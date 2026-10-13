@@ -1,0 +1,102 @@
+# CSA CI (LG01 §10). Lint + types + import boundary + migrations-from-scratch +
+# tests + secret scan. The Postgres service container is the SAME combined
+# PostGIS+pgvector image used by compose.dev.yml, pulled BY DIGEST from GHCR, so
+# "works on my machine" and "green in CI" cannot diverge on the extension set.
+#
+# No production secrets. CI uses fixed, non-secret CSA_* role passwords and a
+# freshly generated throwaway CREDENTIALS_KEY — never prod credentials.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  # Fixed, NON-SECRET CI role passwords (throwaway, not prod).
+  CSA_APP_PASSWORD: ci_app_pw
+  CSA_RO_PASSWORD: ci_ro_pw
+  # The combined DB image, pinned by digest (same as compose.dev.yml).
+  CSA_DB_IMAGE: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223
+        env:
+          POSTGRES_USER: csa
+          POSTGRES_PASSWORD: ci_owner_pw
+          POSTGRES_DB: csa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U csa -d csa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Read-only GHCR login so the private combined image can be pulled by
+      # digest. GITHUB_TOKEN carries only `packages: read` for this job.
+      - name: Log in to GHCR (read-only)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.6"
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Pyright
+        run: uv run pyright
+
+      - name: Import boundary
+        run: uv run lint-imports
+
+      - name: Apply schema baseline + migrations from scratch
+        env:
+          PGPASSWORD: ci_owner_pw
+          MIGRATE_DATABASE_URL: postgres://csa:ci_owner_pw@localhost:5432/csa
+          LG_SETUP_DATABASE_URL: postgres://csa:ci_owner_pw@localhost:5432/csa
+        run: |
+          psql "postgres://csa:ci_owner_pw@localhost:5432/csa" \
+            -v ON_ERROR_STOP=1 -f db/schema_baseline.sql
+          uv run python -m scripts.migrate
+          uv run python -m scripts.lg_setup
+
+      - name: Pytest
+        env:
+          # A freshly generated throwaway AES-256-GCM key for crypto tests.
+          CI_DATABASE_URL: postgres://csa_app:ci_app_pw@localhost:5432/csa
+        run: |
+          export CREDENTIALS_KEY="base64:$(head -c 32 /dev/urandom | base64)"
+          uv run pytest
+
+      - name: Gitleaks (no secrets in the checkout / history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Policy branch coverage (90 percent minimum)
+        run: make coverage

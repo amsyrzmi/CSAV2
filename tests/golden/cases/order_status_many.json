@@ -1,0 +1,24 @@
+{
+  "id": "order_status_many",
+  "matrix": "Orders: many active orders",
+  "description": "Several active orders are listed with tracking buttons, without an id question.",
+  "seed": {
+    "orders": [
+      {"id": "GOLD-MANY-A", "status": "shipped", "total": "21.00"},
+      {"id": "GOLD-MANY-B", "status": "processing", "total": "10.50"}
+    ]
+  },
+  "turns": [{
+    "say": "where is my order",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "ComposeOut": {"reply": "GOLD-MANY-A is shipped. GOLD-MANY-B is processing. Tap an order below to track it."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "plan_args", "agents": ["order_agent"], "gate": "send", "outbound_count": 1,
+      "reply_contains": ["GOLD-MANY-A", "GOLD-MANY-B"], "compose_sees": ["GOLD-MANY-A", "GOLD-MANY-B"],
+      "llm_not_called": ["PlanOut", "StepOut"], "buttons": 2, "escalations": 0
+    }
+  }]
+}

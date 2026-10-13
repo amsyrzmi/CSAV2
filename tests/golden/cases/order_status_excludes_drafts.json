@@ -1,0 +1,26 @@
+{
+  "id": "order_status_excludes_drafts",
+  "matrix": "Context: drafts and cancelled orders are not active orders",
+  "description": "Unplaced drafts and cancelled orders cannot be mistaken for an active customer order.",
+  "seed": {
+    "orders": [
+      {"id": "GOLD-DRAFT", "status": "draft", "total": "21.00", "placed_days_ago": null},
+      {"id": "GOLD-CANCEL", "status": "cancelled", "total": "21.00"}
+    ]
+  },
+  "turns": [{
+    "say": "where is my order",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "No active orders were found for you."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "plan_args", "agents": [], "gate": "send", "outbound_count": 1,
+      "reply_contains": ["No active orders"], "compose_sees": ["No active orders"],
+      "model_never_sees": ["GOLD-DRAFT", "GOLD-CANCEL"],
+      "llm_not_called": ["PlanOut"], "buttons": 0, "escalations": 0
+    }
+  }]
+}

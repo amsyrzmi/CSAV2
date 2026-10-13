@@ -1,0 +1,26 @@
+{
+  "id": "order_confirm_repeat",
+  "matrix": "Orders: confirm button and repeated tap",
+  "description": "Confirm commits the draft, repeats are idempotent, and neither callback invokes the LLM.",
+  "seed": {"products": [{"sku": "A1", "name": "Sample Widget A1", "price": "10.50"}]},
+  "turns": [
+    {
+      "say": "i want 2 A1",
+      "cassette": {
+        "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "A1", "qty": 2}]}}], "reply_strategy": "auto_reply"},
+        "ComposeOut": {"reply": "Your draft for 2 Sample Widget A1 is ready. Tap Confirm to place it."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {"agents": ["order_agent"], "gate": "send", "outbound_count": 1, "confirmation": true, "order_statuses": ["draft"], "reserved_qty": 2, "escalations": 0}
+    },
+    {
+      "say": "", "tap": {"from_turn": 0, "button": "accept"},
+      "expect": {"route": "callback", "agents": ["order_agent"], "gate": "send", "outbound_count": 1, "reply_contains": ["confirmed", "MYR 21.00"], "reply_excludes": ["Hello"], "confirmation": false, "order_statuses": ["pending_confirmation"], "reserved_qty": 2, "escalations": 0, "llm_not_called": ["Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
+    },
+    {
+      "say": "", "tap": {"from_turn": 0, "button": "accept"},
+      "expect": {"route": "callback", "agents": ["order_agent"], "outbound_count": 1, "reply_contains": ["already confirmed"], "order_statuses": ["pending_confirmation"], "reserved_qty": 2, "escalations": 0, "llm_not_called": ["Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
+    }
+  ]
+}

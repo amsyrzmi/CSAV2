@@ -1,0 +1,18 @@
+{
+  "id": "policy_shadow",
+  "matrix": "Policy: shadow suppresses delivery",
+  "description": "Deployment shadow mode computes and verifies a reply but sends nothing.",
+  "seed": {"policy": {"deployment_mode": "shadow"}},
+  "turns": [{
+    "say": "hello",
+    "cassette": {
+      "Classification": {"intent": "chitchat", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false},
+      "ComposeOut": {"reply": "Hello! How can I help?"},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "chitchat", "agents": [], "gate": "reject", "gate_reason": "shadow_mode",
+      "outbound_count": 0, "deliveries": 0, "escalations": 0
+    }
+  }]
+}

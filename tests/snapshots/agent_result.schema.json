@@ -1,0 +1,373 @@
+{
+  "$defs": {
+    "AgentError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "validation",
+            "not_found",
+            "conflict",
+            "dependency_unmet",
+            "upstream",
+            "internal"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "retry_after_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retry After Ms"
+        },
+        "customer_safe_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Customer Safe Hint"
+        }
+      },
+      "required": [
+        "code",
+        "category",
+        "message"
+      ],
+      "title": "AgentError",
+      "type": "object"
+    },
+    "AgentResultData": {
+      "additionalProperties": false,
+      "properties": {
+        "facts": {
+          "items": {
+            "$ref": "#/$defs/Fact"
+          },
+          "maxItems": 100,
+          "title": "Facts",
+          "type": "array"
+        },
+        "ui": {
+          "$ref": "#/$defs/Ui"
+        },
+        "suggested_actions": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Suggested Actions",
+          "type": "array"
+        }
+      },
+      "title": "AgentResultData",
+      "type": "object"
+    },
+    "Fact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "kind": {
+          "default": "verbatim",
+          "enum": [
+            "verbatim",
+            "derived"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As Of"
+        },
+        "confidence": {
+          "default": 1.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "source"
+      ],
+      "title": "Fact",
+      "type": "object"
+    },
+    "ResultMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens",
+          "type": "integer"
+        },
+        "was_duplicate": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Was Duplicate"
+        }
+      },
+      "required": [
+        "trace_id",
+        "latency_ms"
+      ],
+      "title": "ResultMeta",
+      "type": "object"
+    },
+    "Ui": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiConfirmation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/UiOption"
+          },
+          "maxItems": 20,
+          "title": "Options",
+          "type": "array"
+        }
+      },
+      "title": "Ui",
+      "type": "object"
+    },
+    "UiConfirmation": {
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "order_id": {
+          "minLength": 1,
+          "title": "Order Id",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "accept": {
+          "$ref": "#/$defs/UiOption"
+        },
+        "reject": {
+          "$ref": "#/$defs/UiOption"
+        }
+      },
+      "required": [
+        "required",
+        "order_id",
+        "expires_at",
+        "accept",
+        "reject"
+      ],
+      "title": "UiConfirmation",
+      "type": "object"
+    },
+    "UiOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "action_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Id"
+        },
+        "legacy_callback_data": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Legacy Callback Data"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "UiOption",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "ok": {
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "partial",
+        "error"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "agent": {
+      "minLength": 1,
+      "title": "Agent",
+      "type": "string"
+    },
+    "data": {
+      "$ref": "#/$defs/AgentResultData"
+    },
+    "requires_human": {
+      "default": false,
+      "title": "Requires Human",
+      "type": "boolean"
+    },
+    "handoff_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Handoff Reason"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "meta": {
+      "$ref": "#/$defs/ResultMeta"
+    }
+  },
+  "required": [
+    "ok",
+    "status",
+    "task_id",
+    "agent",
+    "data",
+    "meta"
+  ],
+  "title": "AgentResult",
+  "type": "object"
+}

@@ -1,0 +1,28 @@
+{
+  "id": "ticket_cancel_repeat",
+  "matrix": "Tickets: cancel via button and repeated tap",
+  "description": "Typed cancellation prompts a button; its callback cancels exactly once with an audit event.",
+  "seed": {"tickets": [{"id": 800001, "subject": "Synthetic shipping question"}]},
+  "turns": [
+    {
+      "say": "close ticket TKT-800001",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"ticket_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "ticket_agent", "input": {"action": "close", "ticket_id": "TKT-800001"}}], "reply_strategy": "auto_reply"},
+        "ComposeOut": {"reply": "Ticket #800001 is not cancelled yet. Tap Yes, cancel it to confirm."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {"agents": ["ticket_agent"], "outbound_count": 1, "buttons": 1, "ticket_statuses": ["open"], "ticket_events": {}, "escalations": 0}
+    },
+    {
+      "say": "", "tap": {"from_turn": 0, "button": "first_option"},
+      "cassette": {"ComposeOut": {"reply": "Ticket #800001 cancelled."}},
+      "expect": {"route": "callback", "agents": ["ticket_agent"], "outbound_count": 1, "buttons": 0, "reply_contains": ["cancelled"], "ticket_statuses": ["cancelled"], "ticket_events": {"cancelled": 1}, "escalations": 0, "llm_not_called": ["Classification", "PlanOut", "ReviewOut"]}
+    },
+    {
+      "say": "", "tap": {"from_turn": 0, "button": "first_option"},
+      "cassette": {"ComposeOut": {"reply": "Ticket #800001 is already cancelled."}},
+      "expect": {"agents": ["ticket_agent"], "outbound_count": 1, "reply_contains": ["already cancelled"], "ticket_statuses": ["cancelled"], "ticket_events": {"cancelled": 1}, "escalations": 0, "llm_not_called": ["Classification", "PlanOut", "ReviewOut"]}
+    }
+  ]
+}

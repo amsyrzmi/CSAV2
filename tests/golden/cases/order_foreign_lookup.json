@@ -1,0 +1,17 @@
+{
+  "id": "order_foreign_lookup",
+  "matrix": "Orders: other contact's order lookup",
+  "description": "Typed foreign order id yields no matching order, without revealing its price, status or tracking.",
+  "seed": {"orders": [{"id": "GOLD-FOREIGN", "status": "shipped", "total": "987.65", "tracking_no": "PRIVATE-TRACK", "other_contact": true}]},
+  "turns": [{
+    "say": "check order GOLD-FOREIGN",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "status", "order_id": "GOLD-FOREIGN"}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "No matching orders were found for you."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {"agents": ["order_agent"], "outbound_count": 1, "compose_sees": ["No matching orders"], "reply_excludes": ["shipped", "987.65", "PRIVATE-TRACK"], "model_never_sees": ["987.65", "PRIVATE-TRACK"], "order_statuses": ["shipped"], "agent_errors": [], "escalations": 0}
+  }]
+}

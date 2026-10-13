@@ -1,0 +1,19 @@
+{
+  "id": "semantic_fail_safe",
+  "matrix": "Safety: semantic checking rejects both drafts",
+  "description": "Two unsupported drafts result in one persisted safe reply and escalation.",
+  "turns": [{
+    "say": "where is my order",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "Your order has shipped."},
+      "ReviewOut": {"ok": false, "issues": ["No fact supports a shipped order."]}
+    },
+    "expect": {
+      "route": "plan_args", "agents": [], "outbound_count": 1,
+      "reply_contains": ["team member"], "reply_excludes": ["has shipped"],
+      "llm_calls": {"ComposeOut": 2, "ReviewOut": 2}, "escalations": 1
+    }
+  }]
+}

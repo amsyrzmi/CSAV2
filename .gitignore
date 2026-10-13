@@ -1,0 +1,30 @@
+# Environment
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.coverage
+.coverage.*
+*.egg-info/
+
+# OS
+.DS_Store
+
+# Git worktrees
+.worktrees/
+
+# Local environment and generated schema snapshots
+.env
+.env.*
+!.env.example
+.secrets/
+/db/*.local.sql
+
+# Host-specific and legacy operational snapshots stay local; use maintained docs instead.
+/SERVER_HANDOFF.md
+/web_console.md

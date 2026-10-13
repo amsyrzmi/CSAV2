@@ -1,0 +1,88 @@
+[project]
+name = "csa"
+version = "0.1.0"
+description = "CSA customer-service automation (LangGraph rebuild) — foundation."
+readme = "README.md"
+authors = [
+    { name = "Amsyrzmi", email = "mamsyar1404@gmail.com" }
+]
+requires-python = ">=3.12, <3.13"
+dependencies = [
+    "cryptography==50.0.2",
+    "fastapi==0.143.0",
+    "httpx==0.28.1",
+    "jsonschema==4.26.0",
+    "langchain-core==1.6.9",
+    "langchain-groq==1.1.3",
+    "langgraph==1.2.14",
+    "langgraph-checkpoint-postgres==3.1.2",
+    "opentelemetry-api==1.45.1",
+    "opentelemetry-exporter-otlp-proto-grpc==1.45.1",
+    "opentelemetry-instrumentation-fastapi==0.66b1",
+    "opentelemetry-sdk==1.45.1",
+    "orjson==3.13.0",
+    "psycopg[binary,pool]==3.3.6",
+    "pydantic==2.14.0",
+    "pydantic-settings==2.15.0",
+    "structlog==26.1.0",
+    "tenacity==9.2.1",
+    "uvicorn[standard]==0.54.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["csa", "apps"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["csa", "apps", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["csa", "apps", "tests"]
+typeCheckingMode = "standard"
+reportMissingImports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.importlinter]
+root_packages = ["csa", "apps"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Only csa.graph may import langgraph"
+type = "forbidden"
+source_modules = [
+    "csa.contracts",
+    "csa.channels",
+    "csa.decide",
+    "csa.agents",
+    "csa.delivery",
+    "csa.evals",
+    "csa.core",
+    "apps",
+]
+forbidden_modules = [
+    "langgraph",
+    "langgraph_checkpoint",
+]
+
+[dependency-groups]
+dev = [
+    "coverage==7.10.7",
+    "import-linter==2.15",
+    "pyright==1.1.414",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.17.0",
+    "testcontainers[postgres]==4.15.0",
+]

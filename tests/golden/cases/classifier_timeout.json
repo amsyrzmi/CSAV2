@@ -1,0 +1,13 @@
+{
+  "id": "classifier_timeout",
+  "matrix": "Resilience: LLM classifier timeout",
+  "description": "Classification failure persists a safe customer reply and escalation rather than silence.",
+  "turns": [{
+    "say": "i want 2 A1",
+    "cassette": {"Classification": {"error": "groq_timeout"}},
+    "expect": {
+      "agents": [], "outbound_count": 1, "reply_contains": ["team member"],
+      "escalations": 1, "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"]
+    }
+  }]
+}

@@ -1,0 +1,31 @@
+# CSA dev compose (isolated dev stack on the server, LG01 §9.2).
+#
+# Runs ONLY a throwaway PostGIS+pgvector Postgres for development. It is a
+# separate compose project with its own container, volume and default network:
+# it is NOT attached to `csa-net` and must never reach production `csa_db`.
+# The app processes run on the host via `make run-dev`, not in this file.
+#
+# Build the image once with `make db-image` (the tests build the same image).
+name: csa-dev
+
+services:
+  postgres:
+    image: ${CSA_DB_IMAGE:-csa/pg16-postgis-vector:1}
+    container_name: csa_dev_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: csa
+      POSTGRES_PASSWORD: ${CSA_OWNER_PASSWORD:-dev_owner_pw}
+      POSTGRES_DB: csa
+    ports:
+      - "127.0.0.1:${DEV_PGPORT:-5433}:5432"
+    volumes:
+      - csa_dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U csa -d csa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  csa_dev_pgdata:

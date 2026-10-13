@@ -1,0 +1,19 @@
+{
+  "id": "order_status_none",
+  "matrix": "Orders: no active orders",
+  "description": "No orders produces a grounded fact rather than an order-id question.",
+  "turns": [{
+    "say": "where is my order",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "No active orders were found for you."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "plan_args", "agents": [], "gate": "send", "outbound_count": 1,
+      "reply_contains": ["No active orders"], "compose_sees": ["No active orders"],
+      "llm_not_called": ["PlanOut"], "buttons": 0, "escalations": 0
+    }
+  }]
+}

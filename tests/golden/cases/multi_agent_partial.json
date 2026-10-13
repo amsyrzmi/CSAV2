@@ -1,0 +1,17 @@
+{
+  "id": "multi_agent_partial",
+  "matrix": "Flow and policy: multiple agents with a partial result",
+  "description": "Missing product and successful ticket lookup are both recorded; tenant partial-result policy holds the combined reply.",
+  "seed": {"policy": {"always_review_if": ["partial_result"]}},
+  "turns": [{
+    "say": "tell me about ZZ and list my tickets",
+    "cassette": {
+      "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95, "ticket_agent": 0.9}},
+      "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "product_detail", "sku": "ZZ"}}, {"agent": "ticket_agent", "input": {"action": "list"}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "No tickets were found. I could not find product ZZ."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {"agents": ["order_agent", "ticket_agent"], "agent_errors": ["product_not_found"], "gate": "approve", "gate_reason": "always_review:partial_result", "outbound_count": 0, "deliveries": 0, "approvals": 1, "compose_sees": ["No tickets were found.", "product_not_found"], "escalations": 0}
+  }]
+}

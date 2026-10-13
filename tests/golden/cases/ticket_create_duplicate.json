@@ -1,0 +1,29 @@
+{
+  "id": "ticket_create_duplicate",
+  "matrix": "Tickets: duplicate creation within ten minutes",
+  "description": "Repeated same-subject requests produce one ticket and one creation event, with priority capped to high.",
+  "turns": [
+    {
+      "say": "create an urgent ticket about damaged parcel",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"ticket_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "ticket_agent", "input": {"action": "create", "subject": "Damaged parcel", "priority": "urgent"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Your support ticket was created with high priority."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {"agents": ["ticket_agent"], "outbound_count": 1, "compose_sees": ["high priority"], "ticket_statuses": ["open"], "ticket_events": {"created": 1}, "escalations": 0}
+    },
+    {
+      "say": "create a ticket about damaged parcel",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"ticket_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "ticket_agent", "input": {"action": "create", "subject": "Damaged parcel"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Your existing support ticket is open."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {"agents": ["ticket_agent"], "outbound_count": 1, "ticket_statuses": ["open"], "ticket_events": {"created": 1}, "escalations": 0}
+    }
+  ]
+}

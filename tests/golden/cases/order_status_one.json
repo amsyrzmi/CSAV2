@@ -1,0 +1,23 @@
+{
+  "id": "order_status_one",
+  "matrix": "Orders: one active order",
+  "description": "Where is my order resolves the contact's order without asking for an id or calling the planner.",
+  "seed": {
+    "orders": [{"id": "GOLD-ONE", "status": "shipped", "total": "21.00"}]
+  },
+  "turns": [{
+    "say": "where is my order",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "Your order GOLD-ONE is shipped, total MYR 21.00."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "plan_args", "agents": ["order_agent"], "gate": "send",
+      "outbound_count": 1, "reply_contains": ["GOLD-ONE", "shipped"],
+      "reply_excludes": ["order id"], "compose_sees": ["GOLD-ONE", "shipped"],
+      "llm_not_called": ["PlanOut"], "buttons": 0, "escalations": 0
+    }
+  }]
+}

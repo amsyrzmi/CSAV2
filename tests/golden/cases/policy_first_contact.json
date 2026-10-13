@@ -1,0 +1,18 @@
+{
+  "id": "policy_first_contact",
+  "matrix": "Identity: first contact requires review",
+  "description": "The persisted first-contact flag triggers review under tenant policy.",
+  "seed": {"first_contact": true, "policy": {"always_review_if": ["first_contact"]}},
+  "turns": [{
+    "say": "hello",
+    "cassette": {
+      "Classification": {"intent": "chitchat", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false},
+      "ComposeOut": {"reply": "Hello! How can I help?"},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "chitchat", "agents": [], "gate": "approve", "gate_reason": "always_review:first_contact",
+      "outbound_count": 0, "deliveries": 0, "approvals": 1, "escalations": 0
+    }
+  }]
+}

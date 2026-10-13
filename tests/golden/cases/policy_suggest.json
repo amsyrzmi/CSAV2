@@ -1,0 +1,19 @@
+{
+  "id": "policy_suggest",
+  "matrix": "Policy: suggest versus auto",
+  "description": "The greeting that auto sends is held for staff when this tenant selects suggest.",
+  "seed": {"policy": {"deployment_mode": "suggest"}},
+  "turns": [{
+    "say": "hello",
+    "cassette": {
+      "Classification": {"intent": "chitchat", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false},
+      "ComposeOut": {"reply": "Hello! How can I help?"},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "chitchat", "agents": [], "gate": "approve", "gate_reason": "suggest_mode",
+      "outbound_count": 0, "deliveries": 0, "approvals": 1,
+      "llm_not_called": ["PlanOut", "StepOut"], "escalations": 0
+    }
+  }]
+}

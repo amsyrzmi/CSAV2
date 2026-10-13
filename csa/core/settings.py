@@ -1,0 +1,131 @@
+"""Application settings loaded from env and Docker secrets (LG01 §3).
+
+No secret literal lives in the repo. Every secret is read from the environment
+or a Docker secret file under ``/run/secrets``. ``Settings`` is constructed once
+per process via the cached :func:`get_settings`.
+"""  # LG01
+
+from __future__ import annotations
+
+import base64
+import binascii
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import (
+    HttpUrl,
+    PostgresDsn,
+    SecretStr,
+    field_validator,
+)
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_CREDENTIALS_KEY_PREFIX = "base64:"
+_CREDENTIALS_KEY_BYTES = 32
+
+
+class Settings(BaseSettings):
+    """Runtime configuration for every CSA process.
+
+    Values resolve in order: a Docker secret file (``/run/secrets/<field>``),
+    then the environment, then the field default. Missing required fields raise
+    :class:`pydantic.ValidationError` at construction so a misconfigured process
+    exits before serving traffic.
+    """
+
+    model_config = SettingsConfigDict(
+        secrets_dir="/run/secrets",
+        env_file=None,
+        extra="ignore",
+        case_sensitive=True,
+    )
+
+    ENV: Literal["dev", "ci", "prod"]
+
+    DATABASE_URL: PostgresDsn
+    LG_DATABASE_URL: PostgresDsn
+
+    GROQ_API_KEY: SecretStr
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GOOGLE_AI_API_KEY: SecretStr | None = None
+    GOOGLE_AI_MODEL: str = "gemini-2.5-flash"
+    DEV_STAFF_CHAT_ID: str | None = None
+    CONSOLE_API_TOKEN: SecretStr | None = None
+    TYPESAFE_API_KEY: SecretStr | None = None
+
+    # Local adapter bootstrap inputs; normal channel traffic reads encrypted
+    # credentials from channel_credentials instead.
+    TELEGRAM_BOT_TOKEN: SecretStr | None = None
+    TELEGRAM_WEBHOOK_SECRET: SecretStr | None = None
+
+    PUBLIC_BASE_URL: HttpUrl
+
+    CREDENTIALS_KEY: SecretStr
+
+    OTEL_EXPORTER: Literal["console", "otlp"] = "console"
+    OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+
+    TURN_ENGINE: Literal["echo", "coordinator"] = "echo"
+    CHANNEL_MODE: Literal["polling", "webhook"] = "webhook"
+    CHECKPOINT_RETENTION_DAYS: int = 14
+
+    @field_validator("CONSOLE_API_TOKEN", mode="before")
+    @classmethod
+    def _validate_console_token(cls, value: object) -> object:
+        """Blank means disabled; a set token must be long enough to resist guessing."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, str) and len(value) < 32:
+            raise ValueError("CONSOLE_API_TOKEN must be at least 32 characters")
+        return value
+
+    @field_validator("GOOGLE_AI_API_KEY", mode="before")
+    @classmethod
+    def _validate_google_api_key(cls, value: object) -> object:
+        """Treat an empty optional key as disabled, as in the checked-in env template."""
+        return None if value == "" else value
+
+    @field_validator("CREDENTIALS_KEY")
+    @classmethod
+    def _validate_credentials_key(cls, value: SecretStr) -> SecretStr:
+        """Enforce the single ``base64:<base64 of exactly 32 raw bytes>`` rule.
+
+        There is no hex form and no raw-bytes form, so two readers cannot
+        diverge on the encoding.
+        """
+        raw = value.get_secret_value()
+        if not raw.startswith(_CREDENTIALS_KEY_PREFIX):
+            raise ValueError("CREDENTIALS_KEY must be 'base64:<base64 of exactly 32 raw bytes>'")
+        encoded = raw[len(_CREDENTIALS_KEY_PREFIX) :]
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("CREDENTIALS_KEY base64 payload is not valid base64") from exc
+        if len(decoded) != _CREDENTIALS_KEY_BYTES:
+            raise ValueError(
+                f"CREDENTIALS_KEY must decode to exactly {_CREDENTIALS_KEY_BYTES} bytes, "
+                f"got {len(decoded)}"
+            )
+        return value
+
+    def credentials_key_bytes(self) -> bytes:
+        """Return the decoded 32-byte AES-256-GCM key.
+
+        Validated by :meth:`_validate_credentials_key`, so decoding is total.
+        """
+        raw = self.CREDENTIALS_KEY.get_secret_value()
+        return base64.b64decode(raw[len(_CREDENTIALS_KEY_PREFIX) :], validate=True)
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return the process-wide cached :class:`Settings` instance.
+
+    In ``dev`` the ``.env.local`` file is consulted (lowest precedence after a
+    first read of the environment); other environments never read a dotenv file.
+    """
+    import os
+
+    if os.environ.get("ENV") == "dev":
+        return Settings(_env_file=".env.local")  # type: ignore[call-arg]
+    return Settings()  # type: ignore[call-arg]

@@ -1,0 +1,26 @@
+{
+  "id": "order_cancel_repeat",
+  "matrix": "Orders: cancel draft and repeated tap",
+  "description": "Cancel releases a draft reservation once and repeat taps leave it cancelled.",
+  "seed": {"products": [{"sku": "A1", "name": "Sample Widget A1", "price": "10.50"}]},
+  "turns": [
+    {
+      "say": "i want 2 A1",
+      "cassette": {
+        "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "A1", "qty": 2}]}}], "reply_strategy": "auto_reply"},
+        "ComposeOut": {"reply": "Your draft for 2 Sample Widget A1 is ready. Tap Confirm to place it."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {"agents": ["order_agent"], "outbound_count": 1, "confirmation": true, "order_statuses": ["draft"], "reserved_qty": 2}
+    },
+    {
+      "say": "", "tap": {"from_turn": 0, "button": "reject"},
+      "expect": {"route": "callback", "agents": ["order_agent"], "outbound_count": 1, "reply_contains": ["has been cancelled"], "order_statuses": ["cancelled"], "reserved_qty": 0, "escalations": 0, "llm_not_called": ["Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
+    },
+    {
+      "say": "", "tap": {"from_turn": 0, "button": "reject"},
+      "expect": {"route": "callback", "agents": ["order_agent"], "outbound_count": 1, "reply_contains": ["already cancelled"], "order_statuses": ["cancelled"], "reserved_qty": 0, "escalations": 0, "llm_not_called": ["Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
+    }
+  ]
+}

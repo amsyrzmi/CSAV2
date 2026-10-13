@@ -1,0 +1,118 @@
+# CSA production compose (LG01 §9.1).
+#
+# One app image, three long-running services (gateway, worker, delivery) that
+# differ only by `command`, plus a one-shot `migrate` service that applies the
+# SQL migrations and the lg checkpoint setup before the apps start.
+#
+# The database is NOT declared here: Postgres (service name `postgres`,
+# container_name `csa_db`), embeddings, and MCP already run in the existing
+# `csa-platform` stack and are reached over the EXTERNAL `csa-net` network. The
+# runtime DSN therefore uses the service name `postgres` as the host and the
+# non-owner login role `csa_app` (design §9.1 / §12.8).
+#
+# Secrets come from Docker secrets under /run/secrets (never committed). The
+# combined PostGIS+pgvector DB image is pinned by digest in compose.dev.yml and
+# CI; this file consumes the already-running server Postgres.
+
+x-app-base: &app-base
+  image: ghcr.io/amsyrzmi/csa-app:1
+  restart: unless-stopped
+  # Hardening (design §9.1): read-only root FS with a tmpfs /tmp, no new
+  # privileges, all Linux capabilities dropped, non-root user.
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - "no-new-privileges:true"
+  cap_drop:
+    - ALL
+  user: "1000:1000"
+  # json-file log rotation (design §9.1).
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  environment:
+    ENV: prod
+    # csa_app is the login role; host is the existing stack's service name.
+    DATABASE_URL: postgres://csa_app:${CSA_APP_PASSWORD}@postgres:5432/csa
+    LG_DATABASE_URL: postgres://csa_app:${CSA_APP_PASSWORD}@postgres:5432/csa
+    OTEL_EXPORTER: ${OTEL_EXPORTER:-console}
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    CHANNEL_MODE: ${CHANNEL_MODE:-webhook}
+  secrets:
+    - groq_api_key
+    - credentials_key
+  networks:
+    - csa-net
+
+services:
+  # One-shot: apply SQL migrations then create the lg checkpoint tables, exit 0.
+  migrate:
+    <<: *app-base
+    restart: "no"
+    # The migrate step runs as the owner csa (DDL + role creation) and needs the
+    # role passwords in the environment to set csa_app/csa_ro LOGIN.
+    environment:
+      ENV: prod
+      MIGRATE_DATABASE_URL: postgres://csa:${CSA_OWNER_PASSWORD}@postgres:5432/csa
+      LG_SETUP_DATABASE_URL: postgres://csa:${CSA_OWNER_PASSWORD}@postgres:5432/csa
+      DATABASE_URL: postgres://csa_app:${CSA_APP_PASSWORD}@postgres:5432/csa
+      LG_DATABASE_URL: postgres://csa_app:${CSA_APP_PASSWORD}@postgres:5432/csa
+      CSA_APP_PASSWORD: ${CSA_APP_PASSWORD}
+      CSA_RO_PASSWORD: ${CSA_RO_PASSWORD}
+    command: ["sh", "-c", "python -m scripts.migrate && python -m scripts.lg_setup"]
+
+  gateway:
+    <<: *app-base
+    command: ["uvicorn", "apps.gateway.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    <<: *app-base
+    command: ["python", "-m", "apps.worker.main"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Touch-file liveness: the loop refreshes /tmp/worker.alive every
+    # LOOP_INTERVAL (5s); allow up to 2x the interval (10s) of staleness.
+    healthcheck:
+      test: ["CMD-SHELL", "test $(( $(date +%s) - $(stat -c %Y /tmp/worker.alive) )) -lt 10"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  delivery:
+    <<: *app-base
+    command: ["python", "-m", "apps.delivery.main"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "test $(( $(date +%s) - $(stat -c %Y /tmp/delivery.alive) )) -lt 10"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+secrets:
+  groq_api_key:
+    external: true
+  credentials_key:
+    external: true
+
+networks:
+  csa-net:
+    external: true

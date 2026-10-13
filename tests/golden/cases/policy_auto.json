@@ -1,0 +1,19 @@
+{
+  "id": "policy_auto",
+  "matrix": "Policy: suggest versus auto",
+  "description": "An auto tenant sends the same greeting without an approval row.",
+  "seed": {"policy": {"deployment_mode": "auto"}},
+  "turns": [{
+    "say": "hello",
+    "cassette": {
+      "Classification": {"intent": "chitchat", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false},
+      "ComposeOut": {"reply": "Hello! How can I help?"},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "chitchat", "agents": [], "gate": "send", "gate_reason": "auto",
+      "outbound_count": 1, "reply_contains": ["Hello!"],
+      "llm_not_called": ["PlanOut", "StepOut"], "escalations": 0
+    }
+  }]
+}
