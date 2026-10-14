@@ -1,0 +1,24 @@
+{
+  "id": "policy_never_auto_complaint",
+  "matrix": "Policy: never_auto intent complaint always routes to staff review",
+  "description": "Tenant policy never_auto for complaint holds the reply for staff approval even with high confidence.",
+  "seed": {
+    "policy": {
+      "deployment_mode": "auto",
+      "never_auto": ["complaint"]
+    }
+  },
+  "turns": [{
+    "say": "The packaging was damaged on delivery",
+    "cassette": {
+      "Classification": {"intent": "complaint", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false},
+      "ComposeOut": {"reply": "I apologize that your packaging was damaged. Let me connect you with support."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "clarify", "agents": [], "gate": "approve", "gate_reason": "never_auto:complaint",
+      "outbound_count": 0, "deliveries": 0, "approvals": 1,
+      "llm_not_called": ["PlanOut", "StepOut"], "escalations": 0
+    }
+  }]
+}

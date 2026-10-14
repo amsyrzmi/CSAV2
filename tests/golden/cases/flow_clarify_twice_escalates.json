@@ -1,0 +1,35 @@
+{
+  "id": "flow_clarify_twice_escalates",
+  "matrix": "Flow: clarify twice escalates to human support",
+  "description": "A second clarifying turn escalates to staff instead of endlessly asking clarifying questions.",
+  "turns": [
+    {
+      "say": "something ambiguous",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Could you please specify how I can help you today?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "clarify", "agents": [], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["Could you please specify"],
+        "escalations": 0
+      }
+    },
+    {
+      "say": "still unclear",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"}
+      },
+      "expect": {
+        "route": "clarify", "agents": ["escalation_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["team member"],
+        "llm_not_called": ["ComposeOut", "ReviewOut"],
+        "escalations": 1
+      }
+    }
+  ]
+}

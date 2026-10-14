@@ -1,0 +1,25 @@
+{
+  "id": "order_cancel_two_lines_full_release",
+  "matrix": "Orders: customer cancels a two-line order for one product, full release",
+  "description": "Cancelling a draft order created with multiple lines releases the full combined reserved stock.",
+  "seed": {
+    "products": [{"sku": "A1", "name": "Sample Widget A1", "price": "10.00", "stock_qty": 20}]
+  },
+  "turns": [
+    {
+      "say": "i want 2 A1 and another 3 A1",
+      "cassette": {
+        "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "A1", "qty": 2}, {"sku": "A1", "qty": 3}]}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Your draft for 5 Sample Widget A1 is ready. Total MYR 50.00. Tap Confirm to place it."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {"agents": ["order_agent"], "outbound_count": 1, "confirmation": true, "order_statuses": ["draft"], "reserved_qty": 5}
+    },
+    {
+      "say": "", "tap": {"from_turn": 0, "button": "reject"},
+      "expect": {"route": "callback", "agents": ["order_agent"], "outbound_count": 1, "reply_contains": ["has been cancelled"], "order_statuses": ["cancelled"], "reserved_qty": 0, "escalations": 0, "llm_not_called": ["Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
+    }
+  ]
+}

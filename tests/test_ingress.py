@@ -351,3 +351,218 @@ async def test_identity_conflict_rolls_back_new_contact_and_event(
         assert await result.fetchall() == [{"id": contact["id"]}]
         result = await conn.execute("SELECT count(*) AS count FROM ingress_events")
         assert await result.fetchone() == {"count": 0}
+
+
+def _staff_tap_update(update_id: int, chat_id: int, callback_data: str) -> dict[str, Any]:
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": f"cq-{update_id}",
+            "from": {"id": chat_id, "first_name": "Staff"},
+            "data": callback_data,
+            "message": {
+                "message_id": 40,
+                "date": 1791676800,
+                "chat": {"id": chat_id, "type": "private"},
+            },
+        },
+    }
+
+
+@requires_docker
+async def test_staff_edit_text_via_webhook_reaches_customer_outbox_once(
+    ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
+    pg_container: object,
+) -> None:
+    _, pool, client_id, public_id, secret = ingress_context
+    sent: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append({"url": request.url.path.rsplit("/", 1)[-1], **json.loads(request.content)})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
+
+    ingress = TelegramIngress(
+        pool, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+
+    def post(update: dict[str, Any]) -> bytes:
+        return json.dumps(update).encode()
+
+    customer = await ingress.receive(
+        public_id, secret, post(_message_update(update_id=1, sender_id=777, chat_id=777))
+    )
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conversation_id = conn.execute(
+            "SELECT id FROM conversations WHERE client_id=%s AND channel_thread='777'", (client_id,)
+        ).fetchall()[0][0]
+        target_id = conn.execute(
+            "INSERT INTO staff_notification_targets (client_id, channel, address) "
+            "VALUES (%s,'telegram','501') RETURNING id",
+            (client_id,),
+        ).fetchall()[0][0]
+        notification_id = conn.execute(
+            "INSERT INTO staff_notifications "
+            "(client_id, target_id, event, payload, idempotency_key) "
+            "VALUES (%s,%s,'approval_needed','{}'::jsonb,'k') RETURNING id",
+            (client_id, target_id),
+        ).fetchall()[0][0]
+        approval_id = conn.execute(
+            "INSERT INTO approvals "
+            "(client_id, conversation_id, trace_id, draft, reason, expires_at) "
+            "VALUES (%s,%s,%s,'Original draft','test', now() + interval '30 minutes') "
+            "RETURNING id",
+            (client_id, conversation_id, customer.trace_id),
+        ).fetchall()[0][0]
+        action_id = conn.execute(
+            "INSERT INTO staff_actions "
+            "(client_id, notification_id, target_id, approval_id, action, expires_at) "
+            "VALUES (%s,%s,%s,%s,'edit_reply', now() + interval '1 hour') RETURNING id",
+            (client_id, notification_id, target_id, approval_id),
+        ).fetchall()[0][0]
+
+    # Text before the Edit tap is an ordinary private message, not a replacement.
+    await ingress.receive(
+        public_id,
+        secret,
+        post(_message_update(update_id=2, sender_id=501, chat_id=501, text="hello")),
+    )
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM approvals WHERE id=%s", (approval_id,)
+        ).fetchone() == ("pending",)
+
+    await ingress.receive(public_id, secret, post(_staff_tap_update(3, 501, f"s:{action_id}")))
+    assert any(
+        call["url"] == "answerCallbackQuery" and "replacement" in call["text"] for call in sent
+    )
+    assert not any(call["url"] == "editMessageReplyMarkup" for call in sent)
+
+    sent.clear()
+    text_update = post(
+        _message_update(update_id=4, sender_id=501, chat_id=501, text="Edited by staff")
+    )
+    await ingress.receive(public_id, secret, text_update)
+    await ingress.receive(public_id, secret, text_update)
+    assert [c["text"] for c in sent if c["url"] == "sendMessage"] == ["Edited reply sent."]
+
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT m.body, count(d.id) FROM messages m "
+            "JOIN outbound_deliveries d ON d.message_id=m.id "
+            "WHERE m.client_id=%s AND m.direction='outbound' GROUP BY m.body",
+            (client_id,),
+        ).fetchall() == [("Edited by staff", 1)]
+        assert conn.execute(
+            "SELECT status, final_text FROM approvals WHERE id=%s", (approval_id,)
+        ).fetchone() == ("edited", "Edited by staff")
+        assert conn.execute(
+            "SELECT action FROM approval_audit WHERE approval_id=%s", (approval_id,)
+        ).fetchall() == [("edited",)]
+        assert conn.execute(
+            "SELECT status FROM ingress_events WHERE client_id=%s AND idempotency_key=%s",
+            (client_id, f"telegram:{public_id}:4"),
+        ).fetchall() == [("completed",)]
+
+
+@requires_docker
+async def test_group_staff_edit_binds_to_the_alert_reply(
+    ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
+    pg_container: object,
+) -> None:
+    _, pool, client_id, public_id, secret = ingress_context
+    sent: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append({"url": request.url.path.rsplit("/", 1)[-1], **json.loads(request.content)})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
+
+    ingress = TelegramIngress(
+        pool, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+
+    def post(update: dict[str, Any]) -> bytes:
+        return json.dumps(update).encode()
+
+    def group_text(update_id: int, text: str, reply_to: int | None) -> dict[str, Any]:
+        message: dict[str, Any] = {
+            "message_id": update_id,
+            "date": 1791676800,
+            "from": {"id": 501, "first_name": "Staff"},
+            "chat": {"id": -100500, "type": "supergroup"},
+            "text": text,
+        }
+        if reply_to is not None:
+            message["reply_to_message"] = {"message_id": reply_to}
+        return {"update_id": update_id, "message": message}
+
+    customer = await ingress.receive(
+        public_id, secret, post(_message_update(update_id=1, sender_id=777, chat_id=777))
+    )
+    owner_dsn = owner_dsn_for(pg_container)
+    with psycopg.connect(owner_dsn, autocommit=True) as conn:
+        conversation_id = conn.execute(
+            "SELECT id FROM conversations WHERE client_id=%s AND channel_thread='777'", (client_id,)
+        ).fetchall()[0][0]
+        target_id = conn.execute(
+            "INSERT INTO staff_notification_targets (client_id, channel, address) "
+            "VALUES (%s,'telegram','-100500') RETURNING id",
+            (client_id,),
+        ).fetchall()[0][0]
+        notification_id = conn.execute(
+            "INSERT INTO staff_notifications "
+            "(client_id, target_id, event, payload, idempotency_key) "
+            "VALUES (%s,%s,'approval_needed','{}'::jsonb,'kg') RETURNING id",
+            (client_id, target_id),
+        ).fetchall()[0][0]
+        approval_id = conn.execute(
+            "INSERT INTO approvals "
+            "(client_id, conversation_id, trace_id, draft, reason, expires_at) "
+            "VALUES (%s,%s,%s,'Original draft','test', now() + interval '30 minutes') "
+            "RETURNING id",
+            (client_id, conversation_id, customer.trace_id),
+        ).fetchall()[0][0]
+        action_id = conn.execute(
+            "INSERT INTO staff_actions "
+            "(client_id, notification_id, target_id, approval_id, action, expires_at) "
+            "VALUES (%s,%s,%s,%s,'edit_reply', now() + interval '1 hour') RETURNING id",
+            (client_id, notification_id, target_id, approval_id),
+        ).fetchall()[0][0]
+
+    def counts() -> tuple[int, str]:
+        with psycopg.connect(owner_dsn) as conn:
+            customers = conn.execute(
+                "SELECT count(*) FROM contacts WHERE client_id=%s", (client_id,)
+            ).fetchone()
+            status = conn.execute(
+                "SELECT status FROM approvals WHERE id=%s", (approval_id,)
+            ).fetchone()
+        assert customers is not None and status is not None
+        return customers[0], status[0]
+
+    before = counts()
+    with pytest.raises(IngressError) as unarmed:
+        await ingress.receive(public_id, secret, post(group_text(2, "hi", 40)))
+    assert unarmed.value.status_code == 422
+
+    tap = _staff_tap_update(3, -100500, f"s:{action_id}")
+    tap["callback_query"]["from"]["id"] = 501
+    await ingress.receive(public_id, secret, post(tap))
+
+    with pytest.raises(IngressError) as unbound:
+        await ingress.receive(public_id, secret, post(group_text(4, "wrong reply", 41)))
+    assert unbound.value.status_code == 422
+    with pytest.raises(IngressError):
+        await ingress.receive(public_id, secret, post(group_text(5, "no reply", None)))
+    assert counts() == before
+
+    sent.clear()
+    await ingress.receive(public_id, secret, post(group_text(6, "Edited in group", 40)))
+    assert [c["text"] for c in sent if c["url"] == "sendMessage"] == ["Edited reply sent."]
+    with psycopg.connect(owner_dsn) as conn:
+        assert conn.execute(
+            "SELECT status, final_text FROM approvals WHERE id=%s", (approval_id,)
+        ).fetchone() == ("edited", "Edited in group")
+        assert conn.execute(
+            "SELECT count(*) FROM outbound_deliveries WHERE client_id=%s", (client_id,)
+        ).fetchone() == (1,)
+    assert counts()[0] == before[0]

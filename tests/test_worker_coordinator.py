@@ -20,7 +20,7 @@ from csa.contracts.state import (
 from csa.core import db
 from csa.graph.coordinator import build_runtime
 from csa.graph.saver import build_checkpoint_pool, build_saver
-from csa.turn.deps import FALLBACK_TEXT, PostgresTurnDependencies
+from csa.turn.deps import FALLBACK_TEXT, PostgresTurnDependencies, _supported_locale
 
 from tests.conftest import owner_dsn_for, requires_docker
 from tests.test_worker import _configure_test_settings, _seed_events
@@ -177,6 +177,69 @@ async def test_coordinator_turn_persists_once_and_replay_adds_no_rows(
         assert _counts(owner_dsn, client_id) == first
     finally:
         await _close(*pools[:3])
+
+
+async def test_finalize_counts_turn_and_persists_supported_locale(
+    pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, _ = _seed_events(owner_dsn)
+    with psycopg.connect(owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE contacts SET locale='ms' WHERE client_id=%s", (client_id,))
+    pools = await _worker(owner_dsn, app_dsn)
+    worker = pools[3]
+    try:
+        assert await worker.process_once() is True
+        with psycopg.connect(owner_dsn) as conn:
+            turns = conn.execute(
+                "SELECT turn_count FROM conversations WHERE client_id=%s", (client_id,)
+            ).fetchone()
+            locale = conn.execute(
+                "SELECT locale FROM contacts WHERE client_id=%s", (client_id,)
+            ).fetchone()
+            redacted = conn.execute(
+                "SELECT body = redacted_body FROM messages "
+                "WHERE client_id=%s AND direction='outbound'",
+                (client_id,),
+            ).fetchone()
+        assert turns == (1,)
+        assert locale == ("en",)
+        assert redacted == (True,)
+    finally:
+        await _close(*pools[:3])
+
+
+async def test_client_shadow_policy_suppresses_the_reply_the_default_policy_sends(
+    pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, event_ids = _seed_events(owner_dsn)
+    with psycopg.connect(owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE clients SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+            "'{policy}', '{\"deployment_mode\": \"shadow\"}') WHERE id=%s",
+            (client_id,),
+        )
+    pools = await _worker(owner_dsn, app_dsn)
+    worker = pools[3]
+    try:
+        assert await worker.process_once() is True
+        shadow = _counts(owner_dsn, client_id)
+        assert shadow["deliveries"] == 0
+        assert shadow["outbound"] == []
+
+        assert shadow["status"] == "completed"
+    finally:
+        await _close(*pools[:3])
+
+
+async def test_supported_locale_normalizes_and_rejects_unsupported() -> None:
+    assert _supported_locale("zh-CN") == "zh"
+    assert _supported_locale("MS_my") == "ms"
+    assert _supported_locale("fr") is None
+    assert _supported_locale("de-DE") is None
 
 
 async def test_kill_between_collect_and_compose_resumes_without_duplicates(

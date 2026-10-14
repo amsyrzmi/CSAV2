@@ -117,12 +117,14 @@ class FakeDependencies:
         parallel: bool = False,
         angry: bool = False,
         regen_once: bool = False,
+        always_fail_verify: bool = False,
         muted: bool = False,
     ) -> None:
         self.fail_compose = fail_compose
         self.parallel = parallel
         self.angry = angry
         self.regen_once = regen_once
+        self.always_fail_verify = always_fail_verify
         self.verify_seen: list[list[str]] = []
         self.muted = muted
         self.active_spokes = 0
@@ -241,11 +243,20 @@ class FakeDependencies:
     async def verify(self, state: TurnState) -> Verification:
         self.verify_calls += 1
         self.verify_seen.append(list(state.verify_issues))
+        if self.always_fail_verify:
+            return Verification(ok=False, issues=["ungrounded value 999"])
         if self.regen_once and self.verify_calls == 1:
             return Verification(ok=False, issues=["claims stock not in facts"])
         return Verification(ok=True)
 
     async def gate(self, state: TurnState) -> GateVerdict:
+        if state.verified is False:
+            return GateVerdict(
+                decision="approve",
+                risk_score=1.0,
+                reason="draft_verification_failed",
+                policy="test",
+            )
         return GateVerdict(
             decision=self.gate_decision,
             risk_score=0,
@@ -419,6 +430,23 @@ async def test_failed_verification_regenerates_once_then_emits() -> None:
     # The second draft is checked with the first rejection's issues in state.
     assert deps.verify_seen == [[], ["claims stock not in facts"]]
     assert result.verify_issues == []
+
+
+@pytest.mark.asyncio
+async def test_ungrounded_number_never_auto_sends_regens_once_then_fails_safe() -> None:
+    deps = FakeDependencies(always_fail_verify=True)
+
+    result = await run_turn(make_envelope(), deps)
+
+    assert deps.compose_calls == 2
+    assert deps.verify_calls == 2
+    assert result.regen_count == 1
+    # Never auto-sends unverified draft
+    assert deps.emitted == []
+    # Routes to fail-safe template reply and human escalation
+    assert len(result.outbound) == 1
+    assert result.outbound[0].body == "A team member will help you."
+    assert deps.fallbacks == ["draft_verification_failed"]
 
 
 @pytest.mark.asyncio

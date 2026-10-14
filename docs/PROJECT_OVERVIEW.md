@@ -22,7 +22,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md), [RUNBOOK.md](./RUNBOOK.md), [PROGRESS.
 | `csa/staff/callbacks.py` | Handles staff approve / reject / resume taps |
 | `csa/contracts/` | Pydantic contracts: envelope, plan, state, callbacks, approval, registry |
 | `csa/core/` | Settings, DB pool, crypto, logging, PII, tenancy, tracing, clock |
-| `db/migrations/` | Ordered additive migrations (current 0220: tenant-scoped `decision_log`) |
+| `db/migrations/` | Ordered additive migrations (current 0240: Edit bound to the alert message; 0230 added the staff Edit action; 0220 added tenant-scoped `decision_log`) |
 | `db/sql/` | All parameterised SQL, by area |
 | `db/seed/` | Persistent sandbox tenants |
 | `scripts/` | `migrate.py`, `setup_dev_telegram.py` (dev tenant, endpoint, demo products, staff target), `lg_setup.py` |

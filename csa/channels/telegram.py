@@ -98,6 +98,8 @@ class TelegramEvent(ContractModel):
     callback: Callback | None = None
     callback_query_id: str | None = None
     source_message_id: int | None = None
+    reply_to_message_id: int | None = None
+    is_group: bool = False
     staff_action_id: UUID | None = None
 
     @property
@@ -258,6 +260,7 @@ class TelegramAdapter:
         callback: Callback | None = None
         staff_action_id: UUID | None = None
         source_message_id: int | None = None
+        reply_to_message_id: int | None = None
         if "callback_query" in update:
             kind = "callback_query"
             query = _mapping(update["callback_query"], "callback_query")
@@ -287,11 +290,24 @@ class TelegramAdapter:
             raise TelegramUpdateError("Telegram update type is not supported")
 
         chat = _mapping(message_data.get("chat"), f"{kind}.chat")
-        if staff_action_id is None and chat.get("type") != "private":
+        if kind == "message":
+            reply_to = message_data.get("reply_to_message")
+            if isinstance(reply_to, Mapping):
+                raw_reply_id = reply_to.get("message_id")
+                if isinstance(raw_reply_id, int) and not isinstance(raw_reply_id, bool):
+                    reply_to_message_id = raw_reply_id
+        # Group text is only parsed as a reply to a bot alert; ingress still requires an armed Edit.
+        is_group = (
+            staff_action_id is None
+            and kind == "message"
+            and chat.get("type") in {"group", "supergroup"}
+            and reply_to_message_id is not None
+        )
+        if staff_action_id is None and chat.get("type") != "private" and not is_group:
             raise TelegramUpdateError("only private Telegram chats are enabled")
         sender_id = _telegram_id(sender.get("id"), "sender id")
         chat_id = _telegram_id(
-            chat.get("id"), "chat id", allow_negative=staff_action_id is not None
+            chat.get("id"), "chat id", allow_negative=staff_action_id is not None or is_group
         )
         timestamp = message_data.get("date")
         if timestamp is None:
@@ -331,6 +347,8 @@ class TelegramAdapter:
                 callback=callback,
                 callback_query_id=callback_query_id,
                 source_message_id=source_message_id,
+                reply_to_message_id=reply_to_message_id,
+                is_group=is_group,
                 staff_action_id=staff_action_id,
             )
         except ValidationError as exc:

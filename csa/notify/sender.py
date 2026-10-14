@@ -152,7 +152,12 @@ class StaffNotificationSender:
             payload = row["payload"]
             if row["event"] == "approval_needed" and payload.get("approval_id"):
                 buttons = []
-                for action, label in (("approve_reply", "Send reply"), ("reject_reply", "Reject")):
+                reply_actions = [
+                    ("approve_reply", "Send reply"),
+                    ("reject_reply", "Reject"),
+                    ("edit_reply", "Edit"),
+                ]
+                for action, label in reply_actions:
                     created = await db.q.fetch_one(
                         "staff/upsert_reply_actions.sql",
                         (

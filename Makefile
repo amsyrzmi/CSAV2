@@ -21,7 +21,7 @@ PSQL := $(if $(shell command -v psql 2>/dev/null),psql "$(DEV_OWNER_DSN)",docker
 
 DEV_GATEWAY_PORT ?= 18080
 
-.PHONY: db-image db-reset test coverage load-test lint run-dev setup-dev-telegram up down
+.PHONY: db-image db-reset test coverage load-test lint run-dev run-gateway stop-gateway restart-gateway setup-dev-telegram up down
 export CHANNEL_MODE
 
 ## db-image: build the PostGIS+pgvector image used by the dev DB and the tests
@@ -77,12 +77,52 @@ lint:
 # Polling mode deletes the dev bot webhook without dropping pending updates.
 run-dev:
 	@test -f .env.local || { echo "Missing .env.local; copy .env.example and fill local values."; exit 1; }
+	@pids=$$(lsof -ti :$(DEV_GATEWAY_PORT) 2>/dev/null); \
+	if [ -n "$$pids" ]; then \
+		echo "Error: port $(DEV_GATEWAY_PORT) is already in use by PID(s): $$pids."; \
+		echo "Run 'make stop-gateway' or 'make restart-gateway' first."; \
+		exit 1; \
+	fi
 	@echo ">> starting gateway (127.0.0.1:$(DEV_GATEWAY_PORT)), worker, delivery against the dev DB (Ctrl-C to stop)"
 	ENV=dev sh -c 'uv run uvicorn apps.gateway.main:app --host 127.0.0.1 --port $(DEV_GATEWAY_PORT) & \
+	           p1=$$!; \
 	           uv run python -m apps.worker.main & \
+	           p2=$$!; \
 	           uv run python -m apps.delivery.main & \
-	           if [ "$$CHANNEL_MODE" = "polling" ]; then uv run python -m apps.telegram_poller.main & fi; \
+	           p3=$$!; \
+	           p4=""; \
+	           if [ "$$CHANNEL_MODE" = "polling" ]; then uv run python -m apps.telegram_poller.main & p4=$$!; fi; \
+	           trap "kill $$p1 $$p2 $$p3 $$p4 2>/dev/null || true" INT TERM EXIT; \
 	           wait'
+
+## run-gateway: start only the gateway against the dev DB
+run-gateway:
+	@test -f .env.local || { echo "Missing .env.local; copy .env.example and fill local values."; exit 1; }
+	@pids=$$(lsof -ti :$(DEV_GATEWAY_PORT) 2>/dev/null); \
+	if [ -n "$$pids" ]; then \
+		echo "Error: port $(DEV_GATEWAY_PORT) is already in use by PID(s): $$pids."; \
+		echo "Run 'make stop-gateway' or 'make restart-gateway' first."; \
+		exit 1; \
+	fi
+	@echo ">> starting gateway (127.0.0.1:$(DEV_GATEWAY_PORT)) against the dev DB (Ctrl-C to stop)"
+	ENV=dev uv run uvicorn apps.gateway.main:app --host 127.0.0.1 --port $(DEV_GATEWAY_PORT)
+
+## stop-gateway: stop the dev gateway process listening on port $(DEV_GATEWAY_PORT)
+stop-gateway:
+	@pids=$$(lsof -ti :$(DEV_GATEWAY_PORT) 2>/dev/null); \
+	if [ -n "$$pids" ]; then \
+		for pid in $$pids; do \
+			echo ">> stopping gateway on port $(DEV_GATEWAY_PORT) (PID $$pid)"; \
+			kill $$pid 2>/dev/null || true; \
+		done; \
+		while lsof -ti :$(DEV_GATEWAY_PORT) >/dev/null 2>&1; do sleep 0.2; done; \
+		echo ">> gateway stopped"; \
+	else \
+		echo ">> no gateway listening on port $(DEV_GATEWAY_PORT)"; \
+	fi
+
+## restart-gateway: stop any running dev gateway and start a fresh one
+restart-gateway: stop-gateway run-gateway
 
 ## setup-dev-telegram: store a dev bot credential in the local DB and print its webhook URL
 setup-dev-telegram:

@@ -26,7 +26,7 @@ CLASSIFY_TIMEOUT_S = 5.0
 PLAN_TIMEOUT_S = 7.0
 COMPOSE_TIMEOUT_S = 9.0
 _PRIMARY_COMPOSE_TIMEOUT_S = 4.5
-_FALLBACK_COMPOSE_TIMEOUT_S = 4.0
+_FALLBACK_COMPOSE_TIMEOUT_S = 5.0
 REVIEW_TIMEOUT_S = 5.0
 MAX_ISSUE_CHARS = 160
 MIN_CAPABILITY_SCORE = 0.5
@@ -75,6 +75,14 @@ class ReviewOut(BaseModel):
 class ComposeOut(BaseModel):
     reply: str = Field(min_length=1)
     used_fact_ids: list[str] = Field(default_factory=list)
+
+
+class ClientBrand(BaseModel):
+    brand_name: str | None = None
+    brand_tone: str | None = None
+    persona_name: str | None = None
+    intro_line: str | None = None
+    verbatim_for_callbacks: bool = True
 
 
 class LLMProvider:
@@ -276,18 +284,33 @@ class LLMProvider:
                 tasks.append(task)
         return tasks
 
-    async def compose(self, state: TurnState) -> Draft:
+    async def compose(
+        self,
+        state: TurnState,
+        brand: ClientBrand | None = None,
+    ) -> Draft:
         language = str(state.signals.answers.get("language", "en")) if state.signals else "en"
         facts = [{"id": f.id, "text": f.text} for f in state.facts]
         if state.ctx is not None:
             facts += [{"id": f.id, "text": f.text} for f in state.ctx.customer_facts]
         failures = [{"code": e.code, "message": e.message} for e in state.failures]
         strategy = state.plan.reply_strategy if state.plan else "auto_reply"
+
+        brand_name = (brand.brand_name if brand and brand.brand_name else None) or "the business"
+        tone = (
+            brand.brand_tone if brand and brand.brand_tone else "brief, warm and plain; no markdown"
+        )
+        persona = (brand.persona_name if brand and brand.persona_name else None) or brand_name
+        intro = (
+            f" If asked who you are, say: {brand.intro_line}." if brand and brand.intro_line else ""
+        )
+
         system = (
-            "You write the customer-facing reply for a business support assistant. "
+            f"You write the customer-facing reply for {brand_name}. "
+            f"Persona: {persona}. Tone: {tone}.{intro} "
             f"{_DATA_RULE} Use ONLY the provided facts for any business claim, price, quantity, "
             "date, status or policy; never invent or round numbers. If no fact answers the "
-            "question, say a team member will follow up. Be brief, warm and plain; no markdown. "
+            "question, say a team member will follow up. "
             + (
                 "This is a greeting or small talk: reply warmly in one short sentence and offer to "
                 "help with orders or questions. Do NOT mention a team member. "

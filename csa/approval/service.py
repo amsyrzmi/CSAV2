@@ -17,7 +17,9 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from csa.core import db
+from csa.core.pii import redact
 from csa.core.tenancy import tx
+from csa.decide.grounding import ungrounded
 from csa.notify.notifier import notify
 
 logger = structlog.get_logger(__name__)
@@ -25,7 +27,32 @@ logger = structlog.get_logger(__name__)
 FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
 _PREVIEW_CHARS = 800
 
-Decision = Literal["approved", "rejected", "expired"]
+MAX_EDIT_CHARS = 2000
+EDIT_PROMPT_TEXT = (
+    "Send the replacement reply as your next message (in a group, reply to the alert)."
+)
+
+Decision = Literal["approved", "edited", "rejected", "expired"]
+
+
+class EditTextError(ValueError):
+    """The staff replacement text cannot be sent to a customer."""
+
+
+def validate_edit_text(raw: str) -> str:
+    """Return the trimmed replacement text or raise ``EditTextError`` with a staff-safe reason."""
+    text = raw.strip()
+    if not text:
+        raise EditTextError("The replacement text is empty. Send the reply text.")
+    if text.startswith("/"):
+        raise EditTextError("Commands cannot be sent to the customer. Send the reply text.")
+    if len(text) > MAX_EDIT_CHARS:
+        raise EditTextError(
+            f"The replacement text is too long ({len(text)} of {MAX_EDIT_CHARS} characters)."
+        )
+    if any((ord(ch) < 32 and ch not in "\n\t") or ord(ch) == 127 for ch in text):
+        raise EditTextError("The replacement text contains control characters.")
+    return text
 
 
 async def hold_reply(
@@ -101,6 +128,75 @@ async def decide_reply(
     )
 
 
+async def begin_edit(
+    pool: AsyncConnectionPool,
+    *,
+    client_id: UUID,
+    approval_id: int,
+    staff_action_id: UUID,
+    source_message_id: int | None = None,
+) -> str:
+    """Arm the Edit action; the next message (or reply to the alert, in a group) is the reply."""
+    async with tx(pool, str(client_id)) as conn:
+        approval = await db.q.fetch_one(
+            "approval/get_approval.sql", (client_id, approval_id), conn=conn
+        )
+        if approval is None:
+            return "This action is no longer valid."
+        if approval["status"] != "pending":
+            return "Already handled."
+        if approval["expires_at"] <= datetime.now(UTC):
+            await _settle(conn, approval, "expired", "system")
+            return "This approval has expired."
+        armed = await db.q.fetch_one(
+            "staff/await_edit.sql", (source_message_id, client_id, staff_action_id), conn=conn
+        )
+        if armed is not None:
+            await db.q.execute(
+                "staff/disarm_other_edits.sql",
+                (client_id, client_id, staff_action_id, staff_action_id),
+                conn=conn,
+            )
+    return EDIT_PROMPT_TEXT
+
+
+async def edit_reply(
+    pool: AsyncConnectionPool,
+    *,
+    client_id: UUID,
+    approval_id: int,
+    text: str,
+    actor: str,
+) -> str:
+    """Send staff-edited text to the customer once; audit records the original and final text."""
+    final_text = validate_edit_text(text)
+    async with tx(pool, str(client_id)) as conn:
+        approval = await db.q.fetch_one(
+            "approval/get_approval.sql", (client_id, approval_id), conn=conn
+        )
+        if approval is None:
+            return "This action is no longer valid."
+        if approval["status"] != "pending":
+            return "Already handled."
+        if approval["expires_at"] <= datetime.now(UTC):
+            await _settle(conn, approval, "expired", "system")
+            return "This approval has expired."
+        await _settle(conn, approval, "edited", actor, final_text)
+        sources = [approval["draft"]] + [
+            row["redacted_body"] or ""
+            for row in await db.q.fetch_all(
+                "approval/recent_customer_text.sql",
+                (client_id, approval["conversation_id"]),
+                conn=conn,
+            )
+        ]
+    problems = ungrounded(final_text, sources)
+    if problems:
+        listed = ", ".join(problems[:5])
+        return f"Edited reply sent. Warning: not found in the draft or customer messages: {listed}"
+    return "Edited reply sent."
+
+
 async def expire_due(owner_pool: AsyncConnectionPool, app_pool: AsyncConnectionPool) -> int:
     """Settle every pending approval past its expiry with the safe fallback reply."""
     async with owner_pool.connection() as conn:
@@ -123,10 +219,16 @@ async def _settle(
     approval: dict[str, Any],
     outcome: Decision,
     actor: str,
+    edited_text: str | None = None,
 ) -> None:
     client_id = approval["client_id"]
     send_draft = outcome == "approved"
-    text = approval["draft"] if send_draft else FALLBACK_TEXT
+    if outcome == "edited":
+        if edited_text is None:
+            raise ValueError("edited_text_required")
+        text = edited_text
+    else:
+        text = approval["draft"] if send_draft else FALLBACK_TEXT
     decided = await db.q.fetch_one(
         "approval/decide_approval.sql",
         (outcome, actor, text, client_id, approval["id"]),
@@ -136,7 +238,14 @@ async def _settle(
         return
     await db.q.execute(
         "approval/insert_audit.sql",
-        (client_id, approval["id"], outcome, actor, Jsonb({"final_text": text})),
+        (
+            client_id,
+            approval["id"],
+            outcome,
+            actor,
+            Jsonb({"draft": approval["draft"]}) if outcome == "edited" else None,
+            Jsonb({"final_text": text}),
+        ),
         conn=conn,
     )
     await db.q.execute("staff/close_approval_actions.sql", (client_id, approval["id"]), conn=conn)
@@ -148,7 +257,7 @@ async def _settle(
             "outbound",
             "assistant",
             text,
-            text,
+            redact(text),
             Jsonb([]),
             False,
             f"appr:{approval['id']}:{outcome}",

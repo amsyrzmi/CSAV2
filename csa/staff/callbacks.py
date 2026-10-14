@@ -11,9 +11,16 @@ from psycopg_pool import AsyncConnectionPool
 
 from csa.agents.base import AgentContext
 from csa.agents.order_approval.agent import ApprovalInput, OrderApprovalAgent
-from csa.approval.service import decide_reply
+from csa.approval.service import (
+    EDIT_PROMPT_TEXT,
+    EditTextError,
+    begin_edit,
+    decide_reply,
+    edit_reply,
+)
 from csa.contracts.callbacks import PendingActionStore
 from csa.core import db
+from csa.core.pii import redact
 from csa.core.tenancy import tx
 
 logger = structlog.get_logger(__name__)
@@ -35,6 +42,7 @@ async def handle_staff_action(
     chat_id: str,
     staff_action_id: UUID,
     trace_id: UUID,
+    source_message_id: int | None = None,
 ) -> str:
     """Process one staff tap and return the short text shown to the tapping staff member."""
     async with tx(pool, str(client_id)) as conn:
@@ -51,6 +59,8 @@ async def handle_staff_action(
             staff_action_id=str(staff_action_id),
         )
         return NOT_AUTHORISED_TEXT
+    if action["action"] == "edit_reply" and action["status"] == "awaiting":
+        return EDIT_PROMPT_TEXT
     if action["status"] != "open":
         return "Already handled."
     if action["expires_at"] <= datetime.now(UTC):
@@ -58,6 +68,15 @@ async def handle_staff_action(
 
     if action["action"] == "resume":
         return await _resume_conversation(pool, client_id, action)
+
+    if action["action"] == "edit_reply":
+        return await begin_edit(
+            pool,
+            client_id=client_id,
+            approval_id=action["approval_id"],
+            staff_action_id=staff_action_id,
+            source_message_id=source_message_id,
+        )
 
     if action["action"] in {"approve_reply", "reject_reply"}:
         return await decide_reply(
@@ -111,7 +130,7 @@ async def handle_staff_action(
                     "outbound",
                     "assistant",
                     text,
-                    text,
+                    redact(text),
                     Jsonb([]),
                     False,
                     key,
@@ -126,6 +145,35 @@ async def handle_staff_action(
                     conn=conn,
                 )
     return "Approved." if action["action"] == "approve" else "Rejected."
+
+
+async def submit_staff_edit(
+    pool: AsyncConnectionPool,
+    *,
+    client_id: UUID,
+    chat_id: str,
+    text: str,
+    reply_to_message_id: int | None = None,
+) -> str:
+    """Apply the staff replacement text; invalid text keeps the Edit armed for a retry."""
+    async with tx(pool, str(client_id)) as conn:
+        action = await db.q.fetch_one(
+            "staff/get_awaiting_edit.sql",
+            (client_id, reply_to_message_id, reply_to_message_id, chat_id),
+            conn=conn,
+        )
+    if action is None:
+        return "No edit is waiting for a reply."
+    try:
+        return await edit_reply(
+            pool,
+            client_id=client_id,
+            approval_id=action["approval_id"],
+            text=text,
+            actor=f"staff_chat:{chat_id}",
+        )
+    except EditTextError as exc:
+        return str(exc)
 
 
 async def _resume_conversation(

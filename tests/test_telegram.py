@@ -173,3 +173,23 @@ def test_staff_callback_is_allowed_from_group_chat_but_customer_callback_is_not(
     assert event.staff_action_id == action_id
     with pytest.raises(TelegramUpdateError, match="private"):
         TelegramAdapter.parse(update(CallbackCodec.encode(action_id)), public_id="p")
+
+
+def test_group_text_is_parsed_only_as_a_reply_to_an_alert() -> None:
+    def update(**extra: object) -> dict[str, object]:
+        message = {
+            "message_id": 9,
+            "date": 1791676800,
+            "from": {"id": 7, "first_name": "Staff"},
+            "chat": {"id": -100, "type": "supergroup"},
+            "text": "Edited",
+            **extra,
+        }
+        return {"update_id": 1, "message": message}
+
+    event = TelegramAdapter.parse(
+        update(reply_to_message={"message_id": 40}), public_id="devbotendpoint0001"
+    )
+    assert (event.is_group, event.chat_id, event.reply_to_message_id) == (True, "-100", 40)
+    with pytest.raises(TelegramUpdateError, match="private"):
+        TelegramAdapter.parse(update(), public_id="devbotendpoint0001")

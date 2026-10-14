@@ -39,7 +39,9 @@ make run-dev > /tmp/run-dev.log 2>&1 &
 curl localhost:18080/readyz       # {"status":"ready"}
 ```
 
-Restart: list PIDs with `ps -eo pid,cmd | grep -E "apps\.(gateway|worker|delivery)"`, `kill` those PIDs,
+Restart: use `make restart-gateway` to cleanly restart just the gateway, or `make stop-gateway`
+to free port 18080 before re-running `make run-dev`. To stop everything, list PIDs with
+`ps -eo pid,cmd | grep -E "apps\.(gateway|worker|delivery)"`, `kill` those PIDs,
 then start `make run-dev` again. Stop Postgres with `make down`.
 
 Apply a new migration without resetting:

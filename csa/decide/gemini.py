@@ -15,6 +15,7 @@ from csa.decide.completion import CompletionError
 logger = structlog.get_logger(__name__)
 
 ATTEMPTS = 2
+_MIN_ATTEMPT_S = 0.5
 _RETRYABLE = {429, 500, 502, 503, 504}
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 T = TypeVar("T", bound=BaseModel)
@@ -48,6 +49,7 @@ class GeminiClient:
             },
         }
         started = time.monotonic()
+        deadline = started + timeout
         response: httpx.Response | None = None
         for attempt in range(ATTEMPTS):
             try:
@@ -55,17 +57,19 @@ class GeminiClient:
                     GEMINI_URL.format(model=quote(self.model, safe="")),
                     json=body,
                     headers={"x-goog-api-key": self._api_key},
-                    timeout=timeout / ATTEMPTS,
+                    timeout=max(deadline - time.monotonic(), _MIN_ATTEMPT_S),
                 )
             except httpx.TimeoutException as exc:
-                if attempt + 1 < ATTEMPTS:
-                    continue
                 raise CompletionError("gemini_timeout") from exc
             except httpx.HTTPError as exc:
-                if attempt + 1 < ATTEMPTS:
+                if attempt + 1 < ATTEMPTS and deadline - time.monotonic() > _MIN_ATTEMPT_S:
                     continue
                 raise CompletionError("gemini_transport_error") from exc
-            if response.status_code in _RETRYABLE and attempt + 1 < ATTEMPTS:
+            if (
+                response.status_code in _RETRYABLE
+                and attempt + 1 < ATTEMPTS
+                and deadline - time.monotonic() > _MIN_ATTEMPT_S
+            ):
                 continue
             break
         if response is None or not response.is_success:

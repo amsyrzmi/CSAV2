@@ -242,6 +242,17 @@ Intent accuracy, escalation precision/recall, grounding-failure rate, auto-send 
   Two actual spawned processes preserved same-conversation ordering and unique outbox effects;
   after one was terminated while holding its advisory lock, the stale lease was reaped and a
   replacement process completed the event exactly once. Disposable reset and Gitleaks passed.
+- **33 whole-turn golden cases** (expanded from 22): added edge-matrix cases covering:
+  hard legal keyword escalation (`hard_escalate_legal.json`), angry customer sentiment escalation
+  (`safety_angry_customer_escalates.json`), explicit human agent handoff (`safety_wants_human_escalates.json`),
+  unknown SKU product rejection (`order_draft_unknown_sku.json`), duplicate SKU line merging
+  (`order_draft_duplicate_sku_merged.json`), duplicate SKU line exceeding stock (`order_draft_duplicate_sku_out_of_stock.json`),
+  multi-line order reservation release on cancellation (`order_cancel_two_lines_full_release.json`),
+  typed confirmation button enforcement (`order_typed_confirm_asks_for_tap.json`),
+  repeated clarification escalation bound (`flow_clarify_twice_escalates.json`),
+  fast-path greeting routing (`flow_greeting_no_agent_no_plan.json`),
+  and tenant policy `never_auto` review hold (`policy_never_auto_complaint.json`).
+  All 33 cases pass against real PostgreSQL testcontainers and worker runtime.
 
 ## Pitfalls
 - Don't test prompts by eyeballing Telegram; test invariants (grounding, language, no PII, policy) automatically.

@@ -1,0 +1,23 @@
+{
+  "id": "order_draft_duplicate_sku_out_of_stock",
+  "matrix": "Orders: draft with the same SKU twice (A×2 + A×2), 3 available merged to A×4 -> out of stock",
+  "description": "When customer specifies duplicate SKU lines whose sum exceeds available stock, the merge causes insufficient_stock error and nothing is reserved.",
+  "seed": {
+    "products": [{"sku": "A1", "name": "Sample Widget A1", "price": "10.00", "stock_qty": 3}]
+  },
+  "turns": [{
+    "say": "i want 2 A1 and another 2 A1",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "A1", "qty": 2}, {"sku": "A1", "qty": 2}]}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "Some items don't have enough stock for that quantity."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "plan_args", "agents": ["escalation_agent", "order_agent"], "gate": "send",
+      "outbound_count": 1, "reply_contains": ["team member"],
+      "order_statuses": [], "reserved_qty": 0, "agent_errors": ["insufficient_stock"], "escalations": 1
+    }
+  }]
+}

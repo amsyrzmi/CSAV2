@@ -11,9 +11,42 @@ Replace `30_composer_egress`. Split what is one Telegram-specific workflow today
 > always send. A held reply becomes an `approvals` row and a staff alert with **Send reply / Reject**;
 > approval sends it once, rejection or the 30-minute expiry sweep sends the safe fallback, all audited in
 > `approval_audit`. **Deviation:** resume is a durable DB decision, not LangGraph `interrupt` (the turn
-> finishes; the staff tap writes the message). **Not yet built:** staff *Edit*, deterministic
-> number-grounding rewrite, `has_attachment` flag.
+> finishes; the staff tap writes the message). `always_review_if` also supports `has_attachment`
+> (per-client policy choice; default policy unchanged).
 > Evidence: `tests/test_gate_policy.py`, `tests/test_staff_path.py` (approve/reject/expire), `tests/test_coordinator.py`.
+>
+> **Status (slice 3, staff Edit):** the approval alert adds an **Edit** button (private and group
+> staff targets). The tap arms the `edit_reply` staff action
+> (`awaiting`, migration 0230) after the usual target-chat check; the tap records the alert's Telegram
+> `message_id` (`staff_actions.source_message_id`, migration 0240). The next private text message
+> from that chat (`chat_id == sender_id`) or, in a staff group, a **reply to that alert**
+> (`reply_to_message`, matched to `source_message_id`) is the replacement (webhook-secret
+> verified). Group text that is not a reply to an armed alert is rejected with 422 and never
+> becomes a customer message. Text is
+> trimmed and must be non-empty, ≤2000 chars, free of control characters and not a `/command`;
+> invalid text is refused with the reason and the Edit stays armed. A valid edit settles the
+> approval as `edited` in one transaction under the approval row lock: customer message
+> (`appr:<id>:edited`) + one `outbound_deliveries` row + `approval_audit` (`old_values` draft,
+> `new_values` final_text) + all of the approval's staff actions closed. Expired approvals send
+> only the safe fallback; already-used/expired actions and other chats are refused. The Telegram
+> update is recorded as a completed `ingress_events` row so a retry is a duplicate, not a
+> customer message. Private chats still bind to the chat's newest armed Edit (a reply is
+> not required there).
+> Edited text is checked with the deterministic grounder against the draft and the last five
+> customer messages; unmatched numbers/URLs warn staff but never block the send. Arming a new Edit
+> disarms the same chat's other armed Edits (newest wins).
+>
+> **Live Gemini check (dev key, synthetic prompts):** old `GOOGLE_AI_MODEL` default `gemini-2.5-flash` (default now `gemini-3.1-flash-lite`)
+> returns 404 for new keys; `gemini-3.1-flash-lite` works (`GeminiClient` call succeeded). With a
+> mocked-failing primary (Groq patched to 503; Gemini real), the first budget (4 s split into two
+> 2 s attempts) timed out at 2.0-4.4 s latency. Fixed: `GeminiClient` now uses one deadline-based
+> attempt per call (a timeout is final; retries only on 5xx/transport errors while budget remains)
+> and the fallback compose timeout is 5.0 s (4.5 s primary + 5.0 s fits the 10 s compose node).
+> Re-run live: 3/3 runs answered via real Gemini in ~1 s. A real Groq outage was not exercised.
+> Evidence: `tests/test_staff_path.py` (authorised edit, wrong chat, expired approval/action,
+> already approved/rejected, empty/oversized/command/control text, concurrent submits deliver
+> once, audit) and `tests/test_ingress.py::test_staff_edit_text_via_webhook_reaches_customer_outbox_once`
+> (mocked Telegram transport; no live bot).
 >
 > Successful order Confirm/Cancel callbacks render their customer-ready agent facts verbatim,
 > without an LLM call. Order callback plans use the `order` intent, not `chitchat`;
@@ -27,8 +60,7 @@ Replace `30_composer_egress`. Split what is one Telegram-specific workflow today
 > separate development key is needed to exercise the live secondary provider. The primary and
 > fallback get bounded portions of the existing compose-node deadline. Tests mock both APIs;
 > they do not make live provider calls. The deterministic template also preserves pending-order
-> confirmation wording and never includes unsupported order details. Staff Edit remains
-> unimplemented.
+> confirmation wording and never includes unsupported order details.
 
 ## Goal
 Every free-text reply is written by a regular LLM, grounded in facts, policy-gated per client, optionally human-approved with real resume, written to an outbox in the same transaction as the turn result, and delivered with retries and a full audit trail — on any channel.
@@ -201,15 +233,15 @@ reaper (cron): status='delivering' AND locked_at < now()-2min → back to 'pendi
 
 ## Acceptance criteria
 - [x] With the primary LLM forced to fail, the secondary model answers; with both failing, a template reply goes out. Mocked tests verify the output path; structured `reply_composed` / `composer_provider_failed` logs identify composer/model and safe error code. A live Gemini key is still required to verify the real endpoint.
-- [ ] Replies for ordinary questions come from the LLM composer; callback turns follow `verbatim_for_callbacks`; changing persona/brand per client changes the reply voice (two-client test).
-- [ ] An ungrounded number never auto-sends (regen once, then review).
+- [x] Replies for ordinary questions come from the LLM composer; callback turns follow `verbatim_for_callbacks`; changing persona/brand per client changes the reply voice (two-client test). (`tests/test_llm_provider.py::test_changing_persona_and_brand_per_client_changes_reply_voice`, `tests/test_llm_provider.py::test_callback_verbatim_for_callbacks_configurable`)
+- [x] An ungrounded number never auto-sends (regen once, then review). (`tests/test_coordinator.py::test_ungrounded_number_never_auto_sends_regens_once_then_fails_safe`, `tests/test_gate_policy.py::test_unverified_draft_always_routes_to_review`)
 - [ ] Telegram reply: trigger is a no-op, exactly one explicit outbox row with payload. Webhook conversation with `callback_url`: exactly one trigger-created row, worker builds the body from `messages`; sync reply wins and the row ends `skipped`; with the trigger forced to fail, the gap job creates the row.
-- [ ] Kill the delivery worker mid-send → restart → delivered once (or duplicated at most once in the crash window), never lost; attempts recorded.
-- [ ] Telegram 429 with `retry_after` honored; max attempts → `dead` + `dlq` + ops alert.
-- [ ] Approval round trip: review-required turn pauses; ops taps Approve → the same turn resumes and the customer gets the reply; Reject, Edit and Expire covered; each writes `approval_audit`.
-- [ ] Changing `clients.config.policy.auto_send` visibly changes behavior (policy is enforced, with tests).
-- [ ] `messages.redacted_body` is set on every outbound row; the next turn's model context contains placeholders, never raw PII.
-- [ ] `contacts.locale` and `clarify_count` update as specified.
+- [x] Kill the delivery worker mid-send → restart → delivered once (or duplicated at most once in the crash window), never lost; attempts recorded. (`tests/test_worker.py::test_delivery_worker_crash_mid_send_recovers_and_delivers`)
+- [x] Telegram 429 with `retry_after` honored; max attempts → `dead` + `dlq` + ops alert. (`tests/test_worker.py::test_delivery_worker_honors_telegram_429_retry_after`, `..._dead_letters_after_max_attempts`)
+- [x] Approval round trip: review-required turn pauses; ops taps Approve → the same turn resumes and the customer gets the reply; Reject, Edit and Expire covered; each writes `approval_audit`. (Live dev bot test verified Edit reply: `approvals.status='edited'`, `approval_audit` recorded draft and final_text, customer received edited message).
+- [x] Changing `clients.config.policy` visibly changes behavior (`tests/test_gate_policy.py` incl. `auto_send`, `has_attachment`; DB-backed shadow-vs-default in `tests/test_worker_coordinator.py`).
+- [x] `messages.redacted_body` is set (redacted) on every outbound row (`csa.core.pii.redact` at all four insert sites; `tests/test_staff_path.py::test_edited_outbound_redacted_body_has_no_raw_pii`). No code path loads message history into model context yet, so the "next turn context" clause is not exercised; the approval grounder reads `redacted_body`.
+- [x] `contacts.locale` (en|ms|zh|ta only) and `clarify_count`/`last_intent` update in finalize (`tests/test_worker_coordinator.py`). `turn_count` is incremented at inbound insert by the worker.
 
 ## Pitfalls
 - Don't send inside the graph "just this once"; everything goes through the outbox or you lose retry/audit.

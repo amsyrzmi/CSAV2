@@ -500,9 +500,7 @@ def build_graph(
     builder.add_conditional_edges("compose", _on_error("verify"), ["verify", "fail_safe"])
     builder.add_conditional_edges(
         "verify",
-        lambda state: (
-            "fail_safe" if state.node_error else "compose" if state.verified is False else "gate"
-        ),
+        _after_verify,
         ["compose", "gate", "fail_safe"],
     )
     builder.add_conditional_edges(
@@ -785,6 +783,14 @@ async def _fast_plan(state: TurnState, deps: CoordinatorDependencies) -> Plan:
         confidence=1,
         source="policy",
     )
+
+
+def _after_verify(state: TurnState) -> str:
+    if state.node_error:
+        return "fail_safe"
+    if state.verified is False:
+        return "compose"
+    return "gate"
 
 
 def _after_gate(state: TurnState) -> str:

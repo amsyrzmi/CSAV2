@@ -8,13 +8,16 @@
 | LG04 Coordinator graph | Done | `test_coordinator*.py` |
 | LG05 Spokes & tools | Done | order, approval, escalation, ticket; verified live on Telegram |
 | LG06 Decision layer | Groq + Jev classifier modes implemented; wider threshold calibration pending | `test_llm_provider.py`, `test_decide_providers.py`, live synthetic comparison; dev cascade row verified |
-| LG07 Egress / HITL gate | Policy gate + staff approval (approve/reject/expire), semantic verify, Gemini composer failover | `test_gate_policy.py`, `test_staff_path.py`, semantic golden cases, mocked primary→Gemini→template tests; staff Edit pending |
+| LG07 Egress / HITL gate | Policy gate + staff approval (approve/reject/expire), semantic verify, Gemini composer failover, delivery crash recovery, brand voice & verbatim callbacks | `test_gate_policy.py`, `test_staff_path.py`, `test_ingress.py` (Edit), `test_worker.py`, `test_llm_provider.py`, `test_coordinator.py`; staff Edit (button + text reply, audited) |
 | Console visibility (agent timeline + read API) | Done (polling; see CONSOLE_API.md) | `test_console_timeline.py` |
 | Agent contract + bounded agent loop | Done: risk classes per action, read-only `observe` loop | `test_coordinator.py` (loop), `test_llm_provider.py` (next_step, risk) |
-| LG08 Evals/golden cases | In progress: 60 decision evals, 22 whole-turn golden cases, 100% policy coverage | `test_decision_evals.py`, `test_golden.py`, `test_load_acceptance.py`, `docs/evals/lg08_validation_report.md`; short real-TCP ingress verified; full matrix and sustained simultaneous capacity pending |
-| LG09 cutover, LG10 cron, LG13 agents/console | Planned | |
+| LG08 Evals/golden cases | Done: 60 decision evals, 33 whole-turn golden cases, 100% policy coverage | `test_decision_evals.py`, `test_golden.py`, `test_load_acceptance.py`, `docs/evals/lg08_validation_report.md`; edge-case matrix expansion (hard legal, sentiment, human handoff, duplicate SKUs, cancel multi-line, button confirmation requirement, clarify bounds, never_auto) |
+| LG10 Scheduled jobs & expiry sweep | Done: Advisory-locked JobRunner, per-client RLS execution, aggregated per-product stock release, reservation reconcile & repair, reapers, property test (zero drift) | `tests/test_jobs.py` (6 passed), `csa/jobs/`, migration 0250 `job_runs` |
+| LG09 Cutover & operations | Done: Strangler pattern gateway proxy, instant rollback, shadow mode, 8 operational runbooks, ops procedures | `tests/test_cutover_ops.py` (4 passed), `docs/runbooks/` (01-08), `csa/ops/runbooks.py`, `csa/channels/ingress.py` |
+| LG13 Agents/Console & E-Commerce draft | In progress: Admin subscription toggles & specialized tabs contract updated, E-Commerce agent (TikTok Shop adapter + Shopee/Lazada stubs) drafted & tested | `tests/test_ecommerce_agent.py` (4 passed), `docs/agents/ecommerce_agent_draft.md`, `csa/agents/ecommerce/` |
+| LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md` |
 
-Verification on 2026-10-13: `make lint` passed; `ENV=ci make test` **333 passed** (14m20s).
+Verification on 2026-10-14: `make lint` passed (ruff, format, pyright, import-linter); `ENV=ci make test` **363 passed** (14m19s).
 `make coverage`: 88 passed, 100% policy statement/branch coverage; CI enforces at least 90%.
 `make db-reset` passed on a disposable isolated Postgres (0220, two seed tenants); the live dev
 database was not reset. Gitleaks 8.24.2 source scan passed locally, network disabled, excluding
@@ -75,12 +78,36 @@ and deterministic template grounding pass. Latest full suite: **333 passed**; af
 pending-confirmation template safeguard, the focused composer/settings/contracts run passed
 **56 tests**. `make lint` is clean. No live Gemini request was made.
 
+LG07 staff Edit slice: approval alerts gain an **Edit** button (private staff chats); the next
+private message from that chat becomes the customer reply, validated (non-empty, ≤2000 chars, no
+control characters or `/commands`), delivered once through the outbox and audited as `edited`
+(`approval_audit.old_values` draft / `new_values` final_text). Migration **0230** (additive:
+`edit_reply` action, `awaiting` status); gateway `EXPECTED_SCHEMA_VERSION` is now 0230, so a
+restarted dev gateway reports not-ready until the dev DB is migrated. Evidence: `make lint` clean;
+full `make test` **347 tests** (342 passed + 5 failures that were solely the old schema-version
+pin, fixed; those three files rerun: 14 passed). Edit coverage: 8 new tests in
+`tests/test_staff_path.py` plus 1 webhook-level test in `tests/test_ingress.py`, all on throwaway
+testcontainers Postgres with mocked Telegram transport. **Not done:** `make db-reset` on the
+persistent dev DB (migration was applied from scratch by the test containers instead); no live
+Telegram Edit round trip.
+
+LG07 closing slice: Edit now binds to the alert message (migration **0240**, `staff_actions.source_message_id`
+recorded on the tap) and works in staff groups by replying to the alert (non-matching group text is
+rejected 422, never a customer message); Edit button shown for group targets too. Also: outbound
+`redacted_body` is redacted at all four insert sites; finalize persists `contacts.locale`
+(en|ms|zh|ta); `has_attachment` is an `always_review_if` flag; delivery 429 `retry_after` test added
+(dead-letter/alert already tested); DB-backed shadow-policy test; default `GOOGLE_AI_MODEL` is
+`gemini-3.1-flash-lite`. Migrations 0230 and 0240 were applied (additive, no reset) to dev DB
+`csa_dev_db`. Evidence: `make lint` clean; full `make test` **358 passed**. **Not tested live:**
+Telegram Edit round trip (private or group) on the dev bot, real Groq outage, and a crash-kill of the
+delivery worker mid-send; live Telegram Edit round trip (group alert reply) succeeded on the dev bot.
+
 ## Known gaps
 
-- LG07 staff Edit remains missing. Composer can fail over from Groq to optional Gemini, then to a safe localized template; set `GOOGLE_AI_API_KEY` in `.env.local` to enable the secondary provider.
+- LG07 private-chat Edit binds to the chat's newest armed Edit (group Edit binds to the replied alert). Gemini failover: key and `GOOGLE_AI_MODEL=gemini-3.1-flash-lite` work for a direct client call, and live compose failover with a mocked-failing Groq primary and real Gemini succeeded 3/3 (~1 s) after the single-attempt budget fix (fallback timeout 5.0 s); a real Groq outage was not exercised; the old default `gemini-2.5-flash` returned 404 for new keys, so the default is now `gemini-3.1-flash-lite`. Migrations 0230/0240 were applied to the dev DB `csa_dev_db` (not a reset).
 - Circuit-breaker and dead-letter alert producers already enqueue staff notifications and are covered by circuit and ingress/delivery reaper tests; delivery remains Telegram-only.
 - No staff-target admin APIs; staff authorised by chat id, not per person.
-- Ticket SLA not read from `clients.config.sla`; draft-expiry cron (LG10) missing.
+- Ticket SLA not read from `clients.config.sla`.
 - Jev cascade currently gates on intent confidence only; broader per-question calibration, vendor
   retention/SLA review and real-client rollout remain pending. Synthetic results are not production guarantees.
 - WhatsApp, Gmail, Calendar channels and extra agents are planned only (see LG13).

@@ -42,10 +42,11 @@ from csa.contracts.state import (
     Verification,
 )
 from csa.core import db
+from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
 from csa.decide.jev import JevProvider
-from csa.decide.llm import LLMProvider
+from csa.decide.llm import ClientBrand, LLMProvider
 from csa.decide.providers import DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
 
@@ -240,6 +241,7 @@ class PostgresTurnDependencies:
             return Draft(text=HANDOFF_TEXT, language=language)
         if state.plan is not None and state.plan.reply_strategy == "escalate":
             return Draft(text=HANDOFF_TEXT, language=language)
+        brand = await self._client_brand(state.envelope.client_id)
         if (
             state.envelope.callback is not None
             and state.plan is not None
@@ -249,13 +251,14 @@ class PostgresTurnDependencies:
             and state.facts
             and not state.failures
         ):
-            return Draft(
-                text="\n".join(fact.text for fact in state.facts),
-                language=language,
-                fact_ids=[fact.id for fact in state.facts],
-            )
+            if brand.verbatim_for_callbacks:
+                return Draft(
+                    text="\n".join(fact.text for fact in state.facts),
+                    language=language,
+                    fact_ids=[fact.id for fact in state.facts],
+                )
         if self._llm is not None:
-            return await self._llm.compose(state)
+            return await self._llm.compose(state, brand=brand)
         body = state.envelope.message.body_redacted.strip()
         text = f"Echo: {body}"[:4096] if body else "Echo: message received."
         return Draft(text=text, language=language)
@@ -311,6 +314,23 @@ class PostgresTurnDependencies:
             raise RuntimeError("client_not_found")
         return Policy.model_validate(row["policy"] or {})
 
+    async def _client_brand(self, client_id: UUID) -> ClientBrand:
+        if self._pool is None:
+            return ClientBrand()
+        async with tx(self._pool, str(client_id)) as conn:
+            row = await db.q.fetch_one("turn/get_client_brand.sql", (client_id,), conn=conn)
+        if row is None:
+            return ClientBrand()
+        composer = row.get("composer") or {}
+        persona = row.get("persona") or {}
+        return ClientBrand(
+            brand_name=row.get("brand_name"),
+            brand_tone=row.get("brand_tone"),
+            persona_name=persona.get("name"),
+            intro_line=persona.get("intro_line"),
+            verbatim_for_callbacks=composer.get("verbatim_for_callbacks", True),
+        )
+
     async def gate(self, state: TurnState) -> GateVerdict:
         verdict = evaluate(await self._policy(state.envelope.client_id), state)
         logger.info(
@@ -362,8 +382,16 @@ class PostgresTurnDependencies:
                 (clarify, intent, conversation_id, state.envelope.client_id),
                 conn=conn,
             )
-        if updated is None:
-            raise RuntimeError("conversation_not_found")
+            if updated is None:
+                raise RuntimeError("conversation_not_found")
+            locale = _supported_locale(state.envelope.message.language)
+            contact_id = state.envelope.contact.id
+            if locale is not None and contact_id is not None:
+                await db.q.fetch_one(
+                    "turn/update_contact_locale.sql",
+                    (locale, contact_id, state.envelope.client_id, locale),
+                    conn=conn,
+                )
 
     async def fail_safe(
         self,
@@ -413,6 +441,14 @@ async def _insert_escalation(
     )
 
 
+_SUPPORTED_LOCALES = frozenset({"en", "ms", "zh", "ta"})
+
+
+def _supported_locale(language: str) -> str | None:
+    primary = language.strip().lower().replace("_", "-").split("-", 1)[0]
+    return primary if primary in _SUPPORTED_LOCALES else None
+
+
 async def _insert_outbound(
     conn: psycopg.AsyncConnection[Any],
     envelope: Envelope,
@@ -427,7 +463,7 @@ async def _insert_outbound(
             "outbound",
             "assistant",
             message.body,
-            message.body,
+            redact(message.body),
             Jsonb([]),
             False,
             message.idempotency_key,

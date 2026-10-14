@@ -6,12 +6,14 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
 from csa.contracts.facts import Fact, Ui, UiConfirmation, UiOption
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import Context, TurnState
+from csa.decide.completion import CompletionError
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient, GroqError
 from csa.decide.grounding import ungrounded
@@ -484,3 +486,110 @@ async def test_regen_prompt_lists_verify_issues() -> None:
     )
     await _provider(handler).compose(state)
     assert "claims free delivery" in seen["system"]
+
+
+async def test_gemini_attempt_gets_the_whole_budget_and_timeout_is_final() -> None:
+    from csa.decide.llm import ComposeOut
+
+    seen: list[float] = []
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = GeminiClient("k", "m", httpx.AsyncClient(transport=httpx.MockTransport(slow)))
+    with pytest.raises(CompletionError) as caught:
+        await client.json_completion(ComposeOut, system="s", user="u", timeout=5.0)
+    assert caught.value.code == "gemini_timeout"
+    assert len(seen) == 1
+    assert 4.5 < seen[0] <= 5.0
+
+
+async def test_changing_persona_and_brand_per_client_changes_reply_voice() -> None:
+    from csa.decide.llm import ClientBrand
+
+    prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        system = json.loads(request.content)["messages"][0]["content"]
+        prompts.append(system)
+        return _ok({"reply": "Sure thing!", "used_fact_ids": []})(request)
+
+    provider = _provider(handler)
+    state = TurnState(
+        envelope=make_envelope("What products do you have?"),
+        plan=Plan(
+            tasks=[],
+            reply_strategy="auto_reply",
+            intent=Intent.PRODUCT_INFO,
+            confidence=0.9,
+            source="llm",
+        ),
+    )
+
+    client_a = ClientBrand(
+        brand_name="Acme Gadgets",
+        brand_tone="formal, technical, precise",
+        persona_name="Arthur",
+    )
+    draft_a = await provider.compose(state, brand=client_a)
+    assert draft_a.text == "Sure thing!"
+    assert "You write the customer-facing reply for Acme Gadgets." in prompts[0]
+    assert "Persona: Arthur." in prompts[0]
+    assert "Tone: formal, technical, precise." in prompts[0]
+
+    client_b = ClientBrand(
+        brand_name="Bob's Bakery",
+        brand_tone="casual, warm, enthusiastic",
+        persona_name="Bob",
+        intro_line="I am Bob the head baker",
+    )
+    draft_b = await provider.compose(state, brand=client_b)
+    assert draft_b.text == "Sure thing!"
+    assert "You write the customer-facing reply for Bob's Bakery." in prompts[1]
+    assert "Persona: Bob." in prompts[1]
+    assert "Tone: casual, warm, enthusiastic." in prompts[1]
+    assert "If asked who you are, say: I am Bob the head baker." in prompts[1]
+
+
+async def test_callback_verbatim_for_callbacks_configurable() -> None:
+    from uuid import uuid4
+
+    from csa.contracts.envelope import Callback
+    from csa.decide.llm import ClientBrand
+    from csa.turn.deps import PostgresTurnDependencies
+
+    called_llm = {"count": 0}
+
+    def llm_handler(request: httpx.Request) -> httpx.Response:
+        called_llm["count"] += 1
+        return _ok({"reply": "LLM rephrased order confirmation.", "used_fact_ids": ["f1"]})(request)
+
+    deps = PostgresTurnDependencies(None, _provider(llm_handler))  # type: ignore[arg-type]
+    state = TurnState(
+        envelope=make_envelope(callback=Callback(action_id=uuid4())),
+        facts=[Fact(id="f1", text="Order #123 is confirmed.", source="order_agent")],
+        plan=Plan(
+            tasks=[Task(task_id="callback", agent="order_agent", input={"action": "confirm"})],
+            reply_strategy="auto_reply",
+            intent=Intent.ORDER,
+            confidence=1,
+            source="fast_path",
+        ),
+    )
+
+    # 1. Default (verbatim_for_callbacks=True): verbatim facts returned, LLM NOT called
+    draft_verbatim = await deps.compose(state)
+    assert draft_verbatim.text == "Order #123 is confirmed."
+    assert draft_verbatim.fact_ids == ["f1"]
+    assert called_llm["count"] == 0
+
+    # 2. Disabled (verbatim_for_callbacks=False): LLM composer called to rephrase
+    async def mock_brand(_client_id: UUID) -> ClientBrand:
+        return ClientBrand(verbatim_for_callbacks=False)
+
+    deps._client_brand = mock_brand  # type: ignore[assignment]
+    draft_llm = await deps.compose(state)
+    assert draft_llm.text == "LLM rephrased order confirmation."
+    assert draft_llm.fact_ids == ["f1"]
+    assert called_llm["count"] == 1

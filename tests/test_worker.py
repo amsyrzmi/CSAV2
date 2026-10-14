@@ -15,6 +15,7 @@ import psycopg
 import pytest
 from apps.delivery.main import DeliveryWorker
 from apps.worker.main import MAX_INGRESS_ATTEMPTS, ClaimedIngress, IngressWorker
+from csa.channels.telegram import TelegramAdapter
 from csa.contracts.envelope import (
     Channel,
     Contact,
@@ -383,6 +384,50 @@ async def test_delivery_worker_sends_telegram_and_records_attempt(
 
 
 @requires_docker
+async def test_delivery_worker_honors_telegram_429_retry_after(
+    pg_container: object,
+    app_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, _ = _seed_events(owner_dsn)
+    owner_pool, app_pool, ingress_worker = await _open_worker(owner_dsn, app_dsn)
+    try:
+        assert await ingress_worker.process_once() is True
+
+        def respond(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                json={
+                    "ok": False,
+                    "error_code": 429,
+                    "description": "Too Many Requests",
+                    "parameters": {"retry_after": 120},
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            delivery_worker = DeliveryWorker(owner_pool, app_pool, client)
+            assert await delivery_worker.process_once() is True
+            assert await delivery_worker.process_once() is False
+
+        with psycopg.connect(owner_dsn) as conn:
+            row = conn.execute(
+                "SELECT status, attempts, last_status_code, "
+                "extract(epoch FROM next_attempt_at - now()) "
+                "FROM outbound_deliveries WHERE client_id=%s",
+                (client_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[:3] == ("pending", 1, 429)
+        assert 100 <= float(row[3]) <= 121
+    finally:
+        await _close_pools(owner_pool, app_pool)
+        settings.get_settings.cache_clear()
+
+
+@requires_docker
 async def test_delivery_worker_retries_and_dead_letters_after_max_attempts(
     pg_container: object,
     app_dsn: str,
@@ -440,6 +485,101 @@ async def test_delivery_worker_retries_and_dead_letters_after_max_attempts(
         assert notifications[0][0] == "dlq"
         assert notifications[0][1]["stage"] == "delivery"
         assert notifications[0][1]["reason"] == "telegram_http_503"
+    finally:
+        await _close_pools(owner_pool, app_pool)
+        settings.get_settings.cache_clear()
+
+
+@requires_docker
+async def test_delivery_worker_crash_mid_send_recovers_and_delivers(
+    pg_container: object,
+    app_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, _ = _seed_events(owner_dsn)
+    owner_pool, app_pool, ingress_worker = await _open_worker(owner_dsn, app_dsn)
+    try:
+        assert await ingress_worker.process_once() is True
+        sent_requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent_requests.append(request)
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 99}})
+
+        class SimulatedCrash(BaseException):
+            pass
+
+        original_send_message = TelegramAdapter.send_message
+
+        async def crash_after_send(*args: Any, **kwargs: Any) -> Any:
+            await original_send_message(*args, **kwargs)
+            raise SimulatedCrash("worker process killed mid-send")
+
+        monkeypatch.setattr(TelegramAdapter, "send_message", crash_after_send)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            delivery_worker = DeliveryWorker(owner_pool, app_pool, client)
+            with pytest.raises(SimulatedCrash):
+                await delivery_worker.process_once()
+
+        assert len(sent_requests) == 1
+        with psycopg.connect(owner_dsn) as conn:
+            row = conn.execute(
+                "SELECT status, attempts, locked_at FROM outbound_deliveries WHERE client_id = %s",
+                (client_id,),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "delivering"
+            assert row[1] == 1
+            assert row[2] is not None
+
+            # Fast-forward stale lease time so the reaper can reclaim it
+            conn.execute(
+                "UPDATE outbound_deliveries SET locked_at = now() - interval '200 seconds' "
+                "WHERE client_id = %s",
+                (client_id,),
+            )
+
+        # Restore normal send_message for restarted worker
+        monkeypatch.setattr(TelegramAdapter, "send_message", original_send_message)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            restarted_worker = DeliveryWorker(owner_pool, app_pool, client)
+            reaped = await restarted_worker.reap()
+            assert reaped == 1
+
+            # Make next attempt immediately due
+            with psycopg.connect(owner_dsn) as conn:
+                conn.execute(
+                    "UPDATE outbound_deliveries SET next_attempt_at = now() - interval '1 second' "
+                    "WHERE client_id = %s",
+                    (client_id,),
+                )
+
+            # Process again with restarted worker
+            assert await restarted_worker.process_once() is True
+
+        assert len(sent_requests) == 2
+        with psycopg.connect(owner_dsn) as conn:
+            delivery = conn.execute(
+                "SELECT status, attempts, last_status_code, last_error FROM outbound_deliveries "
+                "WHERE client_id = %s",
+                (client_id,),
+            ).fetchone()
+            assert delivery == ("delivered", 2, 200, None)
+
+            attempts = conn.execute(
+                "SELECT attempt_no, status_code, error FROM outbound_delivery_attempts oda "
+                "JOIN outbound_deliveries od ON od.id = oda.delivery_id "
+                "WHERE od.client_id = %s ORDER BY attempt_no",
+                (client_id,),
+            ).fetchall()
+            assert attempts == [
+                (1, None, "delivery lease expired"),
+                (2, 200, None),
+            ]
     finally:
         await _close_pools(owner_pool, app_pool)
         settings.get_settings.cache_clear()

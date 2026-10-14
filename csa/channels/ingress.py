@@ -17,11 +17,17 @@ import structlog
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from csa.channels.telegram import TelegramAdapter, TelegramEvent, TelegramUpdateError
+from csa.approval.service import EDIT_PROMPT_TEXT
+from csa.channels.telegram import (
+    TelegramAdapter,
+    TelegramDeliveryError,
+    TelegramEvent,
+    TelegramUpdateError,
+)
 from csa.contracts.envelope import Channel, Contact, ConversationRef, Envelope, Meta
 from csa.core import crypto, db
 from csa.core.tenancy import tx
-from csa.staff.callbacks import NOT_AUTHORISED_TEXT, handle_staff_action
+from csa.staff.callbacks import NOT_AUTHORISED_TEXT, handle_staff_action, submit_staff_edit
 
 logger = structlog.get_logger(__name__)
 
@@ -44,6 +50,7 @@ class IngressReceipt:
     accepted: bool
     duplicate: bool
     trace_id: UUID
+    proxied: bool = False
 
 
 class EndpointRateLimiter:
@@ -85,6 +92,28 @@ class _StaffTap(Exception):
         self.bot_token = bot_token
 
 
+class _StaffEdit(Exception):
+    """Internal control flow: replacement text from a staff chat with an armed Edit."""
+
+    def __init__(
+        self,
+        *,
+        client_id: UUID,
+        endpoint_id: UUID,
+        trace_id: UUID,
+        event: TelegramEvent,
+        payload_hash: str,
+        bot_token: str,
+    ) -> None:
+        super().__init__("staff edit")
+        self.client_id = client_id
+        self.endpoint_id = endpoint_id
+        self.trace_id = trace_id
+        self.event = event
+        self.payload_hash = payload_hash
+        self.bot_token = bot_token
+
+
 class TelegramIngress:
     """Verify, normalize, tenant-bind, and persist Telegram webhook updates."""
 
@@ -118,12 +147,44 @@ class TelegramIngress:
                 chat_id=tap.event.chat_id,
                 staff_action_id=tap.staff_action_id,
                 trace_id=tap.trace_id,
+                source_message_id=tap.event.source_message_id,
             )
             if tap.event.callback_query_id:
                 await self._answer_callback(tap.bot_token, tap.event.callback_query_id, answer)
-            if answer != NOT_AUTHORISED_TEXT:
+            if answer not in (NOT_AUTHORISED_TEXT, EDIT_PROMPT_TEXT):
                 await self._clear_buttons(tap.bot_token, tap.event)
             return IngressReceipt(accepted=True, duplicate=False, trace_id=tap.trace_id)
+        except _StaffEdit as edit:
+            answer = await submit_staff_edit(
+                self._pool,
+                client_id=edit.client_id,
+                chat_id=edit.event.chat_id,
+                text=edit.event.message.body_raw,
+                reply_to_message_id=edit.event.reply_to_message_id if edit.event.is_group else None,
+            )
+            # Recording the update makes a Telegram retry a duplicate, not a customer message.
+            async with tx(self._pool, str(edit.client_id)) as conn:
+                await db.q.fetch_one(
+                    "ingress/insert_handled_event.sql",
+                    (
+                        edit.client_id,
+                        edit.endpoint_id,
+                        edit.event.idempotency_key,
+                        edit.payload_hash,
+                        edit.trace_id,
+                    ),
+                    conn=conn,
+                )
+            try:
+                await self._adapter.send_message(
+                    edit.bot_token,
+                    chat_id=edit.event.chat_id,
+                    text=answer,
+                    http_client=self._http_client,
+                )
+            except TelegramDeliveryError as exc:
+                logger.error("staff_edit_reply_failed", error=exc.error_code)
+            return IngressReceipt(accepted=True, duplicate=False, trace_id=edit.trace_id)
 
     async def _receive(
         self,
@@ -189,6 +250,47 @@ class TelegramIngress:
             ):
                 raise IngressError(429, "endpoint rate limit exceeded")
 
+            client_runtime = await db.q.fetch_one(
+                "ingress/get_client_runtime.sql",
+                (client_id,),
+                conn=conn,
+            )
+            runtime = (
+                (client_runtime["runtime"] or "langgraph").strip().lower()
+                if client_runtime and client_runtime["runtime"]
+                else "langgraph"
+            )
+            deployment_mode = (
+                (client_runtime["deployment_mode"] or "auto").strip().lower()
+                if client_runtime and client_runtime["deployment_mode"]
+                else "auto"
+            )
+            n8n_url = client_runtime.get("n8n_webhook_url") if client_runtime else None
+
+            if runtime == "n8n":
+                if not n8n_url:
+                    raise IngressError(503, "n8n webhook URL not configured")
+                await self._proxy_to_n8n(n8n_url, supplied_secret, body)
+                if deployment_mode != "shadow":
+                    logger.info(
+                        "ingress_proxied_to_n8n",
+                        client_id=str(client_id),
+                        endpoint_id=str(endpoint_id),
+                        trace_id=str(trace_id),
+                    )
+                    return IngressReceipt(
+                        accepted=True,
+                        duplicate=False,
+                        trace_id=trace_id,
+                        proxied=True,
+                    )
+                logger.info(
+                    "ingress_shadow_mode_enqueued",
+                    client_id=str(client_id),
+                    endpoint_id=str(endpoint_id),
+                    trace_id=str(trace_id),
+                )
+
             try:
                 event = self._adapter.parse(body, public_id=public_id)
             except TelegramUpdateError as exc:
@@ -203,6 +305,29 @@ class TelegramIngress:
                     staff_action_id=event.staff_action_id,
                     bot_token=self._bot_token(route, credential_id),
                 )
+
+            reply_id = event.reply_to_message_id if event.is_group else None
+            if (
+                event.kind == "message"
+                and event.callback_query_id is None
+                and (event.is_group or event.chat_id == event.sender_id)
+                and await db.q.fetch_one(
+                    "staff/get_awaiting_edit.sql",
+                    (client_id, reply_id, reply_id, event.chat_id),
+                    conn=conn,
+                )
+                is not None
+            ):
+                raise _StaffEdit(
+                    client_id=client_id,
+                    endpoint_id=endpoint_id,
+                    trace_id=trace_id,
+                    event=event,
+                    payload_hash=_canonical_payload_hash(body),
+                    bot_token=self._bot_token(route, credential_id),
+                )
+            if event.is_group:
+                raise IngressError(422, "only private Telegram chats are enabled")
 
             contact_id, first_contact, stored_display_name = await self._resolve_contact(
                 conn,
@@ -305,7 +430,42 @@ class TelegramIngress:
             await self._answer_callback(answer_token, event.callback_query_id)
             await self._clear_buttons(answer_token, event)
 
-        return IngressReceipt(accepted=True, duplicate=duplicate, trace_id=trace_id)
+        return IngressReceipt(
+            accepted=True,
+            duplicate=duplicate,
+            trace_id=trace_id,
+            proxied=(runtime == "n8n"),
+        )
+
+    async def _proxy_to_n8n(
+        self,
+        url: str,
+        supplied_secret: str | None,
+        body: bytes,
+    ) -> None:
+        headers = {"Content-Type": "application/json"}
+        if supplied_secret:
+            headers["X-Telegram-Bot-Api-Secret-Token"] = supplied_secret
+        client = self._http_client
+        close_client = False
+        if client is None:
+            client = httpx.AsyncClient(timeout=15.0)
+            close_client = True
+        try:
+            resp = await client.post(url, content=body, headers=headers)
+            if resp.status_code >= 400:
+                logger.error(
+                    "n8n_proxy_response_error",
+                    status_code=resp.status_code,
+                    body=resp.text[:200],
+                )
+                raise IngressError(502, f"n8n proxy error ({resp.status_code})")
+        except httpx.RequestError as exc:
+            logger.error("n8n_proxy_connection_error", error=str(exc))
+            raise IngressError(502, "n8n proxy connection failed") from exc
+        finally:
+            if close_client:
+                await client.aclose()
 
     async def _resolve_endpoint(self, public_id: str) -> dict[str, Any] | None:
         async with self._pool.connection() as conn:

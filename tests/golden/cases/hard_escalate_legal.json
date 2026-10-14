@@ -1,0 +1,16 @@
+{
+  "id": "hard_escalate_legal",
+  "matrix": "Safety: lawyer/sue/court triggers hard escalation",
+  "description": "Urgent legal keyword bypasses LLM planner and routes to escalation immediately.",
+  "turns": [{
+    "say": "I will talk to my lawyer and sue you in court",
+    "cassette": {
+      "Classification": {"intent": "complaint", "language": "en", "sentiment": "angry", "wants_human": true, "injection": false, "urgent": true}
+    },
+    "expect": {
+      "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+      "outbound_count": 1, "reply_contains": ["team member"],
+      "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"], "escalations": 1
+    }
+  }]
+}

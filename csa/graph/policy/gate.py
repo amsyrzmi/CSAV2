@@ -19,7 +19,9 @@ class AutoSend(ContractModel):
     by_intent: dict[Intent, float] = Field(default_factory=dict)
 
 
-ReviewFlag = Literal["first_contact", "partial_result", "requires_human", "email_channel"]
+ReviewFlag = Literal[
+    "first_contact", "has_attachment", "partial_result", "requires_human", "email_channel"
+]
 
 
 class Policy(ContractModel):
@@ -61,12 +63,15 @@ def evaluate(policy: Policy, state: TurnState) -> GateVerdict:
         return verdict("send", "system_reply")
     if policy.deployment_mode == "suggest":
         return verdict("approve", "suggest_mode")
+    if state.verified is False:
+        return verdict("approve", "draft_verification_failed")
 
     intent = plan.intent if plan is not None else Intent.OTHER
     if intent in policy.never_auto:
         return verdict("approve", f"never_auto:{intent.value}")
     flags = {
         "first_contact": state.envelope.meta.is_first_contact,
+        "has_attachment": bool(state.envelope.message.attachments),
         "partial_result": bool(state.failures),
         "requires_human": state.handoff is not None and state.handoff.required,
         "email_channel": state.envelope.channel == Channel.EMAIL,

@@ -76,4 +76,4 @@ def test_optional_typesafe_defaults_none() -> None:
 def test_blank_optional_gemini_key_disables_fallback() -> None:
     s = _settings(GOOGLE_AI_API_KEY="")
     assert s.GOOGLE_AI_API_KEY is None
-    assert s.GOOGLE_AI_MODEL == "gemini-2.5-flash"
+    assert s.GOOGLE_AI_MODEL == "gemini-3.1-flash-lite"

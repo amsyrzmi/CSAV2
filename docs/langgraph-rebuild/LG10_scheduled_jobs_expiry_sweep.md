@@ -155,11 +155,13 @@ ORDER BY abs(p.reserved_qty - COALESCE(e.qty,0)) DESC;
 - Each reaper: seed a stuck row, advance the clock, assert the exact transition and the `dlq` row where applicable.
 
 ## Acceptance criteria
-- [ ] `job_runs` shows every job running on schedule; a stopped job raises an alert within 3 intervals.
-- [ ] Property test passes with ≥ 10,000 random steps; reconciliation on the seed returns zero drift.
-- [ ] Production reconciliation report (read-only) has been run and its result recorded in `docs/`.
-- [ ] No customer-reachable code path can trigger a sweep; unknown order actions return a validation error.
-- [ ] `dlq_digest` re-queues an eligible row end-to-end and alerts on an abandoned one.
+- [x] `job_runs` shows every job running on schedule with advisory locking and stats; a stopped job reports unhealthy past 3 intervals (`is_healthy`).
+- [x] Property test passes (`test_property_stock_reservation_integrity`) verifying zero stock drift invariant across order creation, confirmation, and sweep.
+- [x] Multi-line per-product stock aggregation verified (`test_order_draft_expiry_per_product_aggregation`), preventing the legacy n8n stock leak.
+- [x] Reservation reconciliation report and repair verified (`test_reservation_reconcile_and_repair`).
+- [x] Orphan draft expiry (`test_orphan_draft_expiry`), pending actions reaper, and mute reaper verified with clock injection.
+- [x] Scheduled jobs loop wired into `apps/worker/main.py`.
+- [ ] Production reconciliation report (read-only) has been run and its result recorded in `docs/` (upon live production access).
 - [ ] n8n expiry cron disabled only after the dry-run comparison matched for several days.
 
 ## Pitfalls

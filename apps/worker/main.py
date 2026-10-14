@@ -14,6 +14,7 @@ import structlog
 from csa.contracts.envelope import Channel, Envelope
 from csa.core import db
 from csa.core.liveness import WORKER_ALIVE_PATH, liveness_loop
+from csa.core.pii import redact
 from csa.core.settings import get_settings
 from csa.core.tenancy import tx
 from csa.decide.gemini import GeminiClient
@@ -23,6 +24,7 @@ from csa.graph.coordinator import CoordinatorRuntime, build_runtime, process_tur
 from csa.graph.events import PostgresEventSink
 from csa.graph.retention import CheckpointPool, retention_loop
 from csa.graph.saver import build_checkpoint_pool, build_saver
+from csa.jobs.runner import JobRunner, jobs_loop
 from csa.notify.notifier import notify
 from csa.turn.deps import CAPABILITIES, PostgresTurnDependencies, build_llm_provider
 from psycopg.types.json import Jsonb
@@ -260,7 +262,7 @@ class IngressWorker:
                 "outbound",
                 "assistant",
                 reply,
-                reply,
+                redact(reply),
                 Jsonb([]),
                 False,
                 outbound_key,
@@ -496,11 +498,18 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         owner_dsn,
         retention_days=settings.CHECKPOINT_RETENTION_DAYS,
     )
+    job_runner = JobRunner(
+        owner_pool,
+        app_pool,
+        lock_conninfo=owner_dsn,
+    )
+    jobs_task = asyncio.create_task(jobs_loop(job_runner))
     try:
         await liveness_loop(WORKER_ALIVE_PATH, do_work=worker.do_work)
     finally:
+        jobs_task.cancel()
         retention.cancel()
-        await asyncio.gather(retention, return_exceptions=True)
+        await asyncio.gather(jobs_task, retention, return_exceptions=True)
         await llm_http.aclose()
         await checkpoint_pool.close()
         await app_pool.close()

@@ -23,15 +23,16 @@ Rules for every agent below:
 ## Where each request lands
 | Request | Phase | Why |
 |---|---|---|
+| E-Commerce operations agent (TikTok Shop, Shopee, Lazada) | Wave 1/2 (Drafted) | Multi-channel order, catalog and inventory sync (`docs/agents/ecommerce_agent_draft.md`) |
 | Booking agent (Google Calendar) | Already in LG05 outline; build as wave 2 (needs OAuth + test calendar) | Spec and acceptance gate exist in LG05 |
 | Email management agent | Wave 2 | Builds on the Gmail channel from LG03 |
-| KB agent | Wave 1 | Needed first; also feeds the webscraping and teach agents |
-| Invoice agent | Wave 1 (lookup) / Wave 3 (create, send, e-invoice) | Views exist; creation is financial |
+| KB agent | Wave 1 | Needed first; also feeds the webscraping agent |
+| Invoice agent | Wave 1 (lookup) / Wave 3 (create, send, e-invoice / LHDN) | Views exist; creation is financial |
 | Subscription agent | Wave 3 | Needs a payment provider and webhooks |
-| Teach-a-task agent | Wave 3 | Needs stable spokes to compose from |
 | Webscraping agent | Wave 2, as a scheduled job | Not a live customer-turn tool |
+| Teach-a-task (Grokbot Virtual Desktop) | Dedicated Phase: LG14 | Interactive desktop session, user action recording, and scheduled replay |
 | Future agents | Intake template at the end | |
-| Web console | Parallel track: API contract (below) | Another developer builds the UI |
+| Web console | Parallel track: API contract (below) | Admin subscription toggles & specialized agent tabs |
 
 ## Wave 1 — after LG07
 ### kb_agent (knowledge base)
@@ -85,12 +86,9 @@ Guardrails (required, not optional):
 - Create, send, void, credit note; accounting sync (Xero, QuickBooks, AutoCount, SQL Account) through adapters.
 - LHDN MyInvois e-invoice per the LG05 outline: legal/financial, so deterministic code with tests, never model-generated numbers. Needs a registered taxpayer sandbox.
 
-### teach_task_agent ("teach a task")
-Interpretation: a tenant admin teaches the system a repeatable procedure (SOP) in plain language, for example "when a customer asks for a size exchange, check the order, open a ticket, and tell them the policy".
-- The model **compiles** the description into a declarative, versioned playbook: ordered steps calling existing whitelisted agents with typed inputs, conditions, and an optional approval step. It never generates or runs code.
-- Admin reviews a rendered preview, runs it in a sandbox against synthetic data, then publishes. Playbooks are tenant-scoped, versioned, rollback-able, and audited.
-- At runtime the planner can select a playbook as a plan template; each step still goes through the normal wrapper, gate and HITL, so a taught task can never exceed the permissions of its steps.
-- Needs a `playbooks` table and a plan-template hook in LG06, so build after LG06/LG07.
+### teach_task_agent ("teach a task" / Grokbot virtual desktop)
+Moved to dedicated phase **LG14** (`docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md`).
+Provides an interactive sandboxed desktop environment where users record desktop actions, compile them into declarative playbooks with typed inputs, and schedule them to run on periodic or conditional triggers.
 
 ## Intake template for future agents (add over time)
 For each proposed agent, write down: purpose, who triggers it (customer, staff, schedule), side effects and risk class, external accounts and API scopes, data it reads/writes, HITL requirement, per-tenant config, failure behaviour (what facts/hints when down), and acceptance tests. Then follow the LG05 day-one checklist. Candidates noted so far: refund/warranty status, e-commerce marketplace sync (Shopee/TikTok), payments reconciliation, reporting/digest agent.
@@ -102,17 +100,37 @@ Boundaries:
 - The console can only read and write through the contracts below; agent behaviour changes via config, not code.
 
 Planned API surface (v1):
-1. Auth/session, roles (platform admin, tenant admin, tenant staff, read-only).
-2. Conversations: list/search, transcript, take over, release, reply as human (ties to `owned_by`/`ai_muted_until`).
-3. Approval queue: order, outbound-message and email-draft approvals (approve, edit, reject).
-4. Orders, products/stock, tickets, escalations, invoices/subscriptions (read first, writes later).
-5. Agent settings: enable/disable per tenant, config forms generated from each agent's `config_schema`, circuit state view.
-6. KB: upload, list, delete, re-index, `kb_gaps` inbox.
-7. Channels and integrations: connect Telegram/WhatsApp/Gmail/Calendar (OAuth start/callback, status, revoke).
-8. Notification targets, quiet hours, staff users.
-9. Playbooks (teach-a-task): draft, preview, test, publish, rollback.
-10. Audit log, run history (`agent_runs`), dashboards (volumes, latency, escalation rate, DLQ).
-11. Live updates via SSE.
+1. **Auth & RBAC**: Roles (`platform_admin`, `tenant_admin`, `tenant_staff`, `read_only`).
+2. **Platform Admin — Subscription Agent Management**:
+   - List and toggle active agents per client based on subscribed tiers (`capability_registry.is_enabled`).
+   - Audit trail of enabled/disabled capabilities.
+3. **Tenant Admin — Agent Configuration**:
+   - Toggle subscribed agents (`capability_registry.client_enabled`).
+   - Dynamic configuration forms generated from `capability_registry.config_schema`.
+   - Circuit breaker status and manual reset buttons (`csa.ops.runbooks`).
+4. **Specialized Agent Tabs**:
+   - **LHDN MyInvois Tab** (`/console/v1/agents/lhdn`):
+     - E-invoice generation & submission history.
+     - Validation status against LHDN MyInvois API (TIN, BRN, MSIC codes).
+     - Credit note, debit note, and refund invoice issuance.
+     - Rejection error diagnostics and manual re-submission.
+   - **E-Commerce Operations Tab** (`/console/v1/agents/ecommerce`):
+     - Store connection management (TikTok Shop OAuth, Shopee, Lazada).
+     - Cross-marketplace order stream with channel badges.
+     - Unified stock matrix with one-click "Sync All" to marketplaces.
+     - Dispute & cancellation inbox.
+   - **Bookings Tab** (`/console/v1/agents/bookings`):
+     - Google Calendar OAuth status & calendar binding.
+     - Service slots, working hours, and blackout windows.
+   - **Knowledge Base Tab** (`/console/v1/agents/kb`):
+     - Document upload (PDF, docx, URLs), chunking & vectorization status.
+     - `kb_gaps` inbox displaying unanswered questions for staff resolution.
+5. **Conversations**: List/search, transcript, take over, release, reply as human (ties to `owned_by`/`ai_muted_until`).
+6. **Approval Queue**: Order, outbound-message and email-draft approvals (approve, edit, reject).
+7. **Channels & Integrations**: Connect Telegram / WhatsApp / Gmail / Calendar / TikTok Shop (OAuth start/callback, status, revoke).
+8. **Notification Targets**: Quiet hours, staff users, priority thresholds.
+9. **Audit Log & Observability**: Run history (`agent_runs`), timelines, DLQ inspection and redrive.
+10. **Live Updates**: Server-Sent Events (SSE) for timeline events and approval alerts.
 
 What I need from the console developer / you:
 - Identity: who authenticates users (own login, Google/Microsoft SSO, or a provider like Auth0/Supabase/Keycloak)? How are staff mapped to tenants?

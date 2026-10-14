@@ -4,7 +4,7 @@ import uuid
 from typing import Literal
 
 import pytest
-from csa.contracts.envelope import Callback, Channel
+from csa.contracts.envelope import Attachment, Callback, Channel
 from csa.contracts.facts import AgentError
 from csa.contracts.plan import Intent, Plan
 from csa.contracts.state import Draft, Handoff, TurnState
@@ -42,6 +42,11 @@ def test_default_policy_sends() -> None:
     assert _decide(None, _state()) == ("send", "auto")
 
 
+def test_unverified_draft_always_routes_to_review() -> None:
+    state = _state().model_copy(update={"verified": False})
+    assert _decide(None, state) == ("approve", "draft_verification_failed")
+
+
 def test_shadow_mode_sends_nothing() -> None:
     assert _decide({"deployment_mode": "shadow"}, _state()) == ("reject", "shadow_mode")
 
@@ -74,6 +79,22 @@ def test_agent_failure_lowers_confidence_and_triggers_partial_result_review() ->
     review = {"always_review_if": ["partial_result"]}
     assert _decide(review, _state(failed=True)) == ("approve", "always_review:partial_result")
     assert _decide({"always_review_if": ["requires_human"]}, _state(handoff=True))[0] == "approve"
+
+
+def test_has_attachment_review_is_a_per_client_policy_choice() -> None:
+    plain = _state()
+    attached = plain.model_copy(
+        update={
+            "envelope": make_envelope(
+                "see photo",
+                attachments=[Attachment(kind="image", mime_type="image/jpeg")],
+            )
+        }
+    )
+    review = {"always_review_if": ["has_attachment"]}
+    assert _decide(review, attached) == ("approve", "always_review:has_attachment")
+    assert _decide(review, plain)[0] == "send"
+    assert _decide(None, attached) == ("send", "auto")
 
 
 def test_email_channel_review_and_button_taps_bypass() -> None:

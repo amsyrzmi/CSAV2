@@ -1,0 +1,18 @@
+{
+  "id": "flow_greeting_no_agent_no_plan",
+  "matrix": "Flow: greeting / thanks / goodbye needs no agent or planner",
+  "description": "Chitchat intent routes directly to fast path, requiring no agent execution or LLM planner.",
+  "turns": [{
+    "say": "Thank you so much, bye!",
+    "cassette": {
+      "Classification": {"intent": "chitchat", "language": "en", "sentiment": "positive", "wants_human": false, "injection": false, "urgent": false},
+      "ComposeOut": {"reply": "You're very welcome! Have a great day!"},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "chitchat", "agents": [], "gate": "send",
+      "outbound_count": 1, "reply_contains": ["You're very welcome"],
+      "llm_not_called": ["PlanOut", "StepOut"], "escalations": 0
+    }
+  }]
+}

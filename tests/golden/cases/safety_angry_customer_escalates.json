@@ -1,0 +1,16 @@
+{
+  "id": "safety_angry_customer_escalates",
+  "matrix": "Flow: angry customer sentiment triggers hard escalation",
+  "description": "When customer sentiment is classified as angry, routing triggers hard escalation immediately to ensure human handoff.",
+  "turns": [{
+    "say": "This service is completely unacceptable, your product broke immediately!",
+    "cassette": {
+      "Classification": {"intent": "complaint", "language": "en", "sentiment": "angry", "wants_human": false, "injection": false, "urgent": false}
+    },
+    "expect": {
+      "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+      "outbound_count": 1, "reply_contains": ["team member"],
+      "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"], "escalations": 1
+    }
+  }]
+}

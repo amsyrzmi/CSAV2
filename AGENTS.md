@@ -35,6 +35,9 @@ LangGraph, and PostgreSQL. Read the relevant phase plan under
 - `make test`: run the test suite.
 - `make lint`: run Ruff, formatting, Pyright, and import-linter.
 - `make run-dev`: start the local gateway, worker, and delivery processes.
+- `make run-gateway`: start only the local gateway process.
+- `make stop-gateway`: stop any running dev gateway process on port 18080.
+- `make restart-gateway`: stop any running dev gateway and start a fresh one.
 - `make down`: stop the isolated dev Postgres (separate from production csa_db).
 
 ## Definition of done

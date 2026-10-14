@@ -1,0 +1,34 @@
+{
+  "id": "order_typed_confirm_asks_for_tap",
+  "matrix": "Orders: typed yes/confirm with pending confirmation asks to tap button",
+  "description": "Customer typing confirm when an order is pending confirmation does not place the order; it prompts them to tap the button.",
+  "seed": {"products": [{"sku": "A1", "name": "Sample Widget A1", "price": "10.50"}]},
+  "turns": [
+    {
+      "say": "i want 2 A1",
+      "cassette": {
+        "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "A1", "qty": 2}]}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Your draft for 2 Sample Widget A1 is ready. Tap Confirm to place it."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {"agents": ["order_agent"], "outbound_count": 1, "confirmation": true, "order_statuses": ["draft"], "reserved_qty": 2}
+    },
+    {
+      "say": "yes please confirm my order",
+      "cassette": {
+        "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Please tap the Confirm button above to complete your order."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": [], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["tap the Confirm button"],
+        "order_statuses": ["draft"], "reserved_qty": 2, "escalations": 0
+      }
+    }
+  ]
+}

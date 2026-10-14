@@ -1,0 +1,23 @@
+{
+  "id": "order_draft_duplicate_sku_merged",
+  "matrix": "Orders: draft with the same SKU twice merged to total qty within stock",
+  "description": "When customer specifies the same SKU in multiple lines, order agent merges quantities into one item line and reserves the sum.",
+  "seed": {
+    "products": [{"sku": "A1", "name": "Sample Widget A1", "price": "10.00", "stock_qty": 10}]
+  },
+  "turns": [{
+    "say": "i want 2 A1 and another 3 A1",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "A1", "qty": 2}, {"sku": "A1", "qty": 3}]}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "Your draft for 5 Sample Widget A1 is ready. Total MYR 50.00. Tap Confirm to place it."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "plan_args", "agents": ["order_agent"], "gate": "send",
+      "outbound_count": 1, "confirmation": true,
+      "order_statuses": ["draft"], "reserved_qty": 5, "agent_errors": [], "escalations": 0
+    }
+  }]
+}

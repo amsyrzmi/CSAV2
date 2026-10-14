@@ -1,0 +1,16 @@
+{
+  "id": "safety_wants_human_escalates",
+  "matrix": "Flow: customer asking for human agent triggers hard escalation",
+  "description": "When customer explicitly requests human agent, routing triggers hard escalation immediately.",
+  "turns": [{
+    "say": "Can I talk to a real person please?",
+    "cassette": {
+      "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false}
+    },
+    "expect": {
+      "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+      "outbound_count": 1, "reply_contains": ["team member"],
+      "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"], "escalations": 1
+    }
+  }]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "order_draft_unknown_sku",
+  "matrix": "Orders: draft unknown SKU yields not found error fact",
+  "description": "Requesting an uncatalogued SKU returns a safe not found error without creating an order or reserving stock.",
+  "seed": {
+    "products": [{"sku": "A1", "name": "Sample Widget A1", "price": "10.50", "stock_qty": 20}]
+  },
+  "turns": [{
+    "say": "i want 1 UNKNOWN_SKU",
+    "cassette": {
+      "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
+      "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "UNKNOWN_SKU", "qty": 1}]}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "Sorry, UNKNOWN_SKU is not found in our catalogue."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "route": "plan_args", "agents": ["order_agent"], "gate": "send",
+      "outbound_count": 1, "order_statuses": [], "reserved_qty": 0, "agent_errors": ["product_not_found"], "escalations": 0
+    }
+  }]
+}
