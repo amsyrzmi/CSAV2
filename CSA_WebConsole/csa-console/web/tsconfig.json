@@ -1,0 +1,55 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/console/**/*.tsx",
+    "components/AppShell.tsx",
+    "components/ui/auth-card.tsx",
+    "components/ui/password-input.tsx",
+    "components/ui/input.ts",
+    "lib/api.ts",
+    "lib/identity-contracts.ts",
+    "lib/identity-api.ts",
+    "lib/server-identity.ts",
+    "lib/upstream.ts",
+    "next.config.ts",
+    "proxy.ts",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "components/pm",
+    "components/chat"
+  ]
+}

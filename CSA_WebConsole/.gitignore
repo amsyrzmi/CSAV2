@@ -1,0 +1,16 @@
+# Local metadata and generated artifacts are not source.
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+node_modules/
+.next/
+*.tsbuildinfo
+.backups/
+
+# Keep copied local configuration out of future additions.
+.env
+.env.*
+!.env.example

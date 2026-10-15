@@ -35,6 +35,9 @@ __pycache__/
 /CSA_WebConsole/**/*.tgz
 /CSA_WebConsole/**/*.tar.gz
 /CSA_WebConsole/csa-console/api/
+/CSA_WebConsole/Docs/csa-console-drop1/
+/CSA_WebConsole/Docs/agentic-pm/
+/CSA_WebConsole/Docs/workflows.md
 /CSA_WebConsole/**/node_modules/
 /CSA_WebConsole/**/.next/
 /CSA_WebConsole/**/tsconfig.tsbuildinfo

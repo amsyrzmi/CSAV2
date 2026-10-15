@@ -53,9 +53,11 @@ during this review, so no additional reset was performed.
   Markdown, legacy setup/chat briefs, old console launch Makefiles/compose file,
   backup archives, OS/Python caches and standalone debug scripts. Current plans,
   runbooks and all `ui-guide/` contents remain. The canonical deferred PM pack and
-  historical source-state evidence remain explicitly reference-only. Nested Git,
-  local env files, frontend dependencies and backend/PM reference code are retained;
-  this is not a completed removal of the legacy application or gitlink conversion.
+  historical source-state evidence remain explicitly reference-only. Subsequently,
+  the nested Git metadata and former gitlink were removed and reviewed source was
+  adopted as ordinary parent-repository files. Local env files, frontend dependencies
+  and the legacy backend/drop snapshot/workflow export remain on disk but excluded from Git. This
+  is repository unification, not completed removal of the legacy application.
 - Fixed password changes raising `TypeError` for non-ASCII passwords: constant-time equality
   now compares UTF-8 bytes. Regression exercises change to Unicode, rejection of reusing it,
   and changing away from it.
