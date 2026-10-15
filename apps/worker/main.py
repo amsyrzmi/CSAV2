@@ -11,8 +11,11 @@ from uuid import UUID
 import httpx
 import psycopg
 import structlog
+from csa.agents.kb.embedder import DefaultKbEmbedder
+from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, kb_ingest_loop
 from csa.contracts.envelope import Channel, Envelope
 from csa.core import db
+from csa.core.langfuse import LangfuseSink
 from csa.core.liveness import WORKER_ALIVE_PATH, liveness_loop
 from csa.core.pii import redact
 from csa.core.settings import get_settings
@@ -482,10 +485,20 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             if settings.TYPESAFE_API_KEY is not None
             else None
         )
+        langfuse_sink = (
+            LangfuseSink(
+                public_key=settings.LANGFUSE_PUBLIC_KEY,
+                secret_key=settings.LANGFUSE_SECRET_KEY,
+                base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+                http_client=llm_http,
+            )
+            if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
+            else None
+        )
         coordinator = build_runtime(
             PostgresTurnDependencies(app_pool, llm, jev),
             build_saver(checkpoint_pool),
-            PostgresEventSink(app_pool),
+            PostgresEventSink(app_pool, langfuse_sink=langfuse_sink),
         )
     worker = IngressWorker(
         owner_pool,
@@ -504,12 +517,30 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         lock_conninfo=owner_dsn,
     )
     jobs_task = asyncio.create_task(jobs_loop(job_runner))
+    background = [jobs_task, retention]
+    if settings.KB_INGEST_ENABLED:
+        assert settings.KB_UPLOAD_ROOT is not None
+        kb_processor = KbIngestProcessor(
+            owner_pool,
+            app_pool,
+            embedder=DefaultKbEmbedder.from_settings(settings),
+            config=KbIngestConfig(
+                upload_root=settings.KB_UPLOAD_ROOT,
+                max_files=settings.KB_MAX_FILES_PER_JOB,
+                max_file_bytes=settings.KB_MAX_FILE_BYTES,
+            ),
+        )
+        background.append(
+            asyncio.create_task(
+                kb_ingest_loop(kb_processor, poll_seconds=settings.KB_INGEST_POLL_SECONDS)
+            )
+        )
     try:
         await liveness_loop(WORKER_ALIVE_PATH, do_work=worker.do_work)
     finally:
-        jobs_task.cancel()
-        retention.cancel()
-        await asyncio.gather(jobs_task, retention, return_exceptions=True)
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
         await llm_http.aclose()
         await checkpoint_pool.close()
         await app_pool.close()

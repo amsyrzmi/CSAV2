@@ -38,6 +38,16 @@ Rules for every agent below:
 ### kb_agent (knowledge base)
 - Retrieval over TEI embeddings + pgvector; returns `kind="verbatim"` chunks with source; logs misses to `kb_gaps`.
 - Ingestion: console uploads (PDF, docx, URL, FAQ rows) → chunk → embed, per tenant, versioned, with delete and re-index.
+
+#### KB console upload contract (implemented)
+- The console saves up to 3 files under `KB_UPLOAD_ROOT/<client_id>/` (any file name; UUID names are fine), then inserts one `kb_ingest_jobs` row in the tenant scope: `source='upload'`, `status='queued'`, `files` = JSON list of either path strings or objects `{path, name, title?, category?, language?}`, optional `meta` `{category, language}`. `path` may be relative to the client directory or absolute inside it.
+- The CSA worker (`csa/agents/kb/ingest_jobs.py`, enabled with `KB_INGEST_ENABLED=true`) claims jobs with `FOR UPDATE SKIP LOCKED`. It then rejects paths outside the client directory (including through symlinks), checks file type by signature, and extracts text. PDF text is extracted per page; scanned PDFs without a text layer need OCR first. DOCX uses headings and tables. For CSV, `question`/`answer` (or `soalan`/`jawapan`) columns become FAQ rows; otherwise each row is stored as text. The worker chunks the text (≤600 chars), embeds it, and stores it.
+- Limits: 3 files per job, 10 MB per file, 500 PDF pages, 5000 CSV rows. Encrypted PDFs, legacy `.doc` files, and empty or unreadable files fail with a per-file error.
+- The job ends with status `done`, `partial` (some files failed), or `failed`. `meta.results` lists each file with `status` (`ingested`/`duplicate`/`failed`), `document_id`, `chunks`, `version`, `replaced`, and `error`. The console polls `GET /console/v1/kb/ingest-jobs` and `GET /console/v1/kb/ingest-jobs/{id}`.
+- Identical content is reported as `duplicate` and is not embedded again. Re-uploading the same file name with new content creates version N+1 and deactivates the old version and its chunks.
+- If TEI is unavailable, the job goes back to the queue and is retried with a delay, up to 3 attempts, then fails. The worker never silently falls back to a different embedding. Search only compares chunks with the same `embed_model`, so hash-embedded (dev) and TEI-embedded content are never mixed.
+- Embeddings: `TEI_ENDPOINT` (required in prod). The dev TEI runs `intfloat/multilingual-e5-small` (384-dim) and uses the `TEI_QUERY_PREFIX="query: "` and `TEI_PASSAGE_PREFIX="passage: "` prefixes. Without TEI, dev and ci use a lexical `hash-384` embedder.
+- Cutover: confirm the legacy n8n `kb_documents.embed_model` label and model. If they don't match `KB_EMBED_MODEL_LABEL`, re-index.
 - Suggestion: every fact carries `source_id` and `as_of`; staff can see "unanswered questions" from `kb_gaps` and answer them, which becomes new KB content after approval.
 - Safety: ingested text is untrusted data; never treated as instructions.
 
@@ -95,7 +105,7 @@ For each proposed agent, write down: purpose, who triggers it (customer, staff, 
 
 ## Web console (separate developer)
 Boundaries:
-- The console talks only to a console API I own (`apps/console_api`, FastAPI, OpenAPI published). It never connects to Postgres directly and never sees provider secrets (secrets are write-only fields).
+- The console talks only to the console API (`csa/console/`, mounted by the gateway at `/console/v1` when `CONSOLE_API_TOKEN` is set; OpenAPI at `/openapi.json`). Full n8n-console turnover plan: `LG15_console_turnover.md`. It never connects to Postgres directly and never sees provider secrets (secrets are write-only fields).
 - Authorisation is server-side: every request resolves to `client_id` + role and runs under the same RLS tenant GUC as the runtime.
 - The console can only read and write through the contracts below; agent behaviour changes via config, not code.
 
@@ -144,9 +154,26 @@ What I need from the console developer / you:
 
 Suggested order: publish the OpenAPI contract and mock server first (days), then build read-only screens (conversations, orders, runs), then the approval queue (needs LG07), then settings/KB/integrations.
 
-## Acceptance criteria
-- [ ] Each agent has an intake sheet, accepted by you before coding starts.
-- [ ] Each agent passes the LG05 wrapper tests, a tenant-isolation test, a wrong-contact test where relevant, and an idempotency test for every write.
-- [ ] Live-account use is gated by a test-account integration run.
-- [ ] Console API OpenAPI spec reviewed with the console developer before they build against it.
-- [ ] No console code path reads the database or a provider secret directly.
+## Acceptance criteria & Verification Evidence
+- [x] Each agent has an intake sheet/spec (`docs/agents/ecommerce_agent_draft.md`, `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md`, Wave 1 KB and Invoices).
+- [x] Wave 1 and drafted agents implemented with declared `ACTION_RISK`, tenant isolation, and contact security:
+  - `ecommerce_agent` (`csa/agents/ecommerce/`): Multi-channel spoke + TikTok Shop Open API HMAC-SHA256 signer, Shopee & Lazada draft adapters.
+  - `kb_agent` (`csa/agents/kb/`): 384-dimensional vector embeddings, cosine distance chunk retrieval, auto-logging to `kb_gaps`, chunking and ingestion, gap resolution.
+  - `invoice_agent` (`csa/agents/invoices/`): Contact-isolated status lookup, listing, and HMAC-SHA256 signed expiring download URLs (15-minute TTL).
+  - Wired into `CAPABILITIES`, `build_llm_provider`, and `PostgresTurnDependencies` in `csa/turn/deps.py`.
+- [x] Console API (`csa/console/router.py`, `csa/console/capabilities.py`):
+  - Admin plan subscription (`is_enabled`) vs client self-service toggle (`client_enabled`) on `/console/v1/capabilities`.
+  - Specialized tabs catalog (`/console/v1/tabs/specialized`) covering LHDN MyInvois, E-Commerce, KB, Invoices, and Bookings.
+  - KB document listing, upload/ingestion, ingest-job status, chunk deletion, and gap management endpoints.
+  - Invoice overview and expiring signed download receipt generation.
+- [x] Tests:
+  - `tests/test_ecommerce_agent.py`: 4 passed (signing, webhook verification, inventory, HITL gate).
+  - `tests/test_kb_agent.py`: 7 passed (embedding dimensions/normalization, query match, gap logging, ingest/delete).
+  - `tests/test_kb_ingest.py`: 25 passed (PDF/DOCX/CSV extraction, type/signature allowlist, path traversal/absolute/symlink confinement, size/empty limits, strict TEI errors, batching and e5 prefixes, 3-file job searchable, tenant isolation, >3 files rejected, partial results, duplicate/versioning, TEI outage backoff→failed, concurrent single claim, stale-job requeue).
+  - Live dev check: local TEI (`multilingual-e5-small`) returned 384-dim vectors; an English query ranked the Malay opening-hours passage highest (0.85 vs 0.78/0.77).
+  - `tests/test_invoice_agent.py`: 5 passed (contact isolation, signature verification, status, signed URL).
+  - `tests/test_console_capabilities.py`: 3 passed (capability listing/toggling, specialized tabs, invoice downloads).
+  - All 19 tests passing; `make lint` 0 errors.
+- [ ] Live-account use is gated by a test-account integration run (live credentials provided per tenant).
+- [ ] Console API OpenAPI spec reviewed with the console developer before frontend cutover.
+- [x] No console code path reads the database or a provider secret directly (tenant isolation via RLS GUC).

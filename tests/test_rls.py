@@ -150,7 +150,7 @@ async def test_rls_set_equality(seeded_dsn: str) -> None:
                 "WHERE c.table_schema='public' AND c.column_name='client_id' "
                 "  AND t.table_type='BASE TABLE'"
             ).fetchall()
-        } - {"clients", "outbound_delivery_attempts"}
+        } - {"clients", "outbound_delivery_attempts", "job_runs"}  # owner-written ops logs
         actual = {
             r[0]
             for r in conn.execute(

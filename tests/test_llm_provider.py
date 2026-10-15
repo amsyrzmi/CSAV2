@@ -296,7 +296,13 @@ def test_injection_routes_to_guard_blocked() -> None:
 
 
 def test_capabilities_cover_plannable_agents() -> None:
-    assert set(CAPABILITIES) == {"order_agent", "ticket_agent"}
+    assert set(CAPABILITIES) == {
+        "order_agent",
+        "ticket_agent",
+        "ecommerce_agent",
+        "kb_agent",
+        "invoice_agent",
+    }
 
 
 async def test_callback_turn_skips_llm_classification() -> None:

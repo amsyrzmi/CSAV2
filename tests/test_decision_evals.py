@@ -36,6 +36,8 @@ def _answers(**over: Any) -> dict[str, Any]:
         "needs:order_agent": {"type": "noul", "noul": 0.92},
         "needs:ticket_agent": {"type": "noul", "noul": 0.2},
     }
+    for agent in CAPABILITIES:
+        answers.setdefault(f"needs:{agent}", {"type": "noul", "noul": 0.0})
     answers.update(over)
     return answers
 

@@ -28,6 +28,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md), [RUNBOOK.md](./RUNBOOK.md), [PROGRESS.
 | `scripts/` | `migrate.py`, `setup_dev_telegram.py` (dev tenant, endpoint, demo products, staff target), `lg_setup.py` |
 | `tests/` | Pytest suite (333 passed on 2026-10-13); `golden/` has 22 real-DB whole-turn cases; `test_policy_edges.py` policy boundaries; `test_load_acceptance.py` ASGI/TCP ingress and simultaneous-worker benchmarks; `test_worker_multiprocess.py` process ordering and crash recovery |
 | `Makefile` | Dev lifecycle, lint/tests; `coverage` enforces 90% policy branch coverage, `load-test` reproduces isolated benchmarks |
-| `docs/langgraph-rebuild/` | LG00–LG13 phase plans and acceptance criteria |
+| `docs/handoffs/` | Session handoffs and kickoff prompts (latest: console turnover) |
+| `docs/langgraph-rebuild/` | LG00–LG15 phase plans and acceptance criteria |
 | `AGENTS.md`, `SERVER_HANDOFF.md` | Repo rules and server facts |
 | `OriginalArchitecture.md`, `web_console.md` | Legacy design and console notes |

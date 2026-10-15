@@ -1,4 +1,4 @@
-# Console API contract (v1, read-only, draft)
+# Console API contract (v1, draft)
 
 For the web-console developer. The console backend (not the browser) calls this API.
 
@@ -54,9 +54,29 @@ Semantic rejection details stay in turn state for regeneration; only their count
 Classifier comparisons are persisted separately in `decision_log`; a console endpoint for those rows
 is not implemented yet.
 
-## Not built yet (planned)
-Server-sent live stream, conversations/messages read API, approvals queue and decide endpoints, policy and
-agent settings editing, usage/billing, per-user permissions. Tell us which screen you build first.
+## Capabilities and specialised tabs (LG13)
+- `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`.
+- `PATCH /console/v1/capabilities/{name}` with body `{"is_enabled"?: bool, "client_enabled"?: bool, "changed_by": "<user>"}`. **Warning:** the shared token can currently change both fields. Restricting `is_enabled` to platform admins is part of LG15.
+- `GET /console/v1/tabs/specialized`: the tab catalogue (`lhdn_myinvois`, `ecommerce`, `knowledge_base`, `invoices`, `bookings`). Each tab has `is_subscribed`, `is_active`, and `metrics`. Show a tab only when `is_active` is true.
+
+## Knowledge base (LG13)
+- `GET /console/v1/kb/documents?limit=50` lists documents with `version`, `is_active`, `file_name`, `chunk_count`, `kind`, and `embed_model`.
+- `POST /console/v1/kb/documents` adds plain text. Body: `{title, content, category?, language?, source_uri?}`. Returns 503 when the embedding service is down.
+- `DELETE /console/v1/kb/documents/{id}` deletes a document.
+- File upload: the console writes up to 3 PDF/DOCX/CSV files to `KB_UPLOAD_ROOT/<client_id>/` and inserts a `kb_ingest_jobs` row. See the KB upload contract in LG13. Until LG15 adds an upload endpoint, the console must write the row through the tenant-scoped database role.
+- `GET /console/v1/kb/ingest-jobs?limit=20` and `GET /console/v1/kb/ingest-jobs/{id}` return the job `status` (`queued`, `processing`, `done`, `partial` or `failed`) and per-file `meta.results`.
+- `GET /console/v1/kb/gaps` lists questions the KB could not answer. `POST /console/v1/kb/gaps/{id}/resolve` marks one resolved; it does not accept an answer text yet.
+
+## Invoices (LG13)
+- `GET /console/v1/invoices?limit=50` lists invoices.
+- `GET /console/v1/invoices/{id}/download-link` returns a signed link that expires after 15 minutes. **Known gap:** the target route `/api/v1/invoices/{id}/download` is not served yet, and link signing falls back to a placeholder key when settings fail to load. Do not use this endpoint in production until LG15 fixes both.
+
+## OpenAPI
+The gateway serves FastAPI's `/openapi.json` and `/docs`. Generate a typed client from them. LG15 will restrict both outside dev.
+
+## Not built yet (planned, see LG15)
+Server-sent live stream, conversations/messages read API, takeover/release/human reply, approvals queue and decide endpoints, policy and
+agent settings editing, channel/integration connect, notification targets, DLQ/runs, usage/billing, per-user roles (RBAC), and a KB upload endpoint. Tell us which screen you build first.
 
 ## Questions for the console developer
 1. Does the console backend share a trust boundary with the CSA host (shared token OK) or must it be per-tenant?

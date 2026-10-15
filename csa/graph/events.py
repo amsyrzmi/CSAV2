@@ -37,8 +37,14 @@ class EventSink(Protocol):
 
 
 class PostgresEventSink:
-    def __init__(self, pool: AsyncConnectionPool) -> None:
+    def __init__(
+        self,
+        pool: AsyncConnectionPool,
+        *,
+        langfuse_sink: Any | None = None,
+    ) -> None:
         self._pool = pool
+        self._langfuse_sink = langfuse_sink
 
     async def record(
         self,
@@ -67,6 +73,21 @@ class PostgresEventSink:
                 ),
                 conn=conn,
             )
+
+        if self._langfuse_sink is not None:
+            try:
+                await self._langfuse_sink.send_event(
+                    client_id=client_id,
+                    trace_id=trace_id,
+                    conversation_id=conversation_id,
+                    node=node,
+                    agent=agent,
+                    status=status,
+                    duration_ms=duration_ms,
+                    summary=summary,
+                )
+            except Exception as exc:  # Observability must never fail a customer turn
+                logger.warning("langfuse_record_failed", error_type=type(exc).__name__)
 
 
 def _get(obj: Any, name: str) -> Any:

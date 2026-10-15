@@ -32,6 +32,8 @@ ACTION_RISK: dict[str, RiskClass] = {
 class EcommerceAgent:
     """Spoke agent automating cross-channel e-commerce operations (TikTok Shop, Shopee, Lazada)."""
 
+    ACTION_RISK = ACTION_RISK
+
     def __init__(
         self,
         adapters: dict[str, EcommercePlatformAdapter] | None = None,

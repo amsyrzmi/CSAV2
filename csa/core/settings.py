@@ -10,13 +10,16 @@ from __future__ import annotations
 import base64
 import binascii
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import (
+    Field,
     HttpUrl,
     PostgresDsn,
     SecretStr,
     field_validator,
+    model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -52,6 +55,23 @@ class Settings(BaseSettings):
     DEV_STAFF_CHAT_ID: str | None = None
     CONSOLE_API_TOKEN: SecretStr | None = None
     TYPESAFE_API_KEY: SecretStr | None = None
+    TEI_ENDPOINT: HttpUrl | None = None
+    KB_EMBED_MODEL_LABEL: str = Field(default="tei-384", min_length=1, max_length=64)
+    # E5-family models (e.g. intfloat/multilingual-e5-small) expect these prefixes.
+    TEI_QUERY_PREFIX: str = "query: "
+    TEI_PASSAGE_PREFIX: str = "passage: "
+    # Console uploads land in KB_UPLOAD_ROOT/<client_id>/ and are queued in kb_ingest_jobs.
+    KB_UPLOAD_ROOT: Path | None = None
+    KB_INGEST_ENABLED: bool = False
+    KB_INGEST_POLL_SECONDS: float = Field(default=10.0, gt=0)
+    KB_MAX_FILES_PER_JOB: int = Field(default=3, ge=1, le=20)
+    KB_MAX_FILE_BYTES: int = Field(default=10 * 1024 * 1024, ge=1024)
+    TIKTOK_APP_KEY: str | None = None
+    TIKTOK_APP_SECRET: SecretStr | None = None
+    INVOICE_SIGNING_SECRET: SecretStr | None = None
+    LANGFUSE_PUBLIC_KEY: str | None = None
+    LANGFUSE_SECRET_KEY: SecretStr | None = None
+    LANGFUSE_BASE_URL: str | None = None
 
     # Local adapter bootstrap inputs; normal channel traffic reads encrypted
     # credentials from channel_credentials instead.
@@ -107,6 +127,14 @@ class Settings(BaseSettings):
                 f"got {len(decoded)}"
             )
         return value
+
+    @model_validator(mode="after")
+    def _validate_kb_ingest(self) -> Settings:
+        if self.KB_INGEST_ENABLED and self.KB_UPLOAD_ROOT is None:
+            raise ValueError("KB_INGEST_ENABLED requires KB_UPLOAD_ROOT")
+        if self.ENV == "prod" and self.KB_INGEST_ENABLED and self.TEI_ENDPOINT is None:
+            raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
+        return self
 
     def credentials_key_bytes(self) -> bytes:
         """Return the decoded 32-byte AES-256-GCM key.

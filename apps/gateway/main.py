@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 
 import structlog
 from csa.channels.ingress import IngressError, TelegramIngress
+from csa.channels.marketplace.router import build_marketplace_router
 from csa.console.router import build_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
 from csa.core.logging import configure_logging
@@ -180,6 +181,8 @@ def create_app() -> FastAPI:
 
     if settings.CONSOLE_API_TOKEN is not None:
         app.include_router(build_router(settings.CONSOLE_API_TOKEN.get_secret_value()))
+
+    app.include_router(build_marketplace_router())
 
     instrument_fastapi(app)
     return app

@@ -20,7 +20,10 @@ from psycopg_pool import AsyncConnectionPool
 
 from csa.agents.base import AgentContext
 from csa.agents.breaker import CircuitBreaker
+from csa.agents.ecommerce.agent import EcommerceAgent
 from csa.agents.escalation.agent import EscalationAgent
+from csa.agents.invoices.agent import InvoiceAgent
+from csa.agents.kb.agent import KbAgent
 from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
 from csa.agents.recorder import PostgresBreakerStore, PostgresRunRecorder
@@ -59,6 +62,9 @@ HANDOFF_TEXT = "I've passed this to a team member who will get back to you short
 CAPABILITIES = {
     "order_agent": "Order status, product search and details, creating order drafts",
     "ticket_agent": "Support tickets: create, look up, list, add a note, cancel, reopen",
+    "ecommerce_agent": "E-Commerce operations for TikTok Shop, Shopee, and Lazada",
+    "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
+    "invoice_agent": "Invoice lookup, status check, and signed download links",
 }
 
 
@@ -68,7 +74,13 @@ def build_llm_provider(
     compose_fallback: JsonCompletionClient | None = None,
 ) -> LLMProvider:
     """Wire the planner to the plannable agents' own input models."""
-    agents = {"order_agent": OrderAgent(), "ticket_agent": TicketAgent()}
+    agents = {
+        "order_agent": OrderAgent(),
+        "ticket_agent": TicketAgent(),
+        "ecommerce_agent": EcommerceAgent(),
+        "kb_agent": KbAgent(),
+        "invoice_agent": InvoiceAgent(),
+    }
     return LLMProvider(
         client,
         capabilities=CAPABILITIES,
@@ -84,7 +96,16 @@ def build_llm_provider(
 class PostgresTurnDependencies:
     """Implements ``CoordinatorDependencies`` against the tenant-scoped app pool."""
 
-    known_agents = frozenset({"escalation_agent", "order_agent", "ticket_agent"})
+    known_agents = frozenset(
+        {
+            "escalation_agent",
+            "order_agent",
+            "ticket_agent",
+            "ecommerce_agent",
+            "kb_agent",
+            "invoice_agent",
+        }
+    )
 
     def __init__(
         self,
@@ -102,6 +123,9 @@ class PostgresTurnDependencies:
                 "order_agent": OrderAgent(),
                 "ticket_agent": TicketAgent(),
                 "order_approval": OrderApprovalAgent(),
+                "ecommerce_agent": EcommerceAgent(),
+                "kb_agent": KbAgent(),
+                "invoice_agent": InvoiceAgent(),
             },
             breaker=CircuitBreaker(store=PostgresBreakerStore(app_pool)),
             recorder=PostgresRunRecorder(app_pool),

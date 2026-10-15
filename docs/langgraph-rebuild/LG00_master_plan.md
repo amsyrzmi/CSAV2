@@ -182,6 +182,8 @@ token encrypted per tenant.
 | 8 | LG08 | Tests, seed, evals (runs alongside 3–7) | continuous |
 | 9 | LG09 | Cutover, ops, cloud path | 3–5 days |
 | 13 | LG13 | Agent catalog (kb, invoice, booking, email, web research, subscription, teach-a-task) and web-console API contract; starts after LG07 | per agent; console API runs in parallel |
+| 14 | LG14 | Teach-a-task virtual desktop (record, compile, scheduled replay) | separate phase |
+| 15 | LG15 | Console turnover n8n → CSA: RBAC, console API parity, agent parity, per-client cutover, n8n retirement | after console code is shared |
 
 \*Part-time (~10–15 h/week), single developer, **estimates with wide error bars**.
 Telegram parity + order agent + HITL ≈ 7–9 weeks; WhatsApp, Gmail, Google
