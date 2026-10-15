@@ -11,6 +11,19 @@ All DDL the rebuild needs, in one place and in the order to apply it. The phase 
 5. Run as the owner `csa`. Secrets (role passwords) come from the deploy script, never from git.
 6. Each migration lists a pre-check and a rollback note. Take a `pg_dump` before M01 and M10.
 
+### Implemented additive follow-up: 0260 preparation requests (2026-10-15)
+- `agent_preparation_requests`: validated Wave 2/3 preparation payload, tenant/contact,
+  actor, trace, creation time, fixed `prepared` status, unique
+  `(client_id, contact_id, agent, idempotency_key)`. No execution or approval columns.
+- Staged RLS enabled, not forced; the existing `contact_identity_tenant_check()` trigger
+  enforces contact ownership. `csa_app` may select/insert but not update/delete these records.
+- `seed_preparation_capabilities(uuid)` adds disabled booking/subscription capabilities
+  without overwriting existing rows. Applied to existing clients; onboarding must call
+  it explicitly for new clients and sync the input schemas.
+- Preconditions and rollback guidance are in the migration. Verification uses disposable
+  testcontainers and a separate `wave_reset` database for the actual `make db-reset` target.
+  No live dev/production database migration is implied by those tests.
+
 ## Order at a glance
 | # | Migration | Needed by | Risk |
 |---|---|---|---|

@@ -1,0 +1,110 @@
+[
+  {
+    "id": "support",
+    "title": "Customer support agent",
+    "artKind": 1,
+    "silhouette": "crowned",
+    "eyeCount": 1,
+    "color": "#3264FF",
+    "shade": "#183DA5",
+    "accent": "#7BC9FF",
+    "backdrop": "#EDF2FF",
+    "spectrum": [
+      "#78ACFF",
+      "#3264FF",
+      "#2349CA"
+    ],
+    "avatar": "support.svg",
+    "working": "support-working.svg"
+  },
+  {
+    "id": "knowledge",
+    "title": "Knowledge base agent",
+    "artKind": 5,
+    "silhouette": "scout",
+    "eyeCount": 3,
+    "color": "#2466C1",
+    "shade": "#1B3C87",
+    "accent": "#75B9FF",
+    "backdrop": "#EDF4FE",
+    "spectrum": [
+      "#6ABBF4",
+      "#2D7DDF",
+      "#244BA7"
+    ],
+    "avatar": "knowledge.svg",
+    "working": "knowledge-working.svg"
+  },
+  {
+    "id": "orders",
+    "title": "Order management agent",
+    "artKind": 3,
+    "silhouette": "comet",
+    "eyeCount": 2,
+    "color": "#2457E5",
+    "shade": "#19378F",
+    "accent": "#9ABFFF",
+    "backdrop": "#EEF2FC",
+    "spectrum": [
+      "#80ADFF",
+      "#3968F2",
+      "#153EA7"
+    ],
+    "avatar": "orders.svg",
+    "working": "orders-working.svg"
+  },
+  {
+    "id": "tickets",
+    "title": "Ticketing & handoff agent",
+    "artKind": 0,
+    "silhouette": "glider",
+    "eyeCount": 2,
+    "color": "#0875CA",
+    "shade": "#1C4AAC",
+    "accent": "#81D7FF",
+    "backdrop": "#EAF6FF",
+    "spectrum": [
+      "#67D8FF",
+      "#169FEB",
+      "#3264FF"
+    ],
+    "avatar": "tickets.svg",
+    "working": "tickets-working.svg"
+  },
+  {
+    "id": "ecommerce",
+    "title": "E-commerce operations agent",
+    "artKind": 2,
+    "silhouette": "cluster",
+    "eyeCount": 3,
+    "color": "#126BB3",
+    "shade": "#164B8D",
+    "accent": "#73CBF2",
+    "backdrop": "#EBF5FC",
+    "spectrum": [
+      "#6FCAFA",
+      "#218FDE",
+      "#2253B1"
+    ],
+    "avatar": "ecommerce.svg",
+    "working": "ecommerce-working.svg"
+  },
+  {
+    "id": "invoices",
+    "title": "Invoice lookup agent",
+    "artKind": 4,
+    "silhouette": "ribbon",
+    "eyeCount": 4,
+    "color": "#2D64D9",
+    "shade": "#193F9B",
+    "accent": "#A3D9FF",
+    "backdrop": "#ECF3FF",
+    "spectrum": [
+      "#8ACBFF",
+      "#3C8AF3",
+      "#2850CE"
+    ],
+    "avatar": "invoices.svg",
+    "working": "invoices-working.svg"
+  }
+]

@@ -42,6 +42,7 @@ packages = ["csa", "apps"]
 target-version = "py312"
 line-length = 100
 src = ["csa", "apps", "tests"]
+extend-exclude = ["CSA_WebConsole"]  # reference Python API is outside the active backend
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]

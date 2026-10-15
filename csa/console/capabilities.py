@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,7 +33,6 @@ class CapabilityToggleIn(BaseModel):
 
     is_enabled: bool | None = None
     client_enabled: bool | None = None
-    changed_by: str = Field(default="console_admin", max_length=128)
 
 
 class SpecializedTabInfo(BaseModel):
@@ -77,21 +77,43 @@ async def toggle_capability(
     client_id: UUID,
     name: str,
     toggle: CapabilityToggleIn,
+    *,
+    actor_id: UUID,
 ) -> CapabilityOut | None:
     """Update admin subscription or client toggle for an agent capability."""
     async with tx(pool, str(client_id)) as conn:
+        before = await db.q.fetch_one("console/capability_lock.sql", (client_id, name), conn=conn)
+        if before is None:
+            return None
         row = await db.q.fetch_one(
             "capability_registry/update_enabled.sql",
             (
                 toggle.is_enabled,
                 toggle.client_enabled,
                 toggle.client_enabled,  # Trigger for client_enabled_changed_at
-                toggle.changed_by,
+                str(actor_id),
                 client_id,
                 name,
             ),
             conn=conn,
         )
+        if row is not None:
+            await db.q.execute(
+                "console/audit.sql",
+                (
+                    actor_id,
+                    client_id,
+                    "capability.updated",
+                    name,
+                    Jsonb(
+                        {
+                            "before": {k: before[k] for k in ("is_enabled", "client_enabled")},
+                            "after": {k: row[k] for k in ("is_enabled", "client_enabled")},
+                        }
+                    ),
+                ),
+                conn=conn,
+            )
 
     if not row:
         return None

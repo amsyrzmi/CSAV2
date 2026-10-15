@@ -48,8 +48,10 @@ def combined_pg_image() -> str:
 
     client = docker.from_env()
     client.images.build(
-        path=str(REPO_ROOT),
-        dockerfile=str(DB_DOCKERFILE.relative_to(REPO_ROOT)),
+        # The image needs no application files. Never send environment files,
+        # copied checkouts or archives in Docker's build context.
+        path=str(DB_DOCKERFILE.parent),
+        dockerfile=DB_DOCKERFILE.name,
         tag=_IMAGE_TAG,
         rm=True,
     )

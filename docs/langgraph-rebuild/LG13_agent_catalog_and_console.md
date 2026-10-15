@@ -56,6 +56,39 @@ Rules for every agent below:
 - Authorisation: only the contact the invoice belongs to.
 
 ## Wave 2
+
+### Provider-neutral preparation slice (2026-10-15)
+The user selected backend preparation for all waves before choosing payment providers or
+supplying the console source. This is **not completion of the external integrations below**.
+Implementation: `csa/agents/staged/models.py`, `csa/agents/staged/service.py`;
+migration `0260_staged_agent_requests.sql`. See
+[the latest handoff](../handoffs/2026-10-15-wave23-preparation.md).
+
+| Surface | Implemented now | Still gated / not built |
+|---|---|---|
+| `booking_agent` | Contact-scoped local `list`/`status`; `request_book`, `request_reschedule`, `request_cancel` persist a preparation record. Offset-aware times, IANA zone/DST consistency, future start and ≤24-hour duration checks. | Google OAuth, free/busy, conflict checks, Calendar event create/update/delete and timeout recovery. Local history is not live availability. |
+| Email preparation | Staff-only `EmailDraftInput` through `StaffPreparationService`; tenant-bound Gmail credential reference, bounded reply body and header validation. Saves a local draft, never a Gmail draft or sent message. | Mailbox/thread read authorization, triage/labels/summaries, Gmail draft creation, follow-ups, approval/send and Google OAuth. |
+| Web research preparation | Staff-only `ResearchInput`; ≤10 HTTPS URLs, rejects obvious unsafe address syntax and IP literals, saves an unexecuted request. | Isolated fetcher, tenant allowlists, DNS pinning/rebinding protection, robots/terms checks, redirect/size/rate/cache controls, schedule and KB ingestion. **No URLs are fetched.** |
+| `subscription_agent` | Active plan catalogue, contact-scoped local `list`/`status`; pause/cancel/change requests validate ownership and target plan and persist without changing subscriptions. | Payment provider selection, checkout, signed webhooks, confirmation/HITL, billing changes and dunning. |
+| Invoice write preparation | Staff-only `InvoiceDraftInput`; create/credit drafts and void requests, original-invoice ownership checks; explicit Decimal quantities/prices/tax rates, per-line half-up rounding and amount bounds. | Invoice issuance/PDF delivery, void/credit execution, accounting adapters and MyInvois sandbox validation/signing/submission. These are calculations, not tax/legal validation. |
+
+Only booking/subscription are registered with the customer planner/runner. Their new registry
+entries are disabled by default; both switches must be on even for reads. Staff email, research
+and invoice writes are library services only, intentionally absent from customer planning and
+HTTP routes until authenticated staff adapters exist.
+
+All preparations are immutable, tenant/contact-scoped `agent_preparation_requests` records
+(`status='prepared'`, actor, trace, payload, unique idempotency key). Replays return the same ID;
+changed input with the same key is rejected. They **do not** create approval rows, send staff
+notifications, reserve availability, mutate billing/invoices or execute any external action.
+Future executable actions must use LG07 approval/confirmation and outbox semantics; replying
+with text approval is not sufficient. There is no preparation-request processing worker.
+
+Existing tenants receive disabled booking/subscription rows during migration. For a new tenant,
+onboarding must call `seed_preparation_capabilities(client_id)` and sync each input schema via
+`CapabilityRegistry.sync_input_schema` before deliberately enabling it. The function never
+overwrites existing capability choices.
+
 ### booking_agent
 Per the LG05 Google Calendar section: list/check/book/reschedule/cancel, idempotent event creation, time zone and DST tests, tenant-bound OAuth tokens. Suggestion: start with booking against a calendar the tenant owns; shared calendars come later. Needs a Google Cloud project, OAuth consent configuration and a test calendar.
 
@@ -103,10 +136,19 @@ Provides an interactive sandboxed desktop environment where users record desktop
 ## Intake template for future agents (add over time)
 For each proposed agent, write down: purpose, who triggers it (customer, staff, schedule), side effects and risk class, external accounts and API scopes, data it reads/writes, HITL requirement, per-tenant config, failure behaviour (what facts/hints when down), and acceptance tests. Then follow the LG05 day-one checklist. Candidates noted so far: refund/warranty status, e-commerce marketplace sync (Shopee/TikTok), payments reconciliation, reporting/digest agent.
 
-## Web console (separate developer)
+## Web console
+
+Source supplied 2026-10-15 at `CSA_WebConsole/csa-console/`. The user approved retaining
+the Next.js UI and replacing its API with one CSAV2 backend, session authentication and
+membership-based roles. PM/terminal/Hermes/workroom features are deferred.
+See [the detailed migration plan](../handoffs/2026-10-15-console-source-migration-plan.md).
+The feature catalogue below remains a roadmap, not a claim of implemented endpoints.
+
 Boundaries:
 - The console talks only to the console API (`csa/console/`, mounted by the gateway at `/console/v1` when `CONSOLE_API_TOKEN` is set; OpenAPI at `/openapi.json`). Full n8n-console turnover plan: `LG15_console_turnover.md`. It never connects to Postgres directly and never sees provider secrets (secrets are write-only fields).
-- Authorisation is server-side: every request resolves to `client_id` + role and runs under the same RLS tenant GUC as the runtime.
+- Authorisation is server-side: verified sessions/memberships resolve to `client_id` + role,
+  and domain access runs under the same RLS tenant GUC as the runtime. The current
+  shared-token API must be adapted; browser-supplied actor headers are not trusted.
 - The console can only read and write through the contracts below; agent behaviour changes via config, not code.
 
 Planned API surface (v1):
@@ -173,7 +215,11 @@ Suggested order: publish the OpenAPI contract and mock server first (days), then
   - Live dev check: local TEI (`multilingual-e5-small`) returned 384-dim vectors; an English query ranked the Malay opening-hours passage highest (0.85 vs 0.78/0.77).
   - `tests/test_invoice_agent.py`: 5 passed (contact isolation, signature verification, status, signed URL).
   - `tests/test_console_capabilities.py`: 3 passed (capability listing/toggling, specialized tabs, invoice downloads).
-  - All 19 tests passing; `make lint` 0 errors.
+  - `tests/test_staged_agents.py`: 51 passed (Wave 2/3 preparation, not provider execution).
+  - `make lint` passed. Latest full-suite evidence is in `docs/PROGRESS.md`; do not equate
+    focused passing selections with a clean full suite.
 - [ ] Live-account use is gated by a test-account integration run (live credentials provided per tenant).
+- [x] Wave 2/3 provider-neutral preparation implemented; no external-execution claim. Synthetic
+  verification and live blockers are recorded in the 2026-10-15 handoff.
 - [ ] Console API OpenAPI spec reviewed with the console developer before frontend cutover.
 - [x] No console code path reads the database or a provider secret directly (tenant isolation via RLS GUC).

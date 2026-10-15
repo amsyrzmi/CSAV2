@@ -155,6 +155,9 @@ scopes.
 Official guide: [Google Calendar API authorization scopes](https://developers.google.com/workspace/calendar/api/auth).
 
 Booking-spoke acceptance gate:
+- Preparation update (2026-10-15): `csa/agents/staged/service.py` now exposes local booking
+  history and unexecuted requests, disabled per tenant by default. This does not satisfy
+  the Calendar integration acceptance items below; see LG13 and the Wave 2/3 handoff.
 - [ ] OAuth grants only the configured availability/write scopes and tokens are tenant-bound/encrypted.
 - [ ] Availability and event writes use the selected test calendar; duplicate requests and retry-after-timeout do not create duplicate events.
 - [ ] Conflict re-check, reschedule/cancel authorization, daylight-saving transitions, and client time-zone handling pass tests.

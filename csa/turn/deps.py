@@ -28,6 +28,7 @@ from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
 from csa.agents.recorder import PostgresBreakerStore, PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
+from csa.agents.staged.service import BookingAgent, SubscriptionAgent
 from csa.agents.tickets.agent import TicketAgent
 from csa.approval.service import hold_reply
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
@@ -65,6 +66,8 @@ CAPABILITIES = {
     "ecommerce_agent": "E-Commerce operations for TikTok Shop, Shopee, and Lazada",
     "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
     "invoice_agent": "Invoice lookup, status check, and signed download links",
+    "booking_agent": "Local booking history and unexecuted requests; never confirms availability",
+    "subscription_agent": "Plan/status lookup and unexecuted requests; no billing changes",
 }
 
 
@@ -80,6 +83,8 @@ def build_llm_provider(
         "ecommerce_agent": EcommerceAgent(),
         "kb_agent": KbAgent(),
         "invoice_agent": InvoiceAgent(),
+        "booking_agent": BookingAgent(),
+        "subscription_agent": SubscriptionAgent(),
     }
     return LLMProvider(
         client,
@@ -104,6 +109,8 @@ class PostgresTurnDependencies:
             "ecommerce_agent",
             "kb_agent",
             "invoice_agent",
+            "booking_agent",
+            "subscription_agent",
         }
     )
 
@@ -126,6 +133,8 @@ class PostgresTurnDependencies:
                 "ecommerce_agent": EcommerceAgent(),
                 "kb_agent": KbAgent(),
                 "invoice_agent": InvoiceAgent(),
+                "booking_agent": BookingAgent(),
+                "subscription_agent": SubscriptionAgent(),
             },
             breaker=CircuitBreaker(store=PostgresBreakerStore(app_pool)),
             recorder=PostgresRunRecorder(app_pool),

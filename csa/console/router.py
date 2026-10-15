@@ -1,29 +1,23 @@
-"""Console API (``/console/v1``) for monitoring, capabilities, KB, and invoices (LG13).
-
-The console backend authenticates its own users and calls this API as a trusted service with a
-shared bearer token plus the tenant in ``X-Client-Id``. Tenant isolation is enforced by RLS.
-"""
+"""Tenant-scoped console reads and audited human capability administration."""
 
 from __future__ import annotations
 
-import hmac
-import time
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
 from csa.agents.base import AgentContext
-from csa.agents.invoices import generate_invoice_signature
 from csa.agents.kb import KbAgent, KbInput
 from csa.console import capabilities, timeline
+from csa.console.access import authenticate, tenant
 from csa.console.capabilities import CapabilityOut, CapabilityToggleIn, SpecializedTabInfo
+from csa.console.contracts import ConsoleActor, Role
 from csa.contracts.callbacks import PendingActionStore
 from csa.core import db
-from csa.core.settings import get_settings
 from csa.core.tenancy import tx
 
 
@@ -133,21 +127,15 @@ class SignedDownloadLinkOut(BaseModel):
     expires_at: int
 
 
-def tenant(x_client_id: Annotated[UUID, Header()]) -> UUID:
-    return x_client_id
-
-
 def pool(request: Request) -> AsyncConnectionPool:
     return request.app.state.pool  # type: ignore[no-any-return]
 
 
-def build_router(token: str) -> APIRouter:
-    def auth(
-        authorization: Annotated[str | None, Header()] = None,
-    ) -> None:
-        supplied = (authorization or "").removeprefix("Bearer ")
-        if not supplied or not hmac.compare_digest(supplied, token):
-            raise HTTPException(status_code=401, detail="invalid console token")
+def build_router(
+    token: str | None = None, *, machine_client_ids: frozenset[UUID] = frozenset()
+) -> APIRouter:
+    async def auth(request: Request) -> None:
+        await authenticate(request, token, machine_client_ids)
 
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(auth)])
 
@@ -183,12 +171,28 @@ def build_router(token: str) -> APIRouter:
 
     @router.patch("/capabilities/{name}", response_model=CapabilityOut)
     async def update_capability(
+        request: Request,
         name: str,
         toggle: CapabilityToggleIn,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
     ) -> CapabilityOut:
-        cap = await capabilities.toggle_capability(db_pool, client_id, name, toggle)
+        actor = request.state.console_actor
+        if not isinstance(actor, ConsoleActor):
+            raise HTTPException(403, "human session required")
+        if toggle.is_enabled is not None and not actor.platform_admin:
+            raise HTTPException(403, "platform admin required to change subscriptions")
+        if actor.role not in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN}:
+            raise HTTPException(403, "tenant admin required")
+        if toggle.is_enabled is None and toggle.client_enabled is None:
+            raise HTTPException(422, "at least one capability switch is required")
+        if name in {"escalation_agent", "order_approval"} and (
+            toggle.is_enabled is False or toggle.client_enabled is False
+        ):
+            raise HTTPException(409, "required safety capabilities cannot be disabled")
+        cap = await capabilities.toggle_capability(
+            db_pool, client_id, name, toggle, actor_id=actor.user_id
+        )
         if not cap:
             raise HTTPException(status_code=404, detail=f"capability {name} not found")
         return cap
@@ -370,27 +374,6 @@ def build_router(token: str) -> APIRouter:
         invoice_id: str,
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> SignedDownloadLinkOut:
-        try:
-            settings = get_settings()
-            secret = (
-                settings.INVOICE_SIGNING_SECRET.get_secret_value()
-                if settings.INVOICE_SIGNING_SECRET
-                else settings.CREDENTIALS_KEY.get_secret_value()
-            )
-            base_url = str(settings.PUBLIC_BASE_URL).rstrip("/")
-        except Exception:
-            secret = "fallback_dev_signing_key_secret_123"
-            base_url = "http://localhost:18080"
-        expires_at = int(time.time()) + 900
-        sig = generate_invoice_signature(client_id, invoice_id, expires_at, secret)
-        download_url = (
-            f"{base_url}/api/v1/invoices/{invoice_id}/download"
-            f"?client_id={client_id}&expires={expires_at}&sig={sig}"
-        )
-        return SignedDownloadLinkOut(
-            invoice_id=invoice_id,
-            download_url=download_url,
-            expires_at=expires_at,
-        )
+        raise HTTPException(501, "invoice artifacts are unavailable until the M6 delivery slice")
 
     return router

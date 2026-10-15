@@ -111,6 +111,22 @@ async def _set_role_passwords(conn: psycopg.AsyncConnection) -> None:
         await conn.execute(stmt)
 
 
+async def _set_identity_password(conn: psycopg.AsyncConnection) -> None:
+    """Deliberate optional identity-role provisioning, including an existing install.
+
+    No password leaves the process or enters the migration ledger. With no explicit
+    value the newly created role remains NOLOGIN and human sessions remain disabled.
+    """
+    password = os.environ.get("CSA_IDENTITY_PASSWORD")
+    if password is None:
+        return
+    if len(password) < 12:
+        raise MigrationError("CSA_IDENTITY_PASSWORD must contain at least 12 characters")
+    await conn.execute(
+        sql.SQL("ALTER ROLE csa_identity WITH LOGIN PASSWORD {}").format(sql.Literal(password))
+    )
+
+
 async def run() -> None:
     """Apply all unrecorded migrations forward-only, then stamp them."""
     dsn = _owner_dsn()
@@ -139,6 +155,10 @@ async def run() -> None:
                 async with conn.transaction():
                     await _set_role_passwords(conn)
                 print("set login passwords for csa_app / csa_ro")
+
+        if "0270" in {version for version, _ in migrations}:
+            async with conn.transaction():
+                await _set_identity_password(conn)
 
 
 def main() -> int:

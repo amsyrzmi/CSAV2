@@ -28,3 +28,13 @@ __pycache__/
 # Host-specific and legacy operational snapshots stay local; use maintained docs instead.
 /SERVER_HANDOFF.md
 /web_console.md
+
+# Adopt reviewed Next.js source only; copied backend/checkouts/archives remain reference.
+/CSA_WebConsole/**/.git/
+/CSA_WebConsole/**/.backups/
+/CSA_WebConsole/**/*.tgz
+/CSA_WebConsole/**/*.tar.gz
+/CSA_WebConsole/csa-console/api/
+/CSA_WebConsole/**/node_modules/
+/CSA_WebConsole/**/.next/
+/CSA_WebConsole/**/tsconfig.tsbuildinfo

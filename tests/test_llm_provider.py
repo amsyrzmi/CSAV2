@@ -302,6 +302,8 @@ def test_capabilities_cover_plannable_agents() -> None:
         "ecommerce_agent",
         "kb_agent",
         "invoice_agent",
+        "booking_agent",
+        "subscription_agent",
     }
 
 

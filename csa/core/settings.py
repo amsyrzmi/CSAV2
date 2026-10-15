@@ -12,6 +12,7 @@ import binascii
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     Field,
@@ -54,6 +55,14 @@ class Settings(BaseSettings):
     GOOGLE_AI_MODEL: str = "gemini-3.1-flash-lite"
     DEV_STAFF_CHAT_ID: str | None = None
     CONSOLE_API_TOKEN: SecretStr | None = None
+    # Human identity uses its own least-privilege role; never use DATABASE_URL here.
+    IDENTITY_DATABASE_URL: PostgresDsn | None = None
+    CONSOLE_ALLOWED_ORIGIN: str | None = None
+    CONSOLE_COOKIE_SECURE: bool = True
+    CONSOLE_SESSION_IDLE_SECONDS: int = Field(default=1800, ge=60, le=86400)
+    CONSOLE_SESSION_ABSOLUTE_SECONDS: int = Field(default=43200, ge=300, le=604800)
+    # Service token reads are limited to an explicitly configured tenant allowlist.
+    CONSOLE_MACHINE_CLIENT_IDS: list[str] = Field(default_factory=list)
     TYPESAFE_API_KEY: SecretStr | None = None
     TEI_ENDPOINT: HttpUrl | None = None
     KB_EMBED_MODEL_LABEL: str = Field(default="tei-384", min_length=1, max_length=64)
@@ -136,6 +145,48 @@ class Settings(BaseSettings):
             raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
         return self
 
+    @model_validator(mode="after")
+    def _validate_console(self) -> Settings:
+        from uuid import UUID
+
+        for client_id in self.CONSOLE_MACHINE_CLIENT_IDS:
+            UUID(client_id)
+        if self.IDENTITY_DATABASE_URL is None:
+            return self
+        if any(host["username"] != "csa_identity" for host in self.IDENTITY_DATABASE_URL.hosts()):
+            raise ValueError("IDENTITY_DATABASE_URL must use the csa_identity role")
+        identity_hosts = {
+            (host["host"], host["port"] or 5432) for host in self.IDENTITY_DATABASE_URL.hosts()
+        }
+        domain_hosts = {(host["host"], host["port"] or 5432) for host in self.DATABASE_URL.hosts()}
+        if (
+            identity_hosts != domain_hosts
+            or self.IDENTITY_DATABASE_URL.path != self.DATABASE_URL.path
+        ):
+            raise ValueError("identity and domain pools must target the same database")
+        if not self.CONSOLE_ALLOWED_ORIGIN:
+            raise ValueError("IDENTITY_DATABASE_URL requires CONSOLE_ALLOWED_ORIGIN")
+        origin = urlsplit(self.CONSOLE_ALLOWED_ORIGIN)
+        if (
+            origin.scheme not in {"http", "https"}
+            or not origin.hostname
+            or origin.username
+            or origin.password
+            or origin.path not in {"", "/"}
+            or origin.query
+            or origin.fragment
+        ):
+            raise ValueError("CONSOLE_ALLOWED_ORIGIN must be a single HTTP(S) origin")
+        loopback = origin.hostname in {"localhost", "127.0.0.1", "::1"}
+        if origin.scheme != "https" and not (self.ENV != "prod" and loopback):
+            raise ValueError("console requires HTTPS except loopback dev/ci")
+        if not self.CONSOLE_COOKIE_SECURE and not (self.ENV != "prod" and loopback):
+            raise ValueError("insecure console cookies are allowed only on loopback dev/ci")
+        if self.CONSOLE_SESSION_IDLE_SECONDS > self.CONSOLE_SESSION_ABSOLUTE_SECONDS:
+            raise ValueError("console idle expiry must not exceed absolute expiry")
+        self.CONSOLE_ALLOWED_ORIGIN = self.CONSOLE_ALLOWED_ORIGIN.rstrip("/")
+        return self
+
     def credentials_key_bytes(self) -> bytes:
         """Return the decoded 32-byte AES-256-GCM key.
 
@@ -149,11 +200,11 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return the process-wide cached :class:`Settings` instance.
 
-    In ``dev`` the ``.env.local`` file is consulted (lowest precedence after a
-    first read of the environment); other environments never read a dotenv file.
+    In ``dev`` the ``.env.local`` file is consulted unless ``NO_LOCAL_ENV=1``;
+    other environments never read a dotenv file. Environment values take precedence.
     """
     import os
 
-    if os.environ.get("ENV") == "dev":
+    if os.environ.get("ENV") == "dev" and os.environ.get("NO_LOCAL_ENV") != "1":
         return Settings(_env_file=".env.local")  # type: ignore[call-arg]
     return Settings()  # type: ignore[call-arg]

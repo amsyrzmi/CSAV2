@@ -2,7 +2,9 @@
 #
 # Dev values come from the ignored .env.local. They apply ONLY to the throwaway
 # csa_dev_db container (compose project csa-dev), never to production csa_db.
+ifneq ($(NO_LOCAL_ENV),1)
 -include .env.local
+endif
 
 DEV_PGHOST ?= 127.0.0.1
 DEV_PGPORT ?= 5433
@@ -22,6 +24,7 @@ PSQL := $(if $(shell command -v psql 2>/dev/null),psql "$(DEV_OWNER_DSN)",docker
 DEV_GATEWAY_PORT ?= 18080
 
 .PHONY: db-image db-reset test coverage load-test lint run-dev run-gateway stop-gateway restart-gateway setup-dev-telegram up down
+CHANNEL_MODE ?= webhook
 export CHANNEL_MODE
 
 ## db-image: build the PostGIS+pgvector image used by the dev DB and the tests

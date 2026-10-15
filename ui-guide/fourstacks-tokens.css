@@ -1,0 +1,152 @@
+/* Source-aligned brand tokens plus recommended dashboard extensions.
+   Read UI_GUIDE.md for the distinction. This file does not import page CSS. */
+:root {
+  color-scheme: light;
+  --fs-bg: #f7f8fa;
+  --fs-surface: #ffffff;
+  --fs-surface-raised: #fcfdff;
+  --fs-surface-blue: #edf2ff;
+  --fs-text: #1c2b40;
+  --fs-text-secondary: #566274;
+  --fs-primary: #3264ff;
+  --fs-primary-hover: #234fd8;
+  --fs-border: #dce2e9;
+  --fs-border-control: #7b8ca5;
+  --fs-focus: #3264ff;
+  --fs-disabled-bg: #eef2f7;
+  --fs-disabled-text: #566274;
+  --fs-success: #166534;
+  --fs-success-bg: #eefbf3;
+  --fs-warning: #854d0e;
+  --fs-warning-bg: #fff7e0;
+  --fs-danger: #b42318;
+  --fs-danger-bg: #fff1f0;
+  --fs-info: #2558b4;
+  --fs-info-bg: #edf2ff;
+  --fs-font-body: 'Inter', system-ui, sans-serif;
+  --fs-font-heading: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --fs-font-brand: 'Manrope', 'Inter', system-ui, sans-serif;
+  --fs-font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --fs-text-xs: 0.75rem;
+  --fs-text-sm: 0.8125rem;
+  --fs-text-md: 0.875rem;
+  --fs-text-base: 1rem;
+  --fs-text-lg: 1.125rem;
+  --fs-text-xl: 1.5rem;
+  --fs-text-page: clamp(1.5rem, 2.2vw, 2rem);
+  --fs-space-1: 0.25rem;
+  --fs-space-2: 0.5rem;
+  --fs-space-3: 0.75rem;
+  --fs-space-4: 1rem;
+  --fs-space-5: 1.25rem;
+  --fs-space-6: 1.5rem;
+  --fs-space-8: 2rem;
+  --fs-space-10: 2.5rem;
+  --fs-radius-control: 6px;
+  --fs-radius-panel: 14px;
+  --fs-radius-dialog: 16px;
+  --fs-radius-pill: 999px;
+  --fs-shadow-popover: 0 8px 28px #1c2b4012;
+  --fs-shadow-dialog: 0 24px 64px #1c2b4024;
+  --fs-sidebar-width: 240px;
+  --fs-header-height: 64px;
+  --fs-control-height: 40px;
+  --fs-touch-target: 44px;
+  --fs-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --fs-ease-settle: cubic-bezier(0.16, 1, 0.3, 1);
+  --fs-motion-fast: 180ms;
+  --fs-motion-panel: 240ms;
+  --fs-motion-scene: 420ms;
+}
+
+.fs-ui {
+  color-scheme: light;
+  color: var(--fs-text);
+  background: var(--fs-bg);
+  font-family: var(--fs-font-body);
+  font-size: var(--fs-text-md);
+  line-height: 1.5;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+.fs-ui *,
+.fs-ui *::before,
+.fs-ui *::after {
+  box-sizing: border-box;
+}
+.fs-ui :is(button, input, select, textarea) {
+  font: inherit;
+}
+.fs-ui
+  :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--fs-focus);
+  outline-offset: 3px;
+}
+.fs-ui :is(h1, h2, h3, h4) {
+  font-family: var(--fs-font-heading);
+  font-weight: 600;
+}
+.fs-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.fs-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.fs-working-avatar {
+  display: block;
+  flex-shrink: 0;
+  overflow: visible;
+}
+.fs-working-avatar .agent-eye-lid {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: fs-agent-blink 7400ms ease-in-out infinite;
+  animation-delay: -1100ms;
+}
+.fs-working-avatar .agent-eye:nth-child(2n) .agent-eye-lid {
+  animation-delay: -1180ms;
+}
+.fs-working-avatar .agent-gaze {
+  transform: translate(var(--agent-look-x, 0px), var(--agent-look-y, 0px));
+  transition: transform 160ms ease-out;
+}
+.fs-working-avatar[data-motion-paused='true'] .agent-eye-lid,
+.fs-working-avatar[data-motion-visible='false'] *,
+.fs-working-avatar [data-motion-visible='false'] * {
+  animation-play-state: paused !important;
+}
+.fs-working-avatar[data-motion-paused='true'] .agent-gaze {
+  transform: none;
+}
+@keyframes fs-agent-blink {
+  0%,
+  93%,
+  98%,
+  100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fs-ui {
+    scroll-behavior: auto;
+  }
+  .fs-working-avatar .agent-eye-lid {
+    animation: none;
+  }
+  .fs-working-avatar .agent-gaze {
+    transform: none;
+    transition: none;
+  }
+}

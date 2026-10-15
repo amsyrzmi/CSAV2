@@ -18,10 +18,76 @@
 | Marketplace Ingress (TikTok Shop & Multi-Marketplace) | Done: TikTok Shop webhook verification (HMAC-SHA256, deduplication, ingress_events persistence), seller OAuth flow (signed state, code exchange, AES-GCM credential persistence, auto endpoint provisioning), Shopee/Lazada draft endpoints | `tests/test_marketplace_ingress.py` (17 passed), `csa/channels/marketplace/`, `apps/gateway/main.py` |
 | Langfuse Observability Integration | Done: Direct async batch ingestion (`LangfuseSink`), redaction & privacy preservation, integrated into worker `PostgresEventSink`, initial activation trace verified live on `jp.cloud.langfuse.com` | `tests/test_langfuse.py` (4 passed), `csa/core/langfuse.py`, `csa/graph/events.py`, `apps/worker/main.py` |
 | KB console upload ingestion | Done (gated by `KB_INGEST_ENABLED`): console writes ≤3 PDF/DOCX/CSV files to `KB_UPLOAD_ROOT/<client_id>/` + `kb_ingest_jobs` row; worker validates, confines paths, extracts, chunks, embeds (strict TEI, no silent fallback), stores versioned/deduplicated docs, records per-file `meta.results`, and retries with backoff. Model-filtered search. Also fixed LG13 regressions: `EcommerceAgent.ACTION_RISK` class attribute, stale capabilities test, JEV answers fixture for new agents, and `job_runs` (owner-written ops log) excluded from the RLS set-equality test. Full suite: 442 passed; the 6 failures were rerun in isolation and pass (the 3 latency thresholds failed only under host load). | `tests/test_kb_ingest.py` (25 passed), `tests/test_kb_agent.py` (7 passed), live dev TEI e5-small semantic check; not tested: real console writing jobs, worker loop running live in dev |
-| LG15 Console turnover (n8n → CSA) | Planned: RBAC/auth, console API parity, agent parity, per-client cutover, n8n retirement | `docs/langgraph-rebuild/LG15_console_turnover.md`, `docs/handoffs/2026-10-14-console-turnover.md` |
+| LG13 Waves 2/3 preparation | Implemented provider-neutral slice, **not live integrations**: disabled-by-default booking/subscription agents provide contact-scoped local reads and unexecuted requests; staff-only email/research/invoice-draft libraries, strict inputs and Decimal totals. Immutable preparation ledger with RLS, contact-owner checks, actor/trace and concurrent idempotency. No external calls, executable approvals or billing/event/invoice mutations. | `csa/agents/staged/`, migration `0260_staged_agent_requests.sql`, `tests/test_staged_agents.py` (51 passed); `docs/handoffs/2026-10-15-wave23-preparation.md`. |
+| LG15 Console turnover (n8n → CSA) | M0–M1 implemented and reviewed locally (2026-10-15): reviewed Next.js adoption, CSAV2 sessions/membership RBAC, invitation/reset/manual delivery, deliberate bootstrap, audited tenant/member onboarding and capability provisioning. Identity pool lifecycle/readiness explicit; human sessions independent of machine token. FourStacks UI guide applied; deferred and unmigrated pages inaccessible. M2 groundwork exists; remaining M2–M8, live browser acceptance and deployment remain pending. | Migration `0270_console_identity.sql`, `csa/console/`, typed frontend identity client, `docs/console_openapi.json`; focused checks/lint pass. Full run: 564 passed, one TCP latency failure; standalone rerun also fails. See evidence below; no clean full-suite pass claimed. |
 | LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md` |
 
-Latest verification (2026-10-14, after the KB ingest slice): `make lint` passed. `ENV=ci make test` ran 448 tests: 442 passed and 6 failed. Three of the failures were test drift and have been fixed (2 in the JEV fixture, 1 in the RLS set test). The other three were latency thresholds missed under host load. All 6 pass when rerun in isolation. A clean full-suite rerun is still owed.
+Console M0–M1 review/verification (2026-10-15):
+
+- Fixed Unicode password changes raising `TypeError`: constant-time equality now compares
+  UTF-8 bytes. Fixed resets bypassing an unaccepted invitation's membership creation:
+  reset issuance returns 409 without invalidating the invitation; accept/renew it instead.
+- Session integration selection **33 passed**. Follow-up review regressions plus
+  config/contract/lifecycle/password selection **30 passed** (overlapping selections,
+  not additive). This includes the pending-invitation regression added after the first
+  selection started. Final `ENV=ci NO_LOCAL_ENV=1 make lint` passed.
+  The existing accepted-account invite/reset single-use/session-rotation test was also
+  rerun after the reset guard change: **1 passed**.
+- Frontend transport/routing checks **5 passed again during review**. The implementation
+  run also passed isolated ESLint, Next type generation, `tsc --noEmit` and Next 16.3.8
+  production webpack build; no frontend source was changed during this review.
+- The already-running full `ENV=ci NO_LOCAL_ENV=1 make lint test` completed before the
+  review fixes: **564 passed, 1 failed** (19m44s). TCP ingress ack p95 **1021.433 ms**
+  exceeded **200 ms**. The exact standalone rerun also failed: p95 **451.844 ms**,
+  150 completed turns and 150 pending deliveries, 2.084 turns/s. Cause is not established;
+  do not dismiss this as full-suite contention or claim performance acceptance is green.
+  No threshold relaxation or unrelated performance workaround was made.
+- Previously recorded `make db-reset` plus migration reapply passed in a new disposable
+  Postgres container (0270, LangGraph checkpoint setup and synthetic seeds); it was removed.
+  This review changed no schema and did not reset/migrate any existing database.
+- `NO_LOCAL_ENV=1` prevents Make and development settings from reading `.env.local`;
+  Make uses its declared webhook default rather than exporting empty `CHANNEL_MODE`.
+
+Next bounded slice: finish **M2** (truthful readiness/role/entitlement metadata, tenant
+switch UI, specialised navigation, scoped runtime visibility/pagination, and execution/cache
+freshness evidence). Mutation RBAC, transactional audit, safety guards and the initial
+platform entitlement UI are already implemented. **M3** authenticated three-file upload,
+download/delete safety and job-progress UI can proceed independently after M1. No additional
+provider keys are needed for these provider-neutral packages. Diagnose the unresolved TCP
+latency acceptance failure before treating the release as verified.
+
+Safety correction: the first use of the pre-existing test-image fixture sent the
+repository build context to the local Docker daemon, potentially including ignored
+env/reference files. No secret values were inspected/displayed, and the Dockerfile
+copies no application files. The fixture now uses `deploy/` only. Adopted frontend
+verification copies an explicit source allowlist to `/tmp`; build traces are checked
+for env files, nested Git, backups and the copied API. No deployment, live browser or
+provider validation, existing-process/port/webhook/proxy change, or commit was performed.
+
+Required human-console settings: `IDENTITY_DATABASE_URL` (same database, narrow
+`csa_identity` role), `CONSOLE_ALLOWED_ORIGIN`, and frontend `CSA_CONSOLE_API_ORIGIN`.
+Provision the role using `CSA_IDENTITY_PASSWORD` only in the migration/provisioning
+process, then run the deliberate interactive first-admin bootstrap. Cookie/expiry
+and optional machine allowlist settings are documented in `CONSOLE_API.md` and
+`.env.example`; neither real env file was edited. Invitations/resets use manual
+delivery. Membership switching/account attachment, browser visual checks, M2+ business
+UI, web chat, KB upload, approvals, provider execution and runtime turnover remain open.
+The unsupported invoice download-link endpoint now returns 501 without signing fallbacks.
+
+Wave 2/3 verification (2026-10-15): `make lint` passed (Ruff, format, Pyright and
+import-linter). Final preparation/identifier selection: **52 passed** (51 preparation
+cases). Earlier planner/coordinator/worker selection: 117 passed. Actual `make db-reset`
+passed in a separate disposable `wave_reset` database; no existing dev/production database
+was reset or migrated. Gateway readiness and migration expectations now require `0260`.
+Full `ENV=ci make lint test`: **499 passed, 1 failed** (16m19s): TCP ingress p95
+440.25 ms exceeded the unchanged 200 ms acceptance limit. This is not a clean full-suite
+pass. The exact failing TCP benchmark passed when rerun alone
+(`test_real_ingress_50rps_and_durable_queue[tcp]`, 1 passed in 135s).
+
+Earlier verification (2026-10-14, after the KB ingest slice): `make lint` passed.
+`ENV=ci make test` ran 448 tests: 442 passed and 6 failed. Three failures were test drift
+and were fixed (2 in the JEV fixture, 1 in the RLS set test). Three were latency thresholds
+missed under host load. All 6 passed when rerun in isolation.
 Earlier verification (2026-10-14): `ENV=ci make test` **363 passed** (14m19s).
 `make coverage`: 88 passed, 100% policy statement/branch coverage; CI enforces at least 90%.
 `make db-reset` passed on a disposable isolated Postgres (0220, two seed tenants); the live dev

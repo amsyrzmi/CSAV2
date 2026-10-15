@@ -1,12 +1,49 @@
 # LG15 — Console turnover (n8n → CSA)
 
+## Source-based revision (2026-10-15)
+
+The console source is now available at `CSA_WebConsole/csa-console/`.
+The user approved replacing its backend logic, retaining the Next.js UI and using
+**one CSAV2 backend**, with project-management/terminal/Hermes/workroom features
+disabled for a separate phase.
+
+The authoritative implementation sequence and source-to-target route inventory are in
+[the detailed migration plan](../handoffs/2026-10-15-console-source-migration-plan.md).
+It supersedes earlier assumptions about a separate console backend, actor headers,
+unknown console endpoints and source availability in this document and older handoffs.
+M0 source adoption and M1 identity/onboarding are now implemented locally. Deployment and
+runtime cutover have not been performed. See the implementation record and review evidence
+in the detailed plan; this phase as a whole is not complete.
+
+## Implementation review (2026-10-15)
+
+- Implemented: isolated identity pool and migration 0270, sessions/CSRF/RBAC, invite/reset/
+  password lifecycle, audited tenant/member onboarding, disabled capability provisioning,
+  adopted authentication/admin/portal shell, static OpenAPI contract and deferred-route gates.
+- M2 groundwork already implemented: role-checked capability switches, atomic before/after
+  audit, required-safety capability guards, and initial platform entitlement UI. Runtime
+  readiness metadata, tenant switch UI, specialised navigation and run visibility remain open.
+- Review fixes: UTF-8-safe password equality and rejection of password resets for pending
+  invitations, preserving invitation membership creation. Synthetic regression tests pass.
+- Final review lint passed. Session selection: 33 passed; fix/config/lifecycle/contract/
+  password selection: 30 passed (overlapping selections, not additive).
+- The full run before these two fixes completed with 564 passed and one failed TCP ingress
+  benchmark (p95 1021.433 ms versus the unchanged 200 ms limit). Do not mark full validation
+  green or infer a cause from that result alone. The exact standalone rerun also failed
+  at p95 451.844 ms; diagnosis remains open. The five frontend transport/routing tests
+  were rerun successfully during review.
+- Next: finish M2; M3 authenticated KB upload/lifecycle can follow or run independently
+  once its storage/deletion semantics are tested. No live browser/provider validation or
+  deployment is claimed.
+
 ## CONTEXT FOR CODING AGENT
 The web console is currently built against n8n: its webhooks and workflows, and possibly direct
 database reads. This phase moves every console feature onto the CSA console API (`/console/v1`,
 `csa/console/`) and moves each client's runtime from n8n to LangGraph, using the LG09 strangler
 flag. n8n core workflows are then retired. Read `AGENTS.md`, `LG09`, `LG13` (console and KB upload
 contract), `LG07` (approval semantics), `docs/CONSOLE_API.md`, and
-`docs/handoffs/2026-10-14-console-turnover.md` first.
+the [current source-based migration plan](../handoffs/2026-10-15-console-source-migration-plan.md)
+first.
 
 Two separate turnovers must not be confused:
 1. **Console turnover:** the console UI and backend stop calling n8n and call `/console/v1` only.
@@ -15,8 +52,9 @@ Two separate turnovers must not be confused:
    as long as the console endpoints it uses read tables that both runtimes write.
 
 ## Boundaries (unchanged from LG13)
-- The browser never sees the CSA token, provider secrets, or the database. The console backend
-  calls CSA server-to-server.
+- The browser never sees the CSA token, provider secrets, or the database. Next.js forwards
+  same-origin requests to the CSAV2 gateway; session identity and tenant memberships are
+  verified in CSAV2. There is no separate permanent console business backend.
 - Every request resolves to `client_id` + actor + role. Every database call runs under
   `tx(pool, client_id)` (RLS GUC) and filters by `client_id`.
 - Staff decisions from the console must reuse the same approval and pending-action code paths as
@@ -25,9 +63,15 @@ Two separate turnovers must not be confused:
 - Keep SQL in `db/sql/`, use Pydantic in/out models with `extra="forbid"`, use psycopg 3 async,
   make migrations additive and ordered, and use no silent fallbacks.
 
-## Step 0 — Discovery (blocking; needs the console code from the user)
+## Step 0 — Discovery (core inventory and M0 adoption complete)
+- Source: copied Next.js UI plus a separate synchronous SQLAlchemy/FastAPI API, n8n
+  chat/file/poll calls, direct CSA DB reads/writes, and a large optional PM runtime.
+- Reviewed core routes and feature mapping are in the detailed migration plan. No copied
+  envs, setup scripts, applications or production n8n resources were executed.
+- Any deployed workflow inventory or real user/file import is a later explicitly approved
+  operation, not a prerequisite for rewriting the dev console.
 - Inventory every console → n8n call: webhook path, method, payload, response, and the screen that
-  uses it. Also inventory every direct database read or write the console performs.
+  uses it. Core inventory is recorded; implementation should keep it current as routes change.
 - Re-export the **current** n8n workflow list read-only (name, active, trigger and webhook paths
   only; never node credentials). The 2026-09-20 backup inventory is in the handoff and may be
   stale.
@@ -41,15 +85,17 @@ Two separate turnovers must not be confused:
    the signature and expiry with `verify_invoice_signature`, run under the tenant scope, and return
    404 when the signature is invalid or expired. Decide where invoice files come from
    (storage path or generator).
-2. **RBAC.** Add actor identity and role to every console request. The recommended start is the
-   existing service token plus required `X-Actor-Id` and `X-Actor-Role` headers
-   (`platform_admin | tenant_admin | tenant_staff | read_only`), validated by a dependency.
+2. **RBAC and sessions.** Implement cookie-backed sessions and explicit tenant memberships
+   in CSAV2. Derive actor identity/role from verified sessions, never browser-supplied
+   `X-Actor-Id` or `X-Actor-Role`. Roles:
+   `platform_admin | tenant_admin | tenant_staff | read_only`.
    Per-endpoint role checks:
    - `is_enabled` (subscription) is `platform_admin` only.
    - `client_enabled` is `tenant_admin`+.
    - Approvals and takeover are `tenant_staff`+.
    - Read endpoints accept every role.
-   Later option: short-lived JWTs signed by the console backend (decide with the user).
+   Separate existing service-token machine principals from human users, and scope them
+   explicitly. Do not let machine auth bypass browser-role restrictions.
 3. **Audit.** Record capability toggles (who, when, before → after). This probably needs an additive
 `capability_audit` migration: `subscription_events` covers customer subscriptions and
 requires a `subscription_id`. Add the actor to KB, approval and takeover actions.
@@ -81,6 +127,11 @@ See the parity table in the handoff. Not ported yet: bookings, refund status, wa
 subscription, store, quote, account, voice (LiveKit transcript → internal HMAC endpoint), and
 KB sheet ingest.
 
+Preparation update (2026-10-15): booking/subscription now have local customer reads and
+unexecuted request agents; staff email/research/invoice-write preparation libraries also
+exist. These do not satisfy provider-execution parity. See
+`docs/handoffs/2026-10-15-wave23-preparation.md` before estimating the remaining work.
+
 ## Step 4 — Per-client cutover (LG09 procedure)
 `shadow` (compare for at least a week) → `suggest` → `auto`, one client at a time, with the console
 switched to `/console/v1` for that client. Rollback means flipping `clients.config.runtime`; no
@@ -94,8 +145,12 @@ hard-coded in workflow JSON (LG09), migrate the Langfuse sink to OTLP before **2
 enable `FORCE ROW LEVEL SECURITY` and move n8n off the owner role (LG11 M14).
 
 ## Acceptance criteria
-- [ ] Discovery mapping complete; every console feature maps to a `/console/v1` endpoint and none
-      to n8n.
+- [x] Core copied-source discovery and proposed route mapping recorded in the detailed plan.
+- [x] M0 reviewed frontend adoption and static contract baseline implemented.
+- [x] M1 identity/RBAC/onboarding implemented with synthetic integration evidence.
+- [ ] Live browser acceptance of M1; finish remaining M2 runtime/readiness/UI work.
+- [ ] Every active frontend feature actually uses an implemented CSAV2 endpoint, not n8n;
+      the old Python API and deferred PM/voice runtimes are not mounted or started.
 - [ ] P0 fixes merged with tests (download route and strict signing secret, RBAC, audit, OpenAPI
       restriction).
 - [ ] Parity endpoints implemented with role, tenant, validation and idempotency tests; LG07

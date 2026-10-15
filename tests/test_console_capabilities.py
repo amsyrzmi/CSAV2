@@ -18,7 +18,7 @@ def client_app() -> tuple[TestClient, uuid.UUID, str]:
     client_id = uuid.uuid4()
     app = FastAPI()
     app.state.pool = AsyncMock()
-    app.include_router(build_router(token))
+    app.include_router(build_router(token, machine_client_ids=frozenset({client_id})))
     client = TestClient(app)
     return client, client_id, token
 
@@ -95,7 +95,7 @@ def test_capabilities_and_specialized_tabs(
         assert ecom_tab["is_active"] is False
 
 
-def test_toggle_capability_subscription(
+def test_machine_cannot_toggle_capability_subscription(
     client_app: tuple[TestClient, uuid.UUID, str],
 ) -> None:
     client, client_id, token = client_app
@@ -104,37 +104,21 @@ def test_toggle_capability_subscription(
         "X-Client-Id": str(client_id),
     }
 
-    mock_row = {
-        "id": uuid.uuid4(),
-        "name": "lhdn_agent",
-        "is_enabled": False,  # Turned off by admin
-        "client_enabled": True,
-        "circuit_state": "closed",
-        "fail_count": 0,
-        "capability_kind": "dispatched",
-        "updated_at": datetime(2026, 4, 1),
-    }
-
-    with (
-        patch("csa.console.capabilities.tx") as mock_tx,
-        patch("csa.core.db.q.fetch_one") as mock_fetch_one,
-        patch("csa.core.db.q.fetch_all") as mock_fetch_all,
-    ):
-        mock_conn = AsyncMock()
-        mock_tx.return_value.__aenter__.return_value = mock_conn
-        mock_fetch_one.return_value = {"id": mock_row["id"], "name": "lhdn_agent"}
-        mock_fetch_all.return_value = [mock_row]
-
-        patch_resp = client.patch(
+    with patch("csa.console.capabilities.toggle_capability") as mutate:
+        response = client.patch(
             "/console/v1/capabilities/lhdn_agent",
-            json={"is_enabled": False, "changed_by": "super_admin"},
+            json={"is_enabled": False},
             headers=headers,
         )
-        assert patch_resp.status_code == 200
-        result = patch_resp.json()
-        assert result["name"] == "lhdn_agent"
-        assert result["is_enabled"] is False
-        assert result["active"] is False
+        assert response.status_code == 403
+        mutate.assert_not_called()
+
+    # A correctly signed machine token cannot select an unconfigured tenant.
+    response = client.get(
+        "/console/v1/capabilities",
+        headers={**headers, "X-Client-Id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 403
 
 
 def test_invoices_console_endpoints(
@@ -182,8 +166,5 @@ def test_invoices_console_endpoints(
 
         # 2. Download link
         dl_resp = client.get("/console/v1/invoices/INV-1001/download-link", headers=headers)
-        assert dl_resp.status_code == 200
-        dl_data = dl_resp.json()
-        assert dl_data["invoice_id"] == "INV-1001"
-        assert "sig=" in dl_data["download_url"]
-        assert dl_data["expires_at"] > 0
+        assert dl_resp.status_code == 501
+        assert "M6" in dl_resp.json()["detail"]

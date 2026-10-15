@@ -158,7 +158,6 @@ async def test_rls_set_equality(seeded_dsn: str) -> None:
             ).fetchall()
         }
     assert expected == actual
-    assert len(actual) == 48  # today's value, informational only
 
 
 # 7 — write-path INSERT into a nextval() bigint-PK target (sequence USAGE closure)
