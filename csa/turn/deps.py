@@ -32,7 +32,7 @@ from csa.agents.staged.service import BookingAgent, SubscriptionAgent
 from csa.agents.tickets.agent import TicketAgent
 from csa.approval.service import hold_reply
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
-from csa.contracts.envelope import Envelope
+from csa.contracts.envelope import Channel, Envelope
 from csa.contracts.facts import AgentResult
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
 from csa.contracts.registry import CapabilityRegistry
@@ -59,6 +59,21 @@ logger = structlog.get_logger(__name__)
 
 FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
 HANDOFF_TEXT = "I've passed this to a team member who will get back to you shortly."
+SANDBOX_SCOPE_TEXT = (
+    "Sandbox assistant can only answer knowledge and product-information questions. "
+    "Customer records, business actions and staff escalation are unavailable."
+)
+_SANDBOX_ACCOUNT_INTENTS = frozenset(
+    {
+        Intent.ORDER,
+        Intent.REFUND_RETURNS,
+        Intent.BILLING_INVOICE,
+        Intent.BOOKING,
+        Intent.SUBSCRIPTION,
+        Intent.WARRANTY,
+        Intent.HUMAN_REQUEST,
+    }
+)
 
 
 CAPABILITIES = {
@@ -195,6 +210,8 @@ class PostgresTurnDependencies:
         )
 
     async def resolve_callback(self, envelope: Envelope, context: Context) -> Task | None:
+        if envelope.channel == Channel.WEB and envelope.callback is not None:
+            raise ValueError("sandbox_callbacks_forbidden")
         if envelope.callback is None or envelope.contact.id is None:
             return None
         action_id = envelope.callback.action_id
@@ -271,6 +288,23 @@ class PostgresTurnDependencies:
         return []
 
     async def compose(self, state: TurnState) -> Draft:
+        if state.envelope.channel == Channel.WEB and (
+            (state.handoff is not None and state.handoff.required)
+            or any(error.code == "sandbox_action_forbidden" for error in state.failures)
+            or (
+                state.plan is not None
+                and (
+                    state.plan.requires_confirmation
+                    or state.plan.reply_strategy in {"confirm", "escalate"}
+                    or (state.plan.intent in _SANDBOX_ACCOUNT_INTENTS and not state.facts)
+                )
+            )
+        ):
+            return Draft(
+                text=SANDBOX_SCOPE_TEXT,
+                language=state.envelope.message.language,
+                composer="template",
+            )
         language = state.envelope.message.language
         if state.handoff is not None and state.handoff.required:
             return Draft(text=HANDOFF_TEXT, language=language)
@@ -302,7 +336,12 @@ class PostgresTurnDependencies:
         if state.draft is None:
             return Verification(ok=False, issues=["empty_draft"])
         # Handoff text and button-tap acknowledgements are system text, not model claims.
-        if self._llm is None or state.draft.text == HANDOFF_TEXT or state.envelope.callback:
+        if (
+            self._llm is None
+            or state.draft.text == HANDOFF_TEXT
+            or state.envelope.callback
+            or (state.envelope.channel == Channel.WEB and state.draft.text == SANDBOX_SCOPE_TEXT)
+        ):
             return Verification(ok=True)
         grounded = self._llm.verify(state)
         if not grounded.ok:
@@ -382,6 +421,20 @@ class PostgresTurnDependencies:
             raise RuntimeError("hold_draft_missing")
         envelope = state.envelope
         async with tx(self._pool, str(envelope.client_id)) as conn:
+            if envelope.channel == Channel.WEB:
+                held = await db.q.fetch_one(
+                    "console/chat_hold.sql",
+                    (
+                        state.verdict.reason[:500],
+                        state.draft.text,
+                        envelope.client_id,
+                        envelope.trace_id,
+                    ),
+                    conn=conn,
+                )
+                if held is None:
+                    raise RuntimeError("sandbox_turn_not_found")
+                return
             row = await db.q.fetch_one(
                 "turn/get_client_policy.sql", (envelope.client_id,), conn=conn
             )
@@ -441,11 +494,23 @@ class PostgresTurnDependencies:
             trace_id=envelope.trace_id,
             contact_id=contact_id,
             channel=envelope.channel,
-            body=FALLBACK_TEXT,
+            body=(
+                "Sandbox assistant could not complete this turn. No business action or "
+                "staff escalation was performed."
+                if envelope.channel == Channel.WEB
+                else FALLBACK_TEXT
+            ),
             idempotency_key=f"{envelope.trace_id}:fallback",
         )
         async with tx(self._pool, str(envelope.client_id)) as conn:
-            await _insert_escalation(conn, envelope, f"fail_safe:{error_code}", "high")
+            if envelope.channel != Channel.WEB:
+                await _insert_escalation(conn, envelope, f"fail_safe:{error_code}", "high")
+            else:
+                failed = await db.q.fetch_one(
+                    "console/chat_fail.sql", (envelope.client_id, envelope.trace_id), conn=conn
+                )
+                if failed is None:
+                    raise RuntimeError("sandbox_turn_not_found")
             await _insert_outbound(conn, envelope, message)
         return message
 
@@ -489,6 +554,13 @@ async def _insert_outbound(
     envelope: Envelope,
     message: OutboundMessage,
 ) -> None:
+    if envelope.channel == Channel.WEB and (
+        message.channel != Channel.WEB
+        or message.contact_id != envelope.contact.id
+        or message.ui.confirmation is not None
+        or message.ui.options
+    ):
+        raise ValueError("sandbox_outbound_authority_or_action_invalid")
     conversation_id = _require_conversation(envelope)
     row = await db.q.fetch_one(
         "worker/insert_message.sql",

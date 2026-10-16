@@ -14,7 +14,7 @@ import psycopg
 import pytest
 from csa.agents.base import AgentContext
 from csa.agents.kb import DefaultKbEmbedder, KbAgent, KbEmbeddingError, KbInput
-from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor
+from csa.agents.kb.ingest_jobs import JobStatus, KbIngestConfig, KbIngestProcessor
 from csa.console.security import digest
 from csa.contracts.callbacks import PendingActionStore
 from psycopg.rows import dict_row
@@ -526,6 +526,96 @@ async def test_commit_acknowledgement_loss_retains_durable_sources(
     }
     assert await handle(sessions) == "done"
     assert len(await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", tenant)) == 1
+    assert len(await sessions.q("SELECT id FROM kb_upload_batches WHERE client_id=%s", tenant)) == 1
+    assert len(await sessions.q("SELECT id FROM kb_upload_files WHERE client_id=%s", tenant)) == 1
+    assert (
+        len(
+            await sessions.q(
+                "SELECT id FROM console_audit WHERE client_id=%s AND action='kb.upload_queued'",
+                tenant,
+            )
+        )
+        == 1
+    )
+
+
+async def test_worker_crash_after_document_commit_retries_without_duplicate_chunks(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await enable(sessions)
+    queued = await upload(sessions, [("crash-window.csv", FAQ_CSV)])
+    assert queued.status_code == 202, queued.text
+
+    worker = processor(sessions)
+    job = await worker.claim(UUID(tenant))
+    assert job is not None and job["attempts"] == 1
+    real_finish = worker._finish
+    crashed = False
+
+    async def fail_once(
+        client_id: UUID,
+        job_id: UUID,
+        status: JobStatus,
+        error: str | None,
+        results: list[dict[str, Any]],
+    ) -> None:
+        nonlocal crashed
+        if status == "done" and not crashed:
+            crashed = True
+            raise OSError("synthetic worker crash after document commit")
+        await real_finish(client_id, job_id, status, error, results)
+
+    monkeypatch.setattr(worker, "_finish", fail_once)
+    with pytest.raises(OSError, match="worker crash after document commit"):
+        await worker.process(job)
+    assert crashed
+
+    [interrupted] = await sessions.q(
+        "SELECT status, attempts FROM kb_ingest_jobs WHERE id=%s", job["id"]
+    )
+    assert (interrupted["status"], interrupted["attempts"]) == ("processing", 1)
+    [stored] = await sessions.q(
+        "SELECT id, chunk_count FROM kb_documents WHERE client_id=%s", tenant
+    )
+    [chunks] = await sessions.q(
+        "SELECT count(*) AS n FROM kb_chunks WHERE document_id=%s", stored["id"]
+    )
+    assert chunks["n"] == stored["chunk_count"] > 0
+    [source] = await sessions.q(
+        "SELECT document_id FROM kb_upload_files WHERE client_id=%s", tenant
+    )
+    assert source["document_id"] == stored["id"]
+
+    await sessions.q(
+        "UPDATE kb_ingest_jobs SET locked_at=now()-interval '1 hour' WHERE id=%s",
+        job["id"],
+    )
+    retry = await worker.claim(UUID(tenant))
+    assert retry is not None and retry["id"] == job["id"] and retry["attempts"] == 2
+    assert await worker.process(retry) == "done"
+
+    [completed] = await sessions.q(
+        "SELECT status, attempts, meta FROM kb_ingest_jobs WHERE id=%s", job["id"]
+    )
+    assert completed["status"] == "done" and completed["attempts"] == 2
+    assert completed["meta"]["results"][0]["status"] == "duplicate"
+    assert len(await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", tenant)) == 1
+    [document_count] = await sessions.q(
+        "SELECT count(*) AS n FROM kb_documents WHERE client_id=%s", tenant
+    )
+    [final_chunks] = await sessions.q(
+        "SELECT count(*) AS n FROM kb_chunks WHERE document_id=%s", stored["id"]
+    )
+    assert document_count["n"] == 1 and final_chunks["n"] == chunks["n"]
+    assert (
+        len(
+            await sessions.q(
+                "SELECT id FROM console_audit WHERE client_id=%s AND action='kb.upload_queued'",
+                tenant,
+            )
+        )
+        == 1
+    )
 
 
 async def test_delete_between_resolution_and_read_is_per_file_failure(

@@ -1,6 +1,72 @@
 # CSA WebConsole → CSAV2: source-based migration plan
 
-Date: 2026-10-15. Status: **M0–M3 implemented with isolated-dev acceptance: M1/M2 guided and M3 platform-admin agent-operated. M3 tenant-role browser replay and M4–M8 pending. Full suite has two ingress latency failures; no public deployment or runtime cutover.**
+Date: 2026-10-15; M4 closeout 2026-10-16. Status: **M0–M3 implemented with isolated-dev acceptance; M4 read-only sandbox functionally closed with explicitly accepted laptop-dev performance exception. Latest full run remains 674 passed / 2 latency failures (ASGI 508.717 ms, TCP 298.288 ms versus unchanged <200 ms). M5 next; M3 tenant-role replay and M5–M8 pending. No public deployment or runtime cutover.**
+
+Start the next session from [M4 closeout and M5 kickoff](./2026-10-16-m4-closeout-m5-start.md),
+including the current prompt, authority decision and deferred performance obligation.
+The implementation/review sections below retain historical evidence, not old next-step instructions.
+
+## M4 read-only sandbox implementation (2026-10-16)
+
+- The user explicitly selected **Sandbox assistant**, KB/product-information reads only.
+  This intentionally narrows the original M4 confirmation requirement: callbacks and
+  confirmation actions are rejected, not wired to business mutations. M5 staff inbox/
+  approval execution remains separate.
+- Migration 0290 adds tenant-RLS participant/thread/turn records. A dedicated contact per
+  account/tenant is independent of session user IDs and existing customers. Internal
+  endpoint metadata is disabled and token-free; no existing Telegram route is modified.
+- Human session/CSRF/role/tenant and exact owner checks protect all chat surfaces.
+  Atomic bounded/redacted Envelope 3.0 ingress, request fingerprint/replay conflict,
+  stable-ID pagination and audited archive reuse existing queue/audit primitives.
+- The shared runner permits only KB query and order-agent product search/detail on web;
+  customer reads, business mutations, staff escalation and pending-action consumption
+  are denied. Tenant capability switches and grounding remain authoritative.
+- Web delivery validates the participant/message/trace binding and atomically commits
+  local availability plus delivery attempt, with no external call or Telegram decryption.
+  Held drafts remain private and held without staff notification or automatic release.
+  Fail-safe text does not promise staff follow-up and the turn remains failed.
+- `/chat` and `/portal/chat` have private history, 2.5-second polling, stable older-page
+  cursors, explicit same-key retry, typed rejection vs uncertain timeout, deadline warnings,
+  reconnect without resend and confirmed archive. Voice/files/confirmations are unavailable.
+- Focused runtime/runner/Telegram/contract/migration selection: **60 passed**, including
+  synthetic KB-to-web retrieval, post-outbox-commit worker crash, local-delivery transaction
+  rollback, tenant/user/contact denial, archive and disposable-only `make db-reset` at 0290.
+  Final sandbox rerun **10 passed**, including redaction expansion, bigint cursor bounds,
+  stronger trace bindings and system-refusal-only grounding exemption. Isolated frontend
+  **11 transport/routing/cancellation + 2 state/deadline tests**, lint/types/production
+  build and safe traces pass. Final full validation is recorded in
+  [progress](../PROGRESS.md); do not add overlapping test selections.
+- Final full validation after fixing gateway readiness's expected schema version to
+  0290: **674 passed / 1 failed**. TCP ack p95 **202.643 ms** exceeds the unchanged
+  `<200 ms` bound; ASGI ack p95 **79.734 ms** passes, with 150 completed turns/deliveries
+  per transport. The exact isolated TCP repeat had passed at **110.980 ms**, but does
+  not supersede the full-run failure. Full acceptance is not green; no cause is established
+  and no threshold was relaxed. The user subsequently explicitly approved guarded dev
+  rollout despite that failure; this is not a performance acceptance pass.
+- Forward-only 0290 and guarded gateway/worker/delivery/frontend replacements completed
+  on isolated dev without reset. Health/readiness/login and anonymous-access gates pass.
+  User-operated KB and archive results are metadata-corroborated. Invoice clarification
+  exposed a fact-free `billing_invoice` plan with no agent tasks, not an invoice read.
+  The offline fix refuses unsupported account-domain clarifications and confirmations
+  while preserving grounded general KB answers; sandbox tests **11 passed**.
+  Latest full rerun: **674 passed / 2 failed** (ASGI **508.717 ms**, TCP **298.288 ms**
+  against unchanged `<200 ms`), 134 warnings, 2113.83 seconds. Lint and disposable-only
+  reset pass. The user explicitly approved worker-only replacement despite both failures;
+  the fix is live. Fresh user-operated refusal, sandbox KB and Telegram results are
+  metadata-corroborated; audited archive, history reload and tab offline/online recovery
+  pass. With separate approval, the user privately registered one synthetic reader;
+  agent-operated `/portal/chat` confirms disabled creation, absent send/archive, empty
+  owned list, other-owner active/archived histories 404 and cross-tenant selection 403.
+  Reader own pre-existing history is test-proven, not live-replayed (new fixture).
+  Latest unchanged, uninstrumented reader/backend + ASGI/TCP selection **2 passed /
+  1 failed**: ASGI **93.234 ms** passes; TCP **261.451 ms** fails. Instrumented passing
+  runs do not supersede this or full-run failures. No cause is established and no
+  speculative runtime optimization was applied.
+  No production, infrastructure or webhook changes. See [the API contract](../CONSOLE_API.md).
+- Closeout decision: the user explicitly accepted functional M4 with a laptop-dev
+  performance exception and carried latency work forward. Laptop hardware is reported
+  context, not a measured cause. Do not claim green tests or relax `<200 ms`; performance
+  remains release debt for M7/M8. M5 can begin under its separate authority boundaries.
 
 ## M3 implementation (2026-10-15)
 
@@ -31,8 +97,23 @@ Date: 2026-10-15. Status: **M0–M3 implemented with isolated-dev acceptance: M1
   Live acceptance found/fixed gap-list SQL argument drift in both callers; regression/
   launcher/upload/agent/contract selection **34 passed**, final lint passed. See
   [run instructions](../CONSOLE_API.md#isolated-dev-rollout-prerequisites).
-  Tenant-role M3 browser replay, populated gap UI, live version progression/crash races
-  and customer conversation retrieval remain unverified; no Gemini/provider-general claim.
+  Tenant-role M3 browser replay and customer conversation retrieval remain unverified;
+  populated gap UI, live version progression and disposable crash-window acceptance
+  subsequently passed on 2026-10-16 (see [progress](../PROGRESS.md)). Read-only role
+  denial is covered by disposable integration tests, not a live reader browser replay.
+  No Gemini/provider-general claim.
+- M3 follow-up: an unmatched synthetic KB-agent query appeared in authenticated
+  Unanswered questions and survived polling; M1 showed no gap; resolving it removed the
+  entry and produced one DB-corroborated audit. Two synthetic uploads of the same logical
+  document showed version 1 superseded/version 2 active in the UI. No cleanup or source
+  deletion was used.
+- Disposable-only crash coverage: **15 passed** across commit acknowledgment loss,
+  publication rollback, abandoned jobs, versioning, tenant/read-only boundaries and
+  deletion/read/embedding races. Added an injected worker crash after chunks commit but
+  before job completion; retry completes the existing job without duplicate documents
+  or chunks and retains one upload batch/source/audit. The lost-COMMIT-ack test also now
+  asserts unique batch/file/job/audit metadata after same-key replay. Focused rerun:
+  **2 passed**; `make lint` passed. Persistent dev was not reset.
 - Validation: disposable-only `make db-reset` succeeded at schema 0280 with all three
   new tables RLS-enabled. Python `make lint` passes. Focused upload/worker/streaming/
   agent/contract selection **57 passed**; final three-format retrieval/binary-contract/
@@ -207,7 +288,7 @@ during this review, so no additional reset was performed.
   switching/account attachment remain explicitly deferred; invitation/reset delivery is
   manual. Capability RBAC/audit/safety guards and initial platform subscriptions are M2
   groundwork already present, not evidence that all of M2 is complete.
-- Next bounded implementation: finish M2's truthful entitlement/tenant-switch/role/provider
+- At that historical review, the next bounded implementation was M2's entitlement/tenant-switch/role/provider
   readiness contracts, runtime queries/pagination and tenant switch/specialised UI. Verify
   registry-cache freshness across gateway and worker processes rather than assuming that a
   successful toggle is immediately reflected in execution. M3 can proceed independently
@@ -500,19 +581,28 @@ Dependencies: M1; text chat does not depend on M3.
    leases, audit and terminal status; do not report a merely queued message as delivered.
 6. Rework polling/history UI for queued/processing/held/available/failed with stable cursors,
    typed errors, deadline vs retry distinctions and reconnect recovery. Add web confirmation
-   controls using existing pending-action codecs/context binding.
+   controls using existing pending-action codecs/context binding. **Approved M4 narrowing:
+   the selected read-only sandbox rejects callbacks/confirmations; no mutation controls
+   are exposed. A future broader scope needs a separate authority decision.**
 7. Replace destructive-looking history deletion with audited archive/hide unless an explicit
    retention-approved purge is implemented. Do not invent `status='deleted'` semantics.
 8. Keep voice and arbitrary attachments unavailable until their own end-to-end support.
    KB uploads remain a distinct action, not an automatic side effect of chat.
 
-Exit: text → durable ingress → worker/graph → held approval or web outbox → visible reply;
-duplicates, wrong contact, crash/retry and confirmation single-use tests pass. Existing
-Telegram delivery remains unchanged.
+Exit (approved read-only scope): text → durable ingress → worker/graph → private held
+draft or web outbox → visible reply; duplicates, wrong contact, crash/retry and
+callback-denial tests pass. Held draft release and business confirmations are not part
+of this sandbox. Existing Telegram delivery remains unchanged.
 
 ### M5 — Staff conversation inbox and approvals
 
 Dependencies: M1; web-channel approval round trip depends on M4.
+
+M4 is the private read-only sandbox, not a staff-readable customer web inbox. Before
+M5 implementation confirm customer-channel/message-read roles and whether a separate
+customer-web product is in scope. Never expose sandbox histories or release their
+private held drafts through staff APIs. If customer web is deferred, explicitly stage
+that part of the exit criteria rather than using the sandbox as approval evidence.
 
 1. Add scoped conversation/message reads with pagination, channel filters and safe source
    links. Restrict message content by membership/role; do not expose credential payloads.
@@ -639,7 +729,7 @@ old `.env` into CSAV2 or assume its hostnames/keys are valid.
 5. Staff KB gap answers: immediate publication versus approval.
 6. Optional project/PM scope and real provider/accounting/payment execution remain separate.
 
-## 9. Definition of done and next-session prompt
+## 9. Definition of done and current handoff
 
 - [ ] M0–M7 evidence complete; frontend uses CSAV2 exclusively for active CSA features.
 - [ ] No active legacy API/n8n/direct-domain-SQL path remains in adopted console code.
@@ -648,34 +738,7 @@ old `.env` into CSAV2 or assume its hostnames/keys are valid.
 - [ ] Provider-dependent and deferred features stay explicitly unavailable.
 - [ ] All deployment actions remain separately approved; runtime cutover is not implied.
 
-```text
-Continue from docs/handoffs/2026-10-15-console-source-migration-plan.md.
-Read AGENTS.md, LG15, LG13, LG07 and the source findings before editing.
-
-The user approved retaining the Next.js UI and replacing the copied Python API with
-one CSAV2 backend. Core CSA console only; PM/terminal/Hermes/workroom/projects remain
-disabled. The copied checkout is at CSA_WebConsole/csa-console/.
-
-M0–M2 are implemented locally. Read the review evidence and preserve
-the Unicode-password and pending-invitation-reset regression fixes. Do not redo auth.
-First check the latest full-suite result in PROGRESS and finish authenticated M2 browser
-acceptance after deliberately restarting only the isolated loopback gateway. Verify platform
-subscription vs tenant switches, reader controls, readiness labels and empty/recorded activity.
-Never enable real provider execution to populate a dashboard. Then implement M3 as the next
-bounded slice: authenticated file upload and safe document/job lifecycle, following the plan.
-Do not mount/import the copied API, source its env, run its setup scripts or connect
-through its database URLs. Keep later chat/approval/provider work out of the M3 package.
-
-Keep SQL in db/sql/, psycopg async, exact dependencies, additive staged-RLS migrations
-and current readiness expectations. Only csa/graph/ imports LangGraph. All actors
-come from verified sessions; no trusted actor/role fields from browser input.
-
-Do not read secrets or touch production/n8n/Caddy/Cloudflare/webhooks/existing processes.
-Use synthetic fixtures and disposable databases. Inspect Next's installed version docs
-before frontend edits. Run focused auth/role tests, make lint test, frontend validation
-and disposable migration/reset checks if a schema change requires them. Read the latest
-full-suite/targeted/load evidence in PROGRESS; do not infer a clean full-suite pass
-from passing isolated benchmarks. Update
-this plan and PROGRESS with actual evidence, keeping live browser/deployment separate.
-Ask one focused question only when a decision blocks the implementation.
-```
+The obsolete M2/M3 kickoff prompt has been removed. Use the single current
+[M5 kickoff prompt](./2026-10-16-m4-closeout-m5-start.md#paste-into-the-new-session).
+The recovery handoff, phase plans and earlier implementation evidence remain reference
+material; they do not authorize resets, service replacements or new channel authority.

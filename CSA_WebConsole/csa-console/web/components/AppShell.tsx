@@ -13,6 +13,7 @@ import {
   Bot,
   Activity,
   BookOpen,
+  MessageSquare,
 } from "lucide-react";
 import { identity } from "@/lib/identity-api";
 import type { Me } from "@/lib/identity-contracts";
@@ -35,6 +36,7 @@ export function AppShell({
     { href: admin ? "/agents" : "/portal/agents", label: "Agents", icon: Bot },
     { href: admin ? "/activity" : "/portal/activity", label: "Runtime activity", icon: Activity },
     { href: admin ? "/knowledge-base" : "/portal/faq", label: "Knowledge base", icon: BookOpen },
+    { href: admin ? "/chat" : "/portal/chat", label: "Sandbox assistant", icon: MessageSquare },
     ...(admin
       ? [
           { href: "/settings/clients", label: "Tenants", icon: Building2 },

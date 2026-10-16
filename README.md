@@ -8,9 +8,13 @@ Docs: [Architecture](docs/ARCHITECTURE.md) · [Runbook](docs/RUNBOOK.md) ·
 
 ## Continuing development
 
-Start with the [latest runtime handoff](docs/handoffs/2026-10-16-runtime-stabilization.md)
+Start with the [M4 closeout and M5 kickoff, including a new-session prompt](docs/handoffs/2026-10-16-m4-closeout-m5-start.md)
 and [current progress and verification gaps](docs/PROGRESS.md), then the
-[console migration plan and next-session prompt](docs/handoffs/2026-10-15-console-source-migration-plan.md).
+[console migration plan](docs/handoffs/2026-10-15-console-source-migration-plan.md).
+M4 is functionally closed with an explicitly accepted laptop-dev performance exception;
+the full suite is not green. M5 is next, not implemented. The
+[runtime recovery handoff](docs/handoffs/2026-10-16-runtime-stabilization.md)
+retains incident history and environment safety details.
 Use [the console API contract](docs/CONSOLE_API.md) and the relevant
 [phase plan](docs/langgraph-rebuild/LG00_master_plan.md) before changing behavior.
 The [adopted frontend guide](CSA_WebConsole/csa-console/web/README.md) describes the

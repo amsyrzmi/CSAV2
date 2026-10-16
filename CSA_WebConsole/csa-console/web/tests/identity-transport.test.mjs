@@ -78,6 +78,27 @@ test("failed CSRF request prevents mutation and preserves status", async () => {
   }
 });
 
+test("mutation cancellation also bounds its preceding CSRF request", async () => {
+  const original = globalThis.fetch;
+  const controller = new AbortController();
+  let calls = 0;
+  globalThis.fetch = async (_path, init) => {
+    calls++;
+    assert.equal(init.signal, controller.signal);
+    return new Promise((_, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    });
+  };
+  try {
+    const pending = api("/console/v1/chat/conversations", {
+      method: "POST", body: "{}", signal: controller.signal,
+    });
+    controller.abort(new Error("synthetic request deadline"));
+    await assert.rejects(pending, /synthetic request deadline/);
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = original; }
+});
+
 test("legacy API and external destinations cannot enter adopted browser transport", async () => {
   await assert.rejects(api("/api/auth/me"), /Only the CSAV2/);
   await assert.rejects(
@@ -92,7 +113,6 @@ test("deferred UI and legacy API routes return 404 even with a session cookie", 
     "/projects/synthetic/terminal",
     "/portal/projects",
     "/portal/shared-projects/synthetic",
-    "/portal/chat",
     "/system",
     "/api/auth/me",
     "/invite/raw-token",
@@ -166,6 +186,34 @@ test("M3 KB screens are adopted but still require a session", () => {
       headers: { cookie: "csa_session=synthetic" },
     })).status, 200);
   }
+});
+
+test("M4 sandbox routes require sessions and retain the same request on uncertain retry", async () => {
+  for (const route of ["/chat", "/portal/chat"]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307);
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 200);
+  }
+  const original = globalThis.fetch;
+  const calls = [];
+  let sends = 0;
+  globalThis.fetch = async (path, init) => {
+    if (path.endsWith("/csrf")) return Response.json({ csrf_token: "synthetic-csrf" });
+    calls.push([path, init]);
+    if (++sends === 1) throw new TypeError("synthetic response loss after accept");
+    return Response.json({ id: 1, trace_id: "synthetic-trace", duplicate: true }, { status: 202 });
+  };
+  try {
+    const path = "/console/v1/chat/conversations/synthetic/turns?client_id=synthetic-tenant";
+    const body = { request_key: "synthetic-key", body: "Synthetic product question" };
+    await assert.rejects(post(path, body), /synthetic response loss/);
+    assert.equal((await post(path, body)).duplicate, true);
+    assert.equal(calls[0][0], calls[1][0]);
+    assert.equal(calls[0][1].body, calls[1][1].body);
+    assert.equal(calls[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
+    assert.equal(calls[1][1].headers.has("Authorization"), false);
+  } finally { globalThis.fetch = original; }
 });
 
 test("lost upstream response becomes a proxy error; explicit upload retry keeps the durable job", async () => {

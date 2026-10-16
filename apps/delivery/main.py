@@ -61,7 +61,7 @@ class DeliveryFailure(Exception):
 
 
 class DeliveryWorker:
-    """Drain Telegram outbox rows with retries, attempts, and stale-lease recovery."""
+    """Drain Telegram and private web outbox rows with durable retry/lease handling."""
 
     def __init__(
         self,
@@ -97,6 +97,8 @@ class DeliveryWorker:
         delivery = ClaimedDelivery.model_validate(row)
         started_at = time.monotonic()
         try:
+            if await self._deliver_web(delivery, started_at):
+                return True
             details, bot_token = await self._load_delivery(delivery)
             if details["channel"] != "telegram":
                 raise DeliveryFailure("unsupported_delivery_channel")
@@ -162,6 +164,40 @@ class DeliveryWorker:
                     None,
                     self._duration_ms(started_at),
                 ),
+                conn=conn,
+            )
+        return True
+
+    async def _deliver_web(self, delivery: ClaimedDelivery, started_at: float) -> bool:
+        async with tx(self._app_pool, str(delivery.client_id)) as conn:
+            details = await db.q.fetch_one(
+                "delivery/get_message.sql", (delivery.id, delivery.client_id), conn=conn
+            )
+            if details is None:
+                raise DeliveryFailure("delivery_message_unavailable")
+            if details["channel"] != "web":
+                return False
+            participant = await db.q.fetch_one(
+                "delivery/get_web_participant.sql",
+                (
+                    delivery.client_id,
+                    delivery.conversation_id,
+                    delivery.endpoint_id,
+                    delivery.message_id,
+                    delivery.trace_id,
+                ),
+                conn=conn,
+            )
+            if participant is None:
+                raise DeliveryFailure("web_participant_unavailable")
+            updated = await db.q.fetch_one(
+                "delivery/mark_delivered.sql", (200, delivery.id, delivery.client_id), conn=conn
+            )
+            if updated is None:
+                raise RuntimeError("claimed web delivery is no longer delivering")
+            await db.q.execute(
+                "delivery/insert_attempt.sql",
+                (delivery.id, delivery.attempts, 200, None, self._duration_ms(started_at)),
                 conn=conn,
             )
         return True

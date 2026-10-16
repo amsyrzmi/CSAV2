@@ -146,10 +146,32 @@ class IngressWorker:
     async def _complete_turn(self, item: ClaimedIngress, envelope: Envelope) -> None:
         if envelope.client_id != item.client_id or envelope.trace_id != item.trace_id:
             raise ValueError("ingress envelope tenant or trace does not match its queue row")
-        if envelope.channel != Channel.TELEGRAM:
+        if envelope.channel not in {Channel.TELEGRAM, Channel.WEB}:
             raise ValueError(f"no worker turn handler for channel {envelope.channel.value}")
         if envelope.conversation.id is None:
             raise ValueError("ingress envelope has no conversation id")
+        if envelope.channel == Channel.WEB:
+            if (
+                envelope.contact.channel != Channel.WEB
+                or envelope.conversation.channel_thread != str(envelope.conversation.id)
+            ):
+                raise ValueError("sandbox_channel_binding_invalid")
+            if envelope.callback or envelope.message.attachments or envelope.message.voice:
+                raise ValueError("sandbox_supports_text_only")
+            async with tx(self._app_pool, str(item.client_id)) as conn:
+                participant = await db.q.fetch_one(
+                    "worker/validate_web_ingress.sql",
+                    (
+                        item.client_id,
+                        envelope.conversation.id,
+                        envelope.contact.id,
+                        item.endpoint_id,
+                        item.trace_id,
+                    ),
+                    conn=conn,
+                )
+                if participant is None:
+                    raise ValueError("sandbox_ingress_participant_invalid")
 
         if self._coordinator is not None:
             await self._run_coordinator_turn(item, envelope)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
 
 import psycopg
 import pytest
@@ -14,7 +16,7 @@ from tests.conftest import (
     requires_docker,
 )
 
-EXPECTED_SCHEMA_VERSION = "0280"
+EXPECTED_SCHEMA_VERSION = "0290"
 LG01_SQL_VERSIONS = {"0100", "0110", "0120"}
 
 
@@ -102,3 +104,43 @@ def test_resolve_endpoint_owned_by_csa(migrated_dsn: str) -> None:
         ).fetchone()
     assert row is not None
     assert row[0] == "csa"
+
+
+@requires_docker
+def test_make_reset_only_disposable_container(pg_container: object, migrated_dsn: str) -> None:
+    """Exercise the real reset command with both clients pinned to this test container."""
+    from tests.conftest import REPO_ROOT
+
+    container_id = pg_container.get_wrapped_container().id  # type: ignore[attr-defined]
+    psql = ["docker", "exec", "-i", container_id, "psql", "-U", "csa", "-d", "csa"]
+    result = subprocess.run(
+        ["make", "-e", "db-reset"],
+        cwd=REPO_ROOT,
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": os.environ["HOME"],
+            "ENV": "ci",
+            "NO_LOCAL_ENV": "1",
+            "DEV_OWNER_DSN": migrated_dsn,
+            "DEV_APP_PASSWORD": CSA_APP_PASSWORD,
+            "DEV_RO_PASSWORD": CSA_RO_PASSWORD,
+            "PSQL": shlex.join(psql),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout
+    assert "Verified psql and Python target the same isolated local dev database." in result.stdout
+    with psycopg.connect(migrated_dsn) as conn:
+        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone() == (
+            EXPECTED_SCHEMA_VERSION,
+        )
+        rows = conn.execute(
+            "SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class "
+            "WHERE relname IN "
+            "('console_chat_participants','console_chat_threads','console_chat_turns')"
+        ).fetchall()
+        assert len(rows) == 3 and all(row[1] and not row[2] for row in rows)

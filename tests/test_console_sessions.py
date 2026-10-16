@@ -112,7 +112,8 @@ class SessionWorld:
 async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIterator[SessionWorld]:
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
         await owner.execute(
-            "TRUNCATE console_audit,console_tokens,console_sessions,console_memberships,"
+            "TRUNCATE console_chat_turns,console_chat_threads,console_chat_participants,"
+            "console_audit,console_tokens,console_sessions,console_memberships,"
             "console_login_attempts,console_users"
         )
         await owner.execute(

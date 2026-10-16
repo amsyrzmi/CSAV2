@@ -112,6 +112,24 @@ class SpokeRunner:
         def elapsed() -> int:
             return round((time.perf_counter() - started) * 1000)
 
+        if ctx.channel == "web" and not (
+            (task.agent == "kb_agent" and task.input.get("action") == "query")
+            or (
+                task.agent == "order_agent"
+                and task.input.get("action") in ("search_products", "product_detail")
+            )
+        ):
+            result = _error_result(
+                task,
+                ctx,
+                elapsed(),
+                "sandbox_action_forbidden",
+                "validation",
+                "Sandbox assistant permits only knowledge and product-information queries.",
+                hint="This sandbox cannot access customer records or perform business actions.",
+            )
+            return await self._finish(ctx, task, result, elapsed())
+
         agent = self._agents.get(task.agent)
         if agent is None:
             result = _error_result(

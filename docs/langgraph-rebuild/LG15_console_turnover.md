@@ -2,6 +2,10 @@
 
 ## Source-based revision (2026-10-15)
 
+Current entry point: [M4 closeout and M5 kickoff](../handoffs/2026-10-16-m4-closeout-m5-start.md).
+M4 is functionally closed by explicit user decision with a laptop-dev performance
+exception; M5 is next, not implemented. Failed latency checks remain open release debt.
+
 The console source is now available at `CSA_WebConsole/csa-console/`.
 The user approved replacing its backend logic, retaining the Next.js UI and using
 **one CSAV2 backend**, with project-management/terminal/Hermes/workroom features
@@ -16,6 +20,44 @@ implemented. Guided M1/M2 isolated-dev acceptance and agent-operated platform-ad
 browser checks pass; M3 tenant-role browser replay remains pending. Public deployment and
 runtime cutover have not been performed. See the implementation record and review evidence
 in the detailed plan; this phase as a whole is not complete.
+
+### M4 read-only sandbox continuation (2026-10-16)
+
+M4 is implemented under the user's explicit **Sandbox assistant** choice:
+KB/product-information reads only, private per-account/tenant conversations, durable
+web ingress/graph/outbox and atomic local availability, held-state retention, stable
+polling/history and audited archive. Customer records, business mutations, staff
+escalation, callbacks/confirmations, voice and attachments are rejected/unavailable.
+The original M4 confirmation requirement is intentionally narrowed, not bypassed.
+
+Migration 0290 has staged tenant RLS, dedicated sandbox contacts and disabled/token-free
+internal routing metadata. Explicit risk approval authorized its forward-only isolated-dev
+application and guarded service replacement, now complete without reset. Health/readiness
+pass; user-operated KB/archive acceptance is metadata-corroborated. An invoice clarification
+with no agent execution exposed a scope UX gap, fixed with **11 sandbox tests passing**.
+The worker-only replacement is live after explicit approval despite the updated full
+latency failures. Fresh user-operated refusal, sandbox KB and Telegram checks are
+metadata-corroborated; audited archive, history reload and tab offline/online recovery
+pass. Separately approved, privately registered synthetic-reader browser replay now
+confirms disabled creation, absent send/archive, empty owned list, other-owner history
+404 and cross-tenant 403; backend denial also passes on disposable fixtures.
+The reader's own pre-existing history is not live-replayed because the new account has
+none. No passwords, invite tokens or cookies were inspected.
+No public deployment, Telegram webhook or infrastructure change is authorized or claimed.
+Focused runtime/runner/Telegram/contract/migration validation **60 passed**, including
+disposable-only `make db-reset`. See [current progress](../PROGRESS.md) and
+[the API contract](../CONSOLE_API.md#private-sandbox-assistant-m4)
+for validation and guarded live acceptance. Pre-rollout full run:
+**674 passed / 1 TCP latency failure**, p95 **202.643 ms** against unchanged `<200 ms`.
+The isolated repeat passes, but that full run remains **not green**. The latest scope-fix
+full run is **674 passed / 2 latency failures**, ASGI **508.717 ms**, TCP **298.288 ms**
+against unchanged `<200 ms`; lint and disposable-only reset pass. Explicit risk approvals
+did not change the threshold. The user later explicitly deferred performance acceptance
+for functional M4 closeout on the reported laptop server; no cause is established.
+This is a local-dev exception, not green tests or a production waiver.
+Latest uninstrumented focused reader/ASGI/TCP selection: **2 passed / 1 failed**;
+ASGI p95 **93.234 ms** passes, TCP **261.451 ms** fails. Metadata-only profiling captured
+passing TCP runs, not a proven cause for the failures; runtime/thresholds remain unchanged.
 
 ### Runtime follow-up (2026-10-16)
 

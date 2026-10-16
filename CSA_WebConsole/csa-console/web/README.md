@@ -86,7 +86,7 @@ root boundaries was read before frontend edits. Direct commands `npm run lint`,
 `npm run typecheck`, `npm test` and `npm run build` remain available; use the isolated
 check to keep environment files outside Next's automatic environment loading.
 
-## M0–M3 adoption inventory
+## M0–M4 adoption inventory
 
 Active routes: `/login`, `/forgot-password`, `/invite`, `/change-password`, `/`,
 `/settings/clients`, `/settings/team`, `/portal` and `/portal/team` (tenant admin
@@ -127,8 +127,31 @@ HTTP integration tests cover those role gates. A queued job alone still proves n
 worker nor TEI health. Use synthetic files and
 [the API rollout/recovery contract](../../../docs/CONSOLE_API.md#isolated-dev-rollout-prerequisites).
 
+M4 adds `/chat` and `/portal/chat`, explicitly labelled **Sandbox assistant**.
+Conversations are private to the verified account and tenant, with a separate sandbox
+contact. Only knowledge and product-information reads are allowed by the runtime;
+customer records, business mutations, staff escalation, callbacks/confirmations,
+voice and attachments are unavailable. Reader memberships cannot create/send/archive.
+This is not a customer inbox or an external messaging channel.
+
+History polls every 2.5 seconds using stable turn IDs and older-page cursors.
+Queued/processing/awaiting-delivery, held, privately available, failed and no-reply states
+are distinct. Held drafts are not falsely displayed as delivered or automatically released.
+HTTP requests time out after 15 seconds; uncertain sends keep the same in-memory key/text
+for explicit retry, while reconnect only checks persisted history. A 90-second turn
+deadline is a delay warning, not a delivery claim. After reload or leaving the tenant,
+check persisted history before sending again. Archive is confirmed, audited hide and
+does not delete history, uploads or accepted work.
+See [the M4 API/safety contract](../../../docs/CONSOLE_API.md#private-sandbox-assistant-m4).
+Forward migration 0290 and guarded dev restarts were separately approved and completed.
+Functional acceptance, including reader controls/ownership, passes; the user accepted
+M4 closeout with a documented laptop-dev performance exception, not green latency tests.
+See [the closeout and M5 kickoff](../../../docs/handoffs/2026-10-16-m4-closeout-m5-start.md).
+Future migrations/restarts still require scoped approval; an isolated build is not
+live acceptance, and M5 must not expose owner-private sandbox history or held drafts.
+
 Projects, shared projects, PM boards/notes/planner/diagrams, terminal, Hermes and
-workroom are inaccessible. System/chat and other feature-specific management views await their later
+workroom are inaccessible. System and other feature-specific management views await their later
 CSAV2 integration slices. Their pages are non-importing 404 stubs and the proxy
 also rejects direct access, including the copied `/api/*` paths. Legacy components
 remain as inert reference source, excluded from the typed/lint adoption boundary.
@@ -137,7 +160,7 @@ The adopted build has no old API URL or n8n dependency.
 Reviewed source comprises `app/` (including non-importing deferred stubs),
 `components/console/`, `components/AppShell.tsx`, the auth-card/password/input
 controls, `lib/api.ts`, `lib/identity-*.ts`, `lib/server-identity.ts`,
-`lib/upstream.ts`, `proxy.ts`, the tool configuration, synthetic transport tests,
+`lib/upstream.ts`, `lib/sandbox-chat.ts`, `proxy.ts`, the tool configuration, synthetic transport/state tests,
 and the supplied brand mark. The build-check script lists its exact file boundary.
 The supplied `ui-guide/fourstacks-tokens.css` is imported before product styles and
 scoped through `fs-ui`; the light canvas, blue actions, control boundaries, explicit

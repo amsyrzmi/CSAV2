@@ -27,12 +27,14 @@ const files = [
   "lib/identity-api.ts",
   "lib/server-identity.ts",
   "lib/upstream.ts",
+  "lib/sandbox-chat.ts",
   "components/AppShell.tsx",
   "components/ui/auth-card.tsx",
   "components/ui/password-input.tsx",
   "components/ui/input.ts",
   "public/brand/fourstacks-mark.svg",
   "tests/identity-transport.test.mjs",
+  "tests/sandbox-chat.test.mjs",
 ];
 async function addTree(directory) {
   for (const entry of await readdir(path.join(source, directory), {
@@ -77,6 +79,7 @@ const environment = {
 };
 const commands = [
   ["identity transport tests", "../tests/identity-transport.test.mjs"],
+  ["sandbox state tests", "../tests/sandbox-chat.test.mjs"],
   ["lint", "eslint/bin/eslint.js", "."],
   ["typegen", "next/dist/bin/next", "typegen"],
   ["typecheck", "typescript/bin/tsc", "--noEmit"],

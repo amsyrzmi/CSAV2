@@ -42,6 +42,7 @@ export async function api<T = unknown>(
       await fetch("/console/v1/auth/csrf", {
         credentials: "same-origin",
         cache: "no-store",
+        signal: init.signal,
       }),
     );
     headers.set("X-CSRF-Token", csrf.csrf_token);

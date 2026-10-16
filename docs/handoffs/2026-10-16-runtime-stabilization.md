@@ -1,6 +1,7 @@
 # Runtime stabilization and dev-recovery handoff
 
-Updated 2026-10-16. Start here for the next session. This is not a production rollout.
+Updated 2026-10-16. Historical recovery/stabilization record; this is not a production rollout.
+For the next session start with [M4 closeout and M5 kickoff](./2026-10-16-m4-closeout-m5-start.md).
 
 ## Read first
 
@@ -14,12 +15,42 @@ Updated 2026-10-16. Start here for the next session. This is not a production ro
 
 ## Current state and safety
 
+- M4 continuation implemented the explicitly selected read-only **Sandbox assistant**
+  and rolled it out after explicit approval despite the disclosed latency failure; see
+  [progress](../PROGRESS.md) and [the M4 API contract](../CONSOLE_API.md).
+  Migration **0290** was applied forward-only to isolated dev, without reset, followed
+  by guarded gateway/worker/delivery/frontend replacement. Health/readiness pass.
+  User-operated KB and archive checks are metadata-corroborated. Invoice clarification
+  reproduced an empty `billing_invoice` / `ask_clarifying` plan with no agent execution.
+  The scope fix is now live after a separately approved worker-only replacement.
+  Fresh user-operated refusal, sandbox KB and Telegram checks are metadata-corroborated;
+  user-operated history reload and browser-tab offline/online recovery pass.
+  Reader-role controls/ownership browser replay now passes. With separate explicit
+  approval, the user privately registered one synthetic reader through the normal
+  invitation flow; no invite token, password or cookie was inspected. Creation is
+  disabled, send/archive absent, other-owner active/archived history 404 and cross-tenant
+  selection 403. The new account has no own history; existing-history reads remain
+  automated-test evidence. The shared browser is left signed in as Synthetic M4 Reader.
+  Pre-rollout full validation was **674 passed / 1 failed**: TCP ingress p95 **202.643 ms**
+  versus the unchanged `<200 ms` bound. An exact isolated repeat passed, but that does
+  not make that full run green. Post-scope-fix full rerun: **674 passed / 2 failed**,
+  ASGI p95 **508.717 ms**, TCP **298.288 ms**, unchanged `<200 ms`; lint and disposable
+  reset pass. The user explicitly approved worker replacement despite both failures.
+  No cause for the latency failures is established. The user subsequently accepted
+  functional M4 closeout with a **laptop-dev performance exception**, carrying performance
+  work forward rather than declaring tests green. M5 is next, a separate staff surface.
+  Latest uninstrumented focused run: **2 passed / 1 failed** (reader backend
+  denial and ASGI p95 **93.234 ms** pass; TCP **261.451 ms** fails). Metadata-only
+  profiling on disposable databases captured passing runs, not the failure cause.
+  Do not increase pools, relax durability, suppress tracing or lower thresholds without
+  measured evidence. See detailed metrics and fresh traces in progress.
+
 - Branch `main`; extensive pre-existing modified/untracked work. No commit was made.
   Preserve and integrate the working tree; do not reset, clean, stash or overwrite it.
-- At handoff time, the latest read-only listener check found **no gateway on 18081 or
-  frontend on 13000**. This continuation completed the explicitly approved dev rollout;
-  see the post-handoff update below and fresh evidence in `docs/PROGRESS.md`. Before any
-  future start/replacement, verify exact processes and ports and obtain approval.
+- The original no-listener state is superseded by the explicitly approved dev rollout.
+  At M4 closeout gateway readiness and frontend login return **200**, on loopback 18081
+  and 13000. Before any future start/replacement, verify exact processes/ports and obtain
+  approval; do not start duplicate workers.
 - Use only isolated dev `csa_dev_db`, Compose project `csa-dev`, loopback **5434**,
   database `csa`, roles `csa_app` / `csa_identity` / owner `csa`. Production is on
   **5433: do not connect**. Never change production tokens, n8n, Caddy, Cloudflare,
@@ -27,10 +58,15 @@ Updated 2026-10-16. Start here for the next session. This is not a production ro
 - Do not read/print environment files or attached snapshots, credentials, encrypted
   credentials or session cookies. Existing settings loaders may consume configuration
   internally after sanitized exact-target checks. No environment file was edited.
-- Do not reset persistent dev. No schema change is needed for the latest runtime fixes.
+- Do not reset persistent dev. The original stabilization fixes need no schema change;
+  the later M4 sandbox's separately approved forward-only 0290 is now applied.
   Reset verification already passed on disposable containers.
 - Preserve old upload files: do not invoke reconciliation or cleanup to remove them.
 - `ui-guide/` is excluded from Markdown cleanup and must remain untouched.
+- Current managed detached services: `m4-dev-gateway`, `m4-dev-delivery`,
+  `m4-dev-frontend`, `m4-dev-worker-scope-fix`. The old `m4-dev-worker` was stopped after
+  verifying its exact PID/UID/cwd/command marker. The replacement's job loop is responsive.
+  Verify known services before any future replacement; do not start duplicate workers.
 
 ## Important incident: clean rebuild, not restoration
 
@@ -141,12 +177,16 @@ guarded isolated-dev rollout and current live acceptance are now recorded below 
   one synthetic Telegram return-policy answer are verified in `docs/PROGRESS.md`. The
   user confirmed the expected seventeen-day reply. The committed-response-loss retry
   remains an offline regression, not a live injection.
-- For the next session, read the sources above and inspect the dirty worktree without
-  resetting, cleaning, stashing or overwriting it. Confirm whether the current dev
-  services are still running; if a restart is needed, request approval first. Do not
-  touch `ui-guide/`, old upload files, production, webhooks or infrastructure. Then
-  discuss remaining M3 role acceptance / M4 work with the user; do not promote dev or
-  change `ENV` to production.
+- Follow-up M3 acceptance also populated/resolved a synthetic gap in the authenticated
+  UI, verified cross-tenant gap isolation, and confirmed same-document version 1
+  superseded/version 2 active. Disposable race tests passed; a new worker-crash-after-
+  chunk-commit test verifies idempotent retry without duplicate chunks. The read-only
+  resolve denial is integration-test evidence, not a live reader browser replay. See
+  `docs/PROGRESS.md` and the console migration plan for details.
+- These rollout records predate the later M4 closeout. Continue from the
+  [current M5 handoff](./2026-10-16-m4-closeout-m5-start.md); preserve the dirty worktree,
+  verify existing services and ask before replacements. Never promote dev or change
+  `ENV` to production as an implicit continuation.
 
 ## Documentation cleanup performed
 
@@ -156,13 +196,8 @@ Image provenance/caveat was preserved in the dev runbook. Architecture/overview,
 guidance, phase plans, reports, runbooks, previous handoffs and all UI-guide content
 were retained. The attached read-only version snapshot was not changed.
 
-## Suggested next-session prompt
+## Current next-session prompt
 
-> Continue from docs/handoffs/2026-10-16-runtime-stabilization.md. Read AGENTS.md,
-> docs/PROGRESS.md, docs/CONSOLE_API.md and the relevant phase plans first. Preserve
-> the dirty worktree. Verify current guarded dev service state before taking action;
-> authenticated polling/upload and synthetic Telegram acceptance are recorded in
-> docs/PROGRESS.md. Ask approval before any restart/replacement. Do not read/print
-> environment files or secrets, reset persistent dev, purge old uploads, change
-> production/infrastructure or webhook settings, or claim the historical hang's cause
-> is proven. Keep ui-guide/ untouched.
+The older stabilization kickoff is superseded by the single
+[M5 kickoff prompt](./2026-10-16-m4-closeout-m5-start.md#paste-into-the-new-session).
+Recovery evidence and safety instructions above remain applicable.

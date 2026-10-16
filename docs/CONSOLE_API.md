@@ -1,6 +1,6 @@
 # Console API contract (v1)
 
-M0–M3 implementation, 2026-10-15: the retained Next.js presentation calls one CSAV2
+M0–M4 implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
 See the [migration plan](./handoffs/2026-10-15-console-source-migration-plan.md) and
 [frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
@@ -89,6 +89,120 @@ Machine access is separate: optional `CONSOLE_API_TOKEN` (≥32 chars), bearer a
 **reads only**, for allowlisted tenants. It cannot administer humans, onboard tenants, or
 mutate capabilities/KB. Mixed bearer/cookie domain requests are rejected. Never expose the
 machine token to browsers. Empty allowlist grants no tenant access.
+
+## Private sandbox assistant (M4)
+
+The `/chat` (platform) and `/portal/chat` (tenant) screens are **Sandbox assistant**,
+not a customer inbox. They use the verified session and tenant selector above.
+All chat reads additionally require a human session and exact conversation ownership;
+even another staff member or platform administrator cannot read someone else's sandbox.
+Machine principals are denied. Read-only members can read their existing history but
+cannot create, send or archive. Mutations use the existing role/Origin/CSRF checks.
+
+Migration **0290** adds participants, threads and turns with staged tenant RLS, not FORCE.
+Each `(client_id, user_id)` has its own newly created sandbox contact; the session user
+UUID is never treated as a contact UUID and existing customer contacts are not adopted.
+The existing queue requires endpoint routing metadata: the participant has a **disabled,
+internal-web-only** endpoint and a `channel='web'` metadata record with no tokens.
+No Telegram endpoint, credential, external webhook or infrastructure setting is changed.
+There is no external send in the web-delivery branch.
+
+All paths below use `/console/v1/chat` and the existing tenant-selection query:
+
+| Method/path | Body/query | Result |
+|---|---|---|
+| `POST /conversations` | `{request_key: UUID}` | 201 thread; same actor/tenant/key returns the same thread |
+| `GET /conversations` | `before=<next_cursor>` optional | Active owned threads, newest creation first, 20/page |
+| `POST /conversations/{id}/turns` | `{request_key: UUID, body: string}` | Atomic ingress/turn/audit commit, 202 `{id,trace_id,duplicate}` |
+| `GET /conversations/{id}/turns` | `before=<next_cursor>` optional | Owned turn history, newest ID first, 50/page |
+| `POST /conversations/{id}/archive` | `{}` | Idempotent 204, one `chat.archived` audit; no deletion or cancellation |
+
+Both list responses are `{items,next_cursor}`. Cursors are positive signed-bigint
+IDs; pass the returned cursor unchanged for older pages. Turn IDs, trace IDs and
+request keys remain stable across polling/retry. The browser refreshes loaded history
+pages every 2.5 seconds and merges no content from another tenant/conversation.
+Archived conversations leave the list but remain readable by their owner if the ID is
+known. Accepted work continues; new sends to an archived conversation return 409.
+An already accepted same-key replay still returns its original turn after archive.
+
+Text is nonblank, maximum **4000 input characters** and **32 KiB JSON request**.
+The server creates Envelope 3.0/`Channel.WEB`, all authority fields and a namespaced
+ingress key. Extra fields (including contact, channel, callback, voice and attachments)
+are rejected. Deterministic PII redaction happens before storing text in the envelope,
+turn or message; placeholders may expand to at most 8000 persisted characters.
+This is common-pattern redaction, not a promise to remove all personal information.
+The fingerprint distinguishes different original text even if redaction would match.
+Same-key changed text returns 409; no client-provided identity becomes authority.
+
+Only `kb_agent.query`, `order_agent.search_products` and `order_agent.product_detail`
+can execute for web turns. The shared spoke runner denies everything else **before
+agent execution**, including order status/customer history, KB administration,
+invoice/payment/marketplace, booking/subscription/ticket, escalation and business writes.
+Normal capability switches and grounding checks still apply to allowed queries.
+Fact-free account-domain plans return the fixed sandbox-scope refusal instead of
+asking for customer invoice/order/booking details, even when no agent task was planned.
+Business confirmations are refused too. General policy answers grounded in allowed
+KB facts remain available; this restriction does not change Telegram composition.
+Runtime metadata, audit, KB gap telemetry and sandbox-local message persistence are
+still written; “read-only” refers to business authority, not a read-only SQL transaction.
+Callbacks are rejected before pending actions are consumed. No business confirmation
+controls are exposed: this is the explicitly selected read-only narrowing of the M4 plan,
+not an unimplemented mutation shortcut.
+
+Turn statuses:
+
+- `queued` / `processing`: accepted, not delivered; retries preserve the turn.
+- `awaiting_delivery`: an outbox reply exists but is not yet locally available.
+- `held`: tenant policy held the draft. The private held draft/reason are retained,
+  not returned as a reply, not sent to staff, and not inserted into the expiring
+  customer-approval queue. Release controls require a separately designed later slice.
+- `available`: local web delivery and its attempt committed atomically. History returns
+  only delivered replies, keyed by message ID; polling does not consume or duplicate them.
+  This means private local availability, not a Telegram receipt or proof it was read.
+- `failed`: terminal ingress/delivery failure or runtime fail-safe. A delivered local
+  fail-safe may appear as text, but the turn remains failed; no staff follow-up is promised.
+- `no_reply`: the runtime intentionally finished without an outbound reply.
+
+Transient worker/delivery failures retain existing lease/retry/dead-letter behavior.
+Web delivery validates the contact/conversation/endpoint/trace/message binding and never
+decrypts Telegram credentials or calls an external transport. Telegram delivery remains
+at least once; the web local-availability transaction does not change that guarantee.
+Archive is audited hide, not retention-approved purge.
+
+The browser distinguishes a **15-second HTTP timeout** (potentially accepted; retain the
+same in-memory request key/text and explicitly retry) from a definite 4xx rejection and
+from the **90-second turn deadline** (show delayed status, never invent delivery/failure).
+Polling can reconcile an uncertain send by its request key. Reconnect only refreshes
+history; it never resends. If the page/tenant is left or reloaded, check persisted history
+before submitting again; the retained draft/key are not stored in browser storage.
+Voice, arbitrary attachments and confirmation actions remain unavailable. KB upload is
+a distinct action.
+
+The user explicitly approved guarded dev rollout despite the disclosed full-suite TCP
+latency failure. Forward-only **0290** and guarded gateway/worker/delivery/frontend
+replacement are complete on isolated dev; persistent dev was not reset. Health/readiness,
+login and anonymous-access gates pass. The scope-fix full rerun has **674 passed /
+2 latency failures**: ASGI p95 **508.717 ms**, TCP **298.288 ms**, unchanged `<200 ms`.
+Lint and disposable-only reset pass. After disclosure of both failures, the user
+explicitly approved worker-only replacement; the fix is running.
+User-operated refusal, sandbox KB and fresh Telegram checks are metadata-corroborated.
+Audited archive, history reload and browser-tab offline/online recovery also pass.
+With separate explicit approval, the user privately registered one synthetic read-only
+fixture through the normal invite flow. Agent-operated `/portal/chat` checks pass:
+creation disabled, send/archive controls absent, owned list 200/empty, another owner's
+active and archived histories 404, cross-tenant selection 403. No credentials, invitation
+tokens or cookies were inspected. Reading the reader's own pre-existing history remains
+test-proven rather than live-replayed because this new account has no history.
+The latest uninstrumented focused reader/latency run is **2 passed / 1 failed**:
+reader backend denial and ASGI pass (p95 **93.234 ms**); TCP fails (**261.451 ms**).
+Instrumented standalone passes do not supersede either this failure or the full run.
+The user subsequently accepted **functional M4 closeout with a laptop-dev performance
+exception**, carrying latency work forward. Laptop hardware is reported context, not a
+proven cause. Benchmarks and `<200 ms` remain unchanged; release performance acceptance
+is still required. M5 may begin as a separate staff surface, not expanded sandbox
+authority. See [the closeout and M5 prompt](./handoffs/2026-10-16-m4-closeout-m5-start.md).
+See [current evidence](./PROGRESS.md). Offline tests/build are not live-browser evidence.
+Future replacements still require scoped approval. No public rollout is implied.
 
 ## Implemented M1 lifecycle and onboarding
 

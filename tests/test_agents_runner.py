@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -93,6 +94,33 @@ def _task(agent: str = "t_agent", **inp: object) -> Task:
 async def test_ok() -> None:
     result = await _runner(_Agent(["ok"])).execute(_task(), _ctx())
     assert result.ok
+
+
+@pytest.mark.parametrize(
+    "name,action",
+    [("kb_agent", "query"), ("order_agent", "search_products"), ("order_agent", "product_detail")],
+)
+async def test_web_sandbox_allows_only_knowledge_and_product_reads(name: str, action: str) -> None:
+    agent = _Agent(["ok"])
+    agent.name = name
+    result = await _runner(agent).execute(
+        _task(name, n=1, action=action), replace(_ctx(), channel="web")
+    )
+    assert result.ok and agent.calls == 1
+
+
+@pytest.mark.parametrize("action", ["create_draft", "status", ["search_products"], None])
+async def test_web_denial_is_recorded_without_agent_execution(action: object) -> None:
+    agent = _Agent(["ok"])
+    agent.name = "order_agent"
+    recorder = AsyncMock()
+    runner = SpokeRunner({agent.name: agent}, recorder=recorder)
+    result = await runner.execute(
+        _task(agent.name, n=1, action=action), replace(_ctx(), channel="web")
+    )
+    assert result.error is not None and result.error.code == "sandbox_action_forbidden"
+    assert agent.calls == 0
+    recorder.record.assert_awaited_once()
 
 
 async def test_timeout_is_retryable_then_error() -> None:

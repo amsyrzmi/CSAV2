@@ -1,10 +1,13 @@
 # Progress
 
-Latest continuation: [runtime stabilization handoff](./handoffs/2026-10-16-runtime-stabilization.md).
-Conservative documentation cleanup removed only the stale dependency-version summary;
-dependency manifests remain authoritative, and UI-guide content was untouched.
+Latest continuation: [M4 closeout and M5 kickoff](./handoffs/2026-10-16-m4-closeout-m5-start.md).
+M4 is **functionally closed with an explicitly accepted laptop-dev performance exception**;
+M5 is next, not implemented. The full test suite remains **674 passed / 2 latency failures**,
+not green. See the closeout decision below. Documentation cleanup consolidates stale
+status/navigation and replaces the obsolete kickoff prompt; plans, historical evidence,
+user-owned review reports and UI-guide material remain preserved.
 
-## Active incident: unintended isolated-dev schema reset (2026-10-16)
+## Historical incident and recovery: unintended isolated-dev schema reset (2026-10-16)
 
 During runtime-stabilization validation, the assistant intended to run `make db-reset`
 against a newly created disposable Postgres container. It passed that container's
@@ -196,6 +199,233 @@ change remains pending, and the historical hang/500 causes are not proven.
   as detached loopback processes after the acceptance checks; the earlier offline check
   remains historical evidence.
 
+### M3 gap, version and crash-window follow-up (2026-10-16)
+
+- Through the authenticated KB UI, a deliberately unmatched synthetic KB-agent query
+  appeared under Unanswered questions and remained visible after the five-second polling
+  refresh. Selecting the M1 tenant showed zero gaps; returning to Local Telegram
+  Development showed the synthetic gap. Mark resolved removed it from the UI, and a
+  read-only exact-target dev query confirmed `resolved=true` and exactly one
+  `kb.gap_resolved` audit. Read-only resolution denial is verified by the disposable
+  console integration test, not by a separate live reader login.
+- Uploaded a new synthetic CSV twice under the same logical document title, changing
+  its answer. The UI showed version 1 superseded and version 2 active, each with one
+  `tei-384` chunk. Both source versions are retained; no reconciliation or cleanup ran.
+- Disposable-Postgres acceptance selection: **15 passed**, covering populated gap
+  resolution/audit, read-only role denial, tenant scoping, version progression,
+  publication rollback, commit-ack replay, deletion/embedding/read races, partial retry,
+  and abandoned-job requeue/single claim. An added
+  `test_worker_crash_after_document_commit_retries_without_duplicate_chunks` injects
+  worker failure after document/chunk commit but before job completion; retry reuses the
+  one document/chunk set, completes the same job on attempt 2, and retains one upload
+  batch, source record and audit. The strengthened lost-COMMIT-ack test also checks one
+  batch, file, job and audit after explicit same-key replay. Focused rerun: **2 passed**.
+- `make lint` passes (Ruff, formatting, Pyright and import-linter). These are isolated
+  synthetic tests; no persistent-dev reset or old-upload cleanup was performed. M3
+  tenant-role browser replay remains unverified; in particular, the read-only boundary
+  is test-proven, not browser-replayed with a live reader account.
+
+### M4 private read-only sandbox (2026-10-16; guarded dev acceptance)
+
+- Implemented the user's explicit **Sandbox assistant** scope: only KB query and product
+  search/detail may execute. Shared runner enforcement denies business writes, customer
+  history, invoice/payment/marketplace, booking/subscription/ticket and staff escalation
+  even when a model requests them. Callbacks are rejected before pending-action
+  consumption; confirmation controls intentionally remain unavailable.
+- Additive migration 0290 supplies staged tenant RLS and per-account/tenant dedicated
+  sandbox contacts. Human identity, tenant selection, CSRF/write role and exact owner
+  checks protect conversation creation, bounded redacted text ingress, stable cursor
+  history and audited archive. The queue's required routing metadata is internal-only,
+  disabled and token-free, without changing any existing Telegram endpoint.
+- Web worker/graph dispatch and local outbox delivery validate conversation/contact/
+  endpoint/trace/message binding. Availability and delivery attempt commit together;
+  no external transport or Telegram credential decryption occurs. Held drafts/reasons
+  remain private and held, without staff notification or customer-approval expiry release.
+  Fail-safe status remains failed and does not promise staff follow-up.
+- `/chat` and `/portal/chat` expose private, typed history and 2.5-second polling with
+  older-page cursors, queued/processing/awaiting-delivery/held/available/failed/no-reply
+  labels, 15-second HTTP deadlines versus 90-second turn delay warnings, explicit
+  retained-key retry and reconnect without resend. Archive is confirmed hide, not purge.
+  In-memory draft/key retention does not survive leaving the tenant or reloading:
+  inspect persisted history before submitting again. Voice/files are unavailable.
+- Runtime/runner/Telegram/contract/migration selection: **60 passed**. It includes real
+  synthetic KB retrieval through the graph to a private reply, post-outbox-commit worker
+  crash/reclaim without duplicate messages, local-delivery rollback/retry with no partial
+  visibility, role/tenant/user/contact denial, replay conflict, archive and the actual
+  `make db-reset` command pinned to a disposable container with fingerprint checks.
+  The reset reached 0290 and verified all three tables have RLS enabled without FORCE.
+- Final sandbox-focused rerun: **10 passed**, including expanded-redaction text bounds,
+  signed-bigint cursor rejection, stronger routing/trace bindings and proof that only the
+  fixed system refusal, not arbitrary template replies, bypasses model grounding.
+  This selection overlaps the 60-test run; do not add the counts.
+- Final isolated frontend checks pass: **11 transport/routing/cancellation tests plus
+  2 state/deadline tests**, ESLint, route type generation, TypeScript and production
+  webpack build. Traces exclude environment files, backups, nested Git and the legacy API.
+  Final `make lint` passed (Ruff, formatting, Pyright and import-linter).
+- Initial full run: **671 passed / 4 failed**. The new migration exposed the gateway's
+  separately pinned expected schema version still at 0280. Updating the readiness
+  constant/docstring to 0290 fixes that contract without changing thresholds or SQL.
+  The health/load rerun then had **7 passed / 1 TCP latency failure**: ASGI
+  **109.200 ms**, TCP **243.150 ms** against the unchanged `<200 ms` threshold.
+  Exact standalone TCP repeat passed at **110.980 ms** (scheduled **111.606 ms**),
+  with 150 completed turns and pending deliveries.
+- Pre-rollout post-readiness-fix `NO_LOCAL_ENV=1 ENV=ci PYTEST_ADDOPTS=-s make lint test`:
+  **674 passed / 1 failed**, 134 warnings, 1282.80 seconds. The remaining failure is
+  `test_real_ingress_50rps_and_durable_queue[tcp]`: ack p95 **202.643 ms** and
+  scheduled ack p95 **203.795 ms**, exceeding the unchanged 200 ms acceptance bound.
+  ASGI passes at **79.734 / 81.872 ms** ack/scheduled; each transport completes
+  150 turns with 150 pending deliveries. The separate simultaneous worker-capacity
+  test passes with 150 unique replies, and graph-only p95 is **103.657 ms**.
+  Full acceptance is **not green**. The standalone pass does not replace the full-run
+  failure; no cause or M4-induced/non-M4-induced performance claim is established.
+  No threshold was waived by the subsequent explicit guarded-dev risk approval.
+- The user explicitly chose `approve_dev_with_known_failure`. Forward-only 0290 was
+  applied on exact-target-guarded `127.0.0.1:5434/csa` with the existing migration runner;
+  only that missing migration was applied. No reset, role-password provisioning or
+  secret inspection. Guarded gateway/worker/delivery/frontend replacements are running.
+  Gateway health/readiness and frontend login return 200; anonymous chat API is 401 and
+  anonymous `/chat` redirects 307.
+- Browser integration returned no connected client, including after the user reconnected.
+  Acceptance below is **user-operated**, not an agent-operated browser replay.
+  The user confirmed the seventeen-day KB answer. Trace
+  `ba22451a-06f2-40b6-851b-f0a990bf6529` completed with one successful KB run, retrieved
+  fact IDs and one delivered web reply. The dedicated sandbox contact has zero orders.
+  Conversation `f10ac68b-9050-4cc8-9eed-e0a18313cfc1` is archived, both turns retained,
+  with one `chat.created`, two `chat.queued` and one `chat.archived` audit records.
+  Disappearance from the active list is intended hide behavior, not deletion.
+- The invoice request did **not** pass refusal acceptance. Trace
+  `82e937d1-d108-4975-8460-e6e2aa6ff79c` classified `billing_invoice`, planned no tasks
+  with `ask_clarifying`, ran no agent and delivered a misleading request for invoice/date
+  details. The compose guard only caught denied executions/escalations. The follow-up
+  fixes this fact-free account-intent path and refuses confirmation plans before model
+  composition; general KB-grounded policy answers remain allowed. Sandbox regression
+  selection **11 passed**, with a final strengthened provider-noninvocation check
+  **1 passed** (overlap). Full rerun and approved worker replacement are recorded below.
+- The user initially reported receiving the seventeen-day Telegram answer, but then-current
+  stored
+  Telegram traces (`62f8b7bd-08f3-44ee-9daa-733ab8e4858f`, KB success/HTTP 200, and
+  `16c43902-56b4-4a0b-99bf-e9289a8dabde`, HTTP 200) predate the M4 rollout.
+  Do not treat those or the user's receipt alone as fresh post-rollout corroboration.
+  Fresh Telegram/fixed refusal/reconnect were therefore still unverified at that point.
+- Post-scope-fix `NO_LOCAL_ENV=1 ENV=ci PYTEST_ADDOPTS=-s make lint test`:
+  **674 passed / 2 failed**, 134 warnings, 2113.83 seconds. Ruff, formatting, Pyright,
+  import boundaries and disposable-only `make db-reset`/0290 acceptance pass.
+  Both unchanged ingress benchmarks fail: ASGI ack p95 **508.717 ms** (scheduled
+  **763.499 ms**) and TCP **298.288 ms** (scheduled **299.260 ms**) against `<200 ms`.
+  Both complete 150 turns with 150 pending deliveries. This adds an ASGI failure to
+  the previously disclosed TCP failure. No cause or M4 causality is established.
+  Full acceptance remains **not green**; no threshold was changed.
+- The updated two-failure evidence was explicitly disclosed before replacement.
+  The user chose **Approve guarded dev worker replacement despite both latency failures**.
+  Verified old worker PID 1632176/UID/exact cwd/guarded command marker, stopped only its
+  managed service, and started `m4-dev-worker-scope-fix` with clean environment and
+  exact dev host/port/database/role checks, rejecting `hostaddr`/service overrides.
+  Startup confirmed the old PID absent; the replacement's job loop started and
+  completed scheduled jobs at 16:40:52 UTC. Other services remained running unchanged;
+  gateway readiness and frontend login remain 200.
+- Fresh **user-operated**, read-only metadata-corroborated acceptance after replacement:
+  - Invoice trace `f7b89539-d90f-411d-b030-0bdbd5b7b627` at 16:44:23 UTC reproduces
+    `billing_invoice` / `ask_clarifying`, zero agent runs, and delivers the **exact**
+    fixed sandbox-scope refusal. No invoice details are requested; sandbox orders remain 0.
+  - Web KB trace `77fc0fee-1710-4631-89b4-286db125e085` at 16:45:23 UTC completes
+    one successful `kb_agent` run and one delivered private reply. The user confirms
+    the seventeen-day answer remains available.
+  - Fresh Telegram trace `de8b3b0c-27ed-4297-8c8d-2f5bdb14445f` at 16:46:17 UTC
+    completes one successful KB run and one HTTP-200 delivered reply; the user confirms
+    receipt of the seventeen-day answer. This supersedes the earlier stale receipt.
+  - User refreshes/reopens the new conversation: both questions/replies remain exactly
+    once. User then tests browser-tab Network Offline -> No throttling: polling recovers,
+    with the same history and no duplicate replies. These are user-operated checks,
+    not agent-operated browser evidence.
+- At that point reader-role browser replay remained unverified because the user had no
+  reader account. The separately approved follow-up below closes controls/ownership
+  browser evidence; performance acceptance remains open.
+- Existing upload files, user-owned dirty changes, `ui-guide/` and the approved
+  UI-guide deletion remain preserved. No production, infrastructure or webhook changes.
+  M5 has not started. See [the M4 API contract](./CONSOLE_API.md#private-sandbox-assistant-m4).
+
+### M4 reader replay and bounded latency investigation (2026-10-16)
+
+- The shared browser became available. Agent-operated authenticated platform view of
+  conversation `1e2140a9-4274-4fc5-a0d7-f98a50e5d19c` directly shows both the exact
+  sandbox invoice refusal and seventeen-day KB answer, each once.
+- The user explicitly approved **one synthetic dev-only account**, registering privately
+  through the normal invitation flow. The prepared fixture was Synthetic M4 Reader,
+  `m4-reader-20261016@example.test`, `read_only`, Local Telegram Development. The user
+  created/accepted the invitation and signed in without sharing the password or link;
+  the assistant did not inspect invitation tokens, passwords or cookies. No existing
+  account's role was changed.
+- Agent-operated reader `/portal/chat` checks: read-only status visible; New sandbox
+  conversation disabled; Send to sandbox and Archive conversation controls absent.
+  Same-origin authenticated GETs: own list **200**, **0** conversations; admin-owned
+  active history `1e2140a9-4274-4fc5-a0d7-f98a50e5d19c` and archived history
+  `f10ac68b-9050-4cc8-9eed-e0a18313cfc1` both **404**; selecting M1 tenant is **403**.
+  No write was attempted through the browser or CSRF bypass. Reader write denial is
+  separately reconfirmed by the real disposable backend test. The new reader has no
+  own existing history, so that specific read path remains test-proven, not browser-replayed.
+  Browser left signed in as Synthetic M4 Reader; no account cleanup/revocation performed.
+- Bounded metadata-only diagnostics used disposable containers, synthetic fixtures and
+  temporary session-local instrumentation; no live-dev load, production connection,
+  persistent reset, service replacement or infrastructure change. The original
+  150-request/50-rps/<200-ms assertions and queue/delivery-count checks were unchanged.
+  Results, recorded in execution order (overlapping selections, not additive coverage):
+  1. Instrumented ASGI/TCP selection: **1 passed / 1 failed**. ASGI ack/scheduled p95
+     **132.946 / 134.701 ms**; TCP **460.769 / 461.766 ms**. Each completes 150 turns
+     with 150 pending deliveries. ASGI pool wait p95 **0.114 ms**, event-loop lag
+     **8.096 ms**, max 9 active receives. This passing ASGI sample does not profile
+     the earlier full-run failure.
+  2. TCP-only wrapper run: **1 passed**, ack/scheduled **141.116 / 143.003 ms**.
+     Its shutdown-time profiling report was not produced; do not infer internal
+     stage timings from that run.
+  3. TCP-only profile emitted before shutdown: **1 passed**, ack/scheduled
+     **118.645 / 118.939 ms**. Server receive p95 **68.684 ms**, pool wait
+     **0.113 ms**, event-loop lag **6.477 ms**, max 5 active receives. Five named ingress
+     query families each run 150 times; contact-resolution p95 **15.729 ms**. Again,
+     this captures a passing run, not the TCP failure.
+  4. Final **uninstrumented** reader-backend + original ASGI/TCP selection:
+     **2 passed / 1 failed**, 3 warnings, 189.08 seconds. Reader denial passes;
+     ASGI ack/scheduled **93.234 / 102.600 ms**; TCP **261.451 / 262.471 ms** fails
+     unchanged `<200 ms`. Both transports complete 150 turns with 150 pending deliveries.
+- Full-run acceptance remains **674 passed / 2 latency failures** as recorded above.
+  The isolated passes are not a replacement for it. Shared-host CPU pressure was
+  observable during investigation, but neither that nor any specific SQL/transport
+  bottleneck is established as the cause. No speculative pool, tracing, transaction,
+  durability or threshold changes were made. Further investigation must capture a
+  failing request path with correlated stages/resource evidence, not rerun until green.
+- Temporary profiling source/output/cache files were removed after recording the
+  metadata above. Existing dirty changes (including later unrelated review files),
+  old uploads, the UI-guide deletion and `ui-guide/` remain untouched. Readiness is 200.
+  At that stage latency acceptance remained the M4 blocker; the subsequent explicit
+  functional closeout/deferral below is the current decision.
+
+### M4 functional closeout decision and M5 handoff (2026-10-16)
+
+- The user reports that this server is a **laptop** and explicitly selected
+  **Close functional M4 with documented laptop-dev performance exception; carry latency
+  work forward**. The narrowed read-only Sandbox assistant milestone is functionally
+  closed, with the implementation and acceptance limits above retained.
+- This is an accepted local-development performance exception, **not** a latency fix,
+  green full-suite result, production-readiness claim or changed acceptance threshold.
+  Laptop/resource constraints are plausible context, not a proven failure cause.
+  Full **674 passed / 2 latency failures** and final focused **2 passed / 1 failed**
+  remain the actual test evidence. Carry failing-path profiling and representative-host
+  validation into release acceptance (M7/M8); do not silently waive it for production.
+- User explicitly chose conservative Markdown consolidation: remove stale active status
+  and superseded kickoff directions, preserve plans/history/reviews/UI-guide. No Markdown
+  files were identified as safe redundant deletions. Retained the old recovery handoff
+  as incident history and updated it to point forward; replaced the old M2/M3 kickoff
+  prompt with a canonical M5 handoff link.
+- [M4 closeout / M5 kickoff](./handoffs/2026-10-16-m4-closeout-m5-start.md) contains the
+  acceptance matrix, exact remaining performance debt, environment/service/fixture
+  state, M5 authority question, implementation order and ready-to-paste session prompt.
+  M5 must remain separate from owner-private sandbox history/holds; its original
+  customer-web approval requirement needs an explicit authority/scope decision.
+- This closeout changes documentation only. No new code/test/dependency/schema/runtime
+  change, restart, reset, upload cleanup or production/infrastructure/webhook change.
+  Closeout readiness **200**, frontend login **200**, `.env.local` remains ignored.
+  No new test run was needed for documentation-only changes; prior failures are preserved.
+  Dirty worktree, untracked reviews and UI-guide state remain intact. No commit made.
+
 | Phase | Status | Evidence |
 |---|---|---|
 | LG01 Foundation | Done | lint/tests green |
@@ -215,7 +445,7 @@ change remains pending, and the historical hang/500 causes are not proven.
 | Langfuse Observability Integration | Done: Direct async batch ingestion (`LangfuseSink`), redaction & privacy preservation, integrated into worker `PostgresEventSink`, initial activation trace verified live on `jp.cloud.langfuse.com` | `tests/test_langfuse.py` (4 passed), `csa/core/langfuse.py`, `csa/graph/events.py`, `apps/worker/main.py` |
 | KB console upload ingestion | Done (gated by `KB_INGEST_ENABLED`): console writes ≤3 PDF/DOCX/CSV files to `KB_UPLOAD_ROOT/<client_id>/` + `kb_ingest_jobs` row; worker validates, confines paths, extracts, chunks, embeds (strict TEI, no silent fallback), stores versioned/deduplicated docs, records per-file `meta.results`, and retries with backoff. Model-filtered search. Also fixed LG13 regressions: `EcommerceAgent.ACTION_RISK` class attribute, stale capabilities test, JEV answers fixture for new agents, and `job_runs` (owner-written ops log) excluded from the RLS set-equality test. Full suite: 442 passed; the 6 failures were rerun in isolation and pass (the 3 latency thresholds failed only under host load). | `tests/test_kb_ingest.py` (25 passed), `tests/test_kb_agent.py` (7 passed), live dev TEI e5-small semantic check; not tested: real console writing jobs, worker loop running live in dev |
 | LG13 Waves 2/3 preparation | Implemented provider-neutral slice, **not live integrations**: disabled-by-default booking/subscription agents provide contact-scoped local reads and unexecuted requests; staff-only email/research/invoice-draft libraries, strict inputs and Decimal totals. Immutable preparation ledger with RLS, contact-owner checks, actor/trace and concurrent idempotency. No external calls, executable approvals or billing/event/invoice mutations. | `csa/agents/staged/`, migration `0260_staged_agent_requests.sql`, `tests/test_staged_agents.py` (51 passed); `docs/handoffs/2026-10-15-wave23-preparation.md`. |
-| LG15 Console turnover (n8n → CSA) | M0–M3 implemented (2026-10-15). Persistent isolated dev at 0280 without reset; guided M1/M2 and agent-operated platform-admin M3 browser checks pass. M3 tenant-admin/reader browser replay, M4–M8 and public deployment remain pending. | Migrations `0270_console_identity.sql`, `0280_console_kb_uploads.sql`, `csa/console/`, typed frontend/OpenAPI; M3 focused 57 passed plus final search/contract 3 passed (overlap), rollout regression/launcher selection 34 passed, Python lint, isolated frontend build/types/8 transport checks and disposable-only `make db-reset` pass. Live three-format ingestion through loopback TEI, downloads, duplicate/deletion/reconciliation and audit verified. Full suite: 607 passed / 2 ingress latency failures; full validation is not green. |
+| LG15 Console turnover (n8n → CSA) | M0–M3 implemented; M4 functionally closed with explicitly accepted laptop-dev performance exception, guarded dev at 0290 without reset. M5 next; M3 tenant-role replay, M5–M8 and public deployment pending. | Migrations 0270–0290, `csa/console/`, typed frontend/OpenAPI; see M4 closeout/handoff. Latest full: 674 passed / 2 latency failures (ASGI 508.717 ms, TCP 298.288 ms, unchanged <200 ms). Final focused: 2 passed / 1 TCP failure (261.451 ms). Functional and reader-controls checks pass; performance debt carried forward, not a green full suite. |
 | LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md` |
 
 Console M0–M1 review/verification (2026-10-15):
