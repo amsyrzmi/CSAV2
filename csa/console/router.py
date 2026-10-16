@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path as FilePath
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
 from csa.agents.base import AgentContext
 from csa.agents.kb import KbAgent, KbInput
-from csa.console import capabilities, timeline
+from csa.console import agents, capabilities, runtime, timeline
 from csa.console.access import authenticate, tenant
 from csa.console.capabilities import CapabilityOut, CapabilityToggleIn, SpecializedTabInfo
 from csa.console.contracts import ConsoleActor, Role
+from csa.console.kb_contracts import JobOut, public_job
+from csa.console.kb_uploads import audit as kb_audit
+from csa.console.kb_uploads import build_upload_router
+from csa.console.kb_uploads import writer as kb_writer
 from csa.contracts.callbacks import PendingActionStore
+from csa.contracts.registry import CapabilityRegistry
 from csa.core import db
 from csa.core.tenancy import tx
 
@@ -74,22 +80,6 @@ class KbDocumentOut(BaseModel):
     updated_at: datetime
 
 
-class KbIngestJobOut(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: UUID
-    source: str
-    status: str
-    files: list[Any]
-    meta: dict[str, Any]
-    requested_by: str | None
-    attempts: int
-    error: str | None
-    created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
-
-
 class KbGapOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -132,12 +122,70 @@ def pool(request: Request) -> AsyncConnectionPool:
 
 
 def build_router(
-    token: str | None = None, *, machine_client_ids: frozenset[UUID] = frozenset()
+    token: str | None = None,
+    *,
+    machine_client_ids: frozenset[UUID] = frozenset(),
+    kb_model: str | None = None,
+    kb_tei_configured: bool = False,
+    kb_upload_root: FilePath | None = None,
 ) -> APIRouter:
     async def auth(request: Request) -> None:
         await authenticate(request, token, machine_client_ids)
 
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(auth)])
+    router.include_router(build_upload_router(kb_upload_root))
+
+    async def kb_enabled(
+        client_id: Annotated[UUID, Depends(tenant)],
+        db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
+    ) -> None:
+        if not await CapabilityRegistry(db_pool).allows_execution(client_id, "kb_agent"):
+            raise HTTPException(409, "KB capability is missing or disabled")
+
+    @router.get("/agents", response_model=list[agents.AgentOut])
+    async def agent_catalog(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
+    ) -> list[agents.AgentOut]:
+        actor = request.state.console_actor
+        return await agents.list_agents(
+            db_pool,
+            client_id,
+            role=actor.role if isinstance(actor, ConsoleActor) else None,
+            kb_model=kb_model,
+            kb_tei_configured=kb_tei_configured,
+        )
+
+    @router.get("/overview", response_model=runtime.OverviewOut)
+    async def runtime_overview(
+        client_id: Annotated[UUID, Depends(tenant)],
+        db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
+    ) -> runtime.OverviewOut:
+        return await runtime.overview(db_pool, client_id)
+
+    @router.get("/runs", response_model=runtime.RunPage)
+    async def runs(
+        client_id: Annotated[UUID, Depends(tenant)],
+        db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
+        before_id: Annotated[int | None, Query(ge=1, le=runtime.MAX_RUN_ID)] = None,
+        agent: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+        limit: Annotated[int, Query(ge=1, le=timeline.MAX_PAGE)] = 50,
+    ) -> runtime.RunPage:
+        return await runtime.list_runs(
+            db_pool, client_id, before_id=before_id, agent=agent, limit=limit
+        )
+
+    @router.get("/runs/{run_id}", response_model=runtime.RunOut)
+    async def run_detail(
+        run_id: Annotated[int, Path(ge=1, le=runtime.MAX_RUN_ID)],
+        client_id: Annotated[UUID, Depends(tenant)],
+        db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
+    ) -> runtime.RunOut:
+        row = await runtime.get_run(db_pool, client_id, run_id)
+        if row is None:
+            raise HTTPException(404, "run not found")
+        return row
 
     # Timeline & Traces
     @router.get("/traces", response_model=list[TraceOut])
@@ -199,10 +247,34 @@ def build_router(
 
     @router.get("/tabs/specialized", response_model=list[SpecializedTabInfo])
     async def get_specialized_tabs(
+        request: Request,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
     ) -> list[SpecializedTabInfo]:
-        return await capabilities.get_specialized_tabs(db_pool, client_id)
+        catalog = await agent_catalog(request, client_id, db_pool)
+        return [
+            SpecializedTabInfo(
+                tab_id={
+                    "kb_agent": "knowledge_base",
+                    "invoice_agent": "invoices",
+                    "booking_agent": "bookings",
+                    "ecommerce_agent": "ecommerce",
+                    "lhdn_agent": "lhdn_myinvois",
+                    "subscription_agent": "subscriptions",
+                }[agent.name],
+                title=agent.title,
+                description=agent.detail,
+                agent_name=agent.name,
+                is_subscribed=bool(agent.capability and agent.capability.is_enabled),
+                is_active=bool(agent.capability and agent.capability.active),
+                implementation=agent.implementation,
+                readiness=agent.readiness,
+                can_view=agent.can_view_specialized,
+                can_manage=agent.can_toggle,
+            )
+            for agent in catalog
+            if agent.specialized
+        ]
 
     # Knowledge Base
     @router.get("/kb/documents", response_model=list[KbDocumentOut])
@@ -218,7 +290,7 @@ def build_router(
                 conn=conn,
             )
 
-    @router.post("/kb/documents")
+    @router.post("/kb/documents", dependencies=[Depends(kb_enabled)])
     async def ingest_kb_document(
         doc: KbDocumentIn,
         client_id: Annotated[UUID, Depends(tenant)],
@@ -251,52 +323,27 @@ def build_router(
             )
         return {"status": "ok", "facts": [f.text for f in res.data.facts]}
 
-    @router.delete("/kb/documents/{document_id}")
-    async def delete_kb_document(
-        document_id: UUID,
-        client_id: Annotated[UUID, Depends(tenant)],
-        db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
-    ) -> dict[str, Any]:
-        agent = KbAgent()
-        ctx = AgentContext(
-            client_id=client_id,
-            contact_id=uuid4(),
-            trace_id=uuid4(),
-            conversation_id=None,
-            idempotency_key=f"kb_del_{uuid4().hex[:12]}",
-            channel="web_console",
-            pool=db_pool,
-            pending_actions=PendingActionStore(db_pool),
-        )
-        inp = KbInput(action="delete", document_id=document_id)
-        res = await agent.run(ctx, inp)
-        if not res.ok:
-            raise HTTPException(
-                status_code=404,
-                detail=res.error.message if res.error else "document not found",
-            )
-        return {"status": "ok", "deleted_id": str(document_id)}
-
-    @router.get("/kb/ingest-jobs", response_model=list[KbIngestJobOut])
+    @router.get("/kb/ingest-jobs", response_model=list[JobOut])
     async def list_kb_ingest_jobs(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    ) -> list[dict[str, Any]]:
+    ) -> list[JobOut]:
         async with tx(db_pool, str(client_id)) as conn:
-            return await db.q.fetch_all("kb/list_ingest_jobs.sql", (client_id, limit), conn=conn)
+            rows = await db.q.fetch_all("kb/list_ingest_jobs.sql", (client_id, limit), conn=conn)
+        return [public_job(row) for row in rows]
 
-    @router.get("/kb/ingest-jobs/{job_id}", response_model=KbIngestJobOut)
+    @router.get("/kb/ingest-jobs/{job_id}", response_model=JobOut)
     async def get_kb_ingest_job(
         job_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
-    ) -> dict[str, Any]:
+    ) -> JobOut:
         async with tx(db_pool, str(client_id)) as conn:
             row = await db.q.fetch_one("kb/get_ingest_job.sql", (client_id, job_id), conn=conn)
         if row is None:
             raise HTTPException(status_code=404, detail="ingest job not found")
-        return row
+        return public_job(row)
 
     @router.get("/kb/gaps", response_model=list[KbGapOut])
     async def list_kb_gaps(
@@ -307,34 +354,22 @@ def build_router(
         async with tx(db_pool, str(client_id)) as conn:
             return await db.q.fetch_all(
                 "kb/list_gaps.sql",
-                (client_id, limit),
+                (client_id, False, False, limit),
                 conn=conn,
             )
 
-    @router.post("/kb/gaps/{gap_id}/resolve")
+    @router.post("/kb/gaps/{gap_id}/resolve", dependencies=[Depends(kb_enabled)])
     async def resolve_kb_gap(
         gap_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
+        actor: Annotated[ConsoleActor, Depends(kb_writer)],
     ) -> dict[str, Any]:
-        agent = KbAgent()
-        ctx = AgentContext(
-            client_id=client_id,
-            contact_id=uuid4(),
-            trace_id=uuid4(),
-            conversation_id=None,
-            idempotency_key=f"kb_gap_res_{uuid4().hex[:12]}",
-            channel="web_console",
-            pool=db_pool,
-            pending_actions=PendingActionStore(db_pool),
-        )
-        inp = KbInput(action="resolve_gap", gap_id=gap_id)
-        res = await agent.run(ctx, inp)
-        if not res.ok:
-            raise HTTPException(
-                status_code=404,
-                detail=res.error.message if res.error else "gap not found",
-            )
+        async with tx(db_pool, str(client_id)) as conn:
+            row = await db.q.fetch_one("kb/resolve_gap.sql", (client_id, gap_id), conn=conn)
+            if row is None:
+                raise HTTPException(404, "gap not found")
+            await kb_audit(conn, actor, client_id, "kb.gap_resolved", str(gap_id))
         return {"status": "ok", "resolved_id": str(gap_id)}
 
     # Invoices

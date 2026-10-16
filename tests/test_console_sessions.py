@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, LiteralString
 
 import httpx
@@ -34,12 +36,18 @@ MACHINE_TOKEN = "synthetic-read-only-machine-token-123456"
 
 class SessionWorld:
     def __init__(
-        self, owner_dsn: str, service: IdentityService, pool: AsyncConnectionPool, app: FastAPI
+        self,
+        owner_dsn: str,
+        service: IdentityService,
+        pool: AsyncConnectionPool,
+        app: FastAPI,
+        upload_root: Path,
     ) -> None:
         self.owner_dsn = owner_dsn
         self.service = service
         self.pool = pool
         self.app = app
+        self.upload_root = upload_root
         self.browsers: list[httpx.AsyncClient] = []
         self.admin: httpx.AsyncClient
         self.admin_id: str
@@ -101,7 +109,7 @@ class SessionWorld:
 
 
 @pytest.fixture
-async def sessions(migrated_dsn: str, app_dsn: str) -> AsyncIterator[SessionWorld]:
+async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIterator[SessionWorld]:
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
         await owner.execute(
             "TRUNCATE console_audit,console_tokens,console_sessions,console_memberships,"
@@ -125,7 +133,7 @@ async def sessions(migrated_dsn: str, app_dsn: str) -> AsyncIterator[SessionWorl
     app.state.pool = domain_pool
     app.include_router(build_identity_router())
     app.include_router(build_onboarding_router())
-    world = SessionWorld(migrated_dsn, service, domain_pool, app)
+    world = SessionWorld(migrated_dsn, service, domain_pool, app, tmp_path)
     try:
         await service.check_ready()
         world.admin_id = str(
@@ -159,7 +167,11 @@ async def sessions(migrated_dsn: str, app_dsn: str) -> AsyncIterator[SessionWorl
             assert created.status_code == 201, created.text
             world.tenants.append(created.json()["id"])
         app.include_router(
-            build_router(MACHINE_TOKEN, machine_client_ids=frozenset({uuid.UUID(world.tenants[0])}))
+            build_router(
+                MACHINE_TOKEN,
+                machine_client_ids=frozenset({uuid.UUID(world.tenants[0])}),
+                kb_upload_root=tmp_path,
+            )
         )
         yield world
     finally:
@@ -650,6 +662,111 @@ async def test_audit_failure_rolls_back_tenant_creation_and_capability_change(
         assert capability["is_enabled"] is False
     finally:
         await sessions.q("GRANT INSERT ON console_audit TO csa_app")
+
+
+@pytest.mark.parametrize("role", ["tenant_admin", "tenant_staff", "read_only"])
+async def test_m2_catalogue_permissions_tenant_scope_and_switch_policy(
+    sessions: SessionWorld, role: str
+) -> None:
+    browser, _ = await sessions.member(role=role)
+    response = await browser.get("/console/v1/agents")
+    assert response.status_code == 200
+    catalog = {row["name"]: row for row in response.json()}
+    assert catalog["booking_agent"]["implementation"] == "prepared_only"
+    assert catalog["invoice_agent"]["can_toggle"] is (role == "tenant_admin")
+    assert catalog["invoice_agent"]["can_subscribe"] is False
+    assert (
+        await browser.get("/console/v1/agents", params={"client_id": sessions.tenants[1]})
+    ).status_code == 403
+    attempted = await sessions.mutate(
+        browser, "/console/v1/capabilities/invoice_agent", {"is_enabled": True}, method="PATCH"
+    )
+    assert attempted.status_code == 403
+    tenant_toggle = await sessions.mutate(
+        browser, "/console/v1/capabilities/invoice_agent", {"client_enabled": True}, method="PATCH"
+    )
+    assert tenant_toggle.status_code == (200 if role == "tenant_admin" else 403)
+    safety = await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/capabilities/escalation_agent?client_id={sessions.tenants[0]}",
+        {"is_enabled": False},
+        method="PATCH",
+    )
+    assert safety.status_code == 409
+
+
+async def test_m2_runtime_keyset_pagination_detail_redaction_and_overview(
+    sessions: SessionWorld,
+) -> None:
+    reader, _ = await sessions.member(role="read_only")
+    other, _ = await sessions.member(role="read_only", tenant=sessions.tenants[1])
+    ids: list[int] = []
+    stamp = datetime.now(UTC)
+    for index in range(4):
+        [row] = await sessions.q(
+            "INSERT INTO agent_runs(client_id,trace_id,agent,ok,status,input,output,created_at) "
+            'VALUES (%s,%s,%s,%s,%s,\'{"private":"synthetic-secret"}\','
+            '\'{"private":"synthetic-output"}\',%s) RETURNING id',
+            sessions.tenants[0],
+            uuid.uuid4(),
+            "invoice_agent" if index < 3 else "booking_agent",
+            index != 1,
+            "error" if index == 1 else "ok",
+            stamp,
+        )
+        ids.append(row["id"])
+    summary = await reader.get("/console/v1/overview")
+    assert summary.status_code == 200
+    assert summary.json()["runs"] == 4
+    assert summary.json()["failed"] == 1
+    assert (await other.get("/console/v1/overview")).json()["runs"] == 0
+    first = await reader.get("/console/v1/runs", params={"limit": 2})
+    assert first.status_code == 200
+    assert [row["id"] for row in first.json()["items"]] == ids[::-1][:2]
+    cursor = first.json()["next_before_id"]
+    second = await reader.get("/console/v1/runs", params={"limit": 2, "before_id": cursor})
+    assert [row["id"] for row in second.json()["items"]] == ids[::-1][2:]
+    assert second.json()["next_before_id"] is None
+    filtered = await reader.get("/console/v1/runs", params={"agent": "invoice_agent"})
+    assert len(filtered.json()["items"]) == 3
+    detail = await reader.get(f"/console/v1/runs/{ids[0]}")
+    assert detail.status_code == 200
+    assert "input" not in detail.json() and "output" not in detail.json()
+    assert "synthetic-secret" not in first.text + detail.text
+    assert (await other.get("/console/v1/runs")).json()["items"] == []
+    assert (await other.get(f"/console/v1/runs/{ids[0]}")).status_code == 404
+    for params in (
+        {"limit": 0},
+        {"limit": 201},
+        {"before_id": 0},
+        {"before_id": 2**63},
+        {"agent": ""},
+    ):
+        assert (await reader.get("/console/v1/runs", params=params)).status_code == 422
+    for invalid_id in (0, -1, 2**63):
+        assert (await reader.get(f"/console/v1/runs/{invalid_id}")).status_code == 422
+    assert (
+        await reader.get("/console/v1/runs", params={"client_id": sessions.tenants[1]})
+    ).status_code == 403
+    assert (await sessions.admin.get("/console/v1/runs")).status_code == 400
+
+
+async def test_m2_kb_console_execution_cannot_bypass_disabled_switch(
+    sessions: SessionWorld,
+) -> None:
+    admin, _ = await sessions.member(role="tenant_admin")
+    response = await sessions.mutate(
+        admin, "/console/v1/kb/documents", {"title": "Synthetic", "content": "Synthetic"}
+    )
+    assert response.status_code == 409
+    assert "disabled" in response.json()["detail"]
+    response = await sessions.mutate(admin, f"/console/v1/kb/gaps/{uuid.uuid4()}/resolve")
+    assert response.status_code == 409
+    assert (
+        await admin.request(
+            "DELETE", f"/console/v1/kb/documents/{uuid.uuid4()}", headers=sessions.headers(admin)
+        )
+    ).status_code == 409
 
 
 async def test_password_change_checks_current_password_and_revokes_other_sessions(

@@ -11,13 +11,129 @@ from csa.core import db
 from csa.core.tenancy import tx
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
+from csa.jobs.reapers import run_mute_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
+from csa.jobs.registry import Job, JobRegistry
 from csa.jobs.runner import JobRunner
 
 from tests.conftest import owner_dsn_for, requires_docker
 from tests.test_worker import _configure_test_settings
 
 pytestmark = [requires_docker, pytest.mark.asyncio, pytest.mark.usefixtures("lg_setup_dsn")]
+
+
+async def test_mute_expiry_batch_isolation_locks_and_idempotency(
+    pg_container: object, app_dsn: str
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    tenant, other, contact = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    expired, locked, future, indefinite, ai_owned, foreign = [uuid.uuid4() for _ in range(6)]
+    async with await psycopg.AsyncConnection.connect(owner_dsn, autocommit=True) as conn:
+        for client in (tenant, other):
+            await conn.execute(
+                "INSERT INTO clients(id,slug,name,status,platform_version) "
+                "VALUES (%s,%s,'Synthetic mute','active','lg10-test')",
+                (client, f"mute-{client}"),
+            )
+        await conn.execute(
+            "INSERT INTO contacts(id,client_id,full_name) VALUES (%s,%s,'Synthetic')",
+            (contact, tenant),
+        )
+        for ident, client, owner, mute in [
+            (expired, tenant, "human_support", datetime.now(UTC) - timedelta(minutes=10)),
+            (locked, tenant, "human_support", datetime.now(UTC) - timedelta(minutes=5)),
+            (future, tenant, "human_support", datetime.now(UTC) + timedelta(hours=1)),
+            (indefinite, tenant, "human_support", None),
+            (ai_owned, tenant, "ai", datetime.now(UTC) - timedelta(minutes=1)),
+            (foreign, other, "human_support", datetime.now(UTC) - timedelta(minutes=10)),
+        ]:
+            await conn.execute(
+                "INSERT INTO conversations(id,client_id,contact_id,channel,channel_thread,"
+                "status,owned_by,ai_muted_until) VALUES (%s,%s,%s,'telegram',%s,"
+                "'escalated',%s,%s)",
+                (ident, client, contact, str(ident), owner, mute),
+            )
+    async with db.build_pool(app_dsn, max_size=2, autocommit=True) as pool:
+        async with await psycopg.AsyncConnection.connect(owner_dsn) as blocker:
+            await blocker.execute("SELECT id FROM conversations WHERE id=%s FOR UPDATE", (locked,))
+            async with tx(pool, str(tenant)) as conn:
+                assert await run_mute_expiry(conn, tenant, FakeClock(), batch_size=1) == {
+                    "released_count": 1
+                }
+            async with tx(pool, str(tenant)) as conn:
+                assert await run_mute_expiry(conn, tenant, FakeClock()) == {"released_count": 0}
+        async with tx(pool, str(tenant)) as conn:
+            assert await run_mute_expiry(conn, tenant, FakeClock()) == {"released_count": 1}
+        async with tx(pool, str(tenant)) as conn:
+            assert await run_mute_expiry(conn, tenant, FakeClock()) == {"released_count": 0}
+        async with tx(pool, str(tenant)) as conn:
+            assert await run_mute_expiry(conn, other, FakeClock()) == {"released_count": 0}
+    async with await psycopg.AsyncConnection.connect(owner_dsn) as conn:
+        cursor = await conn.execute(
+            "SELECT id,status,owned_by,ai_muted_until FROM conversations WHERE id=ANY(%s)",
+            ([expired, locked, future, indefinite, ai_owned, foreign],),
+        )
+        rows = {row[0]: row[1:] for row in await cursor.fetchall()}
+    assert rows[expired] == rows[locked] == ("open", "ai", None)
+    assert rows[future][0:2] == rows[indefinite][0:2] == ("escalated", "human_support")
+    assert rows[ai_owned][0:2] == ("escalated", "ai")
+    assert rows[foreign][0:2] == ("escalated", "human_support")
+
+
+@pytest.mark.parametrize("per_client", [True, False])
+async def test_job_failures_do_not_report_success_or_refresh_health(
+    pg_container: object, app_dsn: str, per_client: bool
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    clock = FakeClock()
+    failing = True
+    visited: list[uuid.UUID | None] = []
+    clients = [uuid.uuid4(), uuid.uuid4()]
+
+    async def job_fn(conn, *args, batch_size):
+        client = args[0] if per_client else None
+        visited.append(client)
+        if failing and (not per_client or client == clients[0]):
+            raise RuntimeError("synthetic scheduled failure")
+        return {"checked": True}
+
+    async with await psycopg.AsyncConnection.connect(owner_dsn, autocommit=True) as conn:
+        for client in clients:
+            await conn.execute(
+                "INSERT INTO clients(id,slug,name,status,platform_version) "
+                "VALUES (%s,%s,'Synthetic job','active','lg10-test')",
+                (client, f"job-{client}"),
+            )
+    registry = JobRegistry()
+    registry.register(Job("synthetic_failure", timedelta(minutes=1), job_fn, per_client=per_client))
+    async with (
+        db.build_pool(owner_dsn, max_size=2, autocommit=True) as owner_pool,
+        db.build_pool(app_dsn, max_size=2, autocommit=True) as app_pool,
+    ):
+        runner = JobRunner(
+            owner_pool, app_pool, lock_conninfo=owner_dsn, registry=registry, clock=clock
+        )
+        assert await runner.run_job_once("synthetic_failure") is False
+        if per_client:
+            assert all(client in visited for client in clients)
+        for _ in range(4):
+            clock.advance(timedelta(minutes=1))
+            assert await runner.run_job_once("synthetic_failure") is False
+        assert not runner.is_healthy("synthetic_failure")
+        failing = False
+        assert await runner.run_job_once("synthetic_failure") is True
+        assert runner.is_healthy("synthetic_failure")
+        clock.advance(timedelta(minutes=4))
+        failing = True
+        assert await runner.run_job_once("synthetic_failure") is False
+        assert not runner.is_healthy("synthetic_failure")
+    async with await psycopg.AsyncConnection.connect(owner_dsn) as conn:
+        cursor = await conn.execute(
+            "SELECT ok,error FROM job_runs WHERE job='synthetic_failure' ORDER BY id"
+        )
+        rows = await cursor.fetchall()
+    assert any(not ok and "synthetic scheduled failure" in error for ok, error in rows)
+    assert any(ok for ok, _ in rows)
 
 
 async def test_order_draft_expiry_per_product_aggregation(

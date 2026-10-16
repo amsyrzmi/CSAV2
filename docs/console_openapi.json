@@ -41,6 +41,120 @@
         "title": "AdminUserOut",
         "type": "object"
       },
+      "AgentOut": {
+        "additionalProperties": false,
+        "properties": {
+          "can_subscribe": {
+            "title": "Can Subscribe",
+            "type": "boolean"
+          },
+          "can_toggle": {
+            "title": "Can Toggle",
+            "type": "boolean"
+          },
+          "can_view_specialized": {
+            "title": "Can View Specialized",
+            "type": "boolean"
+          },
+          "capability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compatible_chunks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compatible Chunks"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "implementation": {
+            "enum": [
+              "local",
+              "prepared_only",
+              "not_implemented"
+            ],
+            "title": "Implementation",
+            "type": "string"
+          },
+          "incompatible_chunks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incompatible Chunks"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "readiness": {
+            "enum": [
+              "available",
+              "setup_required",
+              "configured_unverified",
+              "reindex_required"
+            ],
+            "title": "Readiness",
+            "type": "string"
+          },
+          "required_system": {
+            "title": "Required System",
+            "type": "boolean"
+          },
+          "specialized": {
+            "title": "Specialized",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "capability",
+          "implementation",
+          "readiness",
+          "detail",
+          "required_system",
+          "specialized",
+          "can_view_specialized",
+          "can_subscribe",
+          "can_toggle"
+        ],
+        "title": "AgentOut",
+        "type": "object"
+      },
       "AuditOut": {
         "additionalProperties": false,
         "properties": {
@@ -351,6 +465,54 @@
           "created_at"
         ],
         "title": "EventOut",
+        "type": "object"
+      },
+      "FileOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "media_type",
+          "size_bytes",
+          "document_id",
+          "created_at"
+        ],
+        "title": "FileOut",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -664,6 +826,193 @@
         "title": "IssuedTokenOut",
         "type": "object"
       },
+      "JobFileOut": {
+        "properties": {
+          "file_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "JobFileOut",
+        "type": "object"
+      },
+      "JobMetaOut": {
+        "properties": {
+          "results": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/JobResultOut"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "title": "JobMetaOut",
+        "type": "object"
+      },
+      "JobOut": {
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/JobFileOut"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/JobMetaOut"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "status",
+          "files",
+          "meta",
+          "attempts",
+          "error",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "JobOut",
+        "type": "object"
+      },
+      "JobResultOut": {
+        "properties": {
+          "chunks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "file",
+          "status"
+        ],
+        "title": "JobResultOut",
+        "type": "object"
+      },
       "KbDocumentIn": {
         "additionalProperties": false,
         "properties": {
@@ -855,104 +1204,6 @@
         "title": "KbGapOut",
         "type": "object"
       },
-      "KbIngestJobOut": {
-        "additionalProperties": false,
-        "properties": {
-          "attempts": {
-            "title": "Attempts",
-            "type": "integer"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "files": {
-            "items": {},
-            "title": "Files",
-            "type": "array"
-          },
-          "finished_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Finished At"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "meta": {
-            "additionalProperties": true,
-            "title": "Meta",
-            "type": "object"
-          },
-          "requested_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Requested By"
-          },
-          "source": {
-            "title": "Source",
-            "type": "string"
-          },
-          "started_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Started At"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "source",
-          "status",
-          "files",
-          "meta",
-          "requested_by",
-          "attempts",
-          "error",
-          "created_at",
-          "started_at",
-          "finished_at"
-        ],
-        "title": "KbIngestJobOut",
-        "type": "object"
-      },
       "LoginIn": {
         "additionalProperties": false,
         "properties": {
@@ -1142,6 +1393,47 @@
         "title": "MessageOut",
         "type": "object"
       },
+      "OverviewOut": {
+        "properties": {
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "runs": {
+            "title": "Runs",
+            "type": "integer"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "integer"
+          },
+          "window_hours": {
+            "default": 24,
+            "title": "Window Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runs",
+          "succeeded",
+          "failed",
+          "last_run_at"
+        ],
+        "title": "OverviewOut",
+        "type": "object"
+      },
       "PasswordChangeIn": {
         "additionalProperties": false,
         "properties": {
@@ -1169,6 +1461,19 @@
         "title": "PasswordChangeIn",
         "type": "object"
       },
+      "ReconcileOut": {
+        "properties": {
+          "removed_files": {
+            "title": "Removed Files",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "removed_files"
+        ],
+        "title": "ReconcileOut",
+        "type": "object"
+      },
       "Role": {
         "enum": [
           "platform_admin",
@@ -1178,6 +1483,124 @@
         ],
         "title": "Role",
         "type": "string"
+      },
+      "RunOut": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Category"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "trace_id",
+          "conversation_id",
+          "agent",
+          "ok",
+          "status",
+          "error_code",
+          "error_category",
+          "latency_ms",
+          "created_at"
+        ],
+        "title": "RunOut",
+        "type": "object"
+      },
+      "RunPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_before_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Id"
+          }
+        },
+        "required": [
+          "items",
+          "next_before_id"
+        ],
+        "title": "RunPage",
+        "type": "object"
       },
       "SignedDownloadLinkOut": {
         "additionalProperties": false,
@@ -1210,8 +1633,20 @@
             "title": "Agent Name",
             "type": "string"
           },
+          "can_manage": {
+            "title": "Can Manage",
+            "type": "boolean"
+          },
+          "can_view": {
+            "title": "Can View",
+            "type": "boolean"
+          },
           "description": {
             "title": "Description",
+            "type": "string"
+          },
+          "implementation": {
+            "title": "Implementation",
             "type": "string"
           },
           "is_active": {
@@ -1226,6 +1661,10 @@
             "additionalProperties": true,
             "title": "Metrics",
             "type": "object"
+          },
+          "readiness": {
+            "title": "Readiness",
+            "type": "string"
           },
           "tab_id": {
             "title": "Tab Id",
@@ -1242,7 +1681,11 @@
           "description",
           "agent_name",
           "is_subscribed",
-          "is_active"
+          "is_active",
+          "implementation",
+          "readiness",
+          "can_view",
+          "can_manage"
         ],
         "title": "SpecializedTabInfo",
         "type": "object"
@@ -1455,6 +1898,25 @@
           "agents"
         ],
         "title": "TraceOut",
+        "type": "object"
+      },
+      "UploadOut": {
+        "properties": {
+          "duplicate_request": {
+            "title": "Duplicate Request",
+            "type": "boolean"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "duplicate_request"
+        ],
+        "title": "UploadOut",
         "type": "object"
       },
       "UserOut": {
@@ -2034,6 +2496,74 @@
         "tags": [
           "console identity"
         ]
+      }
+    },
+    "/console/v1/agents": {
+      "get": {
+        "operationId": "agent_catalog_console_v1_agents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentOut"
+                  },
+                  "title": "Response Agent Catalog Console V1 Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Catalog"
       }
     },
     "/console/v1/auth/csrf": {
@@ -2865,7 +3395,7 @@
     },
     "/console/v1/kb/documents/{document_id}": {
       "delete": {
-        "operationId": "delete_kb_document_console_v1_kb_documents__document_id__delete",
+        "operationId": "remove_document_console_v1_kb_documents__document_id__delete",
         "parameters": [
           {
             "in": "path",
@@ -2913,13 +3443,84 @@
           }
         ],
         "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Document"
+      }
+    },
+    "/console/v1/kb/files": {
+      "get": {
+        "operationId": "files_console_v1_kb_files_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Delete Kb Document Console V1 Kb Documents  Document Id  Delete",
-                  "type": "object"
+                  "items": {
+                    "$ref": "#/components/schemas/FileOut"
+                  },
+                  "title": "Response Files Console V1 Kb Files Get",
+                  "type": "array"
                 }
               }
             },
@@ -2936,7 +3537,161 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Delete Kb Document"
+        "summary": "Files"
+      }
+    },
+    "/console/v1/kb/files/{file_id}": {
+      "delete": {
+        "operationId": "remove_file_console_v1_kb_files__file_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove File"
+      }
+    },
+    "/console/v1/kb/files/{file_id}/download": {
+      "get": {
+        "operationId": "download_console_v1_kb_files__file_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download"
       }
     },
     "/console/v1/kb/gaps": {
@@ -3152,7 +3907,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/KbIngestJobOut"
+                    "$ref": "#/components/schemas/JobOut"
                   },
                   "title": "Response List Kb Ingest Jobs Console V1 Kb Ingest Jobs Get",
                   "type": "array"
@@ -3229,7 +3984,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/KbIngestJobOut"
+                  "$ref": "#/components/schemas/JobOut"
                 }
               }
             },
@@ -3247,6 +4002,232 @@
           }
         },
         "summary": "Get Kb Ingest Job"
+      }
+    },
+    "/console/v1/kb/storage/reconcile": {
+      "post": {
+        "operationId": "reconcile_console_v1_kb_storage_reconcile_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile"
+      }
+    },
+    "/console/v1/kb/uploads": {
+      "post": {
+        "operationId": "upload_console_v1_kb_uploads_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "files": {
+                    "items": {
+                      "format": "binary",
+                      "type": "string"
+                    },
+                    "maxItems": 3,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "files"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload"
+      }
+    },
+    "/console/v1/overview": {
+      "get": {
+        "operationId": "runtime_overview_console_v1_overview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runtime Overview"
       }
     },
     "/console/v1/profile": {
@@ -3311,6 +4292,193 @@
           }
         },
         "summary": "Profile"
+      }
+    },
+    "/console/v1/runs": {
+      "get": {
+        "operationId": "runs_console_v1_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "before_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runs"
+      }
+    },
+    "/console/v1/runs/{run_id}": {
+      "get": {
+        "operationId": "run_detail_console_v1_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": 1,
+              "title": "Run Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Detail"
       }
     },
     "/console/v1/tabs/specialized": {

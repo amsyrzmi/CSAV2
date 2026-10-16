@@ -17,6 +17,7 @@ from csa.decide.completion import CompletionError
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient, GroqError
 from csa.decide.grounding import ungrounded
+from csa.graph.policy.plan_rules import validate_plan
 from csa.graph.policy.routing import route_turn
 from csa.turn.deps import CAPABILITIES, build_llm_provider
 
@@ -99,6 +100,54 @@ async def test_plan_valid_task_strips_callback_and_validates() -> None:
     plan = await provider.plan(make_envelope("status"), Context(), signals)
     assert plan.source == "llm"
     assert all("callback_id" not in (t.input or {}) for t in plan.tasks)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the demo return window?",
+        "How many days do I have to return a demo item?",
+    ],
+)
+async def test_return_policy_kb_plan_survives_prior_clarification(question: str) -> None:
+    def reply(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        system = payload["messages"][0]["content"]
+        assert "refund_returns question asking about the return policy" in system
+        assert "General policy lookup does not require an order id" in system
+        assert "'Refund my order' must not be treated as an informational policy question" in system
+        return _ok(
+            {
+                "tasks": [{"agent": "kb_agent", "input": {"action": "query", "query": question}}],
+                "reply_strategy": "auto_reply",
+            }
+        )(request)
+
+    provider = _provider(reply)
+    plan = await provider.plan(
+        make_envelope(question), Context(), make_signals(Intent.REFUND_RETURNS)
+    )
+    validated, errors = validate_plan(plan, known_agents=frozenset(CAPABILITIES), clarify_count=1)
+    assert not errors
+    assert validated.reply_strategy == "auto_reply"
+    assert len(validated.tasks) == 1
+    assert validated.tasks[0].agent == "kb_agent"
+    assert validated.tasks[0].input["query"] == question
+    assert validated.tasks[0].input["action"] == "query"
+
+
+async def test_refund_request_without_tasks_keeps_clarification_bound() -> None:
+    provider = _provider(_ok({"tasks": [], "reply_strategy": "ask_clarifying"}))
+    plan = await provider.plan(
+        make_envelope("Refund my order"), Context(), make_signals(Intent.REFUND_RETURNS)
+    )
+    for count, strategy in [(0, "ask_clarifying"), (1, "escalate")]:
+        validated, errors = validate_plan(
+            plan, known_agents=frozenset(CAPABILITIES), clarify_count=count
+        )
+        assert not errors
+        assert validated.tasks == []
+        assert validated.reply_strategy == strategy
 
 
 @pytest.mark.parametrize(

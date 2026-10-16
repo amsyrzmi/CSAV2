@@ -10,6 +10,9 @@ import {
   LogOut,
   Users,
   KeyRound,
+  Bot,
+  Activity,
+  BookOpen,
 } from "lucide-react";
 import { identity } from "@/lib/identity-api";
 import type { Me } from "@/lib/identity-contracts";
@@ -29,6 +32,9 @@ export function AppShell({
   const home = admin ? "/" : "/portal";
   const links = [
     { href: home, label: "Overview", icon: LayoutDashboard },
+    { href: admin ? "/agents" : "/portal/agents", label: "Agents", icon: Bot },
+    { href: admin ? "/activity" : "/portal/activity", label: "Runtime activity", icon: Activity },
+    { href: admin ? "/knowledge-base" : "/portal/faq", label: "Knowledge base", icon: BookOpen },
     ...(admin
       ? [
           { href: "/settings/clients", label: "Tenants", icon: Building2 },

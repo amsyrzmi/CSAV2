@@ -1,14 +1,15 @@
 # CSA — LangGraph rebuild
 
-Customer-service automation core. See `docs/langgraph-rebuild/` for the phase plans
-and `docs/versions.md` for the resolved dependency pins.
+Customer-service automation core. See [the phase plans](docs/langgraph-rebuild/)
+and the authoritative [dependency pins](pyproject.toml) / [resolved lockfile](uv.lock).
 
 Docs: [Architecture](docs/ARCHITECTURE.md) · [Runbook](docs/RUNBOOK.md) ·
 [Progress](docs/PROGRESS.md) · [Project overview](docs/PROJECT_OVERVIEW.md)
 
 ## Continuing development
 
-Start with [current progress and verification gaps](docs/PROGRESS.md), then the
+Start with the [latest runtime handoff](docs/handoffs/2026-10-16-runtime-stabilization.md)
+and [current progress and verification gaps](docs/PROGRESS.md), then the
 [console migration plan and next-session prompt](docs/handoffs/2026-10-15-console-source-migration-plan.md).
 Use [the console API contract](docs/CONSOLE_API.md) and the relevant
 [phase plan](docs/langgraph-rebuild/LG00_master_plan.md) before changing behavior.

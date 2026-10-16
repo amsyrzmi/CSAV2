@@ -250,22 +250,9 @@ class TelegramIngress:
             ):
                 raise IngressError(429, "endpoint rate limit exceeded")
 
-            client_runtime = await db.q.fetch_one(
-                "ingress/get_client_runtime.sql",
-                (client_id,),
-                conn=conn,
-            )
-            runtime = (
-                (client_runtime["runtime"] or "langgraph").strip().lower()
-                if client_runtime and client_runtime["runtime"]
-                else "langgraph"
-            )
-            deployment_mode = (
-                (client_runtime["deployment_mode"] or "auto").strip().lower()
-                if client_runtime and client_runtime["deployment_mode"]
-                else "auto"
-            )
-            n8n_url = client_runtime.get("n8n_webhook_url") if client_runtime else None
+            runtime = (route["runtime"] or "langgraph").strip().lower()
+            deployment_mode = (route["deployment_mode"] or "auto").strip().lower()
+            n8n_url = route["n8n_webhook_url"]
 
             if runtime == "n8n":
                 if not n8n_url:

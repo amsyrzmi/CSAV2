@@ -192,11 +192,12 @@ async def test_kb_agent_ingest_and_delete() -> None:
     with (
         patch("csa.agents.kb.agent.tx") as mock_tx,
         patch("csa.core.db.q.execute"),
+        patch("csa.core.db.q.fetch_all", return_value=[]),
         patch("csa.core.db.q.fetch_one") as mock_fetch_one,
     ):
         mock_conn = AsyncMock()
         mock_tx.return_value.__aenter__.return_value = mock_conn
-        mock_fetch_one.return_value = {"id": doc_id}
+        mock_fetch_one.return_value = {"id": doc_id, "content_hash": "synthetic-hash"}
 
         del_inp = KbInput(action="delete", document_id=doc_id)
         res_del = await agent.run(ctx, del_inp)

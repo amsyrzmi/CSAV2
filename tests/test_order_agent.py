@@ -16,10 +16,14 @@ from csa.agents.recorder import PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
 from csa.agents.tickets.agent import TicketAgent
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
+from csa.contracts.envelope import Callback
 from csa.contracts.plan import Task
+from csa.contracts.state import Context
 from csa.core import db
+from csa.turn.deps import PostgresTurnDependencies
 
 from tests.conftest import owner_dsn_for, requires_docker
+from tests.test_coordinator import make_envelope
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 
@@ -133,6 +137,72 @@ async def world(migrated_dsn: str, pg_container: object, app_dsn: str) -> Any:
 
 def _order_id(result: Any) -> str:
     return result.data.ui.confirmation.order_id
+
+
+@pytest.mark.parametrize("switch", ["is_enabled", "client_enabled"])
+async def test_runtime_denies_disabled_order_drafts_and_existing_callback_actions(
+    world: World, switch: str
+) -> None:
+    envelope = make_envelope()
+    envelope = envelope.model_copy(
+        update={
+            "client_id": world.client_id,
+            "trace_id": uuid.uuid4(),
+            "contact": envelope.contact.model_copy(update={"id": world.contact_id}),
+            "conversation": envelope.conversation.model_copy(update={"id": world.conversation_id}),
+        }
+    )
+    first_worker = PostgresTurnDependencies(world.pool)
+    second_worker = PostgresTurnDependencies(world.pool)
+    draft_task = Task(
+        task_id="enabled-draft",
+        agent="order_agent",
+        input={"action": "create_draft", "items": [{"sku": "A1", "qty": 1}]},
+    )
+    result = await first_worker.execute_spoke(draft_task, envelope, Context())
+    assert result.ok and result.data.ui.confirmation is not None
+    callback = result.data.ui.confirmation.accept.action_id
+    assert callback is not None
+    action_id = CallbackCodec.decode(callback)
+    assert action_id is not None
+    callback_envelope = envelope.model_copy(update={"callback": Callback(action_id=action_id)})
+    callback_task = await first_worker.resolve_callback(callback_envelope, Context())
+    assert callback_task is not None
+    if switch == "is_enabled":
+        world.q(
+            "UPDATE capability_registry SET is_enabled=false "
+            "WHERE client_id=%s AND name='order_agent' RETURNING id",
+            world.client_id,
+        )
+    else:
+        world.q(
+            "UPDATE capability_registry SET client_enabled=false WHERE client_id=%s "
+            "AND name='order_agent' RETURNING id",
+            world.client_id,
+        )
+    for worker in (first_worker, second_worker):
+        denied = await worker.execute_spoke(draft_task, envelope, Context())
+        assert denied.error is not None and denied.error.code == "capability_unavailable"
+        denied_callback = await worker.execute_spoke(callback_task, callback_envelope, Context())
+        assert denied_callback.error is not None
+        assert denied_callback.error.code == "capability_unavailable"
+    assert world.reserved("A1") == 1
+    assert (
+        world.q(
+            "SELECT status FROM orders WHERE client_id=%s AND id=%s",
+            world.client_id,
+            result.data.ui.confirmation.order_id,
+        )[0][0]
+        == "draft"
+    )
+    assert (
+        world.q(
+            "SELECT count(*) FROM agent_runs "
+            "WHERE client_id=%s AND error_code='capability_unavailable'",
+            world.client_id,
+        )[0][0]
+        == 4
+    )
 
 
 async def test_draft_reserves_stock_and_offers_buttons(world: World) -> None:

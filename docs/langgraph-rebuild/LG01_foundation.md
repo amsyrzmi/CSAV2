@@ -61,7 +61,8 @@ If no trigger/function touches those columns, the breaker has never worked; LG02
 
 ### 2. Scaffold
 - `uv init`; Python 3.12; `pyproject.toml` with exact pins (not ranges) for: `fastapi`, `uvicorn[standard]`, `psycopg[binary,pool]` (v3), `langgraph`, `langgraph-checkpoint-postgres`, `pydantic>=2`, `pydantic-settings`, `httpx`, `tenacity`, `structlog`, `orjson`, `jsonschema`, `typesafe-sdk`, `langchain-core` + `langchain-groq` (LLM provider only), `opentelemetry-*`, dev: `pytest`, `pytest-asyncio`, `ruff`, `pyright`, `testcontainers`.
-- Pin LangGraph to the current 1.x release you install; record the version in `docs/versions.md`.
+- Pin LangGraph to the current 1.x release you install; record exact direct pins in
+  `pyproject.toml` and resolve `uv.lock` (the authoritative version records).
 - Layout:
 ```
 apps/gateway/main.py        apps/worker/main.py        apps/delivery/main.py
@@ -114,7 +115,13 @@ CREATE POLICY tenant_isolation ON <t>
 ### 8. Observability
 - `structlog` JSON logs; every log line carries `trace_id`, `client_id`, `conversation_id`, `channel`.
 - Start light (you're at ~100 messages/day): structured logs plus the Postgres tables you already have (`agent_runs`, `outbound_delivery_attempts`, `dlq`, new `decision_log`) answer most debugging questions. Emit OpenTelemetry spans from day one (one per graph node; attributes: model, tokens, latency, decision provider + version) but only wire a backend when you need one: LangSmith or Langfuse cloud (redacted data only), or a single-container Jaeger/Tempo. Self-hosting current Langfuse pulls in ClickHouse, Redis and object storage — heavy for one homelab box at this volume *(verify against current docs)*.
-- `/healthz` (process up) and `/readyz` (DB reachable, migrations at expected version).
+- `/healthz` (process up) and `/readyz` (DB reachable, migrations at expected version,
+  configured identity role ready, logging output healthy). Configured structured and
+  stdlib logs use a bounded background writer (1,024 queued events plus one active).
+  More than five seconds of sink backlog makes readiness unavailable; overflow/writer
+  errors latch an explicit reason/dropped-event count until reconfiguration or restart.
+  Liveness remains responsive even with undrained stdout. Shutdown draining is bounded.
+  See [investigation and validation evidence](../PROGRESS.md).
 - Prometheus `/metrics` (optional now; Uptime Kuma already watches `/healthz`).
 
 ### 9. Compose (`deploy/compose.yml`)

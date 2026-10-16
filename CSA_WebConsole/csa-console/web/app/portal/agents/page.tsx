@@ -1,6 +1,6 @@
-import { notFound } from "next/navigation";
+import { requireIdentity } from "@/lib/server-identity";
+import { RuntimeWorkspace } from "@/components/console/RuntimeWorkspace";
 
-// Deferred until its CSAV2 service and authorization contract are implemented.
-export default function DeferredPage() {
-  notFound();
+export default async function AgentsPage() {
+  return <RuntimeWorkspace me={await requireIdentity()} mode="agents" />;
 }

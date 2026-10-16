@@ -12,13 +12,150 @@ Secrets are never logged (see §3, §6).
 from __future__ import annotations
 
 import logging
-from typing import Any
+import sys
+import time
+from collections import deque
+from dataclasses import dataclass
+from io import TextIOBase
+from threading import Condition, Thread
+from typing import Any, TextIO
 
 import orjson
 import structlog
 from structlog.contextvars import merge_contextvars
 
 _CONTEXT_KEYS = ("trace_id", "client_id", "conversation_id", "channel")
+_OUTPUT_CAPACITY = 1024
+_OUTPUT_STALL_SECONDS = 5.0
+_output: LogOutput | None = None
+
+
+@dataclass(frozen=True)
+class _Entry:
+    stream: TextIO
+    text: str
+    created: float
+
+
+class LogOutput:
+    """Bounded output with nonblocking producers and observable sink failures."""
+
+    def __init__(self, capacity: int = _OUTPUT_CAPACITY) -> None:
+        self._capacity = capacity
+        self._pending: deque[_Entry] = deque()
+        self._condition = Condition()
+        self._active: _Entry | None = None
+        self._failure: str | None = None
+        self._dropped = 0
+        self._closing = False
+        self._thread = Thread(target=self._run, name="csa-log-output", daemon=True)
+        self._thread.start()
+
+    def write(self, stream: TextIO, text: str) -> None:
+        with self._condition:
+            if self._closing or len(self._pending) >= self._capacity:
+                self._failure = "closed" if self._closing else "queue_full"
+                self._dropped += 1
+                return
+            self._pending.append(_Entry(stream, text, time.monotonic()))
+            self._condition.notify()
+
+    def health(self) -> tuple[bool, str]:
+        with self._condition:
+            oldest = self._active or (self._pending[0] if self._pending else None)
+            reason = self._failure
+            if (
+                reason is None
+                and oldest
+                and time.monotonic() - oldest.created > _OUTPUT_STALL_SECONDS
+            ):
+                reason = "sink_stalled"
+            if reason:
+                return False, f"logging unavailable: {reason}; dropped_events={self._dropped}"
+            return True, "ok"
+
+    def flush(self, timeout: float = 1.0) -> None:
+        with self._condition:
+            if not self._condition.wait_for(
+                lambda: not self._pending and self._active is None, timeout=timeout
+            ):
+                raise RuntimeError("Logging output did not drain before the deadline")
+            if self._failure:
+                raise RuntimeError(self.health()[1])
+
+    def close(self, timeout: float = 1.0) -> None:
+        with self._condition:
+            self._closing = True
+            self._condition.notify()
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            raise RuntimeError("Logging output shutdown timed out")
+        if self._failure:
+            raise RuntimeError(self.health()[1])
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: bool(self._pending) or self._closing)
+                if not self._pending:
+                    return
+                self._active = entry = self._pending.popleft()
+            try:
+                entry.stream.write(entry.text)
+                entry.stream.flush()
+            except Exception as exc:
+                # Do not try to report a failed sink through the same failed sink.
+                with self._condition:
+                    self._failure = f"sink_error:{type(exc).__name__}"
+                    self._dropped += 1
+            finally:
+                with self._condition:
+                    self._active = None
+                    self._condition.notify_all()
+
+
+class _QueuedStream(TextIOBase):
+    def __init__(self, output: LogOutput, stream: TextIO) -> None:
+        self._output = output
+        self._stream = stream
+        self._parts: list[str] = []
+
+    def write(self, text: str) -> int:
+        self._parts.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._parts:
+            text = "".join(self._parts)
+            self._parts.clear()
+            self._output.write(self._stream, text)
+
+
+class _QueuedLogger:
+    def __init__(self, output: LogOutput, stream: TextIO) -> None:
+        self._output = output
+        self._stream = stream
+
+    def msg(self, message: str) -> None:
+        self._output.write(self._stream, message + "\n")
+
+    log = debug = info = warn = warning = error = exception = fatal = critical = msg
+
+
+def logging_health() -> tuple[bool, str]:
+    return _output.health() if _output is not None else (True, "ok")
+
+
+def flush_logging(timeout: float = 1.0) -> None:
+    if _output is not None:
+        _output.flush(timeout)
+
+
+def shutdown_logging() -> None:
+    global _output
+    output, _output = _output, None
+    if output is not None:
+        output.close()
 
 
 def _orjson_dumps(obj: Any, default: Any = None, **_: Any) -> str:
@@ -48,6 +185,10 @@ def configure_logging(env: str = "prod") -> None:
     ``env='dev'`` uses the human-readable console renderer; every other value
     emits JSON. Idempotent — safe to call once at process start.
     """
+    global _output
+    shutdown_logging()
+    output = _output = LogOutput()
+    stdout = sys.stdout
     shared_processors: list[structlog.typing.Processor] = [
         merge_contextvars,
         structlog.processors.add_log_level,
@@ -65,14 +206,14 @@ def configure_logging(env: str = "prod") -> None:
     structlog.configure(
         processors=[*shared_processors, renderer],
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=lambda *_: _QueuedLogger(output, stdout),
         cache_logger_on_first_use=True,
     )
 
     # Route stdlib logging (uvicorn, psycopg, ...) through structlog's config.
     root = logging.getLogger()
     root.handlers.clear()
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(_QueuedStream(_output, sys.stderr))
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
             processor=renderer,

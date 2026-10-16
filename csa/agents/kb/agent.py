@@ -16,6 +16,7 @@ from csa.agents.kb.embedder import (
     vector_to_sql,
 )
 from csa.agents.kb.extract import ExtractedChunk
+from csa.agents.kb.lifecycle import delete_document
 from csa.agents.kb.models import KbInput
 from csa.agents.kb.store import store_document
 from csa.contracts.facts import (
@@ -189,16 +190,7 @@ class KbAgent:
     async def _delete(self, ctx: AgentContext, inp: KbInput) -> AgentResult:
         assert inp.document_id is not None
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
-            await db.q.execute(
-                "kb/delete_chunks_by_document.sql",
-                (ctx.client_id, inp.document_id),
-                conn=conn,
-            )
-            row = await db.q.fetch_one(
-                "kb/delete_document.sql",
-                (ctx.client_id, inp.document_id),
-                conn=conn,
-            )
+            row = await delete_document(conn, ctx.client_id, inp.document_id)
 
         if not row:
             return self._error(
@@ -221,7 +213,7 @@ class KbAgent:
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
             rows = await db.q.fetch_all(
                 "kb/list_gaps.sql",
-                (ctx.client_id, inp.limit),
+                (ctx.client_id, False, False, inp.limit),
                 conn=conn,
             )
 

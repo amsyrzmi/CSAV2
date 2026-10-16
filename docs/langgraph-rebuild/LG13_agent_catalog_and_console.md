@@ -1,5 +1,23 @@
 # LG13 — Agent catalog roadmap and web-console contract
 
+## Console M2 implementation update (2026-10-15)
+
+The adopted Next.js console now uses the session-scoped agent catalogue and recorded
+runtime APIs described in [CONSOLE_API.md](../CONSOLE_API.md). Subscription, tenant switch,
+implementation and setup/circuit states are independent. Specialised inspection navigation
+does not imply that the feature-management/OAuth screens in the roadmap below exist.
+Booking/subscription writes remain unexecuted preparation; default e-commerce runtime has
+no adapters; MyInvois and invoice PDF delivery are unavailable. Configured TEI is unverified,
+with matching/incompatible active chunk counts instead of fabricated semantic-health metrics.
+
+Production spoke attempts freshly check both tenant registry switches, including callbacks
+and retries; console KB execution and upload-job claims are also gated. Disabled queued KB
+jobs do not consume attempts; already-started work is not cancelled. Scoped run metadata uses
+ID-keyset pagination and existing trace-event polling, without raw agent payloads.
+Focused and full-suite/isolated-load evidence, including limitations, is maintained in
+[PROGRESS.md](../PROGRESS.md). No schema change, persistent database reset, provider execution
+or authenticated M2 live-browser acceptance is claimed by this implementation.
+
 ## CONTEXT FOR CODING AGENT
 LG05 delivers the **spoke framework** plus the order, escalation, ticket, notifier and staff-approval
 spokes. Every other agent in this file is built **on that framework** using the LG05 "Add a new agent in a
@@ -39,12 +57,45 @@ Rules for every agent below:
 - Retrieval over TEI embeddings + pgvector; returns `kind="verbatim"` chunks with source; logs misses to `kb_gaps`.
 - Ingestion: console uploads (PDF, docx, URL, FAQ rows) → chunk → embed, per tenant, versioned, with delete and re-index.
 
-#### KB console upload contract (implemented)
-- The console saves up to 3 files under `KB_UPLOAD_ROOT/<client_id>/` (any file name; UUID names are fine), then inserts one `kb_ingest_jobs` row in the tenant scope: `source='upload'`, `status='queued'`, `files` = JSON list of either path strings or objects `{path, name, title?, category?, language?}`, optional `meta` `{category, language}`. `path` may be relative to the client directory or absolute inside it.
+#### KB console upload contract (M3, 2026-10-15)
+- The authenticated console posts repeated multipart `files` to `/console/v1/kb/uploads`
+  with a UUID `Idempotency-Key`. Only human platform/tenant admins and staff may upload;
+  tenant context and CSRF use the established identity path. Server-generated UUID
+  filenames are published durably under `KB_UPLOAD_ROOT/<client_id>/` before the
+  batch/file/queue/audit transaction commits. Up to 3 PDF/DOCX/CSV files, 10 MiB each,
+  31 MiB aggregate and bounded multipart headers. Invalid/truncated/type/signature/
+  empty/path/oversize requests fail explicitly. Same key/fingerprint returns the original
+  202 job; changed content is 409. No base64 or client-selected server paths.
+- Internal `kb_ingest_jobs.files` remains compatible with legacy path strings or objects
+  `{path,name,title?,category?,language?}`; managed console entries also carry `file_id`.
+  These trusted internal paths are **not** the browser upload contract. Public DTOs omit
+  paths/requesters/arbitrary metadata; original download uses an authorized source UUID.
 - The CSA worker (`csa/agents/kb/ingest_jobs.py`, enabled with `KB_INGEST_ENABLED=true`) claims jobs with `FOR UPDATE SKIP LOCKED`. It then rejects paths outside the client directory (including through symlinks), checks file type by signature, and extracts text. PDF text is extracted per page; scanned PDFs without a text layer need OCR first. DOCX uses headings and tables. For CSV, `question`/`answer` (or `soalan`/`jawapan`) columns become FAQ rows; otherwise each row is stored as text. The worker chunks the text (≤600 chars), embeds it, and stores it.
 - Limits: 3 files per job, 10 MB per file, 500 PDF pages, 5000 CSV rows. Encrypted PDFs, legacy `.doc` files, and empty or unreadable files fail with a per-file error.
-- The job ends with status `done`, `partial` (some files failed), or `failed`. `meta.results` lists each file with `status` (`ingested`/`duplicate`/`failed`), `document_id`, `chunks`, `version`, `replaced`, and `error`. The console polls `GET /console/v1/kb/ingest-jobs` and `GET /console/v1/kb/ingest-jobs/{id}`.
+- The job ends with status `done`, `partial` (some files failed), or `failed`. Internal
+  `meta.results` includes status (`ingested`/`duplicate`/`failed`), document/chunk/version
+  metadata, replacements and safe file errors. Curated public results omit paths and
+  replacement internals. `/knowledge-base` and `/portal/faq` poll jobs, originals,
+  document versions/model compatibility and gaps every five seconds; queued is not searchable.
 - Identical content is reported as `duplicate` and is not embedded again. Re-uploading the same file name with new content creates version N+1 and deactivates the old version and its chunks.
+- Migration 0280 adds tenant-scoped upload batches/files and hash deletion tombstones.
+  Shared tenant advisory locks serialize final publication/deletion, not embedding calls.
+  Checks before deduplication and after embedding fence deleted managed files and content
+  deleted after a legacy/managed job was queued. Retries cannot resurrect deleted content;
+  deliberate uploads queued after deletion may ingest again.
+- Source/document deletion is confirmed in the UI, scoped and audited, removing chunks
+  and all original aliases linked to a shared duplicate document. Readers can download
+  but not mutate. Already-open downloads may finish during deletion. Storage reconciliation
+  is an explicit audited action under the same lock, removing UUID-pattern orphan/partial/
+  deleted files while retaining active metadata-backed sources and unknown legacy names.
+  See [API and recovery contract](../CONSOLE_API.md#knowledge-base-lg13--m3).
+- Rollout requires a forward-only 0280 migration, shared writable upload root and
+  deliberate gateway/ingestion-worker startup. The user-authorized isolated-dev rollout
+  completed without reset: platform-admin three-format ingestion through loopback TEI,
+  downloads, duplicates, deletion and reconciliation pass. A guarded KB-only task claims
+  only the synthetic M1 tenant; no full runtime or old FAQ import was started. See
+  [startup and scope](../CONSOLE_API.md#isolated-dev-rollout-prerequisites) and
+  [live evidence/remaining checks](../PROGRESS.md#m3-authenticated-kb-upload-and-lifecycle-2026-10-15).
 - If TEI is unavailable, the job goes back to the queue and is retried with a delay, up to 3 attempts, then fails. The worker never silently falls back to a different embedding. Search only compares chunks with the same `embed_model`, so hash-embedded (dev) and TEI-embedded content are never mixed.
 - Embeddings: `TEI_ENDPOINT` (required in prod). The dev TEI runs `intfloat/multilingual-e5-small` (384-dim) and uses the `TEI_QUERY_PREFIX="query: "` and `TEI_PASSAGE_PREFIX="passage: "` prefixes. Without TEI, dev and ci use a lexical `hash-384` embedder.
 - Cutover: confirm the legacy n8n `kb_documents.embed_model` label and model. If they don't match `KB_EMBED_MODEL_LABEL`, re-index.
@@ -205,9 +256,13 @@ Suggested order: publish the OpenAPI contract and mock server first (days), then
   - Wired into `CAPABILITIES`, `build_llm_provider`, and `PostgresTurnDependencies` in `csa/turn/deps.py`.
 - [x] Console API (`csa/console/router.py`, `csa/console/capabilities.py`):
   - Admin plan subscription (`is_enabled`) vs client self-service toggle (`client_enabled`) on `/console/v1/capabilities`.
-  - Specialized tabs catalog (`/console/v1/tabs/specialized`) covering LHDN MyInvois, E-Commerce, KB, Invoices, and Bookings.
-  - KB document listing, upload/ingestion, ingest-job status, chunk deletion, and gap management endpoints.
-  - Invoice overview and expiring signed download receipt generation.
+  - Specialized tabs catalogue (`/console/v1/tabs/specialized`) covering LHDN MyInvois,
+    E-Commerce, KB, Invoices, Bookings and Subscriptions, with explicit implementation/
+    setup/permission metadata. No hard-coded healthy/compliance metrics.
+  - KB listing, plain-text ingestion, ingest-job status, deletion and gap endpoints.
+    Authenticated multipart upload and document lifecycle UI remain M3, not implemented here.
+  - Invoice overview; the console download-link endpoint returns 501 until M6 provides
+    real artifacts. Existing signature-library tests do not establish working PDF delivery.
 - [x] Tests:
   - `tests/test_ecommerce_agent.py`: 4 passed (signing, webhook verification, inventory, HITL gate).
   - `tests/test_kb_agent.py`: 7 passed (embedding dimensions/normalization, query match, gap logging, ingest/delete).

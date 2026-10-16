@@ -26,6 +26,9 @@ def application(monkeypatch: pytest.MonkeyPatch, *, env: str = "ci") -> FastAPI:
         CONSOLE_MACHINE_CLIENT_IDS=[],
         OTEL_EXPORTER="console",
         OTEL_EXPORTER_OTLP_ENDPOINT=None,
+        TEI_ENDPOINT=None,
+        KB_EMBED_MODEL_LABEL="synthetic-384",
+        KB_UPLOAD_ROOT=None,
     )
     monkeypatch.setattr(gateway, "get_settings", lambda: synthetic)
     monkeypatch.setattr(gateway, "configure_logging", lambda **_: None)

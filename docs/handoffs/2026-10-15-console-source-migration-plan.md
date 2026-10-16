@@ -1,6 +1,127 @@
 # CSA WebConsole → CSAV2: source-based migration plan
 
-Date: 2026-10-15. Status: **M0–M1 implemented and reviewed locally; M2 groundwork present, remaining M2–M8 pending. Full-suite performance acceptance is not green; no deployment or runtime cutover.**
+Date: 2026-10-15. Status: **M0–M3 implemented with isolated-dev acceptance: M1/M2 guided and M3 platform-admin agent-operated. M3 tenant-role browser replay and M4–M8 pending. Full suite has two ingress latency failures; no public deployment or runtime cutover.**
+
+## M3 implementation (2026-10-15)
+
+- Authenticated/CSRF multipart upload, server UUID storage, strict extraction/signature
+  validation, streaming 3-file/10 MiB-per-file/31 MiB-request limits and bounded headers.
+  Stable tenant idempotency returns the original 202 job or conflict for changed files.
+- Migration 0280 adds upload batches/files/deletion hashes and staged RLS. Durable
+  atomic file publication precedes queue/metadata/audit commit; explicit storage
+  reconciliation handles orphan/partial/deleted files without deleting active sources.
+  Ambiguous commit cleanup checks durable metadata rather than deleting blindly.
+- Tenant locks and pre/post-embedding validity/hash fences prevent deleted content
+  resurrection, including legacy jobs and retries. Deliberate new uploads after
+  deletion are allowed. Original-file download authorizes by source ID; already-open
+  downloads may finish. Deletion removes linked duplicate aliases and searchable
+  chunks, with confirmed UI semantics and audit.
+- Adopted `/knowledge-base` and `/portal/faq` show originals, job/per-file status/errors,
+  duplicates, versions, embedding metadata and gaps; reader writes are absent/denied.
+  Curated public DTOs omit internal paths/requester/arbitrary job metadata.
+- With explicit approval, persistent isolated dev was forward-migrated to 0280 without
+  reset, gateway/frontend restarted and a guarded KB-only worker started for the synthetic
+  M1 tenant. Tasks share a dedicated private upload root, overriding the unsafe configured
+  repository-root value without editing the environment file. Only that tenant's KB
+  subscription/switch were enabled; no full worker, delivery, bots or legacy import.
+- Authenticated platform-admin browser checks pass: three-format upload reached done
+  through loopback TEI, original bytes/hashes match, duplicate adds no chunks, confirmed
+  source/document deletion removes aliases/chunks/download access, reconciliation retains
+  active sources and audits are DB-corroborated. One synthetic DOCX/chunk remains for testing.
+  Live acceptance found/fixed gap-list SQL argument drift in both callers; regression/
+  launcher/upload/agent/contract selection **34 passed**, final lint passed. See
+  [run instructions](../CONSOLE_API.md#isolated-dev-rollout-prerequisites).
+  Tenant-role M3 browser replay, populated gap UI, live version progression/crash races
+  and customer conversation retrieval remain unverified; no Gemini/provider-general claim.
+- Validation: disposable-only `make db-reset` succeeded at schema 0280 with all three
+  new tables RLS-enabled. Python `make lint` passes. Focused upload/worker/streaming/
+  agent/contract selection **57 passed**; final three-format retrieval/binary-contract/
+  projection follow-up **3 passed** (overlap). Earlier broader identity/migration/RLS
+  selection **103 passed / 1 failed**;
+  the immutable-context fixture error was fixed and that upload test passes.
+  Isolated frontend lint/types/production build/safe traces and **8 transport checks**
+  pass. Full suite **607 passed / 2 failed**: unchanged 200 ms ingress thresholds,
+  ASGI **266.718 ms**, TCP **887.834 ms** (150 completed turns/deliveries each).
+  Final source-resource follow-ups are covered by focused checks and final lint.
+  Unchanged isolated repeat **2 passed**: ASGI **123.840 ms**, TCP **137.444 ms**,
+  150 completed turns/pending deliveries each. Full acceptance is not green and
+  no cause for the variability is claimed. Detailed evidence is in
+  [progress](../PROGRESS.md#m3-authenticated-kb-upload-and-lifecycle-2026-10-15).
+
+## M2 browser follow-up (supersedes earlier pending notes)
+
+With explicit approval the isolated gateway was restarted after served OpenAPI showed
+stale M1 code. Authenticated platform tenant subscriptions, Agents and Runtime activity
+then loaded without Not Found; zero recorded runs were labelled honestly. The user
+subsequently confirmed the guided tenant-admin/read-only checks and cleanup. Those
+role actions are user-confirmed, not a second agent-operated browser run. Populated-run
+and live-provider browser acceptance remain unverified.
+
+## M2 implementation (2026-10-15)
+
+- Added session-scoped `/agents` metadata, separate subscription/tenant controls and
+  specialised inspection navigation at `/agents` and `/portal/agents`.
+  Platform users explicitly select a tenant; tenant admins control only tenant switches;
+  staff/read-only users see state but no switches. Required safety capabilities cannot
+  be disabled; initially disabled safety capabilities can be enabled deliberately.
+- Readiness separates local functionality, prepared-only requests, missing implementations,
+  setup, KB model compatibility and configured-but-unverified TEI. Default e-commerce
+  wiring has no adapters; invoice lookup is not PDF delivery; MyInvois is not built.
+  Removed fabricated provider/compliance metrics from specialised tabs.
+- Added scoped `/overview`, stable ID-keyset `/runs` and `/runs/{id}` metadata APIs.
+  `/activity` and `/portal/activity` poll recorded runs and existing trace events.
+  Raw run payloads and customer text are not exposed; errors are not zero/empty fallbacks.
+- Fixed the execution gap: production spoke attempts read current switches directly
+  rather than trusting discovery caches/static planner descriptions. Existing callbacks
+  and retries cannot bypass a committed disable. Console KB execution is also gated,
+  and disabled KB upload jobs remain queued without spending attempts.
+  Already-started/claimed work is not cancelled; existing breaker behavior is retained.
+- Focused API/catalogue/identity/registry/runner/contract selection: **74 passed**.
+  Subsequent runtime/order-callback/KB-queue/timeline/worker selection: **77 passed**.
+  Selections overlap and must not be summed. Final Python lint passed. Isolated frontend
+  transport/routing checks **6 passed**, ESLint/type generation/typecheck/production
+  webpack build and environment-free build traces passed.
+- No schema/dependency change or database reset. Tests use disposable Postgres and
+  synthetic fixtures. Existing loopback frontend/gateway respond, and anonymous `/agents`
+  redirects to login. The gateway has not been restarted to load these backend changes;
+  authenticated M2 browser acceptance and all live provider checks remain pending.
+  Full-suite result: **559 passed, 32 failed**. Fixed lifecycle-setting mocks and
+  unprovisioned golden fixtures; gateway/golden/runtime/contract rerun **45 passed**.
+  The full run also failed the ASGI 200 ms threshold at **853.178 ms**. Both unchanged
+  transport benchmarks subsequently passed alone: **ASGI 92.637 ms**, **TCP 126.684 ms**,
+  150 completed turns and 150 pending deliveries each. No clean full-suite rerun
+  after corrections or cause of performance variability is claimed.
+
+## Isolated dev browser session (2026-10-15)
+
+The existing `csa-dev/postgres` database on port **5434** was verified and migrated
+forward from 0240 through **0270**, without a reset. The user provisioned the
+identity password, repaired URI encoding locally and bootstrapped the first admin
+through private prompts. DSN target/role and identity readiness checks pass.
+Initially only gateway **127.0.0.1:18081** and frontend **127.0.0.1:13000** ran as VS Code
+tasks. The subsequent M3 activation above adds only the synthetic-tenant KB worker,
+schema 0280 and loopback TEI ingestion; no full worker/delivery/bot or public proxy change.
+Open **http://localhost:13000** through private VS Code forwarding.
+
+Live gateway health/readiness, anonymous route gates, same-origin rewrite and
+CSRF/no-store checks pass. User confirms login, forced password change, admin home,
+tenant list and member screen work; audit verifies login/password change. The shared
+agent browser has a separate unauthenticated session, so authenticated UI evidence
+is user-reported. Guided lifecycle checks subsequently created synthetic tenant
+`m1-browser-20261015` and tenant-admin/read-only users. Tenant creation, scoped
+memberships, consumed invitations and nine disabled capabilities are DB-corroborated.
+User reports role-based management gates and used-invitation rejection pass.
+Logout acceptance subsequently passed: user observed **204** for the reader's
+incognito-window logout request; a follow-up DB check corroborated reader logout
+audit events and session revocation (latest 14:19:35 UTC). User reports direct
+portal access after logout redirects to login. This resolves the earlier
+redirect-only observation that lacked matching server-side evidence.
+The frontend build/typecheck/lint and five transport tests passed before launch.
+The historical TCP failures below are retained; subsequent M2 isolated checks pass both
+transports (see the M2 record), but a clean full-suite rerun remains outstanding.
+
+The review and planning snapshots below predate this explicitly authorized dev setup;
+their no-migration/no-browser/no-process statements describe those earlier steps.
 
 ## M0–M1 implementation record (2026-10-15)
 
@@ -322,11 +443,13 @@ screens/data, and cannot elevate roles or select arbitrary tenants. No permanent
 ### M2 — Agent management, specialised navigation and runtime visibility
 
 Dependencies: M1.
-Status: partial groundwork only. Mutation authorization/audit/safety guards and initial platform
-entitlements UI exist; finish truthful readiness, tenant UI, runtime visibility and cache evidence.
+Status: implemented locally with focused evidence (see M2 record above). Authenticated
+M2 browser acceptance and outstanding performance acceptance are not yet complete.
 
 1. Harden current capabilities mutations; remove client-supplied `changed_by` as authority.
-   Atomic before/after audit and cache invalidation; protect required system capabilities.
+   Atomic before/after audit; protect required system capabilities. Fresh uncached authorization
+   before each production attempt replaces cross-process cache invalidation as the enforcement
+   mechanism; discovery caching is not authority.
 2. Add scoped run/overview queries and stable pagination. Replace workflow activity with
    registry/execution/readiness status; never fabricate a zero when a query failed.
 3. Build platform tenant selection + subscription matrix and tenant self-service controls.
@@ -533,15 +656,15 @@ The user approved retaining the Next.js UI and replacing the copied Python API w
 one CSAV2 backend. Core CSA console only; PM/terminal/Hermes/workroom/projects remain
 disabled. The copied checkout is at CSA_WebConsole/csa-console/.
 
-M0 and M1 are implemented and reviewed locally. Read the review evidence and preserve
+M0–M2 are implemented locally. Read the review evidence and preserve
 the Unicode-password and pending-invitation-reset regression fixes. Do not redo auth.
-Implement remaining M2 as the next bounded slice: truthful entitlement/tenant-switch/
-role/provider readiness contracts, scoped runtime queries/pagination, tenant controls
-and specialised navigation. Reuse the existing capability mutation RBAC/audit/safety
-guards and platform entitlement UI. Prove execution/cache freshness after toggles.
+First check the latest full-suite result in PROGRESS and finish authenticated M2 browser
+acceptance after deliberately restarting only the isolated loopback gateway. Verify platform
+subscription vs tenant switches, reader controls, readiness labels and empty/recorded activity.
+Never enable real provider execution to populate a dashboard. Then implement M3 as the next
+bounded slice: authenticated file upload and safe document/job lifecycle, following the plan.
 Do not mount/import the copied API, source its env, run its setup scripts or connect
-through its database URLs. M3 KB uploads are a separate bounded package, not implicit
-scope for this session.
+through its database URLs. Keep later chat/approval/provider work out of the M3 package.
 
 Keep SQL in db/sql/, psycopg async, exact dependencies, additive staged-RLS migrations
 and current readiness expectations. Only csa/graph/ imports LangGraph. All actors
@@ -550,8 +673,9 @@ come from verified sessions; no trusted actor/role fields from browser input.
 Do not read secrets or touch production/n8n/Caddy/Cloudflare/webhooks/existing processes.
 Use synthetic fixtures and disposable databases. Inspect Next's installed version docs
 before frontend edits. Run focused auth/role tests, make lint test, frontend validation
-and disposable migration/reset checks if a schema change requires them. The previous
-full suite had 564 passes and one TCP latency failure; do not call it green. Update
+and disposable migration/reset checks if a schema change requires them. Read the latest
+full-suite/targeted/load evidence in PROGRESS; do not infer a clean full-suite pass
+from passing isolated benchmarks. Update
 this plan and PROGRESS with actual evidence, keeping live browser/deployment separate.
 Ask one focused question only when a decision blocks the implementation.
 ```

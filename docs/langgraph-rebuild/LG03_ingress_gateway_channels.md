@@ -50,6 +50,26 @@ Adapters are the **only** place that knows tokens, markup flavors, limits, or `t
 
 ## Implementation status (local development only)
 
+### Runtime investigation follow-up (2026-10-16)
+
+The normal Telegram path now reads credentials and client runtime in one tenant-scoped
+lookup, removing one sequential round trip without caching credentials or changing
+authentication, routing, staff callbacks or idempotency. The ingress/cutover/ambiguous
+commit selection plus both original 50-rps/<200-ms benchmarks passed 19 tests. The final
+full lint/test run passed **655 tests**; ASGI ack/scheduled-ack p95 was
+**114.186/120.390 ms**, TCP **129.436/130.810 ms**, at 50 requests/s, with 150 completed
+turns and pending deliveries per transport. Earlier failure/diagnostic runs remain in
+[progress](../PROGRESS.md); one clean run is not a guarantee under all shared-host loads.
+
+An isolated actual gateway reproduced an event-loop stall when synchronous logging met
+undrained stdout. With explicit user approval, configured logging now has a bounded
+background writer and readiness failure on stalls/overflow/writer errors, with a visible
+dropped-event count and responsive liveness. The gateway/identity/poller/logging
+selection passed 29 tests, including real blocked-stdout liveness/readiness and exact
+stall-threshold/recovery regressions.
+This fixes the reproduced failure mode, not a proven historical incident cause.
+No live rollout, production/n8n request or infrastructure change was performed.
+
 The Telegram-first webhook path is implemented and verified in the isolated
 development stack: authentication, normalization, PII redaction,
 endpoint-to-tenant resolution, contact/conversation resolution, idempotent

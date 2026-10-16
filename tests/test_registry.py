@@ -83,6 +83,42 @@ async def test_loader_is_tenant_scoped_and_cache_can_be_invalidated(registry_con
 
 
 @requires_docker
+async def test_execution_authorization_ignores_warm_caches_in_other_processes(
+    registry_context,
+) -> None:
+    registry, client_id, other_id, pg_container = registry_context
+    second = CapabilityRegistry(registry._pool)
+    await registry.load(client_id)
+    await second.load(client_id)
+    tenant_id = uuid.UUID(client_id)
+    assert await registry.allows_execution(tenant_id, "order_agent")
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE capability_registry SET client_enabled=false WHERE client_id=%s "
+            "AND name='order_agent'",
+            (client_id,),
+        )
+    assert not await registry.allows_execution(tenant_id, "order_agent")
+    assert not await second.allows_execution(tenant_id, "order_agent")
+    assert not await second.allows_execution(uuid.UUID(other_id), "order_agent")
+    assert not await second.allows_execution(tenant_id, "missing")
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE capability_registry SET client_enabled=true, is_enabled=false "
+            "WHERE client_id=%s AND name='order_agent'",
+            (client_id,),
+        )
+    assert not await registry.allows_execution(tenant_id, "order_agent")
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            "UPDATE capability_registry SET is_enabled=true WHERE client_id=%s "
+            "AND name='order_agent'",
+            (client_id,),
+        )
+    assert await second.allows_execution(tenant_id, "order_agent")
+
+
+@requires_docker
 async def test_sync_input_schema_uses_pydantic_source(registry_context) -> None:
     registry, client_id, _, _ = registry_context
     updated = await registry.sync_input_schema(client_id, "order_agent", SearchInput)

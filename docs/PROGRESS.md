@@ -1,5 +1,201 @@
 # Progress
 
+Latest continuation: [runtime stabilization handoff](./handoffs/2026-10-16-runtime-stabilization.md).
+Conservative documentation cleanup removed only the stale dependency-version summary;
+dependency manifests remain authoritative, and UI-guide content was untouched.
+
+## Active incident: unintended isolated-dev schema reset (2026-10-16)
+
+During runtime-stabilization validation, the assistant intended to run `make db-reset`
+against a newly created disposable Postgres container. It passed that container's
+host/port/credentials but failed to override `PSQL`. Host `psql` was unavailable, and
+the Makefile's fixed fallback used `docker exec csa_dev_db psql`, ignoring the selected
+disposable target for destructive baseline commands. The persistent isolated-dev
+`public` and `lg` schemas were dropped and the baseline recreated there; the subsequent
+Python migration step connected to the intended disposable database and failed because
+its baseline was absent. This was an assistant execution/safety error, not an authorized
+reset of persistent dev.
+
+Initial read-only verification confirmed zero clients and no console users, KB upload
+metadata, migration ledger or checkpoint schema. Earlier live acceptance records below
+are historical, not evidence for the rebuilt stack. The initial full validation run was
+stopped. No production database connection or change was performed.
+
+The user subsequently chose and explicitly approved a **clean dev rebuild**, not backup
+restoration. Recovery progress:
+
+- Removed the fixed-container `psql` fallback. Reset preflight rejects unsafe targets
+  and compares PostgreSQL system identifier/database through the selected `psql` command
+  and Python DSN before DDL. Makefile and Compose now both default to dev port 5434.
+- **13 focused reset-guard tests pass**; a fingerprint-verified `make db-reset` passed
+  on an explicitly named disposable container. A separate two-container mismatch check
+  refused the target and preserved both sentinel rows.
+- Verified persistent `csa_dev_db` belongs to Compose project `csa-dev`, service
+  `postgres`, with only loopback port 5434. Applied migrations through **0280** to the
+  already-recreated baseline, **without another schema drop**, then recreated checkpoints.
+  App and identity roles authenticated successfully; the existing read-only role
+  password verifier was preserved.
+- Recreated the two synthetic acceptance/development tenants with their prior UUIDs and
+  nine disabled capability entries each, using maintenance audits with no impersonated
+  human actor. Verified `@CSAV2_bot` via read-only API and recreated the DB mapping for
+  its existing webhook. No webhook, Caddy, Cloudflare or n8n setting was changed.
+- Two files remain in the dedicated upload root; none was deleted or adopted. Their
+  lost metadata/content integrity has **not** been recovered. Historical records,
+  accounts, KB documents, subscriptions and enabled switches have **not** been restored.
+- Gateway readiness and frontend login HTTP 200 pass after restart. Frontend restarted
+  after the exact old dev
+  PID retained its Next lock following TERM and required KILL. Fresh administrator
+  bootstrap completed privately; the user reports login and required password change
+  completed, and a read-only DB check confirms one enabled platform administrator with
+  no pending password change. Fresh KB/Telegram acceptance subsequently passed below. Guarded
+  conversation and delivery tasks were restarted; their heartbeats are fresh. The
+  conversation task enables KB ingestion against dedicated storage/loopback TEI (no
+  separate duplicate KB worker). Scheduled jobs, including mute expiry, have successful
+  tenant-scoped `job_runs`; this alone is not evidence of a live expired-row transition.
+- Recovery acceptance exposed two safe onboarding defaults that required deliberate
+  rollout: `onboarding` tenants are not eligible for the normal KB poller, and
+  `config.policy.deployment_mode=shadow` suppresses sends. Only the recreated Telegram
+  tenant was made `pilot`; the user then explicitly approved its gate policy `auto`,
+  with maintenance audits. M1 remains onboarding/disabled. No historical turns replayed.
+- Fresh FAQ job `5f066252-1c96-45c0-af90-1952bb8096d5` completed on attempt 1 with
+  two chunks. The user reported a transient upload 500; frontend logs contain proxy
+  socket-hang-up errors, but the precise cause is not established. No duplicate upload
+  was needed. Do not claim that incident fixed.
+- Fresh Telegram trace `202ac6db-acf8-4a4a-a03f-105512bbe71d` completed on attempt 1:
+  `kb_agent` succeeded, one fact, verification true, gate `auto/send`, one message,
+  outbox delivered on attempt 1. User confirmed the seventeen-day answer.
+- Verified only the two requested environment values after user authorization:
+  blank upload root/ingestion false remain in the environment file; the approved running
+  worker explicitly overrides these with dedicated storage/ingestion true. No secret
+  values were displayed and no environment file was edited.
+- Fresh `NO_LOCAL_ENV=1 ENV=ci make lint test`: lint passed, **644 passed / 3 failed**.
+  ASGI ingress p95 **203.61 ms**, TCP p95 **530.46 ms** exceeded unchanged **200 ms**
+  thresholds. The third failure was the existing reset test's separate database name
+  being correctly refused by the new strict target guard. That test now uses its own
+  disposable container/database `csa`, without weakening the guard; an actual make-level
+  mismatch regression verifies both databases retain sentinel rows.
+- Combined targeted rerun: **17 passed / 2 failed** (reset fixture credential mismatch,
+  subsequently corrected; unchanged TCP p95 **363.48 ms** still exceeds **200 ms**).
+  ASGI passed in that rerun. Final reset-only selection after correction:
+  **15 passed**, covering the actual make-level mismatch/sentinel regression and
+  successful reset/migrations/RLS check in a dedicated disposable container.
+  Final `make lint` passed at that stage. Validation was still non-green then;
+  the subsequent investigation and full-suite result are recorded below. Do not
+  repeatedly rerun tests or relax thresholds merely to manufacture an acceptance result.
+
+Before this incident, the new mute-expiry/runner failure-health fixes and concurrency/
+worker-recovery selection passed **40 tests**. The changes remain uncommitted.
+Subsequent offline validation is green below; live rollout/acceptance of the logging
+change remains pending, and the historical hang/500 causes are not proven.
+
+## Ingress latency and gateway/proxy investigation (2026-10-16)
+
+- Safety: no environment snapshots or secrets read, persistent-dev DB connections,
+  resets, webhook changes or production/Caddy/Cloudflare/n8n changes. Tests use
+  synthetic fixtures/disposable containers. At inspection neither dev gateway 18081
+  nor frontend 13000 was listening; the earlier acceptance was historical, not a
+  claim that these services are still available. Existing services were not restarted.
+- Baseline TCP benchmark reproduced failure at **277.25 ms p95** versus unchanged
+  **<200 ms** at 50 requests/s. A diagnostic TCP run passed at **147.00 ms**;
+  diagnostic ASGI showed **492.27 ms ack p95**, **517.92 ms scheduled ack p95** and
+  **148.45 ms start-lag p95**. Temporary SQL timing instrumentation showed delay
+  distributed across sequential statements (roughly 13–18 ms mean per ingress
+  lookup), not one uniquely slow query. Profiling and host load affect these runs:
+  this does not prove a PostgreSQL bottleneck or justify relaxing thresholds.
+- Consolidated credential/runtime reads into one tenant-scoped SQL lookup (six
+  fetches instead of seven for the normal first-contact path), with no cache or
+  weakened authentication/RLS. Regression checks joined metadata, policy override
+  precedence, foreign-tenant isolation and query count. Existing n8n rollback/shadow,
+  callback and idempotency behavior remain covered using mocks, not live n8n.
+  Combined ingress/cutover/ambiguous-commit/both unchanged latency checks: **19 passed**.
+  A full-suite repeat is required before a stable performance claim.
+- Reproduced liveness failure in an isolated subprocess using the **actual gateway**
+  and deliberately undrained stdout: health 200 before pressure, then health timeout,
+  with the event-loop stack blocked in `structlog/_output.py`. No database connection
+  or external request was used. This proves a failure mode, **not** the cause of the
+  historical hang, whose live process stack is unavailable.
+- User explicitly approved bounded background logging with observable failure.
+  Structured/stdlib logging now formats on the producer (preserving context), then
+  writes on a daemon thread: at most 1,024 waiting events plus one active write.
+  A sink older than five seconds makes readiness 503; overflow or writer error
+  latches an explicit, secret-free reason and `dropped_events` count until logging
+  is reconfigured/restarted. Overflow cannot block a request or grow an unbounded
+  backlog. Liveness remains 200. Shutdown drains with a bounded deadline and reports
+  failure rather than waiting forever. Output still requires a functioning collector;
+  full-queue events cannot be retained and are counted, not silently hidden.
+- New real-subprocess regression fills stdout and verifies the pressure request
+  completes, health stays 200 and readiness reports 503/queue-full/nonzero drops.
+  Logging/gateway/identity-lifecycle/poller selection **29 passed**, including exact
+  4.999-second/5.001-second stall threshold and recovery without event loss;
+  `make lint` passed.
+  This change has **not** been loaded into or accepted against the live dev stack.
+- The installed Next.js proxy maps an upstream socket error to HTTP 500. A new
+  loopback test reproduces that after a simulated durable upload, then verifies an
+  **explicit** same-key multipart retry returns the existing job, preserving CSRF
+  and file contents without automatically replaying mutations. Frontend transport
+  selection **9 passed**. The real database lost-COMMIT-acknowledgement regression
+  also passes. These explain how a queued job can survive a 500, **not why the original
+  upstream connection closed**. No timeout increase or success-shaped fallback added.
+- Final full `NO_LOCAL_ENV=1 ENV=ci PYTEST_ADDOPTS=-s make lint test`: **655 passed**,
+  134 warnings, **1,742.50 s**; Ruff/format/Pyright/import boundary all pass. This includes
+  the existing disposable-only `make db-reset` test; persistent dev was not reset.
+  The additional exact stall-threshold/recovery test was added after full-run collection
+  and passed in the final 29-test focused selection above (counts overlap; do not add them).
+- Full-run 50-rps results, with **150 completed turns and 150 pending deliveries each**:
+
+  | Transport | Ack p95 | Scheduled ack p95 | Start-lag p95 | Required |
+  |---|---:|---:|---:|---|
+  | ASGI | 114.186 ms | 120.390 ms | 5.869 ms | Both ack measures <200 ms |
+  | TCP | 129.436 ms | 130.810 ms | 3.206 ms | Both ack measures <200 ms |
+
+  This is a clean offline run, not proof of stable latency under every shared-host load,
+  nor live browser/Telegram acceptance of the new logging implementation.
+- Frontend changed-test ESLint and all nine transport tests pass. No dependencies,
+  environment files, Caddy/Cloudflare/webhooks or production resources were changed.
+  No dev listener was running at that offline validation's final check; the live
+  rollout and acceptance below subsequently received explicit approval.
+
+### Guarded dev rollout and synthetic acceptance (2026-10-16)
+
+- After explicit user approval, started the isolated loopback gateway (18081), frontend
+  (13000), standard conversation/KB worker and delivery worker. Before launch, neither
+  app port was listening and no repository worker/delivery process had a connection to
+  dev PostgreSQL. `csa-dev/postgres` remained on loopback 5434. The VS Code task runner
+  returned “Task not found” for the declared labels, so the exact guarded command bodies
+  in `.vscode/tasks.json` were run as scoped background processes; their database/role
+  startup checks passed. No task file or environment setting was changed.
+- Gateway `/healthz` and `/readyz` returned 200. Frontend loopback login redirected to
+  the sign-in page; the user signed in privately. Authenticated KB polling loaded the
+  selected synthetic tenant's agents, files, documents, ingestion jobs and gaps, with
+  the UI refreshing every five seconds.
+- Fresh synthetic return-policy upload returned 202 and completed on attempt 1 as job
+  `ac7c91cd-0e15-4b5d-8294-0923f94bd20c` (one chunk, `tei-384`). Authenticated original
+  download returned 200/138 bytes; its SHA-256 matched the local synthetic fixture
+  (`4264d2e1a9bd25323211782b1b2bf63bd74ac210525d687ff6527034db7adee6`).
+- Explicit retry acceptance used a second synthetic CSV: a client-side connection reset
+  was injected before the request reached the server, the UI retained the selected file,
+  and the explicit retry reused the same `Idempotency-Key`. The retry returned 202 as
+  job `9521c0e3-d9a6-441f-83af-880d7eb72cae`, then completed on attempt 1 with one chunk.
+  This validates the UI's retained-key retry path; it is not a live committed-response
+  loss test (the latter remains covered by offline proxy/database regressions).
+- The user sent the synthetic question “What is the sample return window for runtime
+  acceptance?” and confirmed receiving the expected seventeen-day answer. Tenant
+  `76946f31-2b21-4e48-9383-65d1a78029c2` trace
+  `7a4d0622-74f0-431a-9907-6d2bf323ffe1` has one completed ingress (attempt 1), one
+  inbound and one outbound message, and a successful `kb_agent` run. Its persisted
+  result contains four fact IDs, including three retrieved KB-chunk facts; fact text
+  was not selected. UI trace events for verify, gate and emit all reported `ok`.
+  Exactly one matching outbox row is `delivered` (attempt 1, Telegram HTTP 200).
+- Read-only, exact-target dev queries corroborated three recent tenant
+  `kb.upload_queued` console-audit records and fresh successful tenant scheduled-job
+  heartbeats with no errors. No old upload files were reconciled or deleted. No database
+  reset, production connection, webhook/infrastructure change or production setting
+  change occurred.
+- This is one synthetic isolated-dev acceptance, not a general provider/reliability
+  claim or proof of the historical hang's cause. The guarded services remain running
+  as detached loopback processes after the acceptance checks; the earlier offline check
+  remains historical evidence.
+
 | Phase | Status | Evidence |
 |---|---|---|
 | LG01 Foundation | Done | lint/tests green |
@@ -19,10 +215,349 @@
 | Langfuse Observability Integration | Done: Direct async batch ingestion (`LangfuseSink`), redaction & privacy preservation, integrated into worker `PostgresEventSink`, initial activation trace verified live on `jp.cloud.langfuse.com` | `tests/test_langfuse.py` (4 passed), `csa/core/langfuse.py`, `csa/graph/events.py`, `apps/worker/main.py` |
 | KB console upload ingestion | Done (gated by `KB_INGEST_ENABLED`): console writes ≤3 PDF/DOCX/CSV files to `KB_UPLOAD_ROOT/<client_id>/` + `kb_ingest_jobs` row; worker validates, confines paths, extracts, chunks, embeds (strict TEI, no silent fallback), stores versioned/deduplicated docs, records per-file `meta.results`, and retries with backoff. Model-filtered search. Also fixed LG13 regressions: `EcommerceAgent.ACTION_RISK` class attribute, stale capabilities test, JEV answers fixture for new agents, and `job_runs` (owner-written ops log) excluded from the RLS set-equality test. Full suite: 442 passed; the 6 failures were rerun in isolation and pass (the 3 latency thresholds failed only under host load). | `tests/test_kb_ingest.py` (25 passed), `tests/test_kb_agent.py` (7 passed), live dev TEI e5-small semantic check; not tested: real console writing jobs, worker loop running live in dev |
 | LG13 Waves 2/3 preparation | Implemented provider-neutral slice, **not live integrations**: disabled-by-default booking/subscription agents provide contact-scoped local reads and unexecuted requests; staff-only email/research/invoice-draft libraries, strict inputs and Decimal totals. Immutable preparation ledger with RLS, contact-owner checks, actor/trace and concurrent idempotency. No external calls, executable approvals or billing/event/invoice mutations. | `csa/agents/staged/`, migration `0260_staged_agent_requests.sql`, `tests/test_staged_agents.py` (51 passed); `docs/handoffs/2026-10-15-wave23-preparation.md`. |
-| LG15 Console turnover (n8n → CSA) | M0–M1 implemented and reviewed locally (2026-10-15): reviewed Next.js adoption, CSAV2 sessions/membership RBAC, invitation/reset/manual delivery, deliberate bootstrap, audited tenant/member onboarding and capability provisioning. Identity pool lifecycle/readiness explicit; human sessions independent of machine token. FourStacks UI guide applied; deferred and unmigrated pages inaccessible. M2 groundwork exists; remaining M2–M8, live browser acceptance and deployment remain pending. | Migration `0270_console_identity.sql`, `csa/console/`, typed frontend identity client, `docs/console_openapi.json`; focused checks/lint pass. Full run: 564 passed, one TCP latency failure; standalone rerun also fails. See evidence below; no clean full-suite pass claimed. |
+| LG15 Console turnover (n8n → CSA) | M0–M3 implemented (2026-10-15). Persistent isolated dev at 0280 without reset; guided M1/M2 and agent-operated platform-admin M3 browser checks pass. M3 tenant-admin/reader browser replay, M4–M8 and public deployment remain pending. | Migrations `0270_console_identity.sql`, `0280_console_kb_uploads.sql`, `csa/console/`, typed frontend/OpenAPI; M3 focused 57 passed plus final search/contract 3 passed (overlap), rollout regression/launcher selection 34 passed, Python lint, isolated frontend build/types/8 transport checks and disposable-only `make db-reset` pass. Live three-format ingestion through loopback TEI, downloads, duplicate/deletion/reconciliation and audit verified. Full suite: 607 passed / 2 ingress latency failures; full validation is not green. |
 | LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md` |
 
 Console M0–M1 review/verification (2026-10-15):
+
+### M3 authenticated KB upload and lifecycle (2026-10-15)
+
+- Implemented CSRF/session-scoped multipart upload (1–3 PDF/DOCX/CSV, 10 MiB/file,
+  31 MiB aggregate, 8 KiB per-part headers), server-only UUID storage names, signature/
+  extraction validation, tenant-key idempotency and durable atomic publication before
+  queue/file/batch/audit commit. Machine and reader writes are denied.
+- Added typed source metadata and authorized original downloads, safe public job DTOs
+  without storage paths/requesters/arbitrary metadata, document/source deletion and
+  explicit audited orphan/partial/deleted-file reconciliation. Already-open downloads
+  survive unlink and close on disconnect. Gap resolution and audit are atomic.
+- Tenant locks, managed file checks and queued-at/hash tombstones prevent in-flight
+  embedding, retry and legacy-path jobs from resurrecting deleted content. Deletion
+  between path resolution/read is a per-file error, not a whole-job abort. Deleting
+  linked content also removes its duplicate source aliases; deliberate new uploads
+  after deletion are allowed. No legacy source import or automatic tombstone purge.
+- Adopted platform `/knowledge-base` and tenant `/portal/faq` with stable retry keys,
+  5-second job/source/version/model/gap polling, original downloads, confirmed deletion,
+  role-derived controls, explicit failures and truthful queued/worker setup labels.
+- Synthetic disposable-DB follow-up: **57 passed** across upload/worker/streaming/
+  agent/contract checks. Includes all three types through HTTP → queue → hash worker →
+  tenant search; concurrent idempotency/conflict; roles/CSRF/machine/tenant scoping;
+  invalid/empty/type/path/four-file rejection; exact 10 MiB and 31 MiB bounds; partial/
+  retry/delete/legacy embedding races; original downloads/disconnect; publication
+  rollback/lost COMMIT acknowledgement and storage reconciliation/audits.
+  Final three-format search/binary-contract/projection selection **3 passed**
+  (overlaps the 57 selection); each format was queried and retrieved, not just stored.
+  Earlier broader identity/migration/RLS selection **103 passed / 1 failed**;
+  the sole immutable-context fixture error was fixed and its upload test passes.
+- `make lint` passes; isolated frontend **8 transport checks**, ESLint, types,
+  production webpack build and safe build traces pass. Disposable-only `make db-reset`
+  succeeded at **0280**, verifying all three new tables have RLS; its container was
+  removed. Persistent-dev activation is recorded separately below.
+  Full `NO_LOCAL_ENV=1 ENV=ci make lint test`: **607 passed, 2 failed** in 25m37s.
+  Both failures are the existing 200 ms ingress acknowledgement thresholds:
+  ASGI p95 **266.718 ms**, TCP **887.834 ms**. Both completed 150 turns and
+  recorded 150 pending deliveries. No threshold was relaxed or cause inferred.
+  This full run began before the final source-read/download-resource follow-ups,
+  which are covered by the 57-pass and final 3-pass focused selections plus final lint.
+  Both unchanged benchmarks subsequently pass together in isolation: **ASGI 123.840 ms**,
+  **TCP 137.444 ms**, 150 completed turns/pending deliveries each (**2 passed**).
+  No cause for the variability or clean full-suite acceptance is claimed.
+- **Authorized isolated-dev activation:** verified `csa-dev/postgres` on loopback 5434
+  and forward-applied only **0280**, transactionally and without a reset. Restarted only
+  console gateway 18081/frontend 13000; added the guarded `scripts.dev_kb_ingest` task.
+  It requires `csa_app` on the exact dev database, a dedicated absolute storage root,
+  and credential-free loopback HTTP TEI (or explicit dev hash embeddings). It claims
+  only the explicit synthetic tenant, including its onboarding state; it does not start
+  the full worker, delivery, bots or other agents.
+- Gateway and KB tasks override `KB_UPLOAD_ROOT` to
+  `$HOME/.local/share/csav2-dev/kb-uploads`; the configured value resolved to the
+  repository root and was not used. No environment-file contents or credentials were
+  displayed, and the file was not edited.
+  This override is task-local, not a global configuration repair. See
+  [startup instructions](./CONSOLE_API.md#isolated-dev-rollout-prerequisites).
+- **Live platform-admin browser evidence:** user signed in privately; enabled only the
+  synthetic M1 tenant's two KB switches. Four-file selection was rejected. A malformed
+  DOCX fixture was rejected with 422; corrected PDF/DOCX/CSV upload returned 202 and
+  reached `done`, one chunk each through the configured loopback TEI (`tei-384`).
+  All three authenticated original downloads returned 200 with matching SHA-256,
+  attachment headers and `no-store`. Reuploading the CSV reported duplicate/version 1
+  without adding chunks. Confirmed source deletion removed both CSV aliases/shared
+  document; confirmed PDF document deletion also removed its source. Both returned 204,
+  deleted-source downloads returned 404 and compatible chunks fell from 3 to 1.
+  Reconciliation returned 200/zero removals and preserved the remaining DOCX.
+  Tenant-scoped identity reads corroborated upload, source/document deletion and
+  reconciliation audit events; exactly one source file remains.
+- Browser acceptance exposed a four-placeholder/two-argument `list_gaps.sql` regression.
+  Fixed both console and KB-agent callers, typed nullable SQL booleans, and added real-DB
+  HTTP coverage for unresolved listing, reader denial, resolve disappearance and audit.
+  Rollout upload/agent/launcher/contract selection **34 passed** (includes **11** launcher
+  guard tests); final `make lint` passes. Selections overlap; do not sum them.
+- **Not tested live:** M3 tenant-admin/reader browser replay (roles/tenant isolation are
+  covered by HTTP tests), populated/resolved gap UI, changed-content version progression,
+  crash/retry races, customer conversation retrieval, Gemini/other providers or public
+  deployment. Loopback TEI ingestion success is not a claim about Gemini failover.
+  The KB switches remain enabled for synthetic tenant `m1-browser-20261015`; one
+  `m3-smoke-shipping.docx` document/chunk remains as a clearly synthetic dashboard demo.
+
+### M3 direct retrieval follow-up (2026-10-16)
+
+- User reports successful additional PDF ingestion (10 chunks) and synthetic
+  `demo-faq.csv` ingestion (2 chunks), each done in one attempt. Those job results
+  alone do not establish download, changed-version or deletion acceptance.
+- With permission, ran a read-only local check using existing `DefaultKbEmbedder`,
+  `kb/search_chunks.sql` and `KbInput` defaults (threshold **0.65**, limit **3**).
+  Guards verified dev mode, exact `csa_app` database target on loopback 5434 and
+  credential-free loopback TEI; hash mode was explicitly refused. No attached
+  environment-file snapshot or credentials were inspected.
+- For the synthetic M1 tenant, **“What is the demo return window?”** retrieved the
+  expected `demo-faq` return passage at cosine similarity **0.860727**. The paraphrase
+  **“How many days do I have to return a demo item?”** retrieved the same passage at
+  **0.898810**. Both returned “Synthetic returns are accepted within seventeen days.”
+  Model label was **tei-384**; no threshold adjustment or fixture re-ingestion.
+- Each query repeated with a random foreign tenant RLS context while still requesting
+  M1 returned **zero rows**. All database transactions were read-only; no gap records,
+  document changes or full agent/coordinator invocations. Non-demo passage contents
+  were not printed.
+- This verifies the existing embedding/search/threshold retrieval path, not complete
+  customer answering. Telegram tenant mapping, conversation orchestration, policy/
+  approval, composition and delivery remain untested in this follow-up. No services,
+  bot/webhook settings or production resources were changed.
+
+### Telegram acceptance preflight (2026-10-16)
+
+- Metadata-only isolated-dev inspection found one enabled Telegram endpoint on
+  `local-dev-telegram` (pilot), and none on the M1 browser tenant (onboarding).
+  Existing M1 uploads are therefore not available through that bot's tenant scope.
+- User selected synthetic-only acceptance on the existing dev Telegram tenant,
+  confirmed the identified bot is dedicated to development, and requested that its
+  webhook remain unchanged. Read-only Telegram `getWebhookInfo` reported a registered
+  URL matching the configured dev base and existing endpoint, zero pending updates
+  and no reported delivery error. Read-only `getMe` identified the public bot for
+  the user; no tokens, webhook URLs or credential contents were displayed.
+- User confirmed sending the exact synthetic routing probe. A subsequent read-only
+  query found no matching ingress event in the isolated dev database within the last
+  15 minutes. **Routing is not verified; Telegram end-to-end acceptance is blocked.**
+  A registered webhook alone does not establish that this gateway received the probe.
+- No polling, webhook changes, full conversation/delivery workers, fixture copying,
+  tenant remapping or external message sends were performed. The existing poller
+  removes the webhook on startup; the standard worker/delivery claims are not
+  tenant-scoped. Neither was started as a shortcut. Diagnose the dev routing before
+  enabling any conversation processing or delivery.
+- Subsequent user-operated Caddy correction restricted the dev site to webhook POSTs
+  forwarded to gateway 18081; user reports non-webhook `/readyz` now returns 404.
+  A fresh exact synthetic probe was corroborated in isolated-dev ingress as
+  **completed, one attempt** (2026-10-16 02:19:09 UTC); user also reports a bot reply.
+  This resolves the earlier missing-ingress blocker, not KB-answer acceptance.
+- Read-only host process inspection then found existing `apps.worker.main` and
+  `apps.delivery.main` processes (including wrapper/child pairs). They were not started
+  or stopped during this acceptance check, and their effective configuration/launch
+  provenance is unverified. VS Code forwarded ports do not identify background workers.
+  Do not start duplicate runtime processes or assume the current reply used KB;
+  verify the existing runtime's dev-only scope before further live processing.
+- Further preflight: existing runtime processes report `ENV=dev` and this repository
+  as their working directory. At socket inspection time the worker had five and
+  delivery two established connections to loopback 5434, with none to other standard
+  PostgreSQL ports. Their DSNs were absent from process environment, so this is
+  connection evidence, not complete effective-configuration attestation; a later
+  socket-port/DB-session correlation returned no matching rows.
+- The Telegram tenant has only two capability registry rows, no KB/knowledge entry,
+  and zero active KB documents. Its generic clarification reply therefore does not
+  demonstrate KB use. Tenant KB provisioning is a prerequisite to uploading the
+  synthetic FAQ and testing a knowledge question. Browser automation was unavailable
+  (connection timeout); no fallback direct DB writes, capability bypass, process
+  restart, shadow-mode change or synthetic document copy was performed.
+- User authorized an isolated-dev catalogue backfill for `local-dev-telegram`.
+  Reused the console onboarding `_AGENTS` definitions, Pydantic input schemas and
+  `console/provision_capabilities.sql` under application-role tenant transactions.
+  Catalogue increased **2 -> 9**: added ecommerce, escalation, invoice, KB, order,
+  order approval and ticket entries, all **unsubscribed/off**. Existing booking and
+  subscription rows were compared and preserved unchanged. Repeated provisioning
+  produced identical rows; a fresh post-commit read confirmed persisted state.
+  Recorded `capability.catalogue_backfilled` with null actor and explicit authorized
+  maintenance metadata rather than impersonating a console user. No schema/code change,
+  reset, enablement, source copy, service restart or routing change. This repairs this
+  older dev tenant only; no general existing-tenant backfill endpoint was added.
+- Subsequent user enabled the Telegram tenant's KB subscription/switch and uploaded
+  synthetic `demo-faq.csv`. Job `f0412a56-82a7-4232-88ff-844e40b93d7f`
+  was durably queued (zero attempts), but the frontend reported a runtime timeout.
+  Both gateway `/healthz` (no DB I/O) and `/readyz` timed out. Process inspection
+  showed a blocked main thread, a terminal-I/O waiter and open app/identity transactions
+  with DB lock waiters; this is not evidence of a TEI or file extraction failure.
+- User tried Ctrl+Q without recovery and explicitly authorized gateway-only restart.
+  Graceful termination did not exit; the exact verified gateway PID was force-stopped
+  and the guarded VS Code gateway task relaunched. No frontend, worker, delivery,
+  proxy or database reset/change. Replacement `/healthz` returned 200 in ~6 ms,
+  `/readyz` 200 in ~32 ms and frontend login 200 in ~192 ms; DB lock waiters fell to
+  zero. User then confirmed the KB page loads and shows the original queued CSV job.
+  No duplicate upload was needed. Exact blocking cause remains undetermined; terminal
+  output backpressure is only a lead, not a proven root cause or permanent code fix.
+  Telegram-tenant ingestion remains pending; zero attempts means it has not been
+  claimed, and the dedicated KB-only task still targets M1.
+- With further authorization, claimed exactly the known queued Telegram-tenant FAQ
+  job in a tenant-scoped transaction (unexpected job identity would roll back) and
+  processed it through existing `KbIngestProcessor`, exact isolated `csa_app` guards,
+  dedicated upload root and loopback TEI. Job finished **done**, one file, zero errors.
+  This was a bounded run, not a new persistent worker. Existing M1 task unchanged.
+- Telegram-tenant direct retrieval now passes at unchanged threshold 0.65/limit 3:
+  exact return-window question **0.860727**, paraphrase **0.898810**, both retrieving
+  the synthetic seventeen-day passage. No cross-tenant copy or threshold adjustment.
+- User then asked the exact question through Telegram and received handoff text.
+  Trace `59a3d8ac-0adf-4d9d-acfd-c1dd145a5056` corroborates completed ingress:
+  JEV classified `refund_returns`; planner produced **zero tasks**, strategy
+  `ask_clarifying`, confidence 0.6; validation changed strategy to `escalate`.
+  Only escalation agent execution is recorded, composition had zero facts and the
+  gate sent the system reply. **KB was not invoked**. The policy has an existing
+  clarification-count escalation bound; do not remove it or infer an embedding failure.
+  Telegram KB-answer acceptance remains blocked at planning/routing, despite successful
+  ingestion and direct retrieval. No live policy/provider/runtime change was made.
+- Planner follow-up: clarified the shared LLM planning prompt to route general policy/
+  return-window/warranty/shipping/documentation questions to read-only `kb_agent.query`,
+  even when classification says `refund_returns`. Explicitly distinguishes these from
+  customer-specific refund/cancellation/eligibility/mutation requests and retains
+  required inputs, button/human safeguards and existing clarification bounds.
+  No deterministic keyword override or gate/validation relaxation was added.
+- Provider/plan regression selection **35 passed**, including exact/paraphrased KB task
+  validation after prior clarification, missing-task refund escalation bounds and existing
+  invalid-agent/button-action rejection. `NO_LOCAL_ENV=1 ENV=ci make lint` passed.
+  Synthetic-only live configured Groq planner checks selected KB query for both questions
+  in two runs. Actual refund request selected `ticket_agent.create`, not KB lookup or
+  button-only order mutation; no tasks were executed. Initial live harness incorrectly
+  required an empty escalation plan for refunds, and was corrected to accept legitimate
+  support-ticket planning; that initial assertion failure is not a clean pass.
+  Mock tests verify prompt/contracts, not model reliability guarantees.
+- Existing conversation worker has not been restarted to load this prompt change.
+  Telegram KB-answer/composition/gate acceptance remains pending. No schema change,
+  database reset, Telegram message send or full-suite rerun in this prompt-only follow-up.
+- User subsequently authorized replacement of the existing dev conversation worker.
+  Added a guarded VS Code conversation-worker task (all dev tenants/scheduled jobs,
+  not tenant-scoped). Initial `runpy` launcher caused a Pydantic forward-reference
+  error after claiming the synthetic turn; corrected it to normal module import and
+  `asyncio.run(main())`. Standard stale-lease recovery completed that turn on attempt 2,
+  but it intentionally followed the muted route from the prior handoff, with no delivery.
+  User then authorized releasing only this synthetic conversation; existing tenant-scoped
+  release SQL and an explicit maintenance audit restored AI ownership. No gate or mute
+  safeguard bypass and no other conversation changes.
+- **Telegram KB answer acceptance passed:** user resent the question and received
+  “Synthetic returns are accepted within seventeen days.” Trace
+  `973cf19a-e31e-4c18-978d-342d5e03f300` corroborates completed ingress, JEV
+  `refund_returns`, planner/validation **kb_agent, auto_reply, confidence 0.88**,
+  successful KB execution, composition with one fact, verification true, policy gate
+  **send/auto**, one emitted message and delivery **delivered, one attempt**.
+  No Telegram API call was made by the assistant to send the customer test message.
+- Restart also surfaced a pre-existing scheduled `mute_expiry` SQL error referencing
+  missing `conversations.updated_at`; not changed as part of this planner fix.
+  Final acceptance does not establish general planner reliability, real refund
+  execution, Gemini failover or a clean full-suite result.
+
+### M2 agent controls and runtime visibility (2026-10-15)
+
+- User subsequently confirmed the guided tenant-admin/read-only checks and cleanup.
+  Those actions are user-confirmed, not independently replayed; populated-run and
+  live-provider browser acceptance remain unverified.
+- Follow-up dev smoke (15:49 UTC): user reported `Not Found` on all M2 views.
+  Served OpenAPI confirmed the old gateway lacked `/agents`, `/overview` and `/runs`.
+  With explicit user approval, restarted only the verified loopback gateway task on
+  18081; readiness and all three routes then passed. The shared browser now has the
+  user's authenticated platform-admin session: selected synthetic M1 tenant and
+  verified tenant subscriptions, Agents catalogue and Runtime activity load without
+  `Not Found`. Activity correctly shows zero recorded runs. No switches/data changed;
+  tenant-admin/read-only mutation checks and populated-run browser acceptance remain open.
+  This supersedes the no-restart/backend-not-loaded observation below.
+- Implemented `/console/v1/agents` and specialised metadata with independent subscription,
+  tenant switch, implementation stage, setup/circuit and role permissions. Unknown agents
+  and MyInvois are not implemented; booking/subscription writes are prepared-only; invoice
+  reads do not imply PDFs/issuance. Default marketplace runtime has no adapters. TEI is
+  configured-but-unverified, with actual matching/incompatible active KB chunk counts;
+  hash embeddings are explicitly lexical. Removed hard-coded healthy/compliance metrics.
+- Added tenant-scoped `/overview`, ID-keyset `/runs` and `/runs/{id}` execution metadata.
+  Raw inputs/outputs/customer text are excluded; query errors propagate. Platform and
+  tenant agent/activity screens share session transport and reuse incremental trace polling.
+  Platform users select a tenant, tenant admins cannot alter subscriptions, and staff/
+  readers have read-only controls. Required safety switches cannot be turned off.
+- Closed the runtime enforcement gap left by static planner descriptions: each production
+  attempt rechecks current switches without using registry discovery caches. Both disabled
+  switches block drafts and existing callbacks in separate dependency instances. Retry
+  disable stops the next attempt. Console KB execution is gated; queued uploads are not
+  claimed while disabled and spend no attempts. Already-started/claimed work may complete;
+  this is not cancellation or distributed breaker management.
+- Focused catalogue/API/identity/registry/runner/contract selection: **74 passed**.
+  Follow-up order-callback/runner/timeline/KB-queue/worker selection: **77 passed**.
+  These overlap and are not additive. `NO_LOCAL_ENV=1 ENV=ci make lint` passed.
+  Final isolated frontend check passed **6 transport/routing checks**, ESLint, Next
+  type generation, TypeScript, production webpack build and safe build-trace checks.
+- Full `NO_LOCAL_ENV=1 ENV=ci make lint test`: **559 passed, 32 failed** (23m17s).
+  It exposed lifecycle mocks missing the newly used TEI settings and golden fixtures
+  missing registry provisioning. Corrected those fixtures without weakening enforcement,
+  added PostgreSQL-bigint cursor bounds and equal-timestamp pagination evidence, and
+  reran gateway lifecycle + all golden cases + runtime pagination + snapshot:
+  **45 passed**. Final Python lint passes. These selections overlap earlier evidence.
+- The full run's remaining load failure was ASGI ack p95 **853.178 ms** versus the
+  unchanged **200 ms** limit. Subsequently reran both transport benchmarks alone:
+  **2 passed, 2 deselected**; ASGI p95 **92.637 ms**, TCP p95 **126.684 ms**,
+  each with **150 completed turns and 150 pending deliveries**. No threshold changed.
+  This is actual passing isolated performance evidence, but does not establish the
+  cause of earlier failures or a clean full-suite pass. The complete suite was not
+  rerun after fixture corrections; release-level full-suite repeatability remains open.
+- No schema/dependency change, reset, persistent-dev data mutation, provider call or
+  service restart in this M2 implementation. Tests use synthetic disposable Postgres.
+  Existing loopback login/health respond, and anonymous `/agents` redirects to login.
+  The existing gateway must be deliberately restarted to load new backend routes;
+  authenticated M2 browser acceptance, live provider checks and deployment remain pending.
+
+### Isolated dev setup and browser smoke check (later the same day)
+
+- Verified Compose project/service `csa-dev/postgres`, container `csa_dev_db`,
+  dedicated volume and host port **5434** before connecting. Applied missing
+  migrations **0250, 0260, 0270** transactionally with ledger stamps, without
+  resetting data. No production database or existing service was changed.
+- Enabled `csa_identity` login; the user set its password with interactive psql,
+  configured the ignored local env file and bootstrapped `admin@example.test`.
+  A malformed identity URI was diagnosed without printing secret values; the user
+  repaired it with a local password prompt and percent-encoding. Both database
+  roles now connect to the approved dev endpoint; identity privilege readiness passes.
+- Started only the loopback gateway **18081** and Next frontend **13000** using
+  VS Code tasks. Frontend API origin is `http://127.0.0.1:18081`; browser Origin
+  is `http://localhost:13000`, privately forwarded through VS Code. Cookies are
+  non-Secure for this loopback HTTP test only. No worker/delivery/bot/provider
+  processes, public proxy changes or runtime cutover.
+- Gateway `/healthz` and `/readyz` return 200. Live same-origin checks pass:
+  login 200; protected anonymous pages redirect; legacy API/deferred projects
+  return 404; anonymous identity returns 401; CSRF cookie/no-store and rejected
+  unauthenticated mutation verified without displaying tokens.
+- Browser login page inspected directly. User confirms login, forced password change,
+  administration home, tenant list and member screen all work. DB audit confirms
+  login and password-change events. The agent-shared browser did not inherit the
+  user's signed-in session, so authenticated screen acceptance is user-reported,
+  not an agent-operated end-to-end test. Subsequent guided lifecycle results are
+  recorded below; disposable integration evidence is separate.
+- Isolated frontend build/typecheck/lint and five transport checks passed again
+  before launch. No additional full test suite or reset was needed for this setup.
+  Existing TCP performance acceptance failure remains unresolved.
+
+### Guided M1 browser lifecycle checks (2026-10-15)
+
+- User created synthetic tenant `m1-browser-20261015` and accepted invitations for
+  `m1-admin@example.test` (tenant admin) and `m1-reader@example.test` (read only).
+  Database checks corroborate tenant creation, both scoped memberships and consumed
+  invitation tokens; all nine capability switches remain disabled.
+- User reports tenant-admin access to platform administration is blocked, reader
+  management controls are unavailable, direct team access is blocked and used
+  invitation acceptance is rejected. These are user-operated browser results;
+  the agent-shared browser still has a separate unauthenticated session.
+- Logout acceptance subsequently passed: user inspected the reader's incognito-window
+  Network request and reported `POST /console/v1/auth/logout` returned **204**.
+  A follow-up DB check corroborated two reader logout audit events and two revoked
+  reader sessions (latest logout 14:19:35 UTC). Earlier redirect-only checks had
+  no matching audit; the explicit reader-window request resolves that evidence gap.
+  The user also previously confirmed direct portal access after logout redirects to login.
+- Login troubleshooting: the user privately recovered the dev platform-admin password
+  with an audited local operation. An attempted targeted throttle cleanup deleted zero
+  rows; the remaining buckets did not match the intended admin email. Explicitly entering
+  the intended email and recovered password restored login. No credential values logged.
+- Services were restarted using the existing loopback tasks after both were found
+  stopped. Gateway readiness and frontend login returned 200 afterward. No worker,
+  delivery process, production connection or reset was involved.
+
+### Earlier implementation review
 
 - Fixed Unicode password changes raising `TypeError`: constant-time equality now compares
   UTF-8 bytes. Fixed resets bypassing an unaccepted invitation's membership creation:
@@ -48,13 +583,12 @@ Console M0–M1 review/verification (2026-10-15):
 - `NO_LOCAL_ENV=1` prevents Make and development settings from reading `.env.local`;
   Make uses its declared webhook default rather than exporting empty `CHANNEL_MODE`.
 
-Next bounded slice: finish **M2** (truthful readiness/role/entitlement metadata, tenant
-switch UI, specialised navigation, scoped runtime visibility/pagination, and execution/cache
-freshness evidence). Mutation RBAC, transactional audit, safety guards and the initial
-platform entitlement UI are already implemented. **M3** authenticated three-file upload,
+Next bounded slice: complete authenticated **M2 browser acceptance** using the new agent/
+activity screens, then **M3** authenticated three-file upload,
 download/delete safety and job-progress UI can proceed independently after M1. No additional
-provider keys are needed for these provider-neutral packages. Diagnose the unresolved TCP
-latency acceptance failure before treating the release as verified.
+provider keys are needed for these provider-neutral packages. Both load transports now
+pass in isolation, but obtain a clean full-suite rerun and investigate repeatability
+before treating the release as verified.
 
 Safety correction: the first use of the pre-existing test-image fixture sent the
 repository build context to the local Docker daemon, potentially including ignored
@@ -70,7 +604,7 @@ Provision the role using `CSA_IDENTITY_PASSWORD` only in the migration/provision
 process, then run the deliberate interactive first-admin bootstrap. Cookie/expiry
 and optional machine allowlist settings are documented in `CONSOLE_API.md` and
 `.env.example`; neither real env file was edited. Invitations/resets use manual
-delivery. Membership switching/account attachment, browser visual checks, M2+ business
+delivery. Membership switching/account attachment, browser visual checks, M3+ business
 UI, web chat, KB upload, approvals, provider execution and runtime turnover remain open.
 The unsupported invoice download-link endpoint now returns 501 without signing fallbacks.
 

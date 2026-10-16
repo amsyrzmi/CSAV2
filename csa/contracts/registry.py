@@ -97,6 +97,14 @@ class CapabilityRegistry:
         async with self._lock:
             self._cache.pop(tenant_id, None)
 
+    async def allows_execution(self, client_id: UUID, name: str) -> bool:
+        """Recheck current switches across processes; never authorize from the cache."""
+        async with tx(self._pool, str(client_id)) as conn:
+            row = await db.q.fetch_one(
+                "agents/preparation_enabled.sql", (client_id, name), conn=conn
+            )
+        return row is not None
+
     async def sync_input_schema(
         self,
         client_id: UUID | str,

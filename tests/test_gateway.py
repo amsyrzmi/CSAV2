@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
 import uuid
 from collections.abc import Iterator
 from time import perf_counter
@@ -30,6 +36,56 @@ class _FakeIngress:
         return IngressReceipt(accepted=True, duplicate=False, trace_id=uuid.uuid4())
 
 
+def test_actual_gateway_remains_live_when_stdout_is_not_drained(
+    gateway_app: tuple[FastAPI, _FakeIngress],
+) -> None:
+    code = """
+import sys
+import structlog
+import uvicorn
+from apps.gateway.main import create_app
+app = create_app()
+@app.get('/_synthetic/log-pressure')
+async def pressure():
+    for _ in range(4096):
+        structlog.get_logger().info('synthetic-pressure', payload='x' * 1024)
+    return {'done': True}
+uvicorn.run(app, fd=int(sys.argv[1]), lifespan='off', access_log=False, log_level='warning')
+"""
+    with socket.socket() as sock, tempfile.TemporaryFile() as errors:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        process = subprocess.Popen(
+            [sys.executable, "-c", code, str(sock.fileno())],
+            env={**os.environ, "ENV": "ci", "NO_LOCAL_ENV": "1"},
+            pass_fds=(sock.fileno(),),
+            stdout=subprocess.PIPE,
+            stderr=errors,
+        )
+        try:
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+                deadline = time.monotonic() + 30
+                while True:
+                    assert process.poll() is None, "synthetic gateway exited before readiness"
+                    try:
+                        assert client.get("/healthz", timeout=1).status_code == 200
+                        break
+                    except httpx.ConnectError:
+                        assert time.monotonic() < deadline
+                        time.sleep(0.02)
+                assert client.get("/_synthetic/log-pressure", timeout=5).status_code == 200
+                assert client.get("/healthz", timeout=1).status_code == 200
+                response = client.get("/readyz", timeout=1)
+                assert response.status_code == 503
+                assert "queue_full" in response.json()["reason"]
+                assert "dropped_events=0" not in response.json()["reason"]
+        finally:
+            process.kill()
+            process.wait(timeout=5)
+            assert process.stdout is not None
+            process.stdout.close()
+
+
 @pytest.fixture()
 def gateway_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[FastAPI, _FakeIngress]]:
     for name, value in {
@@ -50,6 +106,22 @@ def gateway_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[FastAPI, _Fak
     app.state.telegram_ingress = ingress
     yield app, ingress
     settings.get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_logging_failure_rejects_readiness_but_not_liveness(
+    gateway_app: tuple[FastAPI, _FakeIngress], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, _ = gateway_app
+    reason = "logging unavailable: queue_full; dropped_events=3"
+    monkeypatch.setattr(gateway, "logging_health", lambda: (False, reason))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/readyz")
+        assert response.status_code == 503
+        assert response.json() == {"status": "not_ready", "reason": reason}
+        assert (await client.get("/healthz")).status_code == 200
 
 
 @pytest.mark.asyncio

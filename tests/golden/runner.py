@@ -204,6 +204,7 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             "VALUES (%s, %s, %s, 'lg08-golden', %s)",
             (cid, f"golden-{case.id}-{cid.hex[:8]}", "Golden", Jsonb({"policy": case.seed.policy})),
         )
+        conn.execute("SELECT public.seed_core_capabilities(%s)", (cid,))
         conn.execute(
             "INSERT INTO channel_credentials (id, client_id, channel, access_token) "
             "VALUES (%s, %s, 'telegram', %s)",

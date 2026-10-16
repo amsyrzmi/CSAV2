@@ -83,16 +83,21 @@ def test_capabilities_and_specialized_tabs(
         assert "knowledge_base" in tab_ids
         assert "invoices" in tab_ids
 
-        # LHDN tab has subscription and active true
+        # Switches do not imply a live MyInvois integration.
         lhdn_tab = next(t for t in tabs if t["tab_id"] == "lhdn_myinvois")
         assert lhdn_tab["is_subscribed"] is True
         assert lhdn_tab["is_active"] is True
-        assert lhdn_tab["metrics"]["compliance_version"] == "1.1"
+        assert lhdn_tab["metrics"] == {}
+        assert lhdn_tab["implementation"] == "not_implemented"
+        assert lhdn_tab["readiness"] == "setup_required"
+        assert lhdn_tab["can_view"] is False
 
         # E-Commerce tab is subscribed but not active (client toggle off)
         ecom_tab = next(t for t in tabs if t["tab_id"] == "ecommerce")
         assert ecom_tab["is_subscribed"] is True
         assert ecom_tab["is_active"] is False
+        assert ecom_tab["readiness"] == "setup_required"
+        assert ecom_tab["metrics"] == {}
 
 
 def test_machine_cannot_toggle_capability_subscription(

@@ -164,7 +164,18 @@ class LLMProvider:
             '{"tasks":[{"agent":<name>,"input":<object>}],"reply_strategy":'
             '"auto_reply"|"ask_clarifying","priority":"low|normal|high|urgent"}. '
             "Use at most 3 tasks. Only use values the customer actually stated; never invent "
-            "SKUs, order ids, ticket ids or quantities. If a required value is missing, return "
+            "SKUs, order ids, ticket ids or quantities. General informational questions about "
+            "policies, return windows, warranties, shipping or product documentation should "
+            "use kb_agent with action 'query' and the customer's question as query. "
+            "The intent label is a hint, not a restriction on agent selection: a "
+            "refund_returns question asking about the return policy is not a request to "
+            "execute a refund. General policy lookup does not require an order id. "
+            "Do not use a KB lookup as a substitute for executing or confirming a "
+            "customer-specific refund, cancellation, eligibility decision or other account "
+            "mutation; preserve required inputs and human/confirmation safeguards. "
+            "For example, 'What is the return window?' needs a KB query, whereas "
+            "'Refund my order' must not be treated as an informational policy question. "
+            "If a required value is missing, return "
             'no tasks and reply_strategy "ask_clarifying". Never use order_agent actions '
             '"confirm" or "cancel" (they need a button). Agent input schemas: '
             f"{json.dumps(schemas)}. Agent purposes: {json.dumps(self._capabilities)}."

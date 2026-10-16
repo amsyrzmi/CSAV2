@@ -4,6 +4,7 @@ import { consoleOrigin } from "./lib/upstream";
 const nextConfig: NextConfig = {
   outputFileTracingRoot: process.cwd(),
   turbopack: { root: process.cwd() },
+  experimental: { proxyClientMaxBodySize: 31 * 1024 * 1024 },
   async rewrites() {
     return [
       {

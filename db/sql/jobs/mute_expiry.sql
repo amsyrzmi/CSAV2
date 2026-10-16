@@ -11,7 +11,7 @@ WITH expired AS (
   LIMIT %s
 ), upd AS (
   UPDATE conversations c
-  SET status = 'open', owned_by = NULL, ai_muted_until = NULL, updated_at = now()
+  SET status = 'open', owned_by = 'ai', ai_muted_until = NULL
   FROM expired e
   WHERE c.id = e.id AND c.client_id = %s
   RETURNING c.id

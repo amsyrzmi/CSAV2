@@ -87,6 +87,7 @@ class JobRunner:
         self._registry = registry or build_default_registry()
         self._clock = clock or SystemClock()
         self._last_run: dict[str, datetime] = {}
+        self._first_run: dict[str, datetime] = {}
         self._last_success: dict[str, datetime] = {}
 
     @property
@@ -110,7 +111,8 @@ class JobRunner:
             raise ValueError(f"unknown job: {job_name}")
         last = self._last_success.get(job.name)
         if last is None:
-            return True
+            first_run = self._first_run.get(job.name)
+            return first_run is None or (self._clock.now() - first_run) <= (3 * job.every)
         return (self._clock.now() - last) <= (3 * job.every)
 
     async def run_due_jobs(self) -> dict[str, bool]:
@@ -147,9 +149,10 @@ class JobRunner:
                 return False
 
             try:
-                await self._execute_job(job)
-                self._last_success[job.name] = self._clock.now()
-                return True
+                ok = await self._execute_job(job)
+                if ok:
+                    self._last_success[job.name] = self._clock.now()
+                return ok
             finally:
                 async with lock_conn.cursor() as cur:
                     await cur.execute(
@@ -159,16 +162,17 @@ class JobRunner:
         finally:
             await lock_conn.close()
 
-    async def _execute_job(self, job: Job) -> None:
+    async def _execute_job(self, job: Job) -> bool:
         """Execute the job either per-client or globally, recording job_runs."""
         now = self._clock.now()
         self._last_run[job.name] = now
+        self._first_run.setdefault(job.name, now)
 
         if not job.per_client:
-            await self._run_global_job(job)
-            return
+            return await self._run_global_job(job)
 
         clients = await self.list_active_clients()
+        all_ok = True
         for client in clients:
             client_id = client["id"]
             run_id = await self._start_job_run(job.name, client_id)
@@ -183,14 +187,16 @@ class JobRunner:
                     )
             except Exception as exc:
                 ok = False
+                all_ok = False
                 error_msg = f"{type(exc).__name__}: {exc}"
                 logger.error(
                     "job_tenant_failed", job=job.name, client_id=str(client_id), error=error_msg
                 )
             finally:
                 await self._finish_job_run(run_id, ok=ok, stats=stats, error=error_msg)
+        return all_ok
 
-    async def _run_global_job(self, job: Job) -> None:
+    async def _run_global_job(self, job: Job) -> bool:
         run_id = await self._start_job_run(job.name, client_id=None)
         ok = True
         stats: dict[str, Any] = {}
@@ -207,6 +213,7 @@ class JobRunner:
             logger.error("job_global_failed", job=job.name, error=error_msg)
         finally:
             await self._finish_job_run(run_id, ok=ok, stats=stats, error=error_msg)
+        return ok
 
     async def _start_job_run(self, job_name: str, client_id: UUID | None) -> int:
         now = self._clock.now()

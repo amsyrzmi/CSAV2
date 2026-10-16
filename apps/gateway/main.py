@@ -10,7 +10,7 @@ Health contract (design §8.3):
   AND migrations are at the expected version. "At version" is computed as
   **set membership** — every shipped ``db/migrations/*.sql`` version is present
   in ``schema_migrations`` — plus a ``max(applied) == EXPECTED_SCHEMA_VERSION``
-  (``0270``) sanity check. Any missing shipped version, a ``max`` mismatch, or an
+  (``0280``) sanity check. Any missing shipped version, a ``max`` mismatch, or an
   unreachable DB returns 503 naming the gap. ``*.py`` migrations never enter the
   ledger, so the guarded ``0130`` re-encrypt skeleton is irrelevant to readiness.
 """  # LG01
@@ -30,7 +30,7 @@ from csa.console.middleware import ConsoleResponseHeaders
 from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
-from csa.core.logging import configure_logging
+from csa.core.logging import configure_logging, logging_health, shutdown_logging
 from csa.core.settings import get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
 from fastapi import FastAPI, Request
@@ -44,7 +44,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0270"
+EXPECTED_SCHEMA_VERSION = "0280"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -146,7 +146,10 @@ def create_app() -> FastAPI:
                 if identity_pool is not None:
                     await identity_pool.close()
             finally:
-                await pool.close()
+                try:
+                    await pool.close()
+                finally:
+                    shutdown_logging()
 
     app = FastAPI(
         title="csa-gateway",
@@ -180,7 +183,9 @@ def create_app() -> FastAPI:
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
         """Readiness: DB reachable + migrations at the expected version."""
-        ready, reason = await check_readiness(app.state.pool)
+        ready, reason = logging_health()
+        if ready:
+            ready, reason = await check_readiness(app.state.pool)
         if ready and settings.IDENTITY_DATABASE_URL is not None:
             try:
                 await app.state.identity_service.check_ready()
@@ -243,6 +248,11 @@ def create_app() -> FastAPI:
             machine_client_ids=frozenset(
                 UUID(value) for value in settings.CONSOLE_MACHINE_CLIENT_IDS
             ),
+            kb_model=settings.KB_EMBED_MODEL_LABEL
+            if settings.TEI_ENDPOINT is not None
+            else ("hash-384" if settings.ENV != "prod" else None),
+            kb_tei_configured=settings.TEI_ENDPOINT is not None,
+            kb_upload_root=settings.KB_UPLOAD_ROOT,
         )
     )
 

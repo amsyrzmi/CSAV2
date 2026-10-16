@@ -7,7 +7,7 @@ ifneq ($(NO_LOCAL_ENV),1)
 endif
 
 DEV_PGHOST ?= 127.0.0.1
-DEV_PGPORT ?= 5433
+DEV_PGPORT ?= 5434
 DEV_OWNER_PASSWORD ?= $(if $(strip $(CSA_OWNER_PASSWORD)),$(CSA_OWNER_PASSWORD),dev_owner_pw)
 DEV_APP_PASSWORD ?= $(if $(strip $(CSA_APP_PASSWORD)),$(CSA_APP_PASSWORD),dev_app_pw)
 DEV_RO_PASSWORD ?= $(if $(strip $(CSA_RO_PASSWORD)),$(CSA_RO_PASSWORD),dev_ro_pw)
@@ -17,9 +17,8 @@ DEV_APP_DSN := postgres://csa_app:$(DEV_APP_PASSWORD)@$(DEV_PGHOST):$(DEV_PGPORT
 
 COMPOSE_DEV := deploy/compose.dev.yml
 
-# Use the host psql when installed; otherwise run psql inside the dev container.
-# Files are always fed on stdin so both paths behave identically.
-PSQL := $(if $(shell command -v psql 2>/dev/null),psql "$(DEV_OWNER_DSN)",docker exec -i csa_dev_db psql -U csa -d csa)
+# Never silently select a different database when the host client is missing.
+PSQL := psql "$(DEV_OWNER_DSN)"
 
 DEV_GATEWAY_PORT ?= 18080
 
@@ -33,18 +32,19 @@ db-image:
 
 ## db-reset: drop + recreate the dev DB (baseline -> migrations -> seed -> lg_setup)
 db-reset:
+	@MIGRATE_DATABASE_URL="$(DEV_OWNER_DSN)" uv run python -m scripts.verify_reset_target -- $(PSQL)
 	@echo ">> recreating dev database (public + lg schemas)"
-	$(PSQL) -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS lg CASCADE;"
-	$(PSQL) -v ON_ERROR_STOP=1 -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+	@$(PSQL) -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS lg CASCADE;"
+	@$(PSQL) -v ON_ERROR_STOP=1 -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 	@echo ">> applying schema baseline"
-	$(PSQL) -v ON_ERROR_STOP=1 < db/schema_baseline.sql
+	@$(PSQL) -v ON_ERROR_STOP=1 < db/schema_baseline.sql
 	@echo ">> applying migrations + lg checkpoint setup"
 	@MIGRATE_DATABASE_URL="$(DEV_OWNER_DSN)" \
 	LG_SETUP_DATABASE_URL="$(DEV_OWNER_DSN)" \
 	CSA_APP_PASSWORD="$(DEV_APP_PASSWORD)" \
 	CSA_RO_PASSWORD="$(DEV_RO_PASSWORD)" \
 	    uv run python -m scripts.migrate
-	LG_SETUP_DATABASE_URL="$(DEV_OWNER_DSN)" uv run python -m scripts.lg_setup
+	@LG_SETUP_DATABASE_URL="$(DEV_OWNER_DSN)" uv run python -m scripts.lg_setup
 	@echo ">> applying seed data (empty in LG01)"
 	@for f in db/seed/*.sql; do \
 	    [ -e "$$f" ] || continue; \

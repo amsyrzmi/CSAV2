@@ -4,6 +4,23 @@ Never point any of this at production databases, credentials, bots, services, or
 The development environment may share a physical host with production; verify the private dev
 configuration and use only the isolated dev stack.
 
+For the latest guarded console runtime and recovery constraints, start with the
+[runtime handoff](./handoffs/2026-10-16-runtime-stabilization.md). The generic
+first-time commands below are not instructions to reset or reprovision the recovered dev.
+
+### Dependency and database-image provenance
+
+Exact dependency versions are maintained in [pyproject.toml](../pyproject.toml) and
+[uv.lock](../uv.lock), not a duplicated version table. The combined PostGIS/pgvector
+image is built from [deploy/db.Dockerfile](../deploy/db.Dockerfile).
+Historical LG01 publication recorded
+`ghcr.io/amsyrzmi/csa-pg16-postgis-vector` at
+`sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223`.
+That is provenance, not proof of current registry availability or current deployment
+pins: inspect the relevant Compose/CI manifests and verify before deployment.
+The old production stock image with separately installed PostGIS was not reproducible;
+any production image migration requires a separate approved deployment plan.
+
 ## What runs
 
 | Thing | Where |

@@ -1,14 +1,14 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api, post, patch } from "@/lib/api";
-import type { Capability, Client } from "@/lib/identity-contracts";
+import type { Agent, Capability, Client } from "@/lib/identity-contracts";
 import { action, field, Heading, Notice, Panel } from "./ui";
 
 export function ClientManagement() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [selected, setSelected] = useState("");
   const selection = useRef("");
-  const [capabilities, setCapabilities] = useState<Capability[] | null>(null);
+  const [capabilities, setCapabilities] = useState<Agent[] | null>(null);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [timezone, setTimezone] = useState("Asia/Kuala_Lumpur");
@@ -34,10 +34,11 @@ export function ClientManagement() {
     setError("");
     if (!id) return;
     try {
-      const rows = await api<Capability[]>(
-          `/console/v1/capabilities?client_id=${encodeURIComponent(id)}`,
+      const rows = await api<Agent[]>(
+        `/console/v1/agents?client_id=${encodeURIComponent(id)}`,
       );
-      if (selection.current === id) setCapabilities(rows);
+      if (selection.current === id)
+        setCapabilities(rows.filter((agent) => agent.capability !== null));
     } catch (cause) {
       if (selection.current === id) setError((cause as Error).message);
     }
@@ -70,11 +71,10 @@ export function ClientManagement() {
         `/console/v1/capabilities/${encodeURIComponent(capability.name)}?client_id=${encodeURIComponent(selected)}`,
         { is_enabled: !capability.is_enabled },
       );
-      setCapabilities(
-        await api<Capability[]>(
-          `/console/v1/capabilities?client_id=${encodeURIComponent(selected)}`,
-        ),
+      const rows = await api<Agent[]>(
+        `/console/v1/agents?client_id=${encodeURIComponent(selected)}`,
       );
+      setCapabilities(rows.filter((agent) => agent.capability !== null));
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -183,33 +183,39 @@ export function ClientManagement() {
                 </p>
               ) : (
                 <ul className="divide-y divide-ink-100">
-                  {capabilities.map((capability) => (
-                    <li
-                      key={capability.name}
-                      className="flex flex-wrap items-center justify-between gap-3 py-4"
-                    >
-                      <span className="min-w-0">
-                        <strong className="block break-words text-sm font-medium">
-                          {capability.name}
-                        </strong>
-                        <span className="text-xs text-ink-500">
-                          Tenant switch:{" "}
-                          {capability.client_enabled ? "on" : "off"}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        className="min-h-11 rounded-md border border-ink-300 px-3 text-sm hover:bg-brand-50 disabled:opacity-50"
-                        disabled={busy}
-                        aria-pressed={capability.is_enabled}
-                        onClick={() => void toggle(capability)}
+                  {capabilities.map((agent) => {
+                    const capability = agent.capability;
+                    if (!capability) return null;
+                    return (
+                      <li
+                        key={capability.name}
+                        className="flex flex-wrap items-center justify-between gap-3 py-4"
                       >
-                        {capability.is_enabled
-                          ? "Subscribed · remove"
-                          : "Not subscribed · grant"}
-                      </button>
-                    </li>
-                  ))}
+                        <span className="min-w-0">
+                          <strong className="block break-words text-sm font-medium">
+                            {capability.name}
+                          </strong>
+                          <span className="text-xs text-ink-500">
+                            Tenant switch:{" "}
+                            {capability.client_enabled ? "on" : "off"}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          className="min-h-11 rounded-md border border-ink-300 px-3 text-sm hover:bg-brand-50 disabled:opacity-50"
+                          disabled={busy || !agent.can_subscribe}
+                          aria-pressed={capability.is_enabled}
+                          onClick={() => void toggle(capability)}
+                        >
+                          {agent.required_system && capability.is_enabled
+                            ? "Required safety capability"
+                            : capability.is_enabled
+                              ? "Subscribed · remove"
+                              : "Not subscribed · grant"}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </Panel>

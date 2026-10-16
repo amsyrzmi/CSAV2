@@ -574,36 +574,47 @@ async def test_all_local_lists_work(world: World) -> None:
 
 
 @requires_docker
-async def test_make_db_reset_on_disposable_database(
-    migrated_dsn: str, pg_container: object
-) -> None:
-    async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as conn:
-        await conn.execute("CREATE DATABASE wave_reset")
-    dsn = make_conninfo(migrated_dsn, dbname="wave_reset")
-    container_id = pg_container.get_wrapped_container().id  # type: ignore[attr-defined]
-    psql = (
-        ["psql", dsn]
-        if shutil.which("psql")
-        else ["docker", "exec", "-i", container_id, "psql", "-U", "csa", "-d", "wave_reset"]
-    )
-    process = await asyncio.create_subprocess_exec(
-        "make",
-        "db-reset",
-        f"DEV_OWNER_DSN={dsn}",
-        f"PSQL={shlex.join(psql)}",
-        "DEV_APP_PASSWORD=test_app_pw",
-        "DEV_RO_PASSWORD=test_ro_pw",
-        cwd=Path(__file__).resolve().parents[1],
-        env={**os.environ, "ENV": "ci"},
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    output, _ = await process.communicate()
-    assert process.returncode == 0, output.decode()
-    async with await psycopg.AsyncConnection.connect(dsn) as conn:
-        row = await (
-            await conn.execute(
-                "SELECT relrowsecurity FROM pg_class WHERE relname='agent_preparation_requests'"
-            )
-        ).fetchone()
-        assert row and row[0] is True
+async def test_make_db_reset_on_disposable_database(combined_pg_image: str) -> None:
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer(
+        image=combined_pg_image,
+        username="csa",
+        password="test_owner_pw",
+        dbname="csa",
+        driver=None,
+    ) as container:
+        dsn = make_conninfo(
+            host=container.get_container_host_ip(),
+            port=container.get_exposed_port(5432),
+            user="csa",
+            password="test_owner_pw",
+            dbname="csa",
+        )
+        container_id = container.get_wrapped_container().id
+        psql = (
+            ["psql", dsn]
+            if shutil.which("psql")
+            else ["docker", "exec", "-i", container_id, "psql", "-U", "csa", "-d", "csa"]
+        )
+        process = await asyncio.create_subprocess_exec(
+            "make",
+            "db-reset",
+            f"DEV_OWNER_DSN={dsn}",
+            f"PSQL={shlex.join(psql)}",
+            "DEV_APP_PASSWORD=test_app_pw",
+            "DEV_RO_PASSWORD=test_ro_pw",
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "ENV": "ci", "NO_LOCAL_ENV": "1"},
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        output, _ = await process.communicate()
+        assert process.returncode == 0, output.decode()
+        async with await psycopg.AsyncConnection.connect(dsn) as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT relrowsecurity FROM pg_class WHERE relname='agent_preparation_requests'"
+                )
+            ).fetchone()
+            assert row and row[0] is True

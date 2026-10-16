@@ -1,11 +1,20 @@
 # Console API contract (v1)
 
-M0–M1 implementation, 2026-10-15: the retained Next.js presentation calls one CSAV2
+M0–M3 implementation, 2026-10-15: the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
 See the [migration plan](./handoffs/2026-10-15-console-source-migration-plan.md) and
 [frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
 
 ## Authentication, tenancy and settings
+
+Development reset safety: `make db-reset` is destructive. Its default target is loopback
+port **5434**, never production port 5433. A host `psql` client is required by default;
+there is no automatic Docker fallback. An explicit `PSQL` override must address the same
+database as `DEV_OWNER_DSN`: preflight compares database/system identifiers before any
+schema drop, failing closed on missing clients, probe failure or mismatch. Use a named
+disposable test container for reset validation; do not reset persistent dev merely to
+validate application changes. Keep credentials in the process environment, not command
+arguments or copied logs. See [current dev recovery status](./PROGRESS.md).
 
 Human routes are mounted independently of `CONSOLE_API_TOKEN`. Configure
 `IDENTITY_DATABASE_URL` using **csa_identity**, `CONSOLE_ALLOWED_ORIGIN` using the exact
@@ -15,6 +24,22 @@ dev/CI origins. HTTPS is required elsewhere. No proxy/forwarded headers establis
 `CONSOLE_SESSION_IDLE_SECONDS=1800` and `CONSOLE_SESSION_ABSOLUTE_SECONDS=43200` are
 bounded and configurable. Missing identity configuration returns an explicit unavailable
 response; configured pool failures fail startup/readiness. Both pools close at shutdown.
+
+Configured logging uses a background output writer with a bounded 1,024-event waiting
+queue (plus one active write). It does not perform output I/O on the request event loop.
+`/healthz` remains process-only; `/readyz` also returns **503** when queued output is
+stalled for more than five seconds, overflows, or its writer fails. The readiness reason
+contains a secret-free failure code and `dropped_events` count. Overflow/writer errors
+are latched until logging is reconfigured or the process restarts; restoring a merely
+stalled sink allows readiness to recover if no events were lost. Operators must monitor
+readiness and keep the output collector draining; this is not lossless logging under
+permanent sink failure. Shutdown draining has a bounded deadline and raises on failure.
+
+An upload's HTTP 500/network error does not prove its transaction rolled back. The
+frontend retains the selected files and idempotency key for an **explicit retry**; do
+not reselect/re-upload with a new key for an uncertain result. Retrying the same key and
+same files returns the committed job, or reports a conflict if contents differ.
+Proxy socket-reset and real database lost-acknowledgement cases are regression-tested.
 
 Migration **0270** creates users, sessions, memberships, tokens, throttle buckets and an
 append-only audit ledger. The identity role has no application-domain access or role
@@ -161,16 +186,192 @@ is not implemented yet.
 
 ## Capabilities and specialised tabs (LG13)
 - `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`.
-- `PATCH /console/v1/capabilities/{name}` with body `{"is_enabled"?: bool, "client_enabled"?: bool}`. A human platform admin controls subscriptions; a human tenant admin/platform admin controls tenant switches. Actor fields such as `changed_by` are rejected. Required safety capabilities cannot be disabled. Changes and before/after audit share one locked transaction. Runtime currently reads registry state directly, so no process-local cache can retain stale entitlement state.
-- `GET /console/v1/tabs/specialized`: the tab catalogue (`lhdn_myinvois`, `ecommerce`, `knowledge_base`, `invoices`, `bookings`). Each tab has `is_subscribed`, `is_active`, and `metrics`. Show a tab only when `is_active` is true.
+- `PATCH /console/v1/capabilities/{name}` with body `{"is_enabled"?: bool, "client_enabled"?: bool}`. A human platform admin controls subscriptions; a human tenant admin/platform admin controls tenant switches. Actor fields such as `changed_by` are rejected. Required safety capabilities cannot be disabled. Changes and before/after audit share one locked transaction.
+- `GET /console/v1/agents`: authoritative management catalogue. Each row has `name`, `title`,
+  nullable `capability` (the existing registry contract), `implementation`, `readiness`,
+  explanatory `detail`, `required_system`, `specialized`, `can_view_specialized`,
+  `can_subscribe` and `can_toggle`. Unknown registry agents are explicitly `not_implemented`.
+  A missing registry row is not a subscription. Permission flags are session-role-derived;
+  machine principals receive no mutation permissions. Required safety switches may be
+  enabled if initially off, but cannot be disabled.
+- `implementation`: `local`, `prepared_only`, or `not_implemented`. Local invoice reads
+  do not imply PDF delivery/issuance; booking/subscription preparation is not provider
+  execution. MyInvois is not implemented. No e-commerce adapters are wired into the default
+  turn runtime, even though adapter libraries exist.
+- `readiness`: `available` for implemented local paths, `setup_required`,
+  `configured_unverified`, or `reindex_required`. KB returns the selected embedding model
+  and compatible/incompatible active chunk counts. Mixed indexes report both counts;
+  only matching-model chunks are retrievable. Only incompatible chunks require reindexing.
+  Dev hash retrieval is labelled lexical, not semantic readiness. A configured TEI endpoint
+  is **not** a live health check. No URL/credential is exposed or provider contacted.
+- `GET /console/v1/tabs/specialized`: the catalogue (`lhdn_myinvois`, `ecommerce`,
+  `knowledge_base`, `invoices`, `bookings`, `subscriptions`) includes independent switch,
+  implementation, readiness and `can_view`/`can_manage` metadata. `metrics` remains an
+  empty compatibility object; hard-coded provider health/compliance metrics are removed.
+  Specialised inspection navigation requires a subscription and an implemented surface,
+  not a fabricated healthy state. Setup-required/prepared-only labels remain visible.
+  `can_manage` governs capability toggling, not future feature-specific permissions.
 
-## Knowledge base (LG13)
+### Switch enforcement
+
+Production turn dependencies install a fresh tenant-scoped registry check in `SpokeRunner`
+before **each** execution attempt, including callback and follow-up tasks. This authorization
+does not use the 30-second discovery cache, so another worker's warm cache cannot retain
+permission after a committed toggle. Missing/off subscriptions or tenant switches return
+an explicitly recorded `capability_unavailable` result. Disabling during retry backoff
+prevents another attempt and preserves the previous attempt's failure result.
+The existing circuit breaker remains responsible for circuit/probe behavior.
+
+Console KB text-ingest/delete/gap-resolve execution returns 409 when either KB switch is
+off. Upload jobs are claimable only when both switches are on; disabled jobs remain queued
+without consuming attempts. Work that has already started/been claimed is not cancelled.
+This is not a transaction-wide cancellation lock or cross-process breaker reset.
+
+## Runtime visibility (M2)
+
+All endpoints use the same verified tenant selection as the catalogue. All human roles
+may read their tenant's metadata; platform admins must explicitly select `client_id`.
+The separate machine principal remains read-only and tenant-allowlisted.
+
+- `GET /console/v1/overview`: recorded run counts (`runs`, `succeeded`, `failed`),
+  `last_run_at` and `window_hours=24`. Counts describe recorded attempts, not provider
+  health, revenue or complete historical workflow usage. Query failures propagate rather
+  than being replaced by zero.
+- `GET /console/v1/runs?limit=50&before_id=<id>&agent=<optional exact name>`:
+  `{items, next_before_id}`; limit 1–200, descending unique run ID keyset pagination.
+  Run IDs/cursors must be positive PostgreSQL bigint values (maximum `2^63 - 1`);
+  out-of-range values are rejected with 422 before querying run data.
+  Pass `next_before_id` unchanged for the next page; null means no older page.
+  Each item contains `id`, `trace_id`, `conversation_id`, `agent`, `ok`, `status`,
+  `error_code`, `error_category`, `latency_ms` and `created_at`.
+- `GET /console/v1/runs/{id}`: the same metadata, or tenant-scoped 404.
+  Raw run inputs/outputs, message text and model prompts are deliberately excluded.
+- The frontend `/activity` and `/portal/activity` poll every five seconds and reuse
+  `/events?trace_id=...&after_id=...` for incremental trace inspection. Errors are
+  displayed; no success-shaped empty/zero fallback is rendered. Legacy trace listing
+  remains compatible; the new runs screen uses ID keysets rather than its timestamp cursor.
+
+## Knowledge base (LG13 / M3)
 - `GET /console/v1/kb/documents?limit=50` lists documents with `version`, `is_active`, `file_name`, `chunk_count`, `kind`, and `embed_model`.
 - `POST /console/v1/kb/documents` adds plain text. Body: `{title, content, category?, language?, source_uri?}`. Returns 503 when the embedding service is down.
-- `DELETE /console/v1/kb/documents/{id}` deletes a document.
-- File upload is deferred to M3. The adopted frontend has no database connection or file-ingestion shortcut. The existing worker-side ingestion contract remains available to separately authorized synthetic fixtures/internal services.
-- `GET /console/v1/kb/ingest-jobs?limit=20` and `GET /console/v1/kb/ingest-jobs/{id}` return the job `status` (`queued`, `processing`, `done`, `partial` or `failed`) and per-file `meta.results`.
-- `GET /console/v1/kb/gaps` lists questions the KB could not answer. `POST /console/v1/kb/gaps/{id}/resolve` marks one resolved; it does not accept an answer text yet.
+- `POST /console/v1/kb/uploads`: authenticated multipart repeated `files` fields,
+  **1–3 non-empty PDF/DOCX/CSV files, at most 10 MiB each**, UUID `Idempotency-Key`
+  header. Returns **202 `{job_id, duplicate_request}`**, not a searchable/success result.
+  Same tenant/key and ordered filename/content fingerprint returns the existing job;
+  reuse with different files returns 409. Cookies/CSRF and verified tenant context
+  are required; machine credentials cannot upload or read/download managed sources.
+  Platform/tenant admins and tenant staff may write; readers may view/download.
+  Upload/document/source deletion and gap resolution require both KB switches on (409).
+  Reconciliation remains available with switches off.
+- Parser bounds apply while streaming, before unbounded buffering: **31 MiB total**,
+  **8 KiB headers per part**, at most 3 file parts and no non-file fields. Oversized
+  input is 413; malformed/incomplete multipart, invalid filenames, empty files, unsupported
+  types or invalid signatures/content are 422; non-multipart is 415. No client-selected
+  server paths or base64 payloads. Existing extraction resource limits still apply
+  (500 PDF pages, 5,000 CSV rows, 50 MiB DOCX expansion); image-only PDFs require OCR.
+- Storage uses `KB_UPLOAD_ROOT/<client_id>/<server UUID>.<validated extension>`,
+  private directory/file permissions, exclusive partial writes, fsync and atomic rename
+  **before** committing queue/file/batch/audit rows. A failed/ambiguous commit reconciles
+  against durable metadata rather than blindly unlinking possibly committed files.
+  Cancellation finishes publication before releasing the shared tenant lock.
+- `GET /console/v1/kb/files?limit=100`: public source metadata (`id,name,media_type,
+  size_bytes,document_id,created_at`), never a storage path/hash.
+  `GET /console/v1/kb/files/{id}/download` authorizes the tenant and human session again;
+  deleted/foreign sources are 404, missing storage is an explicit 503. Responses are
+  attachment downloads with no-store/nosniff. Downloads already authorized/open may finish
+  during deletion; new downloads cannot.
+- `DELETE /console/v1/kb/documents/{id}`: **204**, scoped/audited; missing is 404.
+  Removes chunks/document, marks every linked source deleted and unlinks originals.
+  `DELETE /console/v1/kb/files/{id}`: **204**, scoped/audited and repeatable for known
+  sources; when linked it deletes the shared document and **all linked duplicate sources**.
+  Deleting an unprocessed source invalidates it even if a worker already read its bytes.
+  Superseded document versions remain visible until explicitly deleted.
+- Worker deduplication, final storage and deletion share a tenant transaction advisory
+  lock. Hash tombstones fence jobs queued before a content deletion (including legacy
+  jobs without file IDs); managed file validity is rechecked after embedding, so deletion
+  wins over in-flight/retried work. A deliberate new upload queued after deletion is allowed.
+  Locks do not span embedding/network calls. Deletion fences persist; no automatic purge.
+- `POST /console/v1/kb/storage/reconcile`: authenticated writer/CSRF, audited;
+  returns `{removed_files}`. Explicit recovery after crashes/disk failures: under the
+  same tenant lock removes only UUID-pattern orphan/deleted/partial files, retaining
+  active DB-backed sources and unknown operator/legacy filenames. No recursive purge,
+  legacy import or scheduler is implied. Available via **Reconcile orphaned storage**
+  on the source panel; I/O/DB failures propagate and are logged, not reported as success.
+- `GET /console/v1/kb/ingest-jobs?limit=20` and `GET /console/v1/kb/ingest-jobs/{id}`:
+  curated typed job status (`queued`, `processing`, `done`, `partial`, `failed`),
+  attempts/timestamps, public `{name,file_id}` files and per-file `meta.results`
+  (`file,status,document_id,chunks,version,error`). Internal paths/requester/arbitrary
+  metadata are omitted; errors containing path syntax are redacted. Legacy `upload:`
+  document source locations are omitted too. This intentionally replaces raw job JSON.
+- `GET /console/v1/kb/gaps` lists unanswered questions.
+  `POST /console/v1/kb/gaps/{id}/resolve` atomically marks resolved and audits the action;
+  it does not create an answer. Reader controls are absent and backend writes are denied.
+
+Frontend `/knowledge-base` (platform tenant selection) and `/portal/faq` reuse same-origin
+cookie/CSRF transport, multipart browser boundaries and stable retry keys. They poll jobs,
+sources, versions/model metadata and gaps every five seconds, render explicit unavailable
+errors, and confirm destructive actions. Next's proxy buffer is aligned at 31 MiB; the
+gateway remains authoritative. No frontend DB connection/file-ingestion shortcut exists.
+
+### Isolated dev rollout prerequisites
+
+Migration **0280** adds upload batches/files/hash tombstones with staged tenant RLS
+and application-role grants (no identity access). Gateway readiness requires 0280.
+Forward-apply it to the verified isolated dev database **without a reset**, then deliberately
+restart the gateway. Set the same writable `KB_UPLOAD_ROOT` for gateway and worker.
+Enable `KB_INGEST_ENABLED=true` only on the intended ingestion worker, with both tenant
+switches on. Dev/CI can use explicitly labelled lexical `hash-384`; TEI needs deliberate
+configuration and compatible model indexing. Queued jobs do not prove a worker/TEI is live.
+Do not use production connections/tokens or start the full provider worker just to exercise
+uploads. Do not import copied legacy files without an approved inventory/re-index plan.
+On 2026-10-15 the user explicitly authorized isolated-dev activation: 0280 was applied
+without reset, gateway/frontend restarted, and platform-admin browser upload/download/
+duplicate/delete/reconciliation checks passed through configured loopback TEI.
+The configured upload root resolved to the repository root, so tasks override it to
+`$HOME/.local/share/csav2-dev/kb-uploads` (private, pre-created). No environment-file
+edit was made; do not assume generic launch commands inherit this override.
+
+For this already-provisioned dev checkout, use **Tasks: Run Task** in VS Code:
+
+1. **Console: isolated dev gateway**: loopback 18081; guards domain `csa_app` and
+   identity `csa_identity` targets at `127.0.0.1:5434/csa`.
+2. **Console: isolated dev frontend**: loopback 13000, upstream gateway 18081.
+3. **Console: isolated dev KB ingestion**: enables ingestion only for synthetic
+   tenant `7f797233-684a-47ab-8222-6e887b6480db`.
+
+After the approved clean-dev recovery, gateway, frontend, full conversation/KB worker
+and delivery tasks were restarted; the M1-only KB task was not. Do not start duplicates.
+Forward **13000 privately** and open **http://localhost:13000**, then select
+the intended tenant on Knowledge base. Recovery recreated both synthetic tenants with
+all capabilities disabled and no KB documents; enable deliberately and upload fresh
+fixtures. Old on-disk files were preserved, not adopted or reconciled. Stop only the corresponding
+task terminal with Ctrl-C. Do not run `make run-dev` merely for this console smoke test.
+The frontend task's existing `/tmp/fourstacks-toolbin` Node wrapper is host-local,
+not a portable installation.
+
+The ingestion task runs `python -m scripts.dev_kb_ingest --client-id UUID`, not the full
+worker. Its guards require dev mode, the exact isolated database/application role,
+an existing dedicated absolute root, and credential-free loopback HTTP TEI when configured.
+It directly claims only that tenant, including onboarding state; the normal full worker's
+active-tenant enumeration is not used. Other tenants' jobs are not serviced by this task.
+No bots, delivery, other agent runtime, production connection or external provider startup
+is implied. Missing/invalid configuration fails explicitly; a configured TEI failure does
+not silently switch to hash embeddings.
+
+An additional **Console: isolated dev conversation worker** task was added during
+explicitly authorized Telegram acceptance. Unlike the KB-only task, it runs the
+standard conversation worker, KB ingestion and scheduled jobs across eligible isolated-dev tenants;
+do not launch it merely for console uploads or alongside another conversation worker.
+It guards domain/checkpoint roles and targets at loopback 5434 and uses the same
+dedicated upload root and credential-free loopback TEI. Do not run the separate KB-only
+task alongside this task. It does not start delivery or a Telegram poller.
+**Console: isolated dev delivery** separately guards the same domain/owner targets and
+drains the outbox. Neither task changes the existing webhook. Fresh post-recovery KB and
+Telegram acceptance subsequently passed for Local Telegram Development; see
+[trace and recovery evidence](./PROGRESS.md). The recovered Telegram tenant is `pilot`,
+with deliberately enabled KB and explicitly user-approved gate policy `auto`; M1 remains
+onboarding/disabled. Normal KB polling processes only `pilot`/`active` tenants, and a
+shadow gate intentionally produces no sends, even when KB ingestion succeeds.
 
 ## Invoices (LG13)
 - `GET /console/v1/invoices?limit=50` lists invoices.
@@ -200,7 +401,7 @@ fields, and supply the tenant/contact context. No console source is needed for t
 it is required to map existing UI calls and finish the actual turnover.
 
 Server-sent live stream, conversations/messages read API, takeover/release/human reply, approvals queue and decide endpoints, policy and
-agent settings editing, channel/integration connect, notification targets, DLQ/runs,
-usage/billing, and a KB upload endpoint. M2–M8 are not completed by this identity slice.
-Only M1 frontend pages are adopted; all project/PM/terminal/Hermes/diagram/workroom/voice and
+agent settings editing, channel/integration connect, notification targets, DLQ/redrive,
+usage/billing. M4–M8 are not completed by the M1–M3 implementation.
+Authentication/onboarding, M2 agents/activity and M3 KB pages are adopted; all project/PM/terminal/Hermes/diagram/workroom/voice and
 unmigrated business pages return 404. No legacy API/n8n rewrite remains active.

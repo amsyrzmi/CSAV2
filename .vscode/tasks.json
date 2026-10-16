@@ -1,0 +1,40 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Console: isolated dev gateway",
+			"type": "shell",
+			"command": "env -i HOME=\"$HOME\" PATH=\"$PATH\" ENV=dev KB_UPLOAD_ROOT=\"$HOME/.local/share/csav2-dev/kb-uploads\" OTEL_EXPORTER=console .venv/bin/python -c 'from psycopg.conninfo import conninfo_to_dict; from csa.core.settings import get_settings; import uvicorn; s=get_settings(); expected={\"host\":\"127.0.0.1\",\"port\":\"5434\",\"dbname\":\"csa\"}; pairs=((s.DATABASE_URL,\"csa_app\"),(s.IDENTITY_DATABASE_URL,\"csa_identity\")); valid=all(all(conninfo_to_dict(str(dsn)).get(k)==v for k,v in expected.items()) and conninfo_to_dict(str(dsn)).get(\"user\")==role for dsn,role in pairs); valid or exit(\"Refusing gateway startup: isolated dev database target/role mismatch\"); uvicorn.run(\"apps.gateway.main:app\",host=\"127.0.0.1\",port=18081)'",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Console: isolated dev frontend",
+			"type": "shell",
+			"command": "cd CSA_WebConsole/csa-console/web && env -i HOME=\"$HOME\" PATH=\"/tmp/fourstacks-toolbin:/usr/bin:/bin\" NEXT_TELEMETRY_DISABLED=1 CSA_CONSOLE_API_ORIGIN=http://127.0.0.1:18081 /tmp/fourstacks-toolbin/node node_modules/next/dist/bin/next dev --webpack --hostname 127.0.0.1 --port 13000",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Console: isolated dev KB ingestion",
+			"type": "shell",
+			"command": "env -i HOME=\"$HOME\" PATH=\"$PATH\" ENV=dev KB_UPLOAD_ROOT=\"$HOME/.local/share/csav2-dev/kb-uploads\" KB_INGEST_ENABLED=true KB_INGEST_POLL_SECONDS=2 .venv/bin/python -m scripts.dev_kb_ingest --client-id 7f797233-684a-47ab-8222-6e887b6480db",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Console: isolated dev conversation worker",
+			"type": "shell",
+			"command": "env -i HOME=\"$HOME\" PATH=\"$PATH\" ENV=dev KB_UPLOAD_ROOT=\"$HOME/.local/share/csav2-dev/kb-uploads\" KB_INGEST_ENABLED=true OTEL_EXPORTER=console .venv/bin/python -c 'from psycopg.conninfo import conninfo_to_dict; from csa.core.settings import get_settings; from scripts.dev_kb_ingest import validate; import asyncio; s=get_settings(); validate(s); expected={\"host\":\"127.0.0.1\",\"port\":\"5434\",\"dbname\":\"csa\"}; pairs=((s.DATABASE_URL,\"csa_app\"),(s.LG_DATABASE_URL,\"csa\")); valid=all(all(conninfo_to_dict(str(dsn)).get(k)==v for k,v in expected.items()) and conninfo_to_dict(str(dsn)).get(\"user\")==role for dsn,role in pairs); valid or exit(\"Refusing worker startup: isolated dev database target/role mismatch\"); from apps.worker.main import main; asyncio.run(main())'",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Console: isolated dev delivery",
+			"type": "shell",
+			"command": "env -i HOME=\"$HOME\" PATH=\"$PATH\" ENV=dev OTEL_EXPORTER=console .venv/bin/python -c 'from psycopg.conninfo import conninfo_to_dict; from csa.core.settings import get_settings; import asyncio; s=get_settings(); expected={\"host\":\"127.0.0.1\",\"port\":\"5434\",\"dbname\":\"csa\"}; pairs=((s.DATABASE_URL,\"csa_app\"),(s.LG_DATABASE_URL,\"csa\")); valid=all(all(conninfo_to_dict(str(dsn)).get(k)==v for k,v in expected.items()) and conninfo_to_dict(str(dsn)).get(\"user\")==role for dsn,role in pairs); valid or exit(\"Refusing delivery startup: isolated dev database target/role mismatch\"); from apps.delivery.main import main; asyncio.run(main())'",
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

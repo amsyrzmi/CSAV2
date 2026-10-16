@@ -46,7 +46,10 @@ export async function api<T = unknown>(
     );
     headers.set("X-CSRF-Token", csrf.csrf_token);
   }
-  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+  if (init.body instanceof FormData) {
+    // The browser supplies the multipart boundary.
+    headers.delete("Content-Type");
+  } else if (init.body !== undefined) headers.set("Content-Type", "application/json");
   return decode<T>(
     await fetch(path, {
       ...init,

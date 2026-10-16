@@ -159,7 +159,7 @@ ORDER BY abs(p.reserved_qty - COALESCE(e.qty,0)) DESC;
 - [x] Property test passes (`test_property_stock_reservation_integrity`) verifying zero stock drift invariant across order creation, confirmation, and sweep.
 - [x] Multi-line per-product stock aggregation verified (`test_order_draft_expiry_per_product_aggregation`), preventing the legacy n8n stock leak.
 - [x] Reservation reconciliation report and repair verified (`test_reservation_reconcile_and_repair`).
-- [x] Orphan draft expiry (`test_orphan_draft_expiry`), pending actions reaper, and mute reaper verified with clock injection.
+- [x] Orphan draft expiry (`test_orphan_draft_expiry`) verified. Mute-expiry database regression covers expired/future/indefinite/AI-owned rows, batch limits, locked rows, idempotency and foreign-tenant RLS. SQL uses database time; this is not an injected-clock claim for every reaper.
 - [x] Scheduled jobs loop wired into `apps/worker/main.py`.
 - [ ] Production reconciliation report (read-only) has been run and its result recorded in `docs/` (upon live production access).
 - [ ] n8n expiry cron disabled only after the dry-run comparison matched for several days.
@@ -169,3 +169,27 @@ ORDER BY abs(p.reserved_qty - COALESCE(e.qty,0)) DESC;
 - Don't run jobs from the customer-turn path or inside the graph; they are time-driven and tenant-iterating.
 - Batch size and statement timeouts matter more than cadence: a sweep that can lock the `products` table for seconds will stall order creation.
 - Auto-cancelling `pending_confirmation` orders is a business decision, not a technical one — leave it off until the client agrees.
+
+## Runtime stabilization evidence (2026-10-16)
+
+- Fixed mute release to clear the mute and restore AI ownership/open status without
+  writing the nonexistent `conversations.updated_at` column.
+- Failed tenant/global runs no longer advance success heartbeat; tenant failures do
+  not prevent remaining tenants running. Repeated first-run failures become unhealthy
+  after three intervals; recovery and subsequent failure are covered.
+- Combined jobs, console concurrency/cancellation and delivery-recovery selection:
+  **40 passed** before the dev-reset incident. Delivery restart after a committed success
+  does not resend; a remote acceptance followed by a crash before durable acknowledgement
+  can resend the same request (at-least-once delivery, not exactly once).
+- Gateway concurrent authenticated polling/uploads passed; isolated synchronous stdout
+  backpressure reproduced a logging stall. This is a lead, not proof of the original
+  gateway-hang root cause or a verified fix.
+- Following the explicitly approved clean-dev recovery, the guarded worker is running
+  and tenant-scoped scheduled job records (including mute expiry) report success.
+  This is not a live expired-row transition test. Recovery validation initially had
+  644 passed / 3 failed; the reset selection then passed 15 tests while TCP latency
+  still failed a targeted rerun. After the subsequent ingress/logging investigation,
+  the latest full lint/test run passed **655 tests**, including scheduled jobs and
+  both unchanged latency benchmarks. New logging live rollout remains pending;
+  the original gateway-hang cause is unproven.
+  See [incident and current recovery status](../PROGRESS.md).

@@ -10,6 +10,7 @@ import psycopg
 
 from csa.agents.kb.embedder import vector_to_sql
 from csa.agents.kb.extract import ExtractedChunk
+from csa.agents.kb.lifecycle import lock
 from csa.core import db
 
 
@@ -45,6 +46,7 @@ async def store_document(
     """
     if len(chunks) != len(embeddings):
         raise ValueError("chunks and embeddings must have the same length")
+    await lock(conn, client_id)
 
     existing = await db.q.fetch_one(
         "kb/find_document_by_hash.sql", (client_id, content_hash), conn=conn
@@ -54,7 +56,7 @@ async def store_document(
             outcome="duplicate",
             document_id=existing["id"],
             chunk_count=int(existing["chunk_count"]),
-            version=0,
+            version=int(existing["version"]),
         )
 
     version = 1

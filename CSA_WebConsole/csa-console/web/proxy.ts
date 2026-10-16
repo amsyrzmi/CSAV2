@@ -8,6 +8,12 @@ const adoptedPages = new Set([
   "/settings/team",
   "/portal",
   "/portal/team",
+  "/agents",
+  "/activity",
+  "/portal/agents",
+  "/portal/activity",
+  "/knowledge-base",
+  "/portal/faq",
 ]);
 
 export function proxy(req: NextRequest) {

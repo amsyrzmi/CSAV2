@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -35,6 +36,7 @@ from csa.agents.kb.extract import (
     read_upload,
     resolve_upload_path,
 )
+from csa.agents.kb.lifecycle import check_ingestion
 from csa.agents.kb.store import store_document
 from csa.core import db
 from csa.core.tenancy import tx
@@ -55,6 +57,7 @@ class KbUploadFile(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=64)
     language: str | None = Field(default=None, max_length=10)
+    file_id: UUID | None = None
 
 
 class KbJobMeta(BaseModel):
@@ -153,13 +156,13 @@ class KbIngestProcessor:
         results: list[dict[str, Any]] = []
         try:
             for upload in files:
-                results.append(await self._ingest_file(client_id, upload, meta))
+                results.append(await self._ingest_file(client_id, upload, meta, job["created_at"]))
         except KbEmbeddingError as exc:
             status = await self._release(client_id, job_id, int(job["attempts"]), str(exc))
             log.error("kb_ingest_embedding_failed", error=str(exc), status=status)
             return status
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"[:500]
+            error = f"ingestion failed: {type(exc).__name__}"
             await self._finish(client_id, job_id, "failed", error, results)
             log.exception("kb_ingest_job_failed")
             return "failed"
@@ -183,7 +186,7 @@ class KbIngestProcessor:
         return status
 
     async def _ingest_file(
-        self, client_id: UUID, upload: KbUploadFile, meta: KbJobMeta
+        self, client_id: UUID, upload: KbUploadFile, meta: KbJobMeta, queued_at: datetime
     ) -> dict[str, Any]:
         display = upload.name or Path(upload.path).name
         result: dict[str, Any] = {"file": display, "path": upload.path}
@@ -196,37 +199,67 @@ class KbIngestProcessor:
             content_hash = hashlib.sha256(data).hexdigest()
 
             async with tx(self._app_pool, str(client_id)) as conn:
+                await check_ingestion(conn, client_id, content_hash, queued_at, upload.file_id)
                 existing = await db.q.fetch_one(
                     "kb/find_document_by_hash.sql", (client_id, content_hash), conn=conn
                 )
+                if existing is not None and upload.file_id:
+                    await db.q.execute(
+                        "kb/file_attach.sql",
+                        (existing["id"], client_id, upload.file_id),
+                        conn=conn,
+                    )
             if existing is not None:
                 return result | {
                     "status": "duplicate",
                     "document_id": str(existing["id"]),
                     "chunks": int(existing["chunk_count"]),
+                    "version": int(existing["version"]),
                 }
 
             title = (upload.title or Path(display).stem or display).strip()[:255]
             document = await asyncio.to_thread(extract_document, data, kind, title=title)
         except KbFileError as exc:
             return result | {"status": "failed", "error": str(exc)}
+        except FileNotFoundError:
+            logger.warning(
+                "kb_source_removed_before_read",
+                client_id=str(client_id),
+                file_id=str(upload.file_id) if upload.file_id else None,
+            )
+            return result | {
+                "status": "failed",
+                "error": "source file was deleted or is unavailable",
+            }
 
         embeddings = await self._embedder.embed_batch([c.content for c in document.chunks])
-        async with tx(self._app_pool, str(client_id)) as conn:
-            stored = await store_document(
-                conn,
-                client_id=client_id,
-                title=title,
-                chunks=document.chunks,
-                embeddings=embeddings,
-                content_hash=content_hash,
-                embed_model=self._embedder.model_name,
-                kind=document.kind,
-                category=upload.category or meta.category,
-                language=upload.language or meta.language,
-                source_uri=f"upload:{upload.path}",
-                file_name=display,
-            )
+        try:
+            async with tx(self._app_pool, str(client_id)) as conn:
+                await check_ingestion(conn, client_id, content_hash, queued_at, upload.file_id)
+                stored = await store_document(
+                    conn,
+                    client_id=client_id,
+                    title=title,
+                    chunks=document.chunks,
+                    embeddings=embeddings,
+                    content_hash=content_hash,
+                    embed_model=self._embedder.model_name,
+                    kind=document.kind,
+                    category=upload.category or meta.category,
+                    language=upload.language or meta.language,
+                    source_uri=f"file:{upload.file_id}"
+                    if upload.file_id
+                    else f"upload:{upload.path}",
+                    file_name=display,
+                )
+                if upload.file_id:
+                    await db.q.execute(
+                        "kb/file_attach.sql",
+                        (stored.document_id, client_id, upload.file_id),
+                        conn=conn,
+                    )
+        except KbFileError as exc:
+            return result | {"status": "failed", "error": str(exc)}
         return result | {
             "status": stored.outcome,
             "document_id": str(stored.document_id),

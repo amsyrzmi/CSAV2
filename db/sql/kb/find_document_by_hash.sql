@@ -1,4 +1,4 @@
-SELECT id, title, chunk_count
+SELECT id, title, chunk_count, version
 FROM public.kb_documents
 WHERE client_id = %s
   AND content_hash = %s

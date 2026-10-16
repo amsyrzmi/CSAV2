@@ -114,6 +114,60 @@ def _message_update(
 
 
 @requires_docker
+async def test_ingress_resolves_credentials_and_runtime_in_one_tenant_lookup(
+    ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingress, pool, client_id, public_id, secret = ingress_context
+    original = db.q.fetch_one
+    paths: list[str] = []
+
+    async def tracked(path: str, *args: Any, **kwargs: Any) -> Any:
+        paths.append(path)
+        return await original(path, *args, **kwargs)
+
+    monkeypatch.setattr(db.q, "fetch_one", tracked)
+    receipt = await ingress.receive(public_id, secret, json.dumps(_message_update()).encode())
+    assert receipt.accepted
+    assert paths.count("ingress/get_channel_credentials.sql") == 1
+    assert len(paths) == 6
+    async with tx(pool, client_id) as conn:
+        endpoint = await original("ingress/resolve_endpoint.sql", (public_id,), conn=conn)
+        route = await original(
+            "ingress/get_channel_credentials.sql", (endpoint["endpoint_id"], client_id), conn=conn
+        )
+        assert route["runtime"] is None and route["n8n_webhook_url"] is None
+        await conn.execute(
+            "UPDATE clients SET config=%s WHERE id=%s",
+            (
+                Jsonb(
+                    {
+                        "runtime": "langgraph",
+                        "n8n_webhook_url": "https://synthetic.invalid/hook",
+                        "policy": {"deployment_mode": "suggest"},
+                    }
+                ),
+                client_id,
+            ),
+        )
+        route = await original(
+            "ingress/get_channel_credentials.sql", (endpoint["endpoint_id"], client_id), conn=conn
+        )
+        assert route["runtime"] == "langgraph"
+        assert route["deployment_mode"] == "suggest"
+        assert route["n8n_webhook_url"] == "https://synthetic.invalid/hook"
+    async with tx(pool, str(uuid.uuid4())) as conn:
+        assert (
+            await original(
+                "ingress/get_channel_credentials.sql",
+                (endpoint["endpoint_id"], client_id),
+                conn=conn,
+            )
+            is None
+        )
+
+
+@requires_docker
 async def test_ingress_persists_normalized_event_and_deduplicates(
     ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
 ) -> None:

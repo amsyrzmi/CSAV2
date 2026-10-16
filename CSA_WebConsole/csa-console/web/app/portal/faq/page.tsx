@@ -1,6 +1,6 @@
-import { notFound } from "next/navigation";
+import { requireIdentity } from "@/lib/server-identity";
+import { KnowledgeWorkspace } from "@/components/console/KnowledgeWorkspace";
 
-// Deferred until its CSAV2 service and authorization contract are implemented.
-export default function DeferredPage() {
-  notFound();
+export default async function KnowledgePage() {
+  return <KnowledgeWorkspace me={await requireIdentity()} />;
 }

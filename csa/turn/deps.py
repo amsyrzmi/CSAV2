@@ -35,6 +35,7 @@ from csa.contracts.callbacks import CallbackCodec, PendingActionStore
 from csa.contracts.envelope import Envelope
 from csa.contracts.facts import AgentResult
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
+from csa.contracts.registry import CapabilityRegistry
 from csa.contracts.state import (
     Context,
     Draft,
@@ -138,6 +139,7 @@ class PostgresTurnDependencies:
             },
             breaker=CircuitBreaker(store=PostgresBreakerStore(app_pool)),
             recorder=PostgresRunRecorder(app_pool),
+            capabilities=CapabilityRegistry(app_pool),
         )
 
     async def load_context(self, envelope: Envelope) -> Context:

@@ -298,6 +298,14 @@ class Tenant:
                 "VALUES (%s,%s,'Synthetic KB','lg13','active')",
                 (self.id, f"kb-{self.id}"),
             )
+            conn.execute(
+                "INSERT INTO capability_registry "
+                "(client_id,name,display_name,description,pattern,workflow_id,input_schema,"
+                "is_enabled,client_enabled) "
+                "VALUES (%s,'kb_agent','KB','Synthetic KB','lookup',"
+                "'python:kb_agent','{}',true,true)",
+                (self.id,),
+            )
 
     def put(self, name: str, data: bytes) -> str:
         (self.dir / name).write_bytes(data)
@@ -393,6 +401,30 @@ async def kb(
     finally:
         await app_pool.close()
         await owner_pool.close()
+
+
+@requires_docker
+async def test_disabled_kb_jobs_stay_queued_without_spending_attempts(kb: KbWorld) -> None:
+    tenant = kb.tenant()
+    path = tenant.put("faq.csv", FAQ_CSV)
+    job_id = tenant.enqueue([path])
+    for subscription, tenant_switch in ((False, True), (True, False), (False, False)):
+        with psycopg.connect(tenant.owner_dsn, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE capability_registry SET is_enabled=%s,client_enabled=%s "
+                "WHERE client_id=%s AND name='kb_agent'",
+                (subscription, tenant_switch, tenant.id),
+            )
+        assert await kb.processor.claim(tenant.id) is None
+        assert tenant.job(job_id)["status"] == "queued"
+        assert tenant.job(job_id)["attempts"] == 0
+    with psycopg.connect(tenant.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE capability_registry SET is_enabled=true,client_enabled=true "
+            "WHERE client_id=%s AND name='kb_agent'",
+            (tenant.id,),
+        )
+    assert await kb.run(tenant) == "done"
 
 
 @requires_docker

@@ -12,7 +12,7 @@ import structlog
 from csa.channels.ingress import IngressReceipt, TelegramIngress
 from csa.channels.telegram import TelegramAdapter, TelegramPollingError
 from csa.core import crypto, db
-from csa.core.logging import configure_logging
+from csa.core.logging import configure_logging, shutdown_logging
 from csa.core.settings import get_settings
 from csa.core.tracing import configure_tracing
 from psycopg_pool import AsyncConnectionPool
@@ -185,7 +185,10 @@ async def run_poller() -> None:
 
 
 def main() -> int:
-    asyncio.run(run_poller())
+    try:
+        asyncio.run(run_poller())
+    finally:
+        shutdown_logging()
     return 0
 
 

@@ -18,7 +18,7 @@ services:
       POSTGRES_PASSWORD: ${CSA_OWNER_PASSWORD:-dev_owner_pw}
       POSTGRES_DB: csa
     ports:
-      - "127.0.0.1:${DEV_PGPORT:-5433}:5432"
+      - "127.0.0.1:${DEV_PGPORT:-5434}:5432"
     volumes:
       - csa_dev_pgdata:/var/lib/postgresql/data
     healthcheck:

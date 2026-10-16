@@ -72,6 +72,7 @@ def _seed_events(
             "INSERT INTO clients (id, slug, name, platform_version) VALUES (%s, %s, %s, %s)",
             (client_id, f"worker-{client_id}", "Synthetic Worker Test", "lg03-test"),
         )
+        conn.execute("SELECT public.seed_core_capabilities(%s)", (client_id,))
         conn.execute(
             "INSERT INTO channel_credentials (id, client_id, channel, access_token) "
             "VALUES (%s, %s, 'telegram', %s)",
@@ -353,6 +354,9 @@ async def test_delivery_worker_sends_telegram_and_records_attempt(
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             delivery_worker = DeliveryWorker(owner_pool, app_pool, client)
             assert await delivery_worker.process_once() is True
+            restarted_worker = DeliveryWorker(owner_pool, app_pool, client)
+            assert await restarted_worker.reap() == 0
+            assert await restarted_worker.process_once() is False
 
         assert len(requests) == 1
         assert requests[0].url.path.endswith("/sendMessage")
@@ -562,6 +566,7 @@ async def test_delivery_worker_crash_mid_send_recovers_and_delivers(
             assert await restarted_worker.process_once() is True
 
         assert len(sent_requests) == 2
+        assert sent_requests[0].content == sent_requests[1].content
         with psycopg.connect(owner_dsn) as conn:
             delivery = conn.execute(
                 "SELECT status, attempts, last_status_code, last_error FROM outbound_deliveries "

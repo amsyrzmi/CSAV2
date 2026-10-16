@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from csa.agents.base import AgentContext
+from csa.agents.base import AgentContext, SideEffects
 from csa.agents.breaker import CircuitBreaker
 from csa.agents.runner import SpokeRunner
 from csa.contracts.facts import AgentError, AgentResult, AgentResultData, ResultMeta
-from csa.contracts.plan import Task
+from csa.contracts.plan import RiskClass, Task
+from csa.contracts.registry import CapabilityRegistry
 from pydantic import BaseModel
 
 
@@ -30,13 +32,16 @@ class _Clock:
 class _Agent:
     name = "t_agent"
     Input = _In
-    side_effects = "none"
+    side_effects: SideEffects = "none"
     timeout_ms = 50
     max_retries = 1
 
     def __init__(self, behaviours: list[str]) -> None:
         self.behaviours = behaviours
         self.calls = 0
+
+    def risk(self, inp: BaseModel) -> RiskClass:
+        return "read"
 
     async def run(self, ctx: AgentContext, inp: BaseModel) -> AgentResult:
         behaviour = self.behaviours[min(self.calls, len(self.behaviours) - 1)]
@@ -101,6 +106,38 @@ async def test_retry_then_success() -> None:
     agent = _Agent(["retryable", "ok"])
     result = await _runner(agent).execute(_task(), _ctx())
     assert result.ok and agent.calls == 2
+
+
+async def test_disabled_capability_never_runs_and_denial_is_recorded() -> None:
+    agent = _Agent(["ok"])
+    registry = AsyncMock(spec=CapabilityRegistry)
+    registry.allows_execution.return_value = False
+    recorder = AsyncMock()
+    runner = SpokeRunner({agent.name: agent}, capabilities=registry, recorder=recorder)
+    result = await runner.execute(_task(), _ctx())
+    assert result.error is not None and result.error.code == "capability_unavailable"
+    assert agent.calls == 0
+    recorder.record.assert_awaited_once()
+
+
+async def test_disabling_during_backoff_prevents_retry() -> None:
+    agent = _Agent(["retryable", "ok"])
+    registry = AsyncMock(spec=CapabilityRegistry)
+    registry.allows_execution.side_effect = [True, False]
+    runner = SpokeRunner({agent.name: agent}, capabilities=registry, backoff_s=0)
+    result = await runner.execute(_task(), _ctx())
+    assert not result.ok and agent.calls == 1
+    assert registry.allows_execution.await_count == 2
+
+
+async def test_capability_query_failure_is_not_an_allow_or_disabled_fallback() -> None:
+    agent = _Agent(["ok"])
+    registry = AsyncMock(spec=CapabilityRegistry)
+    registry.allows_execution.side_effect = RuntimeError("database unavailable")
+    runner = SpokeRunner({agent.name: agent}, capabilities=registry)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await runner.execute(_task(), _ctx())
+    assert agent.calls == 0
 
 
 async def test_validation_error_is_result_not_exception() -> None:

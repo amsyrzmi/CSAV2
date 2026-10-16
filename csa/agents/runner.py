@@ -14,6 +14,7 @@ from csa.agents.base import Agent, AgentContext
 from csa.agents.breaker import CircuitBreaker
 from csa.contracts.facts import AgentError, AgentResult, AgentResultData, ResultMeta
 from csa.contracts.plan import RiskClass, Task
+from csa.contracts.registry import CapabilityRegistry
 from csa.core.pii import redact
 
 logger = structlog.get_logger(__name__)
@@ -83,11 +84,13 @@ class SpokeRunner:
         breaker: CircuitBreaker | None = None,
         recorder: RunRecorder | None = None,
         backoff_s: float = _BACKOFF_S,
+        capabilities: CapabilityRegistry | None = None,
     ) -> None:
         self._agents = dict(agents)
         self._breaker = breaker or CircuitBreaker()
         self._recorder = recorder
         self._backoff_s = backoff_s
+        self._capabilities = capabilities
 
     @property
     def names(self) -> frozenset[str]:
@@ -128,21 +131,34 @@ class SpokeRunner:
                 hint="I need a bit more detail to do that.",
             )
             return await self._finish(ctx, task, result, elapsed())
-        if not await self._breaker.allow(ctx.client_id, agent.name):
-            result = _error_result(
-                task,
-                ctx,
-                elapsed(),
-                "circuit_open",
-                "upstream",
-                f"{agent.name} circuit is open",
-                hint="That service is temporarily unavailable.",
-            )
-            return await self._finish(ctx, task, result, elapsed())
-
         attempts = agent.max_retries + 1
         result: AgentResult | None = None
         for attempt in range(attempts):
+            if self._capabilities is not None and not await self._capabilities.allows_execution(
+                ctx.client_id, agent.name
+            ):
+                if attempt > 0:
+                    break
+                result = _error_result(
+                    task,
+                    ctx,
+                    elapsed(),
+                    "capability_unavailable",
+                    "validation",
+                    "Capability is missing or disabled.",
+                )
+                return await self._finish(ctx, task, result, elapsed())
+            if attempt == 0 and not await self._breaker.allow(ctx.client_id, agent.name):
+                result = _error_result(
+                    task,
+                    ctx,
+                    elapsed(),
+                    "circuit_open",
+                    "upstream",
+                    f"{agent.name} circuit is open",
+                    hint="That service is temporarily unavailable.",
+                )
+                return await self._finish(ctx, task, result, elapsed())
             result = await self._attempt(agent, ctx, inp, task, elapsed)
             if result.ok or result.error is None or not result.error.retryable:
                 break
