@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -139,6 +140,18 @@ async def handle_staff_action(
                 conn=conn,
             )
             if message is not None:
+                await db.q.fetch_one(
+                    "ingress/insert_handled_event.sql",
+                    (
+                        client_id,
+                        endpoint_id,
+                        f"staff-order:{staff_action_id}",
+                        hashlib.sha256(str(staff_action_id).encode()).hexdigest(),
+                        trace_id,
+                    ),
+                    conn=conn,
+                )
+                await db.q.execute("staff/set_reviewed.sql", (client_id, message["id"]), conn=conn)
                 await db.q.fetch_one(
                     "worker/insert_delivery.sql",
                     (client_id, endpoint_id, trace_id, target["conversation_id"], message["id"]),

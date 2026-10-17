@@ -16,6 +16,10 @@ const adoptedPages = new Set([
   "/portal/faq",
   "/chat",
   "/portal/chat",
+  "/inbox",
+  "/portal/inbox",
+  "/business",
+  "/portal/business",
 ]);
 
 export function proxy(req: NextRequest) {

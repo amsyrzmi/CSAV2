@@ -1,9 +1,9 @@
 # CSA WebConsole → CSAV2: source-based migration plan
 
-Date: 2026-10-15; M4 closeout 2026-10-16. Status: **M0–M3 implemented with isolated-dev acceptance; M4 read-only sandbox functionally closed with explicitly accepted laptop-dev performance exception. Latest full run remains 674 passed / 2 latency failures (ASGI 508.717 ms, TCP 298.288 ms versus unchanged <200 ms). M5 next; M3 tenant-role replay and M5–M8 pending. No public deployment or runtime cutover.**
+Date: 2026-10-15; guarded M5 dev rollout 2026-10-16. Status: **M0–M3 implemented with isolated-dev acceptance; M4 functionally closed with accepted laptop-dev performance exception. M5 Telegram slice reviewed/validated: 692 full tests pass; approved forward-only dev0300 and coordinated replacement complete, platform-admin UI/synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff replay verified. M3 tenant-role and broader M5–M8 acceptance pending. Historical latency failures retained despite latest ASGI/TCP p95 108.284/174.623 ms passing unchanged <200 ms. No public deployment or production cutover.**
 
-Start the next session from [M4 closeout and M5 kickoff](./2026-10-16-m4-closeout-m5-start.md),
-including the current prompt, authority decision and deferred performance obligation.
+Start the next session from [M5 Telegram scope and current evidence](./2026-10-17-m5-telegram-inbox.md).
+The [M4 closeout](./2026-10-16-m4-closeout-m5-start.md) retains prior acceptance decisions.
 The implementation/review sections below retain historical evidence, not old next-step instructions.
 
 ## M4 read-only sandbox implementation (2026-10-16)
@@ -596,6 +596,18 @@ of this sandbox. Existing Telegram delivery remains unchanged.
 
 ### M5 — Staff conversation inbox and approvals
 
+Current continuation: [M5 Telegram scope and evidence](2026-10-17-m5-telegram-inbox.md).
+The user selected Telegram-only customer transcripts/reply approvals for verified platform
+admins with explicit tenant selection, tenant admins and tenant staff; readers/machines
+are denied. Customer-web and stock-changing order decisions are deferred acceptance.
+This bounded slice is reviewed and validated: **692 full tests pass**, lint and isolated
+frontend checks pass. Explicitly approved forward-only dev0300 and coordinated replacement
+are complete; platform-admin UI/synthetic Telegram acceptance and live reader denial
+replay are verified. Representative tenant-admin/staff browser replay also passes;
+fresh per-role approval transitions retain automated evidence.
+Private sandbox contacts/history/holds stay excluded. Persistent dev was not reset.
+The historical work package below is retained with this scope narrowing.
+
 Dependencies: M1; web-channel approval round trip depends on M4.
 
 M4 is the private read-only sandbox, not a staff-readable customer web inbox. Before
@@ -608,8 +620,8 @@ that part of the exit criteria rather than using the sandbox as approval evidenc
    links. Restrict message content by membership/role; do not expose credential payloads.
 2. Add audited takeover/release/human reply through shared domain services and outbox.
 3. Extract reusable approval transition results from LG07 services where necessary.
-   Current functions may return Telegram-oriented text and `edit_reply` requires a bound
-   staff action; provide a structured authenticated-console adapter, not a fake Telegram
+   Current functions return structured shared transitions with Telegram text adapters;
+   the Telegram edit adapter binds its staff action; provide a structured authenticated-console adapter, not a fake Telegram
    identity/action or a second SQL approval implementation.
 4. Distinguish order approvals from outbound-reply approvals; route each to its existing
    domain handler. Enforce tenant scope, expiration, single-use, bounded edited text,
@@ -624,20 +636,117 @@ read-only user, expired/used action and duplicate submissions cannot deliver twi
 
 Dependencies: M1 and M2; financial delivery depends on M5 and a real artifact/provider.
 
-1. Expose read-only order/ticket/invoice views and preparation request list/detail with
-   actor/trace/status; future approval/execution is not implied by `prepared`.
-2. Fix invoice signing fallbacks and implement real authorized PDF storage/serving before
-   exposing download buttons. Missing signing configuration is an explicit error.
-3. Add role-gated connection metadata/start/revoke. Preserve tenant-bound OAuth state and
-   encrypted credentials; Google OAuth/watch/Calendar execution is a separate integration
-   slice, not completed by env values or UI forms.
-4. Adapt `StaffActor` from verified sessions for email/research/invoice draft preparation.
-   Never accept trusted actor fields from browser JSON.
-5. LHDN and payment execution stay disabled until sandbox verification. No production
-   payment/API keys are required merely to migrate these screens.
+#### Expanded seller outcome (approved direction 2026-10-17)
+
+The user requested a **Business management** workspace for orders, tracking, product
+listings, inventory and the operations needed to manage multiple ecommerce platforms,
+starting with the reported existing TikTok Shop connection. This is an expanded staged
+roadmap, not evidence that every seller operation is currently implemented or authorized.
+User explicitly chose:
+
+- Business records: verified platform admin with selected tenant, tenant admin and
+  tenant staff only. Deny readers, machines and anonymous access, including direct reads.
+- Initial inventory: **read-only local stock, explicitly not synchronized**.
+  Stock-write authority/source-of-truth is deferred. Do not infer it from local tables.
+
+Keep one tenant-scoped workspace with platform/store filters and common read contracts.
+Retain native platform/store/order identifiers; distinguish local records, provider
+snapshots, configured credentials, authorized connection and verified live integration.
+No connected badge, fresh-sync timestamp or empty-marketplace claim based solely on local
+records. Missing configuration and provider errors must remain explicit errors/unavailable
+states. No fake successes or arbitrary JSON/credentials exposed to browsers.
+
+| Stage | Deliverable | Exit / explicit gate |
+|---|---|---|
+| M6A — Local read foundation | Separate `/business` and `/portal/business`; bounded local order summaries/tracking references and catalogue/stock with generated read contracts | Staff-only human access, tenant isolation, stable pagination, decimal money, omitted customer address/contact/raw attributes; no provider calls or writes. Initial implementation below is this foundation only |
+| M6B — Unified seller reads and connections | Platform/store filters; scoped store connection metadata/permissions/expiry; supported TikTok orders/items, products/variants/listings, shipment references and freshness/error status | Verify actual adapter wiring, account scope, API response contracts, pagination and provider error handling against mocked fixtures first. Live dev-store read/OAuth start/revoke needs explicit approval; no production credentials or webhook changes |
+| M6C — Controlled TikTok seller operations | Supported listing create/edit/publish, price/stock updates, fulfilment/labels/dispatch, cancellation and return/refund handling | Separate action-authority approval; role/action permissions, tenant/store-bound identifiers, durable idempotent requests, audit before/after, retries/reconciliation and clear pending/failure states. Do not expose unsupported platform actions |
+| M6D — Multi-platform catalogue and inventory | Canonical product/variant SKU mapping to each store listing, warehouses/reservations, low-stock alerts and additional adapters | Decide inventory source-of-truth (platform/local/external), reservation ownership, conflict resolution, oversell prevention, reconciliation and mapping uniqueness before enabling sync. Add platforms one at a time with conformance evidence; Shopee/Lazada draft code is not working integration |
+| M6E — Business support and staff preparation | Read-only tickets/invoices plus preparation-request list/detail with actor/trace/status; verified-session `StaffActor` for supported email/research/invoice preparation | `prepared` never implies approved/sent/executed. Fix invoice signing fallbacks and implement real authorized PDF storage/serving before exposing download buttons. Missing signing configuration is an explicit error |
+
+Seller workspace sections should cover an actionable overview (when real metrics exist),
+orders, shipping/tracking, products/listings, inventory, returns/refunds and stores/connections.
+Before each section is wired, display a specific unavailable state, not inert action buttons
+or mocked success. Tracking numbers/carriers in local orders are **not live carrier tracking**.
+The local catalogue is **not a platform listing**; active local products are not proof of
+published TikTok listings. Product images/source links require separate safe URL handling.
+
+Cross-cutting acceptance:
+
+1. No widening of private sandbox authority or held drafts. No business API accepts browser
+   actor identity. Explicit selected tenant for platform admins; reject cross-tenant cursors,
+   resources and writes. Financial/customer fields need an explicit projection/access policy.
+2. External/persisted adapter data uses Pydantic contracts; SQL stays parameterized under
+   `db/sql/`. Preserve additive migrations and staged RLS, with disposable reset/migration tests.
+3. Track provenance, provider/store IDs, last successful sync versus local update time,
+   pending requests and operational errors. No cross-store stock writes until M6D decisions.
+4. Role/read/mutation/tenant tests, pagination/empty/error states, cancellation/reload and
+   real backend versus unavailable UI checks; generated contract, frontend build/types and
+   backend lint/tests. Writes additionally require duplicate/retry/crash/reconciliation tests.
+5. LHDN/payment execution stays disabled until separately approved sandbox verification.
+   Google OAuth/watch/Calendar execution is a separate integration slice, not completed by
+   env values/forms. No real production keys are required to migrate screens.
+6. Persistent-dev migrations, restarts, live provider access/sends, infrastructure/webhooks
+   and production remain outside implementation authority unless separately approved.
+
+#### Current M6A implementation evidence
+
+- Offline foundation implemented: typed `/console/v1/business/orders` and `/products`,
+  bounded keyset pages and scoped summary-detail endpoints, separate protected frontend
+  routes/navigation, local tracking fields and stock/reserved/available counts.
+- Local records have explicit source/unavailable-sync metadata. No arbitrary JSON, customer
+  address/contact, credential fields, provider URLs or tokens enter these read models.
+  Money uses decimal contracts, not floating-point conversion.
+- No migration/dependency change/provider calls/service replacement. Last approved dev
+  build/schema is M5/0300; a current read-only probe found no18081/13000 listeners.
+  Service restoration/replacement requires separate approval; no M6 live claim.
+- Inspection found `EcommerceAgent()` constructed without adapters in runtime dependencies;
+  TikTok adapter code exists but is not proof of a live wired store. Shopee/Lazada remain
+  draft adapters. Do not connect production or read credentials to resolve this during M6A.
+- Targeted backend/contract **6 passed**; isolated frontend **13 transport + 2 state
+  tests**, lint/types/build/trace checks pass. Full lint passes; **695 passed / 1 TCP
+  latency failure**, ack p95 **788.334 ms** against unchanged **<200 ms**. Disposable-only
+  reset tests pass. Exact metrics and warnings are in [progress](../PROGRESS.md).
+  Full validation is not green; M4's accepted exception is not an M6 waiver.
+  M6A is not the whole M6 exit or a live rollout claim.
+
+#### M6B order-read contract groundwork (offline, not provider verification)
+
+- Existing TikTok order detail/search parsing now validates success envelopes, required
+  identifiers/status/payment/currency/items and finite nonnegative decimal amounts.
+  A rejected or malformed payload cannot become a zero-valued/default order or empty
+  successful list. Detail identity must match the requested order.
+- `EcommerceOrderPage` and `TikTokShopAdapter.search_order_page` retain the opaque
+  continuation token. One bounded provider request per page; duplicate/oversized pages
+  and unchanged continuation tokens are explicit failures. The legacy `search_orders`
+  return remains a bounded first-page list, not a complete-history claim.
+- Order reads use header-only access tokens, disable redirects even on an injected
+  redirect-following client, and expose sanitized `TikTokReadError` codes instead of
+  provider bodies, signed request URLs or raw transport/validation exception messages.
+  This does not claim that legacy product/write methods have the same protections.
+- Synthetic `httpx.MockTransport` coverage: **41 passed** including existing ecommerce
+  tests. Full lint passes; **732 passed / 1 TCP latency failure**, 136 warnings,
+  2701.96 s. TCP ack p95 **608.321 ms** against unchanged **<200 ms**; disposable-only
+  reset checks pass. Full validation remains **not green**, with no new performance waiver.
+  Exact full-suite results are recorded in [progress](../PROGRESS.md).
+  No browser route, provider call, credential lookup, runtime wiring or store badge added.
+- This validates the repository's existing synthetic payload assumptions, **not current
+  official endpoint/response compatibility**. Public official documentation returned only
+  a shell via fetch and redirected the browser to login; no login was attempted.
+  Search summaries are not authoritative contract evidence. Before any live read, verify
+  the detail endpoint/envelope, pagination query-versus-body placement, line-item quantity/
+  price semantics, and search-summary versus detail fields against an approved current
+  specification. Do not guess aliases or manufacture missing fields.
+- Tenant UUID is still not a credential binding in the legacy adapter. A verified
+  tenant/store-bound resolver, scoped connection permission/expiry metadata and common
+  safe browser projections remain required before console exposure. The normalized
+  internal order retains its existing buyer identifier and is not a browser projection.
+  Product/variant contracts, platform/store filters and connection lifecycle remain
+  pending; M6B is not closed by this groundwork.
 
 Exit: every visible business action has a real backend or an explicit unavailable state;
-no stub/fake-provider success in operational UI.
+no stub/fake-provider success in operational UI. Record deferred provider/platform operations
+by stage rather than treating a read-only foundation as a complete ecommerce ERP.
 
 ### M7 — Ops, regression checks and release candidate
 
@@ -738,7 +847,7 @@ old `.env` into CSAV2 or assume its hostnames/keys are valid.
 - [ ] Provider-dependent and deferred features stay explicitly unavailable.
 - [ ] All deployment actions remain separately approved; runtime cutover is not implied.
 
-The obsolete M2/M3 kickoff prompt has been removed. Use the single current
-[M5 kickoff prompt](./2026-10-16-m4-closeout-m5-start.md#paste-into-the-new-session).
+The obsolete M2/M3 kickoff prompt has been removed. Use
+[M5 current scope and evidence](./2026-10-17-m5-telegram-inbox.md).
 The recovery handoff, phase plans and earlier implementation evidence remain reference
 material; they do not authorize resets, service replacements or new channel authority.

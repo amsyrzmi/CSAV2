@@ -15,9 +15,11 @@ from csa.agents.base import AgentContext
 from csa.agents.kb import KbAgent, KbInput
 from csa.console import agents, capabilities, runtime, timeline
 from csa.console.access import authenticate, tenant
+from csa.console.business import build_business_router
 from csa.console.capabilities import CapabilityOut, CapabilityToggleIn, SpecializedTabInfo
 from csa.console.chat import build_chat_router
 from csa.console.contracts import ConsoleActor, Role
+from csa.console.inbox import build_inbox_router
 from csa.console.kb_contracts import JobOut, public_job
 from csa.console.kb_uploads import audit as kb_audit
 from csa.console.kb_uploads import build_upload_router
@@ -136,6 +138,8 @@ def build_router(
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(auth)])
     router.include_router(build_upload_router(kb_upload_root))
     router.include_router(build_chat_router())
+    router.include_router(build_inbox_router())
+    router.include_router(build_business_router())
 
     async def kb_enabled(
         client_id: Annotated[UUID, Depends(tenant)],

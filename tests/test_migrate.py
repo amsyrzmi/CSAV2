@@ -16,7 +16,7 @@ from tests.conftest import (
     requires_docker,
 )
 
-EXPECTED_SCHEMA_VERSION = "0290"
+EXPECTED_SCHEMA_VERSION = "0300"
 LG01_SQL_VERSIONS = {"0100", "0110", "0120"}
 
 
@@ -141,6 +141,6 @@ def test_make_reset_only_disposable_container(pg_container: object, migrated_dsn
         rows = conn.execute(
             "SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class "
             "WHERE relname IN "
-            "('console_chat_participants','console_chat_threads','console_chat_turns')"
+            "('console_chat_participants','console_chat_threads','console_chat_turns','console_inbox_actions')"
         ).fetchall()
-        assert len(rows) == 3 and all(row[1] and not row[2] for row in rows)
+        assert len(rows) == 4 and all(row[1] and not row[2] for row in rows)

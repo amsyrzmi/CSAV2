@@ -1,6 +1,8 @@
 # M4 closeout and M5 kickoff
 
-Updated 2026-10-16. **Start here for the next session.** Isolated dev only.
+M4 closeout recorded 2026-10-16. Historical M5 kickoff; continue from
+[the implemented Telegram M5 slice and current evidence](2026-10-17-m5-telegram-inbox.md).
+Isolated dev only.
 
 ## Closeout decision
 

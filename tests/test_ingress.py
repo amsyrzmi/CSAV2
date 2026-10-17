@@ -497,7 +497,7 @@ async def test_staff_edit_text_via_webhook_reaches_customer_outbox_once(
     )
     await ingress.receive(public_id, secret, text_update)
     await ingress.receive(public_id, secret, text_update)
-    assert [c["text"] for c in sent if c["url"] == "sendMessage"] == ["Edited reply sent."]
+    assert [c["text"] for c in sent if c["url"] == "sendMessage"] == ["Edited reply queued."]
 
     with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
         assert conn.execute(
@@ -611,7 +611,7 @@ async def test_group_staff_edit_binds_to_the_alert_reply(
 
     sent.clear()
     await ingress.receive(public_id, secret, post(group_text(6, "Edited in group", 40)))
-    assert [c["text"] for c in sent if c["url"] == "sendMessage"] == ["Edited reply sent."]
+    assert [c["text"] for c in sent if c["url"] == "sendMessage"] == ["Edited reply queued."]
     with psycopg.connect(owner_dsn) as conn:
         assert conn.execute(
             "SELECT status, final_text FROM approvals WHERE id=%s", (approval_id,)

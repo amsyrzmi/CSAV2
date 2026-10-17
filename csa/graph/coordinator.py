@@ -464,7 +464,15 @@ def build_graph(
 
     builder.add_edge(START, "load_ctx")
     builder.add_conditional_edges("load_ctx", _on_error("guard"), ["guard", "fail_safe"])
-    builder.add_conditional_edges("guard", _on_error("signals"), ["signals", "fail_safe"])
+    builder.add_conditional_edges(
+        "guard",
+        lambda state: (
+            "fail_safe"
+            if state.node_error
+            else ("route" if state.ctx and state.ctx.flags.get("human_muted") else "signals")
+        ),
+        ["signals", "route", "fail_safe"],
+    )
     builder.add_conditional_edges("signals", _on_error("route"), ["route", "fail_safe"])
     builder.add_conditional_edges(
         "route",

@@ -1,11 +1,187 @@
 # Progress
 
-Latest continuation: [M4 closeout and M5 kickoff](./handoffs/2026-10-16-m4-closeout-m5-start.md).
+Latest continuation: [M5 Telegram inbox scope and evidence](./handoffs/2026-10-17-m5-telegram-inbox.md).
+M4 history starts at [the prior closeout](./handoffs/2026-10-16-m4-closeout-m5-start.md).
 M4 is **functionally closed with an explicitly accepted laptop-dev performance exception**;
-M5 is next, not implemented. The full test suite remains **674 passed / 2 latency failures**,
-not green. See the closeout decision below. Documentation cleanup consolidates stale
+M5's Telegram-only staff slice was reviewed and rolled out on explicitly approved guarded
+dev at **0300**; platform-admin UI and synthetic Telegram acceptance are verified.
+Live reader denial and representative tenant-admin/staff browser replay pass. Per-role
+fresh approval-decision coverage remains automated evidence, not a repeated live matrix.
+M5 full validation was **692 passed**, including both unchanged ingress latency checks.
+Latest M6B validation is **732 passed / 1 TCP latency failure**; see the offline record below.
+M4's historical **674 passed / 2 latency failures** remain recorded;
+one current pass is not a laptop capacity guarantee. See the closeout decision below.
+Documentation cleanup consolidates stale
 status/navigation and replaces the obsolete kickoff prompt; plans, historical evidence,
 user-owned review reports and UI-guide material remain preserved.
+
+## M6 Business management foundation (2026-10-17; offline)
+
+- M6B continuation: offline TikTok order-read contract groundwork is implemented.
+  Detail/search now reject provider errors, incomplete/malformed orders, mismatched
+  detail IDs and invalid pages rather than fabricate successful default data.
+  Typed one-page reads preserve continuation tokens, Decimal money and carrier references;
+  legacy first-page list shape remains. Read errors expose safe codes, not raw provider/
+  transport/validation contents; reads do not place access tokens in URLs or follow redirects.
+  Targeted synthetic adapter/ecommerce checks: **41 passed**, 2.51 s.
+  Final `NO_LOCAL_ENV=1 ENV=ci PYTEST_ADDOPTS=-s make lint test`: Ruff/format/Pyright/
+  import-linter pass; **732 passed / 1 failed**, 136 warnings, **2701.96 s**.
+  Only failure: `test_real_ingress_50rps_and_durable_queue[tcp]`, ack p95
+  **608.321 ms** against unchanged **<200 ms**; scheduled ack **627.508 ms**.
+  ASGI ack/scheduled p95 **185.855/198.599 ms** pass. Each transport completed150
+  requests with150 durable deliveries, not a latency waiver. Simultaneous TCP
+  ack/scheduled p95 **1337.291/1362.941 ms**, graph-only p95 **96.771 ms** are
+  diagnostic evidence, not a passing TCP latency claim. Disposable-only reset checks pass.
+  One initial full run was stopped before completion while finalizing the redirect guard;
+  no result is claimed for it. No latency retry/threshold change was made.
+  Full validation remains **not green**; no new M6 performance waiver is implied.
+  No console/provider wiring, live credentials, store claims or product/write changes.
+  Current official API compatibility and tenant/store credential binding remain gates,
+  not assumed complete. See the [M6B groundwork and verification gates](./handoffs/2026-10-15-console-source-migration-plan.md#m6b-order-read-contract-groundwork-offline-not-provider-verification).
+- User requested a multi-platform seller workspace, TikTok-first, and approved **staff-only
+  business reads** plus **read-only local stock with no synchronization authority**.
+  Expanded [M6 roadmap](./handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation)
+  stages local reads, verified seller reads/connections, separately authorized TikTok
+  operations, multi-platform inventory decisions, and original invoice/staff preparation work.
+- Implemented separate `/business` and `/portal/business` UI plus typed local
+  `/console/v1/business/orders` and `/products` lists/scoped summary-detail reads.
+  Bounded keyset pagination; decimal monetary fields; orders include persisted channel,
+  store/order identifiers and tracking/carrier references. Products show local
+  stock/reserved/available counts. No address/contact/credential/arbitrary attributes in
+  these projections. Readers/machines/anonymous denied; staff tenant scoping preserved.
+- Explicit UI labels distinguish local update from sync freshness, local catalogue from
+  published listings, tracking references from live carrier tracking, and missing local
+  rows from a marketplace with no data. Marketplace sync, connections, listing/stock/
+  fulfilment/refund/payment writes and later tickets/invoices/preparation are unavailable,
+  not fake working controls. Existing TikTok adapter is not wired by the empty
+  `EcommerceAgent()` runtime constructors; no live connection was verified.
+- Targeted backend/contract selection: **6 passed**, 1 warning, 77.60 s. Isolated
+  frontend: **13 transport + 2 state tests**, ESLint, Next type generation, TypeScript,
+  production webpack build and trace-boundary checks pass. Initial frontend lint caught
+  synchronous effect state resets; moved resets to explicit navigation/refresh actions,
+  then reran checks.
+- M6A foundation full `NO_LOCAL_ENV=1 ENV=ci PYTEST_ADDOPTS=-s make lint test`: Ruff/format/Pyright/
+  import-linter pass; **695 passed / 1 failed**, 136 warnings, **1795.08 s**. Only failure:
+  `test_real_ingress_50rps_and_durable_queue[tcp]`, ack p95 **788.334 ms** against unchanged
+  **<200 ms** (scheduled ack **1034.766 ms**). ASGI ack/scheduled p95
+  **118.552/119.057 ms** pass. All150 TCP requests completed with150 durable deliveries;
+  this does not satisfy latency acceptance. Simultaneous TCP ack/scheduled p95
+  **514.905/540.197 ms**, graph-only p95 **100.350 ms** are retained diagnostic evidence,
+  not a threshold waiver. Guarded disposable-only `make db-reset` regressions pass.
+  No latency retry or threshold change was made. Full validation is **not green**;
+  M4's laptop-dev exception is not an M6 performance waiver, and laptop causality
+  remains unproven. M6A live acceptance/performance sign-off remain open.
+- No persistent migration/reset, service replacement, provider calls, password/token
+  inspection, production/infrastructure/webhook change, dependency change or UI-guide edit.
+  Existing dirty M5 implementation preserved. Last approved dev build is M5, not M6.
+- Current read-only environment probe (2026-10-17 about 07:04 UTC) found no listeners
+  on18081/13000; recorded prior M5 PIDs are no longer present. This continuation did
+  not stop or restart them. Prior live acceptance is historical evidence; do not claim
+  the console is currently available. Service restoration/replacement and live M6
+  acceptance remain separately approval-gated.
+
+## M5 Telegram customer inbox (2026-10-17 implementation record; guarded dev rollout 2026-10-16 UTC)
+
+- User explicitly selected Telegram customer conversations and outbound-reply approvals
+  for platform admins (explicit tenant), tenant admins and tenant staff. Readers and
+  machines are denied, including message reads. Customer-web and order decisions are
+  deferred. Private sandbox histories, contacts and held turn fields remain excluded.
+- Added separate queue/detail UI and typed `/console/v1/inbox` reads, takeover, release,
+  human replies and structured shared approval transitions. Decisions use verified
+  console user UUIDs, CSRF/RBAC/tenant checks, one shared domain implementation and
+  atomic console/domain audit and outbox. Telegram edit/action binding remains intact;
+  acknowledgement text now says queued, not delivered.
+- Indefinite ownership and model bypass match LG04. Locked egress/holds/fallback and
+  delivery checks prevent stale automatic sends across takeover/release. A matching
+  escalation permits the intentional code-selected handoff acknowledgement; explicit
+  staff replies retain their own authority. Delivery claiming orders each conversation
+  through retries. A provider-accepted send still cannot be recalled or made exactly once.
+- Additive 0300 introduces the suppression/version fields, message provenance, replay
+  receipts and indexes with staged RLS, no FORCE. After disposable validation and separate
+  explicit approval, persistent dev advanced **0290 → 0300** without reset and guarded
+  services were replaced. No environment-file, webhook, upload or production change.
+- The checkout was clean at `d8f7149` on entry. Existing user review files and UI-guide
+  state are preserved. No commit was requested or made.
+- Post-review offline validation passes. Final exact results belong in
+  [the M5 evidence record](./handoffs/2026-10-17-m5-telegram-inbox.md).
+  M4's accepted laptop-dev exception remains; no threshold or release waiver changed.
+- Implementation review fixed three coupled gaps before rollout:
+  - Takeover of an existing timed escalation must clear its expiry and establish
+    indefinite ownership, not return already-handled. The detail UI now offers
+    **Take over indefinitely** for a temporary pause.
+  - Escalation now checks current automation authority under the conversation lock
+    before tickets/notifications/mute effects; stale in-flight work cannot replace
+    indefinite takeover with a 24-hour mute or re-mute an explicitly released turn.
+  - Existing Telegram order callbacks now commit metadata-only completed ingress
+    provenance with their customer message/outbox. The new strict delivery route
+    binding otherwise rejected these replies after a successful order decision.
+    Console order decisions stay deferred; no transport/binding guard was relaxed.
+- Review targeted tests: **59 passed**, 23 warnings, 142.23 s (inbox, staff, coordinator),
+  plus **2 passed**, 3 warnings, 22.56 s (actual order approve/reject callback-to-delivery
+  path with mocked Telegram). Five new regression cases in total; selections overlap
+  the full suite. Final isolated frontend **12 transport + 2 state tests**, lint/types/
+  production build and safe traces pass. Post-review full result is recorded below.
+- The prior completed readiness/load follow-up was **7 passed / 1 ASGI latency failure**,
+  not an in-progress run. Its corrected expected schema 0300 fixes the earlier four
+  readiness failures; it does not establish green performance acceptance.
+- Review changes were offline. At that review stage no persistent migration/reset, service replacement,
+  credentials inspection, live external send, production/infrastructure/webhook change
+  or UI-guide modification. Keep rollout and live acceptance separately approval-gated.
+- Final post-review `NO_LOCAL_ENV=1 ENV=ci PYTEST_ADDOPTS=-s make lint test`:
+  **692 passed**, 136 warnings, 1645.86 s. Ruff/format/Pyright/import-linter pass;
+  actual fingerprint-guarded disposable-only `make db-reset`/0300 and staged RLS pass.
+  Unchanged ingress-only 50-rps acknowledgement/scheduled p95: ASGI
+  **108.284 / 109.555 ms**, TCP **174.623 / 176.324 ms**, both `<200 ms`, each
+  150 completed turns and 150 pending deliveries. Separate simultaneous-capacity test
+  passes with 150 unique replies and worker-turn p95 **2690.479 ms** (ack **382.791 ms**,
+  distinct criteria); graph-only p95 **88.396 ms** passes. No thresholds, pool sizes,
+  tracing or durability were relaxed. Historical failures and the laptop-dev exception
+  remain context, not an established cause or production-capacity guarantee.
+- Subsequent explicit user approval authorized forward-only 0300, coordinated dev
+  replacement and authenticated/synthetic Telegram acceptance. Exact dev target/role
+  guards passed; only pending 0300 applied atomically, without reset or password
+  provisioning. Gateway/worker/delivery and isolated frontend replaced; health/readiness/
+  login 200 and dedicated heartbeats fresh. Initial frontend test-origin rewrite caused
+  500; rebuilding isolated source with actual **18081 at build time** fixed it.
+- Authenticated Synthetic Admin acceptance: scoped reads, indefinite takeover, three
+  completed real Telegram turns without automatic output while muted; shared-service
+  synthetic reply approvals; human reply commit/response loss/same-key retry with
+  **one message/delivery/receipt/attempt**; approve/edit delivered once each; reject audited
+  without fallback while paused. User confirmed the three labeled receipts exactly once.
+  Stale version409, other-tenant404, private-sandbox404, distinct bounded message pages,
+  and reload recovery of the same delivered message/settled cards pass.
+- Deliberate release left the synthetic Telegram conversation AI-owned at version4.
+  Fresh post-boundary trace `b9b49cba-5e4d-4fd6-9576-2c050fdad52b` produced the delivered
+  seventeen-day KB answer, user-confirmed; it is the only new automatic delivery since
+  takeover. No stale paused turn emitted after release.
+- Live reader replay **blocked**: user forgot password and encountered login throttling.
+  No reset/bypass/retries; reader/machine and tenant-staff/admin authority retain automated
+  evidence only. See [exact rollout evidence and active dev handles](
+  ./handoffs/2026-10-17-m5-telegram-inbox.md#approved-guarded-dev-rollout-and-live-acceptance-2026-10-16-utc).
+  Dirty worktree/UI-guide preserved; no production, infrastructure, webhook or commit changes.
+- Subsequently the user explicitly approved recovery of both synthetic dev console logins.
+  User-operated hidden terminal prompts set new passwords privately; exact-dev guarded
+  transaction reused existing identity hashing/SQL, revoked sessions/links, cleared
+  targeted throttling and audited both recoveries at **2026-10-16 20:54:24 UTC**.
+  Metadata verified both enabled with zero active sessions/links immediately afterward.
+  No password/hash was printed; database-role passwords, bot/API/encryption credentials
+  and production were untouched. Live reader replay remains pending, no longer treated
+  as requiring the forgotten old password. New low-count login attempts after recovery
+  are not evidence that the prior lockout was retained.
+- Reader live replay subsequently **passes (2026-10-16 21:02 UTC)**: verified normal
+  `read_only` identity200; no inbox navigation; direct `/portal/inbox` permission denial
+  without transcript/approval content. Conversation list/detail/messages/approvals reads
+  and CSRF-valid takeover/release/reply/approval-decision probes all return **403**.
+  No accepted mutation, send, credential inspection or role elevation. Tenant-admin/staff
+  browser replay remains pending; the reader-specific gap is closed.
+- Subsequent approved separate role fixtures completed normal private invitations:
+  `m5-tenant-admin@example.test` and `m5-tenant-staff@example.test`. Both verified
+  roles/tenant, inbox reads200, foreign-tenant403 and private-sandbox404. Each exercised
+  UI takeover/human reply/release; one delivered message/attempt/receipt each, user-confirmed
+  exactly once in dev Telegram. Staff replay of settled approval1 returns already_handled,
+  queued=false. Reader remains enabled/read_only; final conversation AI-owned/version8.
+  Fresh approval decisions were live-tested as platform admin, with the full per-role
+  decision matrix still automated; separate M3 KB role replay is not closed by this.
 
 ## Historical incident and recovery: unintended isolated-dev schema reset (2026-10-16)
 
@@ -445,7 +621,7 @@ change remains pending, and the historical hang/500 causes are not proven.
 | Langfuse Observability Integration | Done: Direct async batch ingestion (`LangfuseSink`), redaction & privacy preservation, integrated into worker `PostgresEventSink`, initial activation trace verified live on `jp.cloud.langfuse.com` | `tests/test_langfuse.py` (4 passed), `csa/core/langfuse.py`, `csa/graph/events.py`, `apps/worker/main.py` |
 | KB console upload ingestion | Done (gated by `KB_INGEST_ENABLED`): console writes ≤3 PDF/DOCX/CSV files to `KB_UPLOAD_ROOT/<client_id>/` + `kb_ingest_jobs` row; worker validates, confines paths, extracts, chunks, embeds (strict TEI, no silent fallback), stores versioned/deduplicated docs, records per-file `meta.results`, and retries with backoff. Model-filtered search. Also fixed LG13 regressions: `EcommerceAgent.ACTION_RISK` class attribute, stale capabilities test, JEV answers fixture for new agents, and `job_runs` (owner-written ops log) excluded from the RLS set-equality test. Full suite: 442 passed; the 6 failures were rerun in isolation and pass (the 3 latency thresholds failed only under host load). | `tests/test_kb_ingest.py` (25 passed), `tests/test_kb_agent.py` (7 passed), live dev TEI e5-small semantic check; not tested: real console writing jobs, worker loop running live in dev |
 | LG13 Waves 2/3 preparation | Implemented provider-neutral slice, **not live integrations**: disabled-by-default booking/subscription agents provide contact-scoped local reads and unexecuted requests; staff-only email/research/invoice-draft libraries, strict inputs and Decimal totals. Immutable preparation ledger with RLS, contact-owner checks, actor/trace and concurrent idempotency. No external calls, executable approvals or billing/event/invoice mutations. | `csa/agents/staged/`, migration `0260_staged_agent_requests.sql`, `tests/test_staged_agents.py` (51 passed); `docs/handoffs/2026-10-15-wave23-preparation.md`. |
-| LG15 Console turnover (n8n → CSA) | M0–M3 implemented; M4 functionally closed with explicitly accepted laptop-dev performance exception, guarded dev at 0290 without reset. M5 next; M3 tenant-role replay, M5–M8 and public deployment pending. | Migrations 0270–0290, `csa/console/`, typed frontend/OpenAPI; see M4 closeout/handoff. Latest full: 674 passed / 2 latency failures (ASGI 508.717 ms, TCP 298.288 ms, unchanged <200 ms). Final focused: 2 passed / 1 TCP failure (261.451 ms). Functional and reader-controls checks pass; performance debt carried forward, not a green full suite. |
+| LG15 Console turnover (n8n → CSA) | M0–M3 implemented; M4 functionally closed with accepted laptop-dev performance exception. M5 Telegram slice approved/running on guarded dev0300 with platform-admin UI, synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff replay verified. M3 tenant-role replay and broader M5–M8 pending. | Latest full lint/tests **692 passed**, ASGI/TCP ack p95 **108.284 / 174.623 ms**, unchanged <200 ms. Frontend 12+2/lint/types/build pass; controlled live response-loss retry, ownership, approve/edit/reject, scoped denials and fresh post-release delivery verified. No production-capacity waiver or public deployment. |
 | LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md` |
 
 Console M0–M1 review/verification (2026-10-15):

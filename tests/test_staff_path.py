@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 import psycopg
 import pytest
+from apps.delivery.main import DeliveryWorker
 from csa.approval.service import EDIT_PROMPT_TEXT
 from csa.core import crypto, settings
 from csa.notify.sender import StaffNotificationSender
@@ -154,6 +155,51 @@ async def test_staff_approve_tap_confirms_and_queues_customer_message(
         world.client_id,
     )
     assert rows[0][0] == 1
+
+
+@pytest.mark.parametrize("decision", ["Approve", "Reject"])
+async def test_order_callback_reply_retains_verified_route_through_delivery(
+    world: World,  # noqa: F811
+    owner_pool: Any,
+    decision: str,
+) -> None:
+    endpoint_id, _, buttons, _ = await _staff_flow(world, owner_pool)
+    trace_id = uuid.uuid4()
+    answer = await handle_staff_action(
+        world.pool,
+        client_id=world.client_id,
+        endpoint_id=endpoint_id,
+        chat_id="999",
+        staff_action_id=uuid.UUID(buttons[decision][2:]),
+        trace_id=trace_id,
+    )
+    assert answer == ("Approved." if decision == "Approve" else "Rejected.")
+    assert world.q(
+        "SELECT endpoint_id,status,raw FROM ingress_events WHERE client_id=%s AND trace_id=%s",
+        world.client_id,
+        trace_id,
+    ) == [(endpoint_id, "completed", None)]
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE outbound_deliveries SET next_attempt_at=now()+interval '1 day' "
+            "WHERE client_id<>%s",
+            (world.client_id,),
+        )
+    sent: list[dict[str, Any]] = []
+
+    def send(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 88}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as client:
+        delivery = DeliveryWorker(owner_pool, world.pool, client)
+        assert await delivery.process_once()
+        assert not await delivery.process_once()
+    assert len(sent) == 1 and sent[0]["chat_id"] == "601"
+    assert world.q(
+        "SELECT status,last_error FROM outbound_deliveries WHERE trace_id=%s",
+        trace_id,
+    ) == [("delivered", None)]
 
 
 async def test_staff_tap_from_wrong_chat_is_refused(world: World, owner_pool: Any) -> None:  # noqa: F811
@@ -310,7 +356,7 @@ async def test_held_reply_is_sent_once_when_staff_approves(world: World, owner_p
     assert await _tap_reply(world, endpoint_id, buttons["Reject"], "12345") == (
         "You are not authorised for this action."
     )
-    assert await _tap_reply(world, endpoint_id, buttons["Send reply"]) == "Approved. Reply sent."
+    assert await _tap_reply(world, endpoint_id, buttons["Send reply"]) == "Approved. Reply queued."
     assert world.q("SELECT body, direction FROM messages WHERE client_id=%s", world.client_id) == [
         ("Your refund is on the way.", "outbound")
     ]
@@ -394,7 +440,7 @@ async def test_staff_edit_sends_edited_text_once_and_audits(world: World, owner_
     assert await _tap_reply(world, endpoint_id, buttons["Edit"]) == (EDIT_PROMPT_TEXT)
     assert _counts(world) == (0, 0)
 
-    assert await _submit(world, "  Your refund arrives in a few days.  ") == "Edited reply sent."
+    assert await _submit(world, "  Your refund arrives in a few days.  ") == "Edited reply queued."
     assert world.q("SELECT body, direction FROM messages WHERE client_id=%s", world.client_id) == [
         ("Your refund arrives in a few days.", "outbound")
     ]
@@ -426,7 +472,7 @@ async def test_staff_edit_sends_edited_text_once_and_audits(world: World, owner_
 async def test_edited_outbound_redacted_body_has_no_raw_pii(world: World, owner_pool: Any) -> None:  # noqa: F811
     _approval_id, endpoint_id, buttons = await _held_buttons(world, owner_pool)
     await _tap_reply(world, endpoint_id, buttons["Edit"])
-    assert await _submit(world, "Write to help@shop.example for refunds.") == "Edited reply sent."
+    assert await _submit(world, "Write to help@shop.example for refunds.") == "Edited reply queued."
     assert world.q(
         "SELECT body, redacted_body FROM messages WHERE client_id=%s AND direction='outbound'",
         world.client_id,
@@ -517,7 +563,7 @@ async def test_invalid_edit_text_is_refused_and_stays_armed(
     assert world.q("SELECT count(*) FROM approval_audit WHERE approval_id=%s", approval_id) == [
         (0,)
     ]
-    assert await _submit(world, "x" * 2000) == "Edited reply sent."
+    assert await _submit(world, "x" * 2000) == "Edited reply queued."
     assert _counts(world) == (1, 1)
 
 
@@ -527,7 +573,7 @@ async def test_concurrent_edit_submissions_deliver_once(world: World, owner_pool
     approval_id, endpoint_id, buttons = await _held_buttons(world, owner_pool)
     await _tap_reply(world, endpoint_id, buttons["Edit"])
     results = await asyncio.gather(*(_submit(world, "Same text") for _ in range(4)))
-    assert results.count("Edited reply sent.") == 1
+    assert results.count("Edited reply queued.") == 1
     assert _counts(world) == (1, 1)
     assert world.q("SELECT count(*) FROM approval_audit WHERE approval_id=%s", approval_id) == [
         (1,)
@@ -550,7 +596,7 @@ async def test_edit_with_unsupported_number_warns_but_still_sends(
     _, endpoint_id, buttons = await _held_buttons(world, owner_pool)
     await _tap_reply(world, endpoint_id, buttons["Edit"])
     answer = await _submit(world, "Your refund of RM 9999 is on the way.")
-    assert answer.startswith("Edited reply sent. Warning:")
+    assert answer.startswith("Edited reply queued. Warning:")
     assert "9999" in answer
     assert _counts(world) == (1, 1)
 
@@ -564,7 +610,7 @@ async def test_arming_a_second_edit_disarms_the_first(world: World, owner_pool: 
 
     await _tap_reply(world, endpoint_id, first["Edit"])
     await _tap_reply(world, endpoint_id, second["Edit"])
-    assert await _submit(world, "Applies to the newest") == "Edited reply sent."
+    assert await _submit(world, "Applies to the newest") == "Edited reply queued."
     assert world.q("SELECT status FROM approvals WHERE id=%s", first_id) == [("pending",)]
     assert world.q("SELECT status FROM approvals WHERE id=%s", second_id) == [("edited",)]
     assert await _submit(world, "No second target") == "No edit is waiting for a reply."

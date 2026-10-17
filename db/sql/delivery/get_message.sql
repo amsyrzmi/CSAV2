@@ -6,6 +6,7 @@ SELECT delivery.id AS delivery_id,
        delivery.message_id,
        message.body,
        message.ui,
+       message.send_authority,
        conversation.channel,
        conversation.channel_thread
 FROM public.outbound_deliveries AS delivery
@@ -15,6 +16,10 @@ JOIN public.messages AS message
 JOIN public.conversations AS conversation
   ON conversation.id = delivery.conversation_id
  AND conversation.client_id = delivery.client_id
+ AND (conversation.channel <> 'telegram' OR (
+     message.conversation_id = conversation.id
+     AND message.trace_id IS NOT DISTINCT FROM delivery.trace_id
+ ))
 WHERE delivery.id = %s
   AND delivery.client_id = %s
   AND delivery.status = 'delivering';

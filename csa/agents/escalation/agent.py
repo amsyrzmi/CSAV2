@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Literal
 
+import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 from csa.agents.base import AgentContext, SideEffects
@@ -13,8 +14,10 @@ from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.notify.notifier import notify
+from csa.staff.ownership import automation_allowed
 
 MUTE_FOR = timedelta(hours=24)
+logger = structlog.get_logger(__name__)
 
 
 class EscalationInput(BaseModel):
@@ -36,6 +39,23 @@ class EscalationAgent:
     async def run(self, ctx: AgentContext, inp: BaseModel) -> AgentResult:
         assert isinstance(inp, EscalationInput)
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
+            if ctx.conversation_id is not None and not await automation_allowed(
+                conn, ctx.client_id, ctx.conversation_id, ctx.trace_id
+            ):
+                logger.info(
+                    "escalation_suppressed",
+                    conversation_id=str(ctx.conversation_id),
+                    trace_id=str(ctx.trace_id),
+                    reason="conversation_ownership_changed",
+                )
+                return AgentResult(
+                    ok=True,
+                    status="ok",
+                    task_id=ctx.idempotency_key,
+                    agent=self.name,
+                    data=AgentResultData(),
+                    meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0),
+                )
             ticket = await db.q.fetch_one(
                 "tickets/find_open_escalation.sql",
                 (ctx.client_id, ctx.conversation_id),

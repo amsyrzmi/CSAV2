@@ -2,9 +2,29 @@
 
 ## Source-based revision (2026-10-15)
 
-Current entry point: [M4 closeout and M5 kickoff](../handoffs/2026-10-16-m4-closeout-m5-start.md).
+Current entry point: [M5 Telegram scope and evidence](../handoffs/2026-10-17-m5-telegram-inbox.md).
+Prior evidence: [M4 closeout](../handoffs/2026-10-16-m4-closeout-m5-start.md).
 M4 is functionally closed by explicit user decision with a laptop-dev performance
-exception; M5 is next, not implemented. Failed latency checks remain open release debt.
+exception; M5's authorized Telegram-only staff inbox/reply-approval slice is implemented;
+post-review full lint/tests **692 passed**, including unchanged ASGI/TCP ingress thresholds.
+Explicitly approved guarded dev0300 rollout and platform-admin/synthetic Telegram
+acceptance, live reader denial and representative tenant-admin/staff browser replay
+are verified, with automated authority tests passing. Historical laptop latency failures are
+retained context, not erased by one passing run or a production performance waiver.
+M6 is now staged as a Business management seller workspace: local read foundation,
+verified seller reads/connections, separately authorized TikTok operations, multi-platform
+inventory authority/mapping, and business support/staff preparation. The local orders/
+tracking/catalogue/stock read foundation is implemented offline, not live-rolled out.
+See the [expanded M6 scope and gates](../handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
+M6A lint, targeted and frontend checks pass. Its full validation: **695 passed / 1 TCP latency
+failure** (ack p95 **788.334 ms**, unchanged **<200 ms**). This is not green or covered
+by the earlier M4 exception. See [current progress](../PROGRESS.md) for exact evidence.
+M6B's offline order-read groundwork validates existing synthetic TikTok response assumptions,
+preserves continuation tokens and sanitizes failures. It does not verify current provider
+compatibility or bind credentials to tenants/stores; those gates precede console wiring.
+M6B targeted checks: **41 passed**; full lint passes, full tests **732 passed / 1 TCP
+latency failure**, ack p95 **608.321 ms** against unchanged **<200 ms**. Disposable reset
+checks pass; no live rollout, threshold relaxation or new performance waiver occurred.
 
 The console source is now available at `CSA_WebConsole/csa-console/`.
 The user approved replacing its backend logic, retaining the Next.js UI and using

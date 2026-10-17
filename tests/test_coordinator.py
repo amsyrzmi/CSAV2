@@ -405,6 +405,9 @@ async def test_muted_conversation_emits_ack_without_running_planner() -> None:
 @pytest.mark.asyncio
 async def test_muted_conversation_with_no_ack_finishes_silently() -> None:
     class Silent(FakeDependencies):
+        async def signals(self, envelope, context):  # type: ignore[no-untyped-def]
+            raise AssertionError("muted turns must skip classifier work")
+
         async def handle_muted(self, envelope, context):  # type: ignore[no-untyped-def]
             return []
 
@@ -413,6 +416,7 @@ async def test_muted_conversation_with_no_ack_finishes_silently() -> None:
     result = await run_turn(make_envelope(), deps)
 
     assert result.outbound == []
+    assert deps.fallbacks == []
     assert deps.emitted == []
     assert deps.compose_calls == 0
 

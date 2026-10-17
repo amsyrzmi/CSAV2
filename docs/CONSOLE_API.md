@@ -1,9 +1,13 @@
 # Console API contract (v1)
 
-M0–M4 implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
+M0–M5 plus offline M6A implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
 See the [migration plan](./handoffs/2026-10-15-console-source-migration-plan.md) and
 [frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
+Offline M6B TikTok order-page validation is internal adapter groundwork only: it adds no
+console routes or live connection claims. Current provider specification verification,
+tenant/store-bound credential resolution and safe browser projections remain required;
+the normalized internal ecommerce order is not a console response model.
 
 ## Authentication, tenancy and settings
 
@@ -203,6 +207,100 @@ is still required. M5 may begin as a separate staff surface, not expanded sandbo
 authority. See [the closeout and M5 prompt](./handoffs/2026-10-16-m4-closeout-m5-start.md).
 See [current evidence](./PROGRESS.md). Offline tests/build are not live-browser evidence.
 Future replacements still require scoped approval. No public rollout is implied.
+
+## Telegram customer inbox (M5; guarded dev)
+
+The user confirmed Telegram customer conversations only for `platform_admin` (explicit
+selected tenant), `tenant_admin` and `tenant_staff`. Readers, machine principals and
+anonymous requests are denied, including content reads. Customer-web and stock-changing
+order decisions are deferred. Private sandbox histories/contacts and held turn fields
+are excluded, including archived or mislabeled sandbox rows. `/inbox` and `/portal/inbox`
+are distinct staff surfaces; `/chat` remains owner-private.
+
+All paths use `/console/v1/inbox` with the existing tenant-selection query.
+
+| Method/path | Request | Result |
+|---|---|---|
+| `GET /conversations` | `before=UUID`, `limit=1..50` (20 default) | `{items,next_cursor}` |
+| `GET /conversations/{id}` | — | Ownership, mute and version metadata |
+| `GET /conversations/{id}/messages` | `before=UUID`, `limit=1..100` (50 default) | Bounded redacted text, direction, author and actual delivery status |
+| `GET /approvals` | `before=bigint`, `conversation_id=UUID`, `include_handled=false`, `limit=1..50` | Pending reply approvals; optionally settled history |
+| `POST /conversations/{id}/takeover` | `{request_key: UUID, expected_version: int}` | Audited indefinite human ownership |
+| `POST /conversations/{id}/release` | Same | Audited AI ownership; old turns stay suppressed |
+| `POST /conversations/{id}/reply` | Same plus `body` (1–2000 chars) | 202 structured receipt with `message_id`, `queued:true` |
+| `POST /approvals/{id}/decide` | `{request_key: UUID, decision: approve/reject/edit, text?: string}` | Structured applied/already_handled/expired result, status, queue flag and warnings |
+
+Mutations enforce Origin/CSRF and reject extra fields; JSON is capped at 32 KiB.
+Only edits accept/require `text`, with shared 2,000-character/control-character validation.
+Takeover is required before a human reply. Actions serialize per conversation; stale
+versions or changed content under a used key return 409. Mutation receipts, audit,
+message and outbox share the transaction. Explicit same-key retry recovers committed
+results after lost acknowledgement. Reads use stable time/ID keyset ordering. No raw
+envelopes, routing credentials, attachment payloads or arbitrary source URLs are returned.
+
+Muted new turns skip model/planner/spoke/composer work. Already-running computation may
+finish, but escalation, emit, hold, fail-safe and delivery recheck ownership. Taking
+over a temporary escalation clears its expiry and establishes indefinite ownership;
+the UI offers **Take over indefinitely** for a temporary pause. A late escalation
+cannot replace that ownership or re-mute an explicitly released stale turn.
+Takeover and release
+record a suppression boundary so older turns cannot start a stale send after release.
+Takeover skips pending automatic sends; explicit human/reviewed replies remain authorized.
+A code-selected handoff acknowledgement requires a matching escalation and is still
+subject to the takeover boundary. Rejection/expiry keeps its normal fallback unless
+ownership suppresses automatic replies; the decision/audit still commits.
+
+The shared approval transition locks conversation then approval, closes Telegram staff
+actions, and writes domain audit/outbox. Console actors use the verified user UUID;
+Telegram callback/edit binding stays in the Telegram adapter. No second SQL approval
+implementation or generic order-status mutation is introduced. Queued is not delivered.
+Existing Telegram order callbacks retain metadata-only completed ingress provenance
+for their customer acknowledgement, atomically with that message/outbox, so the stricter
+delivery endpoint/trace binding does not reject those replies. This does not add console
+order-decision authority or fabricate a Telegram staff identity.
+
+Delivery serializes by conversation, including retries. It holds the conversation lock
+through Telegram send and local acknowledgement; takeover waits for a send already in
+progress. It cannot recall an accepted remote request. Remote acceptance followed by a
+crash before local commit can still duplicate; delivery remains at least once.
+
+Additive **0300** has staged RLS without FORCE. After disposable validation and explicit
+user approval it was applied forward-only on isolated dev, without reset, with coordinated
+service replacement. Platform-admin browser and synthetic Telegram acceptance are
+verified; live reader UI/direct read/CSRF-valid mutation denial replay passes (403).
+Representative tenant-admin/staff browser replay also passes: scoped reads, cross-tenant/
+sandbox denial, takeover/human reply/release. Fresh decision role matrix retains automated evidence.
+Future migration/replacement/live-send scopes require separate approval. See [M5 scope and evidence](
+./handoffs/2026-10-17-m5-telegram-inbox.md). M4 latency failures remain recorded under the
+accepted laptop-dev exception; unchanged release thresholds apply at M7/M8.
+Post-review offline full validation passes **692 tests** plus lint; ASGI/TCP ack p95
+**108.284 / 174.623 ms** meet the unchanged `<200 ms` threshold in that run.
+Neither offline nor guarded-dev evidence is a guarantee under all laptop loads or
+approval for public deployment.
+
+## Business management (M6A; offline local read foundation)
+
+Only verified human platform administrators (explicit selected tenant), tenant
+administrators and tenant staff may read `/console/v1/business`. Readers, machines
+and anonymous principals are denied. No marketplace client or credential is accessed.
+No write routes are added; normal session/tenant controls remain authoritative.
+
+| Method/path | Query | Response |
+|---|---|---|
+| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders/{id}` | tenant query | Local order summary including persisted tracking/carrier, channel/store/order IDs and local timestamps |
+| `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/products/{id}` | tenant query | Local product summary, decimal price and local stock/reserved/available quantities |
+
+Keysets sort `(created_at,id)` descending; foreign/missing resource or cursor404, bad
+UUID/limit422. Monetary values serialize as decimal strings. Neither customer addresses/
+contacts nor arbitrary items/attributes/credentials/provider payloads are projected.
+Local update timestamps are not marketplace-sync evidence. Product local active status
+is not a published listing; stock is not synchronized and is not cross-store authority.
+These pages do not claim live tracking, connection health or import completeness.
+Tickets, invoices/PDFs, preparation and provider-backed operations remain staged in the
+[expanded M6 plan](./handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
+Implementation is offline; running M5 services have not been replaced.
 
 ## Implemented M1 lifecycle and onboarding
 
@@ -514,8 +612,8 @@ adapter must construct `StaffActor` from verified identity, never from user-supp
 fields, and supply the tenant/contact context. No console source is needed for these libraries;
 it is required to map existing UI calls and finish the actual turnover.
 
-Server-sent live stream, conversations/messages read API, takeover/release/human reply, approvals queue and decide endpoints, policy and
+Server-sent live stream, customer-web inbox, order decision UI, policy and
 agent settings editing, channel/integration connect, notification targets, DLQ/redrive,
-usage/billing. M4–M8 are not completed by the M1–M3 implementation.
+usage/billing. The offline Telegram M5 slice above does not complete broader M5–M8 acceptance.
 Authentication/onboarding, M2 agents/activity and M3 KB pages are adopted; all project/PM/terminal/Hermes/diagram/workroom/voice and
 unmigrated business pages return 404. No legacy API/n8n rewrite remains active.

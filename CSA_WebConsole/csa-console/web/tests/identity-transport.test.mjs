@@ -216,6 +216,55 @@ test("M4 sandbox routes require sessions and retain the same request on uncertai
   } finally { globalThis.fetch = original; }
 });
 
+test("M5 inbox has distinct protected routes and retries an uncertain decision explicitly", async () => {
+  for (const route of ["/inbox", "/portal/inbox"]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307);
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 200);
+  }
+  const original = globalThis.fetch;
+  const mutations = [];
+  globalThis.fetch = async (path, init) => {
+    if (path.endsWith("/csrf")) return Response.json({ csrf_token: "synthetic-csrf" });
+    mutations.push([path, init]);
+    if (mutations.length === 1) throw new TypeError("synthetic committed response loss");
+    return Response.json({ outcome: "applied", queued: true, status: "edited", warnings: [] });
+  };
+  try {
+    const path = "/console/v1/inbox/approvals/42/decide?client_id=synthetic-tenant";
+    const payload = { request_key: "synthetic-key", decision: "edit", text: "Synthetic answer" };
+    await assert.rejects(post(path, payload), /response loss/);
+    assert.equal(mutations.length, 1, "ambiguous mutations must not retry automatically");
+    assert.equal((await post(path, payload)).queued, true);
+    assert.equal(mutations[0][1].body, mutations[1][1].body);
+    assert.equal(mutations[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
+  } finally { globalThis.fetch = original; }
+});
+
+test("M6 business routes require a session and local reads never add mutation authority", async () => {
+  for (const route of ["/business", "/portal/business"]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307);
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 200);
+  }
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push([path, init]);
+    return Response.json({ source: "local_records", marketplace_sync: "unavailable", items: [], next_cursor: null });
+  };
+  try {
+    const result = await api("/console/v1/business/orders?limit=20");
+    assert.equal(result.marketplace_sync, "unavailable");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].credentials, "same-origin");
+    assert.equal(calls[0][1].headers.has("Authorization"), false);
+    assert.equal(calls[0][1].headers.has("X-Client-Id"), false);
+  } finally { globalThis.fetch = original; }
+});
+
 test("lost upstream response becomes a proxy error; explicit upload retry keeps the durable job", async () => {
   const { proxyRequest } = require("next/dist/server/lib/router-utils/proxy-request");
   const originalFetch = globalThis.fetch;

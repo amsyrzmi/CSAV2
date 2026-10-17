@@ -51,6 +51,14 @@ class InventorySyncItem(BaseModel):
     available_qty: int = Field(ge=0)
 
 
+class EcommerceOrderPage(BaseModel):
+    """One provider page, not evidence of a complete or synchronized order history."""
+
+    model_config = ConfigDict(extra="forbid")
+    items: list[EcommerceOrder]
+    next_page_token: str | None = Field(default=None, min_length=1, max_length=2048)
+
+
 class TikTokShopCredentials(BaseModel):
     """Credentials for TikTok Shop Open API integration."""
 

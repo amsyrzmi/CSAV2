@@ -1,5 +1,6 @@
 SELECT c.clarify_count,
-       (c.ai_muted_until IS NOT NULL AND c.ai_muted_until > now()) AS human_muted,
+       (c.owned_by = 'human_support' AND
+        (c.ai_muted_until IS NULL OR c.ai_muted_until > now())) IS TRUE AS human_muted,
        c.summary,
        ARRAY(
            SELECT o.id FROM public.orders o

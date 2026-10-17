@@ -54,6 +54,7 @@ from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider
 from csa.decide.providers import DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
+from csa.staff.ownership import automation_allowed
 
 logger = structlog.get_logger(__name__)
 
@@ -421,6 +422,10 @@ class PostgresTurnDependencies:
             raise RuntimeError("hold_draft_missing")
         envelope = state.envelope
         async with tx(self._pool, str(envelope.client_id)) as conn:
+            if not await automation_allowed(
+                conn, envelope.client_id, _require_conversation(envelope), envelope.trace_id
+            ):
+                return
             if envelope.channel == Channel.WEB:
                 held = await db.q.fetch_one(
                     "console/chat_hold.sql",
@@ -457,7 +462,12 @@ class PostgresTurnDependencies:
         envelope = state.envelope
         async with tx(self._pool, str(envelope.client_id)) as conn:
             for message in state.outbound:
-                await _insert_outbound(conn, envelope, message)
+                await _insert_outbound(
+                    conn,
+                    envelope,
+                    message,
+                    handoff=envelope.channel != Channel.WEB and message.body == HANDOFF_TEXT,
+                )
 
     async def finalize(self, state: TurnState) -> None:
         conversation_id = _require_conversation(state.envelope)
@@ -503,6 +513,10 @@ class PostgresTurnDependencies:
             idempotency_key=f"{envelope.trace_id}:fallback",
         )
         async with tx(self._pool, str(envelope.client_id)) as conn:
+            if not await automation_allowed(
+                conn, envelope.client_id, _require_conversation(envelope), envelope.trace_id
+            ):
+                return message
             if envelope.channel != Channel.WEB:
                 await _insert_escalation(conn, envelope, f"fail_safe:{error_code}", "high")
             else:
@@ -553,6 +567,8 @@ async def _insert_outbound(
     conn: psycopg.AsyncConnection[Any],
     envelope: Envelope,
     message: OutboundMessage,
+    *,
+    handoff: bool = False,
 ) -> None:
     if envelope.channel == Channel.WEB and (
         message.channel != Channel.WEB
@@ -562,6 +578,10 @@ async def _insert_outbound(
     ):
         raise ValueError("sandbox_outbound_authority_or_action_invalid")
     conversation_id = _require_conversation(envelope)
+    if not await automation_allowed(
+        conn, envelope.client_id, conversation_id, envelope.trace_id, handoff=handoff
+    ):
+        return
     row = await db.q.fetch_one(
         "worker/insert_message.sql",
         (
@@ -586,6 +606,8 @@ async def _insert_outbound(
         )
         if row is None or row["conversation_id"] != conversation_id:
             raise RuntimeError("outbound idempotency key conflicts with another turn")
+    if handoff:
+        await db.q.execute("staff/set_handoff.sql", (envelope.client_id, row["id"]), conn=conn)
     ui = message.ui.model_dump(mode="json", exclude_none=True)
     if ui.get("confirmation") or ui.get("options"):
         await db.q.fetch_one(

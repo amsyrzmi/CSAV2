@@ -3,6 +3,13 @@ WITH candidate AS (
     FROM public.outbound_deliveries AS delivery
     WHERE delivery.status = 'pending'
       AND delivery.next_attempt_at <= now()
+      AND NOT EXISTS (
+          SELECT 1 FROM public.outbound_deliveries earlier
+          WHERE earlier.client_id = delivery.client_id
+            AND earlier.conversation_id = delivery.conversation_id
+            AND earlier.status IN ('pending', 'delivering')
+            AND (earlier.created_at, earlier.id) < (delivery.created_at, delivery.id)
+      )
     ORDER BY delivery.next_attempt_at, delivery.created_at, delivery.id
     LIMIT 1
     FOR UPDATE OF delivery SKIP LOCKED

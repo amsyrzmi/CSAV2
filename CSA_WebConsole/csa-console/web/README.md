@@ -150,11 +150,48 @@ See [the closeout and M5 kickoff](../../../docs/handoffs/2026-10-16-m4-closeout-
 Future migrations/restarts still require scoped approval; an isolated build is not
 live acceptance, and M5 must not expose owner-private sandbox history or held drafts.
 
+M5 adds `/inbox` and `/portal/inbox` for Telegram customer conversations and reply
+approvals. Only platform administrators with explicit tenant selection, tenant
+administrators and tenant staff can read or act. Reader navigation is absent and
+backend content reads are denied. Sandbox histories/holds remain private; customer web
+and order decisions are deferred. Takeover pauses AI until release, human reply requires
+takeover, and old turns stay suppressed after release. The queue supports source
+navigation, approve/reject/edit, history pages and stale refresh. Outcomes distinguish
+queued, delivered, suppressed, expired and already handled. Uncertain actions retain the
+same in-memory key and payload for explicit retry; reconnect only refreshes. After
+navigation/reload inspect history before resubmitting. Explicitly approved forward-only
+0300 and coordinated guarded dev replacement are complete; platform-admin UI and
+synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff
+browser replay are verified; automated authority evidence remains green.
+Future rollouts require scoped approval. See [the M5 contract](../../../docs/CONSOLE_API.md#telegram-customer-inbox-m5-guarded-dev).
+
+For a guarded dev production build, set `CSA_CONSOLE_API_ORIGIN` to the actual gateway
+origin **at build time as well as start time**: Next.js rewrites are compiled into
+the build. The isolated check script uses test port18080; the current guarded gateway
+uses18081. Do not serve an unchanged test-origin build and expect a start-time override
+to rewrite it. Keep environment files and legacy API code outside the isolated stage.
+
 Projects, shared projects, PM boards/notes/planner/diagrams, terminal, Hermes and
 workroom are inaccessible. System and other feature-specific management views await their later
 CSAV2 integration slices. Their pages are non-importing 404 stubs and the proxy
 also rejects direct access, including the copied `/api/*` paths. Legacy components
 remain as inert reference source, excluded from the typed/lint adoption boundary.
+
+M6A adds separate `/business` and `/portal/business` pages offline. Navigation and data
+require human admin/staff roles; readers see an explicit permission notice and backend
+reads deny them/machines. Platform administrators select a tenant; members use their
+verified active tenant. Lists page local orders/tracking references and local products/
+stock through `/console/v1/business`. Refresh is explicit, abortable and deadline-bounded;
+tenant changes remount data state. Failures are visible, not converted to empty success.
+Local empty states never claim the marketplace has no orders/listings; local timestamps
+are not sync freshness. No listing/stock/refund/payment writes, connection checks or
+provider calls are performed. Later features are explicitly unavailable. This is the
+[first slice of the expanded M6 roadmap](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation),
+not a full seller platform or an approved replacement of the last approved M5 console.
+The latest read-only probe found no gateway/frontend listeners on18081/13000; the
+historical acceptance above is not a current availability guarantee. M6 isolated frontend
+validation passes **13 transport + 2 state tests**, lint/types/build and trace checks.
+Backend full validation has one unchanged TCP latency failure; see current progress.
 The adopted build has no old API URL or n8n dependency.
 
 Reviewed source comprises `app/` (including non-importing deferred stubs),

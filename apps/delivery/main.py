@@ -18,6 +18,7 @@ from csa.core.settings import get_settings
 from csa.core.tenancy import tx
 from csa.notify.notifier import notify
 from csa.notify.sender import StaffNotificationSender
+from csa.staff.ownership import automation_allowed, lock_conversation
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict
@@ -103,14 +104,61 @@ class DeliveryWorker:
             if details["channel"] != "telegram":
                 raise DeliveryFailure("unsupported_delivery_channel")
             chat_id = str(details["channel_thread"])
-            await self._throttle(chat_id)
-            receipt = await TelegramAdapter.send_message(
-                bot_token,
-                chat_id=chat_id,
-                text=str(details["body"]),
-                http_client=self._http_client,
-                buttons=_buttons(details.get("ui")),
-            )
+            async with tx(self._app_pool, str(delivery.client_id)) as conn:
+                if delivery.conversation_id is None:
+                    raise DeliveryFailure("delivery_conversation_missing")
+                await lock_conversation(conn, delivery.client_id, delivery.conversation_id)
+                if details["send_authority"] in {
+                    "automation",
+                    "handoff",
+                } and not await automation_allowed(
+                    conn,
+                    delivery.client_id,
+                    delivery.conversation_id,
+                    delivery.trace_id,
+                    handoff=details["send_authority"] == "handoff",
+                ):
+                    await db.q.fetch_one(
+                        "delivery/mark_suppressed.sql", (delivery.client_id, delivery.id), conn=conn
+                    )
+                    await db.q.execute(
+                        "delivery/insert_attempt.sql",
+                        (
+                            delivery.id,
+                            delivery.attempts,
+                            None,
+                            "human_takeover",
+                            self._duration_ms(started_at),
+                        ),
+                        conn=conn,
+                    )
+                    return True
+                await self._throttle(chat_id)
+                receipt = await TelegramAdapter.send_message(
+                    bot_token,
+                    chat_id=chat_id,
+                    text=str(details["body"]),
+                    http_client=self._http_client,
+                    buttons=_buttons(details.get("ui")),
+                )
+                updated = await db.q.fetch_one(
+                    "delivery/mark_delivered.sql",
+                    (receipt.status_code, delivery.id, delivery.client_id),
+                    conn=conn,
+                )
+                if updated is None:
+                    raise RuntimeError("claimed delivery is no longer in delivering state")
+                await db.q.execute(
+                    "delivery/insert_attempt.sql",
+                    (
+                        delivery.id,
+                        delivery.attempts,
+                        receipt.status_code,
+                        None,
+                        self._duration_ms(started_at),
+                    ),
+                    conn=conn,
+                )
         except TelegramDeliveryError as exc:
             await self._record_failure(
                 delivery,
@@ -147,25 +195,6 @@ class DeliveryWorker:
             )
             return True
 
-        async with tx(self._app_pool, str(delivery.client_id)) as conn:
-            updated = await db.q.fetch_one(
-                "delivery/mark_delivered.sql",
-                (receipt.status_code, delivery.id, delivery.client_id),
-                conn=conn,
-            )
-            if updated is None:
-                raise RuntimeError("claimed delivery is no longer in delivering state")
-            await db.q.execute(
-                "delivery/insert_attempt.sql",
-                (
-                    delivery.id,
-                    delivery.attempts,
-                    receipt.status_code,
-                    None,
-                    self._duration_ms(started_at),
-                ),
-                conn=conn,
-            )
         return True
 
     async def _deliver_web(self, delivery: ClaimedDelivery, started_at: float) -> bool:
@@ -217,6 +246,13 @@ class DeliveryWorker:
             if details["channel"] != "telegram":
                 raise DeliveryFailure("unsupported_delivery_channel")
 
+            binding = await db.q.fetch_one(
+                "delivery/check_route.sql",
+                (delivery.client_id, delivery.trace_id, delivery.endpoint_id),
+                conn=conn,
+            )
+            if binding is None:
+                raise DeliveryFailure("telegram_route_binding_invalid")
             route = await db.q.fetch_one(
                 "ingress/get_channel_credentials.sql",
                 (delivery.endpoint_id, delivery.client_id),

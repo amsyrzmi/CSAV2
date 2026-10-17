@@ -1,7 +1,8 @@
 # Runtime stabilization and dev-recovery handoff
 
 Updated 2026-10-16. Historical recovery/stabilization record; this is not a production rollout.
-For the next session start with [M4 closeout and M5 kickoff](./2026-10-16-m4-closeout-m5-start.md).
+For the next session start with [M5 guarded dev and current evidence](./2026-10-17-m5-telegram-inbox.md).
+The [M4 closeout](./2026-10-16-m4-closeout-m5-start.md) retains prior acceptance decisions.
 
 ## Read first
 

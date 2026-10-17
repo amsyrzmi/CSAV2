@@ -15,12 +15,14 @@ import psycopg
 import structlog
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
+from pydantic import BaseModel, ConfigDict
 
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.decide.grounding import ungrounded
 from csa.notify.notifier import notify
+from csa.staff.ownership import automation_allowed, lock_conversation
 
 logger = structlog.get_logger(__name__)
 
@@ -99,6 +101,79 @@ async def hold_reply(
     return int(row["id"])
 
 
+class ReplyDecisionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: Literal["applied", "already_handled", "expired", "not_found"]
+    status: str | None = None
+    queued: bool = False
+    warnings: list[str] = []
+
+
+async def _locked_approval(
+    conn: psycopg.AsyncConnection[Any], client_id: UUID, approval_id: int
+) -> dict[str, Any] | None:
+    reference = await db.q.fetch_one(
+        "approval/get_reference.sql", (client_id, approval_id), conn=conn
+    )
+    if reference is None:
+        return None
+    await lock_conversation(conn, client_id, reference["conversation_id"])
+    return await db.q.fetch_one("approval/get_approval.sql", (client_id, approval_id), conn=conn)
+
+
+async def transition_reply(
+    conn: psycopg.AsyncConnection[Any],
+    *,
+    client_id: UUID,
+    approval_id: int,
+    decision: Decision,
+    actor: str,
+    text: str | None = None,
+) -> ReplyDecisionResult:
+    """Shared transition for authenticated adapters; audit/outbox commit with the caller."""
+    final_text = validate_edit_text(text or "") if decision == "edited" else None
+    approval = await _locked_approval(conn, client_id, approval_id)
+    if approval is None:
+        return ReplyDecisionResult(outcome="not_found")
+    if approval["status"] != "pending":
+        return ReplyDecisionResult(outcome="already_handled", status=approval["status"])
+    if approval["expires_at"] <= datetime.now(UTC):
+        queued = await _settle(conn, approval, "expired", "system")
+        return ReplyDecisionResult(outcome="expired", status="expired", queued=queued)
+    queued = await _settle(conn, approval, decision, actor, final_text)
+    warnings: list[str] = []
+    if final_text is not None:
+        sources = [approval["draft"]] + [
+            row["redacted_body"] or ""
+            for row in await db.q.fetch_all(
+                "approval/recent_customer_text.sql",
+                (client_id, approval["conversation_id"]),
+                conn=conn,
+            )
+        ]
+        warnings = ungrounded(final_text, sources)[:5]
+    return ReplyDecisionResult(outcome="applied", status=decision, queued=queued, warnings=warnings)
+
+
+def _staff_result(result: ReplyDecisionResult) -> str:
+    if result.outcome == "not_found":
+        return "This action is no longer valid."
+    if result.outcome == "already_handled":
+        return "Already handled."
+    if result.outcome == "expired":
+        return "This approval has expired."
+    if result.status == "edited":
+        message = "Edited reply queued." if result.queued else "Edited. Reply suppressed."
+        if result.warnings:
+            message += " Warning: not found in the draft or customer messages: " + ", ".join(
+                result.warnings
+            )
+        return message
+    if result.status == "approved":
+        return "Approved. Reply queued." if result.queued else "Approved. Reply suppressed."
+    return "Rejected. Follow-up reply queued." if result.queued else "Rejected. Reply suppressed."
+
+
 async def decide_reply(
     pool: AsyncConnectionPool,
     *,
@@ -107,25 +182,15 @@ async def decide_reply(
     approve: bool,
     actor: str,
 ) -> str:
-    """Apply a staff decision and return the text shown to the tapping staff member."""
     async with tx(pool, str(client_id)) as conn:
-        approval = await db.q.fetch_one(
-            "approval/get_approval.sql", (client_id, approval_id), conn=conn
+        result = await transition_reply(
+            conn,
+            client_id=client_id,
+            approval_id=approval_id,
+            decision="approved" if approve else "rejected",
+            actor=actor,
         )
-        if approval is None:
-            return "This action is no longer valid."
-        if approval["status"] != "pending":
-            return "Already handled."
-        if approval["expires_at"] <= datetime.now(UTC):
-            await _settle(conn, approval, "expired", "system")
-            return "This approval has expired."
-        outcome: Decision = "approved" if approve else "rejected"
-        await _settle(conn, approval, outcome, actor)
-    return (
-        "Approved. Reply sent."
-        if approve
-        else "Rejected. Customer told a team member will follow up."
-    )
+    return _staff_result(result)
 
 
 async def begin_edit(
@@ -138,9 +203,7 @@ async def begin_edit(
 ) -> str:
     """Arm the Edit action; the next message (or reply to the alert, in a group) is the reply."""
     async with tx(pool, str(client_id)) as conn:
-        approval = await db.q.fetch_one(
-            "approval/get_approval.sql", (client_id, approval_id), conn=conn
-        )
+        approval = await _locked_approval(conn, client_id, approval_id)
         if approval is None:
             return "This action is no longer valid."
         if approval["status"] != "pending":
@@ -168,33 +231,16 @@ async def edit_reply(
     text: str,
     actor: str,
 ) -> str:
-    """Send staff-edited text to the customer once; audit records the original and final text."""
-    final_text = validate_edit_text(text)
     async with tx(pool, str(client_id)) as conn:
-        approval = await db.q.fetch_one(
-            "approval/get_approval.sql", (client_id, approval_id), conn=conn
+        result = await transition_reply(
+            conn,
+            client_id=client_id,
+            approval_id=approval_id,
+            decision="edited",
+            actor=actor,
+            text=text,
         )
-        if approval is None:
-            return "This action is no longer valid."
-        if approval["status"] != "pending":
-            return "Already handled."
-        if approval["expires_at"] <= datetime.now(UTC):
-            await _settle(conn, approval, "expired", "system")
-            return "This approval has expired."
-        await _settle(conn, approval, "edited", actor, final_text)
-        sources = [approval["draft"]] + [
-            row["redacted_body"] or ""
-            for row in await db.q.fetch_all(
-                "approval/recent_customer_text.sql",
-                (client_id, approval["conversation_id"]),
-                conn=conn,
-            )
-        ]
-    problems = ungrounded(final_text, sources)
-    if problems:
-        listed = ", ".join(problems[:5])
-        return f"Edited reply sent. Warning: not found in the draft or customer messages: {listed}"
-    return "Edited reply sent."
+    return _staff_result(result)
 
 
 async def expire_due(owner_pool: AsyncConnectionPool, app_pool: AsyncConnectionPool) -> int:
@@ -204,9 +250,7 @@ async def expire_due(owner_pool: AsyncConnectionPool, app_pool: AsyncConnectionP
     settled = 0
     for item in due:
         async with tx(app_pool, str(item["client_id"])) as conn:
-            approval = await db.q.fetch_one(
-                "approval/get_approval.sql", (item["client_id"], item["id"]), conn=conn
-            )
+            approval = await _locked_approval(conn, item["client_id"], item["id"])
             if approval is None or approval["status"] != "pending":
                 continue
             await _settle(conn, approval, "expired", "system")
@@ -220,7 +264,7 @@ async def _settle(
     outcome: Decision,
     actor: str,
     edited_text: str | None = None,
-) -> None:
+) -> bool:
     client_id = approval["client_id"]
     send_draft = outcome == "approved"
     if outcome == "edited":
@@ -235,7 +279,7 @@ async def _settle(
         conn=conn,
     )
     if decided is None:
-        return
+        return False
     await db.q.execute(
         "approval/insert_audit.sql",
         (
@@ -249,6 +293,10 @@ async def _settle(
         conn=conn,
     )
     await db.q.execute("staff/close_approval_actions.sql", (client_id, approval["id"]), conn=conn)
+    if outcome in {"rejected", "expired"} and not await automation_allowed(
+        conn, client_id, approval["conversation_id"], approval["trace_id"]
+    ):
+        return False
     message = await db.q.fetch_one(
         "worker/insert_message.sql",
         (
@@ -266,7 +314,9 @@ async def _settle(
         conn=conn,
     )
     if message is None:
-        return
+        return False
+    if outcome in {"approved", "edited"}:
+        await db.q.execute("staff/set_reviewed.sql", (client_id, message["id"]), conn=conn)
     ui = approval["ui"] if send_draft else {}
     if ui.get("confirmation") or ui.get("options"):
         await db.q.fetch_one(
@@ -289,3 +339,5 @@ async def _settle(
         conn=conn,
     )
     logger.info("approval_settled", approval_id=approval["id"], outcome=outcome)
+
+    return True

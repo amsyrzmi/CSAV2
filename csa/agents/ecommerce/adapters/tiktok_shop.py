@@ -8,18 +8,103 @@ import json
 import time
 from decimal import Decimal
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
 from csa.agents.ecommerce.adapters.base import EcommercePlatformAdapter
 from csa.agents.ecommerce.models import (
     EcommerceOrder,
+    EcommerceOrderPage,
     InventorySyncItem,
     OrderItemSnapshot,
     TikTokShopCredentials,
 )
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 TIKTOK_SHOP_BASE_URL = "https://open-api.tiktokglobalshop.com"
+
+
+class TikTokReadError(RuntimeError):
+    """Safe failure code; never include provider bodies, signed URLs or credentials."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(f"TikTok order read failed: {code}")
+
+
+class _ReadContract(BaseModel):
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
+
+
+class _Envelope(_ReadContract):
+    code: int = Field(strict=True)
+    data: dict[str, Any] | None = None
+
+
+class _Payment(_ReadContract):
+    total_amount: Decimal = Field(ge=0, allow_inf_nan=False)
+    currency: str = Field(min_length=3, max_length=3)
+
+
+class _LineItem(_ReadContract):
+    seller_sku: str | None = Field(default=None, min_length=1, max_length=64)
+    sku_id: str | None = Field(default=None, min_length=1, max_length=64)
+    product_name: str = Field(min_length=1, max_length=255)
+    quantity: int = Field(ge=1, strict=True)
+    sku_sale_price: Decimal = Field(ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def require_sku(self) -> _LineItem:
+        if self.seller_sku is None and self.sku_id is None:
+            raise ValueError("line item requires a SKU identifier")
+        return self
+
+
+class _Order(_ReadContract):
+    id: str = Field(min_length=1, max_length=100)
+    status: str = Field(min_length=1, max_length=100)
+    payment: _Payment
+    line_items: list[_LineItem]
+    buyer_uid: str | None = None
+    tracking_number: str | None = None
+    shipping_provider: str | None = None
+
+    def normalize(self) -> EcommerceOrder:
+        items: list[OrderItemSnapshot] = []
+        for item in self.line_items:
+            sku = item.seller_sku or item.sku_id
+            assert sku is not None
+            items.append(
+                OrderItemSnapshot(
+                    sku=sku,
+                    item_name=item.product_name,
+                    quantity=item.quantity,
+                    unit_price=item.sku_sale_price,
+                )
+            )
+        return EcommerceOrder(
+            platform="tiktok_shop",
+            platform_order_id=self.id,
+            order_status=self.status,
+            buyer_identifier=self.buyer_uid,
+            total_amount=self.payment.total_amount,
+            currency=self.payment.currency,
+            items=items,
+            tracking_number=self.tracking_number,
+            shipping_carrier=self.shipping_provider,
+        )
+
+
+class _OrderPage(_ReadContract):
+    orders: list[_Order]
+    next_page_token: str | None = Field(default=None, max_length=2048)
+
+
+class _SearchQuery(_ReadContract):
+    page_size: int = Field(ge=1, le=50, strict=True)
+    order_status: str | None = Field(default=None, min_length=1, max_length=100)
+    page_token: str | None = Field(default=None, min_length=1, max_length=2048)
 
 
 class TikTokShopAdapter(EcommercePlatformAdapter):
@@ -77,87 +162,84 @@ class TikTokShopAdapter(EcommercePlatformAdapter):
         url = f"{self._base_url}{path}"
         return url, params
 
-    async def get_order(self, client_id: UUID, order_id: str) -> EcommerceOrder:
-        """Fetches order details by ID from TikTok Shop."""
-        path = f"/order/202309/orders/{order_id}"
-        url, params = self._build_url_and_params(path, "")
+    async def _read(self, path: str, body: str | None = None) -> dict[str, Any]:
+        url, params = self._build_url_and_params(path, body or "")
+        params.pop("access_token")
         headers = {"x-tts-access-token": self._creds.access_token}
-
-        resp = await self._client.get(url, params=params, headers=headers)
-        resp.raise_for_status()
-        data = resp.json().get("data", {})
-
-        items = [
-            OrderItemSnapshot(
-                sku=item.get("seller_sku") or item.get("sku_id", "UNKNOWN"),
-                item_name=item.get("product_name", "Product"),
-                quantity=int(item.get("quantity", 1)),
-                unit_price=Decimal(str(item.get("sku_sale_price", "0.00"))),
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        try:
+            response = await self._client.request(
+                "GET" if body is None else "POST",
+                url,
+                params=params,
+                headers=headers,
+                content=body,
+                follow_redirects=False,
             )
-            for item in data.get("line_items", [])
-        ]
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            raise TikTokReadError("http_error") from None
+        except httpx.RequestError:
+            raise TikTokReadError("transport_error") from None
+        try:
+            envelope = _Envelope.model_validate_json(response.content)
+        except ValidationError:
+            raise TikTokReadError("invalid_response") from None
+        if envelope.code != 0:
+            raise TikTokReadError("provider_rejected")
+        if envelope.data is None:
+            raise TikTokReadError("invalid_response")
+        return envelope.data
 
-        payment = data.get("payment", {})
-        total = Decimal(str(payment.get("total_amount", "0.00")))
-        currency = payment.get("currency", "MYR")
-
-        return EcommerceOrder(
-            platform="tiktok_shop",
-            platform_order_id=str(data.get("id") or order_id),
-            order_status=data.get("status", "UNPAID"),
-            buyer_identifier=data.get("buyer_uid"),
-            total_amount=total,
-            currency=currency,
-            items=items,
-            tracking_number=data.get("tracking_number"),
-            shipping_carrier=data.get("shipping_provider"),
-        )
+    async def get_order(self, client_id: UUID, order_id: str) -> EcommerceOrder:
+        """Read one order; tenant/store credential binding remains the caller's responsibility."""
+        if not order_id or len(order_id) > 100:
+            raise TikTokReadError("invalid_query")
+        data = await self._read(f"/order/202309/orders/{quote(order_id, safe='')}")
+        try:
+            order = _Order.model_validate(data)
+        except ValidationError:
+            raise TikTokReadError("invalid_response") from None
+        if order.id != order_id:
+            raise TikTokReadError("order_mismatch")
+        return order.normalize()
 
     async def search_orders(
         self, client_id: UUID, status: str | None = None, limit: int = 10
     ) -> list[EcommerceOrder]:
-        """Searches recent orders on TikTok Shop."""
-        path = "/order/202309/orders/search"
-        body_payload: dict[str, Any] = {"page_size": limit}
-        if status:
-            body_payload["order_status"] = status
-        body_str = json.dumps(body_payload)
+        """Legacy bounded first-page read; seller callers must retain page metadata."""
+        return (await self.search_order_page(client_id, status=status, limit=limit)).items
 
-        url, params = self._build_url_and_params(path, body_str)
-        headers = {
-            "x-tts-access-token": self._creds.access_token,
-            "Content-Type": "application/json",
-        }
-
-        resp = await self._client.post(url, params=params, headers=headers, content=body_str)
-        resp.raise_for_status()
-        orders_data = resp.json().get("data", {}).get("orders", [])
-
-        orders: list[EcommerceOrder] = []
-        for raw in orders_data:
-            items = [
-                OrderItemSnapshot(
-                    sku=item.get("seller_sku") or item.get("sku_id", "UNKNOWN"),
-                    item_name=item.get("product_name", "Product"),
-                    quantity=int(item.get("quantity", 1)),
-                    unit_price=Decimal(str(item.get("sku_sale_price", "0.00"))),
-                )
-                for item in raw.get("line_items", [])
-            ]
-            payment = raw.get("payment", {})
-            orders.append(
-                EcommerceOrder(
-                    platform="tiktok_shop",
-                    platform_order_id=str(raw.get("id", "")),
-                    order_status=raw.get("status", "UNKNOWN"),
-                    buyer_identifier=raw.get("buyer_uid"),
-                    total_amount=Decimal(str(payment.get("total_amount", "0.00"))),
-                    currency=payment.get("currency", "MYR"),
-                    items=items,
-                    tracking_number=raw.get("tracking_number"),
-                )
-            )
-        return orders
+    async def search_order_page(
+        self,
+        client_id: UUID,
+        status: str | None = None,
+        limit: int = 10,
+        page_token: str | None = None,
+    ) -> EcommerceOrderPage:
+        """Read one explicit provider page without implying synchronization or authorization."""
+        try:
+            query = _SearchQuery(page_size=limit, order_status=status, page_token=page_token)
+        except ValidationError:
+            raise TikTokReadError("invalid_query") from None
+        body = json.dumps(query.model_dump(exclude_none=True))
+        data = await self._read("/order/202309/orders/search", body)
+        try:
+            page = _OrderPage.model_validate(data)
+        except ValidationError:
+            raise TikTokReadError("invalid_response") from None
+        ids = [order.id for order in page.orders]
+        token = page.next_page_token or None
+        if (
+            len(ids) > limit
+            or len(set(ids)) != len(ids)
+            or (token is not None and token == page_token)
+        ):
+            raise TikTokReadError("invalid_page")
+        return EcommerceOrderPage(
+            items=[order.normalize() for order in page.orders], next_page_token=token
+        )
 
     async def get_product(self, client_id: UUID, sku: str) -> dict[str, Any]:
         """Queries product details by seller SKU."""

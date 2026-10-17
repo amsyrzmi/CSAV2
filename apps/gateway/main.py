@@ -10,7 +10,7 @@ Health contract (design §8.3):
   AND migrations are at the expected version. "At version" is computed as
   **set membership** — every shipped ``db/migrations/*.sql`` version is present
   in ``schema_migrations`` — plus a ``max(applied) == EXPECTED_SCHEMA_VERSION``
-  (``0290``) sanity check. Any missing shipped version, a ``max`` mismatch, or an
+  (``0300``) sanity check. Any missing shipped version, a ``max`` mismatch, or an
   unreachable DB returns 503 naming the gap. ``*.py`` migrations never enter the
   ledger, so the guarded ``0130`` re-encrypt skeleton is irrelevant to readiness.
 """  # LG01
@@ -44,7 +44,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0290"
+EXPECTED_SCHEMA_VERSION = "0300"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
