@@ -1,15 +1,27 @@
 # Runbook 06 — Disable Client or Force Suggest Mode
 
-## Objective
-Immediately suspend automated customer responses for a tenant or enforce human approval (`suggest` mode) for every outbound reply.
+> **Caution:** This is an operator reference, not approval to modify a live tenant.
+> Review [runbook status and authorization](./README.md) first.
 
-## Scenarios
+## Objective
+Change tenant response policy to `suggest` or suspend a tenant, subject to the
+in-flight and queued-work limitations below.
+
+## Scenarios and limits
 1. **Urgent incident / quarantine:** Client requests immediate freeze of automated messaging.
 2. **Review mode:** Require human staff approval for all drafts prior to sending (`suggest` mode).
 
+Changing policy does not cancel already accepted or in-flight work and is not an
+instantaneous kill switch. Confirm the current ingress/worker behavior and handle
+already queued actions explicitly under an approved incident procedure.
+
 ## Remediation (SQL)
 
-### Option A: Force Suggest Mode (All Drafts Require Staff Approval)
+### Option A: Force Suggest Mode
+The tested programmatic primitive is `csa.ops.runbooks.set_deployment_mode` in an
+authorized tenant transaction. This changes policy for work that reads the updated
+configuration; it does not recall already generated/sent work. The SQL below is
+illustrative only.
 ```sql
 UPDATE public.clients
 SET deployment_mode = 'suggest',
@@ -21,16 +33,19 @@ SET deployment_mode = 'suggest',
     updated_at = now()
 WHERE id = '<CLIENT_UUID>';
 ```
-*Result:* All customer responses will produce an alert with an Approve/Reject/Edit button in the staff chat. No message is sent until approved.
+This mode requests approval for replies governed by the normal reply gate. It does
+not override paths that bypass that gate or work already in flight.
 
-### Option B: Suspend Tenant (Immediate Quarantine)
+### Option B: Suspend Tenant
 ```sql
 UPDATE public.clients
 SET status = 'suspended',
     updated_at = now()
 WHERE id = '<CLIENT_UUID>';
 ```
-*Result:* Gateway reject / worker bypass stops processing turns for this tenant.
+Do not assume this SQL statement is an immediate quarantine or stops work already
+accepted by a worker. Verify the actual deployed ingress/worker enforcement and
+queued-work handling before using any suspension procedure.
 
 ### Option C: Restore Normal Automated Operations
 ```sql

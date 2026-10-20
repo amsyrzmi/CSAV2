@@ -1,11 +1,16 @@
 # Runbook 01 — Replay a Failed Turn
 
+> **Caution:** This is an operator reference, not approval to modify a live
+> database. Review [runbook status and authorization](./README.md) first.
+
 ## Objective
 Re-queue an ingress event that encountered a transient error or was marked `failed`/`dead` without creating duplicate customer deliveries.
 
-## Safety Guarantees
-- Idempotency key and session-level advisory locks prevent double processing or duplicate customer turns.
-- Delivery outbox tables (`outbound_deliveries.message_id`) have unique constraints to prevent duplicate deliveries.
+## Safety considerations
+The worker uses ordering/idempotency controls, but re-running a turn may repeat
+business actions or produce another delivery where the operation lacks a durable
+receipt. Review the event, its downstream effects and the current retry contract
+before authorizing a replay; do not assume the outbox prevents every duplicate.
 
 ## Diagnostic Steps (SQL)
 
@@ -21,7 +26,9 @@ LIMIT 10;
 
 ## Remediation (SQL)
 
-Re-queue the event for immediate worker pickup:
+The tested programmatic primitive is `csa.ops.runbooks.requeue_turn`, subject to
+the caller's authorized tenant transaction. The SQL below is a historical sketch,
+not a production command. Inspect the current parameterized query and tests first.
 ```sql
 UPDATE public.ingress_events
 SET status = 'received',
@@ -33,7 +40,8 @@ WHERE id = '<EVENT_UUID>'
 ```
 
 ## Verification
-1. Confirm the row status transitions to `dispatched`, then `completed`:
+1. Inspect the resulting status and attempts. It may complete or fail again; do not
+   assume requeue means successful completion:
    ```sql
    SELECT id, status, attempts, dispatched_at, completed_at
    FROM public.ingress_events

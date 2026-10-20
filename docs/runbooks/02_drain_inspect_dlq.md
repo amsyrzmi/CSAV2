@@ -1,5 +1,8 @@
 # Runbook 02 — Drain and Inspect DLQ
 
+> **Caution:** This is an operator reference, not approval to modify a live
+> database. Review [runbook status and authorization](./README.md) first.
+
 ## Objective
 Inspect events that exceeded max attempts and were pushed to `dlq`, diagnose the root cause, and re-drive eligible items.
 
@@ -18,13 +21,18 @@ Inspect error details for a specific item:
 ```sql
 SELECT stage, error, envelope
 FROM public.dlq
-WHERE id = <DLQ_ID>;
+WHERE id = <DLQ_ID>
+  AND client_id = '<CLIENT_UUID>';
 ```
 
 ## Remediation (SQL)
 
 ### 1. Re-drive an eligible turn
 If the root cause (e.g. temporary downstream network partition) is resolved:
+Use the tenant-scoped `csa.ops.runbooks.redrive_dlq` procedure only through its
+tested transaction boundary. The two-step SQL example below is retained for
+historical illustration; it is not atomic as written and is not equivalent to
+the current implementation. Do not execute it.
 ```sql
 -- Step A: Mark DLQ row replayed
 UPDATE public.dlq

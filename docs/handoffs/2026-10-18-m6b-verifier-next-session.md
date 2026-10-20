@@ -103,11 +103,13 @@ enforced by the actual order endpoint.
 - Preserve `ui-guide/` completely untouched.
 - Do not change production, infrastructure, webhook settings, service processes,
   uploads, rollout state or public app settings.
-- `CSA_WebConsole/Docs/agentic-pm/` contained only three byte-for-byte duplicate check
-  scripts; those exact duplicates were removed. Keep the canonical deferred
-  `CSA_WebConsole/Docs/csa-agentic-pm/` pack, imported
-  `CSA_WebConsole/csa-console/STATE.md`, active `web/AGENTS.md`, `web/CLAUDE.md` and
-  frontend README. PM/Hermes/workroom work remains deferred.
+- At this handoff, `CSA_WebConsole/Docs/agentic-pm/` contained only three byte-for-byte
+  duplicate check scripts; those exact duplicates were removed. The canonical
+  deferred PM pack was retained then, but the user later identified the entire
+  `CSA_WebConsole/Docs/` tree as obsolete n8n-era material and requested its removal
+  on 2026-10-20. Its historical content remains in Git history, not active context.
+  The imported `CSA_WebConsole/csa-console/STATE.md`, active `web/AGENTS.md`,
+  `web/CLAUDE.md` and frontend README remain. PM/Hermes/workroom work is deferred.
 - No dependencies changed. Use `apply_patch` for edits and run focused tests followed
   by `make lint`; run the full test target when code scope justifies its runtime.
 

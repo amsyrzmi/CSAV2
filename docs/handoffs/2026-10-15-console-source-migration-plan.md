@@ -260,12 +260,14 @@ during this review, so no additional reset was performed.
 - Documentation/source cleanup: removed superseded console handoffs, duplicate PM
   Markdown, legacy setup/chat briefs, old console launch Makefiles/compose file,
   backup archives, OS/Python caches and standalone debug scripts. Current plans,
-  runbooks and all `ui-guide/` contents remain. The canonical deferred PM pack and
-  historical source-state evidence remain explicitly reference-only. Subsequently,
-  the nested Git metadata and former gitlink were removed and reviewed source was
-  adopted as ordinary parent-repository files. Local env files, frontend dependencies
-  and the legacy backend/drop snapshot/workflow export remain on disk but excluded from Git. This
-  is repository unification, not completed removal of the legacy application.
+  runbooks and all `ui-guide/` contents remain. The deferred PM pack and historical
+  source-state evidence were explicitly reference-only at that point. Nested Git
+  metadata and the former gitlink were subsequently removed and reviewed source
+  was adopted as ordinary parent-repository files. Local env files, frontend
+  dependencies and the legacy backend remain excluded from Git. The old Docs tree,
+  including the ignored drop snapshot/workflow export, was later removed on
+  2026-10-20 by owner request. This is repository unification, not completed removal
+  of the legacy application.
 - Fixed password changes raising `TypeError` for non-ASCII passwords: constant-time equality
   now compares UTF-8 bytes. Regression exercises change to Unicode, rejection of reusing it,
   and changing away from it.

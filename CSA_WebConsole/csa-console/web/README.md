@@ -8,10 +8,10 @@ Copied-repository cleanup removed obsolete parent Makefiles/compose launchers,
 backup archives, OS/Python cache files and standalone debug/scratch scripts.
 The checkout is tracked as ordinary files in the parent CSAV2 repository; nested
 Git metadata and the former gitlink were removed. Installed frontend dependencies,
-local environment files and legacy backend reference code remain excluded from Git;
-the copied workflow export and drop snapshot are also excluded. The canonical deferred
-PM reference pack is retained; a second copy of its three inspection/check scripts
-under `Docs/agentic-pm/checks/` was removed. Use the commands below, not the old
+local environment files and legacy backend reference code remain excluded from Git.
+The obsolete `CSA_WebConsole/Docs/` tree (old n8n workflows, a pre-migration
+console snapshot and deferred PM design pack) was removed on 2026-10-20; none is
+adopted source or active implementation guidance. Use the commands below, not old
 console setup or tunnel instructions. The authoritative state is
 [CSAV2 progress](../../../docs/PROGRESS.md) and the
 [migration plan](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md).
@@ -28,7 +28,10 @@ Use an explicitly selected, unused loopback port when starting a future isolated
 frontend, for example `npm run dev -- --hostname 127.0.0.1 --port 13000` **only after
 checking it is available**.
 
-### Current isolated browser-test session (2026-10-15)
+### Historical isolated browser-test session (2026-10-15)
+
+This records the approved session at that date, not current service state or
+authorization to start/restart these tasks.
 
 VS Code tasks in the repository's `.vscode/tasks.json` start the gateway on
 `127.0.0.1:18081` and frontend on `127.0.0.1:13000`. They are loopback-only;

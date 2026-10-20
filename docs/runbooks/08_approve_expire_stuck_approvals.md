@@ -1,5 +1,8 @@
 # Runbook 08 — Approve or Expire Stuck Approvals
 
+> **Caution:** This is an operator reference, not approval to modify a live
+> tenant/database. Review [runbook status and authorization](./README.md) first.
+
 ## Objective
 Identify pending staff approval drafts that exceeded their expiration deadline (`expires_at < now()`) and clean them up with full audit logging.
 
@@ -9,7 +12,8 @@ Find stuck or expired approvals:
 ```sql
 SELECT a.id, a.client_id, a.trace_id, a.status, a.reason, a.expires_at, a.created_at
 FROM public.approvals a
-WHERE a.status = 'pending'
+WHERE a.client_id = '<CLIENT_UUID>'
+  AND a.status = 'pending'
   AND a.expires_at < now()
 ORDER BY a.expires_at ASC;
 ```
@@ -44,5 +48,9 @@ aud AS (
 SELECT count(*) AS expired_count FROM expired;
 ```
 
-## Automated Expiry
-The scheduled job runner (`csa.jobs.runner`) periodically runs `pending_actions_expiry` and approval sweeps automatically. Use this runbook for manual on-demand cleanup during operations.
+## Automated expiry status
+The scheduled `pending_actions_expiry` job expires pending actions; it does not
+expire staff `approvals`. The tested `csa.ops.runbooks.expire_stuck_approvals`
+primitive writes the approval and audit transition in one tenant-scoped operation,
+but this is not an operator-facing CLI. The SQL above is illustrative and must not
+be run without a reviewed, authorized procedure.

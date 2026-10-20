@@ -1,14 +1,17 @@
 # CSA architecture information
 
-**Architecture snapshot: 17 October 2026, Malaysia time.**
+**Long-form architecture reference; status reconciled 20 October 2026.**
 
-Status/schema reconciliation: 19 October 2026. This long-form architecture snapshot
-retains dated descriptions; current continuation is the
+The project entry point and directory/reading guide is
+[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md). This document retains deeper
+architecture detail and dated evidence; current continuation is the
 [domain/release handoff](handoffs/2026-10-19-domain-release-next-session.md).
-Source expects 0360; M6B/M6D remain offline foundations, not live provider/ledger
-authority. Repository-only CI/image packaging is implemented; hosting on
-`console.fourstacks.my`, promotion and deployment remain disabled/unverified.
-See the [release contract](../deploy/RELEASE.md).
+Source expects schema 0360; the last approved persistent-dev schema was recorded
+as 0300, not freshly probed. Hosted build/export and disposable exact-artifact
+acceptance are recorded, but M6B/M6D remain offline foundations, not live provider
+or inventory authority. Promotion and deployment remain disabled/unverified.
+See [PROGRESS.md](PROGRESS.md) and the [release contract](../deploy/RELEASE.md)
+for current evidence and gates.
 
 **Audience:** clients, delivery stakeholders, technical reviewers, and engineers maintaining CSA.
 
@@ -16,7 +19,11 @@ CSA is a multi-tenant customer-service automation platform. It receives customer
 
 The architecture combines a Python service runtime, a Next.js web console, and PostgreSQL. PostgreSQL stores business records, work queues, approvals, delivery state, and audit records. LangGraph coordinates individual customer turns. External language models interpret and compose; application code and database transactions establish authority and business state.
 
-This document describes the **current repository**, including existing working-tree changes. It distinguishes implemented code, recorded isolated-development validation, integration groundwork, and future plans. It is not a statement that every feature is deployed, that services are currently running, or that the system has production acceptance. No environment-file values, credentials, production data, or private deployment addresses are reproduced here.
+This document describes repository architecture and distinguishes implemented code,
+recorded isolated-development validation, integration groundwork, and future plans.
+It does not report uncommitted working-tree state or prove that features are deployed,
+services are running, or the system has production acceptance. No environment-file
+values, credentials, production data, or private deployment addresses are reproduced.
 
 ## Contents
 
@@ -1214,7 +1221,7 @@ Secret-free custom error codes exist in several clients, but global HTTP-library
 
 Checkpoint cleanup does not delete business messages, uploads, audit, or all raw ingress. There is no completed unified tenant retention/export/erasure policy. Deletion fences intentionally persist; sandbox archive is not a purge. Retention commitments must be agreed and implemented separately.
 
-Sources: [crypto](../csa/core/crypto.py), [PII redactor](../csa/core/pii.py), [settings](../csa/core/settings.py), [review findings](reviews/2026-10-17-architecture-code-review.md).
+Sources: [crypto](../csa/core/crypto.py), [PII redactor](../csa/core/pii.py), [settings](../csa/core/settings.py).
 
 ## 20. Scheduled work and retention
 
@@ -1491,11 +1498,16 @@ Marketplace ingress currently persists a provider-event shape that the ordinary 
 
 ### 25.4 Deferred PM and desktop automation
 
-The retained PM reference pack describes project boards, notes/knowledge, diagrams, approved planner tasks, isolated terminal/runner sessions, Hermes investigation/implementation, workrooms, budgets, and selected client publication. Its historical separate-console-database proposal is not the current adopted one-backend architecture.
+An October 2026 PM design pack described project boards, notes/knowledge, diagrams,
+approved planner tasks, isolated terminal/runner sessions, Hermes investigation/
+implementation, workrooms, budgets, and selected client publication. It belonged
+to a separate n8n-era architecture and was removed from the active tree on
+2026-10-20 at the user's request. It is not part of the adopted architecture; Git
+history retains it if future product discovery explicitly revives that scope.
 
 LG14 separately proposes a sandboxed browser/desktop recorder, typed replayable playbooks, parameterization, admin review, dry runs, and scheduled execution with restricted network/secret access. No desktop runner, remote shell, or production computer-use service is active in the current application.
 
-Sources: [console migration roadmap](handoffs/2026-10-15-console-source-migration-plan.md), [agent preparation handoff](handoffs/2026-10-15-wave23-preparation.md), [canonical PM reference pack](../CSA_WebConsole/Docs/csa-agentic-pm/README.md).
+Sources: [console migration roadmap](handoffs/2026-10-15-console-source-migration-plan.md), [agent preparation handoff](handoffs/2026-10-15-wave23-preparation.md).
 
 ## 26. Current limitations and release conditions
 
@@ -1527,7 +1539,10 @@ This section separates architectural controls already present from gaps that aff
 
 For client delivery, supported workflows must be agreed by tenant, channel, data source, allowed operation, human-review policy, and evidence of final business/transport state. A provider configuration, passing unit test, or attractive screen cannot substitute for end-to-end acceptance of that workflow.
 
-Technical assessment and dated reproductions: [architecture review](reviews/2026-10-17-architecture-code-review.md). Current fixes and unresolved validation: [PROGRESS.md](PROGRESS.md) and [M5 evidence](handoffs/2026-10-17-m5-telegram-inbox.md).
+Current fixes and unresolved validation: [PROGRESS.md](PROGRESS.md) and
+[M5 evidence](handoffs/2026-10-17-m5-telegram-inbox.md). Dated review records
+are historical, may be absent from the current worktree, and do not establish
+current implementation status.
 
 ## 27. Repository map and maintenance
 
@@ -1562,12 +1577,12 @@ Technical assessment and dated reproductions: [architecture review](reviews/2026
 | `deploy/` | Application/database Dockerfiles and development/production Compose definitions. |
 | `.github/workflows/ci.yml` | Automated backend checks, migration/test/secret-scan/coverage gates. |
 | `CSA_WebConsole/csa-console/web/` | Adopted Next.js frontend plus explicitly inactive retained UI source. |
-| `CSA_WebConsole/Docs/csa-agentic-pm/` | Canonical deferred project-management design/reference pack. |
 | `ui-guide/` | Design tokens, SVG/animation references, examples and implementation guidance. |
+| `docs/PROJECT_OVERVIEW.md` | Start-here guide, architecture workflow, documentation authority and directory map. |
+| `.agents/skills/` | Task-specific engineering instructions; load only the matching workflow. |
 | `docs/langgraph-rebuild/` | Phase plans LG00–LG15. |
 | `docs/handoffs/` | Milestone scope, rollout/recovery and continuation evidence. |
 | `docs/evals/` | Recorded evaluation and load results. |
-| `docs/reviews/` | Dated architecture/product assessments. |
 | `docs/console_openapi.json` | Versioned console API schema snapshot. |
 | `AGENTS.md`, `Makefile`, `pyproject.toml`, `uv.lock` | Repository rules, developer commands, exact Python requirements/resolution. |
 

@@ -1,5 +1,8 @@
 # Runbook 03 — Circuit Breaker Reset
 
+> **Caution:** This is an operator reference, not approval to modify a live
+> database. Review [runbook status and authorization](./README.md) first.
+
 ## Objective
 Diagnose an open circuit breaker on an agent/spoke and manually close it once the downstream service is healthy.
 
@@ -17,7 +20,9 @@ A row with `circuit_state = 'open'` means the agent tripped after repeated conse
 
 ## Remediation (SQL)
 
-Once downstream health is verified (e.g. database query, external API status):
+Once downstream health is verified, the tested programmatic primitive is
+`csa.ops.runbooks.reset_circuit`, called within the authorized tenant transaction.
+The SQL below is illustrative only; review the current query and tests first.
 ```sql
 UPDATE public.capability_registry
 SET circuit_state = 'closed',

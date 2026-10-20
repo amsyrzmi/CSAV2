@@ -7,6 +7,10 @@ records are not a live provider feed, and the new M6B verifier has no supported
 console callback/runtime registration. Mounted legacy marketplace OAuth routes are
 separate and must not be exposed as the M6B flow.
 
+The packaged Next.js and gateway artifacts have passed recorded disposable runtime
+acceptance; public browser/ingress and staging have not. See
+[PROGRESS.md](./PROGRESS.md) for exact evidence and current gates.
+
 M0–M5 plus offline M6A implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
 See the [migration plan](./handoffs/2026-10-15-console-source-migration-plan.md) and

@@ -72,20 +72,28 @@ So at this volume: **one Postgres, one gateway, one worker, one delivery worker.
 - Scaling levers in order: more `worker` replicas (per-conversation lock keeps ordering) → separate `delivery` replicas → read replica for analytics → partition hot tables (`messages`, `ingress_events`) by time.
 
 ## Implementation status & evidence
+These are source/test claims, not live cutover acceptance. For current operator
+qualifications see the [runbook status index](../runbooks/README.md); helper
+functions are not necessarily authenticated operator commands.
+
 - **Strangler proxy & routing:** Implemented in `csa/channels/ingress.py` and `apps/gateway/main.py`. Routes updates based on `clients.config ->> 'runtime'` (`"n8n"` vs `"langgraph"`) and `clients.deployment_mode` (`"shadow"`, `"suggest"`, `"auto"`).
   - When `runtime == "n8n"`: proxies incoming webhook payload directly to `n8n_webhook_url` upstream and returns `proxied=True`.
   - When `runtime == "n8n"` and `deployment_mode == "shadow"`: proxies to n8n upstream AND enqueues into `ingress_events` for LangGraph coordinator shadow evaluation.
-  - Rollback drill: switching `runtime` between `"n8n"` and `"langgraph"` is instant via DB flag with zero BotFather/webhook reconfiguration.
-- **Runbooks & procedures:** Created all 8 one-page runbooks under `docs/runbooks/` and corresponding typed operational procedures in `csa/ops/runbooks.py` backed by parameterized SQL in `db/sql/ops/`:
+  - Synthetic routing test: one flag change from n8n to LangGraph needs no webhook reconfiguration; operational loss-free rollback remains unverified.
+- **Runbooks & procedures:** All eight documents exist under `docs/runbooks/`.
+  Typed helpers for 01–04, 06 and 08 exist in `csa/ops/runbooks.py`, backed by
+  parameterized SQL in `db/sql/ops/`; this is not an authenticated operator workflow.
   1. `01_replay_failed_turn.md` / `requeue_turn`
   2. `02_drain_inspect_dlq.md` / `inspect_dlq`, `redrive_dlq`
   3. `03_circuit_breaker_reset.md` / `get_circuit_states`, `reset_circuit`
   4. `04_jev_outage_fallback.md` / `force_decide_mode`
-  5. `05_rotate_credentials.md` / DB update procedure
+  5. `05_rotate_credentials.md` / blocked pending an approved channel-specific procedure
   6. `06_disable_client_force_suggest.md` / `set_deployment_mode`
-  7. `07_backup_restore_drill.md` / pg_dump/restore drill
+  7. `07_backup_restore_drill.md` / disposable synthetic restore evidence only
   8. `08_approve_expire_stuck_approvals.md` / `expire_stuck_approvals`
-- **Automated test suite:** `tests/test_cutover_ops.py` (4 tests, all passing):
+- **Recorded automated evidence:** `tests/test_cutover_ops.py` has four tests
+  with historical passing results; they were inspected, not rerun for this
+  documentation closeout:
   - `test_strangler_proxy_n8n_and_instant_rollback`
   - `test_strangler_proxy_shadow_mode`
   - `test_strangler_proxy_errors`
@@ -93,8 +101,14 @@ So at this volume: **one Postgres, one gateway, one worker, one delivery worker.
 
 ## Acceptance criteria
 - [ ] One pilot client (yourself/test client) fully on `langgraph` + `auto` for low-risk intents for 2 weeks with SLOs met.
-- [x] Rollback drill: flip to `n8n` and back with zero lost events (verified in `tests/test_cutover_ops.py::test_strangler_proxy_n8n_and_instant_rollback`).
-- [x] All eight runbooks exist and were executed once (documented in `docs/runbooks/` and verified in `tests/test_cutover_ops.py::test_ops_runbooks_procedures`).
+- [ ] Operational rollback drill: flip to `n8n` and back with zero lost events.
+      The synthetic `test_strangler_proxy_n8n_and_instant_rollback` checks mocked
+      n8n forwarding followed by a flag change to LangGraph and durable enqueue;
+      it does not exercise the reverse change or end-to-end loss-free delivery.
+- [ ] All eight runbooks exist and were executed once. Documents exist, but
+      `test_ops_runbooks_procedures` covers only helpers for 01–04, 06 and 08,
+      not credential rotation or backup/restore. Separate packaged synthetic
+      restore evidence does not establish an approved operational recovery drill.
 - [ ] Restore drill done from a real backup into a scratch environment; app boots and passes smoke tests.
 - [ ] n8n core workflows deactivated (not deleted) and no traffic reaches them.
 

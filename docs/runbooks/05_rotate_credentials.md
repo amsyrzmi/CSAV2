@@ -1,61 +1,21 @@
-# Runbook 05 — Rotate Channel Credentials / Telegram Bot Token
+# Runbook 05 — Channel Credential Rotation (Not an Approved Procedure)
 
-## Objective
-Rotate a compromised or refreshed channel credential (such as a Telegram Bot token or webhook secret) with zero downtime.
+> **Status:** No generic, tested credential-rotation CLI or zero-downtime procedure
+> is established here. Do not follow ad hoc SQL or call a provider from this document.
+> Obtain an approved channel-specific procedure and use synthetic credentials in tests.
 
-## Safety Rules
-- Secrets must never be stored in plain text in database rows.
-- Always use application encryption (`csa.core.crypto.encrypt`) with the designated Authenticated Additional Data (AAD).
+## Required safeguards for a future procedure
 
-## Rotation Steps
+- Never put a plaintext credential in source, SQL, command-line arguments, URLs,
+  terminal output, logs or fixtures.
+- Use the exact column-specific AAD and encryption contract from current source;
+  changing a value without matching AAD makes it undecryptable.
+- Define ordering for provider-side rotation, application persistence, in-flight
+  requests, rollback, revocation and audit before touching a live credential.
+- Test with synthetic credentials and a disposable database. The development
+  bootstrap helper is not a general credential-rotation tool.
+- Verify safe failure and ensure no secret-bearing HTTP client logging.
 
-### 1. Encrypt New Secret & Token in Python
-Run via python script or shell:
-```python
-from csa.core import crypto
-import uuid
-
-credential_id = "<CREDENTIAL_UUID>"
-new_bot_token = "<NEW_BOT_TOKEN>"
-new_webhook_secret = "<NEW_WEBHOOK_SECRET>"
-
-enc_token = crypto.encrypt(
-    new_bot_token,
-    crypto.credential_aad("channel_credentials", "access_token", credential_id),
-)
-enc_secret = crypto.encrypt(
-    new_webhook_secret,
-    crypto.credential_aad(
-        "channel_credentials",
-        "meta.telegram_webhook_secret_enc",
-        credential_id,
-    ),
-)
-print("Encrypted Token:", enc_token)
-print("Encrypted Secret:", enc_secret)
-```
-
-### 2. Update Database (SQL)
-```sql
-UPDATE public.channel_credentials
-SET access_token = '<ENC_TOKEN>',
-    meta = jsonb_set(
-        meta,
-        '{telegram_webhook_secret_enc}',
-        to_jsonb('<ENC_SECRET>'::text)
-    ),
-    updated_at = now()
-WHERE id = '<CREDENTIAL_UUID>';
-```
-
-### 3. Update Webhook with Telegram Bot API
-Register the new secret with Telegram:
-```sh
-curl -s -X POST "https://api.telegram.org/bot<NEW_BOT_TOKEN>/setWebhook" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "url": "https://<GATEWAY_HOSTNAME>/hooks/<PUBLIC_ID>",
-       "secret_token": "<NEW_WEBHOOK_SECRET>",
-       "allowed_updates": ["message", "callback_query"]
-     }'
-```
+Until a dedicated, reviewed procedure exists, treat credential rotation as blocked
+and request an explicit channel-specific operational plan. No provider API example
+is included here because token-bearing URLs can leak through shell/process history.

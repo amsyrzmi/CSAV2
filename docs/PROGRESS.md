@@ -1,5 +1,42 @@
 # Progress
 
+Documentation audit closeout/release review (2026-10-20): branch
+`review/domain-release-2026-10-20`, HEAD
+`710725b667ab7410c27c7f6c5d172e46e3a3b450`, and an empty index were verified.
+Audit changes were uncommitted/unstaged at review. The user subsequently approved
+the explicit **54-path documentation commit and review-branch push**; this record
+is finalized before publication, whose final SHA/status must be checked in Git.
+The two pre-existing
+review-document deletions are excluded; `ui-guide/` is untouched and the local-only
+server handoff stays ignored. Final review corrected LG09's overstated rollback/
+all-eight-runbooks acceptance, stale snapshot-removal chronology and the frontend's
+historical-session heading. Local target/fence checks pass for **45 Markdown files**
+(the previous 44-file scope plus the changed historical console state file):
+**407 local targets**, zero errors; `git diff --check` passes. No runtime tests,
+database probes or services were used for this documentation-only closeout.
+
+Fresh read-only GitHub checks at **2026-10-20 09:26 UTC** confirm runs
+[39382774620](https://github.com/amsyrzmi/CSAV2/actions/runs/39382774620)
+(HEAD) and [39381920580](https://github.com/amsyrzmi/CSAV2/actions/runs/39381920580)
+both completed successfully, including gate/frontend/package. These runs do not
+cover the dirty audit. PR listing remains HTTP 403 via GraphQL and REST; no PR
+is confirmed or created. REST repository metadata confirms base `main`; branch
+metadata access is also 403, but read-only `git ls-remote --heads origin` confirms
+the review branch still points to HEAD and `main` to `848d8ef`. At that observation,
+no credential changes, commit, push or PR creation had been attempted.
+
+Next acceptance slice, proposed only: JavaScript-enabled **synthetic M2 Agents/
+Runtime activity browser acceptance** against disposable packaged services.
+Existing Node transport/state tests and packaged HTTP/server-rendered tests do
+not execute hydrated UI interactions; dated guarded-dev browser checks do not
+cover the packaged release candidate. Scope and manual PR fallback are in the
+[active handoff](./handoffs/2026-10-19-domain-release-next-session.md#next-bounded-task-and-copy-ready-prompt).
+This does not close performance, public-ingress, persistent staging, LG09 live
+cutover/rollback, credential rotation or real-backup recovery gates. The earlier
+committed-range secret scan does not cover the dirty audit or a future commit.
+No local Gitleaks executable was available, so no new secret scan was run here;
+check hosted scanning/CI separately on the published audit head.
+
 Latest exact hosted-artifact runtime acceptance (2026-10-20): **three passed**,
 one existing Testcontainers warning, **233.60 s**. The existing identity/readiness,
 bootstrap/storage and synthetic backup/restore cases ran with imported hosted
@@ -14,10 +51,29 @@ No full-suite rerun was needed for this docs/session-only acceptance slice.
 Evidence committed as `0e148f85a2e4b63fb11541909befc7a2fdbd58b5` and pushed to
 `review/domain-release-2026-10-20`. Hosted CI run
 [39381920580](https://github.com/amsyrzmi/CSAV2/actions/runs/39381920580)
-was in progress at handoff. Draft PR creation/listing is blocked: the configured
+and follow-up run
+[39382774620](https://github.com/amsyrzmi/CSAV2/actions/runs/39382774620)
+completed successfully. Draft PR creation/listing is blocked: the configured
 GitHub token returns HTTP 403 for pull-request resources. Next: use an authorized
-GitHub account/token to open/review the PR and confirm this commit's CI conclusion.
+GitHub account/token to open/review the PR. No PR is confirmed or created.
 No merge, publication, ingress or persistent DB change.
+
+Documentation audit/cleanup (2026-10-20): replaced the duplicated README history
+with an entrypoint and rewrote `docs/PROJECT_OVERVIEW.md` as the architecture,
+workflow, directory and reading-authority map. Removed the obsolete
+`CSA_WebConsole/Docs/` tree (28 tracked files plus ignored old-console/workflow
+snapshots) and the superseded ecommerce agent draft; kept dated handoffs, evaluation
+reports, maintained runbooks and detailed architecture/API references. Updated
+links/status warnings. `SERVER_HANDOFF.md` is ignored/local-only and now contains
+only safe pointers; its stale host-specific operational details were removed.
+Source-accuracy review corrected the shadow-mode blocking description, clarified
+that the pending-action expiry job does not expire staff approvals, removed
+unsafe credential-print/rotation examples, and scoped backup/restore and operator
+SQL claims to their synthetic/tested evidence. It also distinguishes `EcommerceAgent`
+registration from configured marketplace adapters and records source schema 0360
+separately from the last recorded persistent-dev schema 0300. Final documentation
+validation: local links and fenced code blocks consistent in 44 maintained
+Markdown files; `git diff --check` passes. No runtime tests or services used.
 
 Latest candidate scan (2026-10-20): offline Gitleaks **v8.24.2** scanned the
 complete review range `848d8efa864c12d2168b4ccd79e32b97e0bde790..da1b50da5b40479370507020ce7d17cd1317707f`:
@@ -28,8 +84,8 @@ allowlist/baseline. Only a bare committed-history copy was mounted; networking
 was disabled. This closes the initial candidate-range scan gap, not a full-history
 or dirty-worktree scan and not a guarantee that no secrets exist.
 The exact hosted-artifact acceptance above now supplies the next runtime evidence.
-The documentation evidence is committed as `0e148f8`; PR review, merge and staging
-remain separate gates.
+The evidence is committed and pushed as `0e148f8` plus status correction `710725b`;
+PR review, merge and staging remain separate gates.
 
 Latest hosted evidence (2026-10-20):
 [run 39367800618](https://github.com/amsyrzmi/CSAV2/actions/runs/39367800618)
@@ -79,8 +135,10 @@ This run collected before the last Dockerfile-parent symlink regression and synt
 JSON allowlist fix, which have the separate final 27-test/lint pass. Exact commands
 are in the linked handoff.
 Historical latency failures remain recorded below; one pass is not stable capacity.
-Hosted Actions,
-OCI export/upload and deployment acceptance remain unverified. No push/commit,
+At that earlier packaging slice, Hosted Actions,
+OCI export/upload and deployment acceptance remained unverified; subsequent hosted
+and exact-artifact evidence is recorded above, while deployment remains unverified.
+No push/commit,
 registry publish, DNS/tunnel/provider change, existing-service restart, production
 connection, environment-file inspection or persistent migration occurred.
 Latest bootstrap continuation adds a disposable-only packaged migration/first-admin
