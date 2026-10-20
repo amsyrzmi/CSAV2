@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import shutil
 import ssl
 import subprocess
@@ -16,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import LiteralString
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import docker
@@ -26,6 +28,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from docker.models.containers import Container
+from playwright.async_api import BrowserContext, Page, Request, Route, async_playwright
 from psycopg import sql
 from scripts.release_context import materialize
 from testcontainers.core.network import Network
@@ -81,13 +84,16 @@ def tls_frontend(upstream: str, directory: Path) -> Iterator[tuple[str, ssl.SSLC
                 response = client.request(
                     self.command, upstream + self.path, headers=headers, content=body
                 )
-            self.send_response(response.status_code)
-            for header, value in response.headers.multi_items():
-                if header.lower() not in excluded:
-                    self.send_header(header, value)
-            self.send_header("Content-Length", str(len(response.content)))
-            self.end_headers()
-            self.wfile.write(response.content)
+            try:
+                self.send_response(response.status_code)
+                for header, value in response.headers.multi_items():
+                    if header.lower() not in excluded:
+                        self.send_header(header, value)
+                self.send_header("Content-Length", str(len(response.content)))
+                self.end_headers()
+                self.wfile.write(response.content)
+            except BrokenPipeError:
+                return
 
         do_GET = do_POST = do_PATCH = do_DELETE = relay
 
@@ -256,6 +262,9 @@ def packaged_console(
 @pytest.fixture
 async def packaged_identity(migrated_dsn: str) -> None:
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as conn:
+        # The module shares one disposable database; isolate each identity scenario.
+        await conn.execute("TRUNCATE TABLE console_users CASCADE")
+        await conn.execute("TRUNCATE TABLE console_login_attempts")
         await conn.execute(
             sql.SQL("ALTER ROLE csa_identity LOGIN PASSWORD {}").format(
                 sql.Literal(IDENTITY_PASSWORD)
@@ -963,3 +972,413 @@ asyncio.run(run())
                 next(row for row in ledger if row[0] == "0360"),
             )
         assert b"restored readiness and role boundaries passed" in packaged_probe(True)
+
+
+async def test_packaged_m2_browser_acceptance(
+    packaged_console: PackagedConsole,
+    migrated_dsn: str,
+) -> None:
+    w = packaged_console
+    tenant_admin_email = f"browser-admin-{uuid4().hex}@example.test"
+    reader_email = f"browser-reader-{uuid4().hex}@example.test"
+    member_password = "synthetic-browser-member-password"
+    tenants: list[str] = []
+
+    def api_client() -> httpx.Client:
+        client = httpx.Client(
+            base_url=w.origin,
+            verify=w.tls,
+            trust_env=False,
+            timeout=30,
+        )
+        response = client.get("/console/v1/auth/csrf")
+        assert response.status_code == 200
+        assert response.json()["csrf_token"] == client.cookies["csa_csrf"]
+        return client
+
+    def mutate(client: httpx.Client, path: str, body: object) -> httpx.Response:
+        return client.post(
+            path,
+            json=body,
+            headers={
+                "Origin": w.origin,
+                "X-CSRF-Token": client.cookies["csa_csrf"],
+            },
+        )
+
+    page_errors: list[bool] = []
+    egress_attempts: list[str] = []
+    console_requests: list[tuple[str, str, str]] = []
+    fail_run_list = False
+    browser_contexts: list[BrowserContext] = []
+
+    async def login(page: Page, email: str, password: str, destination: str) -> None:
+        await page.goto(f"{w.origin}/login")
+        await page.get_by_label("Email", exact=True).fill(email)
+        await page.get_by_label("Password", exact=True).fill(password)
+        await page.get_by_role("button", name="Sign in", exact=True).click()
+        await page.wait_for_url(f"{w.origin}{destination}")
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+
+        async def route_request(route: Route) -> None:
+            nonlocal fail_run_list
+            target = urlsplit(route.request.url)
+            request_origin = f"{target.scheme}://{target.netloc}"
+            if request_origin != w.origin:
+                egress_attempts.append(request_origin)
+                await route.abort()
+                return
+            if (
+                fail_run_list
+                and target.path == "/console/v1/runs"
+                and route.request.method == "GET"
+            ):
+                await route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body='{"detail":"synthetic transient failure"}',
+                )
+                return
+            await route.continue_()
+
+        async def record_request(request: Request) -> None:
+            target = urlsplit(request.url)
+            if target.path.startswith("/console/v1/"):
+                console_requests.append(
+                    (request.method, f"{target.scheme}://{target.netloc}", target.path)
+                )
+
+        async def new_page() -> tuple[BrowserContext, Page]:
+            context = await browser.new_context(
+                ignore_https_errors=True,
+                service_workers="block",
+            )
+            browser_contexts.append(context)
+            await context.route("**/*", route_request)
+            page = await context.new_page()
+            page.on("pageerror", lambda _: page_errors.append(True))
+            page.on("request", record_request)
+            return context, page
+
+        try:
+            admin_context, admin_page = await new_page()
+            await login(
+                admin_page,
+                "packaged-admin@example.test",
+                PASSWORD,
+                "/change-password",
+            )
+            await admin_page.get_by_label("Current password", exact=True).fill(PASSWORD)
+            await admin_page.get_by_label("New password", exact=True).fill(CHANGED_PASSWORD)
+            await admin_page.get_by_label("Confirm new password", exact=True).fill(CHANGED_PASSWORD)
+            await admin_page.get_by_role("button", name="Save password", exact=True).click()
+            await admin_page.wait_for_url(f"{w.origin}/")
+
+            setup_admin = api_client()
+            try:
+                login_response = mutate(
+                    setup_admin,
+                    "/console/v1/auth/login",
+                    {
+                        "email": "packaged-admin@example.test",
+                        "password": CHANGED_PASSWORD,
+                    },
+                )
+                assert login_response.status_code == 200
+                assert login_response.json()["role"] == "platform_admin"
+                for suffix in ("alpha", "beta"):
+                    created = mutate(
+                        setup_admin,
+                        "/console/v1/admin/clients",
+                        {
+                            "slug": f"browser-{suffix}-{uuid4().hex[:12]}",
+                            "name": f"Synthetic Browser Tenant {suffix.title()}",
+                        },
+                    )
+                    assert created.status_code == 201, created.text
+                    tenants.append(created.json()["id"])
+                for tenant, email, role in (
+                    (tenants[0], tenant_admin_email, "tenant_admin"),
+                    (tenants[1], reader_email, "read_only"),
+                ):
+                    invitation = mutate(
+                        setup_admin,
+                        "/console/v1/admin/invites",
+                        {
+                            "client_id": tenant,
+                            "email": email,
+                            "display_name": "Synthetic Browser Member",
+                            "role": role,
+                        },
+                    )
+                    assert invitation.status_code == 201, invitation.text
+                    member = api_client()
+                    try:
+                        accepted = mutate(
+                            member,
+                            "/console/v1/invites/accept",
+                            {
+                                "token": invitation.json()["token"],
+                                "password": member_password,
+                            },
+                        )
+                    finally:
+                        member.close()
+                    assert accepted.status_code == 200, accepted.text
+                    assert accepted.json()["role"] == role
+            finally:
+                setup_admin.close()
+
+            run_ids: dict[tuple[str, str], int] = {}
+            traces: dict[tuple[str, str], str] = {}
+            async with await psycopg.AsyncConnection.connect(
+                migrated_dsn, autocommit=True
+            ) as owner:
+                for tenant, agent, suffix, ok in (
+                    (tenants[0], "invoice_agent", "alpha-invoice", True),
+                    (tenants[0], "booking_agent", "alpha-booking", False),
+                    (tenants[1], "invoice_agent", "beta-invoice", True),
+                ):
+                    trace_id = uuid4()
+                    cursor = await owner.execute(
+                        "INSERT INTO agent_runs(client_id,trace_id,agent,ok,status,created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,now()) RETURNING id",
+                        (tenant, trace_id, agent, ok, "ok" if ok else "error"),
+                    )
+                    run_row = await cursor.fetchone()
+                    assert run_row is not None
+                    run_id = run_row[0]
+                    await owner.execute(
+                        "INSERT INTO agent_events(client_id,trace_id,node,agent,status,"
+                        "duration_ms,summary) VALUES (%s,%s,%s,%s,%s,%s,'{}'::jsonb)",
+                        (tenant, trace_id, f"browser_seed_{suffix}", agent, "ok", 17),
+                    )
+                    run_ids[(tenant, agent)] = run_id
+                    traces[(tenant, agent)] = str(trace_id)
+
+            await admin_page.goto(f"{w.origin}/agents")
+            await admin_page.get_by_label("Tenant").select_option(tenants[0])
+            admin_invoice = admin_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await admin_invoice.get_by_role("button", name="Subscribe", exact=True).click()
+            await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
+            await admin_invoice.get_by_text("Off", exact=True).wait_for()
+
+            await admin_page.reload()
+            await admin_page.get_by_label("Tenant").select_option(tenants[0])
+            admin_invoice = admin_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
+            await admin_page.get_by_label("Tenant").select_option(tenants[1])
+            other_invoice = admin_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await other_invoice.get_by_text("Not subscribed", exact=True).wait_for()
+
+            _, tenant_page = await new_page()
+            await login(tenant_page, tenant_admin_email, member_password, "/portal")
+            await tenant_page.goto(f"{w.origin}/portal/agents")
+            tenant_invoice = tenant_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            assert (
+                await tenant_page.get_by_role("button", name="Subscribe", exact=True).count() == 0
+            )
+            await tenant_invoice.get_by_role(
+                "button", name="Turn tenant switch on", exact=True
+            ).click()
+            await tenant_invoice.get_by_text("On", exact=True).wait_for()
+            await tenant_page.reload()
+            tenant_invoice = tenant_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await tenant_invoice.get_by_text("On", exact=True).wait_for()
+            forbidden_tenant = await tenant_page.evaluate(
+                """async (clientId) => (await fetch(
+                  `/console/v1/agents?client_id=${encodeURIComponent(clientId)}`
+                )).status""",
+                tenants[1],
+            )
+            assert forbidden_tenant == 403
+
+            async with await psycopg.AsyncConnection.connect(
+                migrated_dsn, autocommit=True
+            ) as owner:
+                state = await owner.execute(
+                    "SELECT is_enabled,client_enabled FROM capability_registry "
+                    "WHERE client_id=%s AND name='invoice_agent'",
+                    (tenants[0],),
+                )
+                assert await state.fetchone() == (True, True)
+                other_state = await owner.execute(
+                    "SELECT is_enabled,client_enabled FROM capability_registry "
+                    "WHERE client_id=%s AND name='invoice_agent'",
+                    (tenants[1],),
+                )
+                assert await other_state.fetchone() == (False, False)
+                audit = await owner.execute(
+                    "SELECT actor_id,details FROM console_audit "
+                    "WHERE client_id=%s AND action='capability.updated' "
+                    "AND target_id='invoice_agent' ORDER BY id",
+                    (tenants[0],),
+                )
+                audit_rows = await audit.fetchall()
+                admin_user = await owner.execute(
+                    "SELECT id FROM console_users WHERE email='packaged-admin@example.test'"
+                )
+                admin_row = await admin_user.fetchone()
+                assert admin_row is not None
+                admin_id = admin_row[0]
+                tenant_user = await owner.execute(
+                    "SELECT id FROM console_users WHERE email=%s",
+                    (tenant_admin_email,),
+                )
+                tenant_row = await tenant_user.fetchone()
+                assert tenant_row is not None
+                tenant_admin_id = tenant_row[0]
+                assert len(audit_rows) == 2
+                audit_by_actor = {actor: details["after"] for actor, details in audit_rows}
+                assert audit_by_actor == {
+                    admin_id: {"is_enabled": True, "client_enabled": False},
+                    tenant_admin_id: {"is_enabled": True, "client_enabled": True},
+                }
+
+            await admin_page.goto(f"{w.origin}/activity")
+            await admin_page.get_by_label("Tenant").select_option(tenants[0])
+            await admin_page.get_by_label("Agent name (optional)").fill("invoice_agent")
+            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
+            invoice_run = run_ids[(tenants[0], "invoice_agent")]
+            invoice_row = admin_page.get_by_role(
+                "button", name=re.compile(rf"#{invoice_run}\s+invoice_agent")
+            )
+            await invoice_row.wait_for()
+            booking_run = run_ids[(tenants[0], "booking_agent")]
+            assert (
+                await admin_page.get_by_role(
+                    "button", name=re.compile(rf"#{booking_run}\s+booking_agent")
+                ).count()
+                == 0
+            )
+            await invoice_row.click()
+            await admin_page.get_by_role(
+                "heading", name=f"Run #{invoice_run}", exact=True
+            ).wait_for()
+            await admin_page.get_by_text(
+                "browser_seed_alpha-invoice / invoice_agent / ok / 17 ms"
+            ).wait_for()
+            async with await psycopg.AsyncConnection.connect(
+                migrated_dsn, autocommit=True
+            ) as owner:
+                await owner.execute(
+                    "INSERT INTO agent_events(client_id,trace_id,node,agent,status,"
+                    "duration_ms,summary) VALUES (%s,%s,%s,%s,'ok',23,'{}'::jsonb)",
+                    (
+                        tenants[0],
+                        traces[(tenants[0], "invoice_agent")],
+                        "browser_poll_followup",
+                        "invoice_agent",
+                    ),
+                )
+            await admin_page.get_by_text(
+                "browser_poll_followup / invoice_agent / ok / 23 ms"
+            ).wait_for(timeout=12_000)
+
+            fail_run_list = True
+            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
+            await (
+                admin_page.get_by_role("alert")
+                .filter(has_text="synthetic transient failure")
+                .wait_for()
+            )
+            await admin_page.get_by_text("Runtime data unavailable.", exact=True).wait_for()
+            fail_run_list = False
+            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
+            await invoice_row.wait_for()
+            await (
+                admin_page.get_by_role("alert")
+                .filter(has_text="synthetic transient failure")
+                .wait_for(state="detached")
+            )
+
+            _, reader_page = await new_page()
+            await login(reader_page, reader_email, member_password, "/portal")
+            await reader_page.goto(f"{w.origin}/portal/agents")
+            reader_invoice = reader_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await reader_invoice.get_by_text("Not subscribed", exact=True).wait_for()
+            assert (
+                await reader_page.get_by_role(
+                    "button", name=re.compile(r"Subscribe|Turn tenant switch")
+                ).count()
+                == 0
+            )
+            forbidden_runs = await reader_page.evaluate(
+                """async (clientId) => (await fetch(
+                  `/console/v1/runs?client_id=${encodeURIComponent(clientId)}`
+                )).status""",
+                tenants[0],
+            )
+            assert forbidden_runs == 403
+            await reader_page.goto(f"{w.origin}/portal/activity")
+            beta_run = run_ids[(tenants[1], "invoice_agent")]
+            beta_row = reader_page.get_by_role(
+                "button", name=re.compile(rf"#{beta_run}\s+invoice_agent")
+            )
+            await beta_row.wait_for()
+            assert (
+                await reader_page.get_by_role(
+                    "button", name=re.compile(rf"#{invoice_run}\s+invoice_agent")
+                ).count()
+                == 0
+            )
+            await tenant_page.goto(f"{w.origin}/portal/activity")
+            tenant_invoice_run = run_ids[(tenants[0], "invoice_agent")]
+            await tenant_page.get_by_role(
+                "button", name=re.compile(rf"#{tenant_invoice_run}\s+invoice_agent")
+            ).wait_for()
+            assert (
+                await tenant_page.get_by_role(
+                    "button", name=re.compile(rf"#{beta_run}\s+invoice_agent")
+                ).count()
+                == 0
+            )
+
+            session_cookie = next(
+                cookie
+                for cookie in await admin_context.cookies(w.origin)
+                if cookie.get("name") == "csa_session"
+            )
+            stale_session = session_cookie.get("value")
+            assert stale_session is not None
+            await admin_page.goto(f"{w.origin}/agents")
+            await admin_page.get_by_role("button", name="Sign out", exact=True).click()
+            await admin_page.wait_for_url(f"{w.origin}/login")
+            await admin_page.go_back()
+            await admin_page.reload()
+            await admin_page.get_by_role("heading", name="Sign in", exact=True).wait_for()
+            assert urlsplit(admin_page.url).path == "/login"
+            with httpx.Client(
+                base_url=w.origin,
+                verify=w.tls,
+                trust_env=False,
+                timeout=30,
+                cookies={"csa_session": stale_session},
+            ) as stale:
+                assert stale.get("/console/v1/auth/me").status_code == 401
+            for _, request_origin, _ in console_requests:
+                assert request_origin == w.origin
+            assert any(
+                method == "POST" and path == "/console/v1/auth/login"
+                for method, _, path in console_requests
+            )
+            assert any(
+                method == "POST" and path == "/console/v1/auth/password/change"
+                for method, _, path in console_requests
+            )
+            assert any(
+                method == "POST" and path == "/console/v1/auth/logout"
+                for method, _, path in console_requests
+            )
+            assert any(
+                method == "PATCH" and path == "/console/v1/capabilities/invoice_agent"
+                for method, _, path in console_requests
+            )
+            assert not egress_attempts
+            assert not page_errors
+        finally:
+            for context in reversed(browser_contexts):
+                await context.close()
+            await browser.close()

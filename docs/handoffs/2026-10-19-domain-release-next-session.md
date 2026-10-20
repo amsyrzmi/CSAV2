@@ -1,19 +1,109 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Latest slice: documentation audit closeout and release review (2026-10-20)
+## Latest slice: synthetic M2 browser acceptance (2026-10-20)
+
+Work continues on branch `review/domain-release-2026-10-20` from published
+audit commit `f46dba0fe006577dcc56d150bd62a576adf0f15e`. The browser slice is
+local and uncommitted; it has not been pushed to draft PR #1. The two deleted
+`docs/reviews/` files remain pre-existing unrelated work and must stay excluded.
+
+The new JavaScript-enabled test
+`tests/test_packaged_console.py::test_packaged_m2_browser_acceptance` passed
+once against packaged candidate services, synthetic tenant/run/event records,
+and disposable Testcontainers Postgres: **1 passed**, one existing
+Testcontainers deprecation warning, **170.34 s**. It exercises UI login,
+password change, logout and stale-session revocation; platform/tenant-admin
+switch permissions and persisted capability/audit results; read-only UI;
+two-tenant Runtime activity filtering/detail/polling; visible refresh failure
+and recovery; same-origin requests, denied browser egress and no page errors.
+No agent, model, worker or provider is invoked.
+
+The executed focused command was:
+
+```sh
+PATH=/tmp/fourstacks-toolbin:$PATH \
+LD_LIBRARY_PATH=/tmp/csa-playwright-runtime-20261020/rootfs/usr/lib/x86_64-linux-gnu \
+NO_LOCAL_ENV=1 ENV=ci uv run pytest -c pyproject.toml \
+  tests/test_packaged_console.py::test_packaged_m2_browser_acceptance -v --tb=short
+```
+
+This host needed the temporary Node wrapper and extracted Chromium libraries;
+they are validation workarounds, not project requirements. CI installs Chromium
+with system dependencies. The package/dependency and CI changes are local.
+First `NO_LOCAL_ENV=1 ENV=ci make lint test` attempt: lint passed (Ruff, format,
+Pyright with zero diagnostics, and import-linter); pytest completed with
+**2,546 passed, 136 warnings, 4 setup errors in 2,101.43 s**. All four errors
+were packaged-console setup assertions that Node was absent from `PATH`; no
+test assertion failed. The packaged-console disposable-reset check was among
+the four that could not set up, so reset acceptance was not established by
+that attempt. A second run with the reviewed temporary Node wrapper and Chromium
+libraries completed with **2,549 passed, 136 warnings, 1 setup error in
+2,188.20 s**: the new browser test tried to bootstrap an admin already present
+in the module-scoped disposable database. The fixture now truncates
+`console_users` with `CASCADE` and clears login-attempt buckets in that
+disposable database before each identity scenario. A focused sequential rerun
+of the packaged identity and M2 browser tests passed (**2 passed**, one existing
+warning, **212.60 s**). Final full run:
+
+```sh
+PATH=/tmp/fourstacks-toolbin:$PATH \
+LD_LIBRARY_PATH=/tmp/csa-playwright-runtime-20261020/rootfs/usr/lib/x86_64-linux-gnu \
+NO_LOCAL_ENV=1 ENV=ci make lint test
+```
+
+It passed lint (Ruff, formatting, Pyright **0 errors/warnings**, import-linter)
+and **2,550 tests, 136 warnings, 2,562.35 s**. All four packaged-console tests
+passed. `tests/test_migrate.py` reported seven passes, including
+`test_make_reset_only_disposable_container`; it was not skipped or deselected.
+`uv lock --check` passed. Final documentation validation covered 45 Markdown
+files and 409 local targets with zero errors; `git diff --check` passed. The run
+used Testcontainers/disposable fixtures only. This one full-suite pass does not
+erase historical latency failures or establish stable performance acceptance.
+
+Fresh GitHub CLI observation: PR run
+[39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600)
+completed with frontend and pytest successful, but gate failed in Gitleaks and
+policy branch coverage/package were skipped. The Gitleaks log shows its
+`GITHUB_TOKEN` integration received HTTP 403 `Resource not accessible by
+integration` while reading `GET /repos/amsyrzmi/CSAV2/pulls/1/commits`; it is a
+workflow permission failure, not a reported secret finding. `.github/workflows/ci.yml`
+now locally grants the minimum `pull-requests: read` permission alongside
+existing read permissions. That adjustment is not in the failed remote run and
+has not been pushed; re-run hosted CI after an approved push to establish whether
+it resolves the failure. No credential was inspected or changed.
+
+No commit or push has been made for this slice. Do not merge PR #1 or deploy.
+The run reflects the remote audit-only head, not these local changes.
+
+## Prior slice: documentation audit closeout and release review (2026-10-20)
 
 Read this section and the [current next task](#next-bounded-task-and-copy-ready-prompt)
 first; older slices below preserve historical evidence.
 
-Verified local branch `review/domain-release-2026-10-20`, HEAD
-`710725b667ab7410c27c7f6c5d172e46e3a3b450`, matching local remote-tracking refs,
-and an empty index. Audit changes were uncommitted and unstaged at review. The
-user subsequently approved the explicit **54-path documentation commit and
-review-branch push**, not PR creation or browser implementation. This record is
-finalized before publication; check Git for the resulting SHA and remote state.
-Preserve the dirty worktree: the two deletions under `docs/reviews/`
-pre-date the audit and are excluded. Do not restore or stage them. `ui-guide/`
-is untouched; `SERVER_HANDOFF.md` remains ignored/local-only, not a commit input.
+After the approved documentation publication, local branch
+`review/domain-release-2026-10-20` and its remote match HEAD
+`f46dba0fe006577dcc56d150bd62a576adf0f15e`. At **2026-10-20 11:46 UTC**, the
+index is empty and the only worktree changes are the two pre-existing,
+unstaged deletions under `docs/reviews/`; they remain excluded. Do not restore
+or stage them. `ui-guide/` is untouched; `SERVER_HANDOFF.md` remains
+ignored/local-only, not a commit input. The 54-path audit commit is published.
+
+The user created draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1), titled
+“Review packaged release and synthetic acceptance evidence”, from
+`review/domain-release-2026-10-20` to `main` at
+`848d8efa864c12d2168b4ccd79e32b97e0bde790`. Fresh GitHub MCP observations at
+**11:46 UTC** confirm it is open and draft. No merge, registry publication,
+promotion or deployment is authorized or performed.
+
+The newest pull-request CI run
+[39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600) is
+still **in progress**: frontend passed; gate is running pytest, while Gitleaks
+and policy branch coverage are pending. Ruff, format, Pyright, import-boundary
+and schema-migration steps passed. Earlier same-head run
+[39402852826](https://github.com/amsyrzmi/CSAV2/actions/runs/39402852826)
+completed successfully, including gate/frontend/package; it does not replace
+the newer PR run. `gh pr list` still returns HTTP 403, but GitHub MCP confirmed
+the PR and check status. Credentials were not inspected or changed.
 
 Reviewed the entrypoint/overview, architecture/API/schema/progress/frontend docs,
 handoffs, LG13 and runbooks 01–08 plus their new status index. The obsolete
@@ -30,24 +120,6 @@ feature or runtime code was added. Final bounded corrections:
 - Progress qualifies an earlier packaging-era "hosted unverified" statement
   rather than contradicting the later hosted evidence.
 
-Read-only GitHub observations at **2026-10-20 09:26 UTC**:
-
-- `gh run list` and `gh run view` freshly confirm **39382774620** on HEAD and
-  **39381920580** on `0e148f85a2e4b63fb11541909befc7a2fdbd58b5` completed
-  successfully; gate, frontend and package all succeeded on both runs.
-  This is committed-state CI, not validation of the dirty audit.
-- `gh pr list` fails GraphQL PR access; REST pull-request listing also returns
-  **HTTP 403**. No existing PR can be confirmed and no creation was attempted.
-- GraphQL default-branch access fails, but `gh api repos/amsyrzmi/CSAV2`
-  confirms default branch **main**. Its local ref and `origin/main` are
-  `848d8efa864c12d2168b4ccd79e32b97e0bde790`, the merge base; HEAD is five
-  commits ahead. REST review-branch metadata is also 403, but read-only
-  `git ls-remote --heads origin main review/domain-release-2026-10-20`
-  freshly confirms both full remote SHAs match those local observations.
-- Credentials were not inspected or changed. At that observation no commit, push
-  or PR had been attempted. The subsequent approval permits only the documentation
-  commit and review-branch push, not registry publication, merge or deployment.
-
 Documentation validation from the repository root:
 
 ```sh
@@ -60,11 +132,12 @@ code and balanced backtick/tilde fences. Scope: all 41 current Markdown files
 under `docs/`, root README, release contract, frontend README and the changed
 historical console state file: **45 files**, **407 local targets**, **zero errors**;
 `git diff --check` exits **0**. It does not validate remote URLs or heading
-fragments. No runtime tests, lint/build, database probe or services were used for
-this prose-only slice. Earlier runtime passes/failures below remain unchanged.
-The earlier committed-range secret scan excludes this dirty audit/future commit.
-No local Gitleaks executable was available, so no new secret scan was run in this
-closeout. Hosted scanning/CI must be checked on the published audit head.
+fragments. The checker and `git diff --check` were rerun after this PR/status
+refresh and pass with the same counts. No runtime tests, lint/build, database
+probe or services were used for this prose-only slice. Earlier runtime
+passes/failures below remain unchanged.
+The earlier committed-range secret scan excludes the audit commit. Hosted
+Gitleaks is pending in PR run 39417032600.
 
 ## Earlier slice: exact hosted OCI runtime acceptance (2026-10-20)
 
@@ -137,8 +210,10 @@ and follow-up run
 [39382774620](https://github.com/amsyrzmi/CSAV2/actions/runs/39382774620)
 completed successfully. Listing PRs and creating a draft PR failed with
 HTTP 403 (`Resource not accessible by personal access token`) through both GitHub
-GraphQL and REST. No PR is confirmed or created. Next: with an authorized GitHub
-account/token, check the run conclusion and open/review the PR. Merge and staging
+GraphQL and REST. At that observation, no PR was confirmed or created. The next
+step was to use an authorized GitHub account/token to check the run conclusion
+and open/review the PR. This state was superseded later the same day when the
+user created draft PR #1; see the latest slice at the top. Merge and staging
 execution require separate approval.
 
 ## Earlier slice: complete review-candidate secret scan (2026-10-20)
@@ -859,118 +934,63 @@ Official references consulted for the hosting/integration checklist:
 
 ## Next bounded task and copy-ready prompt
 
-The user approved the explicit 54-path documentation commit and review-branch
-push. Stage only those reviewed audit paths; exclude the two pre-existing review
-deletions and ignored local handoff. Inspect the staged diff and include the required
-Co-authored-by trailer. Check the final Git/remote state rather than repeating an
-already completed commit/push. Fresh CI above covers pre-audit HEAD; check the
-published audit head separately. PR creation still needs explicit approval.
+Draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1) remains based on `main`
+from `review/domain-release-2026-10-20`; no duplicate PR is needed. The PR run
+39417032600 completed: frontend and pytest passed, Gitleaks failed on a GitHub
+integration 403 fetching PR commits, and policy coverage/package were skipped.
+The local CI workflow now grants `pull-requests: read` to the `gate` job only.
+That permission has not been pushed or validated by hosted CI. No local
+Gitleaks binary is available, so hosted scanning must pass after an approved
+push.
 
-### Manual PR fallback while API access is blocked
+The final local `make lint test` run passed: **2,550 tests**, including all four
+packaged-console tests and the disposable-reset acceptance test; exact command,
+warnings and duration are recorded above. `uv lock --check`, the documentation
+link/fence checker (**45 Markdown files, 409 local targets, zero errors**) and
+`git diff --check` pass. The browser acceptance, pinned Playwright dependency
+and lock, CI browser installation and minimum Gitleaks permission fix remain
+local and uncommitted. The next action is to review this exact local diff and
+obtain explicit approval before committing or pushing. If approved, stage only
+task-owned paths, inspect the staged diff, include the required Co-authored-by
+trailer and push only to the existing review branch. Keep the two pre-existing
+deletions under `docs/reviews/` excluded.
 
-Using an authorized browser/account (do not put credentials in chat), inspect
-existing PRs before creating a duplicate. Head repository: **amsyrzmi/CSAV2**;
-head branch: **review/domain-release-2026-10-20**; base: **main** (verified by
-REST repository metadata). Read-only `git ls-remote` confirms the remote head
-matches recorded HEAD despite blocked branch API access. Obtain approval before pushing
-any new audit commit or creating a draft PR.
+After an approved push, refresh PR #1 and CI. Require Gitleaks and policy
+coverage to complete successfully before recommending review readiness; do not
+mark ready or merge. If `pull-requests: read` does not resolve the action error,
+keep it as a blocker and request repository workflow-permission review rather
+than changing credentials. Preserve draft status; no registry publication,
+promotion or deployment.
 
-Suggested title: **Review packaged release and synthetic acceptance evidence**
-
-Copy-ready body:
-
-```text
-## Scope
-- Review repository-only packaging and offline M6 foundations against main.
-- Review disposable HTTPS identity/readiness, bootstrap/storage and synthetic
-  restore evidence, including exact hosted OCI runtime acceptance.
-- Include documentation cleanup only if its explicit audit commit is approved
-  and pushed; otherwise those edits remain local and are not in this PR.
-
-## Evidence
-- CI runs 39381920580 and 39382774620: gate/frontend/package succeeded.
-- Exact hosted da1b50d OCI acceptance: 3 passed, 1 existing warning, 233.60 s;
-  initial fixture identity failure and correction remain in the handoff.
-- Separate offline scan passed for main..da1b50d only, not later commits or
-  the dirty documentation audit. Preserve historical full-suite latency failures.
-
-## Remaining gates
-- JavaScript browser acceptance of the packaged M2 UI; public HTTPS/ingress.
-- Uploads/workers, approved persistent staging, recovery and per-client cutover.
-- M6/provider/inventory authority remains incomplete and separately gated.
-- Review/scan any later commit before publication; rerun CI on the final head.
-No merge, registry publish, promotion or deployment is authorized by this PR.
-```
-
-### Smallest proposed acceptance slice: synthetic M2 browser interactions
-
-Existing coverage was inspected, not rerun: the frontend package uses Node's
-`node --test` for transport/state/origin checks, and the isolated checker runs
-those plus lint/types/build/traces. Its tests mock fetch or call Next request/
-proxy helpers, not a browser DOM. The packaged acceptance module uses `httpx`
-and server-rendered text. No Playwright/Puppeteer/Selenium browser harness was
-found in the adopted tests/scripts or CI. Historical M1/M2/M3 guarded-dev browser
-records exist, but do not establish hydrated packaged-release acceptance.
-
-Propose one bounded **JavaScript-enabled M2 Agents/Runtime activity** task:
-
-1. Reuse the packaged-console synthetic identity, disposable database, internal
-   network and loopback HTTPS fixture. Use clean allowlisted candidate images,
-   clearly distinguished from exact hosted images. Approve browser tooling and
-   any pinned dependency/lock changes before implementation; no installation or
-   browser/service startup is part of this documentation task.
-2. With JavaScript enabled, submit login/password-change/logout through the UI.
-   Use isolated platform-admin, tenant-admin and read-only contexts and two
-   synthetic tenants; verify logout revokes the session after reload/back navigation.
-3. On Agents, platform admin explicitly selects a tenant and changes a synthetic
-   optional subscription; tenant admin changes only its tenant switch; reader has
-   no mutation controls. Assert the expected same-origin request and persisted
-   capability/audit outcome, including reload persistence and cross-tenant denial.
-   Never invoke an agent or provider to prove a toggle.
-4. On Runtime activity, seed recorded metadata directly in the disposable fixture;
-   exercise the agent filter and detail/poll refresh, and verify no other tenant's
-   rows appear. Include an intercepted failed refresh and visible error/recovery,
-   not just successful initial HTML. No model/worker execution is needed.
-5. Deny unexpected browser egress; redact cookies/passwords/tokens from artifacts;
-   assert hydration produced interactive controls without uncaught page errors.
-   Clean all task-owned browser contexts, containers, TLS files and candidate tags.
-   Run targeted browser/regression checks and repository-required isolated
-   lint/tests, including disposable reset verification if code changes.
-
-Do not implement this slice without clear scope approval. Success would supply
-bounded packaged M2 browser evidence, not close LG15's combined performance
-checkbox, every UI feature, exact hosted-browser identity, public proxy/cookie
-forwarding, uploads, workers, persistent staging or LG09 operational acceptance.
-LG09 still needs the pilot/SLO period, loss-free operational rollback, approved
-runbooks/rotation, real-backup recovery and n8n retirement. No live test or
-persistent operation is authorized.
+This synthetic browser pass closes only the JavaScript-enabled packaged M2
+interaction gap described above. It does not establish exact hosted-browser
+identity, public proxy/cookie forwarding, worker/provider behavior, persistent
+staging, LG15 performance, or LG09 pilot/SLO, loss-free rollback, rotation,
+real-backup recovery and n8n-retirement gates. No live or persistent operation
+is authorized.
 
 ```text
 Continue from docs/handoffs/2026-10-19-domain-release-next-session.md.
-Read AGENTS.md and applicable nested instructions, README.md,
-docs/PROJECT_OVERVIEW.md, latest docs/PROGRESS.md, this handoff's latest slice
-and next-task section, deploy/RELEASE.md, and LG15/LG09 acceptance criteria.
-Load csa-phase-handoff and csa-verify-change; for approved browser code work,
-also load csa-console-feature and follow its source/contract boundaries.
-Preserve the dirty worktree: no reset, stash, restore or unrelated cleanup.
-Verify branch/HEAD/status rather than assuming the recorded 710725b observation.
-Audit changes were unstaged/uncommitted at review; the user then approved the
-explicit 54-path documentation commit and branch push. Verify Git/remote state
-before taking further publication actions. Exclude both pre-existing
-docs/reviews deletions; leave ui-guide untouched and SERVER_HANDOFF.md ignored.
-Do not recreate CSA_WebConsole/Docs or the superseded ecommerce draft.
-Any further commit/push or PR creation needs explicit approval; gh PR APIs
-still returned 403, though CI runs 39382774620 and 39381920580 were freshly green.
-Use the manual PR fallback if needed; do not change credentials or request secrets.
-After documentation publication is resolved, confirm the proposed synthetic M2
-Agents/Runtime activity browser scope before implementing it. Existing Node/httpx
-and historical dev browser evidence do not close packaged JS browser acceptance.
-For later code/DB validation use synthetic disposable Testcontainers only with
-NO_LOCAL_ENV=1 ENV=ci and repository skills; never bare make db-reset.
-No production/env-file access, persistent dev changes, service restarts, real
-provider requests, infrastructure/DNS/tunnel/webhook/uploads, registry publication,
-merge or deployment. Preserve fourstacks.my/www. Keep promotion disabled.
-Source expects0360; persistent0300 is only a dated approval, not a fresh probe.
-Retain all historical failures and secret-scan scope limitations.
-Update progress/handoff only with actual outcomes and remaining gates.
+The final local `NO_LOCAL_ENV=1 ENV=ci make lint test` run passed 2,550 tests,
+including test_make_reset_only_disposable_container; docs link/fence check
+(45 Markdown files, 409 local targets) and git diff --check passed. The M2
+synthetic JavaScript browser slice, Playwright dependency, CI Chromium install
+and job-scoped pull-requests: read change are uncommitted on
+review/domain-release-2026-10-20 at f46dba0. Review the exact current diff and
+obtain explicit user approval before committing or pushing. If approved, stage
+only task-owned paths, exclude both pre-existing docs/reviews deletions, inspect
+the staged diff, include the required Co-authored-by trailer and push only to
+the existing branch.
+PR #1 remains a draft at the old audit-only remote head. Its newest run
+39417032600 passed frontend/pytest but Gitleaks failed on a GitHub integration
+403 and policy coverage/package were skipped. After an approved push, refresh
+CI and require Gitleaks, policy coverage and package to pass; keep the draft,
+do not merge, publish, promote or deploy. The local permission change is not
+yet verified by hosted CI. Do not change credentials.
+Use synthetic disposable Testcontainers only with NO_LOCAL_ENV=1 ENV=ci; never
+run bare make db-reset. No production/env-file access, persistent DB change,
+service restart, real provider request, infrastructure/DNS/tunnel/webhook/upload,
+registry publication or deployment. Preserve fourstacks.my/www and promotion
+disabled. Source expects 0360; persistent 0300 is dated evidence, not a fresh
+probe. Keep prior failures and secret-scan scope limitations explicit.
 ```

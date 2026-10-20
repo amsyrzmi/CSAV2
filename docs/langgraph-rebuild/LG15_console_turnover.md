@@ -611,7 +611,9 @@ enable `FORCE ROW LEVEL SECURITY` and move n8n off the owner role (LG11 M14).
 - [x] M1 identity/RBAC/onboarding implemented with synthetic integration evidence.
 - [x] Guided M1 browser lifecycle/RBAC/logout acceptance, user-operated and DB-corroborated.
 - [x] M2 runtime/readiness/UI implementation with focused disposable integration evidence.
-- [ ] Authenticated M2 browser acceptance and full-suite performance acceptance.
+- [x] Authenticated synthetic packaged M2 Agents/Runtime browser acceptance; see the
+      [2026-10-20 handoff](../handoffs/2026-10-19-domain-release-next-session.md#latest-slice-synthetic-m2-browser-acceptance-2026-10-20).
+- [ ] Full-suite performance acceptance.
 - [ ] Every active frontend feature actually uses an implemented CSAV2 endpoint, not n8n;
       the old Python API and deferred PM/voice runtimes are not mounted or started.
 - [ ] P0 fixes merged with tests (download route and strict signing secret, RBAC, audit, OpenAPI

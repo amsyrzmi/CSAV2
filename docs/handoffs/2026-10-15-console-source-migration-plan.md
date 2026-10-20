@@ -532,8 +532,10 @@ screens/data, and cannot elevate roles or select arbitrary tenants. No permanent
 ### M2 — Agent management, specialised navigation and runtime visibility
 
 Dependencies: M1.
-Status: implemented locally with focused evidence (see M2 record above). Authenticated
-M2 browser acceptance and outstanding performance acceptance are not yet complete.
+Status: implemented locally with focused disposable evidence (see M2 record above).
+Synthetic packaged JavaScript-enabled M2 browser acceptance now passes; full-suite
+performance acceptance remains pending. Public-ingress, hosted-browser and live-provider
+acceptance are not established.
 
 1. Harden current capabilities mutations; remove client-supplied `changed_by` as authority.
    Atomic before/after audit; protect required system capabilities. Fresh uncached authorization

@@ -1,41 +1,89 @@
 # Progress
 
-Documentation audit closeout/release review (2026-10-20): branch
-`review/domain-release-2026-10-20`, HEAD
-`710725b667ab7410c27c7f6c5d172e46e3a3b450`, and an empty index were verified.
-Audit changes were uncommitted/unstaged at review. The user subsequently approved
-the explicit **54-path documentation commit and review-branch push**; this record
-is finalized before publication, whose final SHA/status must be checked in Git.
-The two pre-existing
-review-document deletions are excluded; `ui-guide/` is untouched and the local-only
-server handoff stays ignored. Final review corrected LG09's overstated rollback/
-all-eight-runbooks acceptance, stale snapshot-removal chronology and the frontend's
-historical-session heading. Local target/fence checks pass for **45 Markdown files**
-(the previous 44-file scope plus the changed historical console state file):
-**407 local targets**, zero errors; `git diff --check` passes. No runtime tests,
-database probes or services were used for this documentation-only closeout.
+Documentation audit/release review (2026-10-20): the approved 54-path audit is
+committed as `f46dba0fe006577dcc56d150bd62a576adf0f15e` and pushed to
+`review/domain-release-2026-10-20`. At **2026-10-20 11:46 UTC**, local HEAD and
+the remote branch matched that commit; at that point, only the two pre-existing
+deletions under `docs/reviews/` were present and excluded from the audit. Current
+HEAD remains that commit; the synthetic M2 follow-on described below is local,
+uncommitted and unpushed. Those two unrelated deletions remain excluded. The user
+created draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1), base `main`
+(`848d8efa864c12d2168b4ccd79e32b97e0bde790`), head
+`review/domain-release-2026-10-20`. No merge, publication or deployment was
+requested or performed.
 
-Fresh read-only GitHub checks at **2026-10-20 09:26 UTC** confirm runs
-[39382774620](https://github.com/amsyrzmi/CSAV2/actions/runs/39382774620)
-(HEAD) and [39381920580](https://github.com/amsyrzmi/CSAV2/actions/runs/39381920580)
-both completed successfully, including gate/frontend/package. These runs do not
-cover the dirty audit. PR listing remains HTTP 403 via GraphQL and REST; no PR
-is confirmed or created. REST repository metadata confirms base `main`; branch
-metadata access is also 403, but read-only `git ls-remote --heads origin` confirms
-the review branch still points to HEAD and `main` to `848d8ef`. At that observation,
-no credential changes, commit, push or PR creation had been attempted.
+PR check run
+[39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600)
+completed: frontend and gate pytest passed, but Gitleaks failed and policy
+branch coverage/package were skipped. The Gitleaks action log identifies an
+HTTP 403 `Resource not accessible by integration` reading the PR commit list;
+it reported no secret finding. Ruff, format, Pyright, import-boundary and
+schema-migration steps passed. A local `pull-requests: read` workflow permission
+addresses that API read denial but is not in the remote run. Earlier same-head run
+[39402852826](https://github.com/amsyrzmi/CSAV2/actions/runs/39402852826)
+completed successfully, including gate/frontend/package; it does not replace
+the newer pull-request run. `gh pr view` is also blocked by HTTP 403 for pull
+request details; `gh run view` provided the run/job status. No credentials were
+inspected or changed.
 
-Next acceptance slice, proposed only: JavaScript-enabled **synthetic M2 Agents/
-Runtime activity browser acceptance** against disposable packaged services.
-Existing Node transport/state tests and packaged HTTP/server-rendered tests do
-not execute hydrated UI interactions; dated guarded-dev browser checks do not
-cover the packaged release candidate. Scope and manual PR fallback are in the
-[active handoff](./handoffs/2026-10-19-domain-release-next-session.md#next-bounded-task-and-copy-ready-prompt).
-This does not close performance, public-ingress, persistent staging, LG09 live
-cutover/rollback, credential rotation or real-backup recovery gates. The earlier
-committed-range secret scan does not cover the dirty audit or a future commit.
-No local Gitleaks executable was available, so no new secret scan was run here;
-check hosted scanning/CI separately on the published audit head.
+The audit corrected LG09's overstated rollback/all-runbooks acceptance, stale
+snapshot-removal chronology and the frontend's historical-session heading.
+Documentation target/fence checks passed for **45 Markdown files** and **407
+local targets**, with zero errors; `git diff --check` passed before the
+publication. The follow-up status-note edits remain uncommitted; after those
+edits, the same checker again passed for **45 files**, **407 local targets**,
+zero errors, and `git diff --check` passed. No runtime tests, database probes
+or services were used for these documentation-only changes.
+
+Packaged JavaScript-enabled **synthetic M2 Agents/Runtime browser acceptance**
+now passes: `tests/test_packaged_console.py::test_packaged_m2_browser_acceptance`
+first passed in isolation (**1 passed**, one existing Testcontainers warning,
+**170.34 s**)
+against disposable packaged services and synthetic tenant/run/event data. It
+covers authenticated UI/session behavior, admin switches and persistence,
+read-only controls, tenant-scoped activity/polling, visible refresh failure and
+recovery, same-origin requests, denied browser egress and no page errors. The
+exact command and scope are in the
+[active handoff](./handoffs/2026-10-19-domain-release-next-session.md#latest-slice-synthetic-m2-browser-acceptance-2026-10-20)
+and [frontend README](../CSA_WebConsole/csa-console/web/README.md). The current
+`NO_LOCAL_ENV=1 ENV=ci make lint test` first attempt passed lint but ended with
+**2,546 passed, 136 warnings, 4 setup errors in 2,101.43 s**. Each error was a
+packaged-console fixture setup assertion that Node was missing from `PATH`;
+the disposable-reset setup was among them, so reset acceptance is not yet
+established. No assertion failed. A second run with the reviewed temporary Node
+and Chromium paths reached **2,549 passed, 136 warnings, 1 setup error in
+2,188.20 s**: the new browser scenario encountered the first packaged test's
+platform admin in the shared disposable module database. The fixture now
+truncates `console_users` with `CASCADE` and clears login-attempt buckets in
+that disposable database before each identity scenario. The focused sequential
+identity/browser rerun passed (**2 passed**, one existing warning, **212.60 s**).
+The final full run used the reviewed temporary Node wrapper and Chromium
+libraries:
+
+```sh
+PATH=/tmp/fourstacks-toolbin:$PATH \
+LD_LIBRARY_PATH=/tmp/csa-playwright-runtime-20261020/rootfs/usr/lib/x86_64-linux-gnu \
+NO_LOCAL_ENV=1 ENV=ci make lint test
+```
+
+It passed: Ruff, formatting, Pyright (**0 errors/warnings**), import-linter and
+**2,550 tests passed, 136 warnings, 2,562.35 s**. All four packaged-console
+tests passed. `tests/test_migrate.py` reported seven passes, including
+`test_make_reset_only_disposable_container`; it was not skipped or deselected.
+The run used only Testcontainers/disposable fixtures; no persistent database,
+service, or provider was used. The earlier setup failures above remain recorded.
+`uv lock --check` passed. Final documentation checking covers 45 Markdown files
+and 409 local targets with zero errors; `git diff --check` passed. This single
+full-suite result does not erase historical latency failures or establish stable
+performance acceptance.
+
+The focused browser pass does not close public-ingress, persistent staging,
+LG09 live cutover/rollback, credential rotation or real-backup recovery gates.
+The earlier committed-range secret scan does not cover the audit commit or this
+dirty worktree. Hosted Gitleaks in PR run 39417032600 failed before scanning
+because its token could not read PR commits (HTTP 403); the local workflow now
+adds `pull-requests: read` to the `gate` job only. That fix requires a new hosted
+run and has not been validated remotely. No local Gitleaks binary is available.
 
 Latest exact hosted-artifact runtime acceptance (2026-10-20): **three passed**,
 one existing Testcontainers warning, **233.60 s**. The existing identity/readiness,
@@ -53,10 +101,11 @@ Evidence committed as `0e148f85a2e4b63fb11541909befc7a2fdbd58b5` and pushed to
 [39381920580](https://github.com/amsyrzmi/CSAV2/actions/runs/39381920580)
 and follow-up run
 [39382774620](https://github.com/amsyrzmi/CSAV2/actions/runs/39382774620)
-completed successfully. Draft PR creation/listing is blocked: the configured
-GitHub token returns HTTP 403 for pull-request resources. Next: use an authorized
-GitHub account/token to open/review the PR. No PR is confirmed or created.
-No merge, publication, ingress or persistent DB change.
+completed successfully. At the earlier 09:26 UTC observation, draft PR
+creation/listing was blocked by HTTP 403 for pull-request resources. This was
+superseded later the same day when the user created draft PR #1; see the current
+status at the top of this file. No merge, publication, ingress or persistent DB
+change.
 
 Documentation audit/cleanup (2026-10-20): replaced the duplicated README history
 with an entrypoint and rewrote `docs/PROJECT_OVERVIEW.md` as the architecture,

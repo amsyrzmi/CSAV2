@@ -28,6 +28,10 @@ env:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: read
 
     services:
       postgres:
@@ -53,7 +57,7 @@ jobs:
           fetch-depth: 0
 
       # Read-only GHCR login so the private combined image can be pulled by
-      # digest. GITHUB_TOKEN carries only `packages: read` for this job.
+      # digest. This job's GITHUB_TOKEN has only read permissions.
       - name: Log in to GHCR (read-only)
         uses: docker/login-action@v3
         with:
@@ -91,6 +95,9 @@ jobs:
             -v ON_ERROR_STOP=1 -f db/schema_baseline.sql
           uv run python -m scripts.migrate
           uv run python -m scripts.lg_setup
+
+      - name: Install Chromium for packaged browser acceptance
+        run: uv run python -m playwright install --with-deps chromium
 
       - name: Pytest
         env:

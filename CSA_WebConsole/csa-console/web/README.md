@@ -125,6 +125,19 @@ tenant subscriptions, Agents and Runtime activity load in the authenticated brow
 the user subsequently confirmed the guided tenant-admin/reader checks and cleanup.
 No populated-run or real-provider browser result is claimed.
 
+Packaged JavaScript-enabled M2 acceptance now exercises login, password change,
+logout/session revocation, platform-admin and tenant-admin switches, reader
+read-only behavior, tenant-scoped Runtime activity, polling, visible refresh
+failure/recovery, and same-origin/no-egress behavior against synthetic data and
+disposable packaged services. The focused check
+`NO_LOCAL_ENV=1 ENV=ci uv run pytest -c pyproject.toml tests/test_packaged_console.py::test_packaged_m2_browser_acceptance -v --tb=short`
+passed in an isolated run on 2026-10-20 (one existing Testcontainers deprecation
+warning); a later sequential run with the preceding packaged identity test also
+passed after isolating identity fixtures in the shared disposable database.
+It does not establish live provider, worker, public-proxy, persistent-staging or
+exact-hosted-browser behavior. CI installs Chromium and its system dependencies
+before pytest; local runs need Playwright Chromium and its host libraries.
+
 M3 adds `/knowledge-base` and `/portal/faq`: 1–3 multipart PDF/DOCX/CSV uploads
 (10 MiB/file), stable retry idempotency keys, queued/processing/partial/failed job
 status, original-file downloads, document versions, embedding compatibility and gaps.
