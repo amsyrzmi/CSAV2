@@ -14,7 +14,7 @@ x-python: &python
 
 services:
   staging-db:
-    image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223
+    image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
     profiles: ["staging-approved", "migration-approved"]
     environment:
       POSTGRES_USER: csa
