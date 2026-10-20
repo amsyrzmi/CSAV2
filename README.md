@@ -1,53 +1,58 @@
 # CSA — LangGraph rebuild
 
-Customer-service automation core. See [the phase plans](docs/langgraph-rebuild/)
-and the authoritative [dependency pins](pyproject.toml) / [resolved lockfile](uv.lock).
+Multi-tenant customer-service automation built with Python 3.12, FastAPI,
+LangGraph and PostgreSQL. The adopted staff console is Next.js. The repository
+contains implemented runtime code, staged/offline foundations and historical
+plans; a feature appearing in a plan or UI is not proof it is live.
 
-Docs: [Architecture](docs/ARCHITECTURE.md) · [Runbook](docs/RUNBOOK.md) ·
-[Progress](docs/PROGRESS.md) · [Project overview](docs/PROJECT_OVERVIEW.md)
+## Start here
 
-## Continuing development
+1. Read [repository rules](AGENTS.md).
+2. Read the [project orientation, architecture and workflow](docs/PROJECT_OVERVIEW.md).
+3. For continuation, check [current progress](docs/PROGRESS.md) and the linked
+   active handoff; read only the relevant [phase plan](docs/langgraph-rebuild/).
+4. Inspect executable source, migrations, tests and the API contract before changing
+   behavior. Load the matching skill under `.agents/skills/` when applicable.
 
-Start with the [M5 Telegram inbox scope and evidence](docs/handoffs/2026-10-17-m5-telegram-inbox.md)
-and [current progress and verification gaps](docs/PROGRESS.md), then the
-[console migration plan](docs/handoffs/2026-10-15-console-source-migration-plan.md).
-M4 is functionally closed with an explicitly accepted laptop-dev performance exception.
-M5's Telegram staff inbox/reply-approval slice was reviewed and rolled out on approved
-guarded dev at **0300**, with platform-admin UI and synthetic Telegram acceptance.
-M5 validation: **692 full tests passed** plus lint/frontend checks; live reader denial replay passes.
-Representative tenant-admin/staff browser replay also passes. Future rollouts require scoped
-approval. M6 now has an [expanded seller-workspace roadmap](docs/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation)
-and an offline read-only local orders/catalogue/stock foundation; it has not replaced
-the last approved M5 build. A current probe found the dev gateway/frontend unavailable;
-restoration requires separate approval. Historical failures remain recorded. The
-[runtime recovery handoff](docs/handoffs/2026-10-16-runtime-stabilization.md)
-retains incident history and environment safety details.
-M6A lint, targeted backend and frontend checks pass; its full run was **695 passed /
-1 TCP latency failure**, not green. Exact unchanged-threshold evidence is in
-[current progress](docs/PROGRESS.md).
-M6B continues offline with validated TikTok order pages and sanitized failures;
-current provider compatibility and tenant/store binding remain explicit gates.
-M6B targeted checks: **41 passed**; full lint passes, full tests **732 passed /
-1 TCP latency failure** (p95 **608.321 ms**, unchanged **<200 ms**). No rollout or
-performance waiver is implied.
-Use [the console API contract](docs/CONSOLE_API.md) and the relevant
-[phase plan](docs/langgraph-rebuild/LG00_master_plan.md) before changing behavior.
-The [adopted frontend guide](CSA_WebConsole/csa-console/web/README.md) describes the
-safe build boundary. Provider-neutral agent preparation is documented in the
-[Wave 2/3 handoff](docs/handoffs/2026-10-15-wave23-preparation.md).
+Detailed references:
 
-Superseded console handoffs, legacy n8n setup/chat briefs and duplicate PM Markdown
-have been removed. The canonical
-[PM reference pack](CSA_WebConsole/Docs/csa-agentic-pm/README.md) is retained for
-deferred work, not as current CSAV2 implementation or deployment guidance.
+- [Long-form architecture and trust boundaries](docs/information.md)
+- [Runtime architecture summary](docs/ARCHITECTURE.md)
+- [Console API contract](docs/CONSOLE_API.md) and [OpenAPI snapshot](docs/console_openapi.json)
+- [Development runbook](docs/RUNBOOK.md)
+- [Build-only release contract and gated staging proposal](deploy/RELEASE.md)
+- [Operational runbook status/index](docs/runbooks/README.md)
+- [LG00–LG15 phase plans](docs/langgraph-rebuild/)
 
-## Development
+## Current boundaries
+
+M6 is incomplete. Local business reads are not marketplace synchronization or
+authoritative inventory. M6B authorization/verifier work remains offline and is
+not registered as a callback/runtime flow; live seller eligibility and provider
+acceptance remain external gates. The source schema expectation and last approved
+persistent-dev schema are different; consult progress and never infer fresh DB
+state from a dated record.
+
+Hosted build artifacts have passed recorded integrity and disposable exact-artifact
+runtime checks. Public browser/ingress, persistent staging, promotion and production
+deployment remain separate, unapproved gates. Preserve `fourstacks.my`/`www`; the
+future console selection is `console.fourstacks.my`.
+
+## Development checks
+
+Use only isolated development configuration and synthetic fixtures. Python commands
+must not load `.env.local` unless a task specifically requires isolated local-dev
+configuration.
 
 ```sh
 uv sync --frozen
-uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run lint-imports
-uv run pytest
+NO_LOCAL_ENV=1 ENV=ci make lint
+NO_LOCAL_ENV=1 ENV=ci make test
 ```
 
-Only `csa/graph/` may import `langgraph` (enforced by import-linter and
-`tests/test_import_boundary.py`).
+The test suite uses disposable Testcontainers where Docker is available. For
+database changes, follow `AGENTS.md` and the relevant schema-change skill; never
+run a bare destructive reset against persistent dev or production. The documented
+`make db-reset` acceptance uses its disposable-container test.
+
+Only `csa/graph/` may import LangGraph; import-linter enforces this boundary.

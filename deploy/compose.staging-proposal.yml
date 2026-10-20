@@ -1,0 +1,126 @@
+# INERT PROPOSAL. No deployment workflow invokes this file.
+# All services require an explicit approval profile; no external legacy network/ports.
+name: csav2-staging
+
+x-python: &python
+  image: ${CSA_STAGING_PYTHON_IMAGE:?approved Python image@sha256 digest required}
+  profiles: ["staging-approved"]
+  user: "1000:1000"
+  read_only: true
+  tmpfs: ["/tmp"]
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  networks: ["isolated"]
+
+services:
+  staging-db:
+    image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
+    profiles: ["staging-approved", "migration-approved"]
+    environment:
+      POSTGRES_USER: csa
+      POSTGRES_DB: csa_staging
+      POSTGRES_PASSWORD_FILE: /run/secrets/staging_owner_password
+    secrets: ["staging_owner_password"]
+    volumes: ["staging-db:/var/lib/postgresql/data"]
+    networks: ["isolated"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "csa", "-d", "csa_staging"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    <<: *python
+    environment:
+      ENV: prod
+      NO_LOCAL_ENV: "1"
+      TURN_ENGINE: coordinator
+      CHANNEL_MODE: webhook
+      CONSOLE_ALLOWED_ORIGIN: ${CSA_STAGING_CONSOLE_ORIGIN:?separately approved staging HTTPS origin required}
+      CONSOLE_COOKIE_SECURE: "true"
+      PUBLIC_BASE_URL: ${CSA_STAGING_CONSOLE_ORIGIN:?separately approved staging HTTPS origin required}
+      KB_UPLOAD_ROOT: /var/lib/csa/uploads
+      KB_INGEST_ENABLED: "false"
+    secrets:
+      - source: staging_domain_dsn
+        target: DATABASE_URL
+      - source: staging_checkpoint_dsn
+        target: LG_DATABASE_URL
+      - source: staging_identity_dsn
+        target: IDENTITY_DATABASE_URL
+      - source: staging_credentials_key
+        target: CREDENTIALS_KEY
+      - source: staging_disabled_model_key
+        target: GROQ_API_KEY
+    volumes: ["staging-uploads:/var/lib/csa/uploads"]
+    depends_on:
+      staging-db:
+        condition: service_healthy
+    # Image /readyz checks schema AND configured identity pool. No migration dependency.
+
+  frontend:
+    image: ${CSA_STAGING_FRONTEND_IMAGE:?approved frontend image@sha256 digest required}
+    profiles: ["staging-approved"]
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp", "/app/.next/cache"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CSA_CONSOLE_API_ORIGIN: http://gateway:8080
+    networks: ["isolated"]
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  migrate:
+    <<: *python
+    profiles: ["migration-approved"]
+    environment:
+      NO_LOCAL_ENV: "1"
+      CSA_MIGRATION_APPROVAL: ${CSA_STAGING_MIGRATION_APPROVAL:-disabled}
+    secrets:
+      - source: staging_owner_dsn
+        target: MIGRATE_DATABASE_URL
+      - source: staging_owner_dsn
+        target: LG_SETUP_DATABASE_URL
+      - source: staging_app_password
+        target: CSA_APP_PASSWORD
+      - source: staging_ro_password
+        target: CSA_RO_PASSWORD
+      - source: staging_identity_password
+        target: CSA_IDENTITY_PASSWORD
+    entrypoint: ["python", "-m", "scripts.staging_migrate"]
+    depends_on:
+      staging-db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+networks:
+  isolated:
+    internal: true
+volumes:
+  staging-db:
+  staging-uploads:
+secrets:
+  staging_owner_password:
+    external: true
+  staging_owner_dsn:
+    external: true
+  staging_domain_dsn:
+    external: true
+  staging_checkpoint_dsn:
+    external: true
+  staging_identity_dsn:
+    external: true
+  staging_credentials_key:
+    external: true
+  staging_disabled_model_key:
+    external: true
+  staging_app_password:
+    external: true
+  staging_ro_password:
+    external: true
+  staging_identity_password:
+    external: true

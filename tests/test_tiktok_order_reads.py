@@ -47,14 +47,15 @@ async def test_order_pages_preserve_cursor_signing_and_money() -> None:
         assert params["sign"] == adapter.sign_request(
             request.url.path, params, request.content.decode()
         )
-        assert body["page_size"] == 1 and body["order_status"] == "AWAITING_SHIPMENT"
+        assert body == {"order_status": "AWAITING_SHIPMENT"}
+        assert params["page_size"] == "1"
         if len(requests) == 1:
-            assert "page_token" not in body
+            assert "page_token" not in params
             return httpx.Response(
                 200,
                 json={"code": 0, "data": {"orders": [order()], "next_page_token": "page+2/="}},
             )
-        assert body["page_token"] == "page+2/="
+        assert params["page_token"] == "page+2/="
         return httpx.Response(
             200,
             json={"code": 0, "data": {"orders": [order("SYNTHETIC-2")], "next_page_token": ""}},
@@ -149,7 +150,7 @@ async def test_required_order_fields_are_not_fabricated(field: str, value: Any) 
     payload[field] = value
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda _: httpx.Response(200, json={"code": 0, "data": payload})
+            lambda _: httpx.Response(200, json={"code": 0, "data": {"orders": [payload]}})
         )
     ) as client:
         adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
@@ -217,7 +218,9 @@ async def test_invalid_search_query_never_calls_provider(query: dict[str, Any]) 
 async def test_detail_identity_and_page_size_must_match_request() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda _: httpx.Response(200, json={"code": 0, "data": order("WRONG-ORDER")})
+            lambda _: httpx.Response(
+                200, json={"code": 0, "data": {"orders": [order("WRONG-ORDER")]}}
+            )
         )
     ) as client:
         adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
@@ -249,7 +252,7 @@ async def test_empty_page_is_explicit_and_legacy_list_shape_preserved() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("order_id", ["", "x" * 101])
+@pytest.mark.parametrize("order_id", ["", "x" * 101, "SYNTHETIC-1,SYNTHETIC-2"])
 async def test_invalid_order_id_never_calls_provider(order_id: str) -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         pytest.fail("invalid order ID must not perform HTTP")
@@ -258,3 +261,58 @@ async def test_invalid_order_id_never_calls_provider(order_id: str) -> None:
         adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
         with pytest.raises(TikTokReadError, match="invalid_query"):
             await adapter.get_order(uuid4(), order_id)
+
+
+@pytest.mark.asyncio
+async def test_documented_detail_request_ids_query_envelope_and_signature() -> None:
+    creds = _sample_creds()
+    order_id = "SYNTHETIC/+?&=%"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/order/202309/orders"
+        params = dict(request.url.params)
+        assert params["ids"] == order_id
+        assert "access_token" not in params
+        assert request.content == b""
+        assert request.headers["content-type"] == "application/json"
+        assert params["sign"] == adapter.sign_request(request.url.path, params, "")
+        return httpx.Response(200, json={"code": 0, "data": {"orders": [order(order_id)]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = TikTokShopAdapter(creds, http_client=client)
+        assert (await adapter.get_order(uuid4(), order_id)).platform_order_id == order_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("orders", [[], [order(), order()], [order("OTHER")]])
+async def test_detail_requires_exactly_one_requested_order(orders: list[dict[str, Any]]) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"code": 0, "data": {"orders": orders}})
+        )
+    ) as client:
+        adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
+        with pytest.raises(TikTokReadError, match="order_mismatch"):
+            await adapter.get_order(uuid4(), "SYNTHETIC-1")
+
+
+@pytest.mark.asyncio
+async def test_documented_line_items_without_quantity_are_not_invented() -> None:
+    payload = order()
+    payload["line_items"] = [
+        {
+            "id": "SYNTH-LINE",
+            "sku_id": "SYNTH-SKU",
+            "product_name": "Synthetic",
+            "sale_price": "12.34",
+        }
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"code": 0, "data": {"orders": [payload]}})
+        )
+    ) as client:
+        adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
+        with pytest.raises(TikTokReadError, match="invalid_response"):
+            await adapter.get_order(uuid4(), "SYNTHETIC-1")

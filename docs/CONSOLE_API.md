@@ -1,13 +1,27 @@
 # Console API contract (v1)
 
+Current release/domain continuation:
+[handoff and prompt](./handoffs/2026-10-19-domain-release-next-session.md).
+M6 remains incomplete; this contract is not public deployment approval. M6A local
+records are not a live provider feed, and the new M6B verifier has no supported
+console callback/runtime registration. Mounted legacy marketplace OAuth routes are
+separate and must not be exposed as the M6B flow.
+
+The packaged Next.js and gateway artifacts have passed recorded disposable runtime
+acceptance; public browser/ingress and staging have not. See
+[PROGRESS.md](./PROGRESS.md) for exact evidence and current gates.
+
 M0–M5 plus offline M6A implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
 See the [migration plan](./handoffs/2026-10-15-console-source-migration-plan.md) and
 [frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
 Offline M6B TikTok order-page validation is internal adapter groundwork only: it adds no
-console routes or live connection claims. Current provider specification verification,
+console routes or live connection claims. Complete provider response-contract verification,
 tenant/store-bound credential resolution and safe browser projections remain required;
 the normalized internal ecommerce order is not a console response model.
+Official v202309 request paths, pagination placement and detail envelope have since been
+verified/corrected; line-item quantity/price normalization still blocks provider readiness.
+See the [verified scope and remaining response/grant gates](./handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
 
 ## Authentication, tenancy and settings
 
@@ -278,21 +292,25 @@ Post-review offline full validation passes **692 tests** plus lint; ASGI/TCP ack
 Neither offline nor guarded-dev evidence is a guarantee under all laptop loads or
 approval for public deployment.
 
-## Business management (M6A; offline local read foundation)
+## Business management (M6A/B; offline local reads and store records)
 
 Only verified human platform administrators (explicit selected tenant), tenant
 administrators and tenant staff may read `/console/v1/business`. Readers, machines
-and anonymous principals are denied. No marketplace client or credential is accessed.
+and anonymous principals are denied. No marketplace client is called. Store metadata
+queries select only local identity/expiry/update columns, never token columns or `meta`;
+no credential content is read, decrypted or inspected.
 No write routes are added; normal session/tenant controls remain authoritative.
 
 | Method/path | Query | Response |
 |---|---|---|
-| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
-| `GET /business/orders/{id}` | tenant query | Local order summary including persisted tracking/carrier, channel/store/order IDs and local timestamps |
+| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders/{id}` | optional `channel` and `shop_id`, tenant query | Local order summary including persisted tracking/carrier, channel/store/order IDs and local timestamps |
 | `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"unavailable",items,next_cursor}` |
 | `GET /business/products/{id}` | tenant query | Local product summary, decimal price and local stock/reserved/available quantities |
+| `GET /business/stores` | optional `platform=tiktok_shop\|shopee\|lazada`, `before=<record UUID>`, `limit=1..50` (20 default), tenant query | `{source:"local_credential_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/stores/{record_id}` | optional `platform`, optional `shop_id` (requires platform), tenant query | Local store identity/expiry and stored lifecycle status; exact tenant/record/platform/store match when bound |
 
-Keysets sort `(created_at,id)` descending; foreign/missing resource or cursor404, bad
+Order/product keysets sort `(created_at,id)` descending; foreign/missing resource or cursor404, bad
 UUID/limit422. Monetary values serialize as decimal strings. Neither customer addresses/
 contacts nor arbitrary items/attributes/credentials/provider payloads are projected.
 Local update timestamps are not marketplace-sync evidence. Product local active status
@@ -300,7 +318,76 @@ is not a published listing; stock is not synchronized and is not cross-store aut
 These pages do not claim live tracking, connection health or import completeness.
 Tickets, invoices/PDFs, preparation and provider-backed operations remain staged in the
 [expanded M6 plan](./handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
-Implementation is offline; running M5 services have not been replaced.
+Implementation is offline; the last approved M5 services have not been replaced.
+
+Order filters match persisted `channel` (`telegram`, `web`, `tiktok_shop`, `shopee`,
+`manual`) and `external_shop_id` exactly; they are not provider or connection discovery.
+`shop_id` requires a `channel` (400 without it), is 1..100 characters, and stays opaque
+(no trimming, wildcard matching or case folding). Invalid channel/empty or oversized store
+IDs return422. Same store IDs on different platforms or tenants do not combine.
+Filtered detail/cursor reads return404 if the order does not belong to the selected
+tenant/channel/store, including a cursor moved to a different store. A missing store
+returns an empty local page, not a connection-health claim. Omitting filters preserves
+all tenant-local orders, including missing store IDs. Products remain tenant-wide local
+catalogue/stock; no store-specific listing or inventory mapping is inferred.
+
+The UI applies order filters explicitly and remounts order paging on changed applied
+scope, aborting obsolete requests and starting from newest. Tenant changes reset filter
+drafts and all record state. Draft filter edits do not change applied results until Apply.
+The applied scope remains visible; inventory is explicitly labelled unaffected.
+
+Store records contain `id`, `platform`, `shop_id`, recorded `expires_at`/`updated_at`,
+derived `expiry` (`unknown`, `expired`, `not_expired`), and constant
+`authorization:"unverified"`, `permissions:"unknown"`, `provider_reads:"unavailable"`.
+They also contain `connection:{status,live_integration:"unavailable"}`. This is a
+metadata-only stored lifecycle observation, not a lease, a provider request or proof
+of current external authorization. List and detail use the same tenant-scoped
+projection; one bounded batch query enriches each page, not one lookup per store.
+
+`connection.status` is one of:
+
+| Status | Local meaning |
+|---|---|
+| `unsupported` | Platform is not TikTok; this seller lifecycle is not implemented |
+| `missing_shop_id` | Exact shop ID is absent |
+| `revoked`, `disconnected` | Latest exact-store grant is terminal |
+| `expired` | Credential or selected grant expiry timestamp has passed |
+| `unverified` | No exact-store grant, future verification time or unknown credential expiry |
+| `app_unavailable` | Referenced app is missing, disabled or on a different revision |
+| `binding_missing` | No stored shop-binding evidence exists for the selected grant |
+| `permissions_missing` | Required order/shop scopes are absent from stored grant metadata |
+| `authorization_recorded` | Local app revision/generation/expiry/scope/binding metadata matches; **not verified live** |
+
+The latest exact-tenant/record/platform/shop grant is selected by credential generation,
+verification timestamp then grant ID; retained older terminal history cannot mask a
+newer authorization. Terminal state precedes expiry; credential-generation mismatch
+is disconnected. App revision/state checks precede grant expiry and stored binding/scope
+checks. This advisory status may change immediately after reading and cannot authorize
+provider dispatch. No token presence/validity, ciphertext integrity, external app registry
+availability or fresh scopes are tested.
+
+Connect/Reconnect controls are disabled with no handlers. No Business authorization
+mutation or callback route is added, and no synthetic verifier/legacy OAuth path is invoked.
+Live authorization requires eligible app/seller access and separate integration/approval;
+Partner account registration alone does not prove eligibility or a Sandbox exemption.
+Expiry is evaluated against an aware UTC clock with equality treated as expired.
+`not_expired` means only a future local timestamp, not valid tokens, granted scopes,
+seller authorization or working integration. Null/missing store IDs remain visible as
+incomplete local records and cannot satisfy an exact store binding. Arbitrary `meta`,
+tokens, app secrets, cipher values, scope values, attempt state/code and credential-presence
+checks are excluded. Stored scopes are tested only as booleans inside SQL; values are
+never returned. The shop-binding query tests row existence without selecting cipher data.
+
+Store pages use immutable record UUID descending keysets, not update/connection recency.
+Only marketplace-channel records are included; Telegram/other channel records are not.
+Foreign/missing/platform-mismatched cursor or record404, invalid platform/UUID/limit422.
+Detail `shop_id` without platform400; empty/oversized store IDs422. An exact binding
+combines server-verified tenant, record UUID, platform and opaque store ID; it resolves
+metadata only. This does not implement a credential decryptor or authorize provider calls.
+Unknown permissions/verification, revocation and token validity cannot be inferred from
+the existing table. No connect/revoke/token-refresh/write endpoints are added.
+The UI resets store paging on platform/tenant changes and explicitly separates these
+records from verified connections. No live or browser acceptance is implied by build/tests.
 
 ## Implemented M1 lifecycle and onboarding
 

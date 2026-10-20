@@ -4,8 +4,9 @@
 > CSAV2 migration, including deferred PM features; it is not current runtime or
 > deployment guidance. Do not execute its live-system/tunnel/setup instructions.
 > Continue from the [current migration plan](../../docs/handoffs/2026-10-15-console-source-migration-plan.md)
-> and [adopted frontend guide](./web/README.md). Retained as source evidence for the
-> canonical deferred PM reference pack.
+> and [adopted frontend guide](./web/README.md). Its PM deliverable pack was removed
+> on 2026-10-20 as obsolete n8n-era design material; this file remains only as a
+> dated historical source snapshot.
 
 ## 1. Overview & System Purpose
 The **CSA Console** (Customer Service AI Console) is a multi-tenant web application and operational control center for the CSA platform. It provides:
@@ -361,7 +362,7 @@ make lint         # Runs ESLint on web and Ruff check on API
 
 ### 7.1 Phase 00: Verified Discovery
 - **Status**: Complete (`implemented_local`).
-- **Deliverables**: `Docs/csa-agentic-pm/REPO_FINDINGS.md`, `IMPLEMENTATION_LOG.md`, `DECISIONS.md`.
+- **Deliverables**: Historical repository findings, implementation log and decisions; the old `Docs/` pack was removed on 2026-10-20.
 
 ### 7.2 Phase 01: Admin Project Hub and Internal Projects
 - **Status**: Complete (`implemented_local`). Additive schema migration applied to local `console_db` (`app.projects`), feature flag enabled (`PM_ENABLED=true` in `api/.env`), and end-to-end project creation and retrieval smoke-tested.
@@ -398,7 +399,7 @@ make lint         # Runs ESLint on web and Ruff check on API
 - **Worker recovery and fencing**: Added optional durable LangGraph `PostgresSaver` using `PM_CHECKPOINT_DATABASE_URL`, with the supported library setup procedure. Development falls back to explicitly warned in-memory checkpoints. Production configuration rejects PM AI without the separate checkpoint URL. Workers persist idle/working heartbeats. Graph mutation and completion writes check current lease owner, unexpired lease and fencing state; expired leases cannot be revived by heartbeat. Proposal publication reuses an already committed proposal if the worker died before queue acknowledgement. Runs receive an `X-Request-ID` correlation ID persisted to the run and carried into worker lifecycle logs.
 - **Production HTTP controls**: `DEPLOYMENT_ENVIRONMENT=production` requires HTTPS `CONSOLE_ORIGIN`, `COOKIE_SECURE=true`, and rejects missing or mismatched Origin on state-changing requests. Resumable SSE revalidates session revocation during delivery; terminal tickets bind to the auth session and WebSockets recheck user, session and terminal validity while connected. These settings are not enabled in development by default.
 - **Schema**: Added `api/sql/0012_pm_operations.sql` for run correlation IDs, worker heartbeat records and terminal-ticket auth-session binding. Apply only after review and before updated workers.
-- **Operator guidance**: Added `Docs/csa-agentic-pm/PHASE10_OPERATIONS.md` covering protected backups, isolated restore drills, retention, release rollback, fault drills, rollout gates and currently unverified infrastructure dependencies.
+- **Operator guidance**: The historical PM operations proposal was removed with the obsolete `Docs/` tree on 2026-10-20. Use maintained `docs/RUNBOOK.md` and `deploy/RELEASE.md` for current guarded procedures.
 - **Unverified**: No tests/lint/build or staging drills were run. Production compose/supervisor, backup schedule/restore evidence, external artifact storage, checkpoint DB provisioning, ingress timeouts, capacity, on-call ownership and runner/Hermes network boundaries remain operator/staging work. Do not mark this phase `verified_staging` yet.
 
 ### 7.3 Phase 02: Tasks, Kanban, Milestones, and Activity

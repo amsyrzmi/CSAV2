@@ -19,6 +19,17 @@ const apiCode = ts.transpileModule(apiSource, {
 const { api, post } = await import(
   `data:text/javascript;base64,${Buffer.from(apiCode).toString("base64")}`
 );
+const businessSource = await readFile(new URL("../lib/business.ts", import.meta.url), "utf8");
+const businessCode = ts.transpileModule(businessSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+}).outputText;
+const { localOrderPath, connectionLabels, demoListings, appendDemoListing } = await import(
+  `data:text/javascript;base64,${Buffer.from(businessCode).toString("base64")}`
+);
+const businessWorkspaceSource = await readFile(
+  new URL("../components/console/BusinessWorkspace.tsx", import.meta.url),
+  "utf8",
+);
 const require = createRequire(import.meta.url);
 const proxySource = await readFile(
   new URL("../proxy.ts", import.meta.url),
@@ -115,6 +126,10 @@ test("deferred UI and legacy API routes return 404 even with a session cookie", 
     "/portal/shared-projects/synthetic",
     "/system",
     "/api/auth/me",
+    "/api/v1/channels/tiktok_shop/oauth/authorize",
+    "/api/v1/channels/tiktok_shop/oauth/callback",
+    "/api/v1/channels/tiktok_shop/webhook",
+    "/api/v1/channels/tiktok_shop/webhook/synthetic",
     "/invite/raw-token",
   ]) {
     const request = new NextRequest(`http://console.example.test${route}`, {
@@ -263,6 +278,116 @@ test("M6 business routes require a session and local reads never add mutation au
     assert.equal(calls[0][1].headers.has("Authorization"), false);
     assert.equal(calls[0][1].headers.has("X-Client-Id"), false);
   } finally { globalThis.fetch = original; }
+});
+
+test("M6 local order filters encode platform-scoped store IDs without changing tenant authority", async () => {
+  const shopId = "SYNTH/store+?&=%";
+  const path = localOrderPath("client_id=synthetic-tenant", "tiktok_shop", shopId);
+  const parsed = new URL(path, "http://console.example.test");
+  assert.equal(parsed.pathname, "/console/v1/business/orders");
+  assert.equal(parsed.searchParams.get("client_id"), "synthetic-tenant");
+  assert.equal(parsed.searchParams.get("channel"), "tiktok_shop");
+  assert.equal(parsed.searchParams.get("shop_id"), shopId);
+  assert.equal(parsed.searchParams.has("before"), false);
+  assert.notEqual(path, localOrderPath("client_id=other-tenant", "tiktok_shop", shopId));
+  assert.notEqual(path, localOrderPath("client_id=synthetic-tenant", "shopee", shopId));
+  assert.notEqual(path, localOrderPath("client_id=synthetic-tenant", "tiktok_shop", "other"));
+  assert.equal(localOrderPath("", "", ""), "/console/v1/business/orders?");
+  assert.equal(new URL(localOrderPath("", "web", ""), parsed).searchParams.has("shop_id"), false);
+  assert.throws(() => localOrderPath("", "", shopId), /source\/platform/);
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (requestPath, init) => {
+    calls.push([requestPath, init]);
+    return Response.json({ source: "local_records", marketplace_sync: "unavailable", items: [], next_cursor: null });
+  };
+  try {
+    await api(path);
+    assert.equal(calls[0][0], path);
+    assert.equal(calls[0][1].credentials, "same-origin");
+    assert.equal(calls[0][1].headers.has("X-Client-Id"), false);
+    assert.equal(calls[0][1].headers.has("Authorization"), false);
+  } finally { globalThis.fetch = original; }
+});
+
+test("M6 store metadata reads keep connection authority unavailable and errors explicit", async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push([path, init]);
+    if (path.includes("before=")) return Response.json({ detail: "local store cursor not found" }, { status: 404 });
+    return Response.json({
+      source: "local_credential_records", marketplace_sync: "unavailable",
+      items: [{
+        id: "synthetic-record", platform: "tiktok_shop", shop_id: "synthetic-store",
+        expires_at: null, updated_at: "2026-01-01T00:00:00Z", expiry: "unknown",
+        authorization: "unverified", permissions: "unknown", provider_reads: "unavailable",
+        connection: { status: "authorization_recorded", live_integration: "unavailable" },
+      }], next_cursor: null,
+    });
+
+  };
+  try {
+    const path = "/console/v1/business/stores?client_id=synthetic-tenant&platform=tiktok_shop";
+    const result = await api(path);
+    assert.equal(result.source, "local_credential_records");
+    assert.equal(result.items[0].authorization, "unverified");
+    assert.equal(result.items[0].permissions, "unknown");
+    assert.equal(result.items[0].provider_reads, "unavailable");
+    assert.equal(result.items[0].connection.live_integration, "unavailable");
+    assert.equal(connectionLabels[result.items[0].connection.status], "Authorization recorded locally, not verified live");
+    assert.equal(result.items[0].expires_at, null);
+    await assert.rejects(api(`${path}&before=foreign-record`), { status: 404, message: "local store cursor not found" });
+    assert.equal(calls.length, 2);
+    for (const [, init] of calls) {
+      assert.equal(init.credentials, "same-origin");
+      assert.equal(init.cache, "no-store");
+      assert.equal(init.headers.has("Authorization"), false);
+      assert.equal(init.headers.has("X-Client-Id"), false);
+    }
+  } finally { globalThis.fetch = original; }
+});
+
+test("M6 synthetic demo listings are temporary local state with explicit no-API boundary", () => {
+  assert.equal(demoListings.length, 2);
+  assert.ok(demoListings.every((listing) => listing.id.startsWith("demo-listing-")));
+  const added = appendDemoListing(demoListings);
+  assert.equal(demoListings.length, 2, "appending demo state must not mutate the fixture");
+  assert.equal(added.length, 3);
+  assert.equal(added[2].name, "Sample listing 3");
+  assert.equal(added[2].status, "Demo draft");
+  assert.match(businessWorkspaceSource, /DEMO MODE — fictional sample data only\. Not connected to TikTok; no TikTok API request/);
+  assert.match(businessWorkspaceSource, /No TikTok request was made/);
+  const demoSection = businessWorkspaceSource.split("function DemoBusinessWorkspace()")[1]
+    .split("function BusinessRecords")[0];
+  assert.doesNotMatch(demoSection, /\bapi\s*(?:<[^>]+>)?\s*\(/);
+  assert.doesNotMatch(demoSection, /\bpost\s*\(/);
+});
+
+test("connection lifecycle labels and disabled controls never offer live authority", async () => {
+  assert.deepEqual(Object.keys(connectionLabels).sort(), [
+    "unsupported", "missing_shop_id", "unverified", "revoked", "disconnected",
+    "expired", "app_unavailable", "binding_missing", "permissions_missing", "authorization_recorded",
+  ].sort());
+  const source = await readFile(
+    new URL("../components/console/BusinessWorkspace.tsx", import.meta.url), "utf8",
+  );
+  const file = ts.createSourceFile("BusinessWorkspace.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const controls = [];
+  function visit(node) {
+    if (ts.isJsxElement(node) && node.openingElement.tagName.getText(file) === "button"
+      && /^(Connect|Reconnect) unavailable$/.test(node.children.map((child) => child.getText(file)).join("").trim())) {
+      const attributes = node.openingElement.attributes.properties;
+      assert.ok(attributes.some((attribute) => attribute.name?.getText(file) === "disabled" && !attribute.initializer));
+      assert.equal(attributes.some((attribute) => attribute.name?.getText(file) === "onClick"), false);
+      controls.push(node.getText(file));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  assert.equal(controls.length, 2);
+  assert.match(source, /Account registration alone does not establish eligibility/);
+  assert.match(source, /connectionLabels\[store.connection.status\]/);
 });
 
 test("lost upstream response becomes a proxy error; explicit upload retry keeps the durable job", async () => {

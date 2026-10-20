@@ -64,24 +64,27 @@ async def test_readyz_ready_when_fully_migrated(app_dsn: str) -> None:
 
 @requires_docker
 @pytest.mark.asyncio
-async def test_readyz_503_names_missing_version(migrated_dsn: str, pg_container: object) -> None:
+@pytest.mark.parametrize("missing_version", ["0140", EXPECTED_SCHEMA_VERSION])
+async def test_readyz_503_names_missing_version(
+    migrated_dsn: str, pg_container: object, missing_version: str
+) -> None:
     """When a shipped version is absent from the ledger, /readyz reports 503.
 
-    Delete the 0140 ledger row (as owner csa) so the readiness probe run as
+    Delete a required ledger row (as owner csa) so the readiness probe run as
     csa_app detects the gap and names the missing version.
     """
     import psycopg
 
     # Remove the ledger row as owner so the gap is visible to the probe.
     with psycopg.connect(migrated_dsn, autocommit=True) as conn:
-        conn.execute("DELETE FROM schema_migrations WHERE version = %s", ("0140",))
+        conn.execute("DELETE FROM schema_migrations WHERE version = %s", (missing_version,))
 
     pool = db.build_pool(_app_dsn(pg_container), min_size=1, max_size=2)
     await pool.open(wait=True)
     try:
         ready, reason = await check_readiness(pool)
         assert ready is False
-        assert "0140" in reason
+        assert missing_version in reason
     finally:
         await pool.close()
         # Restore the ledger row so other module-scoped tests see a full ledger.
@@ -89,5 +92,5 @@ async def test_readyz_503_names_missing_version(migrated_dsn: str, pg_container:
             conn.execute(
                 "INSERT INTO schema_migrations (version) VALUES (%s) "
                 "ON CONFLICT (version) DO NOTHING",
-                ("0140",),
+                (missing_version,),
             )

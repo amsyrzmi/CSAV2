@@ -29,12 +29,13 @@ __pycache__/
 /SERVER_HANDOFF.md
 /web_console.md
 
-# Adopt reviewed Next.js source only; copied backend/checkouts/archives remain reference.
+# Adopt reviewed Next.js source only; copied backend/checkouts/archives are excluded.
 /CSA_WebConsole/**/.git/
 /CSA_WebConsole/**/.backups/
 /CSA_WebConsole/**/*.tgz
 /CSA_WebConsole/**/*.tar.gz
 /CSA_WebConsole/csa-console/api/
+# Legacy ignored Docs paths are retained as excludes to prevent old snapshots returning.
 /CSA_WebConsole/Docs/csa-console-drop1/
 /CSA_WebConsole/Docs/agentic-pm/
 /CSA_WebConsole/Docs/workflows.md

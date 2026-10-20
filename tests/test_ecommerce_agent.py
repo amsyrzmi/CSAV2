@@ -134,24 +134,29 @@ async def test_ecommerce_agent_get_order_and_search_mocked() -> None:
                     },
                 },
             )
-        if "/order/202309/orders/TK-ORD-001" in url_str:
+        if request.url.path == "/order/202309/orders":
+            assert request.url.params["ids"] == "TK-ORD-001"
             return httpx.Response(
                 200,
                 json={
                     "code": 0,
                     "data": {
-                        "id": "TK-ORD-001",
-                        "status": "AWAITING_SHIPMENT",
-                        "buyer_uid": "user_my_123",
-                        "payment": {"total_amount": "89.90", "currency": "MYR"},
-                        "line_items": [
+                        "orders": [
                             {
-                                "seller_sku": "SKU-SHIRT-BLK-L",
-                                "product_name": "Cotton T-Shirt",
-                                "quantity": 2,
-                                "sku_sale_price": "44.95",
+                                "id": "TK-ORD-001",
+                                "status": "AWAITING_SHIPMENT",
+                                "buyer_uid": "user_my_123",
+                                "payment": {"total_amount": "89.90", "currency": "MYR"},
+                                "line_items": [
+                                    {
+                                        "seller_sku": "SKU-SHIRT-BLK-L",
+                                        "product_name": "Cotton T-Shirt",
+                                        "quantity": 2,
+                                        "sku_sale_price": "44.95",
+                                    }
+                                ],
                             }
-                        ],
+                        ]
                     },
                 },
             )

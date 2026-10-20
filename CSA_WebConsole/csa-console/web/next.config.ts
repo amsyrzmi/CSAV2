@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 import { consoleOrigin } from "./lib/upstream";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  generateBuildId: async () => process.env.SOURCE_REVISION ?? null,
   outputFileTracingRoot: process.cwd(),
   turbopack: { root: process.cwd() },
   experimental: { proxyClientMaxBodySize: 31 * 1024 * 1024 },

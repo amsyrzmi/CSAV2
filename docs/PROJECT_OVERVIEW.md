@@ -1,49 +1,161 @@
-# Project overview: what each file does
+# Project orientation, architecture and workflow
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md), [RUNBOOK.md](./RUNBOOK.md), [PROGRESS.md](./PROGRESS.md).
-Current continuation: [M5 Telegram inbox scope and evidence](./handoffs/2026-10-17-m5-telegram-inbox.md).
-M4 is functionally closed with accepted laptop-dev performance debt. M5's Telegram
-staff/reply-approval slice was reviewed, validated (692 full tests pass), and rolled out
-on explicitly approved guarded dev0300 with platform-admin/synthetic Telegram acceptance.
-Live reader denial and representative tenant-admin/staff browser replay pass.
-M6's expanded multi-platform seller roadmap and offline local-read foundation are in
-the [console migration plan](./handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
-Local catalogue/stock are not synchronized marketplace listings or inventory authority.
-M6A lint/targeted/frontend checks pass, but its full validation was **695 passed / 1 TCP
-latency failure**; see progress for the unchanged threshold and acceptance limits.
-The latest probe found the dev gateway/frontend unavailable; see current progress before
-assuming services are running. No restoration was performed during offline M6 work.
-M6B adds internal typed TikTok order pages and explicit safe read failures, not console
-provider wiring. Current API specification and tenant/store credential binding are pending.
-M6B targeted checks: **41 passed**; full lint passes, full tests **732 passed / 1 TCP
-latency failure**, so current full validation remains not green.
+Status: repository/source overview, updated 2026-10-20. This describes the
+implemented code and the recorded evidence linked below; it is not proof that
+services are running or deployed.
 
-| Path | Role |
+## Start here
+
+| Need | Read |
 |---|---|
-| `apps/gateway/main.py` | FastAPI webhook gateway, health, schema-version check |
-| `apps/worker/main.py` | Claims ingress events, runs the turn engine |
-| `apps/delivery/main.py` | Sends outbox messages (renders buttons), runs staff sender |
-| `apps/telegram_poller/` | Polling alternative to webhooks |
-| `csa/channels/` | `base.py` channel contracts, `telegram.py` adapter, `ingress.py` webhook handling and button clearing |
-| `csa/turn/` | `deps.py` wires DB, LLM and agents into the graph |
-| `csa/graph/` | `coordinator.py` graph (plan → spokes → bounded observe loop → gate), `policy/` routing, plan and handoff rules, `saver.py` checkpoints, `retention.py` |
-| `csa/decide/` | `groq.py` client (retry), `llm.py` classify/plan/next_step/compose/semantic review, `jev.py` typed classifier, `providers.py` shadow/cascade selection, `grounding.py` fact checking |
-| `csa/evals/` | Offline scoring helpers, 60 synthetic decision cases, explicit live LLM/Jev comparison CLI |
-| `csa/agents/` | Spokes: `orders`, `order_approval`, `escalation`, `tickets`; `runner`, `breaker`, `recorder` |
-| `csa/notify/` | `notifier.py` queues staff alerts; `sender.py` delivers them with action buttons |
-| `csa/graph/events.py` | Redacted per-step timeline events written by the graph |
-| `csa/console/` | Session identity/RBAC, onboarding, audited capability/KB administration, runtime reads, private KB/product-information sandbox, Telegram inbox and staff-only local Business reads ([CONSOLE_API.md](./CONSOLE_API.md)) |
-| `csa/approval/service.py` | Hold AI replies for staff review; decide and expire them |
-| `csa/graph/policy/gate.py` | Pure send/hold/suppress policy |
-| `csa/staff/callbacks.py` | Handles staff approve / reject / resume taps |
-| `csa/contracts/` | Pydantic contracts: envelope, plan, state, callbacks, approval, registry |
-| `csa/core/` | Settings, DB pool, crypto, logging, PII, tenancy, tracing, clock |
-| `db/migrations/` | Ordered additive migrations through 0300 (Telegram inbox); 0270 identity, 0280 KB uploads, 0290 sandbox chat; staged tenant RLS |
-| `db/sql/` | All parameterised SQL, by area |
-| `db/seed/` | Persistent sandbox tenants |
-| `scripts/` | `migrate.py`, `setup_dev_telegram.py` (dev tenant, endpoint, demo products, staff target), `lg_setup.py` |
-| `tests/` | Pytest synthetic unit/integration/golden suites; `test_policy_edges.py` policy boundaries; `test_load_acceptance.py` ASGI/TCP ingress and simultaneous-worker benchmarks; `test_worker_multiprocess.py` ordering/crash recovery. Exact current results and accepted performance debt live in [PROGRESS.md](./PROGRESS.md), not a duplicated stale count. |
-| `Makefile` | Dev lifecycle, lint/tests; `coverage` enforces 90% policy branch coverage, `load-test` reproduces isolated benchmarks |
-| `docs/handoffs/` | Current M4 closeout/M5 prompt, source migration plan and retained recovery/agent-preparation history |
-| `docs/langgraph-rebuild/` | LG00–LG15 phase plans and acceptance criteria |
-| `AGENTS.md` | Repository rules and isolated-dev safety |
+| Rules and safe commands | [AGENTS.md](../AGENTS.md), then [README](../README.md) |
+| Current implementation status and validation | [PROGRESS.md](./PROGRESS.md) |
+| Continue the current bounded task | [Active release handoff](./handoffs/2026-10-19-domain-release-next-session.md) |
+| Full architecture, trust boundaries and limitations | [Architecture information](./information.md) |
+| Runtime request flow | [Architecture summary](./ARCHITECTURE.md) |
+| Console HTTP contract | [CONSOLE_API.md](./CONSOLE_API.md) and [OpenAPI snapshot](./console_openapi.json) |
+| Phase requirements | [LG00–LG15 plans](./langgraph-rebuild/) and the linked milestone plan |
+| Local development operations | [Development runbook](./RUNBOOK.md) |
+| Build-only release and staged deployment gates | [Release contract](../deploy/RELEASE.md) |
+
+Do not load every historical handoff or phase plan as general context. Start
+with the active handoff and read only the plan and tests relevant to the requested
+change. Older handoffs and evaluation reports preserve dated evidence, not current
+service state or authorization.
+
+## What CSA is
+
+CSA is a multi-tenant customer-service runtime. It accepts supported channel
+events, persists work, coordinates bounded domain capabilities, records a reply
+or human-review decision, and delivers through an outbox. An authenticated Next.js
+console provides tenant-scoped administration and staff workflows. PostgreSQL is
+the system of record; language models propose classifications, plans and wording,
+while application/database rules determine identity, permissions and business
+state.
+
+## End-to-end architecture and workflow
+
+```text
+Customer channel
+  -> gateway: authenticate source, normalize and deduplicate event
+  -> PostgreSQL ingress queue
+  -> worker: ordered claim + per-conversation lock
+  -> LangGraph coordinator: guard, route, plan, bounded spokes, verify and gate
+  -> transactional records / approval / human handoff + durable outbox intent
+  -> delivery process: provider send, retry and recorded attempt
+
+Staff browser
+  -> adopted Next.js application
+  -> same-origin /console/v1 transport
+  -> FastAPI gateway: session, CSRF, tenant and role checks
+  -> PostgreSQL identity/domain stores and audited service operations
+```
+
+These are separate process responsibilities: the gateway accepts HTTP and channel
+callbacks; the worker processes customer turns; delivery sends due outbound work
+and staff notifications. LangGraph coordination is confined to `csa/graph/`.
+The web console is not a public catch-all proxy to the gateway. The mounted legacy
+marketplace routes are not substitutes for the unfinished M6B verifier flow.
+
+Key safety boundaries:
+
+- Session-derived identity, active membership, role checks and tenant-scoped SQL
+  govern human console operations. Browser-supplied actor/tenant headers are not
+  authority.
+- PostgreSQL migrations and grants/RLS enforce data boundaries; schema changes
+  are additive and ordered. Structural child tables may inherit tenant scope
+  through a constrained parent rather than a direct `client_id`.
+- A model result is not a persisted business outcome. Mutations, approval, audit,
+  replay and external delivery have explicit application contracts.
+- External provider calls, credentials and live seller eligibility are separate
+  gates. Synthetic adapter tests do not constitute a live integration.
+- The inbox/outbox and graph are durable, but external delivery is not exactly-once.
+  See [architecture limitations](./information.md#26-current-limitations-and-release-conditions).
+
+## Current status and release boundary
+
+- The adopted runtime is Python 3.12, FastAPI, async psycopg 3, LangGraph and
+  PostgreSQL; the adopted UI is the Next.js application under
+  `CSA_WebConsole/csa-console/web/`.
+- M5 Telegram staff inbox/reply approval has historical guarded-dev acceptance.
+  M6 remains incomplete: local business reads are not marketplace synchronization
+  or authoritative stock management.
+- M6B verifier/completion pieces are synthetic/offline foundations and are not
+  callback/runtime registered. No real app registry, provider credential
+  resolution or live seller authorization is established.
+- Source currently expects schema 0360. The last approved persistent-dev schema
+  was recorded as 0300; that record is not a fresh probe or migration approval.
+- CI/package and exact hosted-artifact disposable acceptance passed for the
+  reviewed build. See [current progress](./PROGRESS.md) for run IDs, exact evidence
+  and the current PR/CI state. This is not public browser/ingress, persistent
+  staging or production acceptance.
+- The future `console.fourstacks.my` selection preserves the existing
+  `fourstacks.my`/`www` landing page. No DNS, tunnel, provider, persistent database
+  or service change is authorized by this documentation.
+
+## Repository map
+
+| Path | Responsibility and status |
+|---|---|
+| `apps/gateway/` | FastAPI lifecycle, channel/console routes, health and readiness. |
+| `apps/worker/` | Durable conversation claims and coordinator execution. |
+| `apps/delivery/` | Outbox delivery and staff notification sender. |
+| `apps/telegram_poller/` | Explicitly guarded development polling entry point. |
+| `csa/contracts/` | Typed envelopes, graph state, plans, facts, callbacks and results. |
+| `csa/core/` | Settings, pools/transactions, tenancy, encryption, privacy, logging and tracing. |
+| `csa/channels/` | Channel protocols, Telegram ingress/transport and marketplace groundwork. |
+| `csa/turn/` | Runtime dependency construction and application wiring. |
+| `csa/graph/` | LangGraph coordinator, policies, event projection and checkpoint support. |
+| `csa/decide/` | Classifiers, planners, composers, reviewers and model-provider clients. |
+| `csa/agents/` | Bounded domain spokes, agent protocol and runner. |
+| `csa/console/` | Console identity, authorization, services and route contracts. |
+| `csa/jobs/`, `csa/ops/`, `csa/approval/`, `csa/staff/`, `csa/notify/` | Scheduled/recovery operations, approvals, staff control and notifications. |
+| `db/schema_baseline.sql` | Reviewed inherited schema baseline; not current schema by itself. |
+| `db/migrations/` | Ordered additive schema, role, policy and index changes. |
+| `db/sql/` | Parameterized SQL organized by service/domain. |
+| `db/seed/` | Synthetic sandbox seed data. |
+| `scripts/` | Migration/setup/bootstrap/export and other bounded operator commands. |
+| `tests/` | Unit, contract, Testcontainers, process, golden, frontend and acceptance tests. |
+| `CSA_WebConsole/csa-console/web/` | Adopted Next.js console and isolated build/verification scripts. |
+| `CSA_WebConsole/csa-console/STATE.md` | Historical copied-console status snapshot; not active runtime guidance. |
+| `ui-guide/` | Visual references/design guidance, not application source or runtime behavior. |
+| `deploy/` | Dockerfiles, development/legacy manifests, and inert gated staging/release proposals. |
+| `.github/workflows/` | Hosted CI and build-only artifact workflow; promotion/deployment is disabled. |
+| `.agents/skills/` | Task-specific engineering workflows; load the relevant skill before work. |
+| `docs/langgraph-rebuild/` | LG phase plans: intent, acceptance criteria and staged roadmap. |
+| `docs/handoffs/` | Dated decisions, milestone evidence and continuation records. Read the current one only. |
+| `docs/evals/` | Dated synthetic evaluation/load reports; not live provider guarantees. |
+| `docs/runbooks/` | Operator references; read its status index before using any procedure. |
+
+The former `CSA_WebConsole/Docs/` tree contained a deferred project-management
+proposal, a copied pre-migration console source snapshot and a large n8n-era
+workflow document. These were not maintained as CSAV2 source or instructions and
+were removed on 2026-10-20. The adopted frontend lives under
+`CSA_WebConsole/csa-console/web/`; design references remain under `ui-guide/`.
+
+## Documentation authority and maintenance
+
+Resolve disagreements in this order:
+
+1. Executable source, ordered migrations, tests and generated API schema establish
+   what is implemented and its observable contract.
+2. `docs/PROGRESS.md` and the active handoff establish dated validation and
+   current continuation state.
+3. `docs/CONSOLE_API.md`, `deploy/RELEASE.md` and maintained runbooks describe
+   supported interface and operator boundaries.
+4. LG phase plans define intended scope and acceptance criteria, not shipped status.
+5. Dated handoffs/evals/reviews preserve historical evidence. Deferred UI/PM specs
+   are references only unless a current task explicitly adopts them.
+
+For every implementation slice: read `AGENTS.md`, current progress, the active
+handoff and relevant phase criteria; inspect source and tests; make the smallest
+complete change; run focused isolated checks and repository-required validation;
+record exact outcomes and unmet gates. Keep failures, skips and timing thresholds
+visible. Do not use production data/secrets or persistent dev/production services
+for tests. Use disposable Testcontainers; destructive persistent reset, migration,
+external provider activity, deployment and infrastructure changes need explicit
+authorization.
+
+For code/database changes use repository guidance for `make lint test` and the
+disposable-only reset test. For docs-only edits, validate changed links/fences and
+`git diff --check`; do not start services to validate prose.

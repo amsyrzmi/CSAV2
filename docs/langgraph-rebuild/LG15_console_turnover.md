@@ -1,8 +1,22 @@
 # LG15 — Console turnover (n8n → CSA)
 
-## Source-based revision (2026-10-15)
+## Current continuation (2026-10-19)
 
-Current entry point: [M5 Telegram scope and evidence](../handoffs/2026-10-17-m5-telegram-inbox.md).
+Current entry point: [domain/release handoff and prompt](../handoffs/2026-10-19-domain-release-next-session.md).
+Source expects 0360; persistent dev0300 is last recorded approval, not a fresh probe.
+Repository-only CI/release packaging is implemented; hosted workflow/OCI integrity
+and exact-artifact disposable runtime acceptance pass as of 2026-10-20 (see handoff).
+Public deployment acceptance remains unverified, with promotion disabled. The isolated staging
+manifest is a proposal only. Disposable packaged-console HTTPS identity/CSRF,
+role/tenant denial, readiness refusal/recovery and legacy-path denial now pass;
+this is HTTP-client/server-rendered evidence, not public-proxy or browser acceptance.
+See the current handoff and
+[release contract](../../deploy/RELEASE.md). Preserve the existing landing page and
+show incomplete M6 features as local-only, unavailable or synthetic demo.
+
+### Dated implementation and validation chronology
+
+M5 evidence: [Telegram scope and evidence](../handoffs/2026-10-17-m5-telegram-inbox.md).
 Prior evidence: [M4 closeout](../handoffs/2026-10-16-m4-closeout-m5-start.md).
 M4 is functionally closed by explicit user decision with a laptop-dev performance
 exception; M5's authorized Telegram-only staff inbox/reply-approval slice is implemented;
@@ -16,15 +30,306 @@ verified seller reads/connections, separately authorized TikTok operations, mult
 inventory authority/mapping, and business support/staff preparation. The local orders/
 tracking/catalogue/stock read foundation is implemented offline, not live-rolled out.
 See the [expanded M6 scope and gates](../handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
+M6D has a user-selected offline authority direction and a user-approved rule requiring a
+second distinct tenant admin for every non-zero on-hand change, with no self-approval.
+Count/adjustment contracts, prototype behavior and test-local audit enforcement now
+exist, but no authoritative runtime ledger is implemented; authority cutover remains
+proposed. The TikTok Products/Get Product references and public Postman Update Stock request
+did not expose schemas in the available public retrieval. The user selected Malaysia and
+provided the official Update Inventory v202309 URL, which also returned only the Partner
+Center shell; no inventory endpoint or quantity semantics were verified. Provider inventory
+remains report-only pending a sanitized official Malaysia v202309 read/write schema.
+The user suggested `/product/202309/products/{product_id}/inventory/update` as a candidate
+path; it is unverified. Until the rendered official contract is available, only
+provider-agnostic synthetic conformance work is appropriate. The detailed M6 roadmap now
+records a Stage 1 acceptance matrix for ledger/reservation invariants, tenant isolation,
+admin approval, fixed allocations, conflict handling and ambiguous operations; provider-
+order cases remain deferred. A separate immutable in-memory prototype, report-only
+reconciliation and generated reservation/allocation sequences have **1,352 focused
+synthetic cases passing**; repository lint passes. Full synthetic suite: **2,419 passed,
+136 warnings** in **1,874.60 s**, using disposable Testcontainers Postgres; `git diff
+--check` passes. No failures, including latency checks, occurred in that run; earlier
+latency failures remain historical and are not waived or erased. The prototype is not
+wired to persistence, APIs, UI, providers or runtime, and covers only part of the
+acceptance matrix. Current stock remains local/read-only, with no provider synchronization
+or stock-write authority. Next gate is agreeing a behavior-only persistence/concurrency
+acceptance contract: competing reservations, cancel/fulfil races, return inspection
+single-use, count approval versus concurrent changes, tenant-scoped replay and injected
+transaction failures with exact audit/outbox assertions. This selects no schema,
+isolation level or locking strategy and is not database execution evidence. The M6 roadmap
+now has a local-only conceptual schema/transaction proposal keyed by explicitly enrolled
+tenant-scoped `products.id`; it covers candidate account/warehouse, reservation, count,
+event and return keys, atomic order/count/return boundaries, composite tenant-FK
+prerequisites, and staged RLS/privileges. Review clarified the reservation product
+relationship, active-claim source of truth, single initial warehouse, and fenced cutover
+from legacy projections, including order-line quantity binding and verified holding
+statuses. Before rollout/cutover, verify parent tenant integrity, trusted actor identities, configured
+holding statuses, old-writer drain/fence and initial count evidence/approval. Source
+confirms the current code default holds draft/pending-confirmation orders and approval
+commits stock, but deployed settings/writers remain to verify. Current agent context lacks
+verified staff identity; the approval flow's staff target is not proof of the approver, so
+future count approval must use session-derived tenant-admin identity. Current local orders
+use product rows as stock
+units, but no typed selectable-variant contract proves external variant identity. New
+storage should remain non-authoritative until a tested atomic cutover; provider mapping,
+allocations and sync stay gated. No code, DDL, migration or write authority is approved.
+The baseline FKs do not enforce that order item, order and product share a tenant; existing
+rows were not inspected. No all-writer maintenance fence is implemented/verified, and no
+physical initial count or approval exists. Those are blockers before rollout/cutover,
+not further synthetic development or proposal review.
+An isolated candidate-schema feasibility test now passes **4 synthetic disposable-
+PostgreSQL cases**: composite tenant/product FK rejection, synchronized competing
+reservations, stale-count rejection preserving a new claim, and transaction rollback on
+an injected event constraint failure (`uv run pytest
+tests/test_inventory_persistence_feasibility.py -q`, **4 passed in 10.47 s**, one
+Testcontainers deprecation warning). `make lint` passes. This is not application-schema,
+actual-row, RLS, trusted-admin, writer-fence, physical-count or full Stage 1 acceptance
+evidence; it authorizes no DDL or cutover. Expanded 2026-10-19 focused evidence:
+**21 passed in 21.74 s**, one Testcontainers warning; `make lint` passes. Tests now cover
+eight cancel/fulfil races, both terminal outcomes, replay/opposite-action rejection and
+rollback after each terminal account/claim/event write, plus concurrent reservation
+replay and changed-quantity rejection. Assertions include exact durable event payloads.
+Combined domain/persistence regression passes **1,373 tests in 32.92 s**, one warning;
+`git diff --check` passes. Fixture order IDs now match baseline text types.
+Return/replay continuation now has **36 candidate cases**; combined domain/persistence
+regression: **1,388 passed in 49.21 s**, one Testcontainers warning; `make lint` and
+`git diff --check` pass. Covers concurrent return caps and request replay, receipt-gated
+zero/partial/full restocking, duplicate/conflicting inspection races, rollback/retry
+at coupled writes, changed-payload rejection and independent synthetic tenant keys/events.
+No application transaction, trusted physical receipt/inspection evidence, order-state,
+refund/payment, RLS, outbox or migration-compatibility proof is claimed. The full suite was not
+rerun; earlier suite/latency evidence remains historical. Repository schema is sufficient
+for offline design; no old database/n8n dump is required. The documentation-only migration
+review now recommends identity scaffolding first: necessary typed tenant-composite
+anchors plus an empty warehouse registry, tenant-read RLS and no runtime mutation grants.
+Existing global PKs and legacy writes stay intact; same-tenant parent FKs are separate
+because NOT VALID still enforces new writes. Explicit default-grant revocation and later
+trigger-owned append-only events are required; full actors/fingerprints, pending-count
+freeze and atomic order integration remain unresolved. Disposable migration compatibility,
+role/RLS, reapply and rollback acceptance is specified in the M6 roadmap.
+The user subsequently approved Stage A: migration **0360** now adds only the required
+composite unique anchors and empty warehouse registry, tenant-read RLS without FORCE,
+explicit default-grant revocation and no runtime writes. No ledger/enrollment/backfill,
+same-tenant parent FK or legacy stock trigger is added. Gateway source expects0360;
+no persistent migration or service restart occurred. Disposable catalog/role/constraint,
+synthetic upgrade/legacy stock, runner reapply/rollback and current-version readiness
+checks are implemented. Combined inventory/migration/health/order regression:
+**1,421 passed, 1 deselected, 1 warning in 119.07 s**; full lint passes.
+The reset test was deliberately deselected; no reset was run. Full suite/latency checks
+were not rerun, and historical evidence remains unchanged. Next: typed command/actor/
+evidence contracts, fingerprints and pending-count freeze semantics before writable
+ledger storage; parent-integrity enforcement remains a separate compatibility review.
+Actual-row, deployed-writer/status and physical-count evidence is required for
+persistent rollout/cutover, not to continue synthetic development.
+Offline count-command continuation adds frozen Pydantic account/admin/request/review
+contracts and canonical schema-v1 business-payload fingerprints; session renewal is
+excluded from payload identity, not from future authentication checks. Strict quantity,
+tenant and distinct-reviewer checks are synthetic validation, not verified authority or
+durable outcomes. Pending-count prototype regression confirms new-claim freeze while
+existing fulfilment can stale approval; rejection clears the pending freeze.
+Full lint and **1,383 focused contracts/domain tests in 7.45 s** pass, no database use.
+No migration/runtime transition was changed. Persisted outcomes, trusted actor loaders,
+service/return evidence and reservation replay during freeze remain next design work.
+Subsequent offline contracts add pending/recorded/approved/rejected outcome validation
+and unchanged exact replay, plus an injected actor-loader boundary without a default
+implementation or authentication claim. Prototype existing-reservation replay now
+precedes freeze/shortfall checks after scope/authority validation; changed quantities
+fail and new claims remain frozen. Full lint and **1,391 focused tests in 7.60 s** pass;
+`git diff --check` passes. No database/migration/runtime integration or latency rerun.
+Next: count transition/audit persistence and transaction review; trusted identity
+adapter, concurrency enforcement and service/return evidence remain unfinished.
+The subsequent documentation-only count-storage review finds writable persistence not
+ready: models do not enforce database transitions, freeze changes need account-level
+serialization beyond ledger version, actor reload needs a transaction-bound revocation
+contract, and immutable event envelopes/mandatory append enforcement are missing.
+Approval must fence stale revisions; authorized rejection must still clear stale pending
+commands without posting stock. Decision replay binds reviewer/outcome/reason.
+Next recommended bounded slice is a disposable synthetic count-transaction harness,
+not a new migration/runtime grant. Prior 1,391-test/lint evidence is unchanged;
+no database or service/provider access occurred during review.
+The subsequent disposable count harness adds **20 synthetic cases**: freeze/reservation
+and request races, competing decisions/replay, fulfilment versus approval, stale fences,
+rejection recovery, zero counts, synthetic revocation ordering and event rollback. A
+frozen [count audit envelope](../../csa/inventory/contracts.py) now validates typed
+request/decision evidence, and the disposable harness reads back command, record and
+audit JSON to check fingerprints, event IDs and terminal event/record agreement.
+Focused count/contracts: **59 passed, 1 existing Testcontainers deprecation warning in
+38.44 s**; combined count/contracts/domain/persistence: **1,448 passed, 1 warning in
+92.68 s**. `NO_LOCAL_ENV=1 ENV=ci make lint` and `git diff --check` pass. No reset or
+persistent/provider/service access; full suite/latency not rerun, source 0360 unchanged.
+This remains a synthetic single-account model, not proof of deployed role grants, RLS or
+protection from table-owner/superuser trigger bypass. Test-local deferred constraints
+reject missing/mismatched command audit events, and triggers reject event update/delete/
+truncate and terminal-command replacement. The harness still runs as disposable
+superuser `csa`; its synthetic non-owner `count_trial_app` can commit only with the
+matching event and cannot mutate events, disable triggers or set
+`session_replication_role`. This does not validate deployed `csa_app` grants or protect
+against the superuser/table owner. No application migration or runtime writer/grant was
+added.
+
+Identity source review confirms the current `csa_identity` session/membership resolution
+commits on a separate pool transaction before a later `csa_app` tenant transaction, so
+there is no transaction-bound tenant-admin revalidation for inventory writes. Existing
+membership/user/session revocation paths also touch identity rows in differing orders.
+Focused transaction tests: **29 passed, 1 existing Testcontainers deprecation warning
+in 43.73 s**; combined count/contracts/domain/persistence: **1,457 passed, 1 warning in
+114.59 s**. `NO_LOCAL_ENV=1 ENV=ci make lint` and `git diff --check` pass; full suite/
+latency was not rerun. Next: disposable least-privilege role and trigger-ownership
+checks for a chosen ownership model that addresses the legacy `csa`/n8n owner bypass,
+then reconcile identity lock order before proposing a migration. Writable inventory
+persistence remains gated.
 M6A lint, targeted and frontend checks pass. Its full validation: **695 passed / 1 TCP latency
 failure** (ack p95 **788.334 ms**, unchanged **<200 ms**). This is not green or covered
 by the earlier M4 exception. See [current progress](../PROGRESS.md) for exact evidence.
 M6B's offline order-read groundwork validates existing synthetic TikTok response assumptions,
 preserves continuation tokens and sanitizes failures. It does not verify current provider
 compatibility or bind credentials to tenants/stores; those gates precede console wiring.
-M6B targeted checks: **41 passed**; full lint passes, full tests **732 passed / 1 TCP
+M6B adapter-groundwork checks: **41 passed**; full lint passed, full tests **732 passed / 1 TCP
 latency failure**, ack p95 **608.321 ms** against unchanged **<200 ms**. Disposable reset
 checks pass; no live rollout, threshold relaxation or new performance waiver occurred.
+The next offline M6B slice adds exact persisted source/store filters to local order
+list/detail/cursors and an explicit-apply UI. Inventory stays tenant-wide; no provider
+or credential binding is inferred. Latest evidence and remaining gates are in progress.
+Filter-slice checks: backend/contract **10 passed**, frontend **14 transport + 2 state tests**
+plus lint/types/build pass. Full lint passes; full tests **736 passed / 1 TCP latency
+failure**, p95 **235.195 ms** against unchanged **<200 ms**. Full validation remains not green.
+The next offline slice adds local store-record metadata and exact tenant/record/platform/
+store binding. No credential content is selected or decrypted; permissions are unknown,
+authorization unverified and provider reads unavailable. Provider credential resolution
+and current API-spec verification remain gates, not completed by this metadata view.
+Store-slice validation: frontend **15 transport + 2 state tests** and lint/types/build
+pass; full lint passes, full tests **742 passed / 1 TCP latency failure** (ack p95
+**200.161 ms**, unchanged **<200 ms**). Disposable reset checks pass; no rounding,
+latency retry, threshold change, new performance waiver or live rollout is claimed.
+Subsequent official-doc verification corrected TikTok v202309 detail path/query/envelope
+and search pagination placement; **47 targeted tests pass**. Documented line-item price/
+quantity semantics do not match the legacy normalizer; explicit failure is retained rather
+than invented quantities. Grant/revocation/credential-generation evidence remains required
+before any provider resolver or live read. See the M6 roadmap for authoritative source links.
+Latest request-correction full lint/tests pass: **749 passed**, 136 warnings,2783.22 s;
+standalone ASGI/TCP p95 **102.572/150.074 ms** pass unchanged **<200 ms**. Disposable reset
+checks pass. Simultaneous TCP p95 **1184.752 ms** remains diagnostic evidence, not200 ms
+acceptance. Earlier failures remain recorded; no stable laptop capacity or live rollout claim.
+The subsequent offline slice adds immutable provider-native order/line snapshots and
+detail/page reads, preserving line IDs and `sale_price` without inventing quantities.
+Native/legacy synthetic checks **82 passed** and lint/types/import boundaries pass;
+full validation passes **784 tests**, including disposable reset checks. Standalone
+ASGI/TCP ack p95 **102.295/189.661 ms** pass unchanged **<200 ms**; simultaneous TCP
+p95 **1256.362 ms** remains diagnostic, not sub-200 ms acceptance. Historical failures
+remain. Normalization and grant/lifecycle binding remain open gates.
+User subsequently selected per-operation authorization/shop verification, including a
+new operation per search page. Offline immutable evidence contracts and a pure metadata
+gate pass **121 targeted tests** and lint. Full validation: **819 passed / 1 TCP latency
+failure**, ack p95 **643.091 ms** against unchanged **<200 ms**; disposable reset
+checks pass. Full validation is not green; no retry, threshold change or new waiver.
+Durable lifecycle
+state, trusted live verification and atomic revoke/dispatch handling are not implemented.
+The metadata gate alone must not be treated as authorization or provider wiring.
+The next offline slice adds durable grant/lifecycle metadata in0310 and an internal
+async repository: exact local-store creation matching, terminal revision-CAS invalidation
+and database-triggered atomic audit. **154 targeted tests** and full lint pass; migration
+idempotency and reset pass only on disposable containers. Initial full validation:
+**828 passed / 4 schema-readiness failures**; gateway expectation corrected from0300
+to0310, with **23 readiness/migration/grant tests passing**. Corrected full run:
+**831 passed / 1 ASGI latency failure**, p95 **681.146 ms** against unchanged
+**<200 ms**; lint and disposable reset checks pass. Readiness failures are resolved,
+but full validation is not green. No further retry, threshold change or new waiver.
+Persistent dev remains at approved0300. Current-credential fencing, trusted verification
+and operation/dispatch race enforcement remain gates; no live provider access is enabled.
+Subsequent0320 source implements credential-generation invalidation and single-use
+read dispatch fences, using the user's conservative ordering/no-replay choice.
+Internal callbacks only; no live verifier, credential resolver or adapter wiring.
+Lint/types and **183 targeted tests** pass, including disposable reset and readiness;
+full lint/test **857 passed**, including unchanged standalone ASGI/TCP limits.
+Simultaneous TCP p95 **1418.025 ms** remains diagnostic, not sub-200 ms acceptance;
+earlier failures remain recorded, with no stable capacity claim. Gateway source expects0320;
+persistent dev stays0300. Existing latency evidence shows large request-start lag but
+does not isolate a host/DB/handler cause or establish laptop causality.
+Next offline slice: official authorized-shop request/selected response fields verified;
+exact fresh shop/cipher match primitive passes **138 targeted tests**, full lint and
+**877 full tests**, including disposable reset and unchanged standalone ingress limits.
+Simultaneous TCP p95 **450.294 ms** remains diagnostic, not sub-200 ms acceptance;
+historical failures remain recorded. User revised freshness semantics to shop match plus stored verified
+scopes, with actual order endpoint enforcing current permission. No fresh-scope proof,
+trusted adapter binding, evidence minting or fenced integration is claimed by that primitive.
+Subsequent server-only composition integrates an injected bound reader and fresh shop
+lookup with fenced persisted order dispatch, using truthful shop-plus-stored-scopes
+provenance. **184 targeted tests** and lint pass; full lint/test **887 passed**,
+including unchanged standalone ingress limits and disposable reset checks.
+Simultaneous TCP p95 **535.413 ms** remains diagnostic; historical failures remain.
+Resolver/
+HTTP tests use synthetic data only; real credential decryption and authenticated app
+mapping remain gated. No console/agent integration or live request is enabled.
+The next offline resolver contract adds explicit injected app/credential loaders and
+decryptor, exact binding/expiry checks and existing canonical row/field AAD. Synthetic
+AES-GCM fixtures only; no environment key, stored credential or live request is used.
+No default storage implementation/runtime registration exists. **122 targeted tests**
+and lint/types pass, including disposable reset/migration; full lint/test validation:
+**907 passed** (136 warnings). Performance evidence, historical caveats and actual
+trusted storage/eligibility gates are recorded in progress.
+Subsequent0330 adds immutable encrypted shop-binding evidence and same-transaction
+credential loading, with external app secrets and crypto still explicitly injected.
+Trusted writer/loader never infer app/cipher authority from legacy metadata.
+Lint/types, storage and disposable reset/migration tests pass. Full validation:
+**932 passed / 1 TCP latency failure**, ack p95 **259.251 ms**, unchanged **<200 ms**.
+Full validation is not green; no latency retry, threshold change or new waiver.
+See progress for exact evidence. External registry rotation/disable must coordinate
+grant invalidation; automatic enforcement and verified exchange/reconnection remain gates.
+Gateway source now expects0330; persistent dev stays0300. No real key/credential access,
+runtime registration, live request, persistent migration/reset, service or UI-guide change.
+Subsequent0340 adds a user-selected global non-secret app revision fence and operator-only
+audited disable/activate CAS. Shared app locks precede credential/grant fences; old grants
+never revive, including after reactivation. External app material must match revision;
+disable must commit before changing immutable external snapshots. No default external
+registry/key integration exists. Lint and **150 targeted tests** pass; expanded lifecycle
+**9 tests** pass; full lint/test validation **945 passed** (136 warnings), including
+disposable reset and unchanged standalone ingress limits. Historical failures and
+simultaneous-load diagnostic limits remain recorded in progress.
+Gateway source now expects0340, persistent dev0300. User made the prior TCP latency failure
+non-blocking for continued development, not a benchmark pass or established home-server cause.
+Subsequent0350 adds offline one-use authorization attempts and atomic reconnect completion
+via an injected trusted verifier. State is hashed, binding/expiry exact, consumption commits
+before exchange and cannot replay after uncertainty. Pending/failed attempts preserve
+current credentials; success rotates generation and creates new grant/shop evidence
+atomically while retaining terminal history. No actual TikTok exchange/callback or default
+registry/key source is introduced. **116 targeted tests** and expanded **39 connection/grant
+tests** pass; full lint passes, full tests **971 passed / 1 TCP latency failure**
+(213.232 ms, unchanged <200 ms). Latency remains user-accepted as non-blocking for
+development, not a green full result. Gateway source expects0350, persistent dev0300.
+User cannot complete Partner onboarding: live authorization remains externally gated;
+offline work neither bypasses that gate nor proves a Sandbox/custom-app exemption.
+Subsequent staff Business reads add metadata-only lifecycle status and unavailable
+Connect/Reconnect controls. Recorded authorization is explicitly not verified live;
+existing staff/tenant authority and secret exclusions remain. **30 targeted backend
+tests**, isolated **16 transport + 2 state tests**, lint/types/build pass; full backend
+lint/tests **975 passed** (136 warnings), including disposable reset and unchanged
+standalone ingress limits. No schema change, live callback/provider access, rollout or
+UI-guide edit; source0350/persistent dev0300 unchanged.
+Subsequent public-doc verification confirms token exchange query shape, explicit
+`granted_scopes` and absolute Unix expiry timestamps despite `*_expire_in` names.
+User identity is not shop identity. Query-secret logging isolation must precede real
+transport; next offline slice is a strict selected-response parser with synthetic tests.
+No runtime change or new validation run; latest975 full pass remains prior evidence.
+See the [exchange contract](../handoffs/2026-10-15-console-source-migration-plan.md#m6b-public-token-exchange-contract-verification-2026-10-18).
+Subsequent offline selected-response parser validates absolute Unix expiry, standard
+seller0 and exact distinct required scopes, returning only frozen secret-masked token
+material/expiry/scopes. No app/shop binding or grant authority is inferred; no transport
+or trusted live verifier exists. Lint and **103 parser/authorization tests** pass;
+One full run had **1052 passed / 1 TCP latency failure**; the subsequent full run had
+**1065 passed**, 136 warnings. Latest standalone ASGI/TCP ack p95 **74.585/174.885 ms**
+pass unchanged **<200 ms** acceptance. The timestamp guard false positive is fixed.
+The historical latency failure remains recorded; one pass is not a stable-capacity
+claim. The isolated
+fixed-endpoint exchange transport has **105 focused transport/parser/reconnect tests**
+and full lint passing. It bypasses client hooks/instrumentation, uses zero retries/no
+redirects, disables environment proxy lookup, bounds responses and returns fixed safe
+errors. It is not integrated into attempt completion and does not prove app/shop
+provenance; no live request or connection. Subsequent trusted verifier composition
+binds selected tokens to injected immutable app revision and fresh exact authorized-shop
+evidence, returning the existing verified-result contract. **173 focused tests** and
+full lint pass. The full run preceded the final refresh-expiry boundary addition, which
+the focused tests cover. It is not connected to a callback/runtime or real registry.
+Eligible real seller acceptance remains gated; source0350/persistent0300 unchanged.
 
 The console source is now available at `CSA_WebConsole/csa-console/`.
 The user approved replacing its backend logic, retaining the Next.js UI and using
@@ -306,7 +611,9 @@ enable `FORCE ROW LEVEL SECURITY` and move n8n off the owner role (LG11 M14).
 - [x] M1 identity/RBAC/onboarding implemented with synthetic integration evidence.
 - [x] Guided M1 browser lifecycle/RBAC/logout acceptance, user-operated and DB-corroborated.
 - [x] M2 runtime/readiness/UI implementation with focused disposable integration evidence.
-- [ ] Authenticated M2 browser acceptance and full-suite performance acceptance.
+- [x] Authenticated synthetic packaged M2 Agents/Runtime browser acceptance; see the
+      [2026-10-20 handoff](../handoffs/2026-10-19-domain-release-next-session.md#latest-slice-synthetic-m2-browser-acceptance-2026-10-20).
+- [ ] Full-suite performance acceptance.
 - [ ] Every active frontend feature actually uses an implemented CSAV2 endpoint, not n8n;
       the old Python API and deferred PM/voice runtimes are not mounted or started.
 - [ ] P0 fixes merged with tests (download route and strict signing secret, RBAC, audit, OpenAPI

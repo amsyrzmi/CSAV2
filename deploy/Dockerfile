@@ -3,10 +3,10 @@
 #
 # Build with uv for a frozen, reproducible dependency closure, then run as a
 # non-root user with no build toolchain in the final layer.
-FROM python:3.12-slim-bookworm AS build
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c AS build
 
 # Pin uv by copying its static binary from the official distroless image.
-COPY --from=ghcr.io/astral-sh/uv:0.9.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.9.6@sha256:4b96ee9429583983fd172c33a02ecac5242d63fb46bc27804748e38c1cc9ad0d /uv /usr/local/bin/uv
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -16,18 +16,19 @@ WORKDIR /app
 
 # Install dependencies first (cached) from the locked, frozen set — no dev deps.
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+RUN uv sync --frozen --no-install-project --no-dev --no-cache
 
-# Add the project source and install the project itself.
+# Run source from /app; avoid an unnecessary, unlocked build-backend installation.
 COPY apps ./apps
 COPY csa ./csa
 COPY scripts ./scripts
 COPY db ./db
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c AS runtime
+ARG SOURCE_REVISION
+ARG SOURCE_DATE_EPOCH
+RUN printf '%s' "$SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 
 # Create a non-root runtime user (matches the stack's 1000:1000 convention).
 RUN groupadd --gid 1000 csa \
@@ -40,9 +41,12 @@ COPY --from=build --chown=1000:1000 /app /app
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    NO_LOCAL_ENV=1
 
 USER 1000:1000
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).close()"]
 
 # Default to the gateway; compose overrides `command` for worker and delivery.
 EXPOSE 8080

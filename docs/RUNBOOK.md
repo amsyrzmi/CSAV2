@@ -5,8 +5,14 @@ The development environment may share a physical host with production; verify th
 configuration and use only the isolated dev stack.
 
 For the latest guarded console runtime and recovery constraints, start with the
-[runtime handoff](./handoffs/2026-10-16-runtime-stabilization.md). The generic
+[domain/release handoff](./handoffs/2026-10-19-domain-release-next-session.md) and retained
+[runtime history](./handoffs/2026-10-16-runtime-stabilization.md). The generic
 first-time commands below are not instructions to reset or reprovision the recovered dev.
+Repository-only CI/image packaging is implemented; see the
+[release contract and inert staging proposal](../deploy/RELEASE.md). Public hosting,
+promotion and deployment remain disabled/unverified. The historical production Compose
+file still assumes the old database/network and a conflicting host port; do not run it
+for this release. Preserve the existing `fourstacks.my`/`www` landing service.
 
 ### Dependency and database-image provenance
 
@@ -16,12 +22,19 @@ image is built from [deploy/db.Dockerfile](../deploy/db.Dockerfile).
 Historical LG01 publication recorded
 `ghcr.io/amsyrzmi/csa-pg16-postgis-vector` at
 `sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223`.
-That is provenance, not proof of current registry availability or current deployment
-pins: inspect the relevant Compose/CI manifests and verify before deployment.
+That digest was superseded in the current CI and staging-proposal source on
+2026-10-20 by registry index digest
+`sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe`.
+This records repository configuration, not current registry availability or a
+deployed image. Inspect the relevant Compose/CI manifests and verify before deployment.
 The old production stock image with separately installed PostGIS was not reproducible;
 any production image migration requires a separate approved deployment plan.
 
-## What runs
+## Reference topology (not a live host inventory)
+
+The table describes the isolated development layout the runbook supports. It does
+not assert that any host service, tunnel, database or hostname is currently
+running. Confirm state only under a separately authorized, isolated operation.
 
 | Thing | Where |
 |---|---|
@@ -66,9 +79,10 @@ Apply a new migration without resetting:
 
 ## Checks
 
-`make lint` (Ruff, format, Pyright, import-linter) and `ENV=ci make test` (~14 min; latest
-full run: 333 passed, including composer failover, process-level worker and simultaneous-ingress
-diagnostics).
+`NO_LOCAL_ENV=1 ENV=ci make lint` runs Ruff, format, Pyright and import-linter;
+`NO_LOCAL_ENV=1 ENV=ci make test` runs the suite. Runtime and counts vary: the old
+333-test/~14-minute figure was historical, not a current estimate. Consult
+[progress](./PROGRESS.md) for exact focused/full-suite results and latency limitations.
 Run tests without `.env.local` exported into the shell, or settings tests fail.
 
 Focused offline regression run (Docker required, isolated testcontainers; no provider calls):

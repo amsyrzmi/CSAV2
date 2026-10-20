@@ -1,7 +1,11 @@
 # Runbook 04 — Jev Outage or Latency Spike Fallback
 
+> **Caution:** This is an operator reference, not approval to modify a live
+> tenant configuration. Review [runbook status and authorization](./README.md) first.
+
 ## Objective
-Instantly switch a tenant's decision provider from Jev/cascade to pure LLM (Groq) or shadow mode during an upstream Jev outage or latency spike.
+Select a tenant decision mode after diagnosing an upstream Jev outage or latency
+spike. This configuration change is not an instant kill switch for in-flight turns.
 
 ## Diagnostic Steps
 Check `decision_log` for elevated latencies, errors, or fallbacks:
@@ -16,7 +20,10 @@ GROUP BY mode, provider;
 
 ## Remediation (SQL)
 
-Force decision provider to `llm` (pure Groq classification):
+The tested programmatic primitive is `csa.ops.runbooks.force_decide_mode` within
+the authorized tenant transaction. The SQL below is illustrative only.
+
+Force decision provider to `llm` (LLM-only classification):
 ```sql
 UPDATE public.clients
 SET config = jsonb_set(
@@ -27,7 +34,10 @@ SET config = jsonb_set(
 WHERE id = '<CLIENT_UUID>';
 ```
 
-Alternatively, set to `shadow` to log Jev asynchronously without blocking turn completion:
+Alternatively, set to `shadow` to use the LLM result while comparing/logging Jev.
+Both classifiers run concurrently, but the turn awaits both; this mode is not
+non-blocking and is not an outage fallback. Prefer `llm` when Jev itself is the
+unavailable dependency.
 ```sql
 UPDATE public.clients
 SET config = jsonb_set(
@@ -45,4 +55,4 @@ SELECT id, config->'policy'->>'decide_mode' AS decide_mode
 FROM public.clients
 WHERE id = '<CLIENT_UUID>';
 ```
-New turns will immediately bypass live Jev calls and use the LLM provider.
+Subsequent turns that load the updated tenant configuration use the selected mode.

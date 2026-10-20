@@ -12,6 +12,12 @@ from csa.agents.ecommerce.models import (
     MarketplacePlatform,
     TikTokShopCredentials,
 )
+from csa.agents.ecommerce.tiktok_models import (
+    TikTokLineItemSnapshot,
+    TikTokOrderSnapshot,
+    TikTokOrderSnapshotPage,
+    TikTokPaymentSnapshot,
+)
 
 __all__ = [
     "ACTION_RISK",
@@ -26,4 +32,8 @@ __all__ = [
     "TikTokShopAdapter",
     "TikTokShopCredentials",
     "TikTokReadError",
+    "TikTokLineItemSnapshot",
+    "TikTokOrderSnapshot",
+    "TikTokOrderSnapshotPage",
+    "TikTokPaymentSnapshot",
 ]

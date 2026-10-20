@@ -1,6 +1,17 @@
 # CSA architecture information
 
-**Architecture snapshot: 17 October 2026, Malaysia time.**
+**Long-form architecture reference; status reconciled 20 October 2026.**
+
+The project entry point and directory/reading guide is
+[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md). This document retains deeper
+architecture detail and dated evidence; current continuation is the
+[domain/release handoff](handoffs/2026-10-19-domain-release-next-session.md).
+Source expects schema 0360; the last approved persistent-dev schema was recorded
+as 0300, not freshly probed. Hosted build/export and disposable exact-artifact
+acceptance are recorded, but M6B/M6D remain offline foundations, not live provider
+or inventory authority. Promotion and deployment remain disabled/unverified.
+See [PROGRESS.md](PROGRESS.md) and the [release contract](../deploy/RELEASE.md)
+for current evidence and gates.
 
 **Audience:** clients, delivery stakeholders, technical reviewers, and engineers maintaining CSA.
 
@@ -8,7 +19,11 @@ CSA is a multi-tenant customer-service automation platform. It receives customer
 
 The architecture combines a Python service runtime, a Next.js web console, and PostgreSQL. PostgreSQL stores business records, work queues, approvals, delivery state, and audit records. LangGraph coordinates individual customer turns. External language models interpret and compose; application code and database transactions establish authority and business state.
 
-This document describes the **current repository**, including existing working-tree changes. It distinguishes implemented code, recorded isolated-development validation, integration groundwork, and future plans. It is not a statement that every feature is deployed, that services are currently running, or that the system has production acceptance. No environment-file values, credentials, production data, or private deployment addresses are reproduced here.
+This document describes repository architecture and distinguishes implemented code,
+recorded isolated-development validation, integration groundwork, and future plans.
+It does not report uncommitted working-tree state or prove that features are deployed,
+services are running, or the system has production acceptance. No environment-file
+values, credentials, production data, or private deployment addresses are reproduced.
 
 ## Contents
 
@@ -86,7 +101,8 @@ Sources: [master plan](langgraph-rebuild/LG00_master_plan.md), [runtime wiring](
 | Private sandbox assistant | Owner-private text conversations; knowledge and product-information reads. | Customer records and business actions are unavailable. Held sandbox drafts have no release feature. |
 | Telegram staff inbox | Staff transcripts, takeover/release, human replies, reply approve/reject/edit. | M5 guarded development rollout and representative role checks are recorded. |
 | Business workspace | Staff-only local order/product/stock summaries and pagination. | M6A is an offline foundation; it has not replaced the last approved M5 build. |
-| TikTok Shop | OAuth/webhook scaffolding and adapter libraries; stricter typed order reads/pages. | M6B reads are offline groundwork. Provider compatibility, tenant/store binding, and console integration are pending. |
+| TikTok Shop | Mounted legacy OAuth/webhook scaffolding; separate typed M6B reads, encrypted grant lifecycle and synthetic verifier/completion composition. | New M6B flow is not runtime-registered. Do not expose the legacy callback as its replacement; live eligibility, app/key source, safe callback and console integration remain gated. |
+| Inventory M6D | Frozen command/audit contracts, in-memory prototype, identity-only 0360 scaffolding and disposable transaction/role tests. | No authoritative runtime ledger, provider stock writes or synchronization. |
 | Shopee and Lazada | Adapter interfaces/placeholders and explicit unavailable webhook/OAuth responses. | No completed operational marketplace integration. |
 | Invoice reads | Contact-scoped local status/listing; signature helper/library code. | Console download-link endpoint returns 501; artifact serving and issuance are unavailable. |
 | Booking/subscriptions | Local reads and persisted preparation requests. | No Calendar booking, payment, cancellation, or billing execution. |
@@ -94,7 +110,11 @@ Sources: [master plan](langgraph-rebuild/LG00_master_plan.md), [runtime wiring](
 | WhatsApp, customer email, public web chat, voice | Contracts, inherited schema, or plans. | No completed active customer-channel implementation in the current turn worker. |
 | Projects, PM, terminal, Hermes, workroom, desktop teaching | Retained reference UI/documents and future plans. | Routes are blocked or 404 stubs; those runtimes are not started by the adopted application. |
 
-The latest recorded completed M6A full run is **695 passed and one TCP latency failure**. M6B records **41 targeted adapter/e-commerce tests passing**, with its final full run still marked in progress in the checked documentation. Earlier M5 recorded **692 passing tests** and guarded development acceptance. These are separate dated results, not cumulative test counts or a production SLA.
+The M6A **695 passed / one TCP latency failure** and early M6B **41 targeted tests**
+are dated evidence, not the latest runs. Current exact M6B and M6D validation, including
+focused versus full-suite scope and retained latency failures, is maintained in
+[PROGRESS.md](PROGRESS.md). No documentation reconciliation is a new test or deployment
+pass.
 
 Current status authority: [PROGRESS.md](PROGRESS.md), [console API](CONSOLE_API.md), [M5 evidence](handoffs/2026-10-17-m5-telegram-inbox.md), [M6 roadmap](handoffs/2026-10-15-console-source-migration-plan.md).
 
@@ -1148,8 +1168,18 @@ SQL migrations are ordered, additive files. The runner applies each unapplied fi
 | `0280` | Upload batch/source metadata and deletion fences. |
 | `0290` | Private sandbox participants/threads/turns. |
 | `0300` | Telegram inbox versions, suppression boundary, send authority and action receipts. |
+| `0310` | Internal ecommerce grant/lifecycle persistence. |
+| `0320` | Credential generation and single-attempt read dispatch fences. |
+| `0330` | Encrypted immutable shop-binding evidence. |
+| `0340` | Non-secret app revision/lifecycle fences and audit. |
+| `0350` | Single-use authorization attempts and atomic reconnection. |
+| `0360` | Tenant-composite identity anchors and empty warehouse registry; no ledger. |
 
-Gateway readiness checks that every shipped SQL version is present and the maximum equals `0300`. A mismatch returns 503. The gateway's lifespan opens pools; schema mismatch enforcement is in readiness, so deployment must actually honor readiness before routing traffic.
+Gateway readiness checks that every shipped SQL version is present and the maximum
+equals the source expectation, currently `0360`. A mismatch returns 503. The last
+approved persistent dev is recorded as `0300`, not migrated or re-probed here.
+The gateway's lifespan opens pools; deployment must honor readiness before routing
+traffic rather than relying on `/healthz`.
 
 Sources: [schema baseline](../db/schema_baseline.sql), [schema notes](schema_notes.md), [migrations](../db/migrations/), [SQL](../db/sql/), [migration runner](../scripts/migrate.py).
 
@@ -1191,7 +1221,7 @@ Secret-free custom error codes exist in several clients, but global HTTP-library
 
 Checkpoint cleanup does not delete business messages, uploads, audit, or all raw ingress. There is no completed unified tenant retention/export/erasure policy. Deletion fences intentionally persist; sandbox archive is not a purge. Retention commitments must be agreed and implemented separately.
 
-Sources: [crypto](../csa/core/crypto.py), [PII redactor](../csa/core/pii.py), [settings](../csa/core/settings.py), [review findings](reviews/2026-10-17-architecture-code-review.md).
+Sources: [crypto](../csa/core/crypto.py), [PII redactor](../csa/core/pii.py), [settings](../csa/core/settings.py).
 
 ## 20. Scheduled work and retention
 
@@ -1263,7 +1293,10 @@ Langfuse currently uses its batch ingestion API, not a completed universal OTLP 
 
 `GET /healthz` is process liveness and performs no I/O. It can remain 200 while dependencies are unhealthy.
 
-`GET /readyz` checks logging health, database reachability with a short statement timeout, all shipped SQL migration versions and maximum `0300`, plus identity readiness when configured. It does not probe Groq, Jev, TEI, Telegram, marketplace accounts, worker progress, or filesystem capacity.
+`GET /readyz` checks logging health, database reachability with a short statement timeout,
+all shipped SQL migration versions and source maximum (currently `0360`), plus identity
+readiness when configured. It does not probe Groq, Jev, TEI, Telegram, marketplace
+accounts, worker progress, or filesystem capacity.
 
 Configured logging has a background writer, 1,024 waiting events plus one active write, and a five-second stall threshold. Overflow/writer errors latch an unhealthy state with a dropped-event count; a temporary stall can recover if no events were lost. Shutdown draining is bounded and can raise.
 
@@ -1465,11 +1498,16 @@ Marketplace ingress currently persists a provider-event shape that the ordinary 
 
 ### 25.4 Deferred PM and desktop automation
 
-The retained PM reference pack describes project boards, notes/knowledge, diagrams, approved planner tasks, isolated terminal/runner sessions, Hermes investigation/implementation, workrooms, budgets, and selected client publication. Its historical separate-console-database proposal is not the current adopted one-backend architecture.
+An October 2026 PM design pack described project boards, notes/knowledge, diagrams,
+approved planner tasks, isolated terminal/runner sessions, Hermes investigation/
+implementation, workrooms, budgets, and selected client publication. It belonged
+to a separate n8n-era architecture and was removed from the active tree on
+2026-10-20 at the user's request. It is not part of the adopted architecture; Git
+history retains it if future product discovery explicitly revives that scope.
 
 LG14 separately proposes a sandboxed browser/desktop recorder, typed replayable playbooks, parameterization, admin review, dry runs, and scheduled execution with restricted network/secret access. No desktop runner, remote shell, or production computer-use service is active in the current application.
 
-Sources: [console migration roadmap](handoffs/2026-10-15-console-source-migration-plan.md), [agent preparation handoff](handoffs/2026-10-15-wave23-preparation.md), [canonical PM reference pack](../CSA_WebConsole/Docs/csa-agentic-pm/README.md).
+Sources: [console migration roadmap](handoffs/2026-10-15-console-source-migration-plan.md), [agent preparation handoff](handoffs/2026-10-15-wave23-preparation.md).
 
 ## 26. Current limitations and release conditions
 
@@ -1501,7 +1539,10 @@ This section separates architectural controls already present from gaps that aff
 
 For client delivery, supported workflows must be agreed by tenant, channel, data source, allowed operation, human-review policy, and evidence of final business/transport state. A provider configuration, passing unit test, or attractive screen cannot substitute for end-to-end acceptance of that workflow.
 
-Technical assessment and dated reproductions: [architecture review](reviews/2026-10-17-architecture-code-review.md). Current fixes and unresolved validation: [PROGRESS.md](PROGRESS.md) and [M5 evidence](handoffs/2026-10-17-m5-telegram-inbox.md).
+Current fixes and unresolved validation: [PROGRESS.md](PROGRESS.md) and
+[M5 evidence](handoffs/2026-10-17-m5-telegram-inbox.md). Dated review records
+are historical, may be absent from the current worktree, and do not establish
+current implementation status.
 
 ## 27. Repository map and maintenance
 
@@ -1536,12 +1577,12 @@ Technical assessment and dated reproductions: [architecture review](reviews/2026
 | `deploy/` | Application/database Dockerfiles and development/production Compose definitions. |
 | `.github/workflows/ci.yml` | Automated backend checks, migration/test/secret-scan/coverage gates. |
 | `CSA_WebConsole/csa-console/web/` | Adopted Next.js frontend plus explicitly inactive retained UI source. |
-| `CSA_WebConsole/Docs/csa-agentic-pm/` | Canonical deferred project-management design/reference pack. |
 | `ui-guide/` | Design tokens, SVG/animation references, examples and implementation guidance. |
+| `docs/PROJECT_OVERVIEW.md` | Start-here guide, architecture workflow, documentation authority and directory map. |
+| `.agents/skills/` | Task-specific engineering instructions; load only the matching workflow. |
 | `docs/langgraph-rebuild/` | Phase plans LG00–LG15. |
 | `docs/handoffs/` | Milestone scope, rollout/recovery and continuation evidence. |
 | `docs/evals/` | Recorded evaluation and load results. |
-| `docs/reviews/` | Dated architecture/product assessments. |
 | `docs/console_openapi.json` | Versioned console API schema snapshot. |
 | `AGENTS.md`, `Makefile`, `pyproject.toml`, `uv.lock` | Repository rules, developer commands, exact Python requirements/resolution. |
 

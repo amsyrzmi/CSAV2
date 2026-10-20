@@ -41,7 +41,7 @@ Rules for every agent below:
 ## Where each request lands
 | Request | Phase | Why |
 |---|---|---|
-| E-Commerce operations agent (TikTok Shop, Shopee, Lazada) | Wave 1/2 (Drafted) | Multi-channel order, catalog and inventory sync (`docs/agents/ecommerce_agent_draft.md`) |
+| E-Commerce operations agent (TikTok Shop, Shopee, Lazada) | M6 staged/offline | Follow the current [M6 roadmap](../handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation); do not use the superseded 12-Oct draft as an implementation contract. |
 | Booking agent (Google Calendar) | Already in LG05 outline; build as wave 2 (needs OAuth + test calendar) | Spec and acceptance gate exist in LG05 |
 | Email management agent | Wave 2 | Builds on the Gmail channel from LG03 |
 | KB agent | Wave 1 | Needed first; also feeds the webscraping agent |
@@ -248,12 +248,20 @@ What I need from the console developer / you:
 Suggested order: publish the OpenAPI contract and mock server first (days), then build read-only screens (conversations, orders, runs), then the approval queue (needs LG07), then settings/KB/integrations.
 
 ## Acceptance criteria & Verification Evidence
-- [x] Each agent has an intake sheet/spec (`docs/agents/ecommerce_agent_draft.md`, `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md`, Wave 1 KB and Invoices).
-- [x] Wave 1 and drafted agents implemented with declared `ACTION_RISK`, tenant isolation, and contact security:
-  - `ecommerce_agent` (`csa/agents/ecommerce/`): Multi-channel spoke + TikTok Shop Open API HMAC-SHA256 signer, Shopee & Lazada draft adapters.
+
+> The checked items and measurements below are dated LG13 implementation evidence,
+> not current release acceptance. Current source registers `EcommerceAgent`, but its
+> default instance has no platform adapters. The M6B verifier is not wired as a
+> callback/runtime flow, and no live seller authorization/provider acceptance is
+> established. Consult [current progress](../PROGRESS.md), the [M6 roadmap](../handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation)
+> and the source/tests before relying on these historical counts or claims.
+
+- [x] Agent intake/design material exists. The old ecommerce proposal was superseded by the M6 roadmap; this checklist entry does not establish live marketplace readiness.
+- [x] At the time of this roadmap entry, Wave 1 and drafted agents had implementations with declared `ACTION_RISK`, tenant isolation, and contact security; each capability still requires current source/acceptance review:
+  - `ecommerce_agent` (`csa/agents/ecommerce/`): Spoke contract and adapter groundwork. The default instance is constructed without adapters; this does not imply usable TikTok/Shopee/Lazada operations.
   - `kb_agent` (`csa/agents/kb/`): 384-dimensional vector embeddings, cosine distance chunk retrieval, auto-logging to `kb_gaps`, chunking and ingestion, gap resolution.
   - `invoice_agent` (`csa/agents/invoices/`): Contact-isolated status lookup, listing, and HMAC-SHA256 signed expiring download URLs (15-minute TTL).
-  - Wired into `CAPABILITIES`, `build_llm_provider`, and `PostgresTurnDependencies` in `csa/turn/deps.py`.
+  - Capability/agent registrations exist in `csa/turn/deps.py`; they do not by themselves prove provider dependencies are configured or live.
 - [x] Console API (`csa/console/router.py`, `csa/console/capabilities.py`):
   - Admin plan subscription (`is_enabled`) vs client self-service toggle (`client_enabled`) on `/console/v1/capabilities`.
   - Specialized tabs catalogue (`/console/v1/tabs/specialized`) covering LHDN MyInvois,

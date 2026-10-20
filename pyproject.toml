@@ -84,6 +84,7 @@ forbidden_modules = [
 dev = [
     "coverage==7.10.7",
     "import-linter==2.15",
+    "playwright==1.64.0",
     "pyright==1.1.414",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",

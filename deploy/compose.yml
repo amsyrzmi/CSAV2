@@ -1,4 +1,6 @@
 # CSA production compose (LG01 §9.1).
+# Historical manifest, NOT approved for the new release. It consumes the legacy
+# stack and an occupied host port. See RELEASE.md and compose.staging-proposal.yml.
 #
 # One app image, three long-running services (gateway, worker, delivery) that
 # differ only by `command`, plus a one-shot `migrate` service that applies the

@@ -1,0 +1,2 @@
+# Never send this checkout (including ignored local files) to a builder.
+**

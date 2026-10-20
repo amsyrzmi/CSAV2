@@ -3,6 +3,11 @@
 > Numbering note: `LG00–LG11` is separate from your existing build plan `00–13` so nothing collides in the repo.
 > Each phase file starts with a **CONTEXT FOR CODING AGENT** block so it can be pasted straight into Claude Code as a prompt.
 
+Current implementation/acceptance is in [progress](../PROGRESS.md), with the
+[domain/release continuation](../handoffs/2026-10-19-domain-release-next-session.md).
+The architectural plan, time estimates and original n8n findings below are historical
+design context, not deployment or current phase-completion claims.
+
 ---
 
 ## 1. Verdict (no hedging)
@@ -183,7 +188,7 @@ token encrypted per tenant.
 | 9 | LG09 | Cutover, ops, cloud path | 3–5 days |
 | 13 | LG13 | Agent catalog (kb, invoice, booking, email, web research, subscription, teach-a-task) and web-console API contract; starts after LG07 | per agent; console API runs in parallel |
 | 14 | LG14 | Teach-a-task virtual desktop (record, compile, scheduled replay) | separate phase |
-| 15 | LG15 | Console turnover n8n → CSA: retain supplied Next.js UI, one CSAV2 session/RBAC backend, core API parity, per-client cutover; defer PM | source discovery complete; implementation planned |
+| 15 | LG15 | Console turnover n8n → CSA: retain supplied Next.js UI, one CSAV2 session/RBAC backend, core API parity, per-client cutover; defer PM | M0–M5 scoped implementation/guarded-dev acceptance recorded; M6 offline/incomplete; public hosting and release pipeline pending |
 
 \*Part-time (~10–15 h/week), single developer, **estimates with wide error bars**.
 Telegram parity + order agent + HITL ≈ 7–9 weeks; WhatsApp, Gmail, Google

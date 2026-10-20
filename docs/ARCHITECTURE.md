@@ -2,11 +2,20 @@
 
 CSA is a multi-tenant customer-service runtime: Python 3.12, FastAPI, LangGraph, PostgreSQL (psycopg 3 async).
 Phase plans live in [langgraph-rebuild/](./langgraph-rebuild/LG00_master_plan.md).
+The [project overview](./PROJECT_OVERVIEW.md) explains the repository map and
+document authority; the [long-form architecture reference](./information.md)
+covers trust boundaries, data lifecycle, limitations and dated evidence.
+Current release/domain boundaries are in the
+[domain/release handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+This is the runtime-flow summary, not proof of running services or public deployment.
 
 ## Request pipeline
 
+Illustrative topology only: the diagram shows the intended configured channel
+path. It does not claim that the edge, hostname or any service is currently live.
+
 ```
-Telegram ─► Caddy ─► cloudflared ─► gateway  /hooks/<public_id>
+Telegram ─► Cloudflare edge ─► cloudflared ─► Caddy ─► gateway /hooks/<public_id>
                                       │  verify secret, parse, dedupe
                                       ▼
                                ingress_events (Postgres)
@@ -105,7 +114,9 @@ A failed write is logged loudly but never fails the customer turn. The console r
 
 ## Data model & safety
 
-- Every tenant table has `client_id` and staged Row-Level Security (do not `FORCE` while legacy n8n uses the owner role).
+- Tenant-scoped access uses staged row-level security and application authorization.
+  Some child/structural tables inherit tenant scope through constrained parent records;
+  inspect the schema and tests rather than assuming every table has `client_id`.
 - All SQL is in `db/sql/` and parameterised. Migrations are ordered and additive (`db/migrations/`).
   Gateway refuses to start if the schema version differs from `EXPECTED_SCHEMA_VERSION`.
 - Secrets are never logged; Groq error codes are secret-free (`groq_timeout`, `groq_http_<status>`…).
