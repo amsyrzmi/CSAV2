@@ -1,6 +1,34 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Latest slice: read-only hosted CI/artifact readiness review (2026-10-20)
+## Latest slice: hosted CI checkout-history fix (2026-10-20)
+
+The user approved the full source selection, committed locally as c2e5376 (118
+files; the earlier 92 status entries included directories). The user subsequently
+published the combined DB image, updated the three active CI/staging references
+in de955f0 to registry index digest
+`sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe`,
+and pushed `review/domain-release-2026-10-20`.
+
+[Hosted run 39366363372](https://github.com/amsyrzmi/CSAV2/actions/runs/39366363372)
+completed with failure, but GHCR service initialization, baseline/migrations,
+Ruff/format/Pyright/import boundary and isolated frontend acceptance passed.
+Hosted pytest: **2,549 passed**, 136 warnings, **658.60 s**, no skips.
+Gitleaks failed before a useful scan: default shallow checkout lacked the parent
+required by its push commit range; Git reported an ambiguous/unknown revision,
+and the scan processed approximately zero bytes. Its partial "no leaks" output
+is not acceptance. Coverage and packaging were skipped, so there are no release
+OCI artifacts (the scanner uploaded a diagnostic SARIF artifact only).
+
+The gate checkout now uses `fetch-depth: 0`. Frontend/package checkout behavior,
+scanner thresholds/configuration, read-only workflow permissions and deployment
+gates are unchanged. This is a two-line workflow fix, not a scanner bypass.
+The CLI watch helper also failed because the configured token cannot read check
+annotations; direct run-status/job/log reads succeeded. No token permissions changed.
+
+Next: validate the history fix on hosted CI, then coverage and package OCI
+export/metadata/checksum/upload. Do not merge or deploy until those gates pass.
+
+## Earlier slice: read-only hosted CI/artifact readiness review (2026-10-20)
 
 No remote write, run dispatch, artifact download or credential inspection occurred.
 `gh repo view`'s GraphQL default-branch field and REST contents/package endpoints

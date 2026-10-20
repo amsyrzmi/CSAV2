@@ -49,6 +49,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Read-only GHCR login so the private combined image can be pulled by
       # digest. GITHUB_TOKEN carries only `packages: read` for this job.

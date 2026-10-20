@@ -69,7 +69,7 @@ or skips, covering final source, all three packaged tests, unchanged load/latenc
 and disposable-only reset verification. Historical failures remain recorded.
 No runtime/schema behavior changed; encrypted-key recovery, real login continuity,
 checkpoint replay, upload backup and WAL/PITR/RPO/RTO are not established.
-Read-only hosted review finds local HEAD equals `origin/main` at
+Historical read-only hosted review found local HEAD equal to `origin/main` at
 848d8efa864c12d2168b4ccd79e32b97e0bde790, but **92 worktree paths are
 modified/untracked**. Remote main still has pre-packaging CI only; its latest
 existing run failed during container initialization before checkout and produced
@@ -79,6 +79,18 @@ No run validates the dirty frontend/package jobs or OCI artifact path. Next gate
 owner approval to select changes for a clean review branch and confirmation that
 GHCR grants this repo Actions read access. Do not commit/push/trigger/publish/deploy
 without approval. See the [release handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+That source-selection approval was subsequently granted: review candidate c2e5376
+contains the approved snapshot (118 files; the earlier 92 status entries included
+directories). The user published the DB image, updated its three active digest
+references in de955f0 and pushed `review/domain-release-2026-10-20`.
+Hosted [run 39366363372](https://github.com/amsyrzmi/CSAV2/actions/runs/39366363372)
+confirms GHCR service pull, schema setup, lint/types/imports and isolated frontend
+acceptance pass; **2,549 tests passed**, 136 warnings, **658.60 s**.
+The run nevertheless failed: Gitleaks could not resolve its commit range in the
+shallow checkout and scanned approximately zero bytes. No secret-scan pass is
+claimed; coverage and package jobs were skipped. The gate checkout now requests
+full history (`fetch-depth: 0`) without weakening scanning. Hosted validation of
+that fix, coverage and OCI export/upload remain pending; no merge/deployment.
 See the [release contract](../deploy/RELEASE.md) for operator gates.
 
 ## Historical acceptance context
