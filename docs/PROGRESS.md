@@ -11,8 +11,13 @@ The first session-adapter attempt stopped at fixture setup (**three errors**,
 than the expected config IDs; correcting that assertion required no application
 or repository-test changes. Details and exact identities are in the handoff.
 No full-suite rerun was needed for this docs/session-only acceptance slice.
-Next: commit/review the acceptance evidence and prepare the review PR, then obtain
-separate staging approval. No merge, publication, ingress or persistent DB change.
+Evidence committed as `0e148f85a2e4b63fb11541909befc7a2fdbd58b5` and pushed to
+`review/domain-release-2026-10-20`. Hosted CI run
+[39381920580](https://github.com/amsyrzmi/CSAV2/actions/runs/39381920580)
+was in progress at handoff. Draft PR creation/listing is blocked: the configured
+GitHub token returns HTTP 403 for pull-request resources. Next: use an authorized
+GitHub account/token to open/review the PR and confirm this commit's CI conclusion.
+No merge, publication, ingress or persistent DB change.
 
 Latest candidate scan (2026-10-20): offline Gitleaks **v8.24.2** scanned the
 complete review range `848d8efa864c12d2168b4ccd79e32b97e0bde790..da1b50da5b40479370507020ce7d17cd1317707f`:
@@ -23,7 +28,8 @@ allowlist/baseline. Only a bare committed-history copy was mounted; networking
 was disabled. This closes the initial candidate-range scan gap, not a full-history
 or dirty-worktree scan and not a guarantee that no secrets exist.
 The exact hosted-artifact acceptance above now supplies the next runtime evidence.
-Evidence/docs remain uncommitted; PR review, merge and staging are separate gates.
+The documentation evidence is committed as `0e148f8`; PR review, merge and staging
+remain separate gates.
 
 Latest hosted evidence (2026-10-20):
 [run 39367800618](https://github.com/amsyrzmi/CSAV2/actions/runs/39367800618)

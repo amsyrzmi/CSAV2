@@ -63,8 +63,15 @@ existing-service restart, registry publication, public route or deployment.
 This establishes exact hosted-artifact HTTP/server-rendered runtime acceptance,
 not JavaScript browser/public ingress acceptance, live provider eligibility,
 worker/delivery behavior, HTTP uploads or a persistent staging rollout.
-Next: commit/review the recorded evidence and prepare the review PR. Merge and
-staging execution still require separate approval.
+The four documentation updates were committed as
+`0e148f85a2e4b63fb11541909befc7a2fdbd58b5` and pushed to
+`review/domain-release-2026-10-20`. Hosted CI run
+[39381920580](https://github.com/amsyrzmi/CSAV2/actions/runs/39381920580)
+was still in progress at handoff. Listing PRs and creating a draft PR failed with
+HTTP 403 (`Resource not accessible by personal access token`) through both GitHub
+GraphQL and REST. No PR is confirmed or created. Next: with an authorized GitHub
+account/token, check the run conclusion and open/review the PR. Merge and staging
+execution require separate approval.
 
 ## Earlier slice: complete review-candidate secret scan (2026-10-20)
 
@@ -784,10 +791,13 @@ Official references consulted for the hosting/integration checklist:
 
 ## Next bounded task and copy-ready prompt
 
-Next: commit/review the acceptance evidence and prepare the review PR. Hosted
+At that point the evidence was uncommitted. It has since been committed and pushed
+as `0e148f85a2e4b63fb11541909befc7a2fdbd58b5`; hosted CI run 39381920580 was
+in progress, while PR listing/creation returned 403. Next: obtain authorized PR
+access, check that CI result and create/review the draft PR. Hosted
 export/upload/integrity, offline three-commit candidate scanning and all three exact
 hosted-artifact runtime cases now pass. Preserve earlier failures and limitations.
-No merge or deployment is authorized; evidence/docs remain uncommitted.
+No merge or deployment is authorized.
 
 ```text
 Continue from docs/handoffs/2026-10-19-domain-release-next-session.md.
@@ -801,9 +811,9 @@ Hosted Gitleaks scanned only the latest one-commit push; the initial scan failed
 The separate offline redacted scan now passes over all three candidate commits.
 All three disposable acceptance cases now pass with exact hosted OCI manifests;
 the initial session-adapter identity mismatch and correction remain documented.
-Review the evidence/doc changes and obtain approval for their commit/push and a
-review PR; do not imply PR creation authorizes merge or deployment.
-No merge, publish or deployment is authorized.
+The evidence commit is pushed; check hosted run 39381920580 and create/review a
+draft PR using an authorized GitHub account. Do not imply PR creation authorizes
+merge or deployment. No merge, publish or deployment is authorized.
 Do not execute the persistent staging Compose proposal or auto-migrate on app startup.
 Keep promotion disabled. No push, commit, publish, deploy, DNS/tunnel/provider change,
 SSH, existing-service restart, production connection, environment-file inspection or
