@@ -5,8 +5,14 @@ The development environment may share a physical host with production; verify th
 configuration and use only the isolated dev stack.
 
 For the latest guarded console runtime and recovery constraints, start with the
-[runtime handoff](./handoffs/2026-10-16-runtime-stabilization.md). The generic
+[domain/release handoff](./handoffs/2026-10-19-domain-release-next-session.md) and retained
+[runtime history](./handoffs/2026-10-16-runtime-stabilization.md). The generic
 first-time commands below are not instructions to reset or reprovision the recovered dev.
+Repository-only CI/image packaging is implemented; see the
+[release contract and inert staging proposal](../deploy/RELEASE.md). Public hosting,
+promotion and deployment remain disabled/unverified. The historical production Compose
+file still assumes the old database/network and a conflicting host port; do not run it
+for this release. Preserve the existing `fourstacks.my`/`www` landing service.
 
 ### Dependency and database-image provenance
 
@@ -66,9 +72,10 @@ Apply a new migration without resetting:
 
 ## Checks
 
-`make lint` (Ruff, format, Pyright, import-linter) and `ENV=ci make test` (~14 min; latest
-full run: 333 passed, including composer failover, process-level worker and simultaneous-ingress
-diagnostics).
+`NO_LOCAL_ENV=1 ENV=ci make lint` runs Ruff, format, Pyright and import-linter;
+`NO_LOCAL_ENV=1 ENV=ci make test` runs the suite. Runtime and counts vary: the old
+333-test/~14-minute figure was historical, not a current estimate. Consult
+[progress](./PROGRESS.md) for exact focused/full-suite results and latency limitations.
 Run tests without `.env.local` exported into the shell, or settings tests fail.
 
 Focused offline regression run (Docker required, isolated testcontainers; no provider calls):

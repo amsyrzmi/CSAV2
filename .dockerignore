@@ -1,0 +1,2 @@
+# Deny the entire checkout. Use the explicit materializers, not a root build.
+**

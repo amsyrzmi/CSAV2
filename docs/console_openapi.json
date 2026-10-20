@@ -2428,6 +2428,168 @@
         "title": "SpecializedTabInfo",
         "type": "object"
       },
+      "StoreConnection": {
+        "additionalProperties": false,
+        "description": "Local lifecycle observation, never a current provider authorization decision.",
+        "properties": {
+          "live_integration": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "Live Integration",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "unsupported",
+              "missing_shop_id",
+              "unverified",
+              "revoked",
+              "disconnected",
+              "expired",
+              "app_unavailable",
+              "binding_missing",
+              "permissions_missing",
+              "authorization_recorded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StoreConnection",
+        "type": "object"
+      },
+      "StorePage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StoreRecord"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "marketplace_sync": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "Marketplace Sync",
+            "type": "string"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "source": {
+            "const": "local_credential_records",
+            "default": "local_credential_records",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "StorePage",
+        "type": "object"
+      },
+      "StoreRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "const": "unverified",
+            "default": "unverified",
+            "title": "Authorization",
+            "type": "string"
+          },
+          "connection": {
+            "$ref": "#/components/schemas/StoreConnection"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "expiry": {
+            "enum": [
+              "unknown",
+              "expired",
+              "not_expired"
+            ],
+            "title": "Expiry",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "permissions": {
+            "const": "unknown",
+            "default": "unknown",
+            "title": "Permissions",
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "tiktok_shop",
+              "shopee",
+              "lazada"
+            ],
+            "title": "Platform",
+            "type": "string"
+          },
+          "provider_reads": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "Provider Reads",
+            "type": "string"
+          },
+          "shop_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Id"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "shop_id",
+          "expires_at",
+          "updated_at",
+          "expiry"
+        ],
+        "title": "StoreRecord",
+        "type": "object"
+      },
       "ThreadOut": {
         "additionalProperties": false,
         "properties": {
@@ -3691,6 +3853,47 @@
             }
           },
           {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "telegram",
+                    "web",
+                    "tiktok_shop",
+                    "shopee",
+                    "manual"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          },
+          {
             "in": "header",
             "name": "x-client-id",
             "required": false,
@@ -3763,6 +3966,47 @@
                 }
               ],
               "title": "Client Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "telegram",
+                    "web",
+                    "tiktok_shop",
+                    "shopee",
+                    "manual"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
             }
           },
           {
@@ -3973,6 +4217,233 @@
           }
         },
         "summary": "Product"
+      }
+    },
+    "/console/v1/business/stores": {
+      "get": {
+        "operationId": "stores_console_v1_business_stores_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "tiktok_shop",
+                    "shopee",
+                    "lazada"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stores"
+      }
+    },
+    "/console/v1/business/stores/{record_id}": {
+      "get": {
+        "operationId": "store_console_v1_business_stores__record_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Record Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "tiktok_shop",
+                    "shopee",
+                    "lazada"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Store"
       }
     },
     "/console/v1/capabilities": {

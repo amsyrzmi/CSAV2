@@ -2,6 +2,14 @@
 
 **Architecture snapshot: 17 October 2026, Malaysia time.**
 
+Status/schema reconciliation: 19 October 2026. This long-form architecture snapshot
+retains dated descriptions; current continuation is the
+[domain/release handoff](handoffs/2026-10-19-domain-release-next-session.md).
+Source expects 0360; M6B/M6D remain offline foundations, not live provider/ledger
+authority. Repository-only CI/image packaging is implemented; hosting on
+`console.fourstacks.my`, promotion and deployment remain disabled/unverified.
+See the [release contract](../deploy/RELEASE.md).
+
 **Audience:** clients, delivery stakeholders, technical reviewers, and engineers maintaining CSA.
 
 CSA is a multi-tenant customer-service automation platform. It receives customer messages, interprets requests, retrieves business facts or runs a bounded business operation, applies reply policy, and delivers an answer or brings in a human. A web console gives authorized users access to administration, knowledge management, runtime activity, a private assistant sandbox, and a Telegram customer inbox.
@@ -86,7 +94,8 @@ Sources: [master plan](langgraph-rebuild/LG00_master_plan.md), [runtime wiring](
 | Private sandbox assistant | Owner-private text conversations; knowledge and product-information reads. | Customer records and business actions are unavailable. Held sandbox drafts have no release feature. |
 | Telegram staff inbox | Staff transcripts, takeover/release, human replies, reply approve/reject/edit. | M5 guarded development rollout and representative role checks are recorded. |
 | Business workspace | Staff-only local order/product/stock summaries and pagination. | M6A is an offline foundation; it has not replaced the last approved M5 build. |
-| TikTok Shop | OAuth/webhook scaffolding and adapter libraries; stricter typed order reads/pages. | M6B reads are offline groundwork. Provider compatibility, tenant/store binding, and console integration are pending. |
+| TikTok Shop | Mounted legacy OAuth/webhook scaffolding; separate typed M6B reads, encrypted grant lifecycle and synthetic verifier/completion composition. | New M6B flow is not runtime-registered. Do not expose the legacy callback as its replacement; live eligibility, app/key source, safe callback and console integration remain gated. |
+| Inventory M6D | Frozen command/audit contracts, in-memory prototype, identity-only 0360 scaffolding and disposable transaction/role tests. | No authoritative runtime ledger, provider stock writes or synchronization. |
 | Shopee and Lazada | Adapter interfaces/placeholders and explicit unavailable webhook/OAuth responses. | No completed operational marketplace integration. |
 | Invoice reads | Contact-scoped local status/listing; signature helper/library code. | Console download-link endpoint returns 501; artifact serving and issuance are unavailable. |
 | Booking/subscriptions | Local reads and persisted preparation requests. | No Calendar booking, payment, cancellation, or billing execution. |
@@ -94,7 +103,11 @@ Sources: [master plan](langgraph-rebuild/LG00_master_plan.md), [runtime wiring](
 | WhatsApp, customer email, public web chat, voice | Contracts, inherited schema, or plans. | No completed active customer-channel implementation in the current turn worker. |
 | Projects, PM, terminal, Hermes, workroom, desktop teaching | Retained reference UI/documents and future plans. | Routes are blocked or 404 stubs; those runtimes are not started by the adopted application. |
 
-The latest recorded completed M6A full run is **695 passed and one TCP latency failure**. M6B records **41 targeted adapter/e-commerce tests passing**, with its final full run still marked in progress in the checked documentation. Earlier M5 recorded **692 passing tests** and guarded development acceptance. These are separate dated results, not cumulative test counts or a production SLA.
+The M6A **695 passed / one TCP latency failure** and early M6B **41 targeted tests**
+are dated evidence, not the latest runs. Current exact M6B and M6D validation, including
+focused versus full-suite scope and retained latency failures, is maintained in
+[PROGRESS.md](PROGRESS.md). No documentation reconciliation is a new test or deployment
+pass.
 
 Current status authority: [PROGRESS.md](PROGRESS.md), [console API](CONSOLE_API.md), [M5 evidence](handoffs/2026-10-17-m5-telegram-inbox.md), [M6 roadmap](handoffs/2026-10-15-console-source-migration-plan.md).
 
@@ -1148,8 +1161,18 @@ SQL migrations are ordered, additive files. The runner applies each unapplied fi
 | `0280` | Upload batch/source metadata and deletion fences. |
 | `0290` | Private sandbox participants/threads/turns. |
 | `0300` | Telegram inbox versions, suppression boundary, send authority and action receipts. |
+| `0310` | Internal ecommerce grant/lifecycle persistence. |
+| `0320` | Credential generation and single-attempt read dispatch fences. |
+| `0330` | Encrypted immutable shop-binding evidence. |
+| `0340` | Non-secret app revision/lifecycle fences and audit. |
+| `0350` | Single-use authorization attempts and atomic reconnection. |
+| `0360` | Tenant-composite identity anchors and empty warehouse registry; no ledger. |
 
-Gateway readiness checks that every shipped SQL version is present and the maximum equals `0300`. A mismatch returns 503. The gateway's lifespan opens pools; schema mismatch enforcement is in readiness, so deployment must actually honor readiness before routing traffic.
+Gateway readiness checks that every shipped SQL version is present and the maximum
+equals the source expectation, currently `0360`. A mismatch returns 503. The last
+approved persistent dev is recorded as `0300`, not migrated or re-probed here.
+The gateway's lifespan opens pools; deployment must honor readiness before routing
+traffic rather than relying on `/healthz`.
 
 Sources: [schema baseline](../db/schema_baseline.sql), [schema notes](schema_notes.md), [migrations](../db/migrations/), [SQL](../db/sql/), [migration runner](../scripts/migrate.py).
 
@@ -1263,7 +1286,10 @@ Langfuse currently uses its batch ingestion API, not a completed universal OTLP 
 
 `GET /healthz` is process liveness and performs no I/O. It can remain 200 while dependencies are unhealthy.
 
-`GET /readyz` checks logging health, database reachability with a short statement timeout, all shipped SQL migration versions and maximum `0300`, plus identity readiness when configured. It does not probe Groq, Jev, TEI, Telegram, marketplace accounts, worker progress, or filesystem capacity.
+`GET /readyz` checks logging health, database reachability with a short statement timeout,
+all shipped SQL migration versions and source maximum (currently `0360`), plus identity
+readiness when configured. It does not probe Groq, Jev, TEI, Telegram, marketplace
+accounts, worker progress, or filesystem capacity.
 
 Configured logging has a background writer, 1,024 waiting events plus one active write, and a five-second stall threshold. Overflow/writer errors latch an unhealthy state with a dropped-event count; a temporary stall can recover if no events were lost. Shutdown draining is bounded and can raise.
 

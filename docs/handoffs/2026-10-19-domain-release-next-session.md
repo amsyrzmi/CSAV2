@@ -1,0 +1,641 @@
+# Fourstacks domain and release handoff (2026-10-19)
+
+## Latest slice: read-only hosted CI/artifact readiness review (2026-10-20)
+
+No remote write, run dispatch, artifact download or credential inspection occurred.
+`gh repo view`'s GraphQL default-branch field and REST contents/package endpoints
+returned 403 with the configured token; this limits visibility, not proof of a
+repository/package permission setting. `gh workflow list` identified `ci` as an
+active workflow.
+
+Read-only branch comparison:
+
+- Local `HEAD` and `origin/main` both resolve to
+  `848d8efa864c12d2168b4ccd79e32b97e0bde790`.
+- The worktree has **92 modified/untracked paths**. Therefore neither HEAD nor
+  origin/main contains the current packaging changes; no clean release candidate
+  for those changes exists remotely.
+- `git show origin/main:.github/workflows/ci.yml` confirms remote workflow source
+  predates the local changes: it has only `gate`, no global `NO_LOCAL_ENV=1 ENV=ci`,
+  no service-level GHCR credentials and no frontend/package jobs.
+- Latest existing run is [39025588709](https://github.com/amsyrzmi/CSAV2/actions/runs/39025588709)
+  for that same HEAD. It failed at **Initialize containers** before checkout and
+  all workflow steps were skipped. Logs supplied no further cause. It produced
+  **zero artifacts**. This does not prove the local credentials change fixed
+  service-image pull access.
+- GitHub's package metadata endpoint also returned 403 for the authenticated
+  identity. GHCR package visibility and the explicit repository Actions read grant
+  remain **unverified**; do not infer either public or private access from that 403.
+- No remote run includes or validates the dirty frontend/package workflow, OCI
+  exporter/metadata/checksum/upload steps or any candidate image.
+
+**Next required decision before hosted validation:** the repository owner must
+review/select the intended dirty-worktree changes for a clean candidate, approve
+committing and pushing that exact selection (prefer a review branch/PR), and confirm
+the GHCR package grants `amsyrzmi/CSAV2` Actions `read` access. Do not commit or push
+the 92-path worktree wholesale, alter package visibility, dispatch CI, publish an
+image or deploy without that explicit approval. Once a clean commit is approved and
+on a review branch, observe its normal PR CI and verify gate/frontend/package jobs,
+OCI metadata and checksummed artifacts. The package job is build/artifact-only;
+promotion remains disabled.
+
+## Earlier slice: synthetic database backup/restore rehearsal (2026-10-20)
+
+Added `test_packaged_synthetic_backup_restore` to
+[the packaged acceptance module](../../tests/test_packaged_console.py).
+See [the restore contract and exclusions](../../deploy/RELEASE.md#disposable-synthetic-database-restore).
+The source is the module's migrated synthetic Testcontainer; the destination is
+a second fresh Testcontainer. No real dev, persistent staging or production data
+is used, and no application/runtime/schema behavior changed.
+
+The test takes a custom-format logical dump and a separate password-free roles dump.
+Only the existing Testcontainer owner's duplicate CREATE statement is omitted;
+role attributes, database owners, grants and RLS are restored. Both restore commands
+fail on errors, with database restore in one transaction. App/identity passwords
+are deliberately re-provisioned with fresh synthetic values, not copied role hashes.
+
+Assertions compare exact migration versions/applied timestamps, two tenant IDs,
+synthetic user email, membership role and audit actor/tenant/target fields. The
+packaged runtime then checks domain/identity readiness and membership tenant
+isolation, denied app reads of session secrets, denied identity reads of domain
+data and audit mutation denial. Checkpoint table presence is explicitly checked.
+Removing/restoring the exact 0360 ledger entry verifies readiness refusal/recovery
+for simulated incomplete migration metadata; this is not a corrupted-archive drill.
+Dump bytes stay in process memory and target-container temporary files, which
+are removed by teardown. No backup file is added to the repository or uploaded.
+
+Focused command:
+
+```sh
+PATH=/tmp/fourstacks-toolbin:$PATH NO_LOCAL_ENV=1 ENV=ci uv run pytest \
+  tests/test_packaged_console.py::test_packaged_synthetic_backup_restore \
+  -q -x --tb=short
+```
+
+**1 passed**, one existing Testcontainers warning, **291.16 s**.
+The initial type check found two Docker output-union typing errors; added explicit
+bytes guards and an explicit checkpoint-table assertion before the final full
+check. No failed pytest restore attempt or runtime workaround occurred.
+
+Final command:
+`PATH=/tmp/fourstacks-toolbin:$PATH NO_LOCAL_ENV=1 ENV=ci make lint test`,
+captured with `set -o pipefail` and a session-local log. Ruff/format (**310 files**),
+Pyright (**0 errors**) and import boundary pass; **2,549 tests passed**,
+136 existing warnings, **3,351.07 s** (55m51s), no failures/skips.
+This covers the final type guards/checkpoint assertion, all three packaged tests,
+unchanged load/latency tests and
+`tests/test_migrate.py::test_make_reset_only_disposable_container` (passed).
+No persistent reset occurred. Historical latency failures remain evidence;
+this pass does not establish stable capacity.
+
+Not established: actual browser login/session continuity after restore, checkpoint
+replay, upload-file recovery, encryption-key/credential recovery, WAL/PITR,
+RPO/RTO, persistent backup scheduling, public ingress or hosted CI/OCI acceptance.
+All M6/live-provider gates remain. No environment file/secret inspection, persistent
+database access/reset, service restart, publish/deploy, commit/push or DNS/tunnel
+change occurred.
+
+## Earlier slice: disposable staging bootstrap and storage rehearsal
+
+Extended [the packaged acceptance module](../../tests/test_packaged_console.py)
+with a second independent test. Fresh allowlisted image builds are shared within
+the module, but bootstrap uses its own fresh Testcontainer/database, internal
+network and upload volume. It does not reuse the identity test's migrated fixture.
+See [the release contract](../../deploy/RELEASE.md#disposable-bootstrap-and-storage-rehearsal).
+
+The test proves:
+
+- Missing approval fails before reading nonexistent secret files; no domain
+  relations are added to the fresh database.
+- The baseline comes from the packaged Python image and is applied explicitly
+  with the disposable database image's `psql`. No application-startup migration.
+- Either incorrect owner or checkpoint DSN target is rejected before migrations:
+  baseline relation state is unchanged and runtime/identity roles remain absent.
+  Synthetic uppercase secret files exist only in container tmpfs.
+- Explicitly approved packaged migration provisions all shipped SQL through 0360,
+  identity login and `lg` checkpoint tables. Reapplication preserves exact
+  migration versions and original applied timestamps.
+- Packaged `bootstrap_console_admin.run` creates exactly one forced-change platform
+  admin and bootstrap audit event; a second invocation is rejected. The synthetic
+  password is passed through exec environment, never argv, and is absent from the
+  bootstrap output. This tests the packaged async entry point, **not** interactive
+  `getpass` prompting/confirmation.
+- A task-owned root-owned upload volume rejects the non-root container's write.
+  Even root exec in that capability-dropped application container cannot chown.
+  A separate network-disabled initializer with only CHOWN changes the volume's
+  directory ownership; the original UID/GID 1000 runtime then writes, reads,
+  checks ownership and deletes a synthetic probe. All owned containers, volume,
+  network attachment/network and database are cleaned up.
+
+Focused validation:
+
+```sh
+PATH=/tmp/fourstacks-toolbin:$PATH NO_LOCAL_ENV=1 ENV=ci uv run pytest \
+  tests/test_packaged_console.py::test_packaged_staging_bootstrap_and_storage \
+  -q -x --tb=short
+```
+
+First attempt: **1 failed**, one Testcontainers warning, **233.10 s**. Docker's
+archive API rejected writing into the read-only container, even at the tmpfs
+target. The test now writes its synthetic files using an unprivileged process
+inside explicitly UID-owned tmpfs; the runtime filesystem remains read-only.
+Final focused attempt: **1 passed**, one existing Testcontainers deprecation warning,
+**294.38 s**; focused Ruff/format/Pyright pass. No application, migration, frontend,
+provider or persistent deployment behavior changed.
+
+The first `PATH=/tmp/fourstacks-toolbin:$PATH NO_LOCAL_ENV=1 ENV=ci make lint test`
+attempt passed lint and collected 2,548 tests, but was stopped before a final report.
+Captured output reached `tests/test_load_acceptance.py .F`; exact failure detail,
+timing and final totals are unavailable. Do not claim this run passed, attribute a
+cause or erase it with a later passing run. Validation was restarted with retained
+session-local output, without changing tests or latency thresholds.
+
+Final recorded rerun used the same command with `set -o pipefail` and `tee` to a
+session-local log. Ruff/format (**310 files**), Pyright (**0 errors**) and import
+boundary pass; **2,548 tests passed**, 136 existing warnings, **2,148.51 s**
+(35m48s), no failures/skips. Both packaged-console tests, all four load acceptance
+tests and the disposable-only reset test passed. This covers final test source;
+subsequent changes are documentation only. The interrupted load failure remains
+recorded, with no established cause or changed acceptance threshold.
+
+No persistent staging Compose execution, public ingress, real secrets or environment
+files, owner credential mounting into gateway/frontend, service restart, publish,
+push/commit, DNS/tunnel change, provider call or production connection occurred.
+HTTP uploads/worker execution, backup/restore, hosted CI/OCI and live ingress remain
+unverified. Existing M6 labels/gates and historical latency failures remain intact.
+
+## Earlier slice: disposable packaged-console acceptance
+
+Added [the packaged-console harness](../../tests/test_packaged_console.py).
+It builds fresh Python/Next candidates from the existing allowlisted materializers
+and uses the module's synthetic Testcontainers PostgreSQL, not persistent Compose.
+The non-root, read-only application containers have no published ports and only a
+new internal network. A test-local loopback HTTPS terminator forwards to the
+frontend's private bridge address. The TLS client verifies the generated test
+certificate; Secure cookies are not bypassed or downgraded. This requires local
+Linux Docker bridge connectivity, not remote-daemon/Desktop acceptance.
+
+Verified assertions include anonymous rejection; platform-admin login; forced
+password change and session rotation/old-session rejection; exact Origin/CSRF
+checks; tenant-admin, staff and reader boundaries; two synthetic tenants with
+distinct orders and cross-tenant list/detail denial; logout; secret-free validation
+errors; authenticated/anonymous legacy marketplace path 404s; and rendered M6
+local-only/non-authoritative/unavailable warnings. Removing migration 0360, adding
+an unsafe identity-domain grant, or removing an identity SELECT grant makes the
+running gateway refuse readiness. Grants/ledger entries are restored in `finally`
+blocks, and final readiness recovers. No runtime/source/API/migration behavior changed.
+
+Validation chronology:
+
+- The earlier acceptance attempt was interrupted without a completed result.
+  Its one known candidate tag and explicitly inspected generated context directory
+  were removed; unrelated temporary files, caches, images and services were left alone.
+- First completed attempt:
+  `PATH=/tmp/fourstacks-toolbin:$PATH NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_packaged_console.py -q -x --tb=short`
+  ended with **1 setup error**, one existing Testcontainers deprecation warning,
+  **375.98 s**. Both builds completed, but Docker did not publish a port on its
+  internal-only network. The harness now uses private bridge addresses with no
+  published application ports instead of weakening network isolation.
+- Second attempt with the same command: **1 failed**, one warning, **144.45 s**.
+  The harness expected 400 for a forged browser identity header; current source
+  explicitly returns 403. Corrected that assertion to the exact implemented denial.
+- Final focused attempt with the same command: **1 passed**, one existing
+  Testcontainers deprecation warning, **154.43 s**, no skips.
+  All role/readiness/route assertions above completed. Candidate tags, contexts,
+  application containers, network attachment/network, TLS files and the database
+  are torn down by the test's cleanup/Testcontainers.
+- Final required check:
+  `PATH=/tmp/fourstacks-toolbin:$PATH NO_LOCAL_ENV=1 ENV=ci make lint test`
+  passed Ruff, formatting (**310 files**), Pyright (**0 errors**) and the import
+  boundary; **2,547 tests passed**, 136 existing Testcontainers/missing-secret-directory
+  warnings, **3,490.88 s**, no failures/skips. This covers the final harness,
+  unchanged latency assertions and
+  `tests/test_migrate.py::test_make_reset_only_disposable_container` (passed,
+  not skipped). No bare persistent reset was executed. Historical latency failures
+  remain below/in progress; one passing full run establishes no stable capacity.
+- Documentation validation: **80 local targets** and balanced fences across the
+  release contract, progress, LG15 and this handoff; `git diff --check` passed.
+
+See [the release contract](../../deploy/RELEASE.md#disposable-packaged-console-acceptance)
+for prerequisites and limitations. This is HTTP-client/server-rendered acceptance,
+not authenticated JavaScript browser, Cloudflare/cookie-forwarding, DNS,
+hosted Actions/OCI, persistent staging, uploads/worker or provider acceptance.
+The existing frontend source and its allowlist were not changed. The attached
+environment snapshot was not inspected. No push, commit, publish, deployment,
+DNS/tunnel/provider change, existing-service restart or persistent migration/reset
+was performed. M6 and live seller eligibility remain incomplete/gated.
+
+## Earlier slice: repository-only packaging implemented
+
+The CI/release-packaging continuation below has now been implemented, **not
+deployed**. See [release packaging and staging proposal](../../deploy/RELEASE.md)
+for the build contract and operator gates. The earlier host observations and
+domain/provider planning below remain dated context, not fresh runtime evidence.
+
+- [CI](../../.github/workflows/ci.yml) preserves the Python checks, ephemeral
+  schema setup, Testcontainers, secret scan and coverage. Service-level GHCR
+  credentials fix the pull-before-login bootstrap ordering. Global
+  `NO_LOCAL_ENV=1 ENV=ci` prevents local development configuration loading.
+- A separate frontend gate installs the exact reviewed lock into a fresh
+  allowlisted directory with lifecycle scripts disabled, then tests transport,
+  state and release origin rules, ESLint, typegen/TypeScript, standalone build
+  and trace exclusions. The materializer and gate share one source allowlist.
+- Build-only packaging waits on both gates, requires clean source and produces
+  separate Python/frontend OCI archives, full-SHA revision labels/tags, commit
+  timestamp/platform/origin, input-file checksums, BuildKit digest metadata and
+  archive checksums. Permissions remain read-only; there is no push, publish,
+  promotion or deployment job. Hosted workflow execution has not been tested.
+- Digest-pinned Python/uv/Node bases, frozen production Python dependencies and
+  `npm ci --ignore-scripts` are used. Explicit generated contexts exclude local
+  configuration, copied API/backups, Git, uploads and installed modules. Root,
+  frontend-checkout and historical Dockerfile contexts deny the whole checkout;
+  disposable DB builds send only their Dockerfile. Symlinks fail closed.
+  A final runtime-asset audit found the existing synthetic decision-case JSON;
+  it is explicitly allowlisted and its packaged pure loader is verified offline.
+- Python runs source from `/app` without an unlocked Hatch build dependency.
+  The non-root runtime includes all shipped SQL and gateway/worker/delivery/KB
+  commands. Gateway readiness uses Python `/readyz`, not unavailable `curl`.
+  Next standalone includes its runtime dependencies, static assets and brand.
+- The frontend artifact is origin-bound. Build and runtime must agree on the
+  private `CSA_CONSOLE_API_ORIGIN`; its launcher refuses missing, invalid or
+  mismatched origins before starting Next. Changing it requires a new artifact.
+- The [staging proposal](../../deploy/compose.staging-proposal.yml) has an
+  isolated database/volume/internal network, separate uppercase domain,
+  checkpoint and identity secret targets, HTTPS origin/secure cookies, readiness
+  dependencies and **no host bindings/external network**. Every service needs
+  an explicit approval profile. Migration has a different profile plus an exact
+  approval/target guard, never an application startup dependency. Baseline,
+  identity bootstrap, volume ownership and release acceptance remain operator
+  gates; no staging service or persistent migration was run.
+- The gateway still mounts the old marketplace routes. Those routes are not
+  the M6B callback; the frontend rejects their authorize/callback/webhook paths
+  with 404 even with a session. Packaged-runtime checks confirm that boundary.
+  Direct private access still reaches mounted backend routes: do not expose a
+  gateway catch-all. No legacy OAuth authorization repair is claimed.
+- Existing M6 local-only/unverified/setup-required and synthetic-demo labels
+  remain intact. No live TikTok/Gmail/Calendar or authoritative inventory is
+  enabled. Apex/`www`, DNS, tunnel, providers and old services remain untouched.
+
+### Commands and outcomes for this slice
+
+Commands run from the repository root; `PATH=/tmp/fourstacks-toolbin:$PATH`
+selects the existing host-local Node 24.21.0/npm tooling, not a portable dependency
+install. CI/container Node is pinned to 24.14.0. No environment-file contents were
+read. The requested parent `../AGENTS.md` does not exist; root/frontend guidance
+was read.
+
+| Command | Outcome |
+|---|---|
+| `PATH=/tmp/fourstacks-toolbin:$PATH npm --prefix CSA_WebConsole/csa-console/web run check:isolated` | First attempt failed because local `node_modules/next` was missing. After the reviewed install below, passed 17 transport/routing tests + 2 state tests + 1 origin test, ESLint, typegen, TypeScript, standalone build and safe traces. |
+| `PATH=/tmp/fourstacks-toolbin:$PATH npm --prefix CSA_WebConsole/csa-console/web ci --ignore-scripts --no-audit --no-fund` | Passed; 500 locked packages, lifecycle scripts disabled. Existing ESLint support-deprecation warning retained; no upgrade. |
+| `NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_release_context.py tests/test_health.py tests/test_migrate.py tests/test_console_contract_snapshot.py -q` | 18 passed, 1 Testcontainers deprecation warning, 79.09 s. Includes the real reset target bound only to a disposable fixture database. This preceded expanded pure packaging guards. |
+| `NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_release_context.py -q` | Final pure packaging/approval selection: 16 passed, 1.53 s; no DB, secret access or provider calls. |
+| `NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_release_context.py tests/test_decision_evals.py -q` | Final allowlist/resource regression: **27 passed, 2.36 s**, no warnings. An initial invocation used nonexistent `tests/test_decision_eval.py` and ran no tests (exit 4); corrected to the existing plural filename. |
+| `NO_LOCAL_ENV=1 ENV=ci make lint` | Initial run found a new-test import-order issue; corrected with targeted formatting. Final pass: 309 formatted files, Pyright 0 errors, import contract kept. |
+| `PATH=/tmp/fourstacks-toolbin:$PATH node CSA_WebConsole/csa-console/web/scripts/check-isolated.mjs --install` | First exact CI-mode run installed successfully and passed tests/lint/typecheck, then Next's build printed `Failed to type check` without a diagnostic. A later exact rerun passed all 20 tests, lint/types/build/traces after candidate image builds completed. Failure remains recorded; cause is unproven and no check was disabled. Both temporary trees were cleaned. |
+| `NO_LOCAL_ENV=1 ENV=ci make lint test` | Passed lint and **2,545 tests**, 136 existing Testcontainers/missing-secret-directory warnings, **2,938.01 s**. No failures/skips, including unchanged latency checks and disposable-only reset. The run collected before the final Dockerfile-parent symlink regression and synthetic JSON allowlist fix; these have the final separate 27-test/lint pass above. No second full suite was run. |
+
+Materialization and local build commands:
+
+```sh
+NO_LOCAL_ENV=1 ENV=ci python3 -m scripts.release_context /tmp/csav2-release-109dcb30-python
+PATH=/tmp/fourstacks-toolbin:$PATH node CSA_WebConsole/csa-console/web/scripts/check-isolated.mjs \
+  --context /tmp/csav2-release-109dcb30-frontend
+DOCKER_BUILDKIT=0 docker build \
+  --build-arg SOURCE_REVISION=$(git rev-parse HEAD) \
+  --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  -t csa-release-check-python:109dcb30 /tmp/csav2-release-109dcb30-python
+DOCKER_BUILDKIT=0 docker build \
+  --build-arg SOURCE_REVISION=$(git rev-parse HEAD) \
+  --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  --build-arg CSA_CONSOLE_API_ORIGIN=http://gateway:8080 \
+  -t csa-release-check-frontend:109dcb30 /tmp/csav2-release-109dcb30-frontend
+# Refresh the Python image after the final context-parent symlink guard:
+NO_LOCAL_ENV=1 ENV=ci python3 -m scripts.release_context /tmp/csav2-release-109dcb30-python-final
+DOCKER_BUILDKIT=0 docker build \
+  --build-arg SOURCE_REVISION=$(git rev-parse HEAD) \
+  --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  -t csa-release-check-python:109dcb30 /tmp/csav2-release-109dcb30-python-final
+# Refresh after auditing the existing synthetic JSON runtime asset:
+NO_LOCAL_ENV=1 ENV=ci python3 -m scripts.release_context /tmp/csav2-release-109dcb30-python-assets
+DOCKER_BUILDKIT=0 docker build \
+  --build-arg SOURCE_REVISION=$(git rev-parse HEAD) \
+  --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  -t csa-release-check-python:109dcb30 /tmp/csav2-release-109dcb30-python-assets
+```
+
+All four image builds passed. Public base images were pulled by their recorded
+versions to resolve the digests now pinned in the Dockerfiles. `docker buildx
+version` / `imagetools inspect` initially failed because Buildx is unavailable on
+this host; the existing legacy builder was used instead, with its deprecation
+warning. The OCI exporter/metadata/upload path is **not locally verified**.
+Final contexts were 1.730 MB Python and 563.2 kB frontend, not full checkouts.
+These are **dirty-worktree candidates**, not releases of the HEAD label
+`848d8efa864c12d2168b4ccd79e32b97e0bde790`.
+Final local image IDs (not registry manifest digests):
+
+- Python: `sha256:b1f9c65c527f61c354ae93cd4844eee58c299d8bebccf01e54cc65e81185fdd2`.
+- Frontend: `sha256:325f8e29f07c612a560334798de5a07e3f83217ebd3c290380eb44d8d95eaeab`.
+
+Transient `docker run --rm --network none --read-only` smoke checks passed.
+Python imported gateway/worker/delivery/KB modules, checked UID 1000, all shipped
+SQL through 0360 and absent environment/reference trees, without a DB connection.
+The final refreshed image also successfully loaded the existing synthetic decision
+cases through the pure loader; no evaluator/provider execution was invoked.
+Frontend used container-only loopback (no host port), tmpfs cache and UID 1000:
+launcher startup, baked rewrite destination, login/static/brand 200, protected
+navigation redirect and all four legacy marketplace path denials passed.
+The default launcher with `CSA_CONSOLE_API_ORIGIN=http://different:8080` exited
+1 before startup, as required. The helper server/container was terminated;
+no existing service was restarted.
+
+Compose structure validation passed, using no environment file or actual secrets:
+
+```sh
+CSA_STAGING_PYTHON_IMAGE=csa-python@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+CSA_STAGING_FRONTEND_IMAGE=csa-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+CSA_STAGING_CONSOLE_ORIGIN=https://staging.example.test \
+docker compose --env-file /dev/null -f deploy/compose.staging-proposal.yml config --quiet
+```
+
+Workflow YAML/read-only permissions/gate dependencies, final script syntax,
+focused frontend-script lint and **299 local documentation links across nine
+maintained files** passed structural checks; `git diff --check` passed. An initial
+link-check script missed whitespace around an existing multiline Markdown target;
+the corrected whitespace-aware check passed without changing that link. A focused
+ESLint invocation from the wrong directory found no matching files; rerunning from
+the adopted package directory passed. This is not hosted Actions acceptance, registry
+pull permission proof, byte-identical double-build evidence or staging deployment
+acceptance. No registry publishing/import/promotion, HTTPS identity/browser matrix,
+proxy cookie forwarding, backup restore, migrations on a persistent database,
+real ingress connectivity, live provider or landing-page HTTP smoke check was run.
+No push, commit, SSH, DNS/tunnel/provider change or service replacement occurred.
+Source still expects 0360; persistent dev0300 is only the last recorded approval.
+Earlier latency failures remain in [progress](../PROGRESS.md); packaging does not
+change thresholds or establish capacity.
+The four explicitly task-owned build-context directories were removed after
+validation; candidate images remain local, unpublished. Existing temporary
+directories, Docker services and unrelated worktree changes were not cleaned up.
+
+## Original domain-planning scope (historical)
+
+This is the current continuation entry point. Read [AGENTS](../../AGENTS.md),
+[progress](../PROGRESS.md), [LG15](../langgraph-rebuild/LG15_console_turnover.md),
+the [M6 roadmap](./2026-10-15-console-source-migration-plan.md), and
+[LG09](../langgraph-rebuild/LG09_cutover_ops_cloud.md). The
+[M6B verifier handoff](./2026-10-18-m6b-verifier-next-session.md) is retained as dated
+subsystem evidence, not the current schema/deployment instruction.
+
+The user selected:
+
+- Preserve the existing landing page on `fourstacks.my` and `www.fourstacks.my`.
+- Plan the CSA console at `https://console.fourstacks.my`.
+- Document a gated CI/CD pipeline and next implementation prompt, not implement or
+  deploy a pipeline in this documentation slice.
+- Google Gmail and Calendar are intended future CSA integrations, not an instruction
+  to alter existing n8n integrations. Calendar should eventually support relevant dated
+  business workflows; this does not authorize automatically exporting every date.
+
+Preserve the dirty worktree, including broad console, ecommerce, inventory and migration
+changes. Do not reset, stash, restore, remove unrelated files or edit `ui-guide/`.
+No live infrastructure, DNS, provider settings, services, environment files or persistent
+database were changed or inspected in this slice.
+
+## Pre-packaging source versus reported host state (historical)
+
+| Area | Evidence and implication |
+|---|---|
+| Source schema | [Gateway](../../apps/gateway/main.py) expects every shipped SQL migration and maximum `0360`; [0360](../../db/migrations/0360_inventory_identity.sql) is identity-only inventory scaffolding. |
+| Persistent dev | Last approved recorded state is `0300`. Not probed in this task; do not call it the current observed version or start the latest build against it without reviewed forward migrations. |
+| Existing host | User-supplied `docker ps` shows landing service `fourstacks-web` on loopback 8088, `cloudflared`, legacy `csa-platform` DB/MCP/KB/embeddings, n8n and LiveKit. Running containers alone do not prove traffic, dependency usage or safe retirement. |
+| Port conflict | The supplied snapshot binds another application to host 8080, while [production Compose](../../deploy/compose.yml) tries loopback 8080. Select a verified free port or private network route; do not run this manifest unchanged. |
+| Runtime uncertainty | No new CSAV2 gateway/frontend containers appear in that snapshot. Host processes, reverse-proxy rules, tunnel ingress, Docker networks and image digests were not supplied or inspected; deployment status remains unknown. |
+| Temporary databases | Two random-name Postgres containers in the snapshot could be test infrastructure, but ownership/lifecycle is unverified. Do not delete them by name or assume they are abandoned. |
+| Production Compose | Gateway/worker/delivery plus automatic migration dependency; no adopted Next.js frontend, console identity DSN/origin wiring, or complete upload/KB-worker packaging. It omits required `PUBLIC_BASE_URL`, mounts lowercase secrets while settings are case-sensitive, and leaves `TURN_ENGINE` at its `echo` default. It targets the external legacy `csa-net`/`postgres` stack, not a new isolated staging database. |
+| Image | [Dockerfile](../../deploy/Dockerfile) builds only the Python app, not the Next.js console. Its runtime does not install `curl`, although Compose's gateway health check invokes `curl`; `/healthz` also proves only liveness, not schema/identity readiness. |
+| CI | [Existing CI](../../.github/workflows/ci.yml) already runs Python lint/types/import checks, schema setup, pytest, secret scan and coverage. No frontend gate, application image publishing or CD is implemented there. |
+
+The original proxy attachment was unavailable; the user subsequently supplied port and
+Compose status summaries, not proxy configuration. Obtain only sanitized hostname/path
+routes, network mode and service-to-network membership before choosing the origin address.
+Never request a raw `docker inspect`, rendered secret-bearing Compose output, tunnel
+token, process environment or environment-file dump.
+
+## Domain and proxy plan (not applied)
+
+1. Keep apex, `www`, landing service and all unrelated hostnames unchanged.
+2. Add an explicit `console.fourstacks.my` Tunnel published-application route and
+   matching proxied DNS record to the existing tunnel, after verifying its management
+   mode and ingress configuration. A specific hostname avoids relying on the supplied
+   wildcard A record; DNS alone does not configure an ingress route.
+3. The wildcard presently points to an origin IP, while apex/`www` use the tunnel.
+   Do not replace/delete that wildcard: other applications may depend on it.
+4. Route the console hostname to the adopted frontend; browser `/console/v1/*` stays
+   same-origin and is forwarded to the private gateway. Deny unsupported legacy routes;
+   do not tunnel the entire gateway as a public catch-all.
+5. `localhost` from a bridge-networked `cloudflared` container means that container,
+   not the host. Choose a reviewed shared-network service address or existing
+   host-proxy route after confirming topology. Do not expose database/admin ports.
+6. Preserve HTTPS, Host/Origin, cookies and CSRF headers through the proxy. Trust
+   forwarded headers only from the actual proxy/network, not arbitrary Internet peers.
+   Do not cache authenticated pages or API responses. Validate multipart upload limits,
+   timeouts and redirects. An edge login challenge must not block machine callbacks.
+7. Keep external webhook/callback ingress separate from human console access rules.
+   A future `hooks.fourstacks.my` is an option, not a selected/registered endpoint.
+   Only expose explicitly implemented and reviewed callback paths.
+8. Smoke-test landing apex/`www` before and after any separately approved rollout.
+   An unavailable CSA release must not take down the landing page.
+
+## URL and configuration checklist
+
+Do not globally search-and-replace an environment file or regenerate credential keys.
+The app, Compose and frontend do not all load configuration the same way:
+[Settings](../../csa/core/settings.py) reads `.env.local` only in development unless
+`NO_LOCAL_ENV=1`; production requires process configuration/secrets. Compose interpolation
+and Next.js automatic environment loading are separate mechanisms.
+
+| Setting/surface | Required planning change |
+|---|---|
+| `CONSOLE_ALLOWED_ORIGIN` | Exact `https://console.fourstacks.my`, no path; match the actual browser origin. |
+| `CONSOLE_COOKIE_SECURE` | Keep `true` for public HTTPS. Recheck forwarded cookie headers, login/logout, CSRF, invitation/reset flows and session expiry. |
+| `CSA_CONSOLE_API_ORIGIN` | Server-only private gateway origin, not the public landing URL and never `NEXT_PUBLIC_*`. Next rewrites evaluate it during build; server-side calls also need it at runtime. Build/release strategy must account for both. |
+| `PUBLIC_BASE_URL` | Public origin for supported backend-generated links; choose after path routing is decided. Current uses include invoice links and the legacy TikTok OAuth builder. Changing it neither publishes a route nor enables the supported M6B flow. |
+| Database URLs/key | Do not change DB host/role/schema or encryption keys merely because the domain changes. Domain, checkpoint and identity DSNs retain their distinct roles and isolated staging target. |
+| OAuth registration | Register only the exact implemented HTTPS callback, including path and trailing-slash semantics, with each provider. Keep development/production clients separated; authorize scopes and consent per environment. No final CSA Google callback path exists yet. |
+| Google app branding | Review owned-domain verification, authorized domains, homepage/privacy/terms URLs, audience/test users, scopes and any verification/security-assessment requirements before public OAuth. Google OAuth is not implemented console SSO. |
+| Existing webhooks | Inventory Telegram/provider webhook URLs, Pub/Sub push endpoint and audience, allowed hosts, callback allowlists and voice callback consumers. Change only migrated consumers after approval; preserve n8n/LiveKit routes. |
+| Operational references | Review non-secret deployment configs, monitoring URLs, health probes, frontend build config, email/link templates and external allowlists. Remove old URLs only after cutover and recovery validation. |
+
+### TikTok caveat: a legacy callback exists
+
+[Marketplace router](../../csa/channels/marketplace/router.py) is mounted by the gateway.
+It includes `/api/v1/channels/tiktok_shop/oauth/authorize` and
+`/api/v1/channels/tiktok_shop/oauth/callback`, using the older
+[OAuth helper](../../csa/channels/marketplace/oauth.py).
+Those are **not** the supported M6B verifier/completion flow.
+The newer [verifier](../../csa/agents/ecommerce/authorization_verifier.py) and
+[completion](../../csa/agents/ecommerce/connections.py) compose only in synthetic tests;
+no runtime/default app-material/key source or supported console callback is registered.
+
+Do not register/expose that legacy callback merely by changing `PUBLIC_BASE_URL` or a
+TikTok redirect URL. Review/contain legacy marketplace routes before public exposure.
+Seller/app eligibility, approved scopes, exact shop binding, immutable app revisions,
+safe callback design and separately approved live acceptance remain gates.
+
+## Gmail Pub/Sub versus Calendar
+
+The existing Gmail topic Publisher principal should be
+`gmail-api-push@system.gserviceaccount.com`, scoped to the required topic. That grant
+permits Gmail to publish notifications; it does not authorize mailbox reads or grant
+CSA's consumer permission to pull/receive them.
+
+Gmail still needs user OAuth/consent, encrypted token lifecycle, topic/subscription
+configuration, a consumer and reliable history synchronization. For authenticated Pub/Sub
+push, validate the push JWT issuer/signature/audience and intended service identity;
+configure required service-agent token-creation permissions separately from Publisher.
+For pull, grant the consumer only the needed subscriber permission. Persist/deduplicate
+history progress, handle expired history with resync, acknowledge only after durable
+acceptance, and renew mailbox `watch` before expiration (at least every seven days;
+Google recommends daily). No Gmail consumer/watch runtime was found in active CSA source.
+
+**Do not add a guessed Calendar Publisher principal to that Gmail topic.** Calendar
+API's standard `events.watch` uses HTTPS `web_hook` notification channels, not Gmail's
+Pub/Sub delivery. Calendar requires its API enabled, per-user/calendar authorization,
+a callback, persisted channel/resource IDs, channel-token checks, incremental
+synchronization and renewal/replacement before channel expiry. Notifications signal a
+change; fetch authoritative event data. A service account is useful only with explicit
+calendar sharing or approved Workspace delegation, not as a universal user-calendar grant.
+
+Begin future Calendar implementation with one opt-in booking/calendar workflow,
+read-only availability first. Then separately authorize creates/updates/cancellations,
+attendee/email effects, idempotency and conflict handling. Define tenant/calendar mapping,
+date-only versus instant semantics, IANA time zone, daylight-saving handling, ownership,
+privacy and source-of-truth. Orders, reminders, subscriptions and staff tasks do not become
+Calendar events automatically simply because they have a date.
+
+## Incomplete-feature presentation and release boundaries
+
+Deployment is independent of feature completion. Publish only an explicitly accepted
+release; do not equate `main`, image-build success or latest schema with production approval.
+
+| Area | Honest public console state |
+|---|---|
+| M0-M5 | Previously validated slices, subject to deployment-specific role/session/readiness smoke checks. Last recorded acceptance is guarded dev, not a public-production sign-off. |
+| M6A | Staff-only local records; label "Local data - no marketplace synchronization". |
+| M6B | Stored metadata is not a live connection check; Connect/Reconnect remain disabled with eligibility/setup explanation. |
+| M6C | Seller write/fulfil/refund operations unavailable; no clickable controls implying execution. |
+| M6D | Prototype and disposable persistence tests, not an authoritative ledger or stock sync. No writable inventory UI. |
+| M6E / Google | Preparation/local-read support only where implemented; Gmail/Calendar execution explicitly "Not available yet", not "Connected". |
+| Synthetic demo | Persistent visible "Synthetic demo" label; page-local state only, no provider effects or saved business records. |
+
+These M6 local/demo/unavailable distinctions already exist in
+[BusinessWorkspace](../../CSA_WebConsole/csa-console/web/components/console/BusinessWorkspace.tsx).
+This slice changes documentation only, not UI. A release must test that unfinished
+features fail closed in the backend as well as hiding/disabling controls.
+
+M6D's next development step remains inventory ownership/grants and real identity
+revocation lock ordering, followed by applicable Stage 1 acceptance and separately
+reviewed writable-schema work. Domain hosting does not waive those gates.
+
+## Original gated CI/CD plan (packaging now implemented above; deployment disabled)
+
+1. **PR CI, GitHub-hosted:** preserve Python checks, disposable PostgreSQL and exact pins;
+   add adopted frontend's reviewed install and isolated transport/state/lint/type/build
+   checks. No production environment files, keys, provider traffic or host Docker socket.
+   Keep latency failures visible; do not relax thresholds or omit them to call CI green.
+2. **CI bootstrap:** service containers start before workflow steps. The current private
+   GHCR database image cannot rely on a later `docker/login-action` to authorize its
+   initial pull. Confirm image visibility or configure service image pull credentials.
+3. **Build:** after gates pass, build separate Python and frontend images from a clean
+   reviewed commit, tag with commit SHA and record immutable digests. Add reviewed
+   `.dockerignore`/build contexts before building: none currently exists at repo root.
+   Do not upload environment files, legacy dumps, uploads or credentials as build context.
+   Publish only trusted-branch builds with narrowly scoped package-write permissions;
+   never deploy or publish privileged artifacts from untrusted PR code.
+4. **Staging:** use a separate database, secrets, upload storage, hostname and synthetic
+   fixtures. Add portable frontend/identity/KB packaging and readiness-aware health checks.
+   Do not reuse the legacy `csa-platform` database just because Compose points to it.
+5. **Acceptance:** test login/CSRF/roles/tenant isolation, safe unfinished-feature labels,
+   disabled provider mutations, upload boundaries and landing-page preservation. Publish
+   the exact build/schema/readiness manifest and checks, not just a green login page.
+6. **Promotion:** protected environment plus explicit approval of a named digest/release;
+   verify GitHub plan/repository visibility supports required approval protections.
+   If unavailable, use an explicit operator release gate, not pretend protection exists.
+   Serialize deployments; do not cancel a running migration.
+7. **Migrations:** separate deliberate step with backup/restore evidence, compatibility
+   preflight and scoped credentials. Do not attach automatic production migrations to
+   routine app startup. A source-0360 artifact must not be promoted against recorded
+   dev0300. No reset or automatic DB downgrade.
+8. **Release/rollback:** retain previous image digests, switch only new CSA routes after
+   readiness and smoke tests, monitor, and roll back application routing only when
+   schema-compatible. Inventory authority rollback requires its own audited cutover.
+   Leave apex/`www`, n8n, LiveKit, old databases and unrelated services untouched.
+
+No SSH/cloudflare/deployment credentials are requested now. Do not run untrusted CI
+on a self-hosted runner attached to this shared production host. An eventual deployment
+agent must be constrained to the new CSA stack, not broad host administration.
+
+## Original documentation-slice evidence and Markdown reconciliation (historical)
+
+This slice is documentation-only: no lint/test suite, database, service or deployment
+command is needed to validate prose. A read-only `python3` check validated **307 local
+file/folder links across 13 maintained Markdown files**; `git diff --check` passed.
+The first link-check attempt used unavailable `python` (exit 127); the same check
+succeeded with the existing `python3`, without installing dependencies. Fragment
+anchors and external-site behavior are not implied by the local file-link count.
+Prior M6D code evidence remains:
+
+- `NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_inventory_count_transactions.py -q`:
+  **29 passed, 1 existing Testcontainers deprecation warning, 43.73 s**.
+- Combined count/contracts/domain/persistence selection: **1,457 passed, 1 warning,
+  114.59 s**; `NO_LOCAL_ENV=1 ENV=ci make lint` passed.
+- That is focused evidence, not a new full-suite, live-provider or deployment pass.
+  Historical full-suite latency failures and earlier passing runs remain in progress.
+
+Updated current pointers, stale schema claims and old "latest" statements in maintained
+entry/reference documents. Corrected the architecture diagram's ingress ordering.
+Retained dated M4/M5/M6B handoffs, reviews, phase designs and acceptance results because
+they contain distinct decisions/evidence; no verified redundant Markdown required
+deletion. Historical plan commands are not authorization to deploy.
+
+Official references consulted for the hosting/integration checklist:
+
+- [Cloudflare Tunnel DNS](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/dns/)
+- [Google web-server OAuth](https://developers.google.com/identity/protocols/oauth2/web-server)
+- [Gmail push notifications](https://developers.google.com/workspace/gmail/api/guides/push)
+- [Calendar push notifications](https://developers.google.com/workspace/calendar/api/guides/push)
+- [GitHub deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+
+## Next bounded task and copy-ready prompt
+
+Next: obtain user/owner approval for a specific source selection and clean review
+branch, plus confirmation that the GHCR package grants this repository Actions read
+access. Then validate existing hosted CI on that approved candidate. Do not commit,
+push, trigger a workflow, publish images or deploy before that approval. Local
+disposable tests do not prove hosted service pull permissions or OCI
+archive/export/upload.
+
+```text
+Continue from docs/handoffs/2026-10-19-domain-release-next-session.md.
+Read AGENTS.md, docs/PROGRESS.md, LG15, LG09 and the M6 roadmap first.
+Preserve the dirty worktree: no reset, stash, restore or unrelated cleanup.
+
+Read deploy/RELEASE.md and the repository-only packaging evidence in this handoff.
+Packaged identity/readiness, bootstrap/storage, synthetic database restore and
+read-only hosted readiness review are documented. The current main worktree has 92
+modified/untracked paths and is not a clean release candidate; current remote main
+still has pre-packaging CI, whose latest run failed at container initialization and
+produced no artifacts. Obtain approval to select the exact source changes and create
+a clean review commit/branch; separately confirm GHCR package read access for this
+repository's Actions. Do not inspect secrets, environment files or actual backup
+data. Do not commit/push/dispatch/publish/deploy absent explicit approval.
+Do not execute the persistent staging Compose proposal or auto-migrate on app startup.
+Keep promotion disabled. No push, commit, publish, deploy, DNS/tunnel/provider change,
+SSH, existing-service restart, production connection, environment-file inspection or
+persistent migration/reset. Do not consume csa-platform or bind host 8080. Preserve
+fourstacks.my/www; console.fourstacks.my remains only the chosen future hostname.
+Do not guess cloudflared networking or expose legacy marketplace routes as M6B.
+Run relevant isolated checks and make lint; retain all failed/unrun evidence and
+unchanged latency thresholds. Hosted CI/OCI acceptance is still a separate gate.
+Update this handoff/progress with exact commands, outcomes and one next bounded task.
+```

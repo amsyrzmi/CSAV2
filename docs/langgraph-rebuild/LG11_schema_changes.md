@@ -1,7 +1,12 @@
 # LG11 — Schema change inventory (ordered, additive, safe for a live n8n)
 
 ## CONTEXT FOR CODING AGENT
-All DDL the rebuild needs, in one place and in the order to apply it. The phase files (LG01–LG10) describe *why*; this file is the authoritative *what*. If SQL here and in a phase file ever differ, **this file wins** — fix the phase file. Everything is based on the `\d+` / `\sf` output you sent; anything not shown is marked *verify*.
+This is the schema design inventory and migration safety policy. For implemented
+DDL, [ordered migration source](../../db/migrations/) and its tests take precedence
+over historical SQL examples or phase prose; reconcile discrepancies rather than
+executing old examples over current schema. The phase files explain why. Source is
+currently through 0360; persistent rollout is separately gated. Original baseline
+descriptions use the supplied `\d+` / `\sf` output; anything not shown is marked *verify*.
 
 ## Rules for every migration
 1. **n8n keeps running.** Until cutover (LG09) n8n connects as the table owner `csa` and knows nothing about new columns. Only *additive* or *loosening* changes until M14.

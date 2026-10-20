@@ -2,11 +2,14 @@
 
 CSA is a multi-tenant customer-service runtime: Python 3.12, FastAPI, LangGraph, PostgreSQL (psycopg 3 async).
 Phase plans live in [langgraph-rebuild/](./langgraph-rebuild/LG00_master_plan.md).
+Current release/domain boundaries are in the
+[domain/release handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+This describes application structure, not proof of running services or public deployment.
 
 ## Request pipeline
 
 ```
-Telegram ─► Caddy ─► cloudflared ─► gateway  /hooks/<public_id>
+Telegram ─► Cloudflare edge ─► cloudflared ─► Caddy ─► gateway /hooks/<public_id>
                                       │  verify secret, parse, dedupe
                                       ▼
                                ingress_events (Postgres)

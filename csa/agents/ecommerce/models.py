@@ -67,7 +67,7 @@ class TikTokShopCredentials(BaseModel):
     app_secret: str
     access_token: str
     refresh_token: str | None = None
-    shop_cipher: str
+    shop_cipher: str | None = None
     shop_id: str | None = None
 
 

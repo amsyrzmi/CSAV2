@@ -17,6 +17,8 @@ permissions:
   packages: read
 
 env:
+  NO_LOCAL_ENV: "1"
+  ENV: ci
   # Fixed, NON-SECRET CI role passwords (throwaway, not prod).
   CSA_APP_PASSWORD: ci_app_pw
   CSA_RO_PASSWORD: ci_ro_pw
@@ -30,6 +32,9 @@ jobs:
     services:
       postgres:
         image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_USER: csa
           POSTGRES_PASSWORD: ci_owner_pw
@@ -100,3 +105,59 @@ jobs:
 
       - name: Policy branch coverage (90 percent minimum)
         run: make coverage
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.0"
+      - name: Reviewed isolated install, tests, lint, types, build and trace checks
+        run: node CSA_WebConsole/csa-console/web/scripts/check-isolated.mjs --install
+
+  package:
+    needs: [gate, frontend]
+    runs-on: ubuntu-latest
+    # Build-only artifacts, including for PR review. No registry write or deployment.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.0"
+      - uses: docker/setup-buildx-action@v3
+      - name: Materialize reviewed contexts from clean source
+        run: |
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python3 -m scripts.release_context "$RUNNER_TEMP/python-context"
+          node CSA_WebConsole/csa-console/web/scripts/check-isolated.mjs \
+            --context "$RUNNER_TEMP/frontend-context"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - name: Build separate OCI archives (never publish)
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          mkdir "$RUNNER_TEMP/release"
+          for app in python frontend; do
+            (cd "$RUNNER_TEMP/$app-context" && \
+              find . -type f -print0 | sort -z | xargs -0 sha256sum) \
+              > "$RUNNER_TEMP/release/$app.inputs.sha256"
+            docker buildx build --platform linux/amd64 \
+              --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
+              --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+              --build-arg CSA_CONSOLE_API_ORIGIN=http://gateway:8080 \
+              --tag "csa-$app:$SOURCE_REVISION" \
+              --output "type=oci,dest=$RUNNER_TEMP/release/$app.oci.tar,rewrite-timestamp=true" \
+              --metadata-file "$RUNNER_TEMP/release/$app.metadata.json" \
+              "$RUNNER_TEMP/$app-context"
+          done
+          printf 'source_revision=%s\nsource_date_epoch=%s\nplatform=linux/amd64\nconsole_api_origin=http://gateway:8080\npromotion=disabled\n' \
+            "$SOURCE_REVISION" "$SOURCE_DATE_EPOCH" > "$RUNNER_TEMP/release/release.txt"
+          cd "$RUNNER_TEMP/release"
+          sha256sum *.oci.tar *.metadata.json *.inputs.sha256 release.txt > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: csa-review-only-${{ github.sha }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7

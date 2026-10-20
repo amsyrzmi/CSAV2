@@ -1,0 +1,3 @@
+# Disposable DB tests need only this Dockerfile, never deployment/local files.
+**
+!db.Dockerfile

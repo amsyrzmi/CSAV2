@@ -1,16 +1,36 @@
 """Read-only local seller records; no marketplace transport or credential access."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from psycopg import AsyncConnection
+from pydantic import Field
 
+from csa.agents.ecommerce.models import MarketplacePlatform
+from csa.agents.ecommerce.stores import StoreBinding, StoreConnection, StoreRecord, expiry_state
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
 from csa.core import db
 from csa.core.tenancy import tx
+
+OrderChannel = Literal["telegram", "web", "tiktok_shop", "shopee", "manual"]
+
+
+class OrderFilters(Contract):
+    channel: OrderChannel | None = None
+    shop_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+def order_filters(
+    channel: Annotated[OrderChannel | None, Query()] = None,
+    shop_id: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+) -> OrderFilters:
+    if shop_id is not None and channel is None:
+        raise HTTPException(400, "shop_id requires a channel")
+    return OrderFilters(channel=channel, shop_id=shop_id)
 
 
 class BusinessOrder(Contract):
@@ -58,6 +78,57 @@ class ProductPage(Contract):
     next_cursor: UUID | None
 
 
+class StorePage(Contract):
+    source: Literal["local_credential_records"] = "local_credential_records"
+    marketplace_sync: Literal["unavailable"] = "unavailable"
+    items: list[StoreRecord]
+    next_cursor: UUID | None
+
+
+async def store_records(
+    conn: AsyncConnection[Any], client_id: UUID, rows: list[dict]
+) -> list[StoreRecord]:
+    if not rows:
+        return []
+    metadata = await db.q.fetch_all(
+        "business/store_connections.sql", (client_id, [row["id"] for row in rows]), conn=conn
+    )
+    connections = {
+        row["id"]: StoreConnection.model_validate({"status": row["status"]}) for row in metadata
+    }
+    now = datetime.now(UTC)
+    return [
+        StoreRecord.model_validate(
+            {
+                **row,
+                "expiry": expiry_state(row["expires_at"], now=now),
+                "connection": connections[row["id"]],
+            }
+        )
+        for row in rows
+    ]
+
+
+async def resolve_store_binding(request: Request, binding: StoreBinding) -> StoreRecord:
+    """Match a caller's full local scope; does not load secrets or authorize an API call."""
+    async with tx(request.app.state.pool, str(binding.client_id)) as conn:
+        row = await db.q.fetch_one(
+            "business/get_store.sql",
+            (
+                binding.client_id,
+                binding.record_id,
+                binding.platform,
+                binding.platform,
+                binding.shop_id,
+                binding.shop_id,
+            ),
+            conn=conn,
+        )
+        if row is None:
+            raise HTTPException(404, "local store record not found")
+        return (await store_records(conn, binding.client_id, [row]))[0]
+
+
 def business_actor(request: Request) -> ConsoleActor:
     actor = request.state.console_actor
     if not isinstance(actor, ConsoleActor) or actor.role not in {
@@ -72,21 +143,91 @@ def business_actor(request: Request) -> ConsoleActor:
 def build_business_router() -> APIRouter:
     router = APIRouter(prefix="/business", dependencies=[Depends(business_actor)])
 
+    @router.get("/stores", response_model=StorePage)
+    async def stores(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        platform: MarketplacePlatform | None = None,
+        before: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    ) -> StorePage:
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            if before is not None and not await db.q.fetch_one(
+                "business/get_store.sql",
+                (client_id, before, platform, platform, None, None),
+                conn=conn,
+            ):
+                raise HTTPException(404, "local store cursor not found")
+            rows = await db.q.fetch_all(
+                "business/list_stores.sql",
+                (client_id, platform, platform, before, before, limit + 1),
+                conn=conn,
+            )
+            items = await store_records(conn, client_id, rows[:limit])
+        return StorePage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
+
+    @router.get("/stores/{record_id}", response_model=StoreRecord)
+    async def store(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        record_id: UUID,
+        platform: MarketplacePlatform | None = None,
+        shop_id: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+    ) -> StoreRecord:
+        if shop_id is not None:
+            if platform is None:
+                raise HTTPException(400, "shop_id requires a platform")
+            return await resolve_store_binding(
+                request,
+                StoreBinding(
+                    client_id=client_id, record_id=record_id, platform=platform, shop_id=shop_id
+                ),
+            )
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            row = await db.q.fetch_one(
+                "business/get_store.sql",
+                (client_id, record_id, platform, platform, None, None),
+                conn=conn,
+            )
+            if row is None:
+                raise HTTPException(404, "local store record not found")
+            return (await store_records(conn, client_id, [row]))[0]
+
     @router.get("/orders", response_model=OrderPage)
     async def orders(
         request: Request,
         client_id: Annotated[UUID, Depends(tenant)],
+        filters: Annotated[OrderFilters, Depends(order_filters)],
         before: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
         limit: Annotated[int, Query(ge=1, le=50)] = 20,
     ) -> OrderPage:
         async with tx(request.app.state.pool, str(client_id)) as conn:
             if before is not None and not await db.q.fetch_one(
-                "business/get_order.sql", (client_id, before), conn=conn
+                "business/get_order.sql",
+                (
+                    client_id,
+                    before,
+                    filters.channel,
+                    filters.channel,
+                    filters.shop_id,
+                    filters.shop_id,
+                ),
+                conn=conn,
             ):
                 raise HTTPException(404, "order cursor not found")
             rows = await db.q.fetch_all(
                 "business/list_orders.sql",
-                (client_id, before, client_id, before, limit + 1),
+                (
+                    client_id,
+                    filters.channel,
+                    filters.channel,
+                    filters.shop_id,
+                    filters.shop_id,
+                    before,
+                    client_id,
+                    before,
+                    limit + 1,
+                ),
                 conn=conn,
             )
         items = [BusinessOrder.model_validate(row) for row in rows[:limit]]
@@ -97,9 +238,21 @@ def build_business_router() -> APIRouter:
         request: Request,
         client_id: Annotated[UUID, Depends(tenant)],
         order_id: Annotated[str, Path(min_length=1, max_length=100)],
+        filters: Annotated[OrderFilters, Depends(order_filters)],
     ) -> BusinessOrder:
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            row = await db.q.fetch_one("business/get_order.sql", (client_id, order_id), conn=conn)
+            row = await db.q.fetch_one(
+                "business/get_order.sql",
+                (
+                    client_id,
+                    order_id,
+                    filters.channel,
+                    filters.channel,
+                    filters.shop_id,
+                    filters.shop_id,
+                ),
+                conn=conn,
+            )
         if row is None:
             raise HTTPException(404, "order not found")
         return BusinessOrder.model_validate(row)

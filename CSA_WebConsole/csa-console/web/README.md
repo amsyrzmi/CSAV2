@@ -10,8 +10,9 @@ The checkout is tracked as ordinary files in the parent CSAV2 repository; nested
 Git metadata and the former gitlink were removed. Installed frontend dependencies,
 local environment files and legacy backend reference code remain excluded from Git;
 the copied workflow export and drop snapshot are also excluded. The canonical deferred
-PM reference pack is retained. Use the commands below, not the
-old console setup or tunnel instructions. The authoritative state is
+PM reference pack is retained; a second copy of its three inspection/check scripts
+under `Docs/agentic-pm/checks/` was removed. Use the commands below, not the old
+console setup or tunnel instructions. The authoritative state is
 [CSAV2 progress](../../../docs/PROGRESS.md) and the
 [migration plan](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md).
 
@@ -85,6 +86,19 @@ The installed Next.js documentation for proxy, async cookies, rewrites and Turbo
 root boundaries was read before frontend edits. Direct commands `npm run lint`,
 `npm run typecheck`, `npm test` and `npm run build` remain available; use the isolated
 check to keep environment files outside Next's automatic environment loading.
+
+CI uses `node scripts/check-isolated.mjs --install`: it installs the reviewed lock
+inside a fresh allowlisted directory, with lifecycle scripts disabled, then runs the
+same checks. Both modes remove their own temporary directory on success or failure.
+`--context NEW_DIRECTORY` instead materializes the same allowlist for a container
+build, without installing dependencies, linking local modules or reading environment
+files. Do not build Docker directly from this checkout.
+
+Release builds use Next standalone output and a server-only, origin-bound gateway
+rewrite. The image launcher requires runtime `CSA_CONSOLE_API_ORIGIN` to match its
+build value; changing it requires rebuilding. See the repository-only
+[release packaging and inert staging proposal](../../../deploy/RELEASE.md).
+No publishing, deployment, DNS or live provider capability is enabled.
 
 ## M0–M4 adoption inventory
 
@@ -188,16 +202,65 @@ are not sync freshness. No listing/stock/refund/payment writes, connection check
 provider calls are performed. Later features are explicitly unavailable. This is the
 [first slice of the expanded M6 roadmap](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation),
 not a full seller platform or an approved replacement of the last approved M5 console.
+The workspace also has an opt-in synthetic demo mode for presentations. It displays only
+fictional sample listings and a local-only simulated create action; no tenant records or
+TikTok API calls are used in demo mode. Changes remain in component memory and reset when
+demo mode is exited or the page is reloaded. The persistent label states that no shop is
+connected and nothing was published.
 The latest read-only probe found no gateway/frontend listeners on18081/13000; the
 historical acceptance above is not a current availability guarantee. M6 isolated frontend
 validation passes **13 transport + 2 state tests**, lint/types/build and trace checks.
 Backend full validation has one unchanged TCP latency failure; see current progress.
 The adopted build has no old API URL or n8n dependency.
 
+M6B's local-order continuation adds exact source/platform and optional store ID filters.
+Store IDs require a source; supported source options reflect the local schema, not
+connected adapters. Draft changes apply only on **Apply order filters**; the applied
+scope is shown separately. Changing applied scope remounts orders at newest and aborts
+obsolete reads; changing tenant resets both filters and record state. Inventory stays
+tenant-wide, explicitly unaffected, until verified listing/stock mappings exist.
+Synthetic frontend validation passes **14 transport + 2 state tests**, lint/types/build/
+trace checks. Browser rendering/pagination/abort-race acceptance remains unverified:
+the shared browser could not reach the temporary loopback fixture. That fixture was
+stopped and removed, without changing forwarding or infrastructure.
+Filter-slice backend full validation: **736 passed / 1 TCP latency failure** (p95 **235.195 ms**,
+unchanged **<200 ms**), lint/disposable reset checks pass. Full validation is not green.
+
+M6B also adds a **Local store records (not verified connections)** panel. Its staff-only
+`/console/v1/business/stores` reads expose local record/platform/store IDs and recorded
+expiry/update timestamps, never token contents, permission scopes or arbitrary metadata.
+Authorization remains unverified, permissions unknown and provider reads unavailable;
+future local expiry is not a connected/valid-token badge. Missing store IDs are explicit.
+Platform/tenant changes reset store paging, which follows stable record IDs, not recency.
+No connect/revoke/refresh-token controls or provider calls are wired. Isolated validation:
+**15 transport + 2 state tests**, lint/types/production build/trace checks pass.
+Store-slice backend full validation: **742 passed / 1 TCP latency failure** (p95 **200.161 ms**,
+unchanged **<200 ms**); lint and disposable reset checks pass. Full validation is not green.
+Later backend-only TikTok request corrections pass full lint and **749 tests**, including
+unchanged standalone ASGI/TCP thresholds. Frontend source did not change in that slice;
+the **15 transport + 2 state tests** build evidence above remains the latest frontend run.
+Historical failures remain recorded; no new browser/live-provider acceptance is implied.
+
+The subsequent staff lifecycle-status slice enriches store list/detail with
+`connection:{status,live_integration:"unavailable"}` and displays explicit labels for
+unverified, revoked/disconnected, expired, app-unavailable, missing binding/permissions
+and locally recorded authorization. Even `authorization_recorded` means **not verified
+live**: authorization/permission/dispatch authority stays unavailable. No tokens,
+scope values, shop ciphers, app secrets or authorization-attempt secrets reach the browser.
+Connect/Reconnect buttons are disabled without click handlers; the page explains the
+Partner eligibility gate without assuming account registration or Sandbox access is enough.
+Existing explicit refresh, platform filters, keyset paging and tenant remount/abort behavior
+are unchanged. Isolated validation: **16 transport + 2 state tests**, frontend lint,
+typegen/typecheck, production build and safe build traces pass. Backend targeted selection:
+**30 passed** including lifecycle/role/tenant/contract/disposable reset/migration checks.
+Full backend lint/tests **975 passed** (136 warnings), including disposable reset and
+unchanged standalone ingress limits; historical latency failures remain recorded.
+No service restart or live browser acceptance is claimed.
+
 Reviewed source comprises `app/` (including non-importing deferred stubs),
 `components/console/`, `components/AppShell.tsx`, the auth-card/password/input
 controls, `lib/api.ts`, `lib/identity-*.ts`, `lib/server-identity.ts`,
-`lib/upstream.ts`, `lib/sandbox-chat.ts`, `proxy.ts`, the tool configuration, synthetic transport/state tests,
+`lib/upstream.ts`, `lib/sandbox-chat.ts`, `lib/business.ts`, `proxy.ts`, the tool configuration, synthetic transport/state tests,
 and the supplied brand mark. The build-check script lists its exact file boundary.
 The supplied `ui-guide/fourstacks-tokens.css` is imported before product styles and
 scoped through `fs-ui`; the light canvas, blue actions, control boundaries, explicit
