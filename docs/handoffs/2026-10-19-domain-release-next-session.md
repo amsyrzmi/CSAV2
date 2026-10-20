@@ -2,10 +2,12 @@
 
 ## Latest slice: synthetic M2 browser acceptance (2026-10-20)
 
-Work continues on branch `review/domain-release-2026-10-20` from published
-audit commit `f46dba0fe006577dcc56d150bd62a576adf0f15e`. The browser slice is
-local and uncommitted; it has not been pushed to draft PR #1. The two deleted
-`docs/reviews/` files remain pre-existing unrelated work and must stay excluded.
+The documentation audit is committed as `f46dba0fe006577dcc56d150bd62a576adf0f15e`;
+the browser slice is committed and pushed as
+`3979da55b72f11f44ac678ae6130b1020c79a1ec` on
+`review/domain-release-2026-10-20`. The only local worktree changes before this
+status-note update were two pre-existing deletions under `docs/reviews/`; they
+remain excluded from both commits.
 
 The new JavaScript-enabled test
 `tests/test_packaged_console.py::test_packaged_m2_browser_acceptance` passed
@@ -60,20 +62,17 @@ files and 409 local targets with zero errors; `git diff --check` passed. The run
 used Testcontainers/disposable fixtures only. This one full-suite pass does not
 erase historical latency failures or establish stable performance acceptance.
 
-Fresh GitHub CLI observation: PR run
-[39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600)
-completed with frontend and pytest successful, but gate failed in Gitleaks and
-policy branch coverage/package were skipped. The Gitleaks log shows its
-`GITHUB_TOKEN` integration received HTTP 403 `Resource not accessible by
-integration` while reading `GET /repos/amsyrzmi/CSAV2/pulls/1/commits`; it is a
-workflow permission failure, not a reported secret finding. `.github/workflows/ci.yml`
-now locally grants the minimum `pull-requests: read` permission alongside
-existing read permissions. That adjustment is not in the failed remote run and
-has not been pushed; re-run hosted CI after an approved push to establish whether
-it resolves the failure. No credential was inspected or changed.
-
-No commit or push has been made for this slice. Do not merge PR #1 or deploy.
-The run reflects the remote audit-only head, not these local changes.
+Hosted CI on the browser-slice commit passed: pull-request run
+[39455808313](https://github.com/amsyrzmi/CSAV2/actions/runs/39455808313) and push
+run [39455797430](https://github.com/amsyrzmi/CSAV2/actions/runs/39455797430)
+both succeeded, including frontend, gate (pytest, Gitleaks and policy branch
+coverage) and package. This confirms the job-scoped `pull-requests: read`
+permission fixed the earlier Gitleaks integration 403. The earlier failed run
+[39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600) is
+retained as historical evidence, not the current result. The current GitHub CLI identity could not read PR details (HTTP 403); PR #1 was
+last confirmed open and draft before the browser-slice push. The user plans to
+merge after reviewing the updated PR. No merge, registry publication, promotion
+or deployment has occurred.
 
 ## Prior slice: documentation audit closeout and release review (2026-10-20)
 
@@ -934,33 +933,28 @@ Official references consulted for the hosting/integration checklist:
 
 ## Next bounded task and copy-ready prompt
 
-Draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1) remains based on `main`
-from `review/domain-release-2026-10-20`; no duplicate PR is needed. The PR run
-39417032600 completed: frontend and pytest passed, Gitleaks failed on a GitHub
-integration 403 fetching PR commits, and policy coverage/package were skipped.
-The local CI workflow now grants `pull-requests: read` to the `gate` job only.
-That permission has not been pushed or validated by hosted CI. No local
-Gitleaks binary is available, so hosted scanning must pass after an approved
-push.
+Draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1) targets `main` from
+`review/domain-release-2026-10-20`; no duplicate PR is needed. On browser-slice
+head `3979da55b72f11f44ac678ae6130b1020c79a1ec`, both the PR and push workflows
+passed all jobs, including Gitleaks, policy branch coverage and package. The
+earlier Gitleaks 403 is resolved by the job-scoped `pull-requests: read`
+permission. This handoff and `docs/PROGRESS.md` now record that result in a
+documentation-only follow-up; wait for hosted checks on its updated PR head
+before merging. The user, not this task, will perform the merge. No publish,
+promotion or deployment.
 
 The final local `make lint test` run passed: **2,550 tests**, including all four
 packaged-console tests and the disposable-reset acceptance test; exact command,
 warnings and duration are recorded above. `uv lock --check`, the documentation
 link/fence checker (**45 Markdown files, 409 local targets, zero errors**) and
 `git diff --check` pass. The browser acceptance, pinned Playwright dependency
-and lock, CI browser installation and minimum Gitleaks permission fix remain
-local and uncommitted. The next action is to review this exact local diff and
-obtain explicit approval before committing or pushing. If approved, stage only
-task-owned paths, inspect the staged diff, include the required Co-authored-by
-trailer and push only to the existing review branch. Keep the two pre-existing
-deletions under `docs/reviews/` excluded.
-
-After an approved push, refresh PR #1 and CI. Require Gitleaks and policy
-coverage to complete successfully before recommending review readiness; do not
-mark ready or merge. If `pull-requests: read` does not resolve the action error,
-keep it as a blocker and request repository workflow-permission review rather
-than changing credentials. Preserve draft status; no registry publication,
-promotion or deployment.
+and lock, CI browser installation and minimum Gitleaks permission fix are
+committed in `3979da5`. This follow-up reconciles the stale pre-push status in
+this handoff and `docs/PROGRESS.md`; the documentation links/fences and
+whitespace are validated. It is documentation-only and excludes the two
+pre-existing deletions under `docs/reviews/`. Hosted CI must rerun for the
+updated PR head. The user will review and merge PR #1 after those checks pass;
+do not merge it here. No registry publication, promotion or deployment.
 
 This synthetic browser pass closes only the JavaScript-enabled packaged M2
 interaction gap described above. It does not establish exact hosted-browser
@@ -971,22 +965,19 @@ is authorized.
 
 ```text
 Continue from docs/handoffs/2026-10-19-domain-release-next-session.md.
-The final local `NO_LOCAL_ENV=1 ENV=ci make lint test` run passed 2,550 tests,
-including test_make_reset_only_disposable_container; docs link/fence check
-(45 Markdown files, 409 local targets) and git diff --check passed. The M2
-synthetic JavaScript browser slice, Playwright dependency, CI Chromium install
-and job-scoped pull-requests: read change are uncommitted on
-review/domain-release-2026-10-20 at f46dba0. Review the exact current diff and
-obtain explicit user approval before committing or pushing. If approved, stage
-only task-owned paths, exclude both pre-existing docs/reviews deletions, inspect
-the staged diff, include the required Co-authored-by trailer and push only to
-the existing branch.
-PR #1 remains a draft at the old audit-only remote head. Its newest run
-39417032600 passed frontend/pytest but Gitleaks failed on a GitHub integration
-403 and policy coverage/package were skipped. After an approved push, refresh
-CI and require Gitleaks, policy coverage and package to pass; keep the draft,
-do not merge, publish, promote or deploy. The local permission change is not
-yet verified by hosted CI. Do not change credentials.
+The documentation audit (`f46dba0`) and synthetic M2 browser acceptance
+(`3979da55b72f11f44ac678ae6130b1020c79a1ec`) are pushed to
+review/domain-release-2026-10-20. The browser-slice PR and push runs
+39455808313 and 39455797430 both passed frontend, pytest, Gitleaks, policy
+coverage and package. This handoff and docs/PROGRESS.md contain a docs-only
+status reconciliation; it excludes the pre-existing docs/reviews deletions.
+Check hosted CI on the updated docs head before merge; the user will merge the
+PR after reviewing it. Do not merge, publish, promote or deploy.
+After merge, the smallest bounded acceptance task is to define and execute the
+LG15 full-suite performance acceptance with its existing thresholds and
+historical failures preserved; first read the current progress and LG08/LG15
+criteria. Do not relax thresholds or imply one passing run establishes stable
+capacity.
 Use synthetic disposable Testcontainers only with NO_LOCAL_ENV=1 ENV=ci; never
 run bare make db-reset. No production/env-file access, persistent DB change,
 service restart, real provider request, infrastructure/DNS/tunnel/webhook/upload,
