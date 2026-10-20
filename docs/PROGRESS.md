@@ -1,5 +1,42 @@
 # Progress
 
+Latest exact hosted-artifact runtime acceptance (2026-10-20): **three passed**,
+one existing Testcontainers warning, **233.60 s**. The existing identity/readiness,
+bootstrap/storage and synthetic backup/restore cases ran with imported hosted
+da1b50d OCI manifests, not rebuilt application images. ZIP digest, seven checksums,
+22 blob hashes, source/platform/origin/promotion metadata and imported manifest
+identity were verified. `NO_LOCAL_ENV=1 ENV=ci make lint` passes.
+The first session-adapter attempt stopped at fixture setup (**three errors**,
+**26.88 s**) because Docker's containerd image store reports manifest IDs rather
+than the expected config IDs; correcting that assertion required no application
+or repository-test changes. Details and exact identities are in the handoff.
+No full-suite rerun was needed for this docs/session-only acceptance slice.
+Next: commit/review the acceptance evidence and prepare the review PR, then obtain
+separate staging approval. No merge, publication, ingress or persistent DB change.
+
+Latest candidate scan (2026-10-20): offline Gitleaks **v8.24.2** scanned the
+complete review range `848d8efa864c12d2168b4ccd79e32b97e0bde790..da1b50da5b40479370507020ce7d17cd1317707f`:
+**three commits**, approximately **962,310 bytes**, **1.47 s**, exit **0**,
+**no leaks found**; structured JSON report is empty. Full redaction and
+`--ignore-gitleaks-allow` were enabled, with default rules and no custom
+allowlist/baseline. Only a bare committed-history copy was mounted; networking
+was disabled. This closes the initial candidate-range scan gap, not a full-history
+or dirty-worktree scan and not a guarantee that no secrets exist.
+The exact hosted-artifact acceptance above now supplies the next runtime evidence.
+Evidence/docs remain uncommitted; PR review, merge and staging are separate gates.
+
+Latest hosted evidence (2026-10-20):
+[run 39367800618](https://github.com/amsyrzmi/CSAV2/actions/runs/39367800618)
+on da1b50d passes gate/frontend/package. **2,549 tests passed**, 136 warnings,
+**667.46 s**; policy selection **102 passed**, two deselected, **100%** coverage.
+OCI export/upload now verified: downloaded artifact ZIP matches GitHub's digest,
+all seven listed file checksums match, and 22 OCI blob hashes match across both
+linux/amd64 archives. Exact source/origin/promotion-disabled metadata verified;
+archives were not imported or executed. See the handoff for digests/expiry.
+Important: hosted Gitleaks scanned **only one commit** in the latest push.
+The initial large candidate scan had failed; the separate offline candidate-range
+scan above now supplies that missing evidence. No merge, publication or deployment.
+
 Latest continuation: [Fourstacks domain/release handoff and next-session prompt](./handoffs/2026-10-19-domain-release-next-session.md).
 Current development: M6 incomplete; source expects **0360**, while **0300** is the last
 approved recorded persistent-dev schema, not a fresh probe. Latest M6D focused evidence:

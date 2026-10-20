@@ -4,8 +4,9 @@
 
 Current entry point: [domain/release handoff and prompt](../handoffs/2026-10-19-domain-release-next-session.md).
 Source expects 0360; persistent dev0300 is last recorded approval, not a fresh probe.
-Repository-only CI/release packaging is implemented; hosted workflow/OCI and public
-deployment acceptance remain unverified, with promotion disabled. The isolated staging
+Repository-only CI/release packaging is implemented; hosted workflow/OCI integrity
+and exact-artifact disposable runtime acceptance pass as of 2026-10-20 (see handoff).
+Public deployment acceptance remains unverified, with promotion disabled. The isolated staging
 manifest is a proposal only. Disposable packaged-console HTTPS identity/CSRF,
 role/tenant denial, readiness refusal/recovery and legacy-path denial now pass;
 this is HTTP-client/server-rendered evidence, not public-proxy or browser acceptance.

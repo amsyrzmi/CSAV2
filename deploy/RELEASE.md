@@ -233,3 +233,19 @@ database, environment file, backup service, repository dump or artifact upload i
 This is a synthetic logical restore drill, not measured RPO/RTO, WAL/PITR,
 encrypted-credential/key recovery, session-login continuity, checkpoint replay,
 upload-volume backup, production restore or staging rollout acceptance.
+
+### Exact hosted-artifact runtime evidence (2026-10-20)
+
+The three acceptance cases above also pass with the exact downloaded OCI images
+from [run 39367800618](https://github.com/amsyrzmi/CSAV2/actions/runs/39367800618),
+source `da1b50da5b40479370507020ce7d17cd1317707f`: **3 passed**, one existing
+warning, **233.60 s**; repository lint passes. A session-only adapter replaces the
+image-build fixture with verified OCI imports, leaving all acceptance tests unchanged.
+It verifies the GitHub ZIP digest, file checksums and source/platform/origin metadata
+before loading, and checks the exact imported manifest IDs and revision labels.
+All 22 OCI blob hashes were independently checked before import.
+The initial adapter's config-versus-manifest ID setup error is retained in the
+[handoff](../docs/handoffs/2026-10-19-domain-release-next-session.md), alongside
+exact digests, commands and scope. No application images were rebuilt for this run.
+This closes the exact-artifact runtime gap only; public browser/ingress, live
+providers, workers/uploads and separately approved staging remain unverified.

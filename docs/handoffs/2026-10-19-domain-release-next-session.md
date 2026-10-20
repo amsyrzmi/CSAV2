@@ -1,6 +1,154 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Latest slice: hosted CI checkout-history fix (2026-10-20)
+## Latest slice: exact hosted OCI runtime acceptance (2026-10-20)
+
+Re-downloaded artifact **12241365102** from successful hosted run
+[39367800618](https://github.com/amsyrzmi/CSAV2/actions/runs/39367800618),
+source `da1b50da5b40479370507020ce7d17cd1317707f`. Before import, checked the
+GitHub ZIP digest, all seven listed file checksums, all **22** content-addressed
+OCI blobs and the source/timestamp/platform/origin/promotion-disabled metadata
+recorded below. Each OCI descriptor matches its BuildKit metadata and records
+linux/amd64. Both runtime configs carry the exact source-revision label.
+
+The session-local `test_hosted_oci.py` adapter imports the three unchanged tests
+and identity fixtures from `tests/test_packaged_console.py`, replacing only
+`packaged_images`: it verifies artifact metadata/checksums, refuses existing
+candidate tags, loads the two OCI archives into Docker's containerd image store,
+checks imported IDs/platform/revision and yields their exact manifest IDs.
+It does not invoke the application image builder. The database fixture still builds
+its separate combined extension image and uses only disposable Testcontainers.
+
+Imported/executed manifest IDs (not rebuilt config hashes or published images):
+
+- Python: `sha256:d07ee12b7e23b36c7ca4d44b79cd1aab7de8e485253137b05602e9b8e6f464ea`.
+- Frontend: `sha256:09f8e8e4191b6881ebd96ab454fb6c4dad7508da3ba2db113d61f220ed395934`.
+
+Session-local command, from repository root (`SESSION_FILES` denotes this
+session's files directory, not an environment/secrets file):
+
+```sh
+NO_LOCAL_ENV=1 ENV=ci uv run pytest -p tests.conftest \
+  -c /home/amsyrzmi/CSAV2/pyproject.toml \
+  "$SESSION_FILES/test_hosted_oci.py" -v --tb=short
+NO_LOCAL_ENV=1 ENV=ci make lint
+```
+
+Final pytest: **3 passed**, **one existing Testcontainers deprecation warning**,
+**233.60 s**. All three exact-artifact cases pass:
+
+1. HTTPS login/logout, secure cookies, password/session rotation, CSRF/origin,
+   four roles and tenant isolation, legacy marketplace path denial, M6 rendered
+   local-only warnings, and readiness fault/refusal/recovery.
+2. Packaged migration approval/target guards, baseline/migrations/checkpoints,
+   reapplication ledger preservation, first-admin/audit and duplicate refusal;
+   explicit CHOWN-only disposable volume initialization and UID/GID1000 writes.
+3. Synthetic logical backup/restore into a second disposable database, exact
+   ledger/identity/membership/audit preservation, restored role/RLS boundaries,
+   packaged readiness and incomplete-ledger refusal/recovery.
+
+Initial attempt: **three fixture setup errors**, **26.88 s**, before application
+startup. The adapter compared Docker's image ID with the OCI config digest.
+This Docker 29 containerd-backed store reports the OCI manifest digest instead.
+The correction compares with the already verified manifest digest, retaining
+independent revision/platform checks; no acceptance assertion or runtime code was
+weakened. Both logs and the small adapter remain in session storage.
+
+Lint passes: Ruff/check-format, Pyright (**0 errors/warnings**) and import boundary.
+Repository changes in this slice are documentation only; the full suite was not
+rerun. Earlier complete-suite/latency failures and passes remain dated evidence.
+The imported task-owned application tags and containers were removed, and the
+temporary download was deleted. No production connection, persistent migration,
+existing-service restart, registry publication, public route or deployment.
+
+This establishes exact hosted-artifact HTTP/server-rendered runtime acceptance,
+not JavaScript browser/public ingress acceptance, live provider eligibility,
+worker/delivery behavior, HTTP uploads or a persistent staging rollout.
+Next: commit/review the recorded evidence and prepare the review PR. Merge and
+staging execution still require separate approval.
+
+## Earlier slice: complete review-candidate secret scan (2026-10-20)
+
+Offline Gitleaks **v8.24.2** completed successfully over the exact review range:
+
+```text
+848d8efa864c12d2168b4ccd79e32b97e0bde790..da1b50da5b40479370507020ce7d17cd1317707f
+```
+
+This includes c2e5376 (the initial 118-file snapshot), de955f0 and da1b50d.
+Git confirms a non-shallow repository and exactly **three commits** in this range.
+Scanner output: **3 commits scanned**, approximately **962,310 bytes**,
+**1.47 s**, **no leaks found**, exit **0**. The JSON report is exactly `[]`.
+This supplies the missing candidate-range scan evidence; it does not replace the
+record of the original failed hosted scan or expand the later hosted one-commit scan.
+
+The existing local scanner image was used without a pull:
+`zricethezav/gitleaks:v8.24.2`, resolved RepoDigest
+`zricethezav/gitleaks@sha256:b5918eb91b8d2473cec722f066abb4352e4ffdc4ec9f4283ec143aba9ec9ebc4`.
+A task-owned `git clone --bare --no-hardlinks` copy supplied only committed history;
+no worktree/environment files were mounted. Docker ran with networking disabled,
+read-only rootfs/history mount, invoking UID/GID, all capabilities dropped and
+`no-new-privileges`. Only its task-owned results directory was writable.
+Scanner invocation inside that isolated container:
+
+```sh
+gitleaks git /candidate \
+  --log-opts=848d8efa864c12d2168b4ccd79e32b97e0bde790..da1b50da5b40479370507020ce7d17cd1317707f \
+  --redact=100 --ignore-gitleaks-allow --no-banner --no-color \
+  --report-format=json --report-path=/results/candidate-redacted.json
+```
+
+Default rules were used; no custom config, ignore file, baseline or suppression
+was supplied. Inline `gitleaks:allow` comments were deliberately ignored.
+This is a candidate commit-diff scan, not a full-history/base-tree or uncommitted
+worktree scan, and cannot guarantee absence of secrets. No CI/runtime code changed.
+The temporary bare copy was removed; the redacted log and empty report remain in
+session storage. Documentation links/fences and `git diff --check` pass; no code
+tests or databases were started for this documentation-only update.
+
+Next at that point: disposable runtime acceptance of the exact hosted OCI artifacts,
+not freshly rebuilt substitutes. Evidence/docs remain uncommitted. PR review and
+merge/promotion/staging approvals remain separate; no remote write or deployment
+occurred in that slice. The later runtime acceptance above now passes.
+
+## Earlier slice: hosted OCI artifact verification (2026-10-20)
+
+[Run 39367800618](https://github.com/amsyrzmi/CSAV2/actions/runs/39367800618)
+for clean commit `da1b50da5b40479370507020ce7d17cd1317707f` succeeded:
+gate, frontend and package jobs all passed. Hosted pytest: **2,549 passed**,
+136 warnings, **667.46 s**. Policy coverage selection: **102 passed**, two
+deselected, 35 warnings, **26.57 s**; reported branch-aware total **100%**.
+Gitleaks completed successfully but explicitly scanned **one commit**, the latest
+push range. This is not proof that the large initial c2e5376 candidate or full
+repository history was scanned: its earlier run failed before completing scanning.
+Full checkout history fixes revision resolution, not the scanner's range selection.
+
+Downloaded only the build-only release artifact (not diagnostic SARIF):
+`csa-review-only-da1b50da5b40479370507020ce7d17cd1317707f`,
+artifact ID **12241365102**, **195,120,478 bytes**, expires
+**2026-10-27T04:21:30Z**. Its downloaded ZIP SHA-256 matches GitHub metadata:
+`b934c61a82485b542ebc4e40f0099b4e04bbf4af078291c22850718adec22a86`.
+All **seven** SHA256SUMS entries match, and all content-addressed blobs inside
+both OCI archives match their hashes (**10 Python**, **12 frontend**).
+Each OCI index has the linux/amd64 descriptor matching its BuildKit metadata:
+
+- Python manifest: `sha256:d07ee12b7e23b36c7ca4d44b79cd1aab7de8e485253137b05602e9b8e6f464ea`.
+- Frontend manifest: `sha256:09f8e8e4191b6881ebd96ab454fb6c4dad7508da3ba2db113d61f220ed395934`.
+
+Release metadata names the exact commit above, `linux/amd64`,
+`http://gateway:8080` and `promotion=disabled`. OCI manifest digests are not a
+claim that application images have been published in GHCR. Archives were inspected
+without extraction/import/execution and the temporary downloaded ZIP was removed.
+No registry publish, PR merge, deployment, provider/ingress change or service restart.
+
+Next at that point: establish a successful secret scan of the **whole review
+candidate**, not only the most recent fix commit, before merge or promotion review.
+The later offline scan above now supplies that evidence.
+Use redacted output and preserve scanning failures; no broad allowlist or bypass.
+After that, exact hosted-artifact runtime acceptance and separately approved staging
+remain gates. This run establishes export/upload/integrity, not execution of the
+downloaded OCI images or public HTTPS/browser acceptance.
+
+## Earlier slice: hosted CI checkout-history fix (2026-10-20)
 
 The user approved the full source selection, committed locally as c2e5376 (118
 files; the earlier 92 status entries included directories). The user subsequently
@@ -636,12 +784,10 @@ Official references consulted for the hosting/integration checklist:
 
 ## Next bounded task and copy-ready prompt
 
-Next: obtain user/owner approval for a specific source selection and clean review
-branch, plus confirmation that the GHCR package grants this repository Actions read
-access. Then validate existing hosted CI on that approved candidate. Do not commit,
-push, trigger a workflow, publish images or deploy before that approval. Local
-disposable tests do not prove hosted service pull permissions or OCI
-archive/export/upload.
+Next: commit/review the acceptance evidence and prepare the review PR. Hosted
+export/upload/integrity, offline three-commit candidate scanning and all three exact
+hosted-artifact runtime cases now pass. Preserve earlier failures and limitations.
+No merge or deployment is authorized; evidence/docs remain uncommitted.
 
 ```text
 Continue from docs/handoffs/2026-10-19-domain-release-next-session.md.
@@ -649,14 +795,15 @@ Read AGENTS.md, docs/PROGRESS.md, LG15, LG09 and the M6 roadmap first.
 Preserve the dirty worktree: no reset, stash, restore or unrelated cleanup.
 
 Read deploy/RELEASE.md and the repository-only packaging evidence in this handoff.
-Packaged identity/readiness, bootstrap/storage, synthetic database restore and
-read-only hosted readiness review are documented. The current main worktree has 92
-modified/untracked paths and is not a clean release candidate; current remote main
-still has pre-packaging CI, whose latest run failed at container initialization and
-produced no artifacts. Obtain approval to select the exact source changes and create
-a clean review commit/branch; separately confirm GHCR package read access for this
-repository's Actions. Do not inspect secrets, environment files or actual backup
-data. Do not commit/push/dispatch/publish/deploy absent explicit approval.
+Review branch review/domain-release-2026-10-20 contains the approved candidate.
+Hosted da1b50d passes gate/frontend/package and OCI artifact integrity checks.
+Hosted Gitleaks scanned only the latest one-commit push; the initial scan failed.
+The separate offline redacted scan now passes over all three candidate commits.
+All three disposable acceptance cases now pass with exact hosted OCI manifests;
+the initial session-adapter identity mismatch and correction remain documented.
+Review the evidence/doc changes and obtain approval for their commit/push and a
+review PR; do not imply PR creation authorizes merge or deployment.
+No merge, publish or deployment is authorized.
 Do not execute the persistent staging Compose proposal or auto-migrate on app startup.
 Keep promotion disabled. No push, commit, publish, deploy, DNS/tunnel/provider change,
 SSH, existing-service restart, production connection, environment-file inspection or
@@ -664,6 +811,7 @@ persistent migration/reset. Do not consume csa-platform or bind host 8080. Prese
 fourstacks.my/www; console.fourstacks.my remains only the chosen future hostname.
 Do not guess cloudflared networking or expose legacy marketplace routes as M6B.
 Run relevant isolated checks and make lint; retain all failed/unrun evidence and
-unchanged latency thresholds. Hosted CI/OCI acceptance is still a separate gate.
+unchanged latency thresholds. Browser/public ingress and persistent staging remain
+separate gates; do not rerun unrelated tests solely for documentation changes.
 Update this handoff/progress with exact commands, outcomes and one next bounded task.
 ```
