@@ -14,8 +14,11 @@ runtime protection. Full `NO_LOCAL_ENV=1 ENV=ci make lint test`: lint passed;
 **2,901 passed / 1 failed, 136 warnings in 2,745.14 s**. The only failure was
 packaged M2 browser startup because host Chromium lacks `libatk-1.0.so.0`.
 All four load cases and the disposable-only reset test passed. The isolated
-frontend check passed. Local full acceptance is not green; hosted CI with the
-existing browser-dependency setup is the publication gate. No deployment,
+frontend check passed. Local full acceptance is not green. Hosted PR CI
+39660171469 and push CI 39659967703 passed on `5ac7387`: **2,902 passed,
+136 warnings in 785.08 s**, policy coverage 100%, all gate/frontend/package jobs
+green. Only evidence documentation changed afterward. PR #5 is ready for review
+subject to final-head checks and the user's merge; no deployment,
 persistent migration, service activation or live HR/provider request occurred.
 
 Workspace A0/A1 merged (2026-10-21): PR #3 merged to `main` as `b3b84c7`

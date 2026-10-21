@@ -1,6 +1,6 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: HR integration validation (2026-10-21)
+## Current continuation: HR integration PR #5 (2026-10-21)
 
 PR #4 merged to main as `bb197ae`; main CI 39638334024 passed. Local main
 matches it and retains only the two pre-existing review-document deletions.
@@ -15,7 +15,12 @@ cleanup for the new HR foreign keys and added protection-restoration coverage.
 Full lint passed; full pytest is **2,901 passed / 1 failed** (host Chromium
 missing `libatk-1.0.so.0` before browser assertions). Load and disposable-reset
 tests passed; isolated frontend checks passed. Do not call that local full run
-green. Hosted CI installs the browser dependencies and remains the next gate.
+green. Hosted PR CI 39660171469 and push CI 39659967703 passed on `5ac7387`,
+with **2,902 passed / 136 warnings in 785.08 s**, 100% policy coverage and
+gate/frontend/package green. CI installed its browser dependencies; the shared
+host was not modified. Only evidence documentation changed afterward. PR #5
+is the integration merge boundary; verify its final-head checks before the
+user merges it. Main is not yet HR-enabled.
 
 After review/CI and the user's merge, the next bounded acceptance slice is a
 synthetic authenticated HR directory/training browser replay covering explicit

@@ -47,9 +47,15 @@ Commands use `NO_LOCAL_ENV=1 ENV=ci`, the existing pinned Python environment,
   The checker was corrected to recognize source-line suffixes in historical
   links rather than misclassifying them as missing filenames.
 
-Hosted CI is the next verification gate: its existing workflow installs
-Chromium and system dependencies. No shared-host package installation was
-attempted. HR's actual authenticated browser/microphone flows, live providers,
+Hosted PR CI **39660171469** and push CI **39659967703** both passed on
+`5ac7387` (the final runtime/test source). The PR run passed all `gate`,
+`frontend` and `package` jobs: **2,902 tests passed, 136 warnings in 785.08 s**,
+including packaged M2 browser acceptance; policy branch coverage was **100%**.
+Only documentation of these results changed afterward. This does not erase the
+local full-run failure or establish new HR browser acceptance. The existing CI
+workflow installed Chromium/system dependencies; no shared-host package
+installation was attempted. PR #5 is the integration review/merge boundary.
+HR's actual authenticated browser/microphone flows, live providers,
 real owner/grant/statutory configuration, persistent migrations and deployment
 remain unverified and unapproved. Raw SHA-256 idempotency fingerprints in
 workspace/HR remain a keyed-HMAC/key-management follow-up before real-data
