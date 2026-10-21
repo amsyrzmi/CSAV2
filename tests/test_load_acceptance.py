@@ -59,14 +59,18 @@ async def load_client(app: FastAPI, transport: str) -> AsyncIterator[httpx.Async
             process = subprocess.Popen(
                 [
                     sys.executable,
-                    "-m",
-                    "uvicorn",
-                    "apps.gateway.main:app",
-                    "--fd",
+                    "-c",
+                    (
+                        "import socket, sys, uvicorn\n"
+                        # Uvicorn's --fd path labels inherited IPv4 sockets AF_UNIX.
+                        "with socket.socket(fileno=int(sys.argv[1])) as listener:\n"
+                        "    assert listener.family == socket.AF_INET\n"
+                        "    listener.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)\n"
+                        "    config = uvicorn.Config('apps.gateway.main:app', "
+                        "access_log=False, log_level='warning')\n"
+                        "    uvicorn.Server(config).run(sockets=[listener])\n"
+                    ),
                     str(sock.fileno()),
-                    "--no-access-log",
-                    "--log-level",
-                    "warning",
                 ],
                 pass_fds=(sock.fileno(),),
                 stdout=subprocess.DEVNULL,

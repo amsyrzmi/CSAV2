@@ -1,39 +1,92 @@
 # Progress
 
-Documentation audit/release review (2026-10-20): the approved 54-path audit is
-committed as `f46dba0fe006577dcc56d150bd62a576adf0f15e` and pushed to
-`review/domain-release-2026-10-20`. At **2026-10-20 11:46 UTC**, local HEAD and
-the remote branch matched that commit; at that point, only the two pre-existing
-deletions under `docs/reviews/` were present and excluded from the audit. Current
-HEAD remains that commit; the synthetic M2 follow-on described below is local,
-uncommitted and unpushed. Those two unrelated deletions remain excluded. The user
-created draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1), base `main`
-(`848d8efa864c12d2168b4ccd79e32b97e0bde790`), head
-`review/domain-release-2026-10-20`. No merge, publication or deployment was
-requested or performed.
+TCP harness correction (validated 2026-10-20; publication approved 2026-10-21):
+the load subprocess now
+reconstructs the inherited IPv4 socket with family autodetection and passes it
+directly to Uvicorn, with `TCP_NODELAY=1`. A separate disposable loopback probe
+verified accepted sockets report `AF_INET` and `TCP_NODELAY=1`. No application
+behavior, tracing, pool size or acceptance threshold changed. One exact
+`NO_LOCAL_ENV=1 ENV=ci make load-test` run passed **4 tests, 4 warnings,
+264.13 s**. ASGI acknowledgement/scheduled p95 was **66.181/69.213 ms**,
+TCP **149.415/150.448 ms**, and graph-only p95 **92.894 ms**, within unchanged
+limits. Simultaneous TCP remained diagnostic at **329.062/338.653 ms**, not
+50 completed turns/s capacity acceptance. Required full validation passed:
+Ruff, formatting, Pyright (zero errors/warnings), import-linter and **2,550
+tests, 136 warnings in 2574.63 s**. All four load and four packaged-console
+tests passed. All seven migration tests passed, including the actual
+disposable-only `make db-reset` test; none were skipped or deselected. This is
+one green full run, not stable capacity evidence or a waiver of earlier
+failures. No persistent database, environment file, provider credential or
+running dev service was changed. The approved three-file follow-up is prepared
+on `fix/tcp-load-listener` from merged `main` at `6e51354`. Require fresh hosted
+checks and user review before merge; publication is not deployment approval.
 
-PR check run
+TCP diagnosis (2026-10-20): session-only instrumented probes found a concrete
+inherited-listener artifact in the load harness: Uvicorn's `--fd` path
+reconstructs the IPv4 listener with `AF_UNIX` metadata; accepted TCP sockets
+were observed with `TCP_NODELAY=0`. A fixed off/on/on/off experiment reduced
+no-database health-route p95 from **48.181/45.179 ms** (off) to
+**4.789/4.158 ms** (on). This explains a buffering component, not the whole
+305.228 ms acceptance failure. SQL/transaction timings and pool waiting were
+also higher in the slowest instrumented ingress batch. Tracing-off and
+standard-asyncio probes did not establish either as the cause: the unchanged
+default tracing/uvloop configuration was faster in a later control.
+The measured host had full swap allocated but no swap-in/out during batches,
+and aggregate CPU was not saturated. Laptop/shared-host variability remains
+plausible, not a proven sole cause. No application/test source or thresholds
+changed. These diagnostics do not supersede the failed load run. Exact scope,
+metrics and next action are in the
+[TCP diagnosis](./handoffs/2026-10-19-domain-release-next-session.md#tcp-diagnosis-2026-10-20).
+
+Focused performance check (2026-10-20, source `39de725`): the single
+`NO_LOCAL_ENV=1 ENV=ci make load-test` run finished **3 passed, 1 failed,
+4 warnings in 268.79 s**. ASGI acknowledgement/scheduled p95 passed at
+**69.981/70.605 ms**; TCP failed at **305.228/307.746 ms**, against unchanged
+**<200 ms** limits. Graph-only p95 passed at **108.943 ms** against **<150 ms**.
+The diagnostic simultaneous TCP case completed, reporting **516.237/554.800 ms**
+acknowledgement/scheduled p95; that case has no latency acceptance assertion.
+Each database-backed scenario completed 150 synthetic turns with 150 unique
+replies and pending deliveries, not actual external deliveries. All databases
+were disposable Testcontainers; no provider, persistent migration or service
+restart was used. No timing retry, threshold change or full-suite rerun occurred.
+LG15 performance remains open. Next: diagnose TCP latency without treating
+diagnostic reruns as acceptance or assuming host contention. See the
+[latest performance handoff](./handoffs/2026-10-19-domain-release-next-session.md#latest-slice-focused-performance-check-2026-10-20).
+
+Documentation audit/release review (2026-10-20): the approved 54-path audit is
+committed as `f46dba0fe006577dcc56d150bd62a576adf0f15e`; the follow-on synthetic
+M2 browser slice is committed as `3979da55b72f11f44ac678ae6130b1020c79a1ec`.
+Both are pushed to `review/domain-release-2026-10-20`. At **2026-10-20 16:34
+UTC**, the local and remote branch heads matched `3979da5`; the only worktree
+changes were two pre-existing deletions under `docs/reviews/`, excluded from
+both commits. Draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1) targets
+`main` at `848d8efa864c12d2168b4ccd79e32b97e0bde790`. Its details endpoint
+remains inaccessible to the current GitHub CLI identity (HTTP 403); the PR was
+last confirmed open and draft earlier on 2026-10-20. The user plans to merge
+after reviewing the updated PR. No merge, publication or deployment has occurred.
+
+Both hosted CI runs on `3979da55b72f11f44ac678ae6130b1020c79a1ec` passed:
+[pull-request run 39455808313](https://github.com/amsyrzmi/CSAV2/actions/runs/39455808313)
+and [push run 39455797430](https://github.com/amsyrzmi/CSAV2/actions/runs/39455797430).
+Frontend, gate (including pytest, Gitleaks and 90% policy branch coverage) and
+package jobs succeeded. The earlier PR run
 [39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600)
-completed: frontend and gate pytest passed, but Gitleaks failed and policy
-branch coverage/package were skipped. The Gitleaks action log identifies an
-HTTP 403 `Resource not accessible by integration` reading the PR commit list;
-it reported no secret finding. Ruff, format, Pyright, import-boundary and
-schema-migration steps passed. A local `pull-requests: read` workflow permission
-addresses that API read denial but is not in the remote run. Earlier same-head run
-[39402852826](https://github.com/amsyrzmi/CSAV2/actions/runs/39402852826)
-completed successfully, including gate/frontend/package; it does not replace
-the newer pull-request run. `gh pr view` is also blocked by HTTP 403 for pull
-request details; `gh run view` provided the run/job status. No credentials were
-inspected or changed.
+failed in Gitleaks on a GitHub integration HTTP 403 and skipped coverage/package;
+it is superseded by the passing PR run for the newer head. The job-scoped
+`pull-requests: read` permission in `.github/workflows/ci.yml` allowed Gitleaks
+to pass. This documentation-only status reconciliation is included in a
+follow-up commit on the branch; hosted checks on the updated head must complete
+before merge. No credentials were inspected or changed.
 
 The audit corrected LG09's overstated rollback/all-runbooks acceptance, stale
 snapshot-removal chronology and the frontend's historical-session heading.
 Documentation target/fence checks passed for **45 Markdown files** and **407
 local targets**, with zero errors; `git diff --check` passed before the
-publication. The follow-up status-note edits remain uncommitted; after those
-edits, the same checker again passed for **45 files**, **407 local targets**,
-zero errors, and `git diff --check` passed. No runtime tests, database probes
-or services were used for these documentation-only changes.
+publication. The documentation-only status-note follow-up for that audit also
+passed the same checker for **45 files**, **407 local targets**, zero errors,
+and `git diff --check`; it was included in the published audit commit. No
+runtime tests, database probes or services were used for those documentation
+changes.
 
 Packaged JavaScript-enabled **synthetic M2 Agents/Runtime browser acceptance**
 now passes: `tests/test_packaged_console.py::test_packaged_m2_browser_acceptance`
@@ -79,11 +132,13 @@ performance acceptance.
 
 The focused browser pass does not close public-ingress, persistent staging,
 LG09 live cutover/rollback, credential rotation or real-backup recovery gates.
-The earlier committed-range secret scan does not cover the audit commit or this
-dirty worktree. Hosted Gitleaks in PR run 39417032600 failed before scanning
-because its token could not read PR commits (HTTP 403); the local workflow now
-adds `pull-requests: read` to the `gate` job only. That fix requires a new hosted
-run and has not been validated remotely. No local Gitleaks binary is available.
+The earlier committed-range secret scan does not cover the audit commit or the
+browser-slice changes. Hosted Gitleaks in PR run 39417032600 failed before
+scanning because its token could not read PR commits (HTTP 403), not because it
+reported a secret. The job-scoped `pull-requests: read` fix passed in hosted CI
+run 39455808313 on browser-slice head 3979da5. No credentials were inspected or
+changed. The current documentation-only status reconciliation has its own
+hosted checks pending on the new PR head.
 
 Latest exact hosted-artifact runtime acceptance (2026-10-20): **three passed**,
 one existing Testcontainers warning, **233.60 s**. The existing identity/readiness,
