@@ -44,6 +44,9 @@ try {
     "lib/server-identity.ts",
     "lib/upstream.ts",
     "lib/sandbox-chat.ts",
+    "lib/workspace-api.ts",
+    "lib/workspace-paths.mjs",
+    "lib/workspace-paths.d.mts",
     "components/AppShell.tsx",
     "components/ui/auth-card.tsx",
     "components/ui/password-input.tsx",
@@ -51,6 +54,7 @@ try {
     "public/brand/fourstacks-mark.svg",
     "tests/identity-transport.test.mjs",
     "tests/sandbox-chat.test.mjs",
+    "tests/workspace-paths.test.mjs",
     "tests/release-runtime.test.mjs",
     "scripts/release-runtime.mjs",
   ];
@@ -116,6 +120,7 @@ try {
     const commands = [
       ["identity transport tests", "../tests/identity-transport.test.mjs"],
       ["sandbox state tests", "../tests/sandbox-chat.test.mjs"],
+      ["workspace path tests", "../tests/workspace-paths.test.mjs"],
       ["release origin tests", "../tests/release-runtime.test.mjs"],
       ["lint", "eslint/bin/eslint.js", "."],
       ["typegen", "next/dist/bin/next", "typegen"],

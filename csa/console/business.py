@@ -109,6 +109,35 @@ async def store_records(
     ]
 
 
+def require_business_read(actor: ConsoleActor, client_id: UUID) -> None:
+    if actor.role not in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}:
+        raise HTTPException(403, "business records require an administrator or staff role")
+    if not actor.platform_admin and actor.client_id != client_id:
+        raise HTTPException(403, "business tenant is not authorized")
+
+
+async def get_local_order(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    order_id: str,
+    filters: OrderFilters | None = None,
+) -> BusinessOrder | None:
+    filters = filters or OrderFilters()
+    row = await db.q.fetch_one(
+        "business/get_order.sql",
+        (
+            client_id,
+            order_id,
+            filters.channel,
+            filters.channel,
+            filters.shop_id,
+            filters.shop_id,
+        ),
+        conn=conn,
+    )
+    return BusinessOrder.model_validate(row) if row is not None else None
+
+
 async def resolve_store_binding(request: Request, binding: StoreBinding) -> StoreRecord:
     """Match a caller's full local scope; does not load secrets or authorize an API call."""
     async with tx(request.app.state.pool, str(binding.client_id)) as conn:
@@ -131,11 +160,9 @@ async def resolve_store_binding(request: Request, binding: StoreBinding) -> Stor
 
 def business_actor(request: Request) -> ConsoleActor:
     actor = request.state.console_actor
-    if not isinstance(actor, ConsoleActor) or actor.role not in {
-        Role.PLATFORM_ADMIN,
-        Role.TENANT_ADMIN,
-        Role.TENANT_STAFF,
-    }:
+    if not isinstance(actor, ConsoleActor):
+        raise HTTPException(403, "business records require an administrator or staff role")
+    if actor.role not in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}:
         raise HTTPException(403, "business records require an administrator or staff role")
     return actor
 
@@ -240,22 +267,13 @@ def build_business_router() -> APIRouter:
         order_id: Annotated[str, Path(min_length=1, max_length=100)],
         filters: Annotated[OrderFilters, Depends(order_filters)],
     ) -> BusinessOrder:
+        actor: ConsoleActor = request.state.console_actor
+        require_business_read(actor, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            row = await db.q.fetch_one(
-                "business/get_order.sql",
-                (
-                    client_id,
-                    order_id,
-                    filters.channel,
-                    filters.channel,
-                    filters.shop_id,
-                    filters.shop_id,
-                ),
-                conn=conn,
-            )
-        if row is None:
+            result = await get_local_order(conn, client_id, order_id, filters)
+        if result is None:
             raise HTTPException(404, "order not found")
-        return BusinessOrder.model_validate(row)
+        return result
 
     @router.get("/products", response_model=ProductPage)
     async def products(
