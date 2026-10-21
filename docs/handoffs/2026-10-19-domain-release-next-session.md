@@ -1,11 +1,228 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
+## Latest slice: corrected inherited TCP listener (2026-10-20)
+
+The local change in `tests/test_load_acceptance.py::load_client` replaces the
+Uvicorn `--fd` bootstrap with `socket.socket(fileno=...)`, which detects the
+actual family, verifies IPv4 and sets `TCP_NODELAY=1` before passing the socket
+to `uvicorn.Server.run(sockets=[listener])`. The parent still reserves the
+ephemeral loopback port and passes only that descriptor; subprocess readiness,
+real tracing and process cleanup remain unchanged. No application code, pool
+sizes, event-loop selection or timing thresholds changed.
+
+A separate disposable loopback subprocess using the corrected bootstrap and
+the installed Uvicorn HTTP protocol verified the accepted socket had family
+`AF_INET` (2) and `TCP_NODELAY=1`; it was terminated afterward.
+
+The exact focused command ran once:
+
+```sh
+env -i HOME="$HOME" PATH="$PATH" NO_LOCAL_ENV=1 ENV=ci make load-test
+```
+
+Result: **4 passed, 4 warnings in 264.13 s**, no skips.
+
+| Measurement | Result | Existing limit |
+| --- | --- | --- |
+| ASGI acknowledgement / scheduled p95 | 66.181 / 69.213 ms | Both <200 ms; passed |
+| TCP acknowledgement / scheduled p95 | 149.415 / 150.448 ms | Both <200 ms; passed |
+| Graph-only p95 | 92.894 ms | <150 ms; passed |
+| Simultaneous TCP acknowledgement / scheduled p95 | 329.062 / 338.653 ms | Diagnostic only; no latency assertion |
+
+Every database-backed scenario completed 150 synthetic turns with 150 unique
+replies and 150 pending deliveries. Sequential queue throughput was
+2.159/2.207 turns/s for ASGI/TCP. Simultaneous worker-turn p95 was 2064.861 ms.
+None of this establishes external delivery or sustained 50 completed turns/s.
+The earlier 305.228 ms failure and diagnostic matrices below remain evidence.
+
+Required full validation:
+
+```sh
+env -i HOME="$HOME" PATH="/tmp/fourstacks-toolbin:$PATH" \
+  LD_LIBRARY_PATH=/tmp/csa-playwright-runtime-20261020/rootfs/usr/lib/x86_64-linux-gnu \
+  NO_LOCAL_ENV=1 ENV=ci make lint test
+```
+
+Ruff, formatting, Pyright (zero errors/warnings) and import-linter passed.
+Full pytest: **2,550 passed, 136 warnings in 2574.63 s**, no skips or
+deselections. All four load tests and four packaged-console tests passed.
+`tests/test_migrate.py` passed all seven tests, including
+`test_make_reset_only_disposable_container`, which invokes the real reset
+target against only its disposable database. No bare persistent reset was run.
+Successful full-run load metrics are captured by pytest, not printed in this
+log; use the focused metrics above only for that focused run.
+
+This is one green full run with the correction, not demonstrated stable
+capacity or a production performance waiver. Historical failures are retained.
+No provider request, credentials/environment-file change, dev-service restart
+or deployment was performed. Gateway readiness and frontend login returned
+HTTP 200 after validation. The unrelated two `docs/reviews/` deletions remain
+excluded.
+
+Publication approved on 2026-10-21: only `tests/test_load_acceptance.py`,
+`docs/PROGRESS.md` and this handoff are prepared on `fix/tcp-load-listener`,
+based on merged `main` at `6e51354`. A separate worktree preserves the original
+dirty review branch. Main did not include the later `39de725` status-note
+reconciliation; this follow-up carries those corrections as well. Current next
+task: require fresh hosted checks on the published fix head and user review
+before merge. If the GitHub CLI still cannot create PRs (HTTP 403), provide the
+existing fix branch's compare URL for manual PR creation; do not change
+credentials. No deployment is authorized.
+
+```text
+Read this corrected-listener section first; older next-task prompts below are
+historical. The local harness change preserves IPv4 socket metadata and enables
+TCP_NODELAY. Exact focused load tests passed 4/4 and full lint/tests passed
+2550/2550 (136 warnings, 2574.63 s), including disposable reset and packaged
+browser tests. Docs link/fence and diff checks must pass after final edits.
+The user approved publication on 2026-10-21. The three-file follow-up is on
+fix/tcp-load-listener based on merged main at 6e51354; unrelated docs/reviews
+deletions remain excluded. Check fresh hosted CI and PR status before the user
+merges. If PR creation remains permission-blocked, give a manual compare link.
+No persistent DB changes, provider requests, environment-file changes, running
+dev-service restarts, tunnels or deployment. Preserve thresholds and historical
+failures; do not equate a green run with stable production capacity.
+```
+
+## TCP diagnosis (2026-10-20)
+
+This diagnostic follows the failed 305.228 ms TCP acceptance run below; it
+does not replace it. No repository application or test code changed.
+
+The inspected ingress path uses an eight-connection preopened autocommit pool,
+one unscoped endpoint lookup and an explicit tenant transaction. Six query-loader
+calls plus transaction begin, tenant `set_config` and commit execute on the
+synthetic fresh-contact path. The console response-header middleware bypasses
+channel ingress. The TCP subprocess uses real tracing, unlike the ASGI benchmark
+which stubs it.
+
+Session-only instrumentation measured server time, pool acquisition, query
+paths, transaction entry/exit, event-loop lag and host pressure. Each controlled
+batch sent 150 requests at 50/s; no worker or provider ran. Two diagnostic
+matrices each verified 600 durably queued synthetic events before Testcontainers
+teardown. These are ingress probes, not completed-turn/delivery acceptance.
+
+First fixed-order matrix (instrumentation affects timing):
+
+| TCP configuration | Health p95 | Ingress acknowledgement p95 |
+| --- | --- | --- |
+| Default uvloop, tracing on, first control | 61.386 ms | 271.712 ms |
+| Standard asyncio, tracing on | 52.391 ms | 167.001 ms |
+| Default uvloop, tracing off | 50.159 ms | 149.759 ms |
+| Default uvloop, tracing on, final control | 51.242 ms | 134.930 ms |
+
+The final unchanged control was faster than both alternate configurations, so
+this sequence does not isolate tracing or uvloop as the cause. In the slow first
+ingress control, pool-acquisition p95 was 63.222 ms, transaction begin/end
+21.659/20.826 ms, and individual query-path p95s approximately 23.7–29.4 ms.
+The final control had pool-acquisition p95 0.212 ms and transaction begin/end
+4.484/7.060 ms. These percentiles cannot be added to reconstruct request p95.
+
+A concrete harness artifact was then verified in the installed Uvicorn:
+`--fd` reconstructs the inherited IPv4 listener with
+`socket.fromfd(fd, AF_UNIX, SOCK_STREAM)`. Accepted TCP sockets were observed
+with `TCP_NODELAY=0`, unlike the normal TCP transport expectation. A second,
+fixed off/on/on/off matrix changed only the inherited listener's `TCP_NODELAY`
+setting, holding default uvloop/tracing on:
+
+| Listener and accepted socket NODELAY | Health p95 | Ingress acknowledgement p95 |
+| --- | --- | --- |
+| 0, first control | 48.181 ms | 127.630 ms |
+| 1, first treatment | 4.789 ms | 113.150 ms |
+| 1, second treatment | 4.158 ms | 168.261 ms |
+| 0, final control | 45.179 ms | 141.168 ms |
+
+This establishes a TCP buffering component in the harness. It does not prove
+that eliminating it fixes the entire original failure: ingress timings remained
+variable, and these probes had diagnostic headers, health warm-up and no queue
+drain. Neither matrix is a new acceptance result.
+
+Host: Intel i5-1135G7, four cores/eight threads, approximately 15 GiB RAM.
+Swap was fully allocated, but all measured batches had zero swap-in/out.
+Aggregate CPU idle ranged 35.21–79.68% in the first matrix and 47.15–92.36% in
+the second. The slowest first-matrix ingress batch had CPU pressure 7.611%,
+I/O full pressure 3.002% and memory full pressure 0.865%. This supports
+variable scheduling/storage pressure, not aggregate CPU exhaustion or a proven
+laptop-only cause. No thermal/power/frequency-causality measurements were made.
+
+Both matrices used the session file `files/test_tcp_diagnostic.py` with:
+
+```sh
+env -i HOME="$HOME" PATH="$PATH" PYTHONPATH="$PWD" NO_LOCAL_ENV=1 ENV=ci \
+  uv run pytest -c pyproject.toml -p tests.conftest \
+  /path/to/session/files/test_tcp_diagnostic.py -q -s --tb=short
+```
+
+The second additionally set `DIAG_NODELAY_MATRIX=1`. Results were **1 passed,
+2 warnings in 74.49 s** and **1 passed, 2 warnings in 60.72 s**. Raw metrics
+are retained in the session's `files/tcp-diagnostic-20261020.log` and
+`files/tcp-nodelay-diagnostic-20261020.log`; the disposable app processes,
+listeners and databases were cleaned up. The existing private console was not
+restarted or modified.
+
+Next bounded change: correct the test harness's inherited TCP socket handling,
+verify accepted sockets have the intended TCP settings, then rerun the exact
+unchanged acceptance selection once. Do not disable tracing, switch event loops,
+increase pool sizes or relax limits on this evidence. A corrected-harness pass
+would still not prove stable full-suite performance. No commit/push or live
+rollout was performed.
+
+## Latest slice: focused performance check (2026-10-20)
+
+At source `39de72512dcee66e2e74c786654122a1698010cf`, ran once without coverage:
+
+```sh
+env -i HOME="$HOME" PATH="$PATH" NO_LOCAL_ENV=1 ENV=ci make load-test
+```
+
+Result: **3 passed, 1 failed, 4 warnings in 268.79 s**. No skipped tests.
+
+| Measurement | Result | Existing limit |
+| --- | --- | --- |
+| ASGI acknowledgement / scheduled p95 | 69.981 / 70.605 ms | Both <200 ms; passed |
+| TCP acknowledgement / scheduled p95 | 305.228 / 307.746 ms | Both <200 ms; acknowledgement assertion failed first |
+| Graph-only p95 (200 turns) | 108.943 ms | <150 ms; passed |
+| Simultaneous TCP acknowledgement / scheduled p95 | 516.237 / 554.800 ms | Diagnostic only; no latency assertion |
+
+Both sequential transports and the simultaneous case each completed 150
+synthetic turns with 150 unique replies and 150 pending deliveries. Sequential
+queue throughput was 2.195 turns/s (ASGI) and 2.146 turns/s (TCP), not 50
+completed turns/s. Simultaneous worker-turn p95 was 1954.827 ms. No external
+delivery or real provider was exercised. Warnings were the Testcontainers
+deprecation and missing optional `/run/secrets` directory.
+
+Only disposable Testcontainers were provisioned. The existing private dev
+gateway/frontend remained untouched and returned readiness/login HTTP 200
+afterward. No environment-file access, persistent migration/reset, provider
+request, timing retry, threshold relaxation or full-suite rerun occurred.
+The user's earlier private-console smoke check was reported successful; it is
+user-operated evidence, not an independently observed authenticated test.
+
+LG15 full-suite performance acceptance remains open. The next bounded task is
+TCP latency diagnosis, not another acceptance retry: inspect the ingress,
+connection-pool and tracing paths and collect attributable diagnostic evidence
+with disposable fixtures. Do not attribute the failure to host contention
+without measurements. Keep the existing thresholds and this failed run.
+
+```text
+Start with the latest performance section of this handoff and LG08/LG15.
+The single focused load run at source 39de725 failed TCP p95 at 305.228 ms
+(scheduled 307.746 ms); ASGI and graph-only limits passed. Diagnose TCP latency
+using disposable synthetic fixtures only with NO_LOCAL_ENV=1 ENV=ci.
+Do not retry until green, relax thresholds, or claim full-suite acceptance.
+Do not change persistent dev data, environment files, provider credentials,
+running services, tunnels or deployment. Preserve unrelated docs/reviews
+deletions. No commit/push is authorized for this diagnostic continuation.
+```
+
 ## Latest slice: synthetic M2 browser acceptance (2026-10-20)
 
-Work continues on branch `review/domain-release-2026-10-20` from published
-audit commit `f46dba0fe006577dcc56d150bd62a576adf0f15e`. The browser slice is
-local and uncommitted; it has not been pushed to draft PR #1. The two deleted
-`docs/reviews/` files remain pre-existing unrelated work and must stay excluded.
+The documentation audit is committed as `f46dba0fe006577dcc56d150bd62a576adf0f15e`;
+the browser slice is committed and pushed as
+`3979da55b72f11f44ac678ae6130b1020c79a1ec` on
+`review/domain-release-2026-10-20`. The only local worktree changes before this
+status-note update were two pre-existing deletions under `docs/reviews/`; they
+remain excluded from both commits.
 
 The new JavaScript-enabled test
 `tests/test_packaged_console.py::test_packaged_m2_browser_acceptance` passed
@@ -60,20 +277,17 @@ files and 409 local targets with zero errors; `git diff --check` passed. The run
 used Testcontainers/disposable fixtures only. This one full-suite pass does not
 erase historical latency failures or establish stable performance acceptance.
 
-Fresh GitHub CLI observation: PR run
-[39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600)
-completed with frontend and pytest successful, but gate failed in Gitleaks and
-policy branch coverage/package were skipped. The Gitleaks log shows its
-`GITHUB_TOKEN` integration received HTTP 403 `Resource not accessible by
-integration` while reading `GET /repos/amsyrzmi/CSAV2/pulls/1/commits`; it is a
-workflow permission failure, not a reported secret finding. `.github/workflows/ci.yml`
-now locally grants the minimum `pull-requests: read` permission alongside
-existing read permissions. That adjustment is not in the failed remote run and
-has not been pushed; re-run hosted CI after an approved push to establish whether
-it resolves the failure. No credential was inspected or changed.
-
-No commit or push has been made for this slice. Do not merge PR #1 or deploy.
-The run reflects the remote audit-only head, not these local changes.
+Hosted CI on the browser-slice commit passed: pull-request run
+[39455808313](https://github.com/amsyrzmi/CSAV2/actions/runs/39455808313) and push
+run [39455797430](https://github.com/amsyrzmi/CSAV2/actions/runs/39455797430)
+both succeeded, including frontend, gate (pytest, Gitleaks and policy branch
+coverage) and package. This confirms the job-scoped `pull-requests: read`
+permission fixed the earlier Gitleaks integration 403. The earlier failed run
+[39417032600](https://github.com/amsyrzmi/CSAV2/actions/runs/39417032600) is
+retained as historical evidence, not the current result. The current GitHub CLI identity could not read PR details (HTTP 403); PR #1 was
+last confirmed open and draft before the browser-slice push. The user plans to
+merge after reviewing the updated PR. No merge, registry publication, promotion
+or deployment has occurred.
 
 ## Prior slice: documentation audit closeout and release review (2026-10-20)
 
@@ -934,33 +1148,32 @@ Official references consulted for the hosting/integration checklist:
 
 ## Next bounded task and copy-ready prompt
 
-Draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1) remains based on `main`
-from `review/domain-release-2026-10-20`; no duplicate PR is needed. The PR run
-39417032600 completed: frontend and pytest passed, Gitleaks failed on a GitHub
-integration 403 fetching PR commits, and policy coverage/package were skipped.
-The local CI workflow now grants `pull-requests: read` to the `gate` job only.
-That permission has not been pushed or validated by hosted CI. No local
-Gitleaks binary is available, so hosted scanning must pass after an approved
-push.
+Historical pre-merge continuation: use the current next task and prompt in
+[the corrected-listener section](#latest-slice-corrected-inherited-tcp-listener-2026-10-20)
+instead. The following preserves the earlier PR #1 publication instructions.
+
+Draft PR [#1](https://github.com/amsyrzmi/CSAV2/pull/1) targets `main` from
+`review/domain-release-2026-10-20`; no duplicate PR is needed. On browser-slice
+head `3979da55b72f11f44ac678ae6130b1020c79a1ec`, both the PR and push workflows
+passed all jobs, including Gitleaks, policy branch coverage and package. The
+earlier Gitleaks 403 is resolved by the job-scoped `pull-requests: read`
+permission. This handoff and `docs/PROGRESS.md` now record that result in a
+documentation-only follow-up; wait for hosted checks on its updated PR head
+before merging. The user, not this task, will perform the merge. No publish,
+promotion or deployment.
 
 The final local `make lint test` run passed: **2,550 tests**, including all four
 packaged-console tests and the disposable-reset acceptance test; exact command,
 warnings and duration are recorded above. `uv lock --check`, the documentation
 link/fence checker (**45 Markdown files, 409 local targets, zero errors**) and
 `git diff --check` pass. The browser acceptance, pinned Playwright dependency
-and lock, CI browser installation and minimum Gitleaks permission fix remain
-local and uncommitted. The next action is to review this exact local diff and
-obtain explicit approval before committing or pushing. If approved, stage only
-task-owned paths, inspect the staged diff, include the required Co-authored-by
-trailer and push only to the existing review branch. Keep the two pre-existing
-deletions under `docs/reviews/` excluded.
-
-After an approved push, refresh PR #1 and CI. Require Gitleaks and policy
-coverage to complete successfully before recommending review readiness; do not
-mark ready or merge. If `pull-requests: read` does not resolve the action error,
-keep it as a blocker and request repository workflow-permission review rather
-than changing credentials. Preserve draft status; no registry publication,
-promotion or deployment.
+and lock, CI browser installation and minimum Gitleaks permission fix are
+committed in `3979da5`. This follow-up reconciles the stale pre-push status in
+this handoff and `docs/PROGRESS.md`; the documentation links/fences and
+whitespace are validated. It is documentation-only and excludes the two
+pre-existing deletions under `docs/reviews/`. Hosted CI must rerun for the
+updated PR head. The user will review and merge PR #1 after those checks pass;
+do not merge it here. No registry publication, promotion or deployment.
 
 This synthetic browser pass closes only the JavaScript-enabled packaged M2
 interaction gap described above. It does not establish exact hosted-browser
@@ -971,22 +1184,19 @@ is authorized.
 
 ```text
 Continue from docs/handoffs/2026-10-19-domain-release-next-session.md.
-The final local `NO_LOCAL_ENV=1 ENV=ci make lint test` run passed 2,550 tests,
-including test_make_reset_only_disposable_container; docs link/fence check
-(45 Markdown files, 409 local targets) and git diff --check passed. The M2
-synthetic JavaScript browser slice, Playwright dependency, CI Chromium install
-and job-scoped pull-requests: read change are uncommitted on
-review/domain-release-2026-10-20 at f46dba0. Review the exact current diff and
-obtain explicit user approval before committing or pushing. If approved, stage
-only task-owned paths, exclude both pre-existing docs/reviews deletions, inspect
-the staged diff, include the required Co-authored-by trailer and push only to
-the existing branch.
-PR #1 remains a draft at the old audit-only remote head. Its newest run
-39417032600 passed frontend/pytest but Gitleaks failed on a GitHub integration
-403 and policy coverage/package were skipped. After an approved push, refresh
-CI and require Gitleaks, policy coverage and package to pass; keep the draft,
-do not merge, publish, promote or deploy. The local permission change is not
-yet verified by hosted CI. Do not change credentials.
+The documentation audit (`f46dba0`) and synthetic M2 browser acceptance
+(`3979da55b72f11f44ac678ae6130b1020c79a1ec`) are pushed to
+review/domain-release-2026-10-20. The browser-slice PR and push runs
+39455808313 and 39455797430 both passed frontend, pytest, Gitleaks, policy
+coverage and package. This handoff and docs/PROGRESS.md contain a docs-only
+status reconciliation; it excludes the pre-existing docs/reviews deletions.
+Check hosted CI on the updated docs head before merge; the user will merge the
+PR after reviewing it. Do not merge, publish, promote or deploy.
+After merge, the smallest bounded acceptance task is to define and execute the
+LG15 full-suite performance acceptance with its existing thresholds and
+historical failures preserved; first read the current progress and LG08/LG15
+criteria. Do not relax thresholds or imply one passing run establishes stable
+capacity.
 Use synthetic disposable Testcontainers only with NO_LOCAL_ENV=1 ENV=ci; never
 run bare make db-reset. No production/env-file access, persistent DB change,
 service restart, real provider request, infrastructure/DNS/tunnel/webhook/upload,
