@@ -33,7 +33,13 @@ from psycopg import sql
 from scripts.release_context import materialize
 from testcontainers.core.network import Network
 
-from tests.conftest import CSA_APP_PASSWORD, REPO_ROOT, owner_dsn_for, requires_docker
+from tests.conftest import (
+    CSA_APP_PASSWORD,
+    REPO_ROOT,
+    owner_dsn_for,
+    requires_docker,
+    reset_console_identity,
+)
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 PASSWORD = "synthetic-packaged-initial-password"
@@ -263,8 +269,7 @@ def packaged_console(
 async def packaged_identity(migrated_dsn: str) -> None:
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as conn:
         # The module shares one disposable database; isolate each identity scenario.
-        await conn.execute("TRUNCATE TABLE console_users CASCADE")
-        await conn.execute("TRUNCATE TABLE console_login_attempts")
+        await reset_console_identity(conn)
         await conn.execute(
             sql.SQL("ALTER ROLE csa_identity LOGIN PASSWORD {}").format(
                 sql.Literal(IDENTITY_PASSWORD)

@@ -1,0 +1,1 @@
+UPDATE public.hr_candidates SET display_name=NULL,cv_text=NULL,consent_evidence=NULL,notes='[]',erased_at=%s,version=version+1 WHERE client_id=%s AND id=%s AND version=%s AND erased_at IS NULL RETURNING version;

@@ -24,7 +24,7 @@ from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from tests.conftest import requires_docker
+from tests.conftest import requires_docker, reset_console_identity
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 ORIGIN = "https://console.example.test"
@@ -111,11 +111,7 @@ class SessionWorld:
 @pytest.fixture
 async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIterator[SessionWorld]:
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
-        await owner.execute(
-            "TRUNCATE console_chat_turns,console_chat_threads,console_chat_participants,"
-            "console_workspace_turns,console_workspace_threads,console_audit,console_tokens,"
-            "console_sessions,console_memberships,console_login_attempts,console_users"
-        )
+        await reset_console_identity(owner)
         await owner.execute(
             sql.SQL("ALTER ROLE csa_identity LOGIN PASSWORD {}").format(
                 sql.Literal("synthetic_session_fixture_pw")

@@ -1,6 +1,36 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: workspace A1 merged; HR integration next (2026-10-21)
+## Current continuation: HR integration PR #5 (2026-10-21)
+
+PR #4 merged to main as `bb197ae`; main CI 39638334024 passed. Local main
+matches it and retains only the two pre-existing review-document deletions.
+HR integration is on `integration/hr-foundation` in
+`/home/amsyrzmi/CSAV2-hr-integration`; B's original dirty HR worktree is unchanged.
+Read [HR progress](../hr/PROGRESS.md) and [setup](../hr/SETUP.md) first for
+implemented scope, explicit authority and exact integration evidence.
+
+Both workspace A1 (0370) and HR (0380-0410) are present, with schema readiness
+0410 and regenerated OpenAPI. Review fixed shared disposable identity-fixture
+cleanup for the new HR foreign keys and added protection-restoration coverage.
+Full lint passed; full pytest is **2,901 passed / 1 failed** (host Chromium
+missing `libatk-1.0.so.0` before browser assertions). Load and disposable-reset
+tests passed; isolated frontend checks passed. Do not call that local full run
+green. Hosted PR CI 39660171469 and push CI 39659967703 passed on `5ac7387`,
+with **2,902 passed / 136 warnings in 785.08 s**, 100% policy coverage and
+gate/frontend/package green. CI installed its browser dependencies; the shared
+host was not modified. Only evidence documentation changed afterward. PR #5
+is the integration merge boundary; verify its final-head checks before the
+user merges it. Main is not yet HR-enabled.
+
+After review/CI and the user's merge, the next bounded acceptance slice is a
+synthetic authenticated HR directory/training browser replay covering explicit
+grants, cross-tenant denial, human confirmation and uncertain-response recovery.
+It is not implemented by this integration. Actual local microphone support,
+interactive LiveKit voice, external sends, payroll-compliance review, real
+owner/grant provisioning, retention/HMAC key decisions and persistent rollout
+remain separate gates. No deployment or persistent database action occurred.
+
+## Prior continuation: workspace A1 merged; HR integration next (2026-10-21)
 
 PR #3 (workspace A0/A1) merged to `main` as `b3b84c7`; local `main` was
 fast-forwarded with the dirty documentation/staging files preserved. Read the

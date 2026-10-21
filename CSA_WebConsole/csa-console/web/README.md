@@ -283,6 +283,26 @@ scoped through `fs-ui`; the light canvas, blue actions, control boundaries, expl
 role labels and brand mark follow the detailed UI guide. Font family names use local/system fallbacks because font files
 were not supplied, and no remote font fetch is needed to build.
 
+## Staff HR adoption (source implementation, 2026-10-21)
+
+`/hr` and `/portal/hr` are authenticated adopted pages backed by the gateway's
+`/console/v1/hr` contract. They include explicitly granted directory/training,
+local recruitment, attendance/leave and private payroll-review forms. HR owner
+assignment and field/action/private grants are separate from console roles;
+showing a page does not grant access. Workspace A1 remains a separate page and API.
+
+The optional HR assistant sends submitted messages to the configured model only
+when enabled; it does not supply private stored CV/payroll records to that model.
+Local dictation fills a reviewable text box and never auto-submits. Unsupported
+on-device speech fails explicitly with typed input still available; no cloud
+speech fallback or automatic language-pack download is selected. This is not
+the planned interactive LiveKit voice agent.
+
+See [HR setup](../../../docs/hr/SETUP.md) and
+[current validation](../../../docs/hr/PROGRESS.md). Isolated transport/build checks
+do not establish authenticated browser/microphone acceptance or authorize
+persistent migrations, worker activation, external sends or deployment.
+
 ## Identity contract
 
 `lib/identity-contracts.ts` mirrors the authoritative Pydantic models in

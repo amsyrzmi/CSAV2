@@ -18,6 +18,8 @@ const adoptedPages = new Set([
   "/portal/chat",
   "/inbox",
   "/portal/inbox",
+  "/hr",
+  "/portal/hr",
   "/business",
   "/portal/business",
   "/workspace",

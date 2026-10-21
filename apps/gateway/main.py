@@ -10,7 +10,7 @@ Health contract (design §8.3):
   AND migrations are at the expected version. "At version" is computed as
   **set membership** — every shipped ``db/migrations/*.sql`` version is present
   in ``schema_migrations`` — plus a ``max(applied) == EXPECTED_SCHEMA_VERSION``
-  (``0300``) sanity check. Any missing shipped version, a ``max`` mismatch, or an
+  sanity check. Any missing shipped version, a ``max`` mismatch, or an
   unreachable DB returns 503 naming the gap. ``*.py`` migrations never enter the
   ledger, so the guarded ``0130`` re-encrypt skeleton is irrelevant to readiness.
 """  # LG01
@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
+import httpx
 import structlog
 from csa.channels.ingress import IngressError, TelegramIngress
 from csa.channels.marketplace.router import build_marketplace_router
@@ -33,6 +34,10 @@ from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
 from csa.core.settings import get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
+from csa.decide.groq import GroqClient
+from csa.hr.api import build_hr_router
+from csa.hr.assistant import HrAssistant
+from csa.hr.service import HrService
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -44,7 +49,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0370"
+EXPECTED_SCHEMA_VERSION = "0410"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -123,6 +128,7 @@ def create_app() -> FastAPI:
             if settings.IDENTITY_DATABASE_URL is not None
             else None
         )
+        hr_http: httpx.AsyncClient | None = None
         try:
             await pool.open(wait=True)
             app.state.pool = pool
@@ -140,16 +146,33 @@ def create_app() -> FastAPI:
                 )
                 await identity.check_ready()
                 app.state.identity_service = identity
+                hr = HrService(pool, session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS)
+                await hr.check_ready()
+                app.state.hr_service = hr
+                if settings.HR_ASSISTANT_ENABLED:
+                    hr_http = httpx.AsyncClient()
+                    app.state.hr_assistant = HrAssistant(
+                        hr,
+                        GroqClient(
+                            settings.GROQ_API_KEY.get_secret_value(), settings.GROQ_MODEL, hr_http
+                        ),
+                    )
+            elif settings.HR_ASSISTANT_ENABLED:
+                raise RuntimeError("HR assistant requires console identity")
             yield
         finally:
             try:
-                if identity_pool is not None:
-                    await identity_pool.close()
+                if hr_http is not None:
+                    await hr_http.aclose()
             finally:
                 try:
-                    await pool.close()
+                    if identity_pool is not None:
+                        await identity_pool.close()
                 finally:
-                    shutdown_logging()
+                    try:
+                        await pool.close()
+                    finally:
+                        shutdown_logging()
 
     app = FastAPI(
         title="csa-gateway",
@@ -191,6 +214,11 @@ def create_app() -> FastAPI:
                 await app.state.identity_service.check_ready()
             except Exception as exc:
                 ready, reason = False, f"identity database unavailable: {exc.__class__.__name__}"
+        if ready and settings.IDENTITY_DATABASE_URL is not None:
+            try:
+                await app.state.hr_service.check_ready()
+            except Exception as exc:
+                ready, reason = False, f"HR database unavailable: {exc.__class__.__name__}"
         status_code = 200 if ready else 503
         return JSONResponse(
             status_code=status_code,
@@ -257,6 +285,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(build_marketplace_router())
+    app.include_router(build_hr_router())
 
     instrument_fastapi(app)
     return app

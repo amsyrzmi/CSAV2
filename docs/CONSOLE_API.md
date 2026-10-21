@@ -23,6 +23,41 @@ Official v202309 request paths, pagination placement and detail envelope have si
 verified/corrected; line-item quantity/price normalization still blocks provider readiness.
 See the [verified scope and remaining response/grant gates](./handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
 
+## Staff HR contract (source implementation, 2026-10-21)
+
+The `/console/v1/hr` router and `/hr` / `/portal/hr` pages implement staff-only
+directory, training, recruitment, attendance, leave and local payroll-review
+workflows. See the [HR implementation and validation](./hr/PROGRESS.md) and
+[setup and operating boundaries](./hr/SETUP.md) before enabling anything.
+Ordered migrations 0380-0410 follow workspace migration 0370. This is not
+persistent migration, deployment, live-provider or payroll-compliance acceptance.
+
+- Only verified human sessions are accepted. Platform admins select a tenant
+  explicitly and still need its active membership and explicit HR authority.
+  Console roles alone grant no HR business access. Mutations require CSRF and
+  reject read-only membership; service transactions recheck session/grants.
+- `/context`, `/employees`, `/training-requests` and `/workflows` expose bounded,
+  scoped projections. Training and workflow mutations use `Idempotency-Key`,
+  current versions and coupled receipts/audit. Supervisor decisions remain human;
+  payroll review requires a different reviewer and the exact private snapshot digest.
+- `/operations` handles explicitly granted administration and private operations;
+  `/records/{area}` and `/private/{area}/{resource_id}` return typed, separately
+  authorized records. Candidate text/notes and payroll amounts are absent from
+  generic operation receipts.
+- HR agents use a separate staff catalog and session context, not customer
+  contacts, the customer capability registry or the workspace action union.
+  `/agents`, `/agents/contracts`, `/agents/execute` and session-bound
+  `/confirmations/{confirmation_id}/confirm` preserve that distinction.
+- `/assistant` is disabled by default through `HR_ASSISTANT_ENABLED` and a
+  per-tenant switch. When explicitly configured, submitted messages use the
+  existing model provider; private HR stores are not model context. Model plans
+  cannot grant authority, approve/reject or prepare payroll. Browser voice is
+  local dictation/status playback, not LiveKit or a conversational voice ingress.
+
+All HR responses are no-store; validation errors do not echo submitted HR data.
+External calendar/email delivery, hiring/ranking, payments, filings and automatic
+PCB calculation are not implemented by these local receipts.
+
 ## Authentication, tenancy and settings
 
 Development reset safety: `make db-reset` is destructive. Its default target is loopback

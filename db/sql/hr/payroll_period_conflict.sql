@@ -1,0 +1,1 @@
+SELECT EXISTS(SELECT 1 FROM public.hr_cases c JOIN public.hr_payroll_snapshots s ON s.client_id=c.client_id AND s.case_id=c.id WHERE c.client_id=%s AND c.id<>%s AND s.status='approved' AND c.payload->>'legal_entity_reference'=%s AND c.payload->>'region'=%s AND (c.payload->>'starts_on')::date<=%s AND (c.payload->>'ends_on')::date>=%s) AS conflict;
