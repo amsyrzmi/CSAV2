@@ -1,0 +1,1 @@
+INSERT INTO public.hr_automation_settings(client_id,enabled,remind_after_hours,approved_by) VALUES(%s,%s,%s,%s) ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,remind_after_hours=excluded.remind_after_hours,approved_by=excluded.approved_by;

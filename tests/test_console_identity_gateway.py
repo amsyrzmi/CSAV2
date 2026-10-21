@@ -16,6 +16,7 @@ from fastapi import FastAPI
 def application(monkeypatch: pytest.MonkeyPatch, *, env: str = "ci") -> FastAPI:
     synthetic = SimpleNamespace(
         ENV=env,
+        HR_ASSISTANT_ENABLED=False,
         DATABASE_URL="postgresql://csa_app:test@localhost:1/disposable_fixture",
         IDENTITY_DATABASE_URL="postgresql://csa_identity:test@localhost:1/disposable_fixture",
         CONSOLE_ALLOWED_ORIGIN="https://console.example.test",
@@ -34,10 +35,15 @@ def application(monkeypatch: pytest.MonkeyPatch, *, env: str = "ci") -> FastAPI:
     monkeypatch.setattr(gateway, "configure_logging", lambda **_: None)
     monkeypatch.setattr(gateway, "configure_tracing", lambda **_: None)
     monkeypatch.setattr(gateway, "instrument_fastapi", lambda _: None)
+    monkeypatch.setattr(
+        gateway, "HrService", lambda *_, **__: SimpleNamespace(check_ready=AsyncMock())
+    )
     return gateway.create_app()
 
 
-@pytest.mark.parametrize("failure", [None, "domain-open", "identity-open", "identity-role"])
+@pytest.mark.parametrize(
+    "failure", [None, "domain-open", "identity-open", "identity-role", "hr-role"]
+)
 async def test_identity_pool_is_explicitly_opened_validated_and_closed_on_all_paths(
     monkeypatch: pytest.MonkeyPatch, failure: str | None
 ) -> None:
@@ -82,6 +88,17 @@ async def test_identity_pool_is_explicitly_opened_validated_and_closed_on_all_pa
     monkeypatch.setattr(gateway, "build_pool", factory)
     monkeypatch.setattr(gateway, "IdentityService", Service)
     app = application(monkeypatch)
+
+    class HrDomainService:
+        def __init__(self, pool: Pool, *, session_idle_seconds: int):
+            assert pool is domain and session_idle_seconds == 1800
+
+        async def check_ready(self) -> None:
+            events.append("hr.check")
+            if failure == "hr-role":
+                raise RuntimeError("synthetic HR role failure")
+
+    monkeypatch.setattr(gateway, "HrService", HrDomainService)
     if failure:
         with pytest.raises(RuntimeError, match="synthetic"):
             async with app.router.lifespan_context(app):
@@ -90,7 +107,7 @@ async def test_identity_pool_is_explicitly_opened_validated_and_closed_on_all_pa
         async with app.router.lifespan_context(app):
             assert app.state.pool is domain
             assert isinstance(app.state.identity_service, Service)
-            assert events == ["domain.open", "identity.open", "identity.check"]
+            assert events == ["domain.open", "identity.open", "identity.check", "hr.check"]
             assert not domain.closed and not identity.closed
     assert domain.closed and identity.closed
     assert events[-2:] == ["identity.close", "domain.close"]
@@ -126,6 +143,8 @@ async def test_readiness_checks_identity_pool_after_domain_pool(
     app.state.pool = object()
     identity = SimpleNamespace(check_ready=AsyncMock())
     app.state.identity_service = identity
+    hr = SimpleNamespace(check_ready=AsyncMock())
+    app.state.hr_service = hr
     domain_check = AsyncMock(return_value=(True, "ok"))
     monkeypatch.setattr(gateway, "check_readiness", domain_check)
     async with httpx.AsyncClient(
@@ -134,10 +153,16 @@ async def test_readiness_checks_identity_pool_after_domain_pool(
         ready = await client.get("/readyz")
         assert ready.status_code == 200 and ready.json()["status"] == "ready"
         identity.check_ready.assert_awaited_once()
+        hr.check_ready.assert_awaited_once()
         identity.check_ready.side_effect = RuntimeError("synthetic secret-free identity outage")
         failed = await client.get("/readyz")
         assert failed.status_code == 503
         assert failed.json()["reason"] == "identity database unavailable: RuntimeError"
+        identity.check_ready.side_effect = None
+        hr.check_ready.side_effect = RuntimeError("synthetic HR outage")
+        hr_failed = await client.get("/readyz")
+        assert hr_failed.status_code == 503
+        assert hr_failed.json()["reason"] == "HR database unavailable: RuntimeError"
         domain_check.return_value = False, "missing migrations: 0270"
         identity.check_ready.reset_mock()
         unavailable = await client.get("/readyz")

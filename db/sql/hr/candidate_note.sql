@@ -1,0 +1,1 @@
+UPDATE public.hr_candidates SET notes=notes || %s,version=version+1 WHERE client_id=%s AND id=%s AND version=%s AND jsonb_array_length(notes)<100 AND erased_at IS NULL AND retain_until>%s RETURNING version;

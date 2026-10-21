@@ -51,6 +51,7 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: SecretStr
     GROQ_MODEL: str = "openai/gpt-oss-120b"
+    HR_ASSISTANT_ENABLED: bool = False
     GOOGLE_AI_API_KEY: SecretStr | None = None
     GOOGLE_AI_MODEL: str = "gemini-3.1-flash-lite"
     DEV_STAFF_CHAT_ID: str | None = None

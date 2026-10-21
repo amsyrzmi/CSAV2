@@ -1,0 +1,1 @@
+INSERT INTO public.hr_calendars(client_id,region,year,payload) VALUES(%s,%s,%s,%s) ON CONFLICT(client_id,region,year) DO UPDATE SET payload=excluded.payload,version=hr_calendars.version+1 RETURNING version;

@@ -1,0 +1,1 @@
+UPDATE public.hr_interviews i SET status='cancelled' WHERE i.client_id=%s AND EXISTS(SELECT 1 FROM public.hr_candidates c WHERE c.client_id=i.client_id AND c.id=i.candidate_id AND c.erased_at IS NOT NULL);

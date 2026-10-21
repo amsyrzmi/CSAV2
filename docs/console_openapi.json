@@ -1,6 +1,180 @@
 {
   "components": {
     "schemas": {
+      "AccessSave": {
+        "additionalProperties": false,
+        "properties": {
+          "grants": {
+            "items": {
+              "$ref": "#/components/schemas/ResolvedGrant"
+            },
+            "maxItems": 32,
+            "title": "Grants",
+            "type": "array"
+          },
+          "operation": {
+            "const": "access.save",
+            "title": "Operation",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          },
+          "workflows": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowGrant"
+            },
+            "maxItems": 48,
+            "title": "Workflows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation",
+          "user_id",
+          "grants",
+          "workflows"
+        ],
+        "title": "AccessSave",
+        "type": "object"
+      },
+      "AdminEmployee": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employment Category"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "legal_entity_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Entity Reference"
+          },
+          "manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Id"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "enum": [
+                  "peninsular_labuan",
+                  "sabah",
+                  "sarawak"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          }
+        },
+        "required": [
+          "employee_id",
+          "display_name",
+          "job_title",
+          "department",
+          "work_email",
+          "version",
+          "active",
+          "manager_id",
+          "account_id",
+          "region",
+          "legal_entity_reference",
+          "employment_category"
+        ],
+        "title": "AdminEmployee",
+        "type": "object"
+      },
       "AdminUserOut": {
         "additionalProperties": false,
         "properties": {
@@ -155,6 +329,129 @@
         "title": "AgentOut",
         "type": "object"
       },
+      "AgentSwitch": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "enum": [
+              "hr_directory",
+              "hr_training",
+              "hr_recruitment",
+              "hr_attendance",
+              "hr_payroll",
+              "hr_assistant"
+            ],
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "enabled"
+        ],
+        "title": "AgentSwitch",
+        "type": "object"
+      },
+      "AttendanceImport": {
+        "additionalProperties": false,
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "operation": {
+            "const": "attendance.import",
+            "title": "Operation",
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/AttendanceInput"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "records"
+        ],
+        "title": "AttendanceImport",
+        "type": "object"
+      },
+      "AttendanceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "correction_of": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction Of"
+          },
+          "domain": {
+            "const": "attendance",
+            "title": "Domain",
+            "type": "string"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "timezone": {
+            "enum": [
+              "Asia/Kuala_Lumpur",
+              "Asia/Kuching"
+            ],
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "starts_at",
+          "ends_at",
+          "timezone",
+          "region",
+          "reason"
+        ],
+        "title": "AttendanceInput",
+        "type": "object"
+      },
       "AuditOut": {
         "additionalProperties": false,
         "properties": {
@@ -216,6 +513,142 @@
           "created_at"
         ],
         "title": "AuditOut",
+        "type": "object"
+      },
+      "AuthorityEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "details": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Details",
+            "type": "object"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          },
+          "subject_id": {
+            "format": "uuid",
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "request_key",
+          "operation",
+          "details",
+          "occurred_at"
+        ],
+        "title": "AuthorityEvent",
+        "type": "object"
+      },
+      "AutomationConfigure": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "operation": {
+            "const": "automation.configure",
+            "title": "Operation",
+            "type": "string"
+          },
+          "remind_after_hours": {
+            "default": 24,
+            "maximum": 720.0,
+            "minimum": 1.0,
+            "title": "Remind After Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation",
+          "enabled"
+        ],
+        "title": "AutomationConfigure",
+        "type": "object"
+      },
+      "AutomationRun": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "const": "automation.run",
+            "title": "Operation",
+            "type": "string"
+          },
+          "remind_after_hours": {
+            "default": 24,
+            "maximum": 720.0,
+            "minimum": 1.0,
+            "title": "Remind After Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "AutomationRun",
+        "type": "object"
+      },
+      "BalanceRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "title": "Days",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "leave_type": {
+            "title": "Leave Type",
+            "type": "string"
+          },
+          "policy_reference": {
+            "title": "Policy Reference",
+            "type": "string"
+          },
+          "remaining": {
+            "title": "Remaining",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "employee_id",
+          "year",
+          "leave_type",
+          "days",
+          "version",
+          "policy_reference",
+          "remaining"
+        ],
+        "title": "BalanceRecord",
         "type": "object"
       },
       "BusinessOrder": {
@@ -410,6 +843,383 @@
         "title": "BusinessProduct",
         "type": "object"
       },
+      "CalculatedLine": {
+        "additionalProperties": false,
+        "properties": {
+          "amounts": {
+            "$ref": "#/components/schemas/ReviewedPayrollAmounts"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "net": {
+            "title": "Net",
+            "type": "string"
+          },
+          "tax_review_reference": {
+            "title": "Tax Review Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "amounts",
+          "net",
+          "tax_review_reference"
+        ],
+        "title": "CalculatedLine",
+        "type": "object"
+      },
+      "CalculatedPayroll": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "const": "MYR",
+            "title": "Currency",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/CalculatedLine"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "net_total": {
+            "title": "Net Total",
+            "type": "string"
+          },
+          "rule_id": {
+            "format": "uuid",
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lines",
+          "rule_id",
+          "currency",
+          "net_total"
+        ],
+        "title": "CalculatedPayroll",
+        "type": "object"
+      },
+      "CalendarRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "payload": {
+            "$ref": "#/components/schemas/CalendarSave"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "region",
+          "year",
+          "payload",
+          "version"
+        ],
+        "title": "CalendarRecord",
+        "type": "object"
+      },
+      "CalendarSave": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "holidays": {
+            "items": {
+              "format": "date",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Holidays",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "operation": {
+            "const": "calendar.save",
+            "title": "Operation",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "working_weekdays": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 7,
+            "minItems": 1,
+            "title": "Working Weekdays",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "year": {
+            "maximum": 2200.0,
+            "minimum": 2020.0,
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation",
+          "region",
+          "year",
+          "working_weekdays",
+          "holidays"
+        ],
+        "title": "CalendarSave",
+        "type": "object"
+      },
+      "CandidateDetails": {
+        "additionalProperties": false,
+        "properties": {
+          "consent_evidence": {
+            "maxLength": 200,
+            "title": "Consent Evidence",
+            "type": "string"
+          },
+          "consent_id": {
+            "format": "uuid",
+            "title": "Consent Id",
+            "type": "string"
+          },
+          "cv_text": {
+            "maxLength": 12000,
+            "title": "Cv Text",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewedNote"
+            },
+            "maxItems": 100,
+            "title": "Notes",
+            "type": "array"
+          },
+          "recorded_by": {
+            "format": "uuid",
+            "title": "Recorded By",
+            "type": "string"
+          },
+          "retain_until": {
+            "format": "date-time",
+            "title": "Retain Until",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "consent_id",
+          "retain_until",
+          "version",
+          "cv_text",
+          "consent_evidence",
+          "notes",
+          "recorded_by"
+        ],
+        "title": "CandidateDetails",
+        "type": "object"
+      },
+      "CandidateErase": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "candidate.erase",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "candidate_id",
+          "expected_version"
+        ],
+        "title": "CandidateErase",
+        "type": "object"
+      },
+      "CandidateIntake": {
+        "additionalProperties": false,
+        "properties": {
+          "consent_evidence": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Consent Evidence",
+            "type": "string"
+          },
+          "cv_text": {
+            "maxLength": 12000,
+            "minLength": 1,
+            "title": "Cv Text",
+            "type": "string"
+          },
+          "display_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "operation": {
+            "const": "candidate.intake",
+            "title": "Operation",
+            "type": "string"
+          },
+          "retain_until": {
+            "format": "date-time",
+            "title": "Retain Until",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "display_name",
+          "cv_text",
+          "consent_evidence",
+          "retain_until"
+        ],
+        "title": "CandidateIntake",
+        "type": "object"
+      },
+      "CandidateNote": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 1200,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "operation": {
+            "const": "candidate.note",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "candidate_id",
+          "expected_version",
+          "note"
+        ],
+        "title": "CandidateNote",
+        "type": "object"
+      },
+      "CandidateSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "consent_id": {
+            "format": "uuid",
+            "title": "Consent Id",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "retain_until": {
+            "format": "date-time",
+            "title": "Retain Until",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "consent_id",
+          "retain_until",
+          "version"
+        ],
+        "title": "CandidateSummary",
+        "type": "object"
+      },
       "CapabilityOut": {
         "additionalProperties": false,
         "properties": {
@@ -495,6 +1305,36 @@
         "title": "CapabilityToggleIn",
         "type": "object"
       },
+      "CasePage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRecord"
+            },
+            "maxItems": 50,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CasePage",
+        "type": "object"
+      },
       "ClientIn": {
         "additionalProperties": false,
         "properties": {
@@ -558,6 +1398,158 @@
         "title": "ClientOut",
         "type": "object"
       },
+      "ConfirmationAccept": {
+        "additionalProperties": false,
+        "description": "Opaque path reference only; callers cannot replace the prepared command.",
+        "properties": {},
+        "title": "ConfirmationAccept",
+        "type": "object"
+      },
+      "ConfirmationProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/TrainingAction"
+          },
+          "command": {
+            "$ref": "#/components/schemas/TrainingCommandInput"
+          },
+          "confirmation_id": {
+            "format": "uuid",
+            "title": "Confirmation Id",
+            "type": "string"
+          },
+          "consumed": {
+            "default": false,
+            "title": "Consumed",
+            "type": "boolean"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "kind": {
+            "const": "confirmation_required",
+            "default": "confirmation_required",
+            "title": "Kind",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmation_id",
+          "request_id",
+          "action",
+          "expected_version",
+          "expires_at",
+          "command"
+        ],
+        "title": "ConfirmationProjection",
+        "type": "object"
+      },
+      "ContributionBand-Input": {
+        "additionalProperties": false,
+        "description": "An explicitly reviewed wage band, rather than an inferred flat percentage.",
+        "properties": {
+          "above": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Above"
+          },
+          "employee": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Employee"
+          },
+          "employer": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Employer"
+          },
+          "through": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Through"
+          }
+        },
+        "required": [
+          "above",
+          "through",
+          "employee",
+          "employer"
+        ],
+        "title": "ContributionBand",
+        "type": "object"
+      },
+      "ContributionBand-Output": {
+        "additionalProperties": false,
+        "description": "An explicitly reviewed wage band, rather than an inferred flat percentage.",
+        "properties": {
+          "above": {
+            "title": "Above",
+            "type": "string"
+          },
+          "employee": {
+            "title": "Employee",
+            "type": "string"
+          },
+          "employer": {
+            "title": "Employer",
+            "type": "string"
+          },
+          "through": {
+            "title": "Through",
+            "type": "string"
+          }
+        },
+        "required": [
+          "above",
+          "through",
+          "employee",
+          "employer"
+        ],
+        "title": "ContributionBand",
+        "type": "object"
+      },
       "CsrfOut": {
         "additionalProperties": false,
         "properties": {
@@ -570,6 +1562,155 @@
           "csrf_token"
         ],
         "title": "CsrfOut",
+        "type": "object"
+      },
+      "DirectoryField": {
+        "enum": [
+          "display_name",
+          "job_title",
+          "department",
+          "work_email",
+          "assigned_manager"
+        ],
+        "title": "DirectoryField",
+        "type": "string"
+      },
+      "DirectoryPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DirectoryProjection"
+            },
+            "maxItems": 50,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "DirectoryPage",
+        "type": "object"
+      },
+      "DirectoryProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "employee": {
+            "$ref": "#/components/schemas/EmployeeRef"
+          },
+          "values": {
+            "$ref": "#/components/schemas/DirectoryValues"
+          }
+        },
+        "required": [
+          "employee",
+          "values"
+        ],
+        "title": "DirectoryProjection",
+        "type": "object"
+      },
+      "DirectoryRead": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "directory.read",
+            "title": "Action",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "employee_id"
+        ],
+        "title": "DirectoryRead",
+        "type": "object"
+      },
+      "DirectoryValues": {
+        "additionalProperties": false,
+        "description": "Allowlist only. Salary/bank/medical/CV values have no representation here.",
+        "properties": {
+          "assigned_manager": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmployeeRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "department": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          }
+        },
+        "title": "DirectoryValues",
         "type": "object"
       },
       "EmailInput": {
@@ -586,6 +1727,124 @@
           "email"
         ],
         "title": "EmailInput",
+        "type": "object"
+      },
+      "EmployeeRef": {
+        "additionalProperties": false,
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "employee_id"
+        ],
+        "title": "EmployeeRef",
+        "type": "object"
+      },
+      "EmployeeSave": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_category": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employment Category"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "legal_entity_reference": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Entity Reference"
+          },
+          "operation": {
+            "const": "employee.save",
+            "title": "Operation",
+            "type": "string"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "enum": [
+                  "peninsular_labuan",
+                  "sabah",
+                  "sarawak"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "values": {
+            "$ref": "#/components/schemas/DirectoryValues"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "values"
+        ],
+        "title": "EmployeeSave",
         "type": "object"
       },
       "EventOut": {
@@ -707,6 +1966,16 @@
         "title": "FileOut",
         "type": "object"
       },
+      "GrantScope": {
+        "enum": [
+          "self",
+          "assigned_manager",
+          "hr_operator",
+          "client_owner"
+        ],
+        "title": "GrantScope",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -718,6 +1987,222 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HrAction": {
+        "enum": [
+          "directory.read",
+          "training.read",
+          "training.draft",
+          "training.submit",
+          "training.withdraw",
+          "training.decide"
+        ],
+        "title": "HrAction",
+        "type": "string"
+      },
+      "HrAgentDescription": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "input_schema": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Input Schema",
+            "type": "object"
+          },
+          "max_retries": {
+            "const": 0,
+            "default": 0,
+            "title": "Max Retries",
+            "type": "integer"
+          },
+          "name": {
+            "enum": [
+              "hr_directory",
+              "hr_training",
+              "hr_recruitment",
+              "hr_attendance",
+              "hr_payroll",
+              "hr_assistant"
+            ],
+            "title": "Name",
+            "type": "string"
+          },
+          "side_effects": {
+            "const": "reversible",
+            "default": "reversible",
+            "title": "Side Effects",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "default": 10000,
+            "title": "Timeout Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "enabled",
+          "actions",
+          "input_schema"
+        ],
+        "title": "HrAgentDescription",
+        "type": "object"
+      },
+      "HrChatInput": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "source": {
+            "default": "text",
+            "enum": [
+              "text",
+              "voice"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "HrChatInput",
+        "type": "object"
+      },
+      "HrChatPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "directory.read": "#/components/schemas/DirectoryRead",
+                    "interview.schedule": "#/components/schemas/InterviewArrange",
+                    "training.prepare": "#/components/schemas/TrainingPrepare",
+                    "training.read": "#/components/schemas/TrainingRead",
+                    "training.transition": "#/components/schemas/TrainingTransition",
+                    "workflow.prepare": "#/components/schemas/WorkflowPrepare",
+                    "workflow.read": "#/components/schemas/WorkflowRead"
+                  },
+                  "propertyName": "action"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/DirectoryRead"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TrainingRead"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TrainingPrepare"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TrainingTransition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/WorkflowPrepare"
+                  },
+                  {
+                    "$ref": "#/components/schemas/WorkflowRead"
+                  },
+                  {
+                    "$ref": "#/components/schemas/InterviewArrange"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "clarification": {
+            "anyOf": [
+              {
+                "enum": [
+                  "request_details",
+                  "manual_decision_required",
+                  "unsupported_request"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clarification"
+          }
+        },
+        "title": "HrChatPlan",
+        "type": "object"
+      },
+      "HrContext": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "client_owner": {
+            "title": "Client Owner",
+            "type": "boolean"
+          },
+          "employee": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmployeeRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "private_areas": {
+            "default": [],
+            "items": {
+              "enum": [
+                "recruitment",
+                "attendance",
+                "payroll"
+              ],
+              "type": "string"
+            },
+            "title": "Private Areas",
+            "type": "array"
+          }
+        },
+        "required": [
+          "employee",
+          "client_owner",
+          "actions"
+        ],
+        "title": "HrContext",
         "type": "object"
       },
       "HumanReply": {
@@ -1102,6 +2587,132 @@
           }
         },
         "title": "InboxResult",
+        "type": "object"
+      },
+      "InterviewArrange": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "interview.schedule",
+            "title": "Action",
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/InterviewSchedule"
+          }
+        },
+        "required": [
+          "action",
+          "content"
+        ],
+        "title": "InterviewArrange",
+        "type": "object"
+      },
+      "InterviewRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "delivery": {
+            "const": "local_only",
+            "title": "Delivery",
+            "type": "string"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "interviewer_id": {
+            "format": "uuid",
+            "title": "Interviewer Id",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "scheduled",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "candidate_id",
+          "interviewer_id",
+          "starts_at",
+          "ends_at",
+          "timezone",
+          "delivery",
+          "status"
+        ],
+        "title": "InterviewRecord",
+        "type": "object"
+      },
+      "InterviewSchedule": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "interviewer_id": {
+            "format": "uuid",
+            "title": "Interviewer Id",
+            "type": "string"
+          },
+          "operation": {
+            "const": "interview.schedule",
+            "title": "Operation",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "timezone": {
+            "enum": [
+              "Asia/Kuala_Lumpur",
+              "Asia/Kuching"
+            ],
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "candidate_id",
+          "interviewer_id",
+          "starts_at",
+          "ends_at",
+          "timezone"
+        ],
+        "title": "InterviewSchedule",
         "type": "object"
       },
       "InvitationOut": {
@@ -1589,6 +3200,7 @@
         "title": "JobResultOut",
         "type": "object"
       },
+      "JsonValue": {},
       "KbDocumentIn": {
         "additionalProperties": false,
         "properties": {
@@ -1780,6 +3392,134 @@
         "title": "KbGapOut",
         "type": "object"
       },
+      "LeaveBalanceSave": {
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "anyOf": [
+              {
+                "maximum": 366.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Days"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "leave_type": {
+            "enum": [
+              "annual",
+              "sick",
+              "unpaid",
+              "other"
+            ],
+            "title": "Leave Type",
+            "type": "string"
+          },
+          "operation": {
+            "const": "leave_balance.save",
+            "title": "Operation",
+            "type": "string"
+          },
+          "policy_reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Policy Reference",
+            "type": "string"
+          },
+          "year": {
+            "maximum": 2200.0,
+            "minimum": 2020.0,
+            "title": "Year",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "year",
+          "leave_type",
+          "days",
+          "policy_reference"
+        ],
+        "title": "LeaveBalanceSave",
+        "type": "object"
+      },
+      "LeaveInput": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "const": "leave",
+            "title": "Domain",
+            "type": "string"
+          },
+          "ends_on": {
+            "format": "date",
+            "title": "Ends On",
+            "type": "string"
+          },
+          "leave_type": {
+            "enum": [
+              "annual",
+              "sick",
+              "unpaid",
+              "other"
+            ],
+            "title": "Leave Type",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "starts_on": {
+            "format": "date",
+            "title": "Starts On",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "starts_on",
+          "ends_on",
+          "region",
+          "leave_type",
+          "reason"
+        ],
+        "title": "LeaveInput",
+        "type": "object"
+      },
       "LoginIn": {
         "additionalProperties": false,
         "properties": {
@@ -1930,6 +3670,33 @@
         "title": "MemberPatchIn",
         "type": "object"
       },
+      "MemberRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "display_name"
+        ],
+        "title": "MemberRecord",
+        "type": "object"
+      },
       "MembershipOut": {
         "additionalProperties": false,
         "properties": {
@@ -1967,6 +3734,114 @@
           "message"
         ],
         "title": "MessageOut",
+        "type": "object"
+      },
+      "NotificationRead": {
+        "additionalProperties": false,
+        "properties": {
+          "notification_id": {
+            "format": "uuid",
+            "title": "Notification Id",
+            "type": "string"
+          },
+          "operation": {
+            "const": "notification.read",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "notification_id"
+        ],
+        "title": "NotificationRead",
+        "type": "object"
+      },
+      "NotificationRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "workflow_review",
+              "training_review",
+              "interview_upcoming"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At"
+          },
+          "resource_id": {
+            "format": "uuid",
+            "title": "Resource Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "resource_id",
+          "created_at",
+          "read_at"
+        ],
+        "title": "NotificationRecord",
+        "type": "object"
+      },
+      "OperationReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "duplicate": {
+            "default": false,
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "resource_id": {
+            "format": "uuid",
+            "title": "Resource Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "default": 0,
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation",
+          "resource_id",
+          "status"
+        ],
+        "title": "OperationReceipt",
         "type": "object"
       },
       "OrderPage": {
@@ -2076,6 +3951,595 @@
         "title": "PasswordChangeIn",
         "type": "object"
       },
+      "PayrollInput": {
+        "additionalProperties": false,
+        "description": "Request to prepare a human-reviewed run, without wages in agent/model input.",
+        "properties": {
+          "currency": {
+            "const": "MYR",
+            "default": "MYR",
+            "title": "Currency",
+            "type": "string"
+          },
+          "cycle": {
+            "enum": [
+              "weekly",
+              "fortnightly",
+              "monthly"
+            ],
+            "title": "Cycle",
+            "type": "string"
+          },
+          "domain": {
+            "const": "payroll",
+            "title": "Domain",
+            "type": "string"
+          },
+          "ends_on": {
+            "format": "date",
+            "title": "Ends On",
+            "type": "string"
+          },
+          "legal_entity_reference": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Legal Entity Reference",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "rule_set_reference": {
+            "format": "uuid",
+            "title": "Rule Set Reference",
+            "type": "string"
+          },
+          "starts_on": {
+            "format": "date",
+            "title": "Starts On",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "legal_entity_reference",
+          "region",
+          "starts_on",
+          "ends_on",
+          "cycle",
+          "rule_set_reference"
+        ],
+        "title": "PayrollInput",
+        "type": "object"
+      },
+      "PayrollLine": {
+        "additionalProperties": false,
+        "properties": {
+          "eis_wage": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Eis Wage"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "epf_wage": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Epf Wage"
+          },
+          "gross": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Gross"
+          },
+          "reviewed_other_deductions": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Reviewed Other Deductions"
+          },
+          "reviewed_pcb": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Reviewed Pcb"
+          },
+          "socso_wage": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Socso Wage"
+          },
+          "tax_review_reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tax Review Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "gross",
+          "epf_wage",
+          "socso_wage",
+          "eis_wage",
+          "reviewed_pcb",
+          "reviewed_other_deductions",
+          "tax_review_reference"
+        ],
+        "title": "PayrollLine",
+        "type": "object"
+      },
+      "PayrollReverse": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "format": "uuid",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "payroll.reverse",
+            "title": "Operation",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "case_id",
+          "expected_version",
+          "reason"
+        ],
+        "title": "PayrollReverse",
+        "type": "object"
+      },
+      "PayrollRuleRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/PayrollRules-Output"
+          },
+          "reviewed_by": {
+            "format": "uuid",
+            "title": "Reviewed By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "payload",
+          "reviewed_by"
+        ],
+        "title": "PayrollRuleRecord",
+        "type": "object"
+      },
+      "PayrollRules-Input": {
+        "additionalProperties": false,
+        "properties": {
+          "cycle": {
+            "enum": [
+              "weekly",
+              "fortnightly",
+              "monthly"
+            ],
+            "title": "Cycle",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "effective_until": {
+            "format": "date",
+            "title": "Effective Until",
+            "type": "string"
+          },
+          "eis": {
+            "items": {
+              "$ref": "#/components/schemas/ContributionBand-Input"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Eis",
+            "type": "array"
+          },
+          "employment_category": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Employment Category",
+            "type": "string"
+          },
+          "epf": {
+            "items": {
+              "$ref": "#/components/schemas/ContributionBand-Input"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Epf",
+            "type": "array"
+          },
+          "legal_entity_reference": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Legal Entity Reference",
+            "type": "string"
+          },
+          "operation": {
+            "const": "payroll.rules",
+            "title": "Operation",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "reviewer_qualification_reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reviewer Qualification Reference",
+            "type": "string"
+          },
+          "rule_id": {
+            "format": "uuid",
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "socso": {
+            "items": {
+              "$ref": "#/components/schemas/ContributionBand-Input"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Socso",
+            "type": "array"
+          },
+          "source_reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Source Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "rule_id",
+          "region",
+          "legal_entity_reference",
+          "employment_category",
+          "cycle",
+          "effective_from",
+          "effective_until",
+          "source_reference",
+          "reviewer_qualification_reference",
+          "epf",
+          "socso",
+          "eis"
+        ],
+        "title": "PayrollRules",
+        "type": "object"
+      },
+      "PayrollRules-Output": {
+        "additionalProperties": false,
+        "properties": {
+          "cycle": {
+            "enum": [
+              "weekly",
+              "fortnightly",
+              "monthly"
+            ],
+            "title": "Cycle",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "effective_until": {
+            "format": "date",
+            "title": "Effective Until",
+            "type": "string"
+          },
+          "eis": {
+            "items": {
+              "$ref": "#/components/schemas/ContributionBand-Output"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Eis",
+            "type": "array"
+          },
+          "employment_category": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Employment Category",
+            "type": "string"
+          },
+          "epf": {
+            "items": {
+              "$ref": "#/components/schemas/ContributionBand-Output"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Epf",
+            "type": "array"
+          },
+          "legal_entity_reference": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Legal Entity Reference",
+            "type": "string"
+          },
+          "operation": {
+            "const": "payroll.rules",
+            "title": "Operation",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "reviewer_qualification_reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reviewer Qualification Reference",
+            "type": "string"
+          },
+          "rule_id": {
+            "format": "uuid",
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "socso": {
+            "items": {
+              "$ref": "#/components/schemas/ContributionBand-Output"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Socso",
+            "type": "array"
+          },
+          "source_reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Source Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "rule_id",
+          "region",
+          "legal_entity_reference",
+          "employment_category",
+          "cycle",
+          "effective_from",
+          "effective_until",
+          "source_reference",
+          "reviewer_qualification_reference",
+          "epf",
+          "socso",
+          "eis"
+        ],
+        "title": "PayrollRules",
+        "type": "object"
+      },
+      "PayrollSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "format": "uuid",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/PayrollLine"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "operation": {
+            "const": "payroll.snapshot",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "case_id",
+          "lines"
+        ],
+        "title": "PayrollSnapshot",
+        "type": "object"
+      },
+      "PayrollSnapshotRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "format": "uuid",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/CalculatedPayroll"
+          },
+          "prepared_by": {
+            "format": "uuid",
+            "title": "Prepared By",
+            "type": "string"
+          },
+          "reversal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reversal Reason"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
+          },
+          "status": {
+            "enum": [
+              "prepared",
+              "approved",
+              "reversed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "case_id",
+          "payload",
+          "digest",
+          "prepared_by",
+          "reviewed_by",
+          "status",
+          "version",
+          "reversal_reason"
+        ],
+        "title": "PayrollSnapshotRecord",
+        "type": "object"
+      },
+      "PrivateAccessSave": {
+        "additionalProperties": false,
+        "properties": {
+          "area": {
+            "enum": [
+              "recruitment",
+              "attendance",
+              "payroll"
+            ],
+            "title": "Area",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "operation": {
+            "const": "private_access.save",
+            "title": "Operation",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "user_id",
+          "area",
+          "enabled"
+        ],
+        "title": "PrivateAccessSave",
+        "type": "object"
+      },
       "ProductPage": {
         "additionalProperties": false,
         "properties": {
@@ -2154,6 +4618,129 @@
         "title": "ReconcileOut",
         "type": "object"
       },
+      "Records": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AuthorityEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/MemberRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/AdminEmployee"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateSummary"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateDetails"
+                },
+                {
+                  "$ref": "#/components/schemas/InterviewRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/CalendarRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/BalanceRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/ShiftRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/PayrollRuleRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/PayrollSnapshotRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/NotificationRecord"
+                }
+              ]
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Records",
+        "type": "object"
+      },
+      "RecruitmentInput": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_reference": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Reference"
+          },
+          "competencies": {
+            "items": {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Competencies",
+            "type": "array"
+          },
+          "consent_reference": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consent Reference"
+          },
+          "domain": {
+            "const": "recruitment",
+            "title": "Domain",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          },
+          "role_title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Role Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "role_title",
+          "region",
+          "competencies"
+        ],
+        "title": "RecruitmentInput",
+        "type": "object"
+      },
       "ReplyDecision": {
         "additionalProperties": false,
         "properties": {
@@ -2210,6 +4797,115 @@
           "body"
         ],
         "title": "ReplyOut",
+        "type": "object"
+      },
+      "ResolvedGrant": {
+        "additionalProperties": false,
+        "description": "Trusted permission resolution, NOT a login or a caller-selectable HR role.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/HrAction"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/DirectoryField"
+            },
+            "maxItems": 5,
+            "title": "Fields",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "scope": {
+            "$ref": "#/components/schemas/GrantScope"
+          }
+        },
+        "required": [
+          "action",
+          "scope"
+        ],
+        "title": "ResolvedGrant",
+        "type": "object"
+      },
+      "ReviewedNote": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "by": {
+            "format": "uuid",
+            "title": "By",
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 1200,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "by",
+          "note",
+          "at"
+        ],
+        "title": "ReviewedNote",
+        "type": "object"
+      },
+      "ReviewedPayrollAmounts": {
+        "additionalProperties": false,
+        "description": "Private, manually reviewed input. Never an agent argument or generic fact.\n\nStatutory amounts must come from a reviewed effective-dated rule set; this\narithmetic does not implement or certify EPF/SOCSO/EIS/PCB statutory rules.",
+        "properties": {
+          "employee_eis": {
+            "title": "Employee Eis",
+            "type": "string"
+          },
+          "employee_epf": {
+            "title": "Employee Epf",
+            "type": "string"
+          },
+          "employee_socso": {
+            "title": "Employee Socso",
+            "type": "string"
+          },
+          "employer_eis": {
+            "title": "Employer Eis",
+            "type": "string"
+          },
+          "employer_epf": {
+            "title": "Employer Epf",
+            "type": "string"
+          },
+          "employer_socso": {
+            "title": "Employer Socso",
+            "type": "string"
+          },
+          "gross": {
+            "title": "Gross",
+            "type": "string"
+          },
+          "pcb": {
+            "title": "Pcb",
+            "type": "string"
+          },
+          "reviewed_other_deductions": {
+            "title": "Reviewed Other Deductions",
+            "type": "string"
+          }
+        },
+        "required": [
+          "gross",
+          "employee_epf",
+          "employee_socso",
+          "employee_eis",
+          "pcb",
+          "reviewed_other_deductions",
+          "employer_epf",
+          "employer_socso",
+          "employer_eis"
+        ],
+        "title": "ReviewedPayrollAmounts",
         "type": "object"
       },
       "Role": {
@@ -2338,6 +5034,112 @@
           "next_before_id"
         ],
         "title": "RunPage",
+        "type": "object"
+      },
+      "ScheduleCancel": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "enum": [
+              "interview.cancel",
+              "shift.cancel"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "schedule_id": {
+            "format": "uuid",
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "schedule_id",
+          "reason"
+        ],
+        "title": "ScheduleCancel",
+        "type": "object"
+      },
+      "ShiftRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "scheduled",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "id",
+          "employee_id",
+          "starts_at",
+          "ends_at"
+        ],
+        "title": "ShiftRecord",
+        "type": "object"
+      },
+      "ShiftSchedule": {
+        "additionalProperties": false,
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "operation": {
+            "const": "shift.schedule",
+            "title": "Operation",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "starts_at",
+          "ends_at"
+        ],
+        "title": "ShiftSchedule",
         "type": "object"
       },
       "SignedDownloadLinkOut": {
@@ -2868,6 +5670,246 @@
         "title": "TraceOut",
         "type": "object"
       },
+      "TrainingAction": {
+        "enum": [
+          "submit",
+          "approve",
+          "reject",
+          "withdraw"
+        ],
+        "title": "TrainingAction",
+        "type": "string"
+      },
+      "TrainingCommandInput": {
+        "additionalProperties": false,
+        "description": "Untrusted intent; request/employee/actor/grants come from verified state.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/TrainingAction"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "expected_version"
+        ],
+        "title": "TrainingCommandInput",
+        "type": "object"
+      },
+      "TrainingDraftInput": {
+        "additionalProperties": false,
+        "description": "Untrusted content proposal, not an employee identity or persisted request.",
+        "properties": {
+          "learning_objective": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Learning Objective",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "learning_objective"
+        ],
+        "title": "TrainingDraftInput",
+        "type": "object"
+      },
+      "TrainingPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TrainingProjection"
+            },
+            "maxItems": 50,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TrainingPage",
+        "type": "object"
+      },
+      "TrainingPrepare": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "training.prepare",
+            "title": "Action",
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/TrainingDraftInput"
+          }
+        },
+        "required": [
+          "action",
+          "content"
+        ],
+        "title": "TrainingPrepare",
+        "type": "object"
+      },
+      "TrainingProjection": {
+        "additionalProperties": false,
+        "description": "Authorized request view; omits internal decision identity and private note.",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/TrainingDraftInput"
+          },
+          "employee": {
+            "$ref": "#/components/schemas/EmployeeRef"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TrainingStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id",
+          "employee",
+          "content",
+          "status",
+          "version",
+          "updated_at"
+        ],
+        "title": "TrainingProjection",
+        "type": "object"
+      },
+      "TrainingRead": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "training.read",
+            "title": "Action",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "request_id"
+        ],
+        "title": "TrainingRead",
+        "type": "object"
+      },
+      "TrainingReceipt": {
+        "additionalProperties": false,
+        "description": "Returned only after a successful domain transaction commit (or exact replay).",
+        "properties": {
+          "duplicate": {
+            "default": false,
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "persisted_training",
+            "default": "persisted_training",
+            "title": "Kind",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/TrainingProjection"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "title": "TrainingReceipt",
+        "type": "object"
+      },
+      "TrainingStatus": {
+        "enum": [
+          "draft",
+          "submitted",
+          "approved",
+          "rejected",
+          "withdrawn"
+        ],
+        "title": "TrainingStatus",
+        "type": "string"
+      },
+      "TrainingTransition": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "training.transition",
+            "title": "Action",
+            "type": "string"
+          },
+          "command": {
+            "$ref": "#/components/schemas/TrainingCommandInput"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "request_id",
+          "command"
+        ],
+        "title": "TrainingTransition",
+        "type": "object"
+      },
       "TurnOut": {
         "additionalProperties": false,
         "properties": {
@@ -3062,6 +6104,294 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkflowCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "approve",
+              "reject",
+              "withdraw"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "payroll_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payroll Digest"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "action",
+          "expected_version"
+        ],
+        "title": "WorkflowCommand",
+        "type": "object"
+      },
+      "WorkflowGrant": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "read",
+              "prepare",
+              "decide"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "domain": {
+            "enum": [
+              "recruitment",
+              "attendance",
+              "leave",
+              "payroll"
+            ],
+            "title": "Domain",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "self",
+              "assigned_manager",
+              "hr_operator",
+              "client_owner",
+              "payroll_operator",
+              "payroll_reviewer"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "action",
+          "scope"
+        ],
+        "title": "WorkflowGrant",
+        "type": "object"
+      },
+      "WorkflowPrepare": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "workflow.prepare",
+            "title": "Action",
+            "type": "string"
+          },
+          "content": {
+            "discriminator": {
+              "mapping": {
+                "attendance": "#/components/schemas/AttendanceInput",
+                "leave": "#/components/schemas/LeaveInput",
+                "payroll": "#/components/schemas/PayrollInput",
+                "recruitment": "#/components/schemas/RecruitmentInput"
+              },
+              "propertyName": "domain"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecruitmentInput"
+              },
+              {
+                "$ref": "#/components/schemas/AttendanceInput"
+              },
+              {
+                "$ref": "#/components/schemas/LeaveInput"
+              },
+              {
+                "$ref": "#/components/schemas/PayrollInput"
+              }
+            ],
+            "title": "Content"
+          }
+        },
+        "required": [
+          "action",
+          "content"
+        ],
+        "title": "WorkflowPrepare",
+        "type": "object"
+      },
+      "WorkflowRead": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "workflow.read",
+            "title": "Action",
+            "type": "string"
+          },
+          "case_id": {
+            "format": "uuid",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "domain": {
+            "enum": [
+              "recruitment",
+              "attendance",
+              "leave",
+              "payroll"
+            ],
+            "title": "Domain",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "domain",
+          "case_id"
+        ],
+        "title": "WorkflowRead",
+        "type": "object"
+      },
+      "WorkflowRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "discriminator": {
+              "mapping": {
+                "attendance": "#/components/schemas/AttendanceInput",
+                "leave": "#/components/schemas/LeaveInput",
+                "payroll": "#/components/schemas/PayrollInput",
+                "recruitment": "#/components/schemas/RecruitmentInput"
+              },
+              "propertyName": "domain"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecruitmentInput"
+              },
+              {
+                "$ref": "#/components/schemas/AttendanceInput"
+              },
+              {
+                "$ref": "#/components/schemas/LeaveInput"
+              },
+              {
+                "$ref": "#/components/schemas/PayrollInput"
+              }
+            ],
+            "title": "Content"
+          },
+          "created_by": {
+            "format": "uuid",
+            "title": "Created By",
+            "type": "string"
+          },
+          "decision_reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Reason"
+          },
+          "domain": {
+            "enum": [
+              "recruitment",
+              "attendance",
+              "leave",
+              "payroll"
+            ],
+            "title": "Domain",
+            "type": "string"
+          },
+          "employee": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmployeeRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution": {
+            "const": "local_workflow_only",
+            "default": "local_workflow_only",
+            "title": "Execution",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "interview_guide": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Interview Guide",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "withdrawn"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "domain",
+          "employee",
+          "content",
+          "created_by",
+          "status",
+          "version",
+          "updated_at"
+        ],
+        "title": "WorkflowRecord",
         "type": "object"
       }
     }
@@ -5129,6 +8459,1541 @@
           }
         },
         "summary": "Events"
+      }
+    },
+    "/console/v1/hr/agents": {
+      "get": {
+        "operationId": "agents_console_v1_hr_agents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentSwitch"
+                  },
+                  "title": "Response Agents Console V1 Hr Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agents",
+        "tags": [
+          "HR"
+        ]
+      },
+      "put": {
+        "operationId": "configure_agent_console_v1_hr_agents_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSwitch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSwitch"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Configure Agent",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/agents/contracts": {
+      "get": {
+        "operationId": "agent_contracts_console_v1_hr_agents_contracts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HrAgentDescription"
+                  },
+                  "title": "Response Agent Contracts Console V1 Hr Agents Contracts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Contracts",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/agents/execute": {
+      "post": {
+        "operationId": "execute_agent_console_v1_hr_agents_execute_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "directory.read": "#/components/schemas/DirectoryRead",
+                    "interview.schedule": "#/components/schemas/InterviewArrange",
+                    "training.prepare": "#/components/schemas/TrainingPrepare",
+                    "training.read": "#/components/schemas/TrainingRead",
+                    "training.transition": "#/components/schemas/TrainingTransition",
+                    "workflow.prepare": "#/components/schemas/WorkflowPrepare",
+                    "workflow.read": "#/components/schemas/WorkflowRead"
+                  },
+                  "propertyName": "action"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/DirectoryRead"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TrainingRead"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TrainingPrepare"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TrainingTransition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/WorkflowPrepare"
+                  },
+                  {
+                    "$ref": "#/components/schemas/WorkflowRead"
+                  },
+                  {
+                    "$ref": "#/components/schemas/InterviewArrange"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryProjection"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TrainingProjection"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TrainingReceipt"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ConfirmationProjection"
+                    },
+                    {
+                      "$ref": "#/components/schemas/WorkflowRecord"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationReceipt"
+                    }
+                  ],
+                  "title": "Response Execute Agent Console V1 Hr Agents Execute Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Agent",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/assistant": {
+      "post": {
+        "operationId": "assistant_console_v1_hr_assistant_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HrChatInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/HrChatPlan"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryProjection"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TrainingProjection"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TrainingReceipt"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ConfirmationProjection"
+                    },
+                    {
+                      "$ref": "#/components/schemas/WorkflowRecord"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationReceipt"
+                    }
+                  ],
+                  "title": "Response Assistant Console V1 Hr Assistant Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assistant",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/confirmations/{confirmation_id}/confirm": {
+      "post": {
+        "operationId": "confirm_console_v1_hr_confirmations__confirmation_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "confirmation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Confirmation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmationAccept"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/context": {
+      "get": {
+        "operationId": "context_console_v1_hr_context_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HrContext"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Context",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/employees": {
+      "get": {
+        "operationId": "directory_page_console_v1_hr_employees_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectoryPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Directory Page",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/employees/{employee_id}": {
+      "get": {
+        "operationId": "directory_console_v1_hr_employees__employee_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectoryProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Directory",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/operations": {
+      "post": {
+        "operationId": "operation_console_v1_hr_operations_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "access.save": "#/components/schemas/AccessSave",
+                    "attendance.import": "#/components/schemas/AttendanceImport",
+                    "automation.configure": "#/components/schemas/AutomationConfigure",
+                    "automation.run": "#/components/schemas/AutomationRun",
+                    "calendar.save": "#/components/schemas/CalendarSave",
+                    "candidate.erase": "#/components/schemas/CandidateErase",
+                    "candidate.intake": "#/components/schemas/CandidateIntake",
+                    "candidate.note": "#/components/schemas/CandidateNote",
+                    "employee.save": "#/components/schemas/EmployeeSave",
+                    "interview.cancel": "#/components/schemas/ScheduleCancel",
+                    "interview.schedule": "#/components/schemas/InterviewSchedule",
+                    "leave_balance.save": "#/components/schemas/LeaveBalanceSave",
+                    "notification.read": "#/components/schemas/NotificationRead",
+                    "payroll.reverse": "#/components/schemas/PayrollReverse",
+                    "payroll.rules": "#/components/schemas/PayrollRules-Input",
+                    "payroll.snapshot": "#/components/schemas/PayrollSnapshot",
+                    "private_access.save": "#/components/schemas/PrivateAccessSave",
+                    "shift.cancel": "#/components/schemas/ScheduleCancel",
+                    "shift.schedule": "#/components/schemas/ShiftSchedule"
+                  },
+                  "propertyName": "operation"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/EmployeeSave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AccessSave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PrivateAccessSave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CalendarSave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/LeaveBalanceSave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CandidateIntake"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CandidateNote"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CandidateErase"
+                  },
+                  {
+                    "$ref": "#/components/schemas/InterviewSchedule"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AttendanceImport"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PayrollRules-Input"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PayrollSnapshot"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PayrollReverse"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AutomationRun"
+                  },
+                  {
+                    "$ref": "#/components/schemas/NotificationRead"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ShiftSchedule"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ScheduleCancel"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AutomationConfigure"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operation",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/private/{area}/{resource_id}": {
+      "get": {
+        "operationId": "private_record_console_v1_hr_private__area___resource_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "area",
+            "required": true,
+            "schema": {
+              "enum": [
+                "candidate",
+                "payroll_snapshot"
+              ],
+              "title": "Area",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Resource Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Records"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Private Record",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/records/{area}": {
+      "get": {
+        "operationId": "records_console_v1_hr_records__area__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "area",
+            "required": true,
+            "schema": {
+              "enum": [
+                "authority_audit",
+                "members",
+                "employees",
+                "candidates",
+                "interviews",
+                "my_interviews",
+                "calendars",
+                "balances",
+                "shifts",
+                "payroll_rules",
+                "notifications"
+              ],
+              "title": "Area",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Records"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Records",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/training-requests": {
+      "get": {
+        "operationId": "training_page_console_v1_hr_training_requests_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Training Page",
+        "tags": [
+          "HR"
+        ]
+      },
+      "post": {
+        "operationId": "draft_console_v1_hr_training_requests_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingDraftInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/training-requests/{request_id}": {
+      "get": {
+        "operationId": "training_console_v1_hr_training_requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingProjection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Training",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/training-requests/{request_id}/transitions": {
+      "post": {
+        "operationId": "transition_console_v1_hr_training_requests__request_id__transitions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingCommandInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transition",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/workflows": {
+      "get": {
+        "operationId": "workflow_page_console_v1_hr_workflows_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CasePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workflow Page",
+        "tags": [
+          "HR"
+        ]
+      },
+      "post": {
+        "operationId": "prepare_workflow_console_v1_hr_workflows_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "attendance": "#/components/schemas/AttendanceInput",
+                    "leave": "#/components/schemas/LeaveInput",
+                    "payroll": "#/components/schemas/PayrollInput",
+                    "recruitment": "#/components/schemas/RecruitmentInput"
+                  },
+                  "propertyName": "domain"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RecruitmentInput"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AttendanceInput"
+                  },
+                  {
+                    "$ref": "#/components/schemas/LeaveInput"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PayrollInput"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Workflow",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/workflows/{case_id}": {
+      "get": {
+        "operationId": "workflow_console_v1_hr_workflows__case_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workflow",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/workflows/{case_id}/transitions": {
+      "post": {
+        "operationId": "decide_workflow_console_v1_hr_workflows__case_id__transitions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Workflow",
+        "tags": [
+          "HR"
+        ]
       }
     },
     "/console/v1/inbox/approvals": {

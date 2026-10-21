@@ -1,0 +1,1 @@
+INSERT INTO public.hr_notifications(client_id,subject_id,id,reminder_key,kind,resource_id) SELECT i.client_id,%s,gen_random_uuid(),i.id::text || ':interview','interview_upcoming',i.id FROM public.hr_interviews i WHERE i.client_id=%s AND i.interviewer_id=%s AND i.starts_at>%s AND i.starts_at<=%s ON CONFLICT(client_id,subject_id,reminder_key) DO NOTHING;

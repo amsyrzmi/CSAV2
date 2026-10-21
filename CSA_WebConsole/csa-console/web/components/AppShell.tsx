@@ -34,6 +34,7 @@ export function AppShell({
   const links = [
     { href: home, label: "Overview", icon: LayoutDashboard },
     { href: admin ? "/agents" : "/portal/agents", label: "Agents", icon: Bot },
+    { href: admin ? "/hr" : "/portal/hr", label: "People & HR", icon: Users },
     { href: admin ? "/activity" : "/portal/activity", label: "Runtime activity", icon: Activity },
     { href: admin ? "/knowledge-base" : "/portal/faq", label: "Knowledge base", icon: BookOpen },
     { href: admin ? "/chat" : "/portal/chat", label: "Sandbox assistant", icon: MessageSquare },

@@ -1,0 +1,1 @@
+SELECT b.employee_id,b.year,b.leave_type,b.days,b.version,b.policy_reference,b.days-coalesce((SELECT sum(u.days) FROM public.hr_leave_usage u WHERE u.client_id=b.client_id AND u.employee_id=b.employee_id AND u.year=b.year AND u.leave_type=b.leave_type),0) AS remaining FROM public.hr_leave_balances b WHERE client_id=%s ORDER BY b.employee_id,b.year,b.leave_type LIMIT 200;

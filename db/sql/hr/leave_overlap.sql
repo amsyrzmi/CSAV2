@@ -1,0 +1,1 @@
+SELECT EXISTS(SELECT 1 FROM public.hr_cases WHERE client_id=%s AND employee_id=%s AND domain='leave' AND status='approved' AND (payload->>'starts_on')::date<=%s AND (payload->>'ends_on')::date>=%s) AS conflict;

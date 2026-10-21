@@ -4,7 +4,7 @@ Historical LG01 baseline/reuse record. `db/schema_baseline.sql` is not the
 complete current schema: derive the shipped version from ordered
 `db/migrations/`, runtime readiness, and current tests. See
 [current progress](./PROGRESS.md) before reasoning about persistent-dev state.
-Current gateway source expects migration **0360**; this statement describes source
+Current gateway source expects migration **0410**; this statement describes source
 expectation, not the schema currently applied to any persistent database.
 
 `db/schema_baseline.sql` is the reviewed, schema-only PostgreSQL dump used for

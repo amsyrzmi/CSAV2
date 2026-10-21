@@ -1,0 +1,1 @@
+INSERT INTO public.hr_leave_balances(client_id,employee_id,year,leave_type,days,policy_reference) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(client_id,employee_id,year,leave_type) DO UPDATE SET days=excluded.days,policy_reference=excluded.policy_reference,version=hr_leave_balances.version+1 RETURNING version;
