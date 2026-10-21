@@ -1,6 +1,36 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: HR integration PR #5 (2026-10-21)
+## Current continuation: HR browser acceptance (2026-10-21)
+
+PR #5 merged as `cd1d085`; local main matches it with the two pre-existing
+review-document deletions preserved. Post-merge CI 39666475261 passed.
+The user installed Chromium system dependencies; launch now works. Do not
+repeat the old missing-library diagnosis as a current blocker.
+
+The `test/hr-browser-acceptance` branch in `/home/amsyrzmi/CSAV2-hr-browser`
+adds a synthetic real-session HR directory/training browser scenario to the
+existing packaged acceptance harness. Read [HR progress](../hr/PROGRESS.md)
+and [setup/test command](../hr/SETUP.md#acceptance-before-rollout).
+It proves scoped fields, tenant/role/CSRF denial, current-grant revocation,
+training submission, bound human confirmation, committed-write lost-response
+recovery and exact durable outcomes. It changes only tests/documentation.
+
+Initial focused scenario: 1 passed, one warning in 440.51 s. Final expanded
+scenario is covered by full `NO_LOCAL_ENV=1 ENV=ci make lint test`:
+**2,903 passed, 136 warnings in 2,474.64 s**, all lint/type/import checks passed.
+Both packaged browser cases, unchanged load tests and disposable-only reset
+passed. No failures/skips/deselections. Historical integration failures below
+remain recorded and are not reclassified.
+
+Next: review/merge this bounded acceptance PR after final-head hosted checks.
+Then scope staff workspace web-chat refinement, starting with permission-aware
+HR page guidance/navigation without enabling new mutations. Actual assistant
+chat browser coverage, microphones/interactive LiveKit voice, remaining HR
+domain browser coverage, qualified payroll review, retention/HMAC-key policy,
+real owner/grant provisioning and persistent rollout remain separate gates.
+No persistent migrations, providers, deployment or shared-service restart occurred.
+
+## Prior continuation: HR integration PR #5 (2026-10-21)
 
 PR #4 merged to main as `bb197ae`; main CI 39638334024 passed. Local main
 matches it and retains only the two pre-existing review-document deletions.

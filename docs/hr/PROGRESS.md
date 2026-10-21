@@ -1,9 +1,45 @@
 # HR feature implementation progress
 
-Updated: 2026-10-21. Integration branch `integration/hr-foundation`, based on
-merged main `bb197ae` (PRs #3 and #4). Integration worktree:
-`/home/amsyrzmi/CSAV2-hr-integration`. Developer B's original uncommitted work in
-`/home/amsyrzmi/CSAV2-hr` on `feat/hr-foundation` was not modified.
+Updated: 2026-10-21. PR #5 merged as `cd1d085`; post-merge main CI
+39666475261 passed. The bounded browser acceptance follow-up is on
+`test/hr-browser-acceptance` in `/home/amsyrzmi/CSAV2-hr-browser`.
+Developer B's original uncommitted work in `/home/amsyrzmi/CSAV2-hr` on
+`feat/hr-foundation` was not modified.
+
+## Directory/training browser acceptance
+
+[`test_packaged_hr_browser_acceptance`](../../tests/test_packaged_console.py)
+uses real packaged frontend/gateway services, synthetic TLS, real cookie sessions,
+and a disposable migrated PostgreSQL database. Browser egress outside that
+synthetic origin is blocked and asserted absent. It verifies:
+
+- Real login and anonymous redirection/API denial; staff self directory grants
+  reveal only the display name, while direct-manager grants reveal all five
+  approved fields. Tenant-admin status alone does not grant HR access.
+- Cross-tenant selection and resource denial, read-only mutation denial, and
+  missing-CSRF denial. Revoking a manager's grants denies a subsequent read in
+  the same logged-in browser session.
+- A committed training draft with its acknowledgement deliberately lost.
+  Refresh discovers the saved draft; explicit retry reuses the exact key/body
+  and creates no duplicate. Submission stays pending until the manager reviews
+  and explicitly confirms the bound decision.
+- Final database state: one approved version-2 request, one receipt for each
+  draft/submit/approve operation, three audit rows and one consumed confirmation.
+
+The user installed Chromium system dependencies after the earlier integration
+failure. A synthetic launch check then passed; no application service was
+restarted. Initial focused browser run: **1 passed, 1 warning in 440.51 s**.
+After adding CSRF, manager-field and revocation assertions, final
+`NO_LOCAL_ENV=1 ENV=ci make lint test` passed Ruff, formatting, Pyright and
+import-linter; **2,903 tests passed, 136 warnings in 2,474.64 s**. No skips or
+deselections. Both packaged browser scenarios, all four unchanged load cases,
+and all seven migration tests including disposable-only reset passed.
+
+This follow-up changes tests and documentation only: no runtime source, API,
+frontend, migration or dependency pins changed. HR browser evidence is limited
+to directory/training, not typed assistant chat, microphones, recruitment,
+attendance, payroll, real client configuration, public ingress or deployment.
+The earlier integration failure below remains historical rather than rewritten.
 
 ## Integration review and validation
 

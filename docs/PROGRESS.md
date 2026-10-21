@@ -1,5 +1,19 @@
 # Progress
 
+HR directory/training browser acceptance (2026-10-21): PR #5 merged as
+`cd1d085`, local main was fast-forwarded without altering unrelated deletions,
+and post-merge CI 39666475261 passed. The user installed missing Chromium system
+libraries; a synthetic browser launch passed. The bounded follow-up adds one
+real-session packaged HR browser scenario: field grants, role/tenant/CSRF denial,
+current-grant revocation, training submission/human confirmation, and an exact
+same-key/body retry after a committed draft loses its acknowledgement. Durable
+request/receipt/audit/confirmation counts are checked. Browser egress is blocked.
+See [HR evidence and exclusions](./hr/PROGRESS.md#directorytraining-browser-acceptance).
+Final `NO_LOCAL_ENV=1 ENV=ci make lint test`: all lint/type/import checks passed;
+**2,903 passed, 136 warnings in 2,474.64 s**, no skips/deselections, including
+both packaged browser cases, all load tests and disposable reset. Only tests/docs
+changed; no persistent migration, deployment, live model or microphone use.
+
 HR integration review (2026-10-21): PR #4 merged as `bb197ae`; its main CI
 39638334024 passed and local main was fast-forwarded with the two pre-existing
 review-document deletions preserved. Developer B's uncommitted HR implementation

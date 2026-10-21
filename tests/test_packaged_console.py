@@ -1387,3 +1387,357 @@ async def test_packaged_m2_browser_acceptance(
             for context in reversed(browser_contexts):
                 await context.close()
             await browser.close()
+
+
+async def test_packaged_hr_browser_acceptance(
+    packaged_console: PackagedConsole,
+    migrated_dsn: str,
+) -> None:
+    """Real browser/session/SQL evidence, with only one lost acknowledgement injected."""
+    w = packaged_console
+    member_password = "synthetic-hr-browser-password"
+    emails = {
+        name: f"hr-browser-{name}-{uuid4().hex}@example.test"
+        for name in ("staff", "manager", "admin", "reader", "foreign")
+    }
+    tenants: list[str] = []
+    users: dict[str, str] = {}
+    employees = {name: uuid4() for name in ("staff", "manager", "foreign")}
+    title = "Synthetic HR browser workshop"
+    objective = "Practice bounded synthetic training"
+    contexts: list[BrowserContext] = []
+    egress: list[str] = []
+    page_errors: list[str] = []
+    draft_keys: list[str | None] = []
+    draft_payloads: list[str | None] = []
+    lost_ack = False
+
+    with httpx.Client(base_url=w.origin, verify=w.tls, trust_env=False, timeout=30) as admin:
+
+        def mutate(path: str, body: object) -> httpx.Response:
+            csrf = admin.get("/console/v1/auth/csrf")
+            assert csrf.status_code == 200
+            return admin.post(
+                path,
+                json=body,
+                headers={"Origin": w.origin, "X-CSRF-Token": csrf.json()["csrf_token"]},
+            )
+
+        assert (
+            mutate(
+                "/console/v1/auth/login",
+                {
+                    "email": "packaged-admin@example.test",
+                    "password": PASSWORD,
+                },
+            ).status_code
+            == 200
+        )
+        assert (
+            mutate(
+                "/console/v1/auth/password/change",
+                {
+                    "current_password": PASSWORD,
+                    "new_password": CHANGED_PASSWORD,
+                },
+            ).status_code
+            == 200
+        )
+        for label in ("alpha", "beta"):
+            response = mutate(
+                "/console/v1/admin/clients",
+                {
+                    "slug": f"hr-browser-{label}-{uuid4().hex[:12]}",
+                    "name": f"Synthetic HR Browser {label}",
+                },
+            )
+            assert response.status_code == 201, response.text
+            tenants.append(response.json()["id"])
+        for name, email in emails.items():
+            role = (
+                "tenant_admin"
+                if name == "admin"
+                else ("read_only" if name == "reader" else "tenant_staff")
+            )
+            invitation = mutate(
+                "/console/v1/admin/invites",
+                {
+                    "client_id": tenants[1] if name == "foreign" else tenants[0],
+                    "email": email,
+                    "display_name": f"Synthetic HR {name}",
+                    "role": role,
+                },
+            )
+            assert invitation.status_code == 201, invitation.text
+            with httpx.Client(
+                base_url=w.origin, verify=w.tls, trust_env=False, timeout=30
+            ) as member:
+                csrf = member.get("/console/v1/auth/csrf").json()["csrf_token"]
+                accepted = member.post(
+                    "/console/v1/invites/accept",
+                    json={
+                        "token": invitation.json()["token"],
+                        "password": member_password,
+                    },
+                    headers={"Origin": w.origin, "X-CSRF-Token": csrf},
+                )
+                assert accepted.status_code == 200, accepted.text
+
+    async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
+        for name, email in emails.items():
+            cursor = await owner.execute("SELECT id FROM console_users WHERE email=%s", (email,))
+            row = await cursor.fetchone()
+            assert row is not None
+            users[name] = str(row[0])
+        for name in ("manager", "staff", "foreign"):
+            tenant = tenants[1] if name == "foreign" else tenants[0]
+            await owner.execute(
+                "INSERT INTO hr_employees(client_id,id,display_name,job_title,department,"
+                "work_email,manager_id) VALUES (%s,%s,%s,'Trainer','Learning',%s,%s)",
+                (
+                    tenant,
+                    employees[name],
+                    f"Synthetic HR {name}",
+                    f"private-{name}@example.test",
+                    employees["manager"] if name == "staff" else None,
+                ),
+            )
+            await owner.execute(
+                "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+                (tenant, users[name], employees[name]),
+            )
+        for name in ("staff", "manager"):
+            for action in (
+                "directory.read",
+                "training.read",
+                "training.draft",
+                "training.submit",
+                "training.withdraw",
+            ):
+                fields = ["display_name"] if action == "directory.read" else []
+                await owner.execute(
+                    "INSERT INTO hr_grants(client_id,user_id,action,scope,fields) "
+                    "VALUES (%s,%s,%s,'self',%s)",
+                    (tenants[0], users[name], action, fields),
+                )
+        for action in ("directory.read", "training.read", "training.decide"):
+            fields = (
+                ["display_name", "job_title", "department", "work_email", "assigned_manager"]
+                if action == "directory.read"
+                else []
+            )
+            await owner.execute(
+                "INSERT INTO hr_grants(client_id,user_id,action,scope,fields) "
+                "VALUES (%s,%s,%s,'assigned_manager',%s)",
+                (tenants[0], users["manager"], action, fields),
+            )
+        await owner.execute(
+            "UPDATE hr_agent_settings SET enabled=true WHERE client_id=%s AND name='hr_training'",
+            (tenants[0],),
+        )
+
+    async def hr_fetch(page: Page, path: str, body: object | None = None) -> dict:
+        return await page.evaluate(
+            """async ({path, body}) => {
+                const headers = {};
+                if (body !== null) {
+                    const csrf = await (await fetch('/console/v1/auth/csrf')).json();
+                    headers['X-CSRF-Token'] = csrf.csrf_token;
+                    headers['Content-Type'] = 'application/json';
+                    headers['Idempotency-Key'] = crypto.randomUUID();
+                }
+                const response = await fetch(path, {method: body === null ? 'GET' : 'POST',
+                    headers, ...(body === null ? {} : {body: JSON.stringify(body)})});
+                return {status: response.status, body: await response.json(),
+                    cache: response.headers.get('cache-control')};
+            }""",
+            {"path": path, "body": body},
+        )
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+
+        async def route_request(route: Route) -> None:
+            nonlocal lost_ack
+            target = urlsplit(route.request.url)
+            if f"{target.scheme}://{target.netloc}" != w.origin:
+                egress.append(f"{target.scheme}://{target.netloc}")
+                await route.abort()
+                return
+            if (
+                target.path == "/console/v1/hr/training-requests"
+                and route.request.method == "POST"
+                and "idempotency-key" in route.request.headers
+            ):
+                draft_keys.append(route.request.headers.get("idempotency-key"))
+                draft_payloads.append(route.request.post_data)
+                if not lost_ack:
+                    response = await route.fetch()
+                    assert response.status == 201
+                    lost_ack = True
+                    await route.abort("connectionreset")
+                    return
+            await route.continue_()
+
+        async def new_page(name: str | None = None) -> Page:
+            context = await browser.new_context(ignore_https_errors=True, service_workers="block")
+            contexts.append(context)
+            await context.route("**/*", route_request)
+            page = await context.new_page()
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            if name is not None:
+                await page.goto(f"{w.origin}/login")
+                await page.get_by_label("Email", exact=True).fill(emails[name])
+                await page.get_by_label("Password", exact=True).fill(member_password)
+                await page.get_by_role("button", name="Sign in", exact=True).click()
+                await page.wait_for_url(f"{w.origin}/portal")
+            return page
+
+        try:
+            anonymous = await new_page()
+            await anonymous.goto(f"{w.origin}/portal/hr")
+            await anonymous.wait_for_url(f"{w.origin}/login")
+            assert (await hr_fetch(anonymous, "/console/v1/hr/context"))["status"] == 401
+
+            staff = await new_page("staff")
+            await staff.goto(f"{w.origin}/portal/hr")
+            await staff.get_by_role("button", name="Directory", exact=True).click()
+            await staff.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
+            projection = await hr_fetch(staff, f"/console/v1/hr/employees/{employees['staff']}")
+            assert projection["status"] == 200 and projection["cache"] == "no-store"
+            assert projection["body"]["values"] == {"display_name": "Synthetic HR staff"}
+            csrf_denied = await staff.evaluate(
+                """async () => (await fetch('/console/v1/hr/training-requests', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({title: 'Synthetic denied', learning_objective: 'No CSRF'})
+                })).status"""
+            )
+            assert csrf_denied == 403
+            assert await staff.get_by_text("private-staff@example.test", exact=True).count() == 0
+            assert (
+                await hr_fetch(
+                    staff, f"/console/v1/hr/employees/{employees['foreign']}?client_id={tenants[1]}"
+                )
+            )["status"] == 403
+            assert (await hr_fetch(staff, f"/console/v1/hr/employees/{employees['foreign']}"))[
+                "status"
+            ] == 404
+
+            await staff.get_by_role("button", name="Training", exact=True).click()
+            await staff.get_by_label("Training title", exact=True).fill(title)
+            await staff.get_by_label("Learning objective", exact=True).fill(objective)
+            await staff.get_by_role("button", name="Save draft", exact=True).click()
+            await staff.get_by_text(
+                "Refresh to check saved state before retrying.", exact=False
+            ).wait_for()
+            assert lost_ack and len(draft_keys) == 1
+            await staff.get_by_role("button", name="Refresh", exact=True).click()
+            article = staff.locator("article").filter(has=staff.get_by_role("heading", name=title))
+            await article.get_by_text("draft · version 0", exact=True).wait_for()
+            await staff.get_by_role("button", name="Save draft", exact=True).click()
+            await staff.get_by_text(
+                "Training draft saved. Submit it when ready.", exact=True
+            ).wait_for()
+            assert len(draft_keys) == 2 and draft_keys[0] is not None
+            assert draft_keys[0] == draft_keys[1]
+            assert draft_payloads[0] == draft_payloads[1]
+            assert await article.count() == 1
+            await article.get_by_role("button", name="submit", exact=True).click()
+            await staff.get_by_role("button", name="Continue with submit", exact=True).click()
+            await article.get_by_text("submitted · version 1", exact=True).wait_for()
+
+            manager = await new_page("manager")
+            await manager.goto(f"{w.origin}/portal/hr")
+            manager_projection = await hr_fetch(
+                manager, f"/console/v1/hr/employees/{employees['staff']}"
+            )
+            assert manager_projection["status"] == 200
+            assert set(manager_projection["body"]["values"]) == {
+                "display_name",
+                "job_title",
+                "department",
+                "work_email",
+                "assigned_manager",
+            }
+            await manager.get_by_label(
+                "Use enabled staff agents for preparation.", exact=False
+            ).check()
+            reviewed = manager.locator("article").filter(
+                has=manager.get_by_role("heading", name=title)
+            )
+            await reviewed.get_by_text("submitted · version 1", exact=True).wait_for()
+            await reviewed.get_by_role("button", name="approve", exact=True).click()
+            await manager.get_by_label("Decision reason", exact=True).fill(
+                "Synthetic manager review"
+            )
+            await manager.get_by_role("button", name="Continue with approve", exact=True).click()
+            await manager.get_by_role(
+                "heading", name="Confirm the prepared training decision"
+            ).wait_for()
+            await reviewed.get_by_text("submitted · version 1", exact=True).wait_for()
+            await manager.get_by_role("button", name="Confirm decision", exact=True).click()
+            await reviewed.get_by_text("approved · version 2", exact=True).wait_for()
+            await staff.reload()
+            await article.get_by_text("approved · version 2", exact=True).wait_for()
+
+            for name in ("admin", "reader", "foreign"):
+                denied = await new_page(name)
+                await denied.goto(f"{w.origin}/portal/hr")
+                response = await hr_fetch(denied, f"/console/v1/hr/employees/{employees['staff']}")
+                assert response["status"] == 404
+                assert "private-staff" not in json.dumps(response["body"])
+                if name == "reader":
+                    assert (
+                        await denied.get_by_role("button", name="Save draft", exact=True).count()
+                        == 0
+                    )
+                    assert (
+                        await hr_fetch(
+                            denied,
+                            "/console/v1/hr/training-requests",
+                            {
+                                "title": title,
+                                "learning_objective": objective,
+                            },
+                        )
+                    )["status"] == 403
+
+            async with await psycopg.AsyncConnection.connect(
+                migrated_dsn, autocommit=True
+            ) as owner:
+                cursor = await owner.execute(
+                    "SELECT status,version,title,learning_objective FROM hr_training_requests "
+                    "WHERE client_id=%s",
+                    (tenants[0],),
+                )
+                assert await cursor.fetchall() == [("approved", 2, title, objective)]
+                cursor = await owner.execute(
+                    "SELECT action,count(*) FROM hr_training_receipts WHERE client_id=%s "
+                    "GROUP BY action ORDER BY action",
+                    (tenants[0],),
+                )
+                assert await cursor.fetchall() == [("approve", 1), ("save_draft", 1), ("submit", 1)]
+                cursor = await owner.execute(
+                    "SELECT count(*),bool_and(consumed_at IS NOT NULL) "
+                    "FROM hr_agent_confirmations WHERE client_id=%s",
+                    (tenants[0],),
+                )
+                assert await cursor.fetchone() == (1, True)
+                cursor = await owner.execute(
+                    "SELECT count(*) FROM hr_training_audit WHERE client_id=%s",
+                    (tenants[0],),
+                )
+                assert await cursor.fetchone() == (3,)
+                await owner.execute(
+                    "DELETE FROM hr_grants WHERE client_id=%s AND user_id=%s",
+                    (tenants[0], users["manager"]),
+                )
+            revoked = await hr_fetch(manager, f"/console/v1/hr/employees/{employees['staff']}")
+            assert revoked["status"] == 404
+            assert "private-staff" not in json.dumps(revoked["body"])
+            assert not egress
+            assert not page_errors
+        finally:
+            for context in reversed(contexts):
+                await context.close()
+            await browser.close()
