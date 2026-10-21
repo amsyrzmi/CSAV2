@@ -34,13 +34,31 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import SecretStr
 
-from tests.conftest import requires_docker
+from tests.conftest import requires_docker, reset_console_identity
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = "https://hr.example.test"
 FIELDS = ["display_name", "job_title", "department", "work_email", "assigned_manager"]
 CONTENT = {"title": "Synthetic planning workshop", "learning_objective": "Practice planning"}
+
+
+async def test_identity_fixture_reset_clears_hr_ledgers_and_restores_protection(
+    world: HrWorld,
+) -> None:
+    await world.submit()
+    async with await psycopg.AsyncConnection.connect(world.dsn, autocommit=True) as conn:
+        await reset_console_identity(conn)
+        cursor = await conn.execute(
+            "SELECT (SELECT count(*) FROM console_users),"
+            "(SELECT count(*) FROM hr_training_requests),"
+            "(SELECT count(*) FROM hr_training_receipts),"
+            "(SELECT count(*) FROM hr_training_audit),"
+            "current_setting('session_replication_role')"
+        )
+        assert await cursor.fetchone() == (0, 0, 0, 0, "origin")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege, match="hr_immutable_record"):
+            await conn.execute("TRUNCATE hr_training_audit")
 
 
 @pytest.fixture(scope="module")

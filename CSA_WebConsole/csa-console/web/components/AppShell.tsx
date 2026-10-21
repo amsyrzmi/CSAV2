@@ -38,6 +38,9 @@ export function AppShell({
     { href: admin ? "/activity" : "/portal/activity", label: "Runtime activity", icon: Activity },
     { href: admin ? "/knowledge-base" : "/portal/faq", label: "Knowledge base", icon: BookOpen },
     { href: admin ? "/chat" : "/portal/chat", label: "Sandbox assistant", icon: MessageSquare },
+    ...(me.role && me.role !== "read_only"
+      ? [{ href: admin ? "/workspace" : "/portal/workspace", label: "Staff workspace", icon: MessageSquare }]
+      : []),
     ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/inbox" : "/portal/inbox", label: "Customer inbox", icon: MessageSquare }] : []),
     ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/business" : "/portal/business", label: "Business management", icon: Building2 }] : []),
     ...(admin

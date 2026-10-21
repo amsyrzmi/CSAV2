@@ -141,6 +141,7 @@ def test_make_reset_only_disposable_container(pg_container: object, migrated_dsn
         rows = conn.execute(
             "SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class "
             "WHERE relname IN "
-            "('console_chat_participants','console_chat_threads','console_chat_turns','console_inbox_actions')"
+            "('console_chat_participants','console_chat_threads','console_chat_turns',"
+            "'console_inbox_actions','console_workspace_threads','console_workspace_turns')"
         ).fetchall()
-        assert len(rows) == 4 and all(row[1] and not row[2] for row in rows)
+        assert len(rows) == 6 and all(row[1] and not row[2] for row in rows)

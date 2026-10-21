@@ -90,6 +90,155 @@ No new callback registration or live provider flow is implemented here.
 
 ## Isolated staging proposal (not run)
 
+### Post-merge planning checkpoint (2026-10-21)
+
+PR [#2](https://github.com/amsyrzmi/CSAV2/pull/2) merged as
+`0264c0ade3739f1285ab1a06e577573b71984d44`. Its PR and push checks passed.
+At the final planning checkpoint, the
+[post-merge main run](https://github.com/amsyrzmi/CSAV2/actions/runs/39527322898)
+passed gate, frontend and package. Its review artifact
+`csa-review-only-0264c0ade3739f1285ab1a06e577573b71984d44`
+(artifact ID `12315215226`, 195119606 bytes) expires
+**2026-10-28 01:41:52 UTC**. It was listed, not downloaded, checksum-verified or
+runtime-tested in this slice. Do not substitute older artifact identity for this head.
+The local workspace was fast-forwarded to this main after explicit approval;
+the two unrelated historical review-report deletions remain excluded.
+
+The next slice is **staging preparation only**, not execution:
+
+| Prerequisite | Evidence or decision required before execution |
+| --- | --- |
+| Exact release inputs | Main CI passed; next verify archive checksums/source/platform/origin and approve Python/frontend registry manifest digests. CI only creates seven-day review archives; registry publication requires separate approval. |
+| Secret delivery | Choose and validate the deployment mechanism for the proposal's `external: true` secrets. Docker Compose 2.40.3 is installed, but successful secret provisioning has not been demonstrated; the file is not an executable recipe for ordinary local Compose as-is. Do not assume Swarm-style external secrets are available. |
+| Separate credentials | Generate new staging-only owner/app/read-only/identity passwords and encryption key through a private provisioning procedure, with a disabled synthetic model key. Do not copy `.env.local` or rotate existing dev/production credentials as a staging shortcut. |
+| Database and storage | Approve a new `csa_staging` database/volume, baseline plus ordered migrations, identity bootstrap, and UID/GID 1000 upload-volume initialization. No existing dev or production database is a staging target. |
+| Browser origin | The user selected `https://staging-console.fourstacks.my` for planning only. Before execution, verify control/routing/TLS, matching public/allowed origins and Secure cookies. `console.fourstacks.my` remains a future console selection, not staging approval. Preserve apex/`www`. |
+| Ingress boundary | Review sanitized hostname-to-service rules and explicitly approve connectivity to the frontend only. The existing `cloudflared` container uses `network_default`, whereas the proposal's network is isolated; no network attachment or routing was changed or approved. |
+| Acceptance and teardown | Plan synthetic login/logout/CSRF/roles/cross-tenant denial, cookie forwarding, readiness refusal/recovery, legacy-path denial, landing-page preservation and task-owned cleanup. Keep workers, delivery, KB ingestion and provider integration disabled. |
+
+No staging-named containers or volumes were found during the checkpoint.
+No secret values, tunnel tokens or ingress-rule contents were read. Obtain
+separate approval for publication, provisioning, migration and ingress changes
+after reviewing their exact scope; passing repository checks does not authorize
+those actions or establish operational cutover/rollback acceptance.
+
+### Verified artifact and selected staging design (2026-10-21)
+
+The main artifact above was downloaded and verified without importing or
+executing images. Its ZIP SHA-256 matches GitHub's reported
+`c05f6f6769191bf909eec31859bdfe6c933fb5838df28210c54df492d69c3204`.
+All seven `SHA256SUMS` entries and all 22 OCI blobs passed hash verification.
+Release metadata and image revision labels identify source `0264c0a`, platform
+`linux/amd64`, gateway origin `http://gateway:8080` and promotion disabled.
+
+| Image | Verified archive/platform manifest digest |
+| --- | --- |
+| Python | `sha256:dd7b5199e634128fb6174fbbf32eb415abf1eb67fa4842a050da316e1ebc6701` |
+| Frontend | `sha256:a203fc6a79bb60133fef2d8abe153088ef3d3d8a5983159502285661d31879de` |
+
+These are **archive manifests, not approved registry references**. Publication
+may preserve or change manifest representation; verify the destination digest
+after any separately approved publication. Python's configured user is
+`1000:1000`; frontend uses named user `node`, verified from its image passwd
+entry to be UID/GID 1000:1000. The frontend's baked origin file also matches
+`http://gateway:8080`. No new exact-artifact runtime acceptance was run.
+The initial session verifier incorrectly expected the frontend user to be the
+literal string `1000:1000`; correcting the verifier to validate the named user
+required no image or repository-code change.
+
+The user selected **protected staging-only files outside the repository** for
+ordinary Compose secret delivery and confirmed that Cloudflare hostname routes
+are managed in the **dashboard / Zero Trust**. These are design decisions only:
+
+- Replace the proposal's external-secret assumptions in a separately reviewed
+  local-Compose variant with `file:` sources beneath a dedicated absolute
+  staging secret directory. Do not reuse `.env.local`, commit secrets, pass
+  values on command lines or print rendered configuration containing credentials.
+  Preserve the existing per-service grants and uppercase runtime secret targets.
+- Compose file secrets are bind mounts, not an encrypted secret store.
+  Host file ownership/modes must be checked for each consumer, including
+  non-root Python UID 1000 and the database image's own user. Do not assume
+  secret `uid`/`gid` settings can remap bind-mounted files or that host `0600`
+  files are readable by UID 1000. Use a restricted parent directory and
+  deliberately provisioned file access, verified first with synthetic fixtures.
+  The frontend receives no database, model or encryption secrets.
+- Preferred ingress design for review: a **dedicated staging connector**, not
+  the existing shared connector, on a private staging edge network shared only
+  with the frontend, plus a separate connector-only outbound network for
+  Cloudflare. The database/migration use a private data network; the gateway
+  bridges data and app networks; the frontend joins app and edge. It gets no
+  outbound network. No host ports are published. This is a proposed topology,
+  not an existing attachment.
+- In the dashboard, the eventual route would map only
+  `staging-console.fourstacks.my` to the staging frontend's internal HTTP
+  listener (currently port 3000), after TLS/origin and network review.
+  Do not add this route yet or expose `gateway:8080`, legacy callbacks, DB ports,
+  apex or `www`. A connector credential is a separate staging infrastructure
+  secret, never an application environment value or chat input.
+- Before public reachability, decide the staging access policy and protected
+  test identities, and rehearse authentication/CSRF/cookies/tenant denial and
+  exact-image readiness on disposable fixtures. The application login remains
+  mandatory even if an additional edge access policy is selected.
+
+Sources: Docker's [Compose secret definitions](https://docs.docker.com/reference/compose-file/secrets/)
+and [file-mount delivery guidance](https://docs.docker.com/compose/how-tos/use-secrets/).
+
+### Local-Compose staging variant (configuration-only validation, 2026-10-21)
+
+[compose.staging-local-proposal.yml](./compose.staging-local-proposal.yml) is a
+separate inert variant for ordinary local Compose. It replaces `external: true`
+secret assumptions with file sources under required absolute
+`CSA_STAGING_SECRET_DIR` paths. It does not create secret files or provide their
+values. The original proposal remains unchanged. Both variants still require
+explicit approval profiles and are not invoked by CI or deployment automation.
+
+The local variant separates three internal networks: `data` contains the
+database, gateway and migration service; `app` connects only gateway/frontend;
+`edge` contains only the frontend. All services are profile-gated, no host ports
+are published, and no connector or outbound network is declared. An eventual
+dedicated connector must be separately reviewed and attached only to `edge` and
+its own outbound network. This file is not ready to expose a hostname.
+
+The synthetic test
+`NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_staging_compose.py -q`
+passed **5 tests in 0.88 s**. `NO_LOCAL_ENV=1 ENV=ci make lint` also passed:
+Ruff, formatting, Pyright (zero diagnostics) and import-linter. The focused test
+calls `docker compose config` with both
+profiles and temporary sentinel-only files; it checks profile gates, service
+secret grants, internal network membership, absence of host ports/connector,
+absolute file sources, synthetic file mode `0400`, and that the sentinel is not
+rendered. It does not start a container or service. The permission cases model
+owner-only POSIX read bits for UID 1000 and a distinct synthetic UID.
+
+A separate, explicitly approved probe used the already-local pinned database
+image with `--pull=never`, `--network none`, tmpfs database/socket paths and a
+single synthetic file bind mount. The server process and `postgres` account UID
+were both **999**. The host-owned `1000:1000`, mode-`0400` file was readable by
+the root entrypoint and the database initialized using it via
+`POSTGRES_PASSWORD_FILE`; it was not readable as UID 999 after startup. This is
+consistent with the image's bootstrap flow, where the root entrypoint reads the
+password file before starting PostgreSQL as `postgres`. The temporary container
+and file were removed. This does not test gateway/migration image mounts: those
+services are configured as UID 1000, but their required image references remain
+unprovided. Verify their exact image mounts with synthetic files before
+provisioning. File-backed secrets are not encrypted; never assume Compose can
+remap their UID/GID/mode.
+
+The Compose file deliberately omits Cloudflare credentials. The official
+[tunnel run guidance](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/)
+shows `--token` in service arguments, but the official
+[`cloudflared` source at release 2026.10.2](https://github.com/cloudflare/cloudflared/blob/2026.10.2/cmd/cloudflared/tunnel/subcommands.go)
+also defines `--token-file` and `TUNNEL_TOKEN_FILE`, then reads the token from
+the referenced file. This establishes a file-only design option for that
+release: give the token only to a dedicated connector as a file-backed secret
+and configure `TUNNEL_TOKEN_FILE` with its path, not the token value. Before
+using it, pin the connector image and digest and verify that exact image's
+version, runtime UID and mounted-file access; no connector has been added or
+started. No real credentials, DNS, network, persistent database or application
+service were changed, and no app image was imported or published. Registry
+publication, persistent secret creation, database bootstrap and the dashboard
+route each still require separate approval.
+
 [compose.staging-proposal.yml](./compose.staging-proposal.yml) is an inert proposal:
 all services are behind explicit approval profiles. It has **no published ports**,
 no external network, no reference to the old `csa-platform` database and no

@@ -292,6 +292,41 @@ Post-review offline full validation passes **692 tests** plus lint; ASGI/TCP ack
 Neither offline nor guarded-dev evidence is a guarantee under all laptop loads or
 approval for public deployment.
 
+## Authenticated internal workspace (A1)
+
+The `/workspace` (platform) and `/portal/workspace` (tenant) pages use a distinct,
+session-authenticated internal staff surface. It does not reuse customer sandbox
+conversations, customer contacts, `AgentContext`, Telegram staff actions, model tools
+or callback authority. Platform administrators must select a tenant explicitly;
+tenant administrators and staff are constrained to their active membership. Readers,
+machine principals and anonymous callers are denied. Browser identity/role/tenant
+claims are not accepted, and cookie-authenticated writes retain the global Origin/CSRF
+checks.
+
+Migration **0370** adds owner-private workspace threads and turns with tenant RLS,
+session-bound turn provenance and same-owner idempotency. Reads require both the
+transaction tenant and current human owner. Inputs are strict bounded page/entity
+hints; an order ID is only an untrusted lookup hint and never grants access. Turn text
+is redacted before persistence. No bearer, cookie, CSRF token, unrestricted HR payload
+or employee/contact identity mapping is stored.
+
+| Method/path | Body/query | Result |
+|---|---|---|
+| `POST /workspace/conversations` | `{request_key: UUID}`, tenant query | Creates an owner-private thread; same owner/tenant/key returns the same thread |
+| `GET /workspace/conversations` | optional positive `before` sequence, tenant query | Active owner's threads, newest first, 20/page |
+| `POST /workspace/conversations/{id}/turns` | `{request_key, body, page_hint}`, tenant query | 201 completed/denied read result; same-key replay is 200 when the original local resource version is unchanged |
+| `GET /workspace/conversations/{id}/turns` | optional positive `before` turn ID, tenant query | Owner-only turn history, newest ID first, 50/page |
+
+The only actions are fixed application guidance for supported workspace/business pages
+and a single local order read through the same authorized `get_local_order` service as
+the manual business console. Order projections identify `source:"local_records"`,
+`marketplace_sync:"unavailable"` and an `as_of` timestamp; a missing/foreign order
+returns only `resource_unavailable`. Reusing an idempotency key with different input,
+or replaying an order result after its resource version changes, returns 409. This is
+a synchronous read-only slice: no queued worker, model-generated instruction, business
+mutation, approval, HR access, marketplace request or interactive voice service is
+introduced.
+
 ## Business management (M6A/B; offline local reads and store records)
 
 Only verified human platform administrators (explicit selected tenant), tenant

@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from psycopg import AsyncConnection
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DB_DOCKERFILE = REPO_ROOT / "deploy" / "db.Dockerfile"
@@ -23,6 +24,16 @@ _IMAGE_TAG = "csa/pg16-postgis-vector:test"
 # Fixed, NON-SECRET local test passwords (same shape as .env.example dev values).
 CSA_APP_PASSWORD = "test_app_pw"
 CSA_RO_PASSWORD = "test_ro_pw"
+
+
+async def reset_console_identity(conn: AsyncConnection) -> None:
+    """Reset synthetic identities and dependent ledgers in a disposable fixture only."""
+    async with conn.transaction():
+        # Immutable HR ledgers also reference identities. Disable their triggers
+        # only within this owner-only fixture reset, never in application code.
+        await conn.execute("SET LOCAL session_replication_role = replica")
+        await conn.execute("TRUNCATE console_users CASCADE")
+        await conn.execute("TRUNCATE console_login_attempts")
 
 
 def _docker_available() -> bool:
