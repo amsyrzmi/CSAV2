@@ -476,14 +476,14 @@ async def test_packaged_identity_readiness_and_boundaries(
         assert all("input" not in error for error in invalid.json()["detail"])
 
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
-        await owner.execute("DELETE FROM schema_migrations WHERE version = '0360'")
+        await owner.execute("DELETE FROM schema_migrations WHERE version = '0370'")
         try:
             with httpx.Client(trust_env=False) as direct:
                 assert direct.get(w.gateway + "/healthz").status_code == 200
                 refusal = direct.get(w.gateway + "/readyz")
-            assert refusal.status_code == 503 and "0360" in refusal.json()["reason"]
+            assert refusal.status_code == 503 and "0370" in refusal.json()["reason"]
         finally:
-            await owner.execute("INSERT INTO schema_migrations(version) VALUES ('0360')")
+            await owner.execute("INSERT INTO schema_migrations(version) VALUES ('0370')")
         identity_faults: tuple[tuple[LiteralString, LiteralString], ...] = (
             (
                 "GRANT SELECT ON contacts TO csa_identity",
@@ -903,7 +903,7 @@ async def run():
     try:
         ready, reason = await check_readiness(domain)
         if os.environ['EXPECT_READY'] == 'false':
-            assert not ready and '0360' in reason
+            assert not ready and '0370' in reason
             print('incomplete restore refused')
             return
         assert ready, reason
@@ -965,11 +965,11 @@ asyncio.run(run())
 
         assert b"restored readiness and role boundaries passed" in packaged_probe(True)
         async with await psycopg.AsyncConnection.connect(host_dsn, autocommit=True) as conn:
-            await conn.execute("DELETE FROM schema_migrations WHERE version='0360'")
+            await conn.execute("DELETE FROM schema_migrations WHERE version='0370'")
             assert b"incomplete restore refused" in packaged_probe(False)
             await conn.execute(
                 "INSERT INTO schema_migrations(version,applied_at) VALUES (%s,%s)",
-                next(row for row in ledger if row[0] == "0360"),
+                next(row for row in ledger if row[0] == "0370"),
             )
         assert b"restored readiness and role boundaries passed" in packaged_probe(True)
 

@@ -707,6 +707,59 @@
         "title": "FileOut",
         "type": "object"
       },
+      "GuidanceResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "page_guidance",
+            "default": "page_guidance",
+            "title": "Action",
+            "type": "string"
+          },
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "instruction_key": {
+            "enum": [
+              "workspace_home_help",
+              "business_orders_help",
+              "business_order_help"
+            ],
+            "title": "Instruction Key",
+            "type": "string"
+          },
+          "page": {
+            "enum": [
+              "workspace_home",
+              "business_orders",
+              "business_order"
+            ],
+            "title": "Page",
+            "type": "string"
+          },
+          "source": {
+            "const": "application_guide",
+            "default": "application_guide",
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "completed",
+            "default": "completed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "instruction_key",
+          "as_of"
+        ],
+        "title": "GuidanceResult",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1780,6 +1833,146 @@
         "title": "KbGapOut",
         "type": "object"
       },
+      "LocalOrderSummary": {
+        "additionalProperties": false,
+        "description": "Bounded manual-business projection; no contact, address or provider blob.",
+        "properties": {
+          "carrier": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carrier"
+          },
+          "channel": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Channel",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "external_order_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Order Id"
+          },
+          "external_shop_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Shop Id"
+          },
+          "payment_status": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Payment Status",
+            "type": "string"
+          },
+          "placed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placed At"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/OrderHint"
+          },
+          "shipped_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipped At"
+          },
+          "status": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "string"
+          },
+          "tracking_no": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking No"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource",
+          "status",
+          "payment_status",
+          "total",
+          "currency",
+          "channel",
+          "external_order_id",
+          "external_shop_id",
+          "tracking_no",
+          "carrier",
+          "placed_at",
+          "shipped_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LocalOrderSummary",
+        "type": "object"
+      },
       "LoginIn": {
         "additionalProperties": false,
         "properties": {
@@ -1969,6 +2162,28 @@
         "title": "MessageOut",
         "type": "object"
       },
+      "OrderHint": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "local_order",
+            "title": "Kind",
+            "type": "string"
+          },
+          "order_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "order_id"
+        ],
+        "title": "OrderHint",
+        "type": "object"
+      },
       "OrderPage": {
         "additionalProperties": false,
         "properties": {
@@ -2006,6 +2221,49 @@
           "next_cursor"
         ],
         "title": "OrderPage",
+        "type": "object"
+      },
+      "OrderReadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "local_order_read",
+            "default": "local_order_read",
+            "title": "Action",
+            "type": "string"
+          },
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "marketplace_sync": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "Marketplace Sync",
+            "type": "string"
+          },
+          "order": {
+            "$ref": "#/components/schemas/LocalOrderSummary"
+          },
+          "source": {
+            "const": "local_records",
+            "default": "local_records",
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "completed",
+            "default": "completed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order",
+          "as_of"
+        ],
+        "title": "OrderReadResult",
         "type": "object"
       },
       "OverviewOut": {
@@ -3062,6 +3320,209 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkspaceDeniedResult": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "principal_unavailable",
+              "authority_unavailable",
+              "binding_mismatch",
+              "action_forbidden",
+              "capability_unavailable",
+              "resource_unavailable",
+              "stale_resource",
+              "proposal_expired"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "status": {
+            "const": "denied",
+            "default": "denied",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "WorkspaceDeniedResult",
+        "type": "object"
+      },
+      "WorkspaceThreadOut": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "duplicate": {
+            "default": false,
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "sequence",
+          "created_at"
+        ],
+        "title": "WorkspaceThreadOut",
+        "type": "object"
+      },
+      "WorkspaceThreadPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceThreadOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "WorkspaceThreadPage",
+        "type": "object"
+      },
+      "WorkspaceTurnOut": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "duplicate": {
+            "default": false,
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GuidanceResult"
+              },
+              {
+                "$ref": "#/components/schemas/OrderReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/WorkspaceDeniedResult"
+              },
+              {
+                "$ref": "#/components/schemas/WorkspaceUnavailableResult"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "required": [
+          "id",
+          "request_key",
+          "body",
+          "result",
+          "created_at"
+        ],
+        "title": "WorkspaceTurnOut",
+        "type": "object"
+      },
+      "WorkspaceTurnPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceTurnOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "WorkspaceTurnPage",
+        "type": "object"
+      },
+      "WorkspaceUnavailableResult": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "identity_unavailable",
+              "policy_unavailable",
+              "business_unavailable"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "status": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "retryable"
+        ],
+        "title": "WorkspaceUnavailableResult",
         "type": "object"
       }
     }
@@ -7643,6 +8104,452 @@
           }
         },
         "summary": "Traces"
+      }
+    },
+    "/console/v1/workspace/conversations": {
+      "get": {
+        "operationId": "conversations_console_v1_workspace_conversations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceThreadPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Conversations"
+      },
+      "post": {
+        "operationId": "create_console_v1_workspace_conversations_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "request_key": {
+                    "format": "uuid",
+                    "title": "Request Key",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request_key"
+                ],
+                "title": "CreateWorkspaceThread",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceThreadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create"
+      }
+    },
+    "/console/v1/workspace/conversations/{thread_id}/turns": {
+      "get": {
+        "operationId": "history_console_v1_workspace_conversations__thread_id__turns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceTurnPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "History"
+      },
+      "post": {
+        "operationId": "turn_console_v1_workspace_conversations__thread_id__turns_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$defs": {
+                  "OrderHint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "local_order",
+                        "title": "Kind",
+                        "type": "string"
+                      },
+                      "order_id": {
+                        "maxLength": 100,
+                        "minLength": 1,
+                        "title": "Order Id",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "order_id"
+                    ],
+                    "title": "OrderHint",
+                    "type": "object"
+                  },
+                  "OrderPageHint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "entity": {
+                        "$ref": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/OrderHint"
+                      },
+                      "page": {
+                        "const": "business_order",
+                        "title": "Page",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "page",
+                      "entity"
+                    ],
+                    "title": "OrderPageHint",
+                    "type": "object"
+                  },
+                  "OverviewPageHint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "page": {
+                        "enum": [
+                          "workspace_home",
+                          "business_orders"
+                        ],
+                        "title": "Page",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "page"
+                    ],
+                    "title": "OverviewPageHint",
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "title": "Body",
+                    "type": "string"
+                  },
+                  "page_hint": {
+                    "anyOf": [
+                      {
+                        "discriminator": {
+                          "mapping": {
+                            "business_order": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/OrderPageHint",
+                            "business_orders": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/OverviewPageHint",
+                            "workspace_home": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/OverviewPageHint"
+                          },
+                          "propertyName": "page"
+                        },
+                        "oneOf": [
+                          {
+                            "$ref": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/OverviewPageHint"
+                          },
+                          {
+                            "$ref": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/OrderPageHint"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Hint"
+                  },
+                  "request_key": {
+                    "format": "uuid",
+                    "title": "Request Key",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request_key",
+                  "body"
+                ],
+                "title": "WorkspaceTurnInput",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceTurnOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Turn"
       }
     }
   }

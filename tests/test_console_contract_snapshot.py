@@ -16,6 +16,30 @@ def test_published_console_contract_matches_routes() -> None:
     )
 
 
+def test_workspace_request_schema_references_resolve_in_openapi() -> None:
+    document = contract()
+    schema = document["paths"]["/console/v1/workspace/conversations/{thread_id}/turns"]["post"][
+        "requestBody"
+    ]["content"]["application/json"]["schema"]
+
+    def check(value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "$ref":
+                    assert isinstance(item, str) and item.startswith("#/")
+                    resolved = document
+                    for part in item[2:].split("/"):
+                        resolved = resolved[part.replace("~1", "/").replace("~0", "~")]
+                    assert isinstance(resolved, dict)
+                else:
+                    check(item)
+        elif isinstance(value, list):
+            for item in value:
+                check(item)
+
+    check(schema)
+
+
 def test_kb_job_projection_omits_internal_paths_requesters_and_metadata() -> None:
     job = public_job(
         {
