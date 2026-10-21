@@ -1,7 +1,59 @@
 # HR feature implementation progress
 
-Updated: 2026-10-21. Branch `feat/hr-foundation`, base `0264c0a`.
-Active worktree: `/home/amsyrzmi/CSAV2-hr`.
+Updated: 2026-10-21. Integration branch `integration/hr-foundation`, based on
+merged main `bb197ae` (PRs #3 and #4). Integration worktree:
+`/home/amsyrzmi/CSAV2-hr-integration`. Developer B's original uncommitted work in
+`/home/amsyrzmi/CSAV2-hr` on `feat/hr-foundation` was not modified.
+
+## Integration review and validation
+
+Developer B's source snapshot is `c0357af`; integration commit `d36fde0` retains
+workspace A1, migration 0370 and HR migrations 0380-0410 together. Schema
+expectations are 0410, both workspace/HR navigation and isolated-build inputs
+are retained, and the combined OpenAPI contract was regenerated. Staff HR uses
+its own session/catalog rather than introducing customer-contact authority.
+
+Review found an integration defect in shared identity-test cleanup: HR foreign
+keys blocked the old fixture's TRUNCATE. The disposable-only reset helper now
+clears dependent records in an owner transaction with transaction-local trigger
+suppression. A regression verifies records are cleared, replication role returns
+to `origin`, and HR audit immutability still rejects TRUNCATE afterward. Runtime
+privileges, RLS, triggers and acceptance thresholds were not weakened.
+
+Commands use `NO_LOCAL_ENV=1 ENV=ci`, the existing pinned Python environment,
+`UV_OFFLINE=1 UV_NO_SYNC=1` and Node from `/tmp/fourstacks-toolbin`:
+
+- Initial combined HR/workspace/migration/health selection: **363 passed,
+  6 setup errors**, one warning, **267.46 s**. The errors were all the old
+  identity fixture's missing HR dependencies.
+- After the fixture fix, workspace/session regression: **45 passed**, one
+  warning, **459.18 s**. The added cleanup/protection regression separately
+  passed **1 test in 16.07 s**.
+- Final code: `make lint test` passed Ruff, formatting, Pyright and import-linter.
+  Pytest finished **2,901 passed / 1 failed, 136 warnings in 2,745.14 s**.
+  No skips/deselections. All four load cases passed unchanged. All seven
+  migration tests passed, including `test_make_reset_only_disposable_container`.
+  The three packaged HTTP/bootstrap/backup tests passed; the packaged M2 browser
+  test failed before assertions because this host lacks Chromium's
+  `libatk-1.0.so.0`. Thus local full acceptance is **not green**.
+- `npm --prefix CSA_WebConsole/csa-console/web run check:isolated` passed all
+  transport/state/speech/path tests, lint, type generation, TypeScript,
+  production build and trace exclusions. Its first attempt lacked dependencies
+  in the new worktree; a matching-lockfile installed dependency directory was
+  then linked, without installing/upgrading packages.
+- Gitleaks scanned the complete integration diff, including the generated
+  contract, with no leaks. Final documentation checks passed **57 Markdown
+  files / 611 local link targets**, balanced fences and `git diff --check`.
+  The checker was corrected to recognize source-line suffixes in historical
+  links rather than misclassifying them as missing filenames.
+
+Hosted CI is the next verification gate: its existing workflow installs
+Chromium and system dependencies. No shared-host package installation was
+attempted. HR's actual authenticated browser/microphone flows, live providers,
+real owner/grant/statutory configuration, persistent migrations and deployment
+remain unverified and unapproved. Raw SHA-256 idempotency fingerprints in
+workspace/HR remain a keyed-HMAC/key-management follow-up before real-data
+rollout; the payroll snapshot integrity digest is a distinct contract.
 
 ## Current status
 
@@ -75,7 +127,7 @@ commit. Model/browser arguments cannot supply execution authority. The new worke
 is a distinct, explicitly provisioned system principal for retention and local
 reminders, not a fabricated human session or customer contact.
 
-## Validation evidence
+## Developer B pre-integration validation evidence
 
 Final backend checks:
 

@@ -1,5 +1,23 @@
 # Progress
 
+HR integration review (2026-10-21): PR #4 merged as `bb197ae`; its main CI
+39638334024 passed and local main was fast-forwarded with the two pre-existing
+review-document deletions preserved. Developer B's uncommitted HR implementation
+was copied into `integration/hr-foundation`, reconciled with workspace A1 and
+reviewed without modifying B's worktree. Source now expects schema 0410 on that
+branch, not in any persistent database. Both workspace and HR routes remain.
+See [HR scope, validation and remaining gates](./hr/PROGRESS.md) and
+[setup boundaries](./hr/SETUP.md).
+
+Integration fixed identity-test cleanup for HR foreign keys without changing
+runtime protection. Full `NO_LOCAL_ENV=1 ENV=ci make lint test`: lint passed;
+**2,901 passed / 1 failed, 136 warnings in 2,745.14 s**. The only failure was
+packaged M2 browser startup because host Chromium lacks `libatk-1.0.so.0`.
+All four load cases and the disposable-only reset test passed. The isolated
+frontend check passed. Local full acceptance is not green; hosted CI with the
+existing browser-dependency setup is the publication gate. No deployment,
+persistent migration, service activation or live HR/provider request occurred.
+
 Workspace A0/A1 merged (2026-10-21): PR #3 merged to `main` as `b3b84c7`
 (feature commit `c860bcd`). It adds the owner-private `/console/v1/workspace`
 API, `/workspace` and `/portal/workspace` pages, deterministic page guidance,
