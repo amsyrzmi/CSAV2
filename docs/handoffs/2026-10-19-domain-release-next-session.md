@@ -1,5 +1,166 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
+## Current continuation: workspace A1 merged; HR integration next (2026-10-21)
+
+PR #3 (workspace A0/A1) merged to `main` as `b3b84c7`; local `main` was
+fast-forwarded with the dirty documentation/staging files preserved. Read the
+[A1 handoff](./2026-10-21-workspace-a1-implementation.md) and the
+[PROGRESS entry](../PROGRESS.md) for scope and evidence, including the flaky
+first CI run. Main now expects schema 0370. Developer B's HR work in the
+separate `feat/hr-foundation` worktree is uncommitted and based on `0264c0a`
+with migrations 0380–0410; B must rebase onto `b3b84c7`, set gateway/test/
+schema-notes expectations to 0410, merge both sides' `proxy.ts`, `AppShell.tsx`
+and `check-isolated.mjs` changes, regenerate OpenAPI, then hand off for
+integration review. HR grants/field policy, workspace retention, the HMAC
+fingerprint key and voice consent/retention remain open decisions.
+
+## Prior continuation: workspace and HR planning (2026-10-21)
+
+The user changed the immediate priority before further staging preparation:
+business web chat, HR, customer-service refinement and interactive voice are
+the first four priorities; Teach-a-task is last. Start with the
+[two-developer roadmap](./2026-10-21-workspace-agents-roadmap.md) and its separate
+workspace/HR prompts. It records recommendations and unresolved authority
+decisions, not implementation or deployment approval. Preserve the existing
+owner-private, read-only sandbox. No broad workspace tool enablement is authorized
+by this planning document.
+The user confirmed staff workspace chat, directory/training HR first and
+staff-browser voice first; sensitive-data grants and voice consent/retention
+still need review.
+
+The staging continuation below is retained but no longer the immediate next
+task. Do not provision/attach a connector or alter the existing shared
+Cloudflare service, which the user confirmed serves their other sites/apps.
+Six labeled test-fixture containers were stopped with explicit approval after
+the user confirmed no tests depended on them; they and their volumes remain.
+No deletion/pruning or persistent database restart occurred. Do not infer the
+cleanup failure cause or turn this into production troubleshooting.
+
+## Prior continuation: local Compose staging design validated (2026-10-21)
+
+Start with the [local-Compose staging section](../../deploy/RELEASE.md#local-compose-staging-variant-configuration-only-validation-2026-10-21)
+and the [selected staging design](../../deploy/RELEASE.md#verified-artifact-and-selected-staging-design-2026-10-21).
+Local `main` is at `0264c0a`, matching `origin/main` at the last check. The user
+selected protected staging-only secret files outside the repo, dashboard-managed
+Cloudflare routes, and `https://staging-console.fourstacks.my` for planning only.
+Do not ask for or inspect secrets, change `.env.local`, or use production services.
+
+The inert [local-Compose proposal](../../deploy/compose.staging-local-proposal.yml)
+uses `file:` sources, explicit approval profiles, no host ports, and internal
+`data`, `app`, and frontend-only `edge` networks. It contains no connector. Its
+synthetic validation passed:
+`NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_staging_compose.py -q` —
+**5 passed in 0.88 s**. `NO_LOCAL_ENV=1 ENV=ci make lint` passed Ruff,
+formatting, Pyright and import-linter. The initial test attempts failed on test assumptions
+(profiled services are omitted unless profiles are enabled; rendered networks
+are maps); both were corrected before the passing run. The test ran
+`docker compose config` only, using a sanitized environment and temporary
+sentinel-only files. It did not start containers. The permission cases model
+owner-only `0400` access for UID 1000 and a distinct synthetic UID.
+
+The user approved one disposable probe using the locally available exact
+database image digest. With `--pull=never`, `--network none`, tmpfs database and
+socket paths, and one synthetic file bind mount, the PostgreSQL process and
+`postgres` account both reported UID **999**. The source file was host-owned
+`1000:1000`, mode `0400`; the root entrypoint could read it and initialize via
+`POSTGRES_PASSWORD_FILE`, while UID 999 could not read it after startup. This
+matches the bootstrap flow; it does not imply the running server needs the
+source file. The container and fixture were removed. No real credentials,
+network or persistent database were used. Gateway/migration mounts remain
+untested because their image references are not yet supplied, though both
+services are configured to run as UID 1000.
+
+The official Cloudflare `cloudflared` source at release 2026.10.2 defines
+`--token-file` and `TUNNEL_TOKEN_FILE`; it reads the token from that path. This
+provides a file-only design option: mount the token file only into a dedicated
+connector and set the path, never the token value, in `TUNNEL_TOKEN_FILE`.
+However, no connector image is selected or pinned, and its runtime UID and
+secret-file readability have not been verified. No connector was added or
+started.
+
+Next bounded task: select and review an exact Cloudflare connector image/version
+and digest, then verify its file-backed synthetic secret access without using a
+real token. Keep it out of the Compose proposal until its dedicated edge plus
+outbound-network design and access policy are reviewed. Obtain explicit
+approval before image pulls or container probes, real staging secret/database
+creation, image publication, network attachment or dashboard routing. No full
+suite or database reset was run for this infrastructure proposal.
+
+Preserve the two unrelated `docs/reviews/` deletions. Current task changes are
+uncommitted/unpushed and limited to this handoff, `docs/PROGRESS.md`,
+`deploy/RELEASE.md`, the new Compose proposal and its test. No user action is
+needed now; do not create real secret files or change Cloudflare settings.
+
+```text
+Continue from the current local-Compose staging section and deploy/RELEASE.md.
+Local main is 0264c0a and matched origin/main at the last check. The synthetic
+Compose config test passed 5 tests; an explicitly approved, no-network,
+tmpfs-only probe of the local pinned DB image confirmed PostgreSQL UID 999 and
+entrypoint access to a synthetic bind-mounted password file. The postgres UID
+could not read that 1000:1000 mode-0400 file, as expected after bootstrap.
+Gateway/migration mounts remain untested because their image refs are not
+supplied. The official `cloudflared` 2026.10.2 source supports `--token-file` and
+`TUNNEL_TOKEN_FILE`, allowing a path-only handoff. Next review and pin a
+connector image, then verify synthetic file permissions before any connector
+configuration. Do not add/start it or expose a token. No real secrets,
+.env.local, persistent database, app service, network, DNS/tunnel, registry,
+merge or deployment changes. Preserve two unrelated review deletions and
+current unstaged proposal/test/docs changes.
+```
+
+## Prior continuation: post-merge staging preparation (2026-10-21)
+
+PR [#2](https://github.com/amsyrzmi/CSAV2/pull/2) merged at 01:26:24 UTC as
+`0264c0ade3739f1285ab1a06e577573b71984d44`. Both source-head CI runs passed:
+PR 39525314161 and push 39524681672. Post-merge
+[main run 39527322898](https://github.com/amsyrzmi/CSAV2/actions/runs/39527322898)
+passed gate, frontend and package at the final refresh. Review artifact
+`csa-review-only-0264c0ade3739f1285ab1a06e577573b71984d44`
+(ID `12315215226`, 195119606 bytes) expires 2026-10-28 01:41:52 UTC.
+It was listed, not downloaded, integrity-verified or runtime-tested here.
+
+The user explicitly approved reconciling only the three published task files
+and moving to main. Local main now matches the merged head. Only the two
+unrelated review-report deletions remained before this documentation follow-up;
+they are still unstaged and must not be included in any future task commit.
+No environment file, credential, persistent database or running service changed.
+The final read-only listener check found no listeners on private console ports
+13000/18081. This task did not stop or restart them; the cause is not established.
+Earlier pre-merge publication prompts below are historical.
+
+Read the [staging preparation checklist](../../deploy/RELEASE.md#post-merge-planning-checkpoint-2026-10-21)
+and the inert Compose proposal before designing any executable staging step.
+No staging-named containers or volumes were found. Docker Compose 2.40.3 is
+installed; the proposal assumes external secrets whose provisioning mechanism
+has not been validated for this host. The existing cloudflared container uses
+`network_default`; no ingress contents, token, network attachment or DNS was
+changed or inspected. Do not attach it to the gateway or assume connectivity
+from the proposal's isolated network.
+
+The user selected `https://staging-console.fourstacks.my` as the staging origin
+for planning only. No DNS/tunnel/TLS configuration or rollout is authorized.
+Next bounded task: prepare a supported secret-delivery/ingress design for that
+origin, without provisioning or starting it. Main CI
+passed; verify exact artifact identity before requesting image publication
+or approving registry digests. New synthetic staging secrets must be distinct;
+the user's existing development credentials remain unchanged. No commit/push
+of this documentation follow-up has been requested.
+
+```text
+Continue from the current post-merge section and deploy/RELEASE.md's staging
+checklist. Local main is at 0264c0a, containing merged PR #2. Its source PR/push
+CI passed, as did post-merge main CI 39527322898 (gate/frontend/package).
+Preserve the two unrelated docs/reviews deletions. Current follow-up changes
+only progress, this handoff and the release checklist; validate docs/diff only.
+Use https://staging-console.fourstacks.my as the user-selected planning origin;
+prepare the supported secret-delivery method and frontend-only ingress design
+for separate execution approval. No env-file/credential
+changes, production access, persistent migration, service start/restart,
+registry publication, tunnel/network/DNS mutation, merge or deployment.
+Do not copy dev credentials into staging or treat synthetic tests as public
+ingress, sustained capacity or production recovery acceptance.
+```
+
 ## Latest slice: corrected inherited TCP listener (2026-10-20)
 
 The local change in `tests/test_load_acceptance.py::load_client` replaces the

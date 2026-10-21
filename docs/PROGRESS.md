@@ -1,5 +1,102 @@
 # Progress
 
+Workspace A0/A1 merged (2026-10-21): PR #3 merged to `main` as `b3b84c7`
+(feature commit `c860bcd`). It adds the owner-private `/console/v1/workspace`
+API, `/workspace` and `/portal/workspace` pages, deterministic page guidance,
+one tenant-scoped order read and migration 0370 (RLS, no FORCE); gateway
+readiness now expects schema 0370. No HR, voice, mutation or provider call.
+Details: [A1 handoff](./handoffs/2026-10-21-workspace-a1-implementation.md).
+Evidence: local lint passed; local full suite had 1 known load-latency failure
+plus 4 Node-PATH errors; local browser acceptance could not run (host Chromium
+missing `libatk-1.0.so.0`). PR CI run 39607346826 first failed only
+`test_real_ingress_50rps_and_durable_queue[asgi]` (`scheduled_ack_p95_ms`
+243.7 vs `<200`, 2644 passed); the rerun of the failed job passed. Push runs
+39607088205 (`c860bcd`) and 39631416960 (`b3b84c7`) passed. The load threshold
+was not changed. Open: replace the unsalted SHA-256 workspace `_fingerprint`
+with a keyed HMAC (key source/rotation undecided); stabilize or quarantine
+the flaky load assertion with approval. Persistent dev was not migrated.
+
+Product planning priority change (2026-10-21): the user requested business web
+chat, HR, refined customer service and interactive voice as the first four
+priorities, with Teach-a-task last. The
+[two-developer roadmap](./handoffs/2026-10-21-workspace-agents-roadmap.md)
+records proposed domain grouping, permission/workflow gaps, staged acceptance
+and independent
+[workspace](./handoffs/2026-10-21-developer-a-workspace-prompt.md) /
+[HR](./handoffs/2026-10-21-developer-b-hr-prompt.md) continuation prompts.
+This is planning, not newly implemented features or authority expansion.
+The user confirmed internal staff workspace chat, directory/training as the
+first HR workflow, and staff-browser voice first. HR grants/field/approval policy
+and live voice consent/languages/retention remain explicit decisions.
+Next is the bounded authority/ownership contract decision, not staging rollout.
+Existing sandbox restrictions remain. Release gates and the prior evidence
+below remain applicable; no feature code, migration or service changed here.
+
+Operational follow-up (2026-10-21): filtered Docker metadata identified six
+containers with Testcontainers labels and the test-fixture image. With explicit
+user confirmation/approval they were stopped; all six report exited and retain
+their database volume mounts. No container/volume was deleted or pruned. The
+shared Cloudflare connector and persistent production/dev databases remained
+running without restart. The cause of missing automatic cleanup is unproven.
+
+Local staging Compose design validation (2026-10-21): added
+[compose.staging-local-proposal.yml](../deploy/compose.staging-local-proposal.yml)
+with external file-backed secret paths, explicit profiles, and isolated `data`,
+`app` and frontend-only `edge` networks. Added
+[synthetic Compose checks](../tests/test_staging_compose.py); the focused command
+passed **5 tests in 0.88 s**. `NO_LOCAL_ENV=1 ENV=ci make lint` passed Ruff,
+formatting, Pyright and import-linter. `docker compose config` ran with temporary
+synthetic files only; no service/container started. It verifies grants, profiles,
+network memberships, no host ports or connector, absolute source paths and
+synthetic `0400` file modes. POSIX UID checks are modeled; actual database-image
+UID was subsequently checked in an approved disposable container: the pinned
+image's PostgreSQL process runs as UID 999. A synthetic `1000:1000`, mode-`0400`
+bind-mounted password file was readable by the root entrypoint and not by the
+PostgreSQL UID; startup succeeded through `POSTGRES_PASSWORD_FILE`. The
+container used no network or persistent storage and was removed. Gateway and
+migration image mounts remain untested. Official Cloudflare source at release
+2026.10.2 supports `--token-file` and `TUNNEL_TOKEN_FILE` (path, not token
+value), providing a file-only design for a future connector. Pin and validate
+the exact connector image/version and file permissions before use. No connector
+or Cloudflare configuration is included.
+
+The main artifact `12315215226` also passed its recorded ZIP digest, seven file
+checksums, all 22 OCI blob hashes, source/platform/promotion metadata, revision
+labels and baked frontend-origin checks. The archive manifests are not registry
+digests. No image was imported, executed, rebuilt or published. The user
+selected protected staging-only secret files outside the repository and
+dashboard-managed Cloudflare routes. No real secret, environment file, network,
+tunnel, service or persistent database was changed. Documentation and proposal
+changes remain local, uncommitted and unpushed.
+
+Staging-only remaining work (paused behind the product contract task): verify
+gateway/migration and a separately selected connector image's synthetic mounted
+file access; the database UID probe and source-level token-file support are
+recorded above. Obtain separate execution approval before image pulls/probes,
+real secret/database creation, image publication or dashboard routing.
+
+Post-merge reconciliation/staging review (2026-10-21): PR
+[#2](https://github.com/amsyrzmi/CSAV2/pull/2) merged at 01:26:24 UTC as
+`0264c0ade3739f1285ab1a06e577573b71984d44`; PR run 39525314161 and push run
+39524681672 passed. Post-merge main run
+[39527322898](https://github.com/amsyrzmi/CSAV2/actions/runs/39527322898) passed
+gate, frontend and package at the final refresh. Its current-head review
+artifact is available until 2026-10-28 01:41:52 UTC; integrity/runtime checks
+for that artifact have not been run. After explicit
+user approval, the three already-published task files were reconciled and local
+`main` fast-forwarded to the merged head. The two pre-existing review-report
+deletions remain unstaged and untouched. No credential, database, service or
+tunnel was changed. The next slice is planning/provisioning design, not rollout:
+the [staging prerequisite checklist](../deploy/RELEASE.md#post-merge-planning-checkpoint-2026-10-21)
+records pending artifact/digest approval, supported secret delivery, separate
+synthetic staging credentials/database, HTTPS origin and frontend-only ingress.
+No staging containers or volumes were found. These status/checklist edits remain
+local pending review; no additional commit, push or deployment was performed.
+The user selected `https://staging-console.fourstacks.my` for planning only;
+no DNS, tunnel, TLS or service configuration change was authorized by that choice.
+The private console ports 13000/18081 had no listeners at the final read-only
+check; this task did not stop or restart them, and no cause is established.
+
 TCP harness correction (validated 2026-10-20; publication approved 2026-10-21):
 the load subprocess now
 reconstructs the inherited IPv4 socket with family autodetection and passes it
