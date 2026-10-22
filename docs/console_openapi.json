@@ -2258,6 +2258,43 @@
         "title": "HrContext",
         "type": "object"
       },
+      "HrGuidance": {
+        "additionalProperties": false,
+        "description": "Ephemeral grant summary, not a resource authorization or workflow result.",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/HrAction"
+            },
+            "maxItems": 6,
+            "title": "Actions",
+            "type": "array"
+          },
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "kind": {
+            "const": "hr_navigation",
+            "default": "hr_navigation",
+            "title": "Kind",
+            "type": "string"
+          },
+          "source": {
+            "const": "current_hr_grants",
+            "default": "current_hr_grants",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actions",
+          "as_of"
+        ],
+        "title": "HrGuidance",
+        "type": "object"
+      },
       "HumanReply": {
         "additionalProperties": false,
         "properties": {
@@ -9560,6 +9597,56 @@
           }
         },
         "summary": "Directory",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/guidance": {
+      "get": {
+        "operationId": "guidance_console_v1_hr_guidance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HrGuidance"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Guidance",
         "tags": [
           "HR"
         ]

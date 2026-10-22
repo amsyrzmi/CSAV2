@@ -1,6 +1,42 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: HR browser acceptance (2026-10-21)
+## Current continuation: workspace HR guidance (2026-10-22)
+
+PR #6 merged as `148c03e2271164992191091442a8d8ca67dce408`; main CI
+39700139073 passed, freshly checked. Local main was fast-forwarded while
+preserving the two unrelated review-document deletions. Work continues on
+`feature/workspace-hr-guidance` in `/home/amsyrzmi/CSAV2-workspace-hr`.
+
+The bounded change adds a deterministic, non-persisted HR grant guide beside
+workspace chat, using existing HR session/authority checks and fixed same-origin
+directory/training links. Platform navigation preserves selected tenant; HR
+services still decide record eligibility and mutations. No employee records,
+new mutations, model calls, workspace action-union changes or migrations.
+Read [HR evidence](../hr/PROGRESS.md#workspace-hr-guidance) and
+[API contract](../CONSOLE_API.md#staff-hr-contract-source-implementation-2026-10-21).
+
+Focused affected tests: **198 passed in 189.28 s**. Expanded synthetic packaged HR
+browser: **1 passed / 1 existing warning in 227.78 s**. Repository lint and isolated
+frontend checks passed. Initial fixture/assertion/selector failures are retained
+in HR evidence. Full local pytest, load and disposable reset were not rerun.
+No persistent database, provider, microphone, rollout or shared-service changes.
+
+**User-selected validation policy:** use focused local checks through completion
+of customer-service, subscription and interactive-voice slices. Include relevant
+permissions/replay/public-contract and UI/browser checks; broaden locally when
+shared runtime/contracts change. Full hosted CI remains the merge gate. Do not
+disable tests or reinterpret old full-suite evidence as covering new changes.
+
+Next: review this bounded diff and publish only with approval, then require
+final-head hosted CI and the user's merge. After that, scope the next staff-chat/
+customer-service refinement slice from the roadmap; do not enable all tools or
+start LiveKit/provider work implicitly. Subscription already has gated local
+plan/status reads and unexecuted requests, not billing execution. Interactive
+voice, typed-assistant browser coverage, remaining HR-domain browser acceptance,
+qualified payroll review, owner/grant provisioning, retention/HMAC-key policy and
+persistent rollout remain separate gates.
+
+## Prior continuation: HR browser acceptance (2026-10-21)
 
 PR #5 merged as `cd1d085`; local main matches it with the two pre-existing
 review-document deletions preserved. Post-merge CI 39666475261 passed.

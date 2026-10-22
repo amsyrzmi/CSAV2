@@ -40,6 +40,7 @@ from csa.hr.records import (
     DirectoryPage,
     EmployeeRow,
     HrContext,
+    HrGuidance,
     HrSession,
     ReceiptRow,
     RequestRow,
@@ -103,6 +104,16 @@ class HrService:
                 employee=access.employee,
                 client_owner=access.client_owner,
                 actions=tuple(sorted({grant.action.value for grant in access.grants})),
+            )
+            await self._session(conn, session)
+        return result
+
+    async def guidance(self, session: HrSession) -> HrGuidance:
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            access = await self._access(conn, session)
+            result = HrGuidance(
+                actions=tuple(sorted({grant.action for grant in access.grants})),
+                as_of=self.now(),
             )
             await self._session(conn, session)
         return result

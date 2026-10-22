@@ -40,6 +40,7 @@ from csa.hr.records import (
     ConfirmationProjection,
     DirectoryPage,
     HrContext,
+    HrGuidance,
     HrSession,
     TrainingPage,
     TrainingReceipt,
@@ -178,6 +179,10 @@ class ConfirmationAccept(HrModel):
 def build_hr_router() -> APIRouter:
     """Requires configured identity_service, hr_service and ordered HR schema."""
     router = APIRouter(prefix="/console/v1/hr", tags=["HR"], route_class=HrRoute)
+
+    @router.get("/guidance", response_model=HrGuidance)
+    async def guidance(session: Session, service: Service) -> HrGuidance:
+        return await service.guidance(session)
 
     @router.post(
         "/assistant",

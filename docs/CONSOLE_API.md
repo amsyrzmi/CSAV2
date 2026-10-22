@@ -40,6 +40,17 @@ persistent migration, deployment, live-provider or payroll-compliance acceptance
   scoped projections. Training and workflow mutations use `Idempotency-Key`,
   current versions and coupled receipts/audit. Supervisor decisions remain human;
   payroll review requires a different reviewer and the exact private snapshot digest.
+- `GET /guidance` returns only `{kind:"hr_navigation", actions, source:"current_hr_grants",
+  as_of}`. Actions summarize current explicit directory/training grants, not permission
+  to a particular employee/request. It reuses HR's transaction-bound session and
+  authority checks, accepts only optional `client_id` (required for platform admins),
+  and returns an empty action list when a verified tenant member has no such grants.
+  No employee references, private areas, records or model input are returned.
+  The staff workspace renders fixed guidance and same-origin links to the existing
+  HR pages; this is separate from persisted workspace turns and their action union.
+  HR navigation accepts only `section=directory|training`; platform links retain the
+  explicitly selected `client_id`. URL hints never establish authority. Opening a
+  page rechecks resource eligibility, and read-only sessions still cannot mutate.
 - `/operations` handles explicitly granted administration and private operations;
   `/records/{area}` and `/private/{area}/{resource_id}` return typed, separately
   authorized records. Candidate text/notes and payroll amounts are absent from

@@ -1,8 +1,9 @@
 # HR setup and operating boundaries
 
-Start in `/home/amsyrzmi/CSAV2-hr`; current progress and validation are maintained
-in [PROGRESS.md](./PROGRESS.md). Source and migrations are implemented; no persistent
-rollout or service activation was performed in this session.
+Start from the current merged checkout or its explicitly selected implementation
+worktree, not Developer B's preserved pre-integration worktree. Current progress
+and validation are maintained in [PROGRESS.md](./PROGRESS.md). Source and migrations
+are implemented; no persistent rollout or service activation was performed.
 
 ## Tenant setup
 
@@ -135,6 +136,8 @@ NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_packaged_console.py::test_package
 It exercises real JavaScript-enabled login, field grants, tenant/role/CSRF
 denial, training submission, manager confirmation, grant revocation and an
 explicit same-key retry after a committed request loses its acknowledgement.
+The workspace-guidance expansion also checks current-grant links, platform tenant
+retention, section deep links, failed-refresh cleanup and no-grant/revocation behavior.
 It verifies durable request, receipt, audit and confirmation rows. Browser
 egress outside the synthetic origin is blocked and asserted absent. This
 scenario neither uses nor validates microphones, external models, recruitment,

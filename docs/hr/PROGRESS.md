@@ -1,10 +1,58 @@
 # HR feature implementation progress
 
-Updated: 2026-10-21. PR #5 merged as `cd1d085`; post-merge main CI
-39666475261 passed. The bounded browser acceptance follow-up is on
-`test/hr-browser-acceptance` in `/home/amsyrzmi/CSAV2-hr-browser`.
+Updated: 2026-10-22. PR #6 merged as `148c03e`; post-merge main CI
+39700139073 passed. The bounded workspace guidance follow-up is on
+`feature/workspace-hr-guidance` in `/home/amsyrzmi/CSAV2-workspace-hr`.
 Developer B's original uncommitted work in `/home/amsyrzmi/CSAV2-hr` on
 `feat/hr-foundation` was not modified.
+
+## Workspace HR guidance
+
+The staff workspace now has a separate deterministic People & HR guide. Its
+no-store `GET /console/v1/hr/guidance` response summarizes current directory/
+training grants using the existing HR session/authority transaction. It returns
+no employee identifiers or private/domain records and creates no conversation,
+workflow, receipt or audit record. It does not change the persisted workspace
+action union or enable a model tool. Grant summaries are not resource access
+decisions; existing HR pages/services still enforce eligibility and mutation rules.
+
+Fixed same-origin links open the directory or training tab. Platform links retain
+the explicitly selected tenant; regular members stay in their verified tenant.
+Refreshing clears old links before requesting current grants, including on failure.
+Tenant changes remount guide state and abort outstanding requests.
+
+Validation with `NO_LOCAL_ENV=1 ENV=ci`, synthetic fixtures and disposable databases:
+
+- Affected selection (`test_hr_persistence.py`, `test_console_contract_snapshot.py`,
+  `test_workspace_contracts.py`): **198 passed in 189.28 s**, no skips/deselections.
+  Covers current grants, broad-role/no-grant behavior, session revocation at HTTP
+  and service boundaries, tenant/identity spoof denial, minimal public shape,
+  existing HR persistence behavior and OpenAPI parity.
+- Expanded packaged HR browser scenario: **1 passed, 1 existing Testcontainers
+  deprecation warning in 227.78 s**. Real JavaScript sessions prove platform tenant
+  retention, directory/training deep links, failed-refresh removal of old links,
+  no-grant denial and revoked-grant guidance. Existing directory/CSRF/cross-tenant/
+  human-confirmation/lost-acknowledgement/durable-count assertions still pass.
+- `make lint` and `npm --prefix CSA_WebConsole/csa-console/web run check:isolated`
+  passed, including synthetic frontend tests, lint/types, build and trace exclusions.
+- Initial focused API run: **10 passed / 1 failed / 99 deselected in 18.03 s**:
+  the duplicate-query fixture used invalid UUIDs, so validation correctly returned
+  422 before the expected duplicate-key 400. Corrected to valid duplicate UUIDs;
+  the guidance selection then passed **11 / 99 deselected in 39.06 s**.
+- Initial broader affected run: **197 passed / 1 failed in 124.74 s** because the
+  explicit HR path allowlist needed the intentional `/guidance` addition.
+- Browser attempts: **1 failed / 1 warning in 578.79 s** on a new tenant-label
+  locator; **1 failed / 1 warning in 307.00 s** because reload correctly reopened
+  the directory URL, not the subsequently selected training tab. Corrected the
+  locator and explicitly reopened Training before checking the approved request.
+  These failures are not reclassified as passes.
+
+The user requested focused local checks until customer-service, subscription and
+interactive-voice slices are finished. Use affected tests and broaden locally for
+shared contracts/runtime changes; retain full hosted CI before merge. No workflow
+checks, load thresholds or assertions were disabled. Full local pytest, load and
+disposable-reset checks were not rerun for this slice; no schema/SQL changed.
+No persistent migration, rollout, microphone, model/provider or external send ran.
 
 ## Directory/training browser acceptance
 
