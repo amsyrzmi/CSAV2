@@ -43,6 +43,7 @@ async def test_golden(
     case: GoldenCase, pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     owner_dsn = owner_dsn_for(pg_container)
+    monkeypatch.delenv("TEI_ENDPOINT", raising=False)
     _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
     tenant = seed_tenant(owner_dsn, case)
     groq = CassetteGroq()

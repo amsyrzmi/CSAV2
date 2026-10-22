@@ -1,6 +1,33 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: customer-service inbox acceptance (2026-10-22)
+## Current continuation: customer-service goldens (2026-10-22)
+
+PR #8 merged as `b2dc7a2695a349bd94ed6a75b76fa479473fe95e`. PR CI
+39719424850, branch CI 39719295898 and post-merge main CI 39725222410 passed,
+freshly verified. Main was fast-forwarded while preserving unrelated deletions.
+
+The isolated `test/customer-service-goldens` branch in
+`/home/amsyrzmi/CSAV2-cs-goldens` adds four real-worker synthetic scenarios:
+tenant-scoped KB policy/review regeneration, foreign-only KB gap, wrong-customer
+ticket denial, and durable human-handoff suppression of follow-up automation.
+Only tests and documentation change. Read
+[LG08 exact evidence/limitations](../langgraph-rebuild/LG08_testing_seed_evals.md#customer-service-evaluation-expansion-2026-10-22).
+All golden, KB and staff-path regressions: **71 passed / 63 existing warnings in
+94.12 s**; repository lint/types/import checks passed. Initial fixture and command
+failures are retained. No live model/TEI/provider, delivery worker, persistent
+database, microphone, frontend/runtime change or deployment.
+
+Next: review/publish this bounded slice with approval, require full final-head
+hosted CI and the user's merge. Then inspect subscription's existing plan/status/
+unexecuted-request coverage and implement the smallest missing acceptance slice.
+Do not silently enable billing execution or promise live provider integration.
+Customer-service synthetic inbox/routing/grounding/handoff evidence is improved,
+not live-model/multilingual quality or full product completion. Interactive voice
+still requires a bounded session/ingress/consent/replay design before media activation.
+Continue focused local checks, broaden for shared-runtime changes and retain full
+hosted CI as the merge gate.
+
+## Prior continuation: customer-service inbox acceptance (2026-10-22)
 
 PR #7 merged as `650bc08a63df9db8153673ef5970466f5c3665b3`. Final PR CI
 39711968531, branch CI 39711862612 and post-merge main CI 39713659882 passed,

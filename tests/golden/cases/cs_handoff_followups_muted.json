@@ -1,0 +1,35 @@
+{
+  "id": "cs_handoff_followups_muted",
+  "matrix": "Customer service: durable human handoff suppresses later automation",
+  "description": "One persisted escalation authorizes the acknowledgement; repeated follow-up turns stay human-owned without model work or duplicate handoff acknowledgement.",
+  "turns": [
+    {
+      "say": "Can I speak to a human please?",
+      "cassette": {
+        "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false}
+      },
+      "expect": {
+        "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["team member"],
+        "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"],
+        "escalations": 1, "human_muted": true, "ticket_statuses": ["open"]
+      }
+    },
+    {
+      "say": "Any update about my parcel?",
+      "expect": {
+        "route": "muted", "agents": [], "outbound_count": 0, "deliveries": 0,
+        "llm_not_called": ["Classification", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
+        "escalations": 0, "human_muted": true, "ticket_statuses": ["open"]
+      }
+    },
+    {
+      "say": "Please check again",
+      "expect": {
+        "route": "muted", "agents": [], "outbound_count": 0, "deliveries": 0,
+        "llm_not_called": ["Classification", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
+        "escalations": 0, "human_muted": true, "ticket_statuses": ["open"]
+      }
+    }
+  ]
+}

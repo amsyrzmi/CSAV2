@@ -17,6 +17,43 @@ n8n gave you no unit tests, no diffable logic, and manual Telegram testing. This
 
 ## Golden case format (`tests/golden/cases/*.json`)
 
+### Customer-service evaluation expansion (2026-10-22)
+
+Four `cs_*` cases extend the executable suite to 37 JSON cases (38 pytest cases
+including seed isolation/timing). The real worker, graph, spoke runner, SQL,
+checkpoint/timeline and persisted outbox remain in use:
+
+- Tenant KB policy retrieval and semantic-check rejection/regeneration of invented
+  free return shipping; a foreign policy marker never reaches model prompts/replies.
+- Foreign-only KB content produces one local knowledge-gap row, without a foreign
+  answer or an unsupported promise of human follow-up.
+- Another contact's ticket ID returns `ticket_not_found`, without disclosing its
+  subject or changing ticket state/events.
+- A persisted human escalation creates one open ticket and acknowledgement; two
+  subsequent turns remain muted with no classifiers/planners/composers, duplicate
+  escalations, acknowledgements or deliveries.
+
+The test seed supports tenant-separated KB articles and contact-separated tickets.
+KB is explicitly registered/enabled only in the disposable synthetic tenant that
+needs it; no production/tenant switches change. `TEI_ENDPOINT` is removed from
+the golden test process before settings are loaded, and article/query vectors use
+the existing `hash-384` deterministic lexical embedder. This is not TEI retrieval
+quality acceptance. Cassettes script classification/planning/composition/review,
+so this proves orchestration and supplied-verdict handling, not real-model accuracy
+or language quality. There is no delivery worker or external provider request.
+
+Final command:
+`NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_golden.py tests/test_kb_agent.py tests/test_staff_path.py -q`
+— **71 passed, 63 existing warnings in 94.12 s**, no skips/deselections.
+`make lint` passed Ruff, formatting, Pyright and import boundaries.
+Initial new-case selection: **2 failed / 2 passed / 34 deselected, 5 warnings in
+24.06 s**, because the old core-only seed lacked KB registration; explicit
+synthetic registration fixed it. Focused rerun: **4 passed / 34 deselected,
+5 warnings in 21.71 s**. One broader command named nonexistent ticket/escalation
+test files and collected no tests; the final command uses their existing
+`test_staff_path.py` coverage. Full local/load/reset checks were not rerun per
+the user's focused-local/full-hosted-CI policy. No production acceptance implied.
+
 The implementation uses strict Pydantic-validated JSON rather than adding a YAML dependency.
 The example below is the original planning notation; executable cases use `seed`, `turns[].cassette`
 (response-schema names such as `Classification`, `ComposeOut`, `ReviewOut`) and `turns[].expect`.

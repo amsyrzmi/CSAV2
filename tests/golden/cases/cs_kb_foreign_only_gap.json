@@ -1,0 +1,25 @@
+{
+  "id": "cs_kb_foreign_only_gap",
+  "matrix": "Customer service: unavailable policy and cross-tenant KB denial",
+  "description": "A policy stored only in another tenant becomes a local knowledge gap, not a leaked answer or invented refund promise.",
+  "seed": {"knowledge": [
+    {"title": "Foreign policy", "content": "FOREIGN-REFUND-SECRET Return policy grants ninety days.", "other_tenant": true}
+  ]},
+  "turns": [{
+    "say": "What is the return policy?",
+    "cassette": {
+      "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"kb_agent": 0.95}},
+      "PlanOut": {"tasks": [{"agent": "kb_agent", "input": {"action": "query", "query": "return policy"}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "I could not find a matching return policy in the knowledge base."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "agents": ["kb_agent"], "gate": "send", "outbound_count": 1,
+      "compose_sees": ["No matching knowledge base documentation found", "knowledge gap review"],
+      "reply_excludes": ["FOREIGN-REFUND-SECRET", "ninety", "team member will"],
+      "model_never_sees": ["FOREIGN-REFUND-SECRET", "ninety days"],
+      "kb_gaps": 1, "agent_errors": [], "escalations": 0
+    }
+  }]
+}

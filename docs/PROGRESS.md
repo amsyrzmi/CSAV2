@@ -1,5 +1,23 @@
 # Progress
 
+Customer-service routing/grounding/handoff goldens (2026-10-22): PR #8 merged
+as `b2dc7a2`; PR CI 39719424850, branch CI 39719295898 and post-merge main
+CI 39725222410 passed (freshly checked). Local main was fast-forwarded without
+touching unrelated deletions. `test/customer-service-goldens` adds four synthetic
+real-worker cases over existing KB/ticket/escalation agents, with test-only seed/
+observation support. No runtime, API, frontend, migration or dependency changed.
+
+Final focused command covering all golden cases, KB tests and staff-path tests:
+**71 passed, 63 existing warnings in 94.12 s**, no skips/deselections.
+Repository lint/types/import checks passed. The initial four-case run was
+**2 passed / 2 failed** because core-only seeding did not register/enable KB;
+the synthetic fixture now explicitly registers/enables it with the current schema.
+See [LG08 evidence and limits](./langgraph-rebuild/LG08_testing_seed_evals.md#customer-service-evaluation-expansion-2026-10-22).
+No live model/TEI/provider requests, delivery worker, persistent database action or
+deployment. Scripted model verdicts prove orchestration/guard behavior, not
+independent model accuracy or multilingual quality. Full hosted CI remains the
+merge gate; full local/load/reset checks were not rerun.
+
 Customer-service inbox browser acceptance (2026-10-22): PR #7 merged as
 `650bc08`; its PR CI 39711968531, branch CI 39711862612 and post-merge main
 CI 39713659882 all passed (freshly verified). Local main was fast-forwarded

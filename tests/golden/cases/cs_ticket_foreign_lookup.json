@@ -1,0 +1,25 @@
+{
+  "id": "cs_ticket_foreign_lookup",
+  "matrix": "Customer service: other customer's ticket denied",
+  "description": "Ticket lookup binds the current contact even when the planner supplies another customer's valid ticket ID.",
+  "seed": {"tickets": [
+    {"id": 880001, "subject": "PRIVATE-TICKET-SUBJECT", "other_contact": true}
+  ]},
+  "turns": [{
+    "say": "Check ticket 880001",
+    "cassette": {
+      "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"ticket_agent": 0.95}},
+      "PlanOut": {"tasks": [{"agent": "ticket_agent", "input": {"action": "get", "ticket_id": 880001}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": {"reply": "I could not find that ticket for you."},
+      "ReviewOut": {"ok": true}
+    },
+    "expect": {
+      "agents": ["ticket_agent"], "outbound_count": 1, "gate": "send",
+      "compose_sees": ["ticket_not_found"], "agent_errors": ["ticket_not_found"],
+      "reply_excludes": ["PRIVATE-TICKET-SUBJECT"],
+      "model_never_sees": ["PRIVATE-TICKET-SUBJECT"],
+      "ticket_statuses": ["open"], "ticket_events": {}, "escalations": 0
+    }
+  }]
+}
