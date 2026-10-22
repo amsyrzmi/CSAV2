@@ -22,9 +22,11 @@ function Input({ name, label, type = "text", maxLength = 160, required = true }:
 }
 
 /** Each tenant selection creates fresh state and transport; late responses cannot cross tenants. */
-export function HrWorkspace({ me }: { me: Me }) {
-  const [selection, setSelection] = useState(me.active_client_id ?? "");
-  const [tenant, setTenant] = useState(me.role === "platform_admin" ? "" : me.active_client_id ?? "");
+export function HrWorkspace({ me, initialTenant = "", initialSection = "training" }: {
+  me: Me; initialTenant?: string; initialSection?: "directory" | "training";
+}) {
+  const [selection, setSelection] = useState(initialTenant || me.active_client_id || "");
+  const [tenant, setTenant] = useState(me.role === "platform_admin" ? initialTenant : me.active_client_id ?? "");
   return <div className="space-y-6">
     <Heading title="People & HR" description="Training, recruitment, attendance, leave and payroll preparation." />
     {me.role === "platform_admin" && <form className="flex flex-wrap items-end gap-3" onSubmit={event => {
@@ -33,14 +35,14 @@ export function HrWorkspace({ me }: { me: Me }) {
       onChange={e => setSelection(e.target.value)} required><option value="">Choose a tenant</option>
       {me.memberships.map(m => <option key={m.client_id} value={m.client_id}>{m.client_id}</option>)}
     </select></label><button className={secondary}>Open HR</button></form>}
-    {tenant ? <TenantHr key={tenant} me={me} tenant={tenant} /> : <Notice>Select a tenant to continue.</Notice>}
+    {tenant ? <TenantHr key={`${tenant}:${initialSection}`} me={me} tenant={tenant} initialSection={initialSection} /> : <Notice>Select a tenant to continue.</Notice>}
   </div>;
 }
 
-function TenantHr({ me, tenant }: { me: Me; tenant: string }) {
+function TenantHr({ me, tenant, initialSection }: { me: Me; tenant: string; initialSection: "directory" | "training" }) {
   const client = useMemo(() => hrClient(tenant), [tenant]);
   const [context, setContext] = useState<HrContext | null>(null);
-  const [tab, setTab] = useState("training");
+  const [tab, setTab] = useState<string>(initialSection);
   const [directory, setDirectory] = useState(empty<Employee>);
   const [training, setTraining] = useState(empty<Training>);
   const [workflows, setWorkflows] = useState(empty<Workflow>);
@@ -62,7 +64,10 @@ function TenantHr({ me, tenant }: { me: Me; tenant: string }) {
         const ctx = await client.context();
         if (!active) return;
         setContext(ctx);
-        if (ctx.actions.includes("training.read")) {
+        if (initialSection === "directory" && ctx.actions.includes("directory.read")) {
+          const page = await client.directory();
+          if (active) setDirectory(page);
+        } else if (initialSection === "training" && ctx.actions.includes("training.read")) {
           const page = await client.training();
           if (active) setTraining(page);
         }
@@ -72,7 +77,7 @@ function TenantHr({ me, tenant }: { me: Me; tenant: string }) {
     }
     void load();
     return () => { active = false; };
-  }, [client]);
+  }, [client, initialSection]);
   async function run(work: () => Promise<void>) {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true); setError(""); setMessage("");

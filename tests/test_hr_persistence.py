@@ -43,6 +43,94 @@ FIELDS = ["display_name", "job_title", "department", "work_email", "assigned_man
 CONTENT = {"title": "Synthetic planning workshop", "learning_objective": "Practice planning"}
 
 
+@pytest.mark.parametrize(
+    "name", ["staff", "manager", "operator", "owner", "admin", "reader", "platform"]
+)
+async def test_hr_guidance_is_minimal_current_grants_not_console_role(
+    world: HrWorld, name: str
+) -> None:
+    suffix = f"?client_id={world.tenant}" if name == "platform" else ""
+    response = await world.call(name, "GET", f"/console/v1/hr/guidance{suffix}")
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert set(body) == {"kind", "actions", "source", "as_of"}
+    assert body["kind"] == "hr_navigation" and body["source"] == "current_hr_grants"
+    expected = sorted(
+        {
+            row["action"]
+            for row in await world.q(
+                "SELECT action FROM hr_grants WHERE client_id=%s AND user_id=%s",
+                (world.tenant, world.users[name]),
+            )
+        }
+    )
+    assert body["actions"] == expected
+    if name in {"admin", "reader", "platform"}:
+        assert body["actions"] == []
+    for value in (*world.users.values(), *world.employees.values(), *world.tokens.values()):
+        assert str(value) not in response.text
+    assert "staff@example.test" not in response.text
+
+
+async def test_hr_guidance_refresh_revokes_existing_session_and_does_not_write(
+    world: HrWorld,
+) -> None:
+    response = await world.call("staff", "GET", "/console/v1/hr/guidance")
+    assert response.status_code == 200 and "directory.read" in response.json()["actions"]
+    await world.q(
+        "DELETE FROM hr_grants WHERE client_id=%s AND user_id=%s",
+        (world.tenant, world.users["staff"]),
+    )
+    refreshed = await world.call("staff", "GET", "/console/v1/hr/guidance")
+    assert refreshed.status_code == 200 and refreshed.json()["actions"] == []
+    assert await world.q(
+        "SELECT (SELECT count(*) FROM hr_training_requests) AS requests,"
+        "(SELECT count(*) FROM hr_training_receipts) AS receipts,"
+        "(SELECT count(*) FROM hr_training_audit) AS audit"
+    ) == [{"requests": 0, "receipts": 0, "audit": 0}]
+    await world.q(
+        "UPDATE console_sessions SET revoked_at=now() WHERE id=%s",
+        (world.sessions["staff"],),
+    )
+    assert (await world.call("staff", "GET", "/console/v1/hr/guidance")).status_code == 401
+    with pytest.raises(HrPolicyError, match="session_unavailable"):
+        await world.service.guidance(world.proof("staff"))
+
+
+async def test_hr_guidance_rejects_untrusted_identity_tenant_and_query(world: HrWorld) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=world.app), base_url=ORIGIN
+    ) as anonymous:
+        assert (await anonymous.get("/console/v1/hr/guidance")).status_code == 401
+    assert (await world.call("platform", "GET", "/console/v1/hr/guidance")).status_code == 400
+    assert (
+        await world.call("staff", "GET", f"/console/v1/hr/guidance?client_id={world.other_tenant}")
+    ).status_code == 403
+    assert (
+        await world.call(
+            "platform", "GET", f"/console/v1/hr/guidance?client_id={world.other_tenant}"
+        )
+    ).status_code == 401
+    for query in (
+        "?action=training.decide",
+        f"?client_id={world.tenant}&client_id={world.tenant}",
+    ):
+        assert (
+            await world.call("staff", "GET", f"/console/v1/hr/guidance{query}")
+        ).status_code == 400
+    assert (
+        await world.call(
+            "staff", "GET", "/console/v1/hr/guidance", headers={"X-HR-Grants": "training.decide"}
+        )
+    ).status_code == 403
+    assert (
+        await world.call(
+            "staff", "GET", "/console/v1/hr/guidance", headers={"Authorization": "Bearer synthetic"}
+        )
+    ).status_code == 401
+
+
 async def test_identity_fixture_reset_clears_hr_ledgers_and_restores_protection(
     world: HrWorld,
 ) -> None:
@@ -912,6 +1000,7 @@ async def test_api_contract_exposes_only_bounded_hr_operations(world: HrWorld) -
     hr_paths = {path for path in schema["paths"] if path.startswith("/console/v1/hr")}
     assert hr_paths == {
         "/console/v1/hr/context",
+        "/console/v1/hr/guidance",
         "/console/v1/hr/operations",
         "/console/v1/hr/assistant",
         "/console/v1/hr/records/{area}",

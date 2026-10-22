@@ -13,6 +13,7 @@ from csa.hr.models import (
     DirectoryValues,
     EmployeeIdentity,
     EmployeeRef,
+    HrAction,
     HrModel,
     ResolvedGrant,
     TrainingAction,
@@ -189,3 +190,12 @@ class HrContext(HrModel):
     employee: EmployeeRef | None
     client_owner: bool
     actions: tuple[str, ...]
+
+
+class HrGuidance(HrModel):
+    """Ephemeral grant summary, not a resource authorization or workflow result."""
+
+    kind: Literal["hr_navigation"] = "hr_navigation"
+    actions: tuple[HrAction, ...] = Field(max_length=6)
+    source: Literal["current_hr_grants"] = "current_hr_grants"
+    as_of: AwareDatetime

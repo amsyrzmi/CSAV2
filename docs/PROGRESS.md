@@ -1,5 +1,23 @@
 # Progress
 
+HR workspace guidance (2026-10-22): PR #6 merged as `148c03e`; post-merge main CI
+39700139073 passed (freshly verified). The bounded follow-up adds an ephemeral
+current-grant directory/training guide to the staff workspace and fixed HR deep
+links. HR retains session/grant/resource authority; no employee records, new
+mutations, model calls, workspace-history changes or migrations are added.
+See [HR evidence](./hr/PROGRESS.md#workspace-hr-guidance) and the
+[active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+
+At the user's request, use focused local validation through customer-service,
+subscription and interactive-voice completion, with broader checks for shared
+runtime changes and full hosted CI retained as the merge gate. No CI checks or
+acceptance thresholds were disabled. This slice: **198 affected tests passed in
+189.28 s**, the packaged HR browser scenario **1 passed / 1 existing warning in
+227.78 s**, repository lint and isolated frontend checks passed. Initial test
+expectation/selector failures are recorded in HR evidence. Full local pytest,
+load and disposable-reset checks were not rerun; earlier full-suite evidence is
+historical, not final-patch coverage. No deployment or persistent action occurred.
+
 HR directory/training browser acceptance (2026-10-21): PR #5 merged as
 `cd1d085`, local main was fast-forwarded without altering unrelated deletions,
 and post-merge CI 39666475261 passed. The user installed missing Chromium system

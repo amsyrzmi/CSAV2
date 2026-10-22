@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import {
@@ -13,7 +14,12 @@ import {
   type WorkspaceThread,
   type WorkspaceTurn,
 } from "@/lib/workspace-api";
-import { guidanceText } from "@/lib/workspace-paths.mjs";
+import {
+  guidanceText,
+  hrGuidancePath,
+  hrGuidanceText,
+  type HrGuidanceAction,
+} from "@/lib/workspace-paths.mjs";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 export function WorkspaceAssistant({ me }: { me: Me }) {
@@ -72,13 +78,13 @@ export function WorkspaceAssistant({ me }: { me: Me }) {
       {!tenantId ? (
         <Notice>Select a tenant to open its private workspace.</Notice>
       ) : (
-        <TenantWorkspace key={tenantId} tenantId={tenantId} />
+        <TenantWorkspace key={tenantId} tenantId={tenantId} platform={platform} />
       )}
     </>
   );
 }
 
-function TenantWorkspace({ tenantId }: { tenantId: string }) {
+function TenantWorkspace({ tenantId, platform }: { tenantId: string; platform: boolean }) {
   const [threads, setThreads] = useState<WorkspaceThread[]>([]);
   const [threadId, setThreadId] = useState("");
   const [turns, setTurns] = useState<WorkspaceTurn[]>([]);
@@ -344,11 +350,85 @@ function TenantWorkspace({ tenantId }: { tenantId: string }) {
         <p className="text-sm">
           Guidance is deterministic application text. Order reads use local
           tenant records only and include a source and as-of time. No marketplace,
-          customer-channel, HR, payroll, order mutation, or model-tool action is
-          available here.
+          customer-channel, HR record read or mutation, payroll, order mutation,
+          or model-tool action is available here. The separate HR guide checks
+          current grants and links to the existing HR pages.
         </p>
       </Panel>
+      <HrGuide tenantId={tenantId} platform={platform} />
     </div>
+  );
+}
+
+interface HrGuidance {
+  kind: "hr_navigation";
+  actions: HrGuidanceAction[];
+  source: "current_hr_grants";
+  as_of: string;
+}
+
+function HrGuide({ tenantId, platform }: { tenantId: string; platform: boolean }) {
+  const [guide, setGuide] = useState<HrGuidance | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => controller.current?.abort(), []);
+
+  async function refresh() {
+    controller.current?.abort();
+    const request = new AbortController();
+    controller.current = request;
+    setGuide(null);
+    setError("");
+    setBusy(true);
+    try {
+      const result = await api<HrGuidance>(
+        `/console/v1/hr/guidance?${new URLSearchParams({ client_id: tenantId })}`,
+        { signal: request.signal },
+      );
+      if (!request.signal.aborted) setGuide(result);
+    } catch (cause) {
+      if (!request.signal.aborted)
+        setError(cause instanceof Error ? cause.message : "HR guidance failed");
+    } finally {
+      if (!request.signal.aborted) setBusy(false);
+    }
+  }
+
+  return (
+    <Panel title="People & HR guide">
+      <p className="mb-3 text-sm">
+        Check your current HR grants for directory and training guidance. This
+        does not read employee records, run a workflow, or save guidance in chat.
+        Every HR page rechecks record eligibility and permissions. Grants alone
+        do not guarantee access to a particular record or allow a read-only
+        session to make changes.
+      </p>
+      <button className={secondary} disabled={busy} onClick={refresh}>
+        {busy ? "Checking HR grants..." : "Check my HR guidance"}
+      </button>
+      {error && <Notice error>{error}</Notice>}
+      {guide && (
+        <div className="mt-3 space-y-3" aria-live="polite">
+          {guide.actions.length === 0 && (
+            <Notice>No directory or training grants are assigned in this tenant. Ask your authorized HR owner to review access.</Notice>
+          )}
+          {guide.actions.map((item) => (
+            <p key={item} className="text-sm">
+              {hrGuidanceText(item)}{" "}
+              <Link prefetch={false} className="underline"
+                href={hrGuidancePath(item, tenantId, platform)}>
+                Open {item === "directory.read" ? "directory" : "training"}
+              </Link>
+            </p>
+          ))}
+          <p className="text-xs text-ink-500">
+            Source: {guide.source} · As of {new Date(guide.as_of).toLocaleString()}.
+            Recheck after permissions change.
+          </p>
+        </div>
+      )}
+    </Panel>
   );
 }
 

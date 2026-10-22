@@ -1489,6 +1489,21 @@ async def test_packaged_hr_browser_acceptance(
             row = await cursor.fetchone()
             assert row is not None
             users[name] = str(row[0])
+        cursor = await owner.execute(
+            "SELECT id FROM console_users WHERE email='packaged-admin@example.test'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        users["platform"] = str(row[0])
+        await owner.execute(
+            "INSERT INTO console_memberships(user_id,client_id,role) VALUES (%s,%s,'tenant_admin')",
+            (users["platform"], tenants[0]),
+        )
+        await owner.execute(
+            "INSERT INTO hr_grants(client_id,user_id,action,scope,fields) "
+            "VALUES (%s,%s,'directory.read','hr_operator',ARRAY['display_name'])",
+            (tenants[0], users["platform"]),
+        )
         for name in ("manager", "staff", "foreign"):
             tenant = tenants[1] if name == "foreign" else tenants[0]
             await owner.execute(
@@ -1587,10 +1602,16 @@ async def test_packaged_hr_browser_acceptance(
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             if name is not None:
                 await page.goto(f"{w.origin}/login")
-                await page.get_by_label("Email", exact=True).fill(emails[name])
-                await page.get_by_label("Password", exact=True).fill(member_password)
+                await page.get_by_label("Email", exact=True).fill(
+                    "packaged-admin@example.test" if name == "platform" else emails[name]
+                )
+                await page.get_by_label("Password", exact=True).fill(
+                    CHANGED_PASSWORD if name == "platform" else member_password
+                )
                 await page.get_by_role("button", name="Sign in", exact=True).click()
-                await page.wait_for_url(f"{w.origin}/portal")
+                await page.wait_for_url(
+                    f"{w.origin}/" if name == "platform" else f"{w.origin}/portal"
+                )
             return page
 
         try:
@@ -1598,10 +1619,48 @@ async def test_packaged_hr_browser_acceptance(
             await anonymous.goto(f"{w.origin}/portal/hr")
             await anonymous.wait_for_url(f"{w.origin}/login")
             assert (await hr_fetch(anonymous, "/console/v1/hr/context"))["status"] == 401
+            assert (await hr_fetch(anonymous, "/console/v1/hr/guidance"))["status"] == 401
+
+            platform = await new_page("platform")
+            await platform.goto(f"{w.origin}/workspace")
+            await platform.get_by_role("heading", name="Staff workspace", exact=True).wait_for()
+            await platform.get_by_role("combobox").select_option(tenants[0])
+            await platform.get_by_role("button", name="Check my HR guidance", exact=True).click()
+            platform_link = platform.get_by_role("link", name="Open directory", exact=True)
+            await platform_link.wait_for()
+            assert await platform_link.get_attribute("href") == (
+                f"/hr?section=directory&client_id={tenants[0]}"
+            )
+            await platform_link.click()
+            await platform.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
+            assert (
+                await platform.get_by_label("Tenant membership", exact=False).input_value()
+                == (tenants[0])
+            )
 
             staff = await new_page("staff")
-            await staff.goto(f"{w.origin}/portal/hr")
-            await staff.get_by_role("button", name="Directory", exact=True).click()
+            await staff.goto(f"{w.origin}/portal/workspace")
+            await staff.get_by_role("button", name="Check my HR guidance", exact=True).click()
+            directory_link = staff.get_by_role("link", name="Open directory", exact=True)
+            await directory_link.wait_for()
+            assert await directory_link.get_attribute("href") == "/portal/hr?section=directory"
+            assert await staff.get_by_text("private-staff@example.test", exact=True).count() == 0
+            await staff.route(
+                "**/console/v1/hr/guidance?*",
+                lambda route: route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body='{"detail":"synthetic_guidance_unavailable"}',
+                ),
+            )
+            await staff.get_by_role("button", name="Check my HR guidance", exact=True).click()
+            await staff.get_by_text("synthetic_guidance_unavailable", exact=True).wait_for()
+            assert await directory_link.count() == 0
+            await staff.unroute("**/console/v1/hr/guidance?*")
+            await staff.get_by_role("button", name="Check my HR guidance", exact=True).click()
+            await directory_link.wait_for()
+            await directory_link.click()
+            await staff.wait_for_url(f"{w.origin}/portal/hr?section=directory")
             await staff.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
             projection = await hr_fetch(staff, f"/console/v1/hr/employees/{employees['staff']}")
             assert projection["status"] == 200 and projection["cache"] == "no-store"
@@ -1647,7 +1706,11 @@ async def test_packaged_hr_browser_acceptance(
             await article.get_by_text("submitted · version 1", exact=True).wait_for()
 
             manager = await new_page("manager")
-            await manager.goto(f"{w.origin}/portal/hr")
+            await manager.goto(f"{w.origin}/portal/workspace")
+            await manager.get_by_role("button", name="Check my HR guidance", exact=True).click()
+            await manager.get_by_text("Review an eligible training request", exact=False).wait_for()
+            await manager.get_by_role("link", name="Open training", exact=True).first.click()
+            await manager.wait_for_url(f"{w.origin}/portal/hr?section=training")
             manager_projection = await hr_fetch(
                 manager, f"/console/v1/hr/employees/{employees['staff']}"
             )
@@ -1678,10 +1741,20 @@ async def test_packaged_hr_browser_acceptance(
             await manager.get_by_role("button", name="Confirm decision", exact=True).click()
             await reviewed.get_by_text("approved · version 2", exact=True).wait_for()
             await staff.reload()
+            await staff.get_by_role("button", name="Training", exact=True).click()
             await article.get_by_text("approved · version 2", exact=True).wait_for()
 
             for name in ("admin", "reader", "foreign"):
                 denied = await new_page(name)
+                if name == "admin":
+                    await denied.goto(f"{w.origin}/portal/workspace")
+                    await denied.get_by_role(
+                        "button", name="Check my HR guidance", exact=True
+                    ).click()
+                    await denied.get_by_text(
+                        "No directory or training grants are assigned", exact=False
+                    ).wait_for()
+                    assert await denied.get_by_role("link", name="Open directory").count() == 0
                 await denied.goto(f"{w.origin}/portal/hr")
                 response = await hr_fetch(denied, f"/console/v1/hr/employees/{employees['staff']}")
                 assert response["status"] == 404
@@ -1735,6 +1808,12 @@ async def test_packaged_hr_browser_acceptance(
             revoked = await hr_fetch(manager, f"/console/v1/hr/employees/{employees['staff']}")
             assert revoked["status"] == 404
             assert "private-staff" not in json.dumps(revoked["body"])
+            await manager.goto(f"{w.origin}/portal/workspace")
+            await manager.get_by_role("button", name="Check my HR guidance", exact=True).click()
+            await manager.get_by_text(
+                "No directory or training grants are assigned", exact=False
+            ).wait_for()
+            assert await manager.get_by_role("link", name="Open training", exact=True).count() == 0
             assert not egress
             assert not page_errors
         finally:
