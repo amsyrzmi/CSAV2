@@ -1,5 +1,18 @@
 # Progress
 
+Staging image publication workflow (proposed, 2026-10-22): PR #12 merged as
+`12c74dd` (push CI 39826917861 and PR CI 39826987627 passed). Branch
+`ci/staging-image-publication` adds a manual, `staging-images`-environment-gated
+workflow that republishes the exact archive of one successful push-to-main CI
+run to GHCR by full SHA with preserved digests, then fails unless the registry
+digests match; no rebuild, no `latest`, `ci.yml` unchanged. Ten static and
+synthetic OCI-layout tests pass locally; no dispatch, registry or GitHub API
+call was made. Next gates: workflow PR review/CI/merge, owner-created protected
+`staging-images` environment, then a separately approved dispatch of CI run
+39754225130 before its artifact expires 2026-10-29. See the
+[workflow contract](../deploy/RELEASE.md#staging-image-publication-workflow-proposed-not-yet-run)
+and [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+
 Staging connector configuration and exact-image mount probes: PR #11 merged as
 `7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Post-merge CI
 39754225130 passed gate, frontend and package, including Gitleaks. The current

@@ -68,6 +68,41 @@ Dirty-worktree local builds are **unreleased candidates**, even when labelled
 with HEAD for tooling validation. They must not be claimed as that clean commit.
 CI's clean checkout, tests and recorded digests supply release identity.
 
+### Staging image publication workflow (proposed, not yet run)
+
+[publish-staging-images.yml](../.github/workflows/publish-staging-images.yml)
+is the reviewed path from a CI review archive to an immutable registry
+reference. It is manual (`workflow_dispatch`) and takes one `ci_run_id`. It
+does not rebuild. Instead, it:
+
+1. requires the run to be a successful `push` of `.github/workflows/ci.yml` on
+   `main` in this repository, with a 40-hex head SHA that is an ancestor of
+   `main`;
+2. downloads that run's `csa-review-only-<sha>` artifact, verifies every
+   `SHA256SUMS` entry and `release.txt` revision/platform, and requires each
+   OCI archive to contain exactly one `linux/amd64` image manifest whose
+   manifest/config hashes match and whose revision label equals the SHA;
+3. copies each archive with `skopeo copy --preserve-digests` to
+   `ghcr.io/<owner>/csa-{python,frontend}:<full-sha>` (never `latest`);
+4. re-reads each registry manifest, fails unless its digest equals the archive
+   manifest digest, and writes the `@sha256` references to the job summary.
+
+Only this job has `packages: write`; `ci.yml` remains build-only. Before the
+first dispatch, the repository owner must create the GitHub environment
+`staging-images` with a required reviewer and deployment branches restricted to
+`main`. GitHub auto-creates an unprotected environment if a job references a
+missing one, so dispatching before this setup removes the approval gate. The
+source run must be within the seven-day artifact retention. Packages created
+by the workflow are private by default; staging-host pull credentials are a
+later, separate gate.
+
+Publication is not deployment, staging startup or acceptance. A published
+digest identifies a new build; it does not inherit evidence recorded for an
+earlier artifact unless its manifest digest matches. Static tests and synthetic
+OCI-layout execution of the archive-verification block are in
+[test_publish_staging_images.py](../tests/test_publish_staging_images.py); no
+registry or GitHub call was made to produce that evidence.
+
 ## Origin and route boundary
 
 `CSA_CONSOLE_API_ORIGIN` is a non-secret **server-only** bare HTTP(S) origin.
