@@ -74,6 +74,19 @@ services:
       gateway:
         condition: service_healthy
 
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39
+    profiles: ["staging-approved"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command: ["tunnel", "run"]
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/staging_tunnel_token
+    secrets: ["staging_tunnel_token"]
+    networks: ["edge", "connector-egress"]
+
   migrate:
     <<: *python
     profiles: ["migration-approved"]
@@ -105,6 +118,9 @@ networks:
     internal: true
   edge:
     internal: true
+  connector-egress:
+    driver: bridge
+    internal: false
 
 volumes:
   staging-db:
@@ -125,6 +141,8 @@ secrets:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/staging_credentials_key
   staging_disabled_model_key:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/staging_disabled_model_key
+  staging_tunnel_token:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/connector/staging_tunnel_token
   staging_app_password:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/migration/staging_app_password
   staging_ro_password:
