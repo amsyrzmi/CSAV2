@@ -1,5 +1,26 @@
 # Progress
 
+Customer-service inbox browser acceptance (2026-10-22): PR #7 merged as
+`650bc08`; its PR CI 39711968531, branch CI 39711862612 and post-merge main
+CI 39713659882 all passed (freshly verified). Local main was fast-forwarded
+without touching the two unrelated review-document deletions.
+The isolated `test/customer-service-browser` branch adds one real-session
+synthetic packaged inbox scenario, with no application/frontend/API/schema change.
+It proves takeover/release, committed human-reply lost-acknowledgement recovery,
+approve/edit/reject/expired reply decisions, settled-action denial of new delivery,
+role/tenant/CSRF/private-sandbox boundaries and exact durable counts.
+See [M5 acceptance evidence and exclusions](
+./handoffs/2026-10-17-m5-telegram-inbox.md#packaged-customer-service-browser-acceptance-2026-10-22).
+
+Focused inbox backend regression: **14 passed, 1 existing warning in 102.20 s**.
+Final packaged browser: **1 passed, 1 existing warning in 215.34 s**.
+Repository lint/types/import checks passed. Initial synthetic fixture/locator
+failures are retained in the linked evidence. All five customer deliveries remain
+pending: no delivery worker, Telegram request, model, persistent migration,
+shared-service restart or deployment. Full local/load/reset checks were not rerun,
+per the user's focused-local/full-hosted-CI policy. This is inbox acceptance,
+not full customer-service routing/grounding/language or live-provider completion.
+
 HR workspace guidance (2026-10-22): PR #6 merged as `148c03e`; post-merge main CI
 39700139073 passed (freshly verified). The bounded follow-up adds an ephemeral
 current-grant directory/training guide to the staff workspace and fixed HR deep

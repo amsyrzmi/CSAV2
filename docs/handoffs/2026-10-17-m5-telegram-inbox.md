@@ -7,6 +7,72 @@ Telegram acceptance; rollout and platform-admin acceptance are verified below.
 Live reader denial replay now passes after the approved private dev password recovery.
 Tenant-admin/staff representative browser replay also passes, with exact limits below.
 
+## Packaged customer-service browser acceptance (2026-10-22)
+
+Current base: PR #7 merged as `650bc08`, with PR/branch/main CI success freshly
+verified. The `test/customer-service-browser` branch in
+`/home/amsyrzmi/CSAV2-customer-service` adds
+[`test_packaged_customer_inbox_browser_acceptance`](../../tests/test_packaged_console.py)
+to the existing packaged test harness. This is test/documentation-only work, not
+a runtime rollout or a change to the previously approved Telegram-only scope.
+
+The scenario uses a JavaScript-enabled Chromium browser, packaged gateway/frontend,
+synthetic TLS, normal invite/login cookie sessions and disposable migrated PostgreSQL:
+
+- Anonymous page redirects/API denial; staff and tenant-admin transcript access;
+  reader content/mutation denial; foreign-tenant resource denial and staff cross-tenant
+  selection denial. Platform users select a tenant explicitly, and switching tenants
+  removes the previous transcript.
+- Common-pattern email redaction; private sandbox exclusion even after its channel
+  is deliberately mislabeled Telegram; missing-CSRF mutation denial.
+- Staff takeover pauses AI; a human reply commits, then a route interceptor drops
+  its acknowledgement. Polling finds the saved message. Explicit retry sends the
+  exact same payload/key and produces one message, delivery, receipt and reply audit.
+  Release and reload preserve AI ownership, and queued is never labeled delivered.
+- Real browser approve/edit/reject and expired-approval handling. A different-key
+  decision on each settled approval returns `already_handled` with no new delivery.
+  Handled history is visible on request.
+- Final state: AI ownership/version 2; one human pending delivery plus four approval
+  pending deliveries; exactly one approved, edited, expired and rejected approval;
+  four approval-domain audit entries; 11 console action receipts/audits (three
+  conversation operations, four decisions and four already-handled attempts).
+  Browser external-origin requests are blocked and asserted absent.
+
+No delivery process runs. Synthetic ingress metadata and held drafts are seeded;
+the coordinator/model/customer-channel ingress is not exercised by this scenario.
+An inert credential placeholder is never decrypted or sent. Five durable pending
+deliveries establish queuing, not Telegram acceptance or exactly-once remote delivery.
+This does not complete KB/order/ticket routing, grounding, language quality, SLA,
+customer-web, subscription execution, interactive voice or public deployment.
+
+Commands use `NO_LOCAL_ENV=1 ENV=ci`, existing pinned dependencies and the isolated
+task worktree:
+
+```sh
+uv run pytest tests/test_console_inbox.py -q
+uv run pytest tests/test_packaged_console.py::test_packaged_customer_inbox_browser_acceptance -q
+make lint
+```
+
+Evidence:
+
+- Existing inbox permission/replay/approval/race suite: **14 passed, 1 existing
+  Testcontainers deprecation warning in 102.20 s**.
+- Final packaged browser: **1 passed, 1 existing warning in 215.34 s**.
+- Repository Ruff/formatting/Pyright/import-boundary checks passed. No frontend
+  source changed; the browser fixture builds the current packaged frontend.
+- Initial browser attempts failed: **440.38 s** on a fixture using unsupported
+  ingress status `done` (corrected to `completed`); **202.86 s** on an ambiguous
+  reply-text locator matching both saved message and retained textarea; **329.73 s**
+  on an exact edit-label locator (corrected to the approval card's textbox role).
+  Each was **1 failed / 1 existing warning**, not a passing acceptance result.
+  Initial lint also caught a 101-character fixture SQL line, corrected without
+  suppressing checks. Final lint and browser checks passed afterward.
+
+Per the user's current validation policy, full local pytest/load/disposable-reset
+checks were not rerun; full hosted CI remains the merge gate. No migration, API,
+runtime/frontend behavior, dependency, worker, provider or persistent service changed.
+
 ## Confirmed authority
 
 The user explicitly selected **Telegram only, admin/staff access; defer customer-web
