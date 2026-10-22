@@ -1,27 +1,50 @@
 # Progress
 
-Staging connector configuration (2026-10-22): PR #10 merged as
-`9d6ed70bbb52344c80f65719f485731a5f380220`; PR, branch and post-merge main CI
-all passed (main run 39737788986, freshly checked). In a new isolated worktree
-at that merge, the local staging Compose proposal now includes the reviewed,
-digest-pinned Cloudflare connector. It is profile-gated, non-root/read-only,
-uses its own file-backed token secret, and joins only the frontend edge plus a
-connector-only outbound network. No real secret, container/service, tunnel,
-DNS, route, Caddy or infrastructure change occurred.
-
-The existing `tests/test_staging_compose.py` now checks exact image/profile,
-network and secret isolation, `TUNNEL_TOKEN_FILE`, hardening, no host ports or
-external networks, and synthetic contents absent from rendered Compose.
-The focused configuration tests passed **7 tests in 0.59 s**; full repository
-lint, type and import checks passed after one corrected formatter-only issue.
-`git diff --check`, edited Markdown fence/added-link validation and a
-credential-shaped-content scan passed.
-Validation outcomes and limitations are recorded in the
-[release contract](../deploy/RELEASE.md#dedicated-connector-in-local-staging-compose-configuration-only-2026-10-22)
+Staging connector configuration and exact-image mount probes: PR #11 merged as
+`7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Post-merge CI
+39754225130 passed gate, frontend and package, including Gitleaks. The current
+review artifact was downloaded and inspected offline with explicit approval:
+GitHub artifact digest and every internal `SHA256SUMS` entry verified; both OCI
+manifest/config digests, source revision, amd64 platform and runtime users were
+verified. Python runs as `1000:1000`; frontend's configured `node` resolves to
+`1000:1000`. Exact artifact identities and limits are in the
+[release evidence](../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22)
 and [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
-Compose rendering does not prove runtime networking, UID-65532 file access,
-tunnel authentication, public ingress or staging readiness. Full hosted CI
-remains the merge gate; this branch remains unpublished with no push or PR.
+
+The exact reviewed Python/frontend OCI archives were imported and
+tested with explicit approval using synthetic files and network-disabled
+containers. Python `Settings` loaded its expected secret files as UID/GID 1000;
+the five migration files were readable without invoking migrations. The
+frontend passed UID, baked-origin/mismatch, read-only-root, writable-tmpfs and
+no-secret-mount checks. One initial frontend probe used an incorrect baked-file
+path and failed; it was corrected to the Dockerfile's `/app/console-api-origin`
+location and passed. Containers, exact imported image tags, synthetic fixtures
+and temporary artifacts were removed. See the
+[artifact identity](../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22)
+and [runtime evidence](../deploy/RELEASE.md#exact-image-synthetic-mount-probes-2026-10-22).
+
+These probes did not start the application, Compose, database, tunnel or any
+staging service. They establish no Compose secret runtime, database readiness,
+network/ingress or end-to-end agent acceptance. The staging proposal still lacks
+worker, delivery and KB consumers and does not enable real provider delivery.
+Next prerequisite: select immutable Python/frontend registry image digests for
+the proposal. The checked artifacts are review archives, not registry images;
+publication/import into a registry or deployment needs separate approval. No
+real secret, staging database, tunnel, DNS, route, Caddy, service or deployment
+action occurred.
+
+Read-only registry metadata check (2026-10-22): the GitHub Packages list API
+returned HTTP 403 for the current token; candidate GHCR manifest HEAD requests
+returned HTTP 401, and anonymous token requests returned HTTP 403. These
+responses do not prove that matching packages are absent. Credentials were not
+changed; no image was downloaded or published. A metadata lookup using an
+already-authorized read-only identity is needed before selecting an existing
+registry digest; publishing remains a separate approval gate. The user then
+ran the metadata lookup under their authorized `gh` identity: the container
+package list returned no `csa-python`/`csa-frontend` entries without error, and
+both package-version lookups returned HTTP 404 `Package not found`. No matching
+registry image exists in the `amsyrzmi` namespace; the verified CI archives are
+the only artifacts. Next gate: separately approved registry publication.
 
 Staging connector probe (2026-10-22): PR #9 merged as `97c9172` (PR CI
 39730060082 and branch CI 39730054197 passed). The user resumed the staging

@@ -1,61 +1,134 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging lane resumed (2026-10-22)
+## Current continuation: staging artifact mount probes verified (2026-10-22)
 
-PR #10 is merged as
-`9d6ed70bbb52344c80f65719f485731a5f380220`. Fresh `gh` verification shows PR #10
-merged, PR CI 39735335849 and branch CI 39735295259 successful, and post-merge
-main CI 39737788986 successful. The previous main worktree is left untouched:
-its only changes remain the two pre-existing review-document deletions.
+PR #11 merged as `7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Fresh checks:
+PR #11 CI 39748495863 and branch CI 39748381545 passed at source head
+`97d98e199c28604c1ae938371d5d83e98983862d`; post-merge main CI 39754225130
+passed gate, frontend and package at merge commit `7cdc1562a33bf3a33c4561e53d26263a6a08f731`,
+including Gitleaks. No merge was performed by this session.
 
-The bounded follow-up is implemented in the isolated worktree
-`/home/amsyrzmi/CSAV2-staging-cloudflare`, branch
-`feat/staging-cloudflare-connector`, starting at the PR #10 merge commit.
-Only the local staging Compose proposal, its existing synthetic configuration
-test, this release record, progress and this handoff are changed. The original
-external-secret proposal is unchanged. The branch remains unpublished: it has
-not been pushed and has no PR.
+The post-merge review artifact (ID `12414924895`, GitHub digest
+`sha256:920ac9637341ef6ed38e7763a867a6d2cf6e5f3329c6cfb274c5f168d800cf91`,
+expires 2026-10-29 09:36:53 UTC) was downloaded for offline verification with
+explicit approval and removed afterward. It was then downloaded a second time
+under separate approval for exact-image synthetic mount probes and removed
+afterward. GitHub artifact metadata remained available for the same run and
+artifact ID; all downloaded artifact `SHA256SUMS` entries passed, as did OCI
+manifest/config hashes. Both images identify source revision
+`7cdc1562a33bf3a33c4561e53d26263a6a08f731`,
+`linux/amd64`; frontend origin is `http://gateway:8080`, and promotion is
+disabled.
 
-The dedicated connector is now declared **only** in the inert local-Compose
-variant. It uses the full reviewed digest
-`cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39`,
-profile `staging-approved`, UID `65532:65532`, read-only filesystem, dropped
-capabilities and `no-new-privileges`. It joins only the existing internal
-frontend edge and a project-scoped connector-only outbound bridge. Its only
-secret grant is the file-backed
-`${CSA_STAGING_SECRET_DIR}/connector/staging_tunnel_token`, referenced through
-`TUNNEL_TOKEN_FILE=/run/secrets/staging_tunnel_token`. Any real file later needs
-owner `65532:65532`, mode `0400` and a restricted host parent directory; Compose
-bind-mount secret options do not remap host ownership. No real token was created.
+| Image | Manifest digest | Config digest | Runtime user |
+| --- | --- | --- | --- |
+| Python | `sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764` | `sha256:c7c681096ddd73b17177ec642157a9ee887a80cab4cf88b2519784230c2ac0b1` | `1000:1000` |
+| Frontend | `sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f` | `sha256:af86f20a3d23e942d91e68f2fd9962f8273ae56ebf9a3708e3d1bd61638ba210` | `node` = `1000:1000` from image `/etc/passwd` |
 
-The existing staging configuration test was extended rather than replaced.
-Validation outcomes, failures and unrun checks are in the release contract's
-[configuration-only evidence](../../deploy/RELEASE.md#dedicated-connector-in-local-staging-compose-configuration-only-2026-10-22)
-and at the top of [PROGRESS.md](../PROGRESS.md). A passing Compose render is
-not runtime network, filesystem-readability, authentication, public-ingress or
-staging-readiness acceptance. No stack/container, tunnel, secret, DNS, route,
-dashboard, Caddy or infrastructure action occurred.
+The exact images were imported locally with separate approval after checking
+their identities and the absence of the exact commit-specific tags. Three
+short-lived `--pull=never --network none --read-only --rm` probes passed:
 
-Final focused command:
-`NO_LOCAL_ENV=1 ENV=ci /home/amsyrzmi/CSAV2/.venv/bin/python -m pytest tests/test_staging_compose.py -q`
-— **7 passed in 0.59 s**, no skips/deselections. Full
-`NO_LOCAL_ENV=1 ENV=ci UV_PROJECT_ENVIRONMENT=/home/amsyrzmi/CSAV2/.venv make lint`
-passed Ruff, formatting, Pyright and import-linter. Its first run found only a
-formatting issue in a new assertion; formatting was corrected and the complete
-lint rerun passed. `git diff --check`, edited Markdown fence/added-link checks,
-and a credential-shaped-content scan passed. A first Markdown-check invocation
-could not start because system `python` is unavailable; rerunning with the
-repository venv interpreter passed. Full pytest, runtime/container checks,
-database/reset checks and live acceptance were not run, as authorized scope is
-configuration-only. No CI has run for this unpushed branch; PR #10's PR, branch
-and merged-main CI runs were all freshly checked successful.
+1. Python `Settings` read synthetic `DATABASE_URL`, `LG_DATABASE_URL`,
+   `IDENTITY_DATABASE_URL`, `CREDENTIALS_KEY` and disabled `GROQ_API_KEY`
+   files as UID/GID 1000. The synthetic credentials key passed model validation;
+   no DB connection was attempted.
+2. All five migration-target files were readable as UID/GID 1000. The
+   migration runner and database were not invoked.
+3. Frontend assertions passed for UID/GID 1000, baked
+   `http://gateway:8080` origin and rejection of a mismatch, root read-only
+   mount, writable `/tmp` and `/app/.next/cache` tmpfs, and absence of a
+   `/run/secrets` mount. The Node assertion process did not start the server.
 
-Implementation is committed locally; any amend, push, or PR creation requires
-explicit user approval. The user performs the merge after full hosted CI passes.
-After review/merge, separately select current Python/frontend artifacts and
-verify their UID-1000 secret mounts. Real secret provisioning, database
-bootstrap and connector activation/hostname routing each remain later approved
-gates.
+The first frontend probe failed on an incorrect baked-origin path assumption;
+the Dockerfile shows the standalone tree is copied to `/app`, so the corrected
+`/app/console-api-origin` path passed. This initial failure is retained as
+evidence, not hidden. All containers auto-removed; the two exact imported image
+tags, task-owned synthetic files and private temporary artifact directory were
+then removed. No database, Compose service, app server, real secret or network
+connection was used.
+
+The review archives are not published registry images, and matching immutable
+Python/frontend registry references have not been identified, so staging
+Compose has no verified image references. **Next bounded prerequisite:**
+identify eligible existing registry image digests matching these reviewed
+source artifacts, or obtain separate approval to publish/import them into the
+chosen registry. No registry write or deployment is authorized by the completed
+runtime probes. A read-only lookup attempted with approval was blocked: the
+GitHub Packages list API returned 403 for the current token; unauthenticated
+HEAD requests for candidate GHCR manifests returned 401, and anonymous token
+requests returned 403. This does not prove the packages are absent. No
+credential was changed, and no registry image was downloaded or published.
+The user then ran the lookup under their authorized `gh` identity: the package
+list returned no `csa-python`/`csa-frontend` entries without error, and both
+version lookups returned HTTP 404 `Package not found`. (An earlier attempt's
+exit code 1 is consistent with `set -eu` stopping on that 404.) No matching
+registry image exists in the `amsyrzmi` namespace. A local `docker inspect` of
+`:latest` tags also found nothing, which is local-only and irrelevant to
+digest selection; staging must never use `latest`.
+Staging-only secrets, isolated database bootstrap, application
+startup, tunnel/hostname routing and public acceptance remain separate gates.
+
+The inert proposal includes database, gateway, frontend, migration and the
+dedicated connector only. It has **no worker, delivery or KB consumer**, so it
+does not support accepted end-to-end agent conversations; no real provider
+delivery is enabled or implied. Despite the image-mount probe passing,
+staging-only secrets/test identities, DB bootstrap, app startup, tunnel/hostname
+and public acceptance remain separate approvals. Protected repeatable staging
+promotion is later still. Subscription acceptance is next in the agreed roadmap
+only after these staging gates are met; do not bypass them.
+
+Read this section, current [progress](../PROGRESS.md), the
+[release contract](../../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22),
+and the [staging proposal](../../deploy/compose.staging-local-proposal.yml)
+before continuing. Keep all work in an isolated worktree; the original main
+worktree still has only the two pre-existing review-report deletions. Preserve
+the six-phase order: Staging/CD, subscription, WhatsApp test demo, interactive
+voice, Google mailbox/calendar, reporting/wallboards.
+
+The original PR #11 publication and merge are already complete; these current
+documentation changes have not been committed or published. Preserve the
+unrelated deletions in `/home/amsyrzmi/CSAV2`. Keep the user's roadmap order:
+Staging/CD -> subscription -> WhatsApp test-number demo -> interactive voice
+-> Google mailbox/calendar -> reporting/wallboards. Ask before commit, push or
+PR; the user merges.
+
+```text
+Continue in `/home/amsyrzmi/CSAV2-staging-artifacts`, branch
+`docs/staging-artifact-verification`, based on PR #11 merge
+`7cdc1562a33bf3a33c4561e53d26263a6a08f731`. First verify worktree, branch and
+CI. PR #11 CI 39748495863 and branch CI 39748381545 passed at
+97d98e199c28604c1ae938371d5d83e98983862d; post-merge main CI 39754225130
+passed all jobs at 7cdc1562a33bf3a33c4561e53d26263a6a08f731.
+
+Artifact 12414924895 was verified twice: all listed SHA256SUMS entries, OCI
+manifest/config hashes, source revision, linux/amd64 platform, origin and
+promotion-disabled metadata matched. Exact Python and frontend OCI images were
+loaded locally under separate approval. Python Settings synthetic secret-file
+resolution and all five migration secret-file readability checks passed as
+UID/GID 1000 without DB access or running migrations. Frontend passed UID,
+baked-origin/mismatch, root-read-only, /tmp and /app/.next/cache tmpfs, and no
+secret-mount assertions; server not started. The first frontend attempt used an
+incorrect baked-origin path and failed; corrected to /app/console-api-origin
+per Dockerfile and passed. Containers, exact imported tags, synthetic files
+and temporary artifact files were removed.
+
+No matching registry image refs have been identified; review archives are not
+registry images. The approved read-only lookup was blocked: GitHub Packages
+returned 403 for the current token; anonymous manifest HEADs returned 401 and
+anonymous token requests returned 403. This does not prove package absence.
+A user-run lookup under an authorized identity then found no `csa-python` or
+`csa-frontend` package (list empty; versions HTTP 404). Next bounded gate is a
+separately approved registry-publication design: how the verified archives
+reach GHCR (CI job with `packages: write` vs. manual push of the verified
+archive), package visibility, and post-push digest verification. Do not publish,
+deploy, start Compose, provision real staging secrets, bootstrap DB, activate
+tunnel/DNS, or merge without separate approval. No worker/delivery/KB consumer
+is configured, so do not claim end-to-end agent conversations. Keep the order:
+Staging/CD -> subscription -> WhatsApp test-number demo -> interactive voice
+-> Google mailbox/calendar -> reporting/wallboards. Preserve the unrelated
+deletions in /home/amsyrzmi/CSAV2. Ask before commit, push or PR; user merges.
+```
 
 ## Prior continuation: customer-service goldens (2026-10-22)
 

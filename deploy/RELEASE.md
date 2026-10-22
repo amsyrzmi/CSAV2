@@ -327,20 +327,99 @@ of a new test assertion; that formatting was corrected before the passing rerun.
 `git diff --check`, edited Markdown fence/added-link validation and a
 credential-shaped-content scan also passed.
 
-This is render/configuration evidence only—not runtime network egress,
-filesystem readability, tunnel authentication/connectivity, DNS, public ingress
-or staging readiness. The original staging proposal, shared connector and
-existing hostnames/routes remain unchanged. Artifact selection and UID-1000
-application-image secret-mount verification, staging secret provisioning,
-database bootstrap and route activation remain separate gates.
+The Compose render itself is configuration evidence only—not connector runtime
+egress, connector-token readability/authentication, DNS, public ingress or
+staging readiness. The separate exact-image application probes below establish
+synthetic app-secret file readability and frontend mount behavior only. The
+original staging proposal, shared connector and existing hostnames/routes remain
+unchanged. Matching immutable registry image references, staging secret
+provisioning, database bootstrap and route activation remain separate gates.
+
+### PR #11 merged artifacts: identity verification (2026-10-22)
+
+PR #11 merged as `7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Post-merge main
+CI run [39754225130](https://github.com/amsyrzmi/CSAV2/actions/runs/39754225130)
+completed successfully: gate, frontend and package jobs passed, including
+Gitleaks. Its review artifact `csa-review-only-7cdc1562a33bf3a33c4561e53d26263a6a08f731`
+(artifact ID `12414924895`; 195,234,264 bytes; expires 2026-10-29 09:36:53 UTC)
+was downloaded for offline inspection with explicit approval and then removed.
+GitHub's artifact metadata reports digest
+`sha256:920ac9637341ef6ed38e7763a867a6d2cf6e5f3329c6cfb274c5f168d800cf91`.
+
+The artifact's `SHA256SUMS` entries all verified. `release.txt`, both OCI
+indexes, manifests and config blobs identify source/revision
+`7cdc1562a33bf3a33c4561e53d26263a6a08f731`, platform `linux/amd64`, frontend
+origin `http://gateway:8080` and `promotion=disabled`; manifest and config
+blob hashes were recomputed and matched their descriptors.
+
+| Image | OCI manifest digest | Config digest | Runtime user |
+| --- | --- | --- | --- |
+| Python | `sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764` | `sha256:c7c681096ddd73b17177ec642157a9ee887a80cab4cf88b2519784230c2ac0b1` | `1000:1000` (`csa`) |
+| Frontend | `sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f` | `sha256:af86f20a3d23e942d91e68f2fd9962f8273ae56ebf9a3708e3d1bd61638ba210` | config user `node`, resolved from image `/etc/passwd` as `1000:1000` |
+
+### Exact-image synthetic mount probes (2026-10-22)
+
+With separate explicit approval, artifact `12414924895` was downloaded again.
+Its run/revision, artifact metadata, all `SHA256SUMS` entries and the Python and
+frontend OCI manifest/config digests matched the identities above. Neither
+expected commit-specific Docker tag existed before import. The exact archives
+were loaded locally, inspected for the expected image IDs and revision labels,
+then their task-created tags, all `--rm` containers, the synthetic secret files
+and private temporary artifact directory were removed. No registry operation
+occurred.
+
+Three short-lived probes passed, each using the exact image, `--pull=never`,
+`--network none`, `--read-only`, UID/GID 1000, dropped capabilities and
+`no-new-privileges`:
+
+1. The Python image constructed the real `csa.core.settings.Settings` using
+   synthetic files at `/run/secrets` and synthetic non-secret origin settings.
+   Required database/checkpoint settings, the separate `csa_identity` setting,
+   the disabled model-key placeholder and the validated synthetic credentials
+   key all resolved. The fixture directory was mode `0700`; each file was mode
+   `0400`, owned by UID 1000. No database connection was attempted.
+2. The Python image could read all five Compose-targeted migration files
+   (`MIGRATE_DATABASE_URL`, `LG_SETUP_DATABASE_URL`, `CSA_APP_PASSWORD`,
+   `CSA_RO_PASSWORD`, `CSA_IDENTITY_PASSWORD`) as UID 1000. The migration
+   runner and database were not invoked.
+3. The frontend ran a Node assertion script only, not its server. It ran as
+   UID/GID 1000, matched the baked `http://gateway:8080` origin and rejected a
+   mismatched origin. `/` was mounted read-only; `/tmp` and `/app/.next/cache`
+   were writable tmpfs mounts; the probe confirmed no `/run/secrets` mount.
+
+The first frontend attempt failed because the probe looked for the baked origin
+under `.next/standalone`; inspection of the image Dockerfile showed that this
+tree is copied to `/app`, so the correct runtime path is `/app/console-api-origin`.
+The same bounded probe passed after that path correction. The failed
+`--rm` container left no persistent container.
+
+This closes only exact-image, synthetic configuration-file readability and
+frontend mount/origin checks. It does not exercise Compose secret mounting,
+application server startup/readiness, database behavior, live network
+connectivity, tunnel authentication, DNS, public ingress, staging operations or
+end-to-end agent conversations.
+
+The proposal currently includes only database, gateway, frontend, migration and
+the dedicated connector. It has **no worker, delivery or KB-ingestion consumer**;
+it does not support accepted end-to-end agent conversations, and no real
+provider delivery is enabled or implied.
 
 Before any separately approved execution:
 
-1. Approve named Python/frontend **registry `@sha256:` digests**, verify the
-   recorded origin, platform and checksums, and approve distinct staging secrets.
+1. The verified artifacts are CI review archives only; this CI run provides no
+   registry image references for the staging Compose proposal. Select approved
+   Python/frontend registry `@sha256:` digests and verify source, platform and
+   origin before staging configuration can use them. Publishing the archives,
+   importing them into a registry, or deploying them requires separate approval.
    Required Compose image variables have no default, but Compose does not itself
-   enforce digest syntax; the operator must verify it. Nothing publishes these
-   archives to a registry in this slice.
+   enforce digest syntax; the operator must verify it. A read-only metadata
+   lookup on 2026-10-22 was blocked: the GitHub Packages list API returned 403
+   for the current token; anonymous HEAD requests to the candidate GHCR
+   manifests returned 401, and anonymous token requests returned 403. This does
+   not establish that the packages are absent. No credential was changed and no
+   registry image was downloaded or published. A subsequent user-run lookup
+   under an authorized `gh` identity returned no `csa-python`/`csa-frontend`
+   packages and HTTP 404 for both version lists: no registry image exists yet.
 2. Provision `csa_app` domain/checkpoint DSNs and a separate `csa_identity` DSN,
    all targeting `staging-db:5432/csa_staging`. Owner DSNs must never be mounted
    into gateway/frontend. External secret targets use **uppercase Settings names**.
