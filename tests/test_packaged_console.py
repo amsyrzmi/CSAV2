@@ -1389,6 +1389,412 @@ async def test_packaged_m2_browser_acceptance(
             await browser.close()
 
 
+async def test_packaged_customer_inbox_browser_acceptance(
+    packaged_console: PackagedConsole,
+    migrated_dsn: str,
+) -> None:
+    """Exercise staff inbox UX and durable outcomes without a delivery worker/provider."""
+    w = packaged_console
+    password = "synthetic-inbox-browser-password"
+    emails = {
+        name: f"inbox-{name}-{uuid4().hex}@example.test"
+        for name in ("staff", "admin", "reader", "foreign")
+    }
+    tenants: list[str] = []
+    conversation, contact, credential, endpoint, trace = (uuid4() for _ in range(5))
+    contexts: list[BrowserContext] = []
+    egress: list[str] = []
+    page_errors: list[str] = []
+    replies: list[str | None] = []
+    lost_ack = False
+    reply_text = "Synthetic staff answer awaiting delivery"
+
+    with httpx.Client(base_url=w.origin, verify=w.tls, trust_env=False, timeout=30) as admin:
+
+        def mutate(path: str, body: object) -> httpx.Response:
+            csrf = admin.get("/console/v1/auth/csrf").json()["csrf_token"]
+            return admin.post(path, json=body, headers={"Origin": w.origin, "X-CSRF-Token": csrf})
+
+        assert (
+            mutate(
+                "/console/v1/auth/login",
+                {"email": "packaged-admin@example.test", "password": PASSWORD},
+            ).status_code
+            == 200
+        )
+        assert (
+            mutate(
+                "/console/v1/auth/password/change",
+                {"current_password": PASSWORD, "new_password": CHANGED_PASSWORD},
+            ).status_code
+            == 200
+        )
+        for label in ("alpha", "beta"):
+            created = mutate(
+                "/console/v1/admin/clients",
+                {"slug": f"inbox-{label}-{uuid4().hex[:12]}", "name": f"Synthetic Inbox {label}"},
+            )
+            assert created.status_code == 201, created.text
+            tenants.append(created.json()["id"])
+        for name, email in emails.items():
+            invited = mutate(
+                "/console/v1/admin/invites",
+                {
+                    "client_id": tenants[1] if name == "foreign" else tenants[0],
+                    "email": email,
+                    "display_name": f"Synthetic Inbox {name}",
+                    "role": "tenant_admin"
+                    if name == "admin"
+                    else ("read_only" if name == "reader" else "tenant_staff"),
+                },
+            )
+            assert invited.status_code == 201, invited.text
+            with httpx.Client(base_url=w.origin, verify=w.tls, trust_env=False) as member:
+                csrf = member.get("/console/v1/auth/csrf").json()["csrf_token"]
+                accepted = member.post(
+                    "/console/v1/invites/accept",
+                    json={"token": invited.json()["token"], "password": password},
+                    headers={"Origin": w.origin, "X-CSRF-Token": csrf},
+                )
+                assert accepted.status_code == 200, accepted.text
+
+    async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
+        await owner.execute(
+            "INSERT INTO contacts(id,client_id) VALUES (%s,%s)", (contact, tenants[0])
+        )
+        await owner.execute(
+            "INSERT INTO conversations(id,client_id,contact_id,channel,channel_thread) "
+            "VALUES (%s,%s,%s,'telegram',%s)",
+            (conversation, tenants[0], contact, str(contact.int)),
+        )
+        await owner.execute(
+            "INSERT INTO channel_credentials(id,client_id,channel,access_token) "
+            "VALUES (%s,%s,'telegram','synthetic-not-a-token')",
+            (credential, tenants[0]),
+        )
+        await owner.execute(
+            "INSERT INTO webhook_endpoints(id,client_id,public_id,credential_id) "
+            "VALUES (%s,%s,%s,%s)",
+            (endpoint, tenants[0], f"synthetic-inbox-{uuid4().hex}", credential),
+        )
+        await owner.execute(
+            "INSERT INTO ingress_events(client_id,endpoint_id,contact_id,idempotency_key,"
+            "payload_hash,trace_id,raw,status) "
+            "VALUES (%s,%s,%s,%s,'synthetic',%s,'{}','completed')",
+            (tenants[0], endpoint, contact, f"synthetic:{trace}", trace),
+        )
+        await owner.execute(
+            "INSERT INTO messages(client_id,conversation_id,direction,author,body,"
+            "idempotency_key,trace_id) VALUES (%s,%s,'inbound','customer',%s,%s,%s)",
+            (
+                tenants[0],
+                conversation,
+                "Question from synthetic@example.test",
+                f"{trace}:in",
+                trace,
+            ),
+        )
+
+    async def fetch(
+        page: Page, path: str, body: object | None = None, *, csrf: bool = True
+    ) -> dict:
+        return await page.evaluate(
+            """async ({path, body, csrf}) => {
+                const headers = {};
+                if (body !== null) {
+                    headers['Content-Type'] = 'application/json';
+                    if (csrf) {
+                        const token = await (await fetch('/console/v1/auth/csrf')).json();
+                        headers['X-CSRF-Token'] = token.csrf_token;
+                    }
+                }
+                const response = await fetch(path, {method: body === null ? 'GET' : 'POST',
+                    headers, ...(body === null ? {} : {body: JSON.stringify(body)})});
+                return {status: response.status, body: await response.json()};
+            }""",
+            {"path": path, "body": body, "csrf": csrf},
+        )
+
+    base = f"/console/v1/inbox/conversations/{conversation}"
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+
+        async def route_request(route: Route) -> None:
+            nonlocal lost_ack
+            target = urlsplit(route.request.url)
+            if f"{target.scheme}://{target.netloc}" != w.origin:
+                egress.append(f"{target.scheme}://{target.netloc}")
+                await route.abort()
+                return
+            if target.path == f"{base}/reply" and route.request.method == "POST":
+                replies.append(route.request.post_data)
+                if not lost_ack:
+                    committed = await route.fetch()
+                    assert committed.status == 202
+                    lost_ack = True
+                    await route.abort("connectionreset")
+                    return
+            await route.continue_()
+
+        async def new_page(name: str | None = None) -> Page:
+            context = await browser.new_context(ignore_https_errors=True, service_workers="block")
+            contexts.append(context)
+            await context.route("**/*", route_request)
+            page = await context.new_page()
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            page.on("dialog", lambda dialog: dialog.accept())
+            if name is not None:
+                await page.goto(f"{w.origin}/login")
+                await page.get_by_label("Email", exact=True).fill(
+                    "packaged-admin@example.test" if name == "platform" else emails[name]
+                )
+                await page.get_by_label("Password", exact=True).fill(
+                    CHANGED_PASSWORD if name == "platform" else password
+                )
+                await page.get_by_role("button", name="Sign in", exact=True).click()
+                await page.wait_for_url(
+                    f"{w.origin}/" if name == "platform" else f"{w.origin}/portal"
+                )
+            return page
+
+        try:
+            anonymous = await new_page()
+            await anonymous.goto(f"{w.origin}/portal/inbox")
+            await anonymous.wait_for_url(f"{w.origin}/login")
+            assert (await fetch(anonymous, "/console/v1/inbox/conversations"))["status"] == 401
+
+            staff = await new_page("staff")
+            await staff.goto(f"{w.origin}/portal/inbox")
+            await staff.get_by_role(
+                "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
+            ).click()
+            await staff.get_by_text("Question from [EMAIL_0]", exact=True).wait_for()
+            assert await staff.get_by_text("synthetic@example.test", exact=False).count() == 0
+            assert (
+                await fetch(
+                    staff,
+                    f"{base}/takeover",
+                    {
+                        "request_key": str(uuid4()),
+                        "expected_version": 0,
+                    },
+                    csrf=False,
+                )
+            )["status"] == 403
+            assert (await fetch(staff, f"/console/v1/inbox/conversations?client_id={tenants[1]}"))[
+                "status"
+            ] == 403
+            await staff.get_by_role("button", name="Take over", exact=True).click()
+            await staff.get_by_text(
+                "Human support owns this conversation. AI paused.", exact=True
+            ).wait_for()
+            await staff.get_by_label("Human reply", exact=True).fill(reply_text)
+            await staff.get_by_role("button", name="Queue reply", exact=True).click()
+            await staff.get_by_text("Outcome uncertain.", exact=False).wait_for()
+            await staff.get_by_role("list").get_by_text(reply_text, exact=True).wait_for()
+            await staff.get_by_role("button", name="Retry the same action", exact=True).click()
+            await staff.get_by_text(
+                "Reply queued. Delivery status appears in the conversation.", exact=True
+            ).wait_for()
+            assert lost_ack and len(replies) == 2 and replies[0] == replies[1]
+            assert replies[0] is not None and json.loads(replies[0])["request_key"]
+            assert await staff.get_by_role("list").get_by_text(reply_text, exact=True).count() == 1
+            await staff.get_by_text("Staff · queued", exact=True).wait_for()
+            await staff.get_by_role("button", name="Release to AI", exact=True).click()
+            await staff.get_by_text("AI owns this conversation.", exact=True).wait_for()
+            assert await staff.get_by_label("Human reply", exact=True).count() == 0
+            await staff.reload()
+            await staff.get_by_role(
+                "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
+            ).click()
+            await staff.get_by_text(reply_text, exact=True).wait_for()
+            await staff.get_by_text("AI owns this conversation.", exact=True).wait_for()
+
+            sandbox = await fetch(
+                staff, "/console/v1/chat/conversations", {"request_key": str(uuid4())}
+            )
+            assert sandbox["status"] == 201
+            sandbox_id = sandbox["body"]["id"]
+            async with await psycopg.AsyncConnection.connect(
+                migrated_dsn, autocommit=True
+            ) as owner:
+                await owner.execute(
+                    "UPDATE conversations SET channel='telegram' WHERE id=%s", (sandbox_id,)
+                )
+            for suffix in ("", "/messages"):
+                assert (
+                    await fetch(staff, f"/console/v1/inbox/conversations/{sandbox_id}{suffix}")
+                )["status"] == 404
+            listed = await fetch(staff, "/console/v1/inbox/conversations")
+            assert [item["id"] for item in listed["body"]["items"]] == [str(conversation)]
+
+            for name in ("admin", "reader", "foreign"):
+                member = await new_page(name)
+                await member.goto(f"{w.origin}/portal/inbox")
+                if name == "reader":
+                    await member.get_by_text(
+                        "Staff inbox access requires an administrator or staff role.", exact=True
+                    ).wait_for()
+                    for suffix in ("", "/messages"):
+                        assert (await fetch(member, f"{base}{suffix}"))["status"] == 403
+                    assert (
+                        await fetch(
+                            member,
+                            f"{base}/takeover",
+                            {
+                                "request_key": str(uuid4()),
+                                "expected_version": 2,
+                            },
+                        )
+                    )["status"] == 403
+                elif name == "foreign":
+                    await member.get_by_text(
+                        "No customer conversations found.", exact=True
+                    ).wait_for()
+                    assert (await fetch(member, f"{base}/messages"))["status"] == 404
+                else:
+                    await member.get_by_role(
+                        "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
+                    ).click()
+                    await member.get_by_text(reply_text, exact=True).wait_for()
+
+            platform = await new_page("platform")
+            await platform.goto(f"{w.origin}/inbox")
+            await platform.get_by_text("Select a tenant to open its inbox.", exact=True).wait_for()
+            assert (await fetch(platform, "/console/v1/inbox/conversations"))["status"] == 400
+            await platform.get_by_role("combobox").select_option(tenants[0])
+            await platform.get_by_role(
+                "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
+            ).click()
+            await platform.get_by_text(reply_text, exact=True).wait_for()
+            await platform.get_by_role("combobox").select_option(tenants[1])
+            await platform.get_by_text("No customer conversations found.", exact=True).wait_for()
+            assert await platform.get_by_text(reply_text, exact=True).count() == 0
+
+            approval_ids: dict[str, int] = {}
+            async with await psycopg.AsyncConnection.connect(
+                migrated_dsn, autocommit=True
+            ) as owner:
+                for decision in ("approve", "edit", "reject", "expire"):
+                    approval_trace = uuid4()
+                    await owner.execute(
+                        "INSERT INTO ingress_events(client_id,endpoint_id,contact_id,"
+                        "idempotency_key,payload_hash,trace_id,raw,status) "
+                        "VALUES (%s,%s,%s,%s,'synthetic',%s,'{}','completed')",
+                        (
+                            tenants[0],
+                            endpoint,
+                            contact,
+                            f"synthetic:{approval_trace}",
+                            approval_trace,
+                        ),
+                    )
+                    cursor = await owner.execute(
+                        "INSERT INTO approvals(client_id,conversation_id,trace_id,draft,"
+                        "reason,risk_score,ui,expires_at) "
+                        "VALUES (%s,%s,%s,%s,'Synthetic review',0.5,'{}',now()+interval '1 hour') "
+                        "RETURNING id",
+                        (tenants[0], conversation, approval_trace, f"Synthetic {decision} draft"),
+                    )
+                    row = await cursor.fetchone()
+                    assert row is not None
+                    approval_ids[decision] = row[0]
+            for decision, approval_id in approval_ids.items():
+                card = staff.locator("article").filter(
+                    has=staff.get_by_text(f"Synthetic {decision} draft", exact=True)
+                )
+                await card.get_by_role("button", name="View conversation", exact=True).wait_for()
+                if decision == "expire":
+                    async with await psycopg.AsyncConnection.connect(
+                        migrated_dsn, autocommit=True
+                    ) as owner:
+                        await owner.execute(
+                            "UPDATE approvals SET expires_at=now()-interval '1 second' WHERE id=%s",
+                            (approval_id,),
+                        )
+                    await card.get_by_role("button", name="Approve", exact=True).click()
+                    await staff.get_by_text("Approval expired.", exact=False).wait_for()
+                elif decision == "edit":
+                    await card.get_by_role("button", name="Edit", exact=True).click()
+                    await card.get_by_role("textbox").fill("Synthetic edited answer")
+                    await card.get_by_role("button", name="Queue edited reply", exact=True).click()
+                else:
+                    await card.get_by_role(
+                        "button", name="Approve" if decision == "approve" else "Reject", exact=True
+                    ).click()
+                await card.wait_for(state="detached")
+                handled = await fetch(
+                    staff,
+                    f"/console/v1/inbox/approvals/{approval_id}/decide",
+                    {
+                        "request_key": str(uuid4()),
+                        "decision": "approve",
+                    },
+                )
+                assert handled["status"] == 200
+                assert handled["body"]["outcome"] == "already_handled"
+                assert handled["body"]["queued"] is False
+            await staff.get_by_label("Include handled approvals", exact=True).check()
+            await staff.get_by_text("Synthetic edit draft", exact=True).wait_for()
+
+            async with await psycopg.AsyncConnection.connect(
+                migrated_dsn, autocommit=True
+            ) as owner:
+                cursor = await owner.execute(
+                    "SELECT owned_by,inbox_version,ai_muted_until FROM conversations WHERE id=%s",
+                    (conversation,),
+                )
+                assert await cursor.fetchone() == ("ai", 2, None)
+                cursor = await owner.execute(
+                    "SELECT m.body,m.send_authority,d.status FROM messages m "
+                    "JOIN outbound_deliveries d ON d.message_id=m.id "
+                    "WHERE m.conversation_id=%s",
+                    (conversation,),
+                )
+                deliveries = await cursor.fetchall()
+                assert len(deliveries) == 5
+                assert (reply_text, "human", "pending") in deliveries
+                assert all(row[2] == "pending" for row in deliveries)
+                assert ("Synthetic edited answer", "reviewed", "pending") in deliveries
+                cursor = await owner.execute(
+                    "SELECT status,count(*) FROM approvals WHERE client_id=%s "
+                    "GROUP BY status ORDER BY status",
+                    (tenants[0],),
+                )
+                assert await cursor.fetchall() == [
+                    ("approved", 1),
+                    ("edited", 1),
+                    ("expired", 1),
+                    ("rejected", 1),
+                ]
+                cursor = await owner.execute(
+                    "SELECT count(*) FROM approval_audit WHERE client_id=%s", (tenants[0],)
+                )
+                assert await cursor.fetchone() == (4,)
+                cursor = await owner.execute(
+                    "SELECT action,count(*) FROM console_audit WHERE client_id=%s "
+                    "AND action LIKE 'inbox.%%' GROUP BY action ORDER BY action",
+                    (tenants[0],),
+                )
+                assert await cursor.fetchall() == [
+                    ("inbox.release", 1),
+                    ("inbox.reply", 1),
+                    ("inbox.reply_decided", 8),
+                    ("inbox.takeover", 1),
+                ]
+                cursor = await owner.execute(
+                    "SELECT count(*) FROM console_inbox_actions WHERE client_id=%s",
+                    (tenants[0],),
+                )
+                assert await cursor.fetchone() == (11,)
+            assert not egress
+            assert not page_errors
+        finally:
+            for context in reversed(contexts):
+                await context.close()
+            await browser.close()
+
+
 async def test_packaged_hr_browser_acceptance(
     packaged_console: PackagedConsole,
     migrated_dsn: str,

@@ -1,6 +1,38 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: workspace HR guidance (2026-10-22)
+## Current continuation: customer-service inbox acceptance (2026-10-22)
+
+PR #7 merged as `650bc08a63df9db8153673ef5970466f5c3665b3`. Final PR CI
+39711968531, branch CI 39711862612 and post-merge main CI 39713659882 passed,
+freshly checked. Local main was safely fast-forwarded, retaining the two unrelated
+review-document deletions. HR guidance is merged; no deployment occurred.
+
+The next isolated branch is `test/customer-service-browser` in
+`/home/amsyrzmi/CSAV2-customer-service`. Its test/documentation-only slice adds
+real-session packaged customer inbox browser acceptance. Read the
+[M5 evidence](./2026-10-17-m5-telegram-inbox.md#packaged-customer-service-browser-acceptance-2026-10-22)
+for exact scope, commands, durable counts and initial failures.
+Focused inbox regression: **14 passed / 1 warning in 102.20 s**; final browser:
+**1 passed / 1 warning in 215.34 s**; lint/types/import checks passed.
+No frontend/API/runtime/schema changes, provider sends or delivery worker.
+Five deliveries deliberately stay pending, not delivered.
+
+Next: review and publish this bounded acceptance slice with approval, require
+final-head full hosted CI, then the user's merge. Continue customer-service
+refinement with a bounded synthetic routing/grounding/handoff evaluation over
+existing KB/order/ticket/escalation components before claiming that bundle finished.
+Subscription already has gated local plan/status reads and unexecuted requests;
+scope remaining subscription behavior separately. Interactive staff-browser voice
+is still not implemented by local dictation and needs its own reviewed ingress/
+session/consent/cancellation/replay contract before LiveKit/provider activation.
+
+Retain focused local validation through customer-service/subscription/interactive
+voice completion; broaden for shared-runtime changes and retain full hosted CI
+before merge. Do not use historical full-suite evidence as final-patch coverage.
+No production/persistent DB access, shared-service restart, deployment or live
+provider/microphone request is authorized by this continuation.
+
+## Prior continuation: workspace HR guidance (2026-10-22)
 
 PR #6 merged as `148c03e2271164992191091442a8d8ca67dce408`; main CI
 39700139073 passed, freshly checked. Local main was fast-forwarded while
