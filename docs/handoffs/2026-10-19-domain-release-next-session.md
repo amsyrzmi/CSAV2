@@ -1,6 +1,79 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging artifact mount probes verified (2026-10-22)
+## Current continuation: staging image publication workflow proposed (2026-10-22)
+
+PR #12 (artifact identity, mount probes and registry lookup evidence) merged as
+`12c74dd23dde8d18800258c56cc22e4f190bae8d`; its push CI 39826917861 and PR CI
+39826987627 passed at `ca19a3c`. The user chose a protected CI publication path
+(option b) over a manual push of the verified archive.
+
+Branch `ci/staging-image-publication` (worktree
+`/home/amsyrzmi/CSAV2-staging-publish`) adds
+[publish-staging-images.yml](../../.github/workflows/publish-staging-images.yml),
+[test_publish_staging_images.py](../../tests/test_publish_staging_images.py) and
+the [workflow contract](../../deploy/RELEASE.md#staging-image-publication-workflow-proposed-not-yet-run).
+It is manual `workflow_dispatch` with one `ci_run_id`, gated by environment
+`staging-images`. It verifies a successful push-to-main `ci.yml` run on an
+ancestor of `main`, downloads that run's exact archive, verifies checksums,
+revision, single amd64 manifest and blob hashes, copies with
+`skopeo copy --preserve-digests` to `ghcr.io/<owner>/csa-{python,frontend}:<full-sha>`,
+and fails unless the re-read registry digests match. Nothing is rebuilt;
+`latest` is never used; `ci.yml` stays build-only.
+
+Local evidence: 10 new tests passed (static permission/trigger/identity
+assertions plus the archive-verification block executed against synthetic OCI
+layouts, with wrong-revision, multiple-manifest and tampered-manifest
+rejections); the 7 staging Compose tests still pass; repository Ruff check and
+format check, Pyright on the new test, YAML parse and `bash -n` on every run
+block, `git diff --check` and a credential-pattern scan passed. Not run locally:
+Gitleaks (hosted CI runs it), actionlint/shellcheck (not installed), and any
+real dispatch, GitHub API or registry call. Static and synthetic checks do not
+prove GHCR authentication, `skopeo` behaviour on the runner or package creation.
+
+**Gates, in order (each separately approved):**
+
+1. Review and merge the workflow PR after full hosted CI.
+2. The repository owner creates environment `staging-images` with a required
+   reviewer and deployment branches limited to `main` **before** any dispatch;
+   GitHub otherwise auto-creates it unprotected.
+3. Approve one dispatch. Run 39754225130 (`7cdc156`, artifact `12414924895`,
+   expires 2026-10-29 09:36:53 UTC) would publish exactly the identity-verified
+   and mount-probed images; success requires registry digests
+   `sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764`
+   (Python) and
+   `sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f`
+   (frontend). Any other run is a new build needing its own verification.
+4. Then: staging-host pull credentials, staging-only secrets/test identities,
+   isolated DB bootstrap, application startup, dedicated tunnel/hostname,
+   authenticated browser/tenant-isolation/ingress/recovery acceptance, and
+   protected repeatable promotion.
+
+The staging proposal still has no worker, delivery or KB consumers; do not
+claim end-to-end agent conversations or enable real provider delivery. No
+registry write, deployment, real secret, Compose, database, tunnel or DNS
+action occurred.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: PR #12 merged
+as 12c74dd; the ci/staging-image-publication PR (manual, environment-gated GHCR
+publication of exact CI archives with preserved digests) state and its CI.
+If merged, confirm the user created environment `staging-images` with a
+required reviewer and main-only deployment branches before asking separate
+approval to dispatch it with ci_run_id 39754225130 (artifact expires
+2026-10-29 09:36:53 UTC). Expected registry digests: Python
+sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764,
+frontend sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f.
+Record the job-summary @sha256 references and any failure verbatim. Later gates
+remain separate approvals: pull credentials, staging-only secrets/identities,
+isolated DB bootstrap, app startup, tunnel/hostname, browser/tenant/ingress/
+recovery acceptance, protected promotion. No worker/delivery/KB consumer is
+configured. Roadmap order: Staging/CD -> subscription -> WhatsApp test-number
+demo -> interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Use isolated worktrees; preserve the two pre-existing deletions in
+/home/amsyrzmi/CSAV2. Ask before commit, push or PR; the user merges.
+```
+
+## Prior continuation: staging artifact mount probes verified (2026-10-22)
 
 PR #11 merged as `7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Fresh checks:
 PR #11 CI 39748495863 and branch CI 39748381545 passed at source head
