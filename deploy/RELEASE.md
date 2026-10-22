@@ -239,6 +239,51 @@ service were changed, and no app image was imported or published. Registry
 publication, persistent secret creation, database bootstrap and the dashboard
 route each still require separate approval.
 
+### Dedicated connector image and token-file probe (2026-10-22)
+
+Selected candidate (not yet added to any Compose file):
+`cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39`
+(multi-platform index; amd64 manifest
+`sha256:c3f24df7c5e68c1467afc5486c155689f247eb02246b3a124fc5f42458728672`).
+It is the official
+[2026.10.3 release](https://github.com/cloudflare/cloudflared/releases/tag/2026.10.3)
+(published 2026-10-21). That tag's
+[`subcommands.go`](https://github.com/cloudflare/cloudflared/blob/2026.10.3/cmd/cloudflared/tunnel/subcommands.go)
+still defines `--token-file` / `TUNNEL_TOKEN_FILE`, and its
+[`Dockerfile.amd64`](https://github.com/cloudflare/cloudflared/blob/2026.10.3/Dockerfile.amd64)
+uses a distroless `nonroot` base, `USER 65532:65532` and
+`ENTRYPOINT ["cloudflared", "--no-autoupdate"]`.
+
+With explicit approval, the image was pulled by digest only and inspected:
+`Config.User` `65532:65532`, amd64, `cloudflared version 2026.10.3`. Probes
+used `--pull=never --network none --read-only --rm`, one random **fake** token
+file bind-mounted read-only at `/run/secrets/tunnel_token` and
+`TUNNEL_TOKEN_FILE` naming that path:
+
+| Host file owner/mode | Container UID | Result (exit 255 in all cases) |
+| --- | --- | --- |
+| `1000:1000` `0400` | 65532 (image default) | `Failed to read token file: ... permission denied` |
+| `1000:1000` `0444` (probe only) | 65532 | read, then `Provided Tunnel token is not valid.` |
+| `65532:65532` `0400` | 65532 | read, then `Provided Tunnel token is not valid.` |
+| `65532:65532` `0400` | 1000 (`--user` override) | `permission denied` |
+
+Conclusion: unlike the database image, this connector has **no root
+entrypoint**, so its token file must be readable by UID 65532 itself; provision
+it as `65532:65532` mode `0400` inside a restricted parent directory. Do not
+reuse the Python services' UID 1000 ownership or world-readable modes.
+
+Two `sudo chown` attempts by the user were not applied to the probe file (the
+first targeted `/tmp`, which this session sees as a private tmpfs); the session
+stopped on the mismatch instead of probing. With further explicit approval the
+owner was then set by a throwaway `--network none --read-only` container from
+the already-local `postgres:16-alpine@sha256:cf78e766...` image running only
+`chown`. The fake files/directories and probe containers were removed; the
+pinned image was kept by request. The existing shared connector and its
+`cloudflared:latest` image, tunnels, DNS, dashboard routes, Caddy and
+application services were not touched. No real token was created or used, and
+nothing contacted Cloudflare. This establishes the image identity and file
+permissions only, not tunnel connectivity, edge routing or access policy.
+
 [compose.staging-proposal.yml](./compose.staging-proposal.yml) is an inert proposal:
 all services are behind explicit approval profiles. It has **no published ports**,
 no external network, no reference to the old `csa-platform` database and no

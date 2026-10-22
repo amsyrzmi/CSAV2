@@ -1,6 +1,28 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: customer-service goldens (2026-10-22)
+## Current continuation: staging lane resumed (2026-10-22)
+
+PR #9 merged as `97c917259a7d8f7efdf4aa65ce690c130ae52fcf`; its PR CI
+39730060082 and branch CI 39730054197 passed. The user then chose to resume the
+staging/CD lane ahead of subscription and voice work.
+
+The dedicated connector image was reviewed and probed offline with a fake token
+file; see
+[RELEASE.md](../../deploy/RELEASE.md#dedicated-connector-image-and-token-file-probe-2026-10-22).
+Pinned candidate: `cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1...ff39`,
+runtime UID **65532** with no root entrypoint, so its token file must be
+`65532:65532` `0400`. No connector was added to Compose; no real token, tunnel,
+DNS, dashboard, Caddy or service change occurred.
+
+Next bounded staging task (each step needs its own approval): add the pinned
+connector to the inert local-Compose variant on `edge` plus a connector-only
+outbound network with a file-backed `TUNNEL_TOKEN_FILE` secret, extend
+`tests/test_staging_compose.py` for its isolation and file-source rules, then
+select the current Python/frontend artifacts to verify their UID 1000 secret
+mounts. Staging secret provisioning, connector token creation, database
+bootstrap and the `staging-console` dashboard route remain separate approvals.
+
+## Prior continuation: customer-service goldens (2026-10-22)
 
 PR #8 merged as `b2dc7a2695a349bd94ed6a75b76fa479473fe95e`. PR CI
 39719424850, branch CI 39719295898 and post-merge main CI 39725222410 passed,

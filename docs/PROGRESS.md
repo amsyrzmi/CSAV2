@@ -1,5 +1,15 @@
 # Progress
 
+Staging connector probe (2026-10-22): PR #9 merged as `97c9172` (PR CI
+39730060082 and branch CI 39730054197 passed). The user resumed the staging
+lane. The dedicated connector candidate
+`cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1...ff39` runs as UID 65532
+with no root entrypoint; offline `--network none` probes with a fake token file
+showed `65532:65532` `0400` is readable while UID-1000-owned `0400` is denied.
+No connector, real token, tunnel, DNS, dashboard, Caddy or service change. See
+[RELEASE.md](../deploy/RELEASE.md#dedicated-connector-image-and-token-file-probe-2026-10-22)
+and the [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+
 Customer-service routing/grounding/handoff goldens (2026-10-22): PR #8 merged
 as `b2dc7a2`; PR CI 39719424850, branch CI 39719295898 and post-merge main
 CI 39725222410 passed (freshly checked). Local main was fast-forwarded without
