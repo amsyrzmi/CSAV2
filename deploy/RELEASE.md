@@ -241,7 +241,7 @@ route each still require separate approval.
 
 ### Dedicated connector image and token-file probe (2026-10-22)
 
-Selected candidate (not yet added to any Compose file):
+Selected candidate (not yet added to a Compose file at the time of this probe):
 `cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39`
 (multi-platform index; amd64 manifest
 `sha256:c3f24df7c5e68c1467afc5486c155689f247eb02246b3a124fc5f42458728672`).
@@ -284,14 +284,55 @@ application services were not touched. No real token was created or used, and
 nothing contacted Cloudflare. This establishes the image identity and file
 permissions only, not tunnel connectivity, edge routing or access policy.
 
-[compose.staging-proposal.yml](./compose.staging-proposal.yml) is an inert proposal:
+[compose.staging-proposal.yml](./compose.staging-proposal.yml) is the original
+inert proposal:
 all services are behind explicit approval profiles. It has **no published ports**,
 no external network, no reference to the old `csa-platform` database and no
-cloudflared attachment. `gateway:8080` is a container-only port, not host 8080.
+cloudflared attachment. The separate local variant is updated below.
+`gateway:8080` is a container-only port, not host 8080.
 A separate `staging-db` owns database `csa_staging`, its own volume and synthetic
 fixtures. Internal networking deliberately prevents provider access. There are
 no worker/delivery/KB consumers in this proposal, so queued jobs/chat do not
 constitute working end-to-end acceptance. No provider keys/tokens are provisioned.
+
+### Dedicated connector in local staging Compose (configuration-only, 2026-10-22)
+
+The separate inert [compose.staging-local-proposal.yml](./compose.staging-local-proposal.yml)
+now declares the reviewed Cloudflare image by full digest, behind the existing
+`staging-approved` profile. It runs as `65532:65532`, read-only, with all
+capabilities dropped and `no-new-privileges`; no host port, host network,
+privileged mode or Docker socket is configured. It joins only the internal
+frontend `edge` network and its own project-scoped `connector-egress` bridge.
+Only `cloudflared` joins the outbound network; the gateway, frontend, database
+and migration service do not.
+
+The connector alone receives `staging_tunnel_token` from
+`${CSA_STAGING_SECRET_DIR}/connector/staging_tunnel_token` and uses
+`TUNNEL_TOKEN_FILE=/run/secrets/staging_tunnel_token`. No token value is in the
+Compose definition. Any future secret file must be owned by `65532:65532` with
+mode `0400`, under a host secret directory restricted to its operator (for
+example mode `0700`). Compose file secrets are host bind mounts: do not rely on
+Compose `uid`, `gid` or `mode` settings to remap their host ownership. No real
+secret file was created or provisioned by this configuration change.
+
+`NO_LOCAL_ENV=1 ENV=ci /home/amsyrzmi/CSAV2/.venv/bin/python -m pytest tests/test_staging_compose.py -q`
+passed **7 tests in 0.59 s**. It verifies the pinned image, profile, network
+isolation, non-root/read-only hardening, connector-only file-secret grant,
+token-file path, absent host ports/external networks and non-rendering of
+synthetic secret contents. It uses `docker compose config` only; no Compose
+`up`, service or container is run. Full `NO_LOCAL_ENV=1 ENV=ci
+UV_PROJECT_ENVIRONMENT=/home/amsyrzmi/CSAV2/.venv make lint` passed Ruff,
+formatting, Pyright and import-linter. Its first run stopped only on formatting
+of a new test assertion; that formatting was corrected before the passing rerun.
+`git diff --check`, edited Markdown fence/added-link validation and a
+credential-shaped-content scan also passed.
+
+This is render/configuration evidence only—not runtime network egress,
+filesystem readability, tunnel authentication/connectivity, DNS, public ingress
+or staging readiness. The original staging proposal, shared connector and
+existing hostnames/routes remain unchanged. Artifact selection and UID-1000
+application-image secret-mount verification, staging secret provisioning,
+database bootstrap and route activation remain separate gates.
 
 Before any separately approved execution:
 

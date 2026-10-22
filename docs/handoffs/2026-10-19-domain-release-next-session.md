@@ -2,25 +2,60 @@
 
 ## Current continuation: staging lane resumed (2026-10-22)
 
-PR #9 merged as `97c917259a7d8f7efdf4aa65ce690c130ae52fcf`; its PR CI
-39730060082 and branch CI 39730054197 passed. The user then chose to resume the
-staging/CD lane ahead of subscription and voice work.
+PR #10 is merged as
+`9d6ed70bbb52344c80f65719f485731a5f380220`. Fresh `gh` verification shows PR #10
+merged, PR CI 39735335849 and branch CI 39735295259 successful, and post-merge
+main CI 39737788986 successful. The previous main worktree is left untouched:
+its only changes remain the two pre-existing review-document deletions.
 
-The dedicated connector image was reviewed and probed offline with a fake token
-file; see
-[RELEASE.md](../../deploy/RELEASE.md#dedicated-connector-image-and-token-file-probe-2026-10-22).
-Pinned candidate: `cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1...ff39`,
-runtime UID **65532** with no root entrypoint, so its token file must be
-`65532:65532` `0400`. No connector was added to Compose; no real token, tunnel,
-DNS, dashboard, Caddy or service change occurred.
+The bounded follow-up is implemented in the isolated worktree
+`/home/amsyrzmi/CSAV2-staging-cloudflare`, branch
+`feat/staging-cloudflare-connector`, starting at the PR #10 merge commit.
+Only the local staging Compose proposal, its existing synthetic configuration
+test, this release record, progress and this handoff are changed. The original
+external-secret proposal is unchanged. The branch remains unpublished: it has
+not been pushed and has no PR.
 
-Next bounded staging task (each step needs its own approval): add the pinned
-connector to the inert local-Compose variant on `edge` plus a connector-only
-outbound network with a file-backed `TUNNEL_TOKEN_FILE` secret, extend
-`tests/test_staging_compose.py` for its isolation and file-source rules, then
-select the current Python/frontend artifacts to verify their UID 1000 secret
-mounts. Staging secret provisioning, connector token creation, database
-bootstrap and the `staging-console` dashboard route remain separate approvals.
+The dedicated connector is now declared **only** in the inert local-Compose
+variant. It uses the full reviewed digest
+`cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39`,
+profile `staging-approved`, UID `65532:65532`, read-only filesystem, dropped
+capabilities and `no-new-privileges`. It joins only the existing internal
+frontend edge and a project-scoped connector-only outbound bridge. Its only
+secret grant is the file-backed
+`${CSA_STAGING_SECRET_DIR}/connector/staging_tunnel_token`, referenced through
+`TUNNEL_TOKEN_FILE=/run/secrets/staging_tunnel_token`. Any real file later needs
+owner `65532:65532`, mode `0400` and a restricted host parent directory; Compose
+bind-mount secret options do not remap host ownership. No real token was created.
+
+The existing staging configuration test was extended rather than replaced.
+Validation outcomes, failures and unrun checks are in the release contract's
+[configuration-only evidence](../../deploy/RELEASE.md#dedicated-connector-in-local-staging-compose-configuration-only-2026-10-22)
+and at the top of [PROGRESS.md](../PROGRESS.md). A passing Compose render is
+not runtime network, filesystem-readability, authentication, public-ingress or
+staging-readiness acceptance. No stack/container, tunnel, secret, DNS, route,
+dashboard, Caddy or infrastructure action occurred.
+
+Final focused command:
+`NO_LOCAL_ENV=1 ENV=ci /home/amsyrzmi/CSAV2/.venv/bin/python -m pytest tests/test_staging_compose.py -q`
+— **7 passed in 0.59 s**, no skips/deselections. Full
+`NO_LOCAL_ENV=1 ENV=ci UV_PROJECT_ENVIRONMENT=/home/amsyrzmi/CSAV2/.venv make lint`
+passed Ruff, formatting, Pyright and import-linter. Its first run found only a
+formatting issue in a new assertion; formatting was corrected and the complete
+lint rerun passed. `git diff --check`, edited Markdown fence/added-link checks,
+and a credential-shaped-content scan passed. A first Markdown-check invocation
+could not start because system `python` is unavailable; rerunning with the
+repository venv interpreter passed. Full pytest, runtime/container checks,
+database/reset checks and live acceptance were not run, as authorized scope is
+configuration-only. No CI has run for this unpushed branch; PR #10's PR, branch
+and merged-main CI runs were all freshly checked successful.
+
+Implementation is committed locally; any amend, push, or PR creation requires
+explicit user approval. The user performs the merge after full hosted CI passes.
+After review/merge, separately select current Python/frontend artifacts and
+verify their UID-1000 secret mounts. Real secret provisioning, database
+bootstrap and connector activation/hostname routing each remain later approved
+gates.
 
 ## Prior continuation: customer-service goldens (2026-10-22)
 

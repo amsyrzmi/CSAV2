@@ -1,5 +1,28 @@
 # Progress
 
+Staging connector configuration (2026-10-22): PR #10 merged as
+`9d6ed70bbb52344c80f65719f485731a5f380220`; PR, branch and post-merge main CI
+all passed (main run 39737788986, freshly checked). In a new isolated worktree
+at that merge, the local staging Compose proposal now includes the reviewed,
+digest-pinned Cloudflare connector. It is profile-gated, non-root/read-only,
+uses its own file-backed token secret, and joins only the frontend edge plus a
+connector-only outbound network. No real secret, container/service, tunnel,
+DNS, route, Caddy or infrastructure change occurred.
+
+The existing `tests/test_staging_compose.py` now checks exact image/profile,
+network and secret isolation, `TUNNEL_TOKEN_FILE`, hardening, no host ports or
+external networks, and synthetic contents absent from rendered Compose.
+The focused configuration tests passed **7 tests in 0.59 s**; full repository
+lint, type and import checks passed after one corrected formatter-only issue.
+`git diff --check`, edited Markdown fence/added-link validation and a
+credential-shaped-content scan passed.
+Validation outcomes and limitations are recorded in the
+[release contract](../deploy/RELEASE.md#dedicated-connector-in-local-staging-compose-configuration-only-2026-10-22)
+and [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+Compose rendering does not prove runtime networking, UID-65532 file access,
+tunnel authentication, public ingress or staging readiness. Full hosted CI
+remains the merge gate; this branch remains unpublished with no push or PR.
+
 Staging connector probe (2026-10-22): PR #9 merged as `97c9172` (PR CI
 39730060082 and branch CI 39730054197 passed). The user resumed the staging
 lane. The dedicated connector candidate
