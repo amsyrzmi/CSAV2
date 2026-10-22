@@ -1,0 +1,35 @@
+{
+  "id": "cs_kb_policy_tenant_grounding",
+  "matrix": "Customer service: tenant policy retrieval and grounded answer",
+  "description": "Real KB SQL retrieves the current tenant article, never a foreign tenant policy; cassette review rejects invented business terms.",
+  "seed": {
+    "knowledge": [
+      {"title": "Synthetic returns", "content": "Unopened products may be returned within seven days."},
+      {"title": "Foreign private policy", "content": "FOREIGN-POLICY-SECRET refunds allow ninety days.", "other_tenant": true}
+    ]
+  },
+  "turns": [{
+    "say": "What is the return policy?",
+    "cassette": {
+      "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"kb_agent": 0.95}},
+      "PlanOut": {"tasks": [{"agent": "kb_agent", "input": {"action": "query", "query": "Unopened products may be returned within seven days.", "threshold": 0.8}}], "reply_strategy": "auto_reply"},
+      "StepOut": {"done": true},
+      "ComposeOut": [
+        {"reply": "Unopened products may be returned within seven days with free return shipping."},
+        {"reply": "Unopened products may be returned within seven days."}
+      ],
+      "ReviewOut": [
+        {"ok": false, "issues": ["Free return shipping is not supported by the retrieved policy."]},
+        {"ok": true}
+      ]
+    },
+    "expect": {
+      "route": "plan_args", "agents": ["kb_agent"], "gate": "send", "outbound_count": 1,
+      "reply_contains": ["within seven days"], "reply_excludes": ["free return shipping", "FOREIGN-POLICY-SECRET", "ninety"],
+      "compose_sees": ["Unopened products may be returned within seven days.", "Free return shipping is not supported"],
+      "model_never_sees": ["FOREIGN-POLICY-SECRET", "ninety days"],
+      "llm_calls": {"ComposeOut": 2, "ReviewOut": 2},
+      "agent_errors": [], "kb_gaps": 0, "escalations": 0
+    }
+  }]
+}

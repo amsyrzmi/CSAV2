@@ -17,6 +17,8 @@ from typing import Any, Literal, TypeVar
 
 import httpx
 import psycopg
+from csa.agents.kb.embedder import HASH_MODEL, _deterministic_embedding, vector_to_sql
+from csa.agents.kb.models import KbInput
 from csa.contracts.callbacks import CallbackCodec
 from csa.contracts.envelope import (
     Callback,
@@ -63,6 +65,13 @@ class Ticket(Strict):
     id: int
     subject: str
     status: str = "open"
+    other_contact: bool = False
+
+
+class KnowledgeArticle(Strict):
+    title: str
+    content: str
+    other_tenant: bool = False
 
 
 class Seed(Strict):
@@ -71,6 +80,7 @@ class Seed(Strict):
     orders: list[Order] = Field(default_factory=list)
     first_contact: bool = False
     tickets: list[Ticket] = Field(default_factory=list)
+    knowledge: list[KnowledgeArticle] = Field(default_factory=list)
 
 
 class Expect(Strict):
@@ -97,6 +107,8 @@ class Expect(Strict):
     ticket_events: dict[str, int] | None = None
     agent_errors: list[str] | None = None
     action_status: str | None = None
+    kb_gaps: int | None = None
+    human_muted: bool | None = None
 
 
 class Tap(Strict):
@@ -205,6 +217,15 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             (cid, f"golden-{case.id}-{cid.hex[:8]}", "Golden", Jsonb({"policy": case.seed.policy})),
         )
         conn.execute("SELECT public.seed_core_capabilities(%s)", (cid,))
+        if case.seed.knowledge:
+            conn.execute(
+                "INSERT INTO capability_registry(client_id,name,display_name,description,"
+                "pattern,risk_class,workflow_id,input_schema,timeout_ms,max_retries,"
+                "capability_kind,is_enabled,client_enabled) "
+                "VALUES (%s,'kb_agent','Knowledge base','Synthetic golden retrieval',"
+                "'python','low','python:kb_agent',%s,15000,1,'dispatched',true,true)",
+                (cid, Jsonb(KbInput.model_json_schema())),
+            )
         conn.execute(
             "INSERT INTO channel_credentials (id, client_id, channel, access_token) "
             "VALUES (%s, %s, 'telegram', %s)",
@@ -225,11 +246,20 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             (tenant.conversation_id, cid, tenant.contact_id, tenant.external_id),
         )
         other_contact_id = uuid.uuid4()
-        if any(order.other_contact for order in case.seed.orders):
+        other_conversation_id = uuid.uuid4()
+        if any(order.other_contact for order in case.seed.orders) or any(
+            ticket.other_contact for ticket in case.seed.tickets
+        ):
             conn.execute(
                 "INSERT INTO contacts (id,client_id,full_name) VALUES (%s,%s,'Other Contact')",
                 (other_contact_id, cid),
             )
+            if any(ticket.other_contact for ticket in case.seed.tickets):
+                conn.execute(
+                    "INSERT INTO conversations(id,client_id,contact_id,channel,channel_thread) "
+                    "VALUES (%s,%s,%s,'telegram',%s)",
+                    (other_conversation_id, cid, other_contact_id, str(other_contact_id.int)),
+                )
         for product in case.seed.products:
             conn.execute(
                 "INSERT INTO products (client_id, sku, name, price, stock_qty, description) "
@@ -274,10 +304,36 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
                 (
                     ticket.id,
                     cid,
-                    tenant.contact_id,
-                    tenant.conversation_id,
+                    other_contact_id if ticket.other_contact else tenant.contact_id,
+                    other_conversation_id if ticket.other_contact else tenant.conversation_id,
                     ticket.subject,
                     ticket.status,
+                ),
+            )
+        for article in case.seed.knowledge:
+            article_tenant = cid
+            if article.other_tenant:
+                article_tenant = uuid.uuid4()
+                conn.execute(
+                    "INSERT INTO clients(id,slug,name,platform_version) "
+                    "VALUES (%s,%s,'Foreign synthetic KB','lg08-golden')",
+                    (article_tenant, f"golden-kb-{article_tenant.hex}"),
+                )
+            document_id = uuid.uuid4()
+            conn.execute(
+                "INSERT INTO kb_documents(id,client_id,title,embed_model,chunk_count) "
+                "VALUES (%s,%s,%s,%s,1)",
+                (document_id, article_tenant, article.title, HASH_MODEL),
+            )
+            conn.execute(
+                "INSERT INTO kb_chunks(id,client_id,document_id,chunk_index,content,embedding) "
+                "VALUES (%s,%s,%s,0,%s,%s::vector)",
+                (
+                    uuid.uuid4(),
+                    article_tenant,
+                    document_id,
+                    article.content,
+                    vector_to_sql(_deterministic_embedding(article.content)),
                 ),
             )
     return tenant
@@ -361,6 +417,8 @@ class Observed(BaseModel):
     ticket_events: dict[str, int]
     agent_errors: list[str]
     action_status: str | None
+    kb_gaps: int
+    human_muted: bool
 
 
 def observe(
@@ -420,6 +478,15 @@ def observe(
             if action_id is not None
             else None
         )
+        gaps = conn.execute(
+            "SELECT count(*) FROM kb_gaps WHERE client_id=%s", (tenant.client_id,)
+        ).fetchone()
+        ownership = conn.execute(
+            "SELECT (owned_by='human_support' AND "
+            "(ai_muted_until IS NULL OR ai_muted_until>now())) IS TRUE "
+            "FROM conversations WHERE client_id=%s AND id=%s",
+            (tenant.client_id, tenant.conversation_id),
+        ).fetchone()
     route = next((s.get("route") for node, _, s in events if node == "route"), None)
     gate = next((s.get("decision") for node, _, s in events if node == "gate"), None)
     gate_reason = next((s.get("reason") for node, _, s in events if node == "gate"), None)
@@ -441,6 +508,8 @@ def observe(
         ticket_events=dict(ticket_events),
         agent_errors=[row[0] for row in agent_errors],
         action_status=action[0] if action else None,
+        kb_gaps=gaps[0] if gaps else 0,
+        human_muted=ownership[0] if ownership else False,
     )
 
 
@@ -462,6 +531,8 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
         "ticket_events",
         "agent_errors",
         "action_status",
+        "kb_gaps",
+        "human_muted",
     ):
         expected = getattr(expect, field)
         if expected is not None:
