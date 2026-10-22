@@ -124,6 +124,22 @@ browser; typed chat remains available.
 
 ## Acceptance before rollout
 
+The bounded directory/training browser scenario is maintained in
+[`test_packaged_hr_browser_acceptance`](../../tests/test_packaged_console.py).
+Run it with synthetic packaged services and disposable PostgreSQL only:
+
+```sh
+NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_packaged_console.py::test_packaged_hr_browser_acceptance -q
+```
+
+It exercises real JavaScript-enabled login, field grants, tenant/role/CSRF
+denial, training submission, manager confirmation, grant revocation and an
+explicit same-key retry after a committed request loses its acknowledgement.
+It verifies durable request, receipt, audit and confirmation rows. Browser
+egress outside the synthetic origin is blocked and asserted absent. This
+scenario neither uses nor validates microphones, external models, recruitment,
+attendance, payroll, public ingress or real client configuration.
+
 Coordinate the full suite and disposable-only reset test, validate approved
 configuration with synthetic data, then exercise actual session-based browser
 flows and the intended browser’s microphone support. Persistent migrations,
