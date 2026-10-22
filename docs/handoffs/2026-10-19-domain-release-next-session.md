@@ -1,6 +1,51 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging image publication workflow proposed (2026-10-22)
+## Current continuation: staging images published (2026-10-22)
+
+PR #13 merged as `b60cde5adca806a073b580a7fa80527e6344aaa4`; main CI
+39833976733 passed. The owner created environment `staging-images` with
+required reviewer `amsyrzmi` and deployment branch `main`, then dispatched and
+approved publish run 39838393620 (`ci_run_id=39754225130`). All steps passed;
+see the [publication record](../../deploy/RELEASE.md#first-publication-pr-11-merge-images-2026-10-22).
+
+Approved staging image references (source `7cdc1562a33bf3a33c4561e53d26263a6a08f731`):
+
+- `ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764`
+- `ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f`
+
+They match the identity-verified and mount-probed manifests. They are supplied
+at run time as `CSA_STAGING_PYTHON_IMAGE`/`CSA_STAGING_FRONTEND_IMAGE`, not
+committed. Package visibility was not read back (agent token lacks package
+access); expected private.
+
+**Next gates, each separately approved:** (1) staging-host GHCR pull
+credential, created and stored by the owner on the host, never pasted into chat
+or committed; (2) staging-only secret files under the absolute
+`CSA_STAGING_SECRET_DIR` layout and protected synthetic test identities; (3)
+isolated database bootstrap and migration; (4) application startup; (5)
+dedicated tunnel and staging hostname; (6) authenticated browser,
+tenant-isolation, ingress and recovery acceptance; (7) protected repeatable
+promotion. The staging proposal still has no worker, delivery or KB consumers;
+no end-to-end agent conversations or real provider delivery are claimed.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: main at or
+after b60cde5 (PR #13) plus the docs PR recording publish run 39838393620.
+Approved staging images (source 7cdc156):
+ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764
+ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f
+Next bounded task: plan, then request separate approval for, the staging-host
+GHCR pull credential and staging-only secret/test-identity provisioning, with
+exact owner-run commands, effects and cleanup. Never ask for secret values in
+chat. Later separate gates: isolated DB bootstrap, app startup, tunnel/hostname,
+browser/tenant/ingress/recovery acceptance, protected promotion. No
+worker/delivery/KB consumer is configured. Roadmap: Staging/CD -> subscription
+-> WhatsApp test-number demo -> interactive voice -> Google mailbox/calendar ->
+reporting/wallboards. Use isolated worktrees; preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. Ask before commit, push or PR; user merges.
+```
+
+## Prior continuation: staging image publication workflow proposed (2026-10-22)
 
 PR #12 (artifact identity, mount probes and registry lookup evidence) merged as
 `12c74dd23dde8d18800258c56cc22e4f190bae8d`; its push CI 39826917861 and PR CI
@@ -11,7 +56,7 @@ Branch `ci/staging-image-publication` (worktree
 `/home/amsyrzmi/CSAV2-staging-publish`) adds
 [publish-staging-images.yml](../../.github/workflows/publish-staging-images.yml),
 [test_publish_staging_images.py](../../tests/test_publish_staging_images.py) and
-the [workflow contract](../../deploy/RELEASE.md#staging-image-publication-workflow-proposed-not-yet-run).
+the [workflow contract](../../deploy/RELEASE.md#staging-image-publication-workflow).
 It is manual `workflow_dispatch` with one `ci_run_id`, gated by environment
 `staging-images`. It verifies a successful push-to-main `ci.yml` run on an
 ancestor of `main`, downloads that run's exact archive, verifies checksums,

@@ -68,7 +68,7 @@ Dirty-worktree local builds are **unreleased candidates**, even when labelled
 with HEAD for tooling validation. They must not be claimed as that clean commit.
 CI's clean checkout, tests and recorded digests supply release identity.
 
-### Staging image publication workflow (proposed, not yet run)
+### Staging image publication workflow
 
 [publish-staging-images.yml](../.github/workflows/publish-staging-images.yml)
 is the reviewed path from a CI review archive to an immutable registry
@@ -102,6 +102,42 @@ earlier artifact unless its manifest digest matches. Static tests and synthetic
 OCI-layout execution of the archive-verification block are in
 [test_publish_staging_images.py](../tests/test_publish_staging_images.py); no
 registry or GitHub call was made to produce that evidence.
+
+#### First publication: PR #11 merge images (2026-10-22)
+
+PR #13 merged the workflow as `b60cde5adca806a073b580a7fa80527e6344aaa4`;
+main CI 39833976733 passed. The owner created environment `staging-images`
+before dispatch, with required reviewer `amsyrzmi` and a single deployment
+branch policy `main` (read back through the environments API; self-review is
+not prevented, and the owner is the only collaborator).
+
+The owner dispatched run
+[39838393620](https://github.com/amsyrzmi/CSAV2/actions/runs/39838393620)
+from `main` (`b60cde5`) with `ci_run_id=39754225130`. It paused for the
+environment and was approved by `amsyrzmi`, then concluded `success` with every
+step passing. Its log shows the download of artifact `12414924895`
+(`csa-review-only-7cdc1562a33bf3a33c4561e53d26263a6a08f731`, 195,234,264
+bytes, expected digest
+`sha256:920ac9637341ef6ed38e7763a867a6d2cf6e5f3329c6cfb274c5f168d800cf91`),
+`skopeo` 1.13.3, the two recorded config blobs, and the registry-compare step
+running with these expected manifest digests, which it found equal:
+
+| Image | Registry reference |
+| --- | --- |
+| Python | `ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764` |
+| Frontend | `ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f` |
+
+Both are tagged `7cdc1562a33bf3a33c4561e53d26263a6a08f731` and equal the
+manifest digests already identity-verified and mount-probed above, so that
+evidence applies to these references. The workflow logged out of GHCR at the
+end. These references are the candidate values for `CSA_STAGING_PYTHON_IMAGE`
+and `CSA_STAGING_FRONTEND_IMAGE`; they are supplied at run time and are not
+committed into the Compose proposal.
+
+Not established: package visibility (expected private; not read back because
+the agent token lacks package-list access), staging-host pull credentials,
+any pull from the staging host, and every runtime gate. Nothing was deployed or
+started.
 
 ## Origin and route boundary
 
