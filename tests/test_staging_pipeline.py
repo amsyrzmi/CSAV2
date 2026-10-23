@@ -14,6 +14,7 @@ import httpx
 import psycopg
 import pytest
 from csa.core import crypto, db
+from psycopg.types.json import Jsonb
 from pydantic import SecretStr
 from scripts import staging_pipeline_key, staging_secrets, staging_test_bot
 
@@ -178,7 +179,7 @@ async def test_bot_binding_is_atomic_encrypted_and_cannot_move_tenants(
             conn.execute(
                 "INSERT INTO clients(id,slug,name,status,platform_version,config) "
                 "VALUES(%s,%s,%s,'pilot','langgraph',%s)",
-                (tenant_id, name, name, psycopg.types.json.Jsonb({"runtime": "langgraph"})),
+                (tenant_id, name, name, Jsonb({"runtime": "langgraph"})),
             )
     pool = db.build_pool(owner_dsn_for(pg_container), max_size=3)
     await pool.open(wait=True)
