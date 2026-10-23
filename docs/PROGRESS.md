@@ -1,5 +1,17 @@
 # Progress
 
+Staging images published (2026-10-22): PR #13 merged as `b60cde5` (main CI
+39833976733 passed). The owner created protected environment `staging-images`
+(required reviewer `amsyrzmi`, deployment branch `main`), dispatched publish run
+39838393620 for CI run 39754225130 and approved it; every step passed. GHCR now
+holds `ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764`
+and `ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f`,
+tagged with the full `7cdc156` SHA. Their digests equal the identity-verified,
+mount-probed artifact, so that evidence carries over. See the
+[publication record](../deploy/RELEASE.md#first-publication-pr-11-merge-images-2026-10-22).
+Nothing was deployed or started. Next gate: separately approved staging-host
+pull credential plus staging-only secrets and protected test identities.
+
 Staging image publication workflow (proposed, 2026-10-22): PR #12 merged as
 `12c74dd` (push CI 39826917861 and PR CI 39826987627 passed). Branch
 `ci/staging-image-publication` adds a manual, `staging-images`-environment-gated
@@ -10,7 +22,7 @@ synthetic OCI-layout tests pass locally; no dispatch, registry or GitHub API
 call was made. Next gates: workflow PR review/CI/merge, owner-created protected
 `staging-images` environment, then a separately approved dispatch of CI run
 39754225130 before its artifact expires 2026-10-29. See the
-[workflow contract](../deploy/RELEASE.md#staging-image-publication-workflow-proposed-not-yet-run)
+[workflow contract](../deploy/RELEASE.md#staging-image-publication-workflow)
 and [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
 
 Staging connector configuration and exact-image mount probes: PR #11 merged as
