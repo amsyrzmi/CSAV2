@@ -1,12 +1,66 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging secret provisioning tool (2026-10-23)
+## Current continuation: staging host images and secrets provisioned (2026-10-23)
+
+PR #15 merged as `88a6711173e81d358802cb23995e81c0839f1108`; main CI
+39882125951 passed. The owner ran the image-pull and secret-file gate on the
+staging host. The approved digests are present locally, and their revision and
+users match. `/srv/csa-staging/secrets` passes `staging_secrets check`. See the
+[host execution record](../../deploy/RELEASE.md#host-execution-2026-10-23).
+
+**Next bounded task (authorized local work):** write and test, without
+running, the isolated database bootstrap procedure for
+[compose.staging-local-proposal.yml](../../deploy/compose.staging-local-proposal.yml).
+It covers:
+
+1. starting only `staging-db` under `migration-approved`;
+2. applying the baseline from the approved Python image with the database
+   image's `psql`;
+3. running `migrate` with `CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging`;
+4. initializing the upload volume as `1000:1000` with a network-disabled
+   initializer that has only `CHOWN`;
+5. bootstrapping the first platform admin through `csa_identity` with
+   interactive `getpass`;
+6. verification and teardown, including volume deletion before any data
+   exists.
+
+The [disposable bootstrap rehearsal](../../deploy/RELEASE.md#disposable-bootstrap-and-storage-rehearsal)
+is the model. Running the procedure is a **separate approval**.
+
+Later gates, each separately approved:
+
+1. Application startup.
+2. Tunnel token (`65532:65532`) and staging hostname.
+3. Browser, tenant-isolation, ingress and recovery acceptance.
+4. Protected promotion.
+
+No worker, delivery or KB consumer is configured.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: the docs PR
+recording the staging host image pull and secret files (main at or after
+88a6711) and its CI. Host state: approved images pulled by digest
+(csa-python@sha256:f422...c764, csa-frontend@sha256:af62...3e4f, rev 7cdc156);
+/srv/csa-staging/secrets passes `python3 -m scripts.staging_secrets check`.
+Do not read secret values. Next: in an isolated worktree, write and test (no
+execution) the isolated DB bootstrap procedure for the local staging Compose
+proposal: staging-db only, baseline via the db image's psql, the approved
+migrate profile, upload volume chown init, interactive csa_identity admin
+bootstrap, verification and teardown. Ask before commit/push/PR. Running it,
+app startup, tunnel/hostname, acceptance and protected promotion are separate
+approvals. No worker/delivery/KB consumer. Roadmap: Staging/CD ->
+subscription -> WhatsApp test-number demo -> interactive voice -> Google
+mailbox/calendar -> reporting/wallboards. Preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. The user merges.
+```
+
+## Prior continuation: staging secret provisioning tool (2026-10-23)
 
 PR #14 merged as `f0a8d974b022730056ef7fd86e4d629be95940f8` (PR CI 39840472983,
 push CI 39840462467 passed). Branch `feat/staging-secret-provisioning`
 (worktree `/home/amsyrzmi/CSAV2-staging-published`) adds
 [staging_secrets.py](../../scripts/staging_secrets.py) and its synthetic tests,
-plus the [operator procedure](../../deploy/RELEASE.md#staging-host-image-pull-and-secret-files-operator-procedure-not-yet-run)
+plus the [operator procedure](../../deploy/RELEASE.md#staging-host-image-pull-and-secret-files)
 for the host image pull and secret files. Approved images are unchanged (see
 the publication record below).
 

@@ -139,7 +139,7 @@ the agent token lacks package-list access), staging-host pull credentials,
 any pull from the staging host, and every runtime gate. Nothing was deployed or
 started.
 
-### Staging host image pull and secret files (operator procedure, not yet run)
+### Staging host image pull and secret files
 
 Both steps run on the staging host by its operator. Neither starts a container,
 database or tunnel. Credentials and generated values must never be pasted into
@@ -196,6 +196,51 @@ temporary directories only and cover:
 They do not prove PostgreSQL accepts these credentials; that is established at
 the isolated database bootstrap gate. Protected console test identities are
 created only after migration, using the existing `csa_identity` bootstrap.
+
+#### Host execution (2026-10-23)
+
+PR #15 merged as `88a6711173e81d358802cb23995e81c0839f1108`; main CI 39882125951
+passed. The owner then ran the procedure on the staging host (`nexusserver`).
+
+**Image pull.**
+
+1. The owner logged in to GHCR as `amsyrzmi` with a classic token, using a
+   fresh `0700` `mktemp` `DOCKER_CONFIG` directory. Docker's unencrypted-storage
+   warning referred only to that temporary directory.
+2. Both images were pulled by digest. Docker reported each requested digest.
+3. The owner logged out (`Removing login credentials for ghcr.io`) and deleted
+   the temporary directory.
+4. A later metadata check found no `/tmp/csa-ghcr-*` directory.
+
+`docker image inspect` then showed:
+
+| Image | `RepoDigests` | Revision label | Config user |
+| --- | --- | --- | --- |
+| Python | `ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764` | `7cdc1562a33bf3a33c4561e53d26263a6a08f731` | `1000:1000` |
+| Frontend | `ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f` | `7cdc1562a33bf3a33c4561e53d26263a6a08f731` | `node` |
+
+Pull-token revocation: the owner confirmed that the temporary `read:packages` token was revoked after the pulls.
+
+**Secret files.**
+
+1. The owner created `/srv/csa-staging` with mode `0700`.
+2. From the clean `88a6711` checkout, the owner ran
+   `python3 -m scripts.staging_secrets create --secret-dir /srv/csa-staging/secrets`
+   as UID 1000. It listed the ten expected relative paths, each `(0400)`.
+3. A separate `check` printed `OK 10 staging secret files; values not displayed`
+   and exited 0.
+4. A later metadata-only listing (`stat`, no content read) showed every
+   directory as `0700` and every file as a regular `0400` file, all owned by
+   `amsyrzmi:amsyrzmi`. It found no `connector/` directory and nothing else
+   under `/srv/csa-staging`.
+
+No secret value was displayed, transmitted or committed. The files are
+unencrypted at rest. Any host backup of `/srv` would include them; that
+exposure has not been assessed.
+
+Not established: that PostgreSQL accepts these credentials; Compose secret
+mounts; the tunnel token; and any database, container, startup, network or
+ingress behaviour. Nothing was started.
 
 ## Origin and route boundary
 
