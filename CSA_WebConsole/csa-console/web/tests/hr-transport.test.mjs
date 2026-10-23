@@ -28,12 +28,16 @@ test("dictation requires local processing, emits text for review and aborts clea
   try {
     const stop = localDictation(text => { transcript = text; }, () => {}, assert.fail);
     assert.equal(starts, 1);
+    assert.equal(instances[0].lang, "en-MY");
     instances[0].onresult({ results: [[{ transcript: "Synthetic training request" }]] });
     assert.equal(transcript, "Synthetic training request");
     stop(); assert.equal(aborts, 1); assert.equal(instances[0].onresult, null);
+    const stopEnglish = localDictation(() => {}, () => {}, assert.fail, "en-US");
+    assert.equal(instances[1].lang, "en-US", "use the selected installed language pack");
+    stopEnglish();
     globalThis.window.SpeechRecognition = class { start() { starts++; } };
     assert.throws(() => localDictation(() => {}, () => {}, () => {}), /cannot require local/);
-    assert.equal(starts, 1, "never start a cloud-only recognizer");
+    assert.equal(starts, 2, "never start a cloud-only recognizer");
   } finally { globalThis.window = original; }
 });
 

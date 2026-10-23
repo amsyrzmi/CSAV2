@@ -1,5 +1,54 @@
 # Progress
 
+Recorded voice implementation (2026-10-24, local working tree): the sandbox now
+records bounded audio and submits it through the authenticated gateway to an
+explicit OpenAI-compatible transcription endpoint. Jobs are private to the exact
+user/tenant/conversation, with staged RLS, composite ownership FK, atomic audit,
+exact-key replay/conflict handling and durable failure/timeout states. Audio is
+held in memory; transcripts are reviewable drafts and never auto-submitted.
+The user selected Groq; only the nonsecret endpoint/model settings were updated
+in ignored `.env.local`, with exact-URL-bound reuse of the existing server key.
+See [voice configuration, retention and recovery limits](./CONSOLE_VOICE.md).
+Migration 0420 and gateway readiness are implemented; no persistent database
+migration, service restart, live provider call or production access occurred.
+This replaces the unavailable n8n-dependent recorded upload flow; continuous
+LiveKit conversation and Telegram transcription are still not implemented.
+Evidence: 22 focused voice/migration/readiness/contract tests passed (1 existing
+warning), including disposable reset. After audit/timeout changes, all 7 voice
+integration tests passed (1 existing warning); final Groq settings tests: 9 passed
+(9 existing warnings). Final isolated frontend transport/state tests, lint, types, build and trace checks
+passed. Full-suite validation remains incomplete; one lint run reported settings
+attribute errors while the Groq settings method was being added, and a fresh run
+against the settled source is in progress. That run then found an optional-key
+typing issue in the settings regression test; explicit non-None assertions now
+correct it, and validation has been restarted. The earlier full run
+predating this backend change ended with 2910 passed, 1 load failure and 6
+packaged-console setup errors. The missing Node PATH prerequisite was confirmed
+and the latest run has the installed runtime on PATH; no full-suite pass is claimed.
+A run started without Node was interrupted and superseded. Live microphone,
+multilingual/provider quality, scheduled transcript erasure and reload recovery
+remain unverified or absent as documented.
+
+Browser voice restoration (2026-10-24, local working tree): investigation found
+that the adopted sandbox replaced the copied recorder page; its legacy
+`/api/voice` upload path and LiveKit runtime remain deferred by the console
+migration plan. The current gateway also has no voice submission/callback route.
+The sandbox now exposes the existing browser-local speech adapter for explicit
+reviewable dictation and reply playback, with English US/UK/Malaysia language
+selection. These are text submissions through the existing authenticated sandbox
+contract. No server audio upload, LiveKit call, Telegram transcription, automatic
+send or continuous voice conversation is implemented by this patch.
+Microphone callbacks are detached and recognition aborted on conversation change
+or unmount; sending and conversation selection are disabled while listening.
+Speech errors remain visible. No environment file was read or changed.
+Validation: final isolated frontend transport/state tests, lint, types, build
+and trace checks passed; speech/transport tests passed (5 tests), including
+language selection. Repository Ruff/Pyright/import checks passed. The disposable
+reset test passed (1 test, 1 existing warning). The full backend suite was started
+and remains in progress; no full-suite pass is claimed. Live microphone and
+installed language-pack acceptance are not established.
+
+
 Customer-service routing/grounding/handoff goldens (2026-10-22): PR #8 merged
 as `b2dc7a2`; PR CI 39719424850, branch CI 39719295898 and post-merge main
 CI 39725222410 passed (freshly checked). Local main was fast-forwarded without

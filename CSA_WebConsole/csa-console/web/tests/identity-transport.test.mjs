@@ -472,3 +472,24 @@ test("lost upstream response becomes a proxy error; explicit upload retry keeps 
     await close(upstream);
   }
 });
+
+
+test("recorded audio preserves MIME, raw bytes, CSRF and same-origin credentials", async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push([path, init]);
+    if (path === "/console/v1/auth/csrf") return Response.json({ csrf_token: "synthetic-csrf" });
+    return Response.json({ status: "completed", transcript: "Synthetic draft" });
+  };
+  try {
+    const blob = new Blob(["synthetic-audio"], { type: "audio/webm;codecs=opus" });
+    await api("/console/v1/chat/conversations/synthetic/voice/synthetic", { method: "POST", body: blob });
+    assert.equal(calls.length, 2);
+    const [, init] = calls[1];
+    assert.equal(init.body, blob);
+    assert.equal(init.headers.get("Content-Type"), blob.type);
+    assert.equal(init.headers.get("X-CSRF-Token"), "synthetic-csrf");
+    assert.equal(init.credentials, "same-origin");
+  } finally { globalThis.fetch = original; }
+});

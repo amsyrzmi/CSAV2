@@ -22,7 +22,7 @@ PSQL := psql "$(DEV_OWNER_DSN)"
 
 DEV_GATEWAY_PORT ?= 18080
 
-.PHONY: db-image db-reset test coverage load-test lint run-dev run-gateway stop-gateway restart-gateway setup-dev-telegram up down
+.PHONY: db-image db-reset db-seed test coverage load-test lint run-dev run-gateway stop-gateway restart-gateway setup-dev-telegram up down
 CHANNEL_MODE ?= webhook
 export CHANNEL_MODE
 
@@ -45,13 +45,23 @@ db-reset:
 	CSA_RO_PASSWORD="$(DEV_RO_PASSWORD)" \
 	    uv run python -m scripts.migrate
 	@LG_SETUP_DATABASE_URL="$(DEV_OWNER_DSN)" uv run python -m scripts.lg_setup
-	@echo ">> applying seed data (empty in LG01)"
+	@echo ">> applying synthetic sandbox seed data"
 	@for f in db/seed/*.sql; do \
 	    [ -e "$$f" ] || continue; \
 	    echo ">> seed $$f"; \
 	    $(PSQL) -v ON_ERROR_STOP=1 < "$$f"; \
 	done
 	@echo ">> db-reset complete"
+
+## db-seed: apply repeatable synthetic tenants and scenarios to the isolated dev DB
+db-seed:
+	@MIGRATE_DATABASE_URL="$(DEV_OWNER_DSN)" uv run python -m scripts.verify_reset_target -- $(PSQL)
+	@for f in db/seed/*.sql; do \
+	    [ -e "$$f" ] || continue; \
+	    echo ">> seed $$f"; \
+	    $(PSQL) -v ON_ERROR_STOP=1 < "$$f"; \
+	done
+	@echo ">> db-seed complete"
 
 ## test: run the test suite (testcontainers spin their own PG; no dev DB needed)
 test:

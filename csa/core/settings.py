@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     GROQ_API_KEY: SecretStr
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     HR_ASSISTANT_ENABLED: bool = False
+    # Explicit opt-in; local/OpenAI-compatible transcription endpoint, never browser supplied.
+    VOICE_STT_ENDPOINT: HttpUrl | None = None
+    VOICE_STT_API_KEY: SecretStr | None = None
+    VOICE_STT_MODEL: str = "whisper-large-v3-turbo"
     GOOGLE_AI_API_KEY: SecretStr | None = None
     GOOGLE_AI_MODEL: str = "gemini-3.1-flash-lite"
     DEV_STAFF_CHAT_ID: str | None = None
@@ -137,6 +141,20 @@ class Settings(BaseSettings):
                 f"got {len(decoded)}"
             )
         return value
+
+    def voice_transcription_key(self) -> SecretStr | None:
+        if self.VOICE_STT_API_KEY is not None:
+            return self.VOICE_STT_API_KEY
+        if str(self.VOICE_STT_ENDPOINT) == "https://api.groq.com/openai/v1/audio/transcriptions":
+            return self.GROQ_API_KEY
+        return None
+
+    @model_validator(mode="after")
+    def _validate_voice(self) -> Settings:
+        if self.VOICE_STT_ENDPOINT is not None and self.ENV == "prod":
+            if self.VOICE_STT_ENDPOINT.scheme != "https":
+                raise ValueError("VOICE_STT_ENDPOINT in prod requires HTTPS")
+        return self
 
     @model_validator(mode="after")
     def _validate_kb_ingest(self) -> Settings:

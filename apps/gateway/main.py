@@ -49,7 +49,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0410"
+EXPECTED_SCHEMA_VERSION = "0420"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -132,6 +132,12 @@ def create_app() -> FastAPI:
         try:
             await pool.open(wait=True)
             app.state.pool = pool
+            app.state.voice_endpoint = (
+                str(settings.VOICE_STT_ENDPOINT) if settings.VOICE_STT_ENDPOINT else None
+            )
+            voice_key = settings.voice_transcription_key()
+            app.state.voice_api_key = voice_key.get_secret_value() if voice_key else None
+            app.state.voice_model = settings.VOICE_STT_MODEL
             app.state.telegram_ingress = TelegramIngress(pool)
             if identity_pool is not None:
                 await identity_pool.open(wait=True)

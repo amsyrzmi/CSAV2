@@ -77,3 +77,18 @@ def test_blank_optional_gemini_key_disables_fallback() -> None:
     s = _settings(GOOGLE_AI_API_KEY="")
     assert s.GOOGLE_AI_API_KEY is None
     assert s.GOOGLE_AI_MODEL == "gemini-3.1-flash-lite"
+
+
+def test_voice_key_is_bound_to_exact_groq_endpoint() -> None:
+    exact = "https://api.groq.com/openai/v1/audio/transcriptions"
+    key = _settings(VOICE_STT_ENDPOINT=exact).voice_transcription_key()
+    assert key is not None
+    assert key.get_secret_value() == _SECRET
+    for endpoint in ["https://speech.example.test/transcriptions", exact + "?extra=1", exact + "/"]:
+        assert _settings(VOICE_STT_ENDPOINT=endpoint).voice_transcription_key() is None
+    explicit = _settings(VOICE_STT_ENDPOINT=exact, VOICE_STT_API_KEY="synthetic-voice-key")
+    explicit_key = explicit.voice_transcription_key()
+    assert explicit_key is not None
+    assert explicit_key.get_secret_value() == "synthetic-voice-key"
+    with pytest.raises(ValidationError, match="requires HTTPS"):
+        _settings(ENV="prod", VOICE_STT_ENDPOINT="http://speech.example.test/transcriptions")

@@ -50,6 +50,8 @@ export async function api<T = unknown>(
   if (init.body instanceof FormData) {
     // The browser supplies the multipart boundary.
     headers.delete("Content-Type");
+  } else if (init.body instanceof Blob) {
+    headers.set("Content-Type", init.body.type || "application/octet-stream");
   } else if (init.body !== undefined) headers.set("Content-Type", "application/json");
   return decode<T>(
     await fetch(path, {

@@ -56,6 +56,18 @@ VALUES
         '2026-09-23 08:14:31.909552+00',
         '2026-09-23 08:14:31.909552+00',
         '2026-09-23 08:14:31.909552+00'
-    );
+    )
+ON CONFLICT (slug) DO UPDATE SET
+    name = EXCLUDED.name,
+    tier = EXCLUDED.tier,
+    status = EXCLUDED.status,
+    platform_version = EXCLUDED.platform_version,
+    timezone = EXCLUDED.timezone,
+    region = EXCLUDED.region,
+    config = EXCLUDED.config,
+    brand_name = EXCLUDED.brand_name,
+    languages = EXCLUDED.languages,
+    core_object = EXCLUDED.core_object,
+    updated_at = now();
 
 SELECT public.seed_core_capabilities(id) FROM public.clients WHERE slug LIKE 'sandbox-%';

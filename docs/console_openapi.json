@@ -6401,6 +6401,80 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VoiceConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_bytes": {
+            "default": 8388608,
+            "title": "Max Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "VoiceConfig",
+        "type": "object"
+      },
+      "VoiceJob": {
+        "additionalProperties": false,
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "processing",
+              "completed",
+              "failed",
+              "timeout",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript"
+          }
+        },
+        "required": [
+          "id",
+          "request_key",
+          "status"
+        ],
+        "title": "VoiceJob",
+        "type": "object"
+      },
       "WorkflowCommand": {
         "additionalProperties": false,
         "properties": {
@@ -8849,6 +8923,190 @@
           }
         },
         "summary": "Send"
+      }
+    },
+    "/console/v1/chat/conversations/{conversation_id}/voice/{key}": {
+      "get": {
+        "operationId": "status_console_v1_chat_conversations__conversation_id__voice__key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceJob"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Status"
+      },
+      "post": {
+        "operationId": "submit_console_v1_chat_conversations__conversation_id__voice__key__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceJob"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit"
+      }
+    },
+    "/console/v1/chat/voice": {
+      "get": {
+        "operationId": "config_console_v1_chat_voice_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Config"
       }
     },
     "/console/v1/events": {
