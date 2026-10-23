@@ -1,6 +1,52 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging host images and secrets provisioned (2026-10-23)
+## Current continuation: staging database bootstrap procedure (2026-10-23)
+
+Branch `feat/staging-db-bootstrap` (worktree `/home/amsyrzmi/CSAV2-staging-bootstrap`)
+is based on `2a4a037` (PR #16 merge). It adds:
+
+- the `uploads-init` and `admin-bootstrap` one-shot services in
+  [compose.staging-local-proposal.yml](../../deploy/compose.staging-local-proposal.yml);
+- render and gate-execution tests in
+  [test_staging_compose.py](../../tests/test_staging_compose.py);
+- the owner-run
+  [procedure](../../deploy/RELEASE.md#isolated-staging-database-bootstrap-operator-procedure-not-yet-run).
+
+The admin gate is inline YAML Python because the approved image `7cdc156`
+predates any new module. It delegates to the packaged
+`scripts.bootstrap_console_admin`. The relevant database, migration and
+identity sources are unchanged between `7cdc156` and `2a4a037`.
+
+Not run: the procedure itself, so there is no evidence about the database,
+containers, volumes or credential acceptance. Also unverified: whether
+`compose up` accepts the absent connector token file. The procedure stops if
+it does not, and never creates a placeholder.
+
+**Next gate (separate approval):** the owner runs steps 0–6 and reports
+outputs, never secret values or the admin password. Later gates, each
+separately approved:
+
+1. Application startup (`csa_app` acceptance).
+2. Tunnel token and staging hostname.
+3. Browser, tenant-isolation, ingress and recovery acceptance.
+4. Protected promotion.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: the PR from
+feat/staging-db-bootstrap (base 2a4a037) and its CI/merge. If merged, give
+the owner the exact deploy/RELEASE.md "Isolated staging database bootstrap"
+steps from a clean detached checkout of that merge, with the approved digests
+(python f422...c764, frontend af62...3e4f, rev 7cdc156) and secret dir
+/srv/csa-staging/secrets. Ask for approval and actual outputs; never ask for
+secret values or the admin password. Starting the gateway, frontend or
+connector, the tunnel/hostname, acceptance and protected promotion are later
+separate approvals. No worker/delivery/KB consumer. Roadmap: Staging/CD ->
+subscription -> WhatsApp test-number demo -> interactive voice -> Google
+mailbox/calendar -> reporting/wallboards. Preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. The user merges.
+```
+
+## Prior continuation: staging host images and secrets provisioned (2026-10-23)
 
 PR #15 merged as `88a6711173e81d358802cb23995e81c0839f1108`; main CI
 39882125951 passed. The owner ran the image-pull and secret-file gate on the

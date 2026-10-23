@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,8 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
             "staging-approved",
             "--profile",
             "migration-approved",
+            "--profile",
+            "admin-bootstrap-approved",
             "config",
             "--format",
             "json",
@@ -82,6 +85,8 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
         "frontend",
         "cloudflared",
         "migrate",
+        "uploads-init",
+        "admin-bootstrap",
     }
     assert {
         service_name: set(service["profiles"])
@@ -92,6 +97,8 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
         "frontend": {"staging-approved"},
         "cloudflared": {"staging-approved"},
         "migrate": {"migration-approved"},
+        "uploads-init": {"migration-approved"},
+        "admin-bootstrap": {"admin-bootstrap-approved"},
     }
     assert all(service["profiles"] for service in rendered["services"].values())
     assert all("ports" not in service for service in rendered["services"].values())
@@ -101,6 +108,10 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
     connector = rendered["services"]["cloudflared"]
     assert set(connector["networks"]) == {"edge", "connector-egress"}
     assert set(rendered["services"]["migrate"]["networks"]) == {"data"}
+    assert set(rendered["services"]["admin-bootstrap"]["networks"]) == {"data"}
+    uploads_init = rendered["services"]["uploads-init"]
+    assert uploads_init["network_mode"] == "none"
+    assert "networks" not in uploads_init
     assert set(rendered["networks"]) == {"data", "app", "edge", "connector-egress"}
     assert all(
         network["internal"]
@@ -112,7 +123,7 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
     assert {
         service_name
         for service_name, service in rendered["services"].items()
-        if "connector-egress" in service["networks"]
+        if "connector-egress" in service.get("networks", {})
     } == {"cloudflared"}
     assert all(not network.get("external", False) for network in rendered["networks"].values())
     assert "secrets" not in rendered["services"]["frontend"]
@@ -154,6 +165,8 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
             "staging_ro_password",
             "staging_identity_password",
         },
+        "uploads-init": set(),
+        "admin-bootstrap": {"staging_identity_dsn"},
     }
     assert all(
         "staging_tunnel_token" not in service_grants
@@ -169,6 +182,130 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
     assert connector_secret_file == str(secrets_dir / "connector/staging_tunnel_token")
     assert stat.S_IMODE((secrets_dir / "connector").stat().st_mode) == 0o700
     assert SYNTHETIC_VALUE not in result.stdout
+
+    assert uploads_init["image"] == _compose_env(secrets_dir)["CSA_STAGING_PYTHON_IMAGE"]
+    assert uploads_init["user"] == "0:0"
+    assert uploads_init["read_only"] is True
+    assert uploads_init["cap_drop"] == ["ALL"]
+    assert uploads_init["cap_add"] == ["CHOWN"]
+    assert uploads_init["security_opt"] == ["no-new-privileges:true"]
+    assert uploads_init["entrypoint"] == ["chown", "1000:1000", "/var/lib/csa/uploads"]
+    assert [volume["source"] for volume in uploads_init["volumes"]] == ["staging-uploads"]
+    assert uploads_init["healthcheck"]["disable"] is True
+    assert "depends_on" not in uploads_init
+
+    admin = rendered["services"]["admin-bootstrap"]
+    assert admin["user"] == "1000:1000"
+    assert admin["read_only"] is True
+    assert admin["cap_drop"] == ["ALL"]
+    assert admin["entrypoint"][:2] == ["python", "-c"]
+    assert 'run_module("scripts.bootstrap_console_admin"' in admin["entrypoint"][2]
+    assert admin["environment"]["CSA_IDENTITY_DSN_FILE"] == "/run/secrets/IDENTITY_DATABASE_URL"
+    assert admin["secrets"] == [
+        {"source": "staging_identity_dsn", "target": "IDENTITY_DATABASE_URL"}
+    ]
+    assert admin["environment"]["CSA_ADMIN_BOOTSTRAP_APPROVAL"] == "disabled"
+    assert rendered["services"]["migrate"]["environment"]["CSA_MIGRATION_APPROVAL"] == "disabled"
+    assert not admin.get("volumes")
+
+
+def _render_admin_gate(tmp_path: Path) -> str:
+    secrets_dir = tmp_path / "synthetic-staging-secrets"
+    secrets_dir.mkdir(mode=0o700)
+    _make_synthetic_secrets(secrets_dir)
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--file",
+            str(COMPOSE_FILE),
+            "--profile",
+            "admin-bootstrap-approved",
+            "config",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_compose_env(secrets_dir),
+    )
+    entrypoint = json.loads(result.stdout)["services"]["admin-bootstrap"]["entrypoint"]
+    assert entrypoint[:2] == ["python", "-c"]
+    return entrypoint[2]
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
+@pytest.mark.parametrize(
+    ("approval", "dsn", "delegated"),
+    [
+        (
+            "approved-isolated-staging",
+            "postgresql://csa_identity@staging-db:5432/csa_staging",
+            True,
+        ),
+        ("approved-isolated-staging", "postgres://csa_identity@staging-db/csa_staging", True),
+        (None, "postgresql://csa_identity@staging-db/csa_staging", False),
+        ("disabled", "postgresql://csa_identity@staging-db/csa_staging", False),
+        ("approved-isolated-staging", "postgresql://csa@staging-db/csa_staging", False),
+        ("approved-isolated-staging", "postgresql://csa_app@staging-db/csa_staging", False),
+        ("approved-isolated-staging", "postgresql://csa_identity@postgres/csa_staging", False),
+        ("approved-isolated-staging", "postgresql://csa_identity@staging-db/csa", False),
+        (
+            "approved-isolated-staging",
+            "postgresql://csa_identity@staging-db:5434/csa_staging",
+            False,
+        ),
+        (
+            "approved-isolated-staging",
+            "postgresql://csa_identity@staging-db/csa_staging?host=postgres",
+            False,
+        ),
+    ],
+)
+def test_admin_bootstrap_gate_requires_approval_and_identity_target(
+    tmp_path: Path, approval: str | None, dsn: str, *, delegated: bool
+) -> None:
+    code = _render_admin_gate(tmp_path)
+    # A stub stands in for the packaged module; it records what it would receive.
+    stub_root = tmp_path / "stub"
+    (stub_root / "scripts").mkdir(parents=True)
+    (stub_root / "scripts" / "__init__.py").write_text("")
+    record = tmp_path / "delegated.json"
+    (stub_root / "scripts" / "bootstrap_console_admin.py").write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['STUB_RECORD']).write_text(json.dumps("
+        "[os.environ['IDENTITY_DATABASE_URL'], sys.argv[1:]]))\n"
+    )
+    dsn_file = tmp_path / "IDENTITY_DATABASE_URL"
+    dsn_file.write_text(dsn + "\n")
+    env = {
+        "PATH": os.defpath,
+        "CSA_IDENTITY_DSN_FILE": str(dsn_file if approval else tmp_path / "absent"),
+        "STUB_RECORD": str(record),
+    }
+    if approval is not None:
+        env["CSA_ADMIN_BOOTSTRAP_APPROVAL"] = approval
+    args = ["--email", "admin@example.test", "--create-first-platform-admin"]
+    result = subprocess.run(
+        [sys.executable, "-E", "-s", "-c", code, *args],
+        cwd=stub_root,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert "staging-db" not in result.stdout + result.stderr
+    if delegated:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(record.read_text()) == [dsn, args]
+    else:
+        assert result.returncode != 0
+        assert not record.exists()
+        expected = "approval required" if approval != "approved-isolated-staging" else "target"
+        assert expected in result.stderr
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,24 @@
 # Progress
 
+Staging database bootstrap procedure (proposed, not run, 2026-10-23): PR #16
+merged as `2a4a037`. Branch `feat/staging-db-bootstrap` adds two one-shot
+services to the
+[local staging proposal](../deploy/compose.staging-local-proposal.yml):
+
+- `uploads-init`: root, `CHOWN` only, no network or secrets.
+- `admin-bootstrap`: its own approval profile, `data` network only, and only
+  the `csa_identity` DSN. An inline gate checks the approval and the exact
+  target, then delegates to the packaged admin bootstrap. It is inline because
+  the approved `7cdc156` image predates it.
+
+The branch also adds the exact owner-run procedure for database start, baseline,
+migration, upload ownership, first admin, stop and teardown, with expected
+outputs, in [RELEASE.md](../deploy/RELEASE.md#isolated-staging-database-bootstrap-operator-procedure-not-yet-run).
+
+Evidence: synthetic Compose renders, plus execution of the rendered gate code
+against a stub. No container, database or volume was started or created.
+Next: after review and merge, separately approve the owner-run procedure.
+
 Staging host images and secret files provisioned (2026-10-23): PR #15
 merged as `88a6711` (main CI 39882125951 passed). On the staging host, the
 owner pulled both approved images by digest using a temporary `DOCKER_CONFIG`
