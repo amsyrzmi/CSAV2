@@ -1,6 +1,75 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: consolidated ingress readiness (2026-10-23)
+## Current continuation: public login demo review (2026-10-23)
+
+Read repository guidance, current PROGRESS and
+[STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md) first. Branch
+`docs/staging-public-demo`, worktree `/home/amsyrzmi/CSAV2-staging-public-demo`,
+is based on PR #21 merge `05b429ec0856694de87dfb02bbd7ca74cbbf27bd`
+(main CI `39951244406` passed). Verify publication state.
+
+The owner selected Internet-reachable login without Access; only the owner
+signs in to present the demo. No signup, visitor accounts or shared admin
+credentials. The exposure revision documents source safeguards and keeps
+public proxy/abuse protection as acceptance gates, not assumed facts.
+Runtime, Compose and database contracts are unchanged.
+
+Owner-reported discoveries: zone Active, existing wildcard DNS, empty Access
+application list, no dedicated staging tunnel. Owner added staging to the
+shared tunnel, got 502, then separately approved/removal reported for only
+that route; both landing-page routes remained and no explicit staging DNS
+record was listed. No independent account/DNS verification performed. Never
+copy full DNS/account links or personal identifiers into this handoff. Do not
+reuse the failed shared-tunnel route, change Caddy or attach shared networks.
+
+Source review of accepted-image auth/identity/security and identity SQL found
+no changes from `7cdc156` to this base. App throttling is database-backed with
+email/IP buckets; CSRF and secure session/forced password-change controls exist.
+Effective per-IP behaviour behind proxy and aggregate abuse protection are
+not verified. Check plan-available exact-host edge controls, record limits and
+compatibility, and stop before publication if protection is unresolved. No
+account-wide WAF rule, paid plan, external probe or configuration is authorized.
+
+Last known staging state remains three stopped services and both volumes
+retained; initial password change has not been accepted. No tunnel, token,
+restart or replacement DNS/route is approved. Infrastructure preparation may
+be separately approved, but routing awaits safeguards and explicit exposure
+approval. After publication of this revision, next is owner-guided read-only
+inspection of available exact-host abuse controls, without saving changes.
+Batch local preparation/evidence, not a PR per dashboard click.
+
+Local validation (`NO_LOCAL_ENV=1 ENV=ci`): staging Compose, identity
+configuration, gateway identity lifecycle and password/security checks:
+**48 passed, 12 warnings in 44.84 seconds**, no skips. Warnings report the
+absent `/run/secrets` directory in identity configuration tests; no secret
+directory was read or created. These are non-starting/synthetic checks, not
+database-backed session-throttle, real cookie/proxy or public-browser tests.
+Accepted auth/identity/security/identity-SQL source comparison is unchanged.
+Whitespace, fences in four changed Markdown files and five updated local
+links/anchors pass. Added-content credential-pattern check found no matches;
+no untracked files. This is not Gitleaks; full hosted CI/Gitleaks remains
+required. No runtime suite, container, persistent database access or reset
+was used for this documentation-only change.
+
+```text
+Continue CSA roadmap: Staging/CD, subscription, WhatsApp test-number demo,
+interactive voice, Google mailbox/calendar, reporting/wallboards.
+Read AGENTS.md, current PROGRESS/handoff and deploy/STAGING_INGRESS.md.
+Verify docs/staging-public-demo publication; base 05b429ec, main CI
+39951244406 passed. Owner wants public login page, only owner signs in;
+no Access/signup/visitor credentials. Shared-tunnel staging route produced
+502 and was removed with approval; landing pages/wildcard intact, no exact
+staging DNS record, no dedicated tunnel, Access list empty (owner reports).
+Next: review plan-available exact-host abuse controls read-only and resolve
+proxy/throttle/publication gates. No account changes, probes, tunnel/token,
+restart, route/DNS/Caddy/shared connector changes without separate approval.
+Three services stopped, both volumes retained. Never repeat bootstrap,
+delete volumes, inspect secrets or enable provider/worker/delivery/KB traffic.
+Ask before commit/push/PR; user merges after full hosted CI. Batch evidence.
+Preserve main's two existing review deletions and other worktrees.
+```
+
+## Prior continuation: consolidated ingress readiness (2026-10-23)
 
 Start with repository guidance, latest PROGRESS,
 [STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md), the pinned local

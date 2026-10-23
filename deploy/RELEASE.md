@@ -692,8 +692,10 @@ token provisioning, exact-host protection/routing, application restart,
 connector activation, browser/tenant acceptance, failure drills and
 non-destructive rollback. It also lists unresolved backup/restore and
 protected-CD prerequisites. It changes no runtime or Compose configuration.
-Current official Cloudflare guidance was checked directly; account/zone/
-hostname authority and exposure-policy decisions remain unresolved.
+Current official Cloudflare guidance was checked directly. The owner later
+selected a public login page with owner-only CSA login, without Access.
+The runbook records subsequent owner-reported authority/route findings and
+public-login safeguard hold points; public routing is not yet approved.
 
 The existing configuration tests additionally render the connector alone,
 verify no implicit dependencies, application-secret grants or host exposure,
@@ -703,6 +705,26 @@ acceptance result. Every infrastructure step remains separately approved.
 After approved execution, batch outcomes into one evidence update rather
 than opening a separate PR for each owner command. Full hosted CI remains
 required before merge; no status-only commits are needed.
+
+### Public demo exposure revision (not activated)
+
+The current [ingress runbook](STAGING_INGRESS.md) supersedes its original
+owner-only Access recommendation with the owner's selected public-login/
+owner-presented demo. Anonymous console access, signup, shared credentials,
+visitor accounts and provider delivery are not authorized. Review of unchanged
+accepted-image identity source found login throttling, CSRF/Origin checks,
+secure sessions and initial password change; public proxy/abuse behaviour is
+not accepted. Exact-host abuse-control selection and compatibility remain
+explicit public-routing hold points.
+
+The owner reported adding staging to the shared tunnel and receiving 502,
+then separately approved removal of only that staging route. The owner
+reported both landing-page routes retained, no explicit staging DNS record,
+the existing wildcard unchanged, the zone Active, no dedicated staging tunnel
+and an empty Access application list. These are reported findings, not
+assistant dashboard verification. No DNS values, dashboard links, personal
+identifiers or credentials are reproduced. The failed route is not a staging
+acceptance result; do not repeat it or change Caddy/shared connector.
 
 ## Origin and route boundary
 

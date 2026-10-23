@@ -1,5 +1,20 @@
 # Progress
 
+Public-login demo revision (proposed, not activated, 2026-10-23): PR #21
+merged as `05b429ec`; main CI `39951244406` passed. The owner selected a public
+login page with owner-only CSA login, no Access, signup or visitor credentials.
+The [ingress runbook](../deploy/STAGING_INGRESS.md) now records this choice,
+unchanged-source authentication safeguards and unresolved proxy/abuse-control
+publication gates. It also preserves the owner's shared-tunnel 502 and
+separately approved staging-route cleanup. No explicit staging DNS record,
+dedicated tunnel or Access application was reported; wildcard/company routes
+remain untouched. Three staging services were last reported stopped, volumes
+retained. No runtime/Compose changes or infrastructure operations in this slice.
+Current continuation:
+[public-login safeguards and remaining gates](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-public-login-demo-review-2026-10-23).
+Batch remaining local evidence; ask before publication and each infrastructure
+operation. Public routing remains blocked pending safeguard approval.
+
 Consolidated ingress readiness (proposed, not executed, 2026-10-23): PR #20
 merged as `df948b08`; main CI `39945835399` passed. Branch
 `feat/staging-ingress-readiness` prepares one
@@ -11,8 +26,8 @@ No tunnel/token, external account inspection, restart, DNS/Caddy or deployment
 operation was performed. Runtime steps remain separately approved; batch their
 outcomes into one evidence update. Protected executable CD follows live
 acceptance, not unproven procedure automation.
-Current continuation:
-[consolidated ingress readiness](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-consolidated-ingress-readiness-2026-10-23).
+Historical continuation at runbook proposal:
+[consolidated ingress readiness](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-consolidated-ingress-readiness-2026-10-23).
 
 Private staging readiness accepted and stopped (2026-10-23): PR #19 merged
 as `8ff63c29`; PR, branch and main CI passed (main `39935706204`).
