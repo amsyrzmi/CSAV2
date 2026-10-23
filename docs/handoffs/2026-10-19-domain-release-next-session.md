@@ -1,6 +1,54 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging images published (2026-10-22)
+## Current continuation: staging secret provisioning tool (2026-10-23)
+
+PR #14 merged as `f0a8d974b022730056ef7fd86e4d629be95940f8` (PR CI 39840472983,
+push CI 39840462467 passed). Branch `feat/staging-secret-provisioning`
+(worktree `/home/amsyrzmi/CSAV2-staging-published`) adds
+[staging_secrets.py](../../scripts/staging_secrets.py) and its synthetic tests,
+plus the [operator procedure](../../deploy/RELEASE.md#staging-host-image-pull-and-secret-files-operator-procedure-not-yet-run)
+for the host image pull and secret files. Approved images are unchanged (see
+the publication record below).
+
+**Next gate (separate approval, owner-run on the staging host):**
+
+1. Create a classic token with only `read:packages`.
+2. Pull both digests using a dedicated `0700` `DOCKER_CONFIG`.
+3. Log out, then revoke the token.
+4. Verify each image's `RepoDigests` and revision label.
+5. Run `staging_secrets create` and `check` into a new absolute directory owned
+   by UID 1000.
+6. Report only the tool's path/`OK` output, never values.
+
+Afterwards these gates still remain, each separately approved:
+
+1. Isolated database bootstrap, migration and `csa_identity` admin/test
+   identities.
+2. Application startup.
+3. Tunnel token (`65532:65532`) and staging hostname.
+4. Browser, tenant-isolation, ingress and recovery acceptance.
+5. Protected promotion.
+
+No worker, delivery or KB consumer is configured.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: whether the
+feat/staging-secret-provisioning PR merged and its CI. If merged, give the
+owner exact host commands (dedicated DOCKER_CONFIG, read:packages-only classic
+token entered at docker's hidden prompt, pulls by digest of
+ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764
+and ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f,
+logout, inspect RepoDigests/revision, then scripts.staging_secrets create and
+check) and ask for separate approval. Never request or display secret values.
+Later separate gates: isolated DB bootstrap/migration/identities, app startup,
+tunnel/hostname, browser/tenant/ingress/recovery acceptance, protected
+promotion. No worker/delivery/KB consumer. Roadmap: Staging/CD -> subscription
+-> WhatsApp test-number demo -> interactive voice -> Google mailbox/calendar ->
+reporting/wallboards. Isolated worktrees; preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. Ask before commit, push or PR; user merges.
+```
+
+## Prior continuation: staging images published (2026-10-22)
 
 PR #13 merged as `b60cde5adca806a073b580a7fa80527e6344aaa4`; main CI
 39833976733 passed. The owner created environment `staging-images` with

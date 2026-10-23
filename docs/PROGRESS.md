@@ -1,5 +1,19 @@
 # Progress
 
+Staging secret provisioning tool (proposed, 2026-10-23): PR #14 merged as
+`f0a8d97` (PR CI 39840472983 and push CI 39840462467 passed). Branch
+`feat/staging-secret-provisioning` adds
+[staging_secrets.py](../scripts/staging_secrets.py), which creates or checks the
+ten application secret files expected by the local staging Compose proposal.
+It never overwrites existing files, prints no values, and keeps DSNs and
+passwords consistent. The tunnel token is excluded. The branch also documents
+the host image-pull procedure (dedicated read-only token, digest pulls,
+logout). Synthetic tests use temporary directories only; no real secret, pull,
+container or database action occurred. Next gate: after merge, separate
+approval for the owner to pull the images and create the secret files on the
+staging host. See the
+[operator procedure](../deploy/RELEASE.md#staging-host-image-pull-and-secret-files-operator-procedure-not-yet-run).
+
 Staging images published (2026-10-22): PR #13 merged as `b60cde5` (main CI
 39833976733 passed). The owner created protected environment `staging-images`
 (required reviewer `amsyrzmi`, deployment branch `main`), dispatched publish run
