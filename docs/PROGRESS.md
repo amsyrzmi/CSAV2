@@ -1,5 +1,37 @@
 # Progress
 
+Staging seed prepared (2026-10-23, branch `feat/staging-seed`): the owner
+reversed the files-only rule and asked for the hosted staging console to be
+seeded with every role. [scripts/seed_staging.py](../scripts/seed_staging.py)
+onboards two synthetic tenants with the console onboarding SQL, creates
+tenant_admin/tenant_staff/read_only accounts by invite plus accept through
+`IdentityService` as the existing platform administrator (one-time passwords,
+forced change at first login, acceptance sessions revoked), assigns the HR owner
+through the HR bootstrap SQL, applies employees and role-appropriate grants
+through `public.hr_admin_apply` with canonical fingerprints, and inserts the
+synthetic retailer records from
+[db/sql/seed_staging/records.sql](../db/sql/seed_staging/records.sql).
+Guards mirror the staging migration: explicit approval, exact
+`staging-db/csa_staging` target, `csa` and `csa_identity` roles, advisory lock,
+idempotent re-runs. See [the seed runbook](../deploy/STAGING_SEED.md).
+Evidence: `tests/test_seed_staging.py` **12 passed** (two full seed runs on a
+disposable migrated Testcontainer; exact role, HR receipt and record counts),
+repository lint passed. Not seeded: KB documents/vectors, outbox, bot
+credentials, approvals, HR cases/leave/payroll data. The live staging run is a
+separate owner-approved step.
+
+Staging seed executed (2026-10-23, owner approved): one-off container on the
+accepted Python image, `csa-staging_data` network only, approval and exact
+target guards satisfied. Result: tenants `demo-meranti` and `demo-foreign`
+created, HR owner assigned, 11 HR operations recorded, 6 accounts created with
+one-time passwords handed to the owner privately, all forced to change password
+at first login, 0 open acceptance sessions. Counts: demo-meranti members 5,
+capabilities enabled 9, products 8, contacts 2, conversations 2, messages 3,
+orders 8, tickets 2, invoices 2, kb_gaps 2, hr_employees 3, hr_grants 18,
+hr_workflow_grants 22, hr_private_grants 4; demo-foreign members 1, products 1,
+contacts 1, conversations 1, messages 1, orders 1. Existing tenant and
+platform administrator untouched. No KB, outbox, bot, provider or worker change.
+
 Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
 repository runbook and Caddy snippet assumed a host-service connector reaching
 Caddy over loopback. Live inspection shows the shared connector is the
