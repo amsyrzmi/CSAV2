@@ -244,6 +244,11 @@ ingress behaviour. Nothing was started.
 
 ### Isolated staging database bootstrap (operator procedure, not yet run)
 
+The heading retains the original procedure/anchor. The owner subsequently ran
+steps 0-6; see the [execution record](#staging-bootstrap-host-execution-2026-10-23).
+Commands below using `stg` assume the shell function from step 0, not an
+installed executable. The recorded execution used explicit commands instead.
+
 This procedure initializes the isolated staging database, upload volume and
 first platform administrator. It never starts the gateway, frontend or
 connector, publishes no port, and joins no shared network. **Running it needs
@@ -443,6 +448,54 @@ Not established by this procedure:
 - HTTP uploads;
 - ingress;
 - backups.
+
+### Staging bootstrap host execution (2026-10-23)
+
+PR #17 merged as `a5eb450ae6fdcbff71c673abaedc3bd8abb8639e`.
+PR CI `39914864494`, branch CI `39914798398` and main CI `39917438918`
+passed. The owner ran the separately approved steps from the clean detached
+checkout at `/home/amsyrzmi/CSAV2-staging-run`, using the previously accepted
+Python image (source `7cdc156`, digest recorded above). This record describes
+owner-reported terminal results, not an independent query of staging data.
+
+| Step | Reported result | Evidence boundary |
+| --- | --- | --- |
+| Preflight | Secret checker passed; no staging containers/volumes; Compose rendered; baseline SHA-256 matched; migration inventory `31 0410` | Files/configuration and offline image checks, not runtime readiness |
+| Database startup | Only `csa-staging-staging-db-1`, `csa-staging_data` and `csa-staging_staging-db` were reported created; database healthy | Database process/healthcheck, not application readiness |
+| Baseline | Both checked relations absent (`t`); owner reported `baseline exit=0 0` | Baseline application, not migrations |
+| Migration/checkpoints | `migrate exit=0`; `31 0410`; `csa_app,csa_identity,csa_ro`; all three checkpoint tables present (`t`) | Owner DSN accepted over TCP; migration/role setup, not app-role login |
+| Upload initialization | Volume created; `uploads-init exit=0`; ownership `1000 1000` | Directory ownership only, not HTTP upload/ingestion |
+| First administrator | Creation succeeded; `admin-bootstrap exit=0`; forced-change admin count `1`; bootstrap audit count `1` | Identity DSN accepted; not browser login or password-change acceptance |
+| Stop | `status=exited`; both `csa-staging_staging-db` and `csa-staging_staging-uploads` listed | Stopped database with volumes retained; no destructive teardown |
+
+The initial `stg up`/`stg ps` attempts failed with `Unknown command`: the
+shell resolved `/usr/bin/stg` rather than the temporary Compose function.
+No staging resources existed after those failed attempts. Subsequent commands
+used `docker compose`/`docker exec` explicitly, with image pulls prohibited
+and automatic Compose environment-file loading disabled for startup/one-shots.
+Database-only startup succeeded without a connector token or placeholder.
+
+No administrator email, display name, identifier or password is recorded here.
+Secret contents were not requested or inspected by the assistant. The
+administrator must change the initial password at first login.
+
+The database volume now contains schema and a protected staging identity;
+the upload volume is initialized. Do not rerun baseline/first-admin bootstrap,
+regenerate secrets, or delete either volume as a routine next step.
+Persistent backup/restore remains unaccepted.
+
+**Next bounded slice:** review and validate a private gateway/frontend startup
+and readiness procedure against the accepted image identities, mounts and
+current source. Obtain separate approval before restarting the database or
+starting either application. Do not enable the connector implicitly by
+starting an entire profile. No host ports, shared networks, Caddy edits,
+tunnel activation, DNS changes or live provider delivery are authorized.
+
+Application-role credential acceptance, authenticated browser/password change,
+tenant isolation, public ingress and recovery acceptance remain open. The
+proposal has no worker, delivery or KB consumers and does not establish
+end-to-end agent conversations. Protected repeatable staging CD is not yet
+accepted; this is not a production deployment.
 
 ## Origin and route boundary
 
