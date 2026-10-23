@@ -42,7 +42,7 @@ services:
     secrets:
       - source: staging_domain_dsn
         target: DATABASE_URL
-      - source: staging_checkpoint_dsn
+      - source: staging_owner_dsn
         target: LG_DATABASE_URL
       - source: staging_credentials_key
         target: CREDENTIALS_KEY
@@ -71,7 +71,7 @@ services:
     secrets:
       - source: staging_domain_dsn
         target: DATABASE_URL
-      - source: staging_checkpoint_dsn
+      - source: staging_owner_dsn
         target: LG_DATABASE_URL
       - source: staging_credentials_key
         target: CREDENTIALS_KEY

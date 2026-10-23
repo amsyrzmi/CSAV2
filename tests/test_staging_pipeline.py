@@ -68,12 +68,17 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
         assert "data" in services[name]["networks"]
         targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
         assert targets["DATABASE_URL"] == "staging_domain_dsn"
-        assert targets["LG_DATABASE_URL"] == "staging_checkpoint_dsn"
         assert "provider-egress" in services[name]["networks"]
+    gateway_secrets = {s["target"]: s["source"] for s in services["gateway"]["secrets"]}
+    assert gateway_secrets["LG_DATABASE_URL"] == "staging_checkpoint_dsn"
+    # Queue claims run under RLS; only the owner role sees unscoped rows.
+    for name in ("worker", "delivery"):
+        targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
+        assert targets["LG_DATABASE_URL"] == "staging_owner_dsn"
     worker_secrets = {s["target"]: s["source"] for s in services["worker"]["secrets"]}
     assert worker_secrets["GROQ_API_KEY"] == "staging_model_key"
     assert "IDENTITY_DATABASE_URL" not in worker_secrets
-    assert "staging_owner_dsn" not in worker_secrets.values()
+    assert worker_secrets["DATABASE_URL"] != "staging_owner_dsn"
     for name in ("gateway", "worker"):
         env = services[name]["environment"]
         assert env["TEI_ENDPOINT"] == "http://staging-embeddings:8080"
