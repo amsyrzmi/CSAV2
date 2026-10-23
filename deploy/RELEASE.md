@@ -139,6 +139,64 @@ the agent token lacks package-list access), staging-host pull credentials,
 any pull from the staging host, and every runtime gate. Nothing was deployed or
 started.
 
+### Staging host image pull and secret files (operator procedure, not yet run)
+
+Both steps run on the staging host by its operator. Neither starts a container,
+database or tunnel. Credentials and generated values must never be pasted into
+chat, issues, logs or source.
+
+**Image pull.** GHCR accepts only a personal access token (classic) for package
+pulls. Use a dedicated token with only `read:packages` and a short expiry. Log in
+with a dedicated `DOCKER_CONFIG` directory (mode `0700`) so the operator's
+default Docker credentials and other services are untouched. Pull both images
+**by digest**, run `docker logout ghcr.io` with the same `DOCKER_CONFIG`, then
+revoke the token or let it expire. Compose does not pull an image that is
+already present, so no registry credential remains on the host for startup.
+Before relying on a pulled image, confirm that its `RepoDigests` contain the
+approved reference and that its revision label is the published source SHA.
+
+**Secret files.** Generate the application secrets with
+[staging_secrets.py](../scripts/staging_secrets.py):
+
+```sh
+python3 -m scripts.staging_secrets create --secret-dir /ABSOLUTE/csa-staging/secrets
+python3 -m scripts.staging_secrets check --secret-dir /ABSOLUTE/csa-staging/secrets
+```
+
+Run it as UID 1000, the Python containers' runtime user. It refuses a relative
+path, a path inside the checkout, an existing directory and any other UID. It
+writes a complete new directory atomically, then renames it into place. It
+creates these files:
+
+- **Passwords:** fresh 48-hex-character owner, `csa_app`, `csa_ro` and
+  `csa_identity` passwords.
+- **DSNs:** each consistent with its password and targeting
+  `staging-db:5432/csa_staging`. The owner DSN uses `csa`; the domain and
+  checkpoint DSNs use `csa_app`; the identity DSN uses `csa_identity`.
+- **Credentials key:** a `base64:` key of 32 random bytes.
+- **Model key:** a fixed, non-functional model-key placeholder.
+
+Every directory is `0700` and every file is `0400`, owned by UID 1000. The
+tool prints only relative paths, and `check` reports failures without values.
+The tunnel token (`connector/staging_tunnel_token`, `65532:65532`, `0400`) is
+excluded; it belongs to the separately approved tunnel gate.
+
+Synthetic evidence is in
+[test_staging_secrets.py](../tests/test_staging_secrets.py). Those tests use
+temporary directories only and cover:
+
+- layout parity with the Compose secret sources;
+- modes and ownership;
+- fresh, distinct values;
+- no values in output;
+- refusal cases;
+- tamper, symlink and loose-mode detection;
+- acceptance of the generated runtime values by the real `Settings` validation.
+
+They do not prove PostgreSQL accepts these credentials; that is established at
+the isolated database bootstrap gate. Protected console test identities are
+created only after migration, using the existing `csa_identity` bootstrap.
+
 ## Origin and route boundary
 
 `CSA_CONSOLE_API_ORIGIN` is a non-secret **server-only** bare HTTP(S) origin.
