@@ -418,7 +418,7 @@ def test_shared_caddy_overlay_exposes_only_loopback_frontend(
 
 
 @pytest.mark.skipif(shutil.which("caddy") is None, reason="Caddy CLI is unavailable")
-def test_staging_caddy_site_adapts_to_exact_host_and_loopback_only() -> None:
+def test_staging_caddy_site_adapts_to_exact_host_loopback_and_connector_only() -> None:
     result = subprocess.run(
         [
             "caddy",
@@ -440,7 +440,9 @@ def test_staging_caddy_site_adapts_to_exact_host_and_loopback_only() -> None:
     assert server["routes"][0]["match"] == [{"host": ["staging-console.fourstacks.my"]}]
     routes = server["routes"][0]["handle"][0]["routes"]
     assert len(routes) == 2
-    assert routes[0]["match"] == [{"not": [{"remote_ip": {"ranges": ["127.0.0.1", "::1"]}}]}]
+    assert routes[0]["match"] == [
+        {"not": [{"remote_ip": {"ranges": ["127.0.0.1", "::1", "172.22.0.2"]}}]}
+    ]
     assert routes[0]["handle"] == [{"handler": "static_response", "status_code": 403}]
     assert routes[1]["handle"] == [
         {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:18030"}]}
