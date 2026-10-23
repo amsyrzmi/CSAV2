@@ -209,6 +209,73 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
     assert not admin.get("volumes")
 
 
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
+def test_private_startup_selection_without_connector_secret(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "synthetic-staging-secrets"
+    secrets_dir.mkdir(mode=0o700)
+    _make_synthetic_secrets(secrets_dir)
+    (secrets_dir / "connector/staging_tunnel_token").unlink()
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "--project-name",
+            "csa-staging-synthetic",
+            "--file",
+            str(COMPOSE_FILE),
+            "--profile",
+            "staging-approved",
+            "config",
+            "--format",
+            "json",
+            "staging-db",
+            "gateway",
+            "frontend",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**_compose_env(secrets_dir), "COMPOSE_PROFILES": ""},
+    )
+    rendered = json.loads(result.stdout)
+    services = rendered["services"]
+    assert set(services) == {"staging-db", "gateway", "frontend"}
+    for name in ("gateway", "frontend"):
+        service = services[name]
+        assert (
+            service["image"]
+            == _compose_env(secrets_dir)[
+                f"CSA_STAGING_{'PYTHON' if name == 'gateway' else 'FRONTEND'}_IMAGE"
+            ]
+        )
+        assert service["user"] == "1000:1000"
+        assert service["read_only"] is True
+        assert service["cap_drop"] == ["ALL"]
+        assert service["security_opt"] == ["no-new-privileges:true"]
+        assert not service.get("ports")
+        assert not service.get("privileged", False)
+        assert "connector-egress" not in service["networks"]
+    gateway = services["gateway"]
+    assert gateway["environment"]["KB_INGEST_ENABLED"] == "false"
+    assert gateway["environment"]["NO_LOCAL_ENV"] == "1"
+    assert gateway["environment"]["ENV"] == "prod"
+    assert gateway["environment"]["CONSOLE_COOKIE_SECURE"] == "true"
+    assert gateway["depends_on"]["staging-db"]["condition"] == "service_healthy"
+    assert services["frontend"]["depends_on"]["gateway"]["condition"] == "service_healthy"
+    assert services["frontend"]["environment"]["CSA_CONSOLE_API_ORIGIN"] == "http://gateway:8080"
+    assert not services["frontend"].get("secrets")
+    assert {secret["target"] for secret in gateway["secrets"]} == {
+        "DATABASE_URL",
+        "LG_DATABASE_URL",
+        "IDENTITY_DATABASE_URL",
+        "CREDENTIALS_KEY",
+        "GROQ_API_KEY",
+    }
+    assert SYNTHETIC_VALUE not in result.stdout
+
+
 def _render_admin_gate(tmp_path: Path) -> str:
     secrets_dir = tmp_path / "synthetic-staging-secrets"
     secrets_dir.mkdir(mode=0o700)
