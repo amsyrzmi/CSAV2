@@ -20,6 +20,28 @@ acceptance are in [STAGING_PIPELINE.md](../deploy/STAGING_PIPELINE.md).
 Evidence: staging pipeline and Compose tests **50 passed**; no service, Caddy,
 tunnel, secret or database change was made in this slice.
 
+Staging pipeline activated (2026-10-23, owner approved): secrets provisioned
+by the owner from `.env.local` into `pipeline/` (model key, bot token); the
+embeddings-init one-shot, `staging-embeddings`, recreated `gateway`
+(`127.0.0.1:18031`, embeddings settings), `worker` and `delivery` all healthy.
+First attempt claimed nothing: the worker's LG pool used the app-role
+checkpoint secret and row-level security hid every unscoped queue row with no
+error; fixed by mounting `staging_owner_dsn` as `LG_DATABASE_URL` for worker
+and delivery only (as the development stack does). The owner promoted `joe`
+and `demo-meranti` to `pilot` (background jobs visit only pilot/active tenants)
+and switched both from `shadow` to `auto` deployment mode (shadow rejects
+every reply by design); both changes audited. Result: 3 KB jobs `done`
+(3 documents, 75 chunks, `multilingual-e5-small-fd1525a`), all queued sandbox
+turns `completed`, Groq `openai/gpt-oss-120b` answering in about 1.3 s per
+turn. Owner appended the hooks Caddy site and reloaded; local and public
+checks returned 404 (webhook path only). Owner added the `hooks.fourstacks.my`
+tunnel route. Bot bound to `demo-meranti` with encrypted token and fresh
+webhook secret; webhook registered. Live acceptance: Telegram "hello" at
+22:53:26Z → ingress `completed` → `gate_verdict send/auto risk=0.0` → outbound
+message → `outbound_deliveries` `delivered`, attempt HTTP 200 in 978 ms.
+Remaining: public auth/CSRF/logout/tenant acceptance matrix, backup/restore of
+staging volumes, connector-address stability, Groq spend monitoring.
+
 Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
 repository runbook and Caddy snippet assumed a host-service connector reaching
 Caddy over loopback. Live inspection shows the shared connector is the
