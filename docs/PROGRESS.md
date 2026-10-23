@@ -18,7 +18,19 @@ Evidence: `tests/test_seed_staging.py` **12 passed** (two full seed runs on a
 disposable migrated Testcontainer; exact role, HR receipt and record counts),
 repository lint passed. Not seeded: KB documents/vectors, outbox, bot
 credentials, approvals, HR cases/leave/payroll data. The live staging run is a
-separate owner-approved step and had not been executed when this was written.
+separate owner-approved step.
+
+Staging seed executed (2026-10-23, owner approved): one-off container on the
+accepted Python image, `csa-staging_data` network only, approval and exact
+target guards satisfied. Result: tenants `demo-meranti` and `demo-foreign`
+created, HR owner assigned, 11 HR operations recorded, 6 accounts created with
+one-time passwords handed to the owner privately, all forced to change password
+at first login, 0 open acceptance sessions. Counts: demo-meranti members 5,
+capabilities enabled 9, products 8, contacts 2, conversations 2, messages 3,
+orders 8, tickets 2, invoices 2, kb_gaps 2, hr_employees 3, hr_grants 18,
+hr_workflow_grants 22, hr_private_grants 4; demo-foreign members 1, products 1,
+contacts 1, conversations 1, messages 1, orders 1. Existing tenant and
+platform administrator untouched. No KB, outbox, bot, provider or worker change.
 
 Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
 repository runbook and Caddy snippet assumed a host-service connector reaching
