@@ -25,6 +25,20 @@ shared services to data networks or enable the unused dedicated connector.
 The configuration changes no existing landing-page route or Caddy block.
 Check port 18030 again before startup; it was unused during preparation.
 
+The overlay adds a normal, non-internal `frontend-host` bridge used only by
+frontend, alongside its existing internal app/edge networks. This permits the
+host-publishing topology and grants frontend outbound capability; it is not an
+egress restriction. Gateway/database must never join this bridge. The published
+port must remain loopback-only. The dedicated proposal is unchanged.
+
+**Execution hold (2026-10-23):** the first approved shared-mode startup on
+Docker 29.1.3 left all three services healthy but frontend unreachable from
+the host (curl exit 7, HTTP 000). Docker recorded the requested loopback port
+but actual port `3000/tcp` was null; both attached networks were internal.
+The frontend-only normal bridge is a proposed correction, not yet recreated
+or runtime-accepted. Do not proceed to Caddy/public routing based on a
+passing render. Services were left running privately with owner approval.
+
 Use the original [Compose proposal](compose.staging-local-proposal.yml)
 **plus** [shared-Caddy overlay](compose.staging-shared-caddy.yml). Compose
 2.24.4+ is required for `!override`: the connector's profile is replaced, not

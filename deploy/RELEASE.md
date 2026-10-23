@@ -755,6 +755,26 @@ full candidate validation, existing-site checks and scoped rollback before
 changing the shared service. Public-login abuse-control and proxy acceptance
 hold points remain unresolved; shared hosting does not waive them.
 
+#### Shared-mode startup failure and proposed network correction
+
+PR #22 merged as `a9a212f`; final branch `39970840315`, PR `39970848027`
+and merged-main `39970918017` CI passed. After separate approval, retained
+image identities and the redacting ten-file secret checker passed; startup
+made database/gateway/frontend healthy. However, host curl to port 18030
+failed (exit 7, HTTP 000). Docker 29.1.3 metadata showed the requested
+`127.0.0.1:18030:3000` binding but actual `3000/tcp: null`, with frontend
+attached only to internal app/edge networks. Synthetic render acceptance
+did not establish host publishing.
+
+The owner approved preparing a correction adding a normal frontend-only
+`frontend-host` bridge to the shared overlay. This intentionally gives
+frontend outbound capability, without publishing gateway/database or
+changing existing internal networks. The loopback-only binding remains.
+No live network attachment/recreation or runtime proof of the correction
+has occurred. All three services remain running privately, volumes retained;
+Caddy/DNS/tunnel remain untouched. Ask before commit/push/PR, then require
+full hosted CI and separate frontend recreation/probe approval.
+
 ## Origin and route boundary
 
 `CSA_CONSOLE_API_ORIGIN` is a non-secret **server-only** bare HTTP(S) origin.
