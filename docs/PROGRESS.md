@@ -1,5 +1,14 @@
 # Progress
 
+Shared-host publishing correction (local proposal, 2026-10-23): #22 merged
+as `a9a212f`; final branch/PR/main CI passed. Approved staging startup left
+all three services healthy but host access to 18030 failed (curl exit 7,
+HTTP 000). Requested Docker binding existed; actual binding was absent.
+Owner approved a frontend-only normal bridge correction and leaving services
+running privately. No Caddy/public route change or live correction applied.
+Current continuation:
+[host publishing correction](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-frontend-host-publishing-correction-2026-10-23).
+
 Shared-tunnel/Caddy hosting (proposed, not applied, 2026-10-23): owner selected
 the existing host cloudflared service and explicitly approved local preparation
 of a staging-only Caddy site and frontend loopback port. The
@@ -9,8 +18,8 @@ open #22, not an additional stacked PR. Original dedicated proposal unchanged.
 Database/gateway remain private; normal shared startup excludes dedicated
 connector. Host Caddy edits/reload, service startup, tunnel route and DNS still
 need separate approval. Public-login safeguards remain open.
-Current continuation:
-[shared hosting preparation](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-shared-tunnel-and-caddy-2026-10-23).
+Historical continuation:
+[shared hosting preparation](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-shared-tunnel-and-caddy-2026-10-23).
 Focused final checks: **52 passed**, no skips, 12 test-secret-directory warnings;
 Ruff/types, Caddy snippet and runbook syntax pass. This is configuration
 evidence, not live acceptance. Previous #22 head's PR CI failed the unchanged

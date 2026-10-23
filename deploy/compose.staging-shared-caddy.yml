@@ -2,8 +2,14 @@
 # Configuration proposal only: this file does not start or reload anything.
 services:
   frontend:
+    networks: ["app", "edge", "frontend-host"]
     ports:
       - "127.0.0.1:18030:3000"
 
   cloudflared:
     profiles: !override ["dedicated-connector-approved"]
+
+networks:
+  frontend-host:
+    driver: bridge
+    internal: false

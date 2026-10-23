@@ -384,11 +384,17 @@ def test_shared_caddy_overlay_exposes_only_loopback_frontend(
         for name in ("staging-db", "gateway"):
             assert not services[name].get("ports")
         assert not services["frontend"].get("secrets")
-        assert set(services["frontend"]["networks"]) == {"app", "edge"}
+        assert set(services["frontend"]["networks"]) == {"app", "edge", "frontend-host"}
         assert set(services["gateway"]["networks"]) == {"app", "data"}
         assert set(services["staging-db"]["networks"]) == {"data"}
-        assert set(rendered["networks"]) == {"data", "app", "edge"}
-        assert all(network["internal"] for network in rendered["networks"].values())
+        assert set(rendered["networks"]) == {"data", "app", "edge", "frontend-host"}
+        assert all(rendered["networks"][name]["internal"] for name in ("data", "app", "edge"))
+        host_network = rendered["networks"]["frontend-host"]
+        assert host_network["driver"] == "bridge"
+        assert host_network.get("internal", False) is False
+        assert {
+            name for name, service in services.items() if "frontend-host" in service["networks"]
+        } == {"frontend"}
         for name in ("frontend", "gateway"):
             service = services[name]
             assert service["user"] == "1000:1000"

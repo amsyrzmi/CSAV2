@@ -1,6 +1,63 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: shared tunnel and Caddy (2026-10-23)
+## Current continuation: frontend host publishing correction (2026-10-23)
+
+Read repository guidance, latest PROGRESS and
+[shared-host procedure](../../deploy/STAGING_SHARED_CADDY.md).
+Worktree `/home/amsyrzmi/CSAV2-staging-public-demo`, corrective branch
+`fix/staging-frontend-host-network`, base `a9a212f` (#22 merge).
+Final branch CI `39970840315`, PR CI `39970848027`, main CI `39970918017`
+passed; the earlier latency failure below remains historical.
+
+Approved preflight confirmed clean accepted checkout, port 18030 unused,
+three stopped staging containers and both correctly labelled volumes.
+Retained image digests/revisions matched; the existing redacting checker
+reported ten secret files OK. No secret values displayed or regenerated.
+Shared Compose render selected only database/gateway/frontend.
+
+Separately approved startup used both Compose files, sequential health waits,
+`--no-deps --pull never`, existing secrets/volumes, no bootstrap/migrations.
+All three services became healthy. Frontend was recreated for the port
+configuration, but host curl failed exit 7 / HTTP 000; `docker port` showed
+no published port. Docker 29.1.3 inspect showed requested loopback binding
+but actual `3000/tcp: null`, frontend only on internal app/edge networks.
+This is a live failure of the accepted proposal, not a successful ingress test.
+
+Owner approved preparing a repository correction: normal bridge
+`frontend-host` joined only by frontend. This permits host publishing and
+adds frontend outbound capability; database/gateway remain private and the
+port remains loopback-only. No live network change/recreation is authorized
+by that approval. Services remain running privately with volumes intact.
+No Caddy edits/reload, DNS/route or external requests performed.
+
+Correction validation (`NO_LOCAL_ENV=1 ENV=ci`): staging Compose tests
+**24 passed in 7.93 s**, no skips/warnings; Ruff check/format and focused
+Pyright pass (zero errors/warnings). This checks the frontend-only bridge,
+loopback binding, internal data/app/edge networks and retained security/profile
+contracts in rendered configuration, not live Docker publishing. Both
+runbooks' Bash syntax is included. Full local runtime tests/reset not run
+under this non-starting correction scope; hosted full CI is still required.
+
+Next: focused non-starting checks, ask before commit/push/new PR (do not
+reuse merged #22), full hosted CI/user merge, then separately approve
+frontend recreation and exact binding/host request acceptance. Do not call
+the correction proven based on renders. Public abuse/authentication gates
+remain before route publication.
+
+```text
+Continue the shared-host publishing correction, not production promotion.
+Read AGENTS.md, latest PROGRESS/handoff and deploy/STAGING_SHARED_CADDY.md.
+Use worktree CSAV2-staging-public-demo, branch fix/staging-frontend-host-network.
+#22 is merged, final CI passed. Approved startup left all three services healthy
+but host port absent; curl to 127.0.0.1:18030 failed. Owner approved local
+frontend-only non-internal bridge correction, services left running privately.
+Do not change live networks, recreate, edit/reload Caddy or publish routes
+without separate approval. Never repeat bootstrap/migrations or inspect secrets.
+Validate focused configuration checks; ask before commit/push/new PR.
+Preserve unrelated main review deletions and other worktrees.
+```
+
+## Prior continuation: shared tunnel and Caddy (2026-10-23)
 
 Start with repository guidance, latest PROGRESS,
 [STAGING_SHARED_CADDY.md](../../deploy/STAGING_SHARED_CADDY.md), its overlay
