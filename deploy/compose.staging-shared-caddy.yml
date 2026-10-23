@@ -1,0 +1,9 @@
+# Apply after compose.staging-local-proposal.yml; requires Compose >= 2.24.4.
+# Configuration proposal only: this file does not start or reload anything.
+services:
+  frontend:
+    ports:
+      - "127.0.0.1:18030:3000"
+
+  cloudflared:
+    profiles: !override ["dedicated-connector-approved"]

@@ -6,6 +6,14 @@ operation. Start with [release authority and evidence](RELEASE.md), the
 [local Compose proposal](compose.staging-local-proposal.yml), and the current
 [continuation](../docs/handoffs/2026-10-19-domain-release-next-session.md).
 
+**Current hosting choice:** the owner subsequently selected the existing host
+tunnel plus Caddy. Follow [STAGING_SHARED_CADDY.md](STAGING_SHARED_CADDY.md)
+for that topology, startup overlay, Caddy/route changes and rollback.
+The dedicated-tunnel/token/connector instructions below are an alternative,
+not steps to execute for shared hosting. Public-login safeguards and
+application acceptance requirements below still apply. Shared hosting does
+not itself solve abuse controls or public proxy acceptance.
+
 ## Scope and starting state
 
 PR #21 merged as `05b429ec0856694de87dfb02bbd7ca74cbbf27bd`; main CI

@@ -1,5 +1,22 @@
 # Progress
 
+Shared-tunnel/Caddy hosting (proposed, not applied, 2026-10-23): owner selected
+the existing host cloudflared service and explicitly approved local preparation
+of a staging-only Caddy site and frontend loopback port. The
+[shared procedure](../deploy/STAGING_SHARED_CADDY.md), Compose overlay and
+Caddy snippet are prepared on `docs/staging-public-demo` as an extension of
+open #22, not an additional stacked PR. Original dedicated proposal unchanged.
+Database/gateway remain private; normal shared startup excludes dedicated
+connector. Host Caddy edits/reload, service startup, tunnel route and DNS still
+need separate approval. Public-login safeguards remain open.
+Current continuation:
+[shared hosting preparation](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-shared-tunnel-and-caddy-2026-10-23).
+Focused final checks: **52 passed**, no skips, 12 test-secret-directory warnings;
+Ruff/types, Caddy snippet and runbook syntax pass. This is configuration
+evidence, not live acceptance. Previous #22 head's PR CI failed the unchanged
+ingress latency threshold while push CI passed; full final-head CI remains
+required. See current continuation for exact evidence and limitations.
+
 Public-login demo revision (proposed, not activated, 2026-10-23): PR #21
 merged as `05b429ec`; main CI `39951244406` passed. The owner selected a public
 login page with owner-only CSA login, no Access, signup or visitor credentials.
@@ -10,8 +27,8 @@ separately approved staging-route cleanup. No explicit staging DNS record,
 dedicated tunnel or Access application was reported; wildcard/company routes
 remain untouched. Three staging services were last reported stopped, volumes
 retained. No runtime/Compose changes or infrastructure operations in this slice.
-Current continuation:
-[public-login safeguards and remaining gates](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-public-login-demo-review-2026-10-23).
+Historical continuation at public-login revision:
+[public-login safeguards and remaining gates](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-public-login-demo-review-2026-10-23).
 Batch remaining local evidence; ask before publication and each infrastructure
 operation. Public routing remains blocked pending safeguard approval.
 

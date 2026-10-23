@@ -708,6 +708,11 @@ required before merge; no status-only commits are needed.
 
 ### Public demo exposure revision (not activated)
 
+The owner subsequently approved local preparation of a shared host-tunnel/
+Caddy alternative; use the [shared hosting procedure](STAGING_SHARED_CADDY.md)
+rather than the dedicated connector instructions. The original no-host-port
+and no-Caddy-change proposal remains an alternative, not the selected mode.
+
 The current [ingress runbook](STAGING_INGRESS.md) supersedes its original
 owner-only Access recommendation with the owner's selected public-login/
 owner-presented demo. Anonymous console access, signup, shared credentials,
@@ -724,7 +729,31 @@ the existing wildcard unchanged, the zone Active, no dedicated staging tunnel
 and an empty Access application list. These are reported findings, not
 assistant dashboard verification. No DNS values, dashboard links, personal
 identifiers or credentials are reproduced. The failed route is not a staging
-acceptance result; do not repeat it or change Caddy/shared connector.
+acceptance result; do not repeat it. At that point no Caddy/shared-connector
+change was approved; the later shared-mode proposal below is still not applied.
+
+### Shared host tunnel and Caddy proposal (not applied)
+
+The owner explicitly selected the existing host-system-service connector and
+requested a staging Caddy site instead of a dedicated connector. The
+[shared-Caddy overlay](compose.staging-shared-caddy.yml) publishes only frontend
+`127.0.0.1:18030:3000` and moves the unused dedicated connector behind a
+separate profile. The original local proposal is unchanged. Compose 2.24.4+
+is required for profile replacement with `!override`.
+
+The [site snippet](staging-console.Caddyfile) matches only the staging
+hostname, refuses non-loopback peers and proxies to that loopback frontend.
+The proposed shared-tunnel route is `http://127.0.0.1:80` with the original
+Host preserved, not Docker's `frontend` hostname. No application secrets,
+database/gateway ports, shared Docker networks or new tunnel/token are needed.
+
+Read-only host checks found Caddy 2.6.2 on ports 80/443 and no listener on
+18030 during preparation. Port use must be rechecked at execution. No live
+Caddy edit/reload, startup, route or DNS change was performed. The
+[operator procedure](STAGING_SHARED_CADDY.md) requires separate approvals,
+full candidate validation, existing-site checks and scoped rollback before
+changing the shared service. Public-login abuse-control and proxy acceptance
+hold points remain unresolved; shared hosting does not waive them.
 
 ## Origin and route boundary
 

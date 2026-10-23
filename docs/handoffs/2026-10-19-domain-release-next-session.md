@@ -1,6 +1,87 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: public login demo review (2026-10-23)
+## Current continuation: shared tunnel and Caddy (2026-10-23)
+
+Start with repository guidance, latest PROGRESS,
+[STAGING_SHARED_CADDY.md](../../deploy/STAGING_SHARED_CADDY.md), its overlay
+and Caddy snippet, plus the public-login safeguards in STAGING_INGRESS.
+Worktree `/home/amsyrzmi/CSAV2-staging-public-demo`, branch
+`docs/staging-public-demo`, currently extends open #22 (previous published
+head `cb764309`). Verify merge/CI/head before publication or execution.
+Base main `05b429ec` had passing CI `39951244406`.
+
+The owner rejected the dedicated connector requirement, reported shared
+cloudflared runs as a host system service, requested Caddy edits and approved
+local config/test/docs preparation. No live edit/reload/startup/routing
+approval was given. Selected topology: shared tunnel -> loopback Caddy port
+80, original Host preserved -> loopback-only frontend port 18030 -> private
+gateway/database. Caddy site rejects non-loopback peers. Existing sites and
+wildcard remain intact. No new tunnel/token or shared Docker network needed.
+
+The overlay uses Compose `!override` to exclude dedicated connector from the
+normal staging profile. Base proposal is unchanged. Use both files for shared
+mode. Tests render default (inert) and staging profile selection, validate
+only frontend loopback binding, and adapt the snippet when Caddy is installed.
+No application code or schema changes.
+
+Local validation of this shared-mode slice (`NO_LOCAL_ENV=1 ENV=ci`):
+
+- `python -m pytest tests/test_staging_compose.py
+  tests/test_console_identity_config.py tests/test_console_identity_gateway.py
+  tests/test_console_security.py -q`: **52 passed**, no skips, 12 warnings
+  (test environment has no `/run/secrets` directory), 21.92 s.
+- Ruff check/format and focused Pyright: pass, zero type errors/warnings.
+  Initial Ruff format check found one wrapping issue; formatted and reran.
+- Caddy 2.6.2 snippet validation/adaptation and formatting: pass. HTTP-only
+  warning expected; TLS terminates at Cloudflare. Both runbooks' Bash blocks
+  pass syntax checks. No live Caddy validation/reload or requests performed.
+- Changed/new Markdown links/fences checked; two unchanged older PROGRESS
+  anchors to the M6 migration-plan handoff are missing and remain outside this
+  slice. Changed/new links pass. Diff whitespace and credential-pattern scan
+  pass (all eight changed/new files, not a full Gitleaks run).
+- Full local runtime suite/reset not run under the focused non-starting scope.
+  Full hosted CI is still required on the final published head.
+
+Fresh check of #22's previously published `cb764309` head: push CI
+`39962276593` passed, PR CI `39962417228` **failed**: ingress ASGI p95
+336.72 ms against the unchanged <200 ms limit; 2,951 passed, one failed,
+140 warnings. Cause is not established. Do not describe the PR as green,
+waive the threshold or repeatedly rerun until a passing sample hides it.
+These runs predate the uncommitted shared-mode slice.
+
+Host read-only checks found Caddy 2.6.2, ports 80/443 listening, 18030 unused.
+Last owner-reported staging state remains three stopped services, both volumes
+retained, initial administrator still requiring password change. No bootstrap
+repetition, secret regeneration, volume deletion or secret inspection.
+
+Public audience: anyone can reach login; only owner signs in and presents.
+No Access/signup/visitor credentials or provider/worker/delivery/KB enablement.
+Shared hosting is not a substitute for unresolved public abuse/proxy gates.
+Review plan-available controls before separately approving publication.
+After config merge/full CI, exact staged Caddy edit/full validation/reload,
+frontend binding/startup and shared route each need separate approval.
+Do not repeat the failed shared route to `http://frontend:3000`; the new
+proposed route is HTTP `127.0.0.1:80`.
+
+```text
+Continue roadmap: Staging/CD -> subscription -> WhatsApp test-number demo ->
+interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Read AGENTS.md, latest PROGRESS/handoff and deploy/STAGING_SHARED_CADDY.md.
+Check #22 state/head: docs/staging-public-demo (previous head cb764309)
+now has locally prepared shared-Caddy configuration; ask before pushing it.
+Owner selected shared host tunnel/Caddy, frontend 127.0.0.1:18030:3000.
+No dedicated tunnel/token is needed. No live Caddy edits/reload, startup or
+route/DNS change approved. Public login only; owner presents, no visitors'
+credentials. Preserve existing sites/wildcard/shared service availability.
+Resolve public abuse/proxy safeguards; then explicit approval per host step.
+Use the shared Compose overlay, not base-only profile startup. Never repeat
+bootstrap/delete volumes/read secrets or enable real provider delivery.
+Three services last stopped, both volumes retained. Ask before commit/push/PR;
+reuse #22 if still open, user merges after full CI. Batch changes/evidence.
+Preserve main-worktree review deletions and all unrelated worktrees.
+```
+
+## Prior continuation: public login demo review (2026-10-23)
 
 Read repository guidance, current PROGRESS and
 [STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md) first. Branch
