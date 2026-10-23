@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -274,6 +275,68 @@ def test_private_startup_selection_without_connector_secret(tmp_path: Path) -> N
         "GROQ_API_KEY",
     }
     assert SYNTHETIC_VALUE not in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
+def test_dedicated_connector_selection_has_no_implicit_dependencies(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "synthetic-staging-secrets"
+    secrets_dir.mkdir(mode=0o700)
+    _make_synthetic_secrets(secrets_dir)
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "--project-name",
+            "csa-staging-synthetic",
+            "--file",
+            str(COMPOSE_FILE),
+            "--profile",
+            "staging-approved",
+            "config",
+            "--format",
+            "json",
+            "cloudflared",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**_compose_env(secrets_dir), "COMPOSE_PROFILES": ""},
+    )
+    rendered = json.loads(result.stdout)
+    assert set(rendered["services"]) == {"cloudflared"}
+    connector = rendered["services"]["cloudflared"]
+    assert not connector.get("depends_on")
+    assert not connector.get("healthcheck")
+    assert not connector.get("ports")
+    assert not connector.get("volumes")
+    assert not connector.get("privileged", False)
+    assert connector.get("network_mode") != "host"
+    assert set(connector["networks"]) == {"edge", "connector-egress"}
+    assert connector["environment"] == {"TUNNEL_TOKEN_FILE": "/run/secrets/staging_tunnel_token"}
+    assert {secret["source"] for secret in connector["secrets"]} == {"staging_tunnel_token"}
+    assert not any(network.get("external", False) for network in rendered["networks"].values())
+    assert rendered["networks"]["edge"]["internal"] is True
+    assert not rendered["networks"]["connector-egress"].get("internal", False)
+    assert SYNTHETIC_VALUE not in result.stdout
+
+
+def test_ingress_runbook_shell_blocks_are_syntax_valid() -> None:
+    runbook = (REPO_ROOT / "deploy" / "STAGING_INGRESS.md").read_text()
+    blocks = re.findall(r"^```bash\n(.*?)^```", runbook, re.MULTILINE | re.DOTALL)
+    assert blocks
+    for block in blocks:
+        subprocess.run(
+            ["bash", "-n"],
+            input=block,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+    provisioning = re.search(r"sudo python3 - <<'PY'\n(.*?)\nPY", runbook, re.DOTALL)
+    assert provisioning is not None
+    compile(provisioning[1], "staging-token-provisioning", "exec")
 
 
 def _render_admin_gate(tmp_path: Path) -> str:

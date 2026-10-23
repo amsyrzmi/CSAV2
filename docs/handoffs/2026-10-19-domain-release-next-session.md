@@ -1,6 +1,74 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: private readiness complete (2026-10-23)
+## Current continuation: consolidated ingress readiness (2026-10-23)
+
+Start with repository guidance, latest PROGRESS,
+[STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md), the pinned local
+Compose proposal, configuration tests and RELEASE's private host execution.
+PR #20 merged as `df948b0882aefdb4fe01381fe47271fed81f31ff`; main CI
+`39945835399` passed. This consolidated local slice is prepared on
+`feat/staging-ingress-readiness` at `/home/amsyrzmi/CSAV2-staging-ingress`.
+Verify publication state before proceeding.
+
+User requested larger coherent batches to avoid repeated slow hosted CI.
+The runbook covers all currently actionable ingress planning: owner authority
+checks; protection-before-routing; dedicated tunnel; hidden token provisioning;
+private restart; connector-only activation; exact hostname routing; browser/
+tenant acceptance; failure drills; non-destructive rollback; and remaining
+backup/restore/CD gates. Official Cloudflare docs were read directly after the
+documentation connector failed authentication. No credentials were changed.
+No runtime/Compose configuration changed. Tests extend the existing harness.
+
+Do not execute the plan implicitly. First obtain non-secret owner decisions:
+account/zone control, hostname conflicts and intended controlled recipients/
+Access policy. The runbook recommends exact-host Access before publication;
+no new Access policy, IdP or cost is preapproved. Token provisioning, restart,
+connector activation, route/DNS, browser mutations, drills and stop each
+require explicit approval. Never request passwords/tokens/cookies in chat.
+
+Last owner-reported state remains three stopped staging containers and both
+volumes retained. Do not repeat bootstrap, remove volumes, regenerate secrets,
+pull images or touch shared connector/Caddy/apex/www. Private readiness passed;
+browser login/password change, tenant/public ingress/recovery and persistent
+restore are not accepted. No worker/delivery/KB consumer or real provider
+delivery is authorized. Executable protected CD follows the proven process.
+
+After approved execution, consolidate sanitized outcomes/failures and final
+state into one evidence PR. Do not create per-command or CI-status-only commits.
+Full hosted CI stays the merge gate; user merges. Ask before commit/push/PR.
+
+Validation with `NO_LOCAL_ENV=1 ENV=ci`: focused staging Compose, secrets,
+publication and release-context tests **56 passed in 6.70 seconds**. Ruff
+lint/format and focused Pyright pass (0 errors/warnings); an initial format
+check failed and was corrected. Tests render configuration and syntax-check
+all six runbook Bash blocks and embedded provisioning Python; they do not
+execute provisioning or any runtime command. Whitespace, Markdown fences and
+11 added/new local links/anchors pass. Credential-pattern checking covers
+the full working diff and complete new runbook, with no matches; it is not a
+complete Gitleaks scan. No local Gitleaks executable is available; no scan
+container or dependency installation was used. Full runtime/database suites,
+resets, account/DNS inspection and live checks were deliberately not run.
+Hosted full CI/Gitleaks remain required before merge.
+
+```text
+Continue agreed roadmap: Staging/CD -> subscription -> WhatsApp test-number
+demo -> interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Read AGENTS.md, current PROGRESS/handoff, deploy/STAGING_INGRESS.md and
+RELEASE evidence. Verify publication/merge of feat/staging-ingress-readiness
+(base df948b08, main CI 39945835399 passed); worktree CSAV2-staging-ingress.
+This is a consolidated plan plus synthetic checks, not live acceptance.
+Next: non-secret owner authority/hostname/exposure decisions, then separately
+approved tunnel/token/restart/connector/route and browser/tenant/recovery gates.
+No secret inspection or credentials in chat; no implicit spending, provider
+delivery, shared connector/Caddy/site changes, pulls, volume deletion or
+bootstrap repetition. Three services remain stopped; both volumes retained.
+Ask before commit/push/PR; user merges. Batch execution evidence into one PR,
+not a commit per command or CI status. Full hosted CI remains required.
+Preserve main's two review deletions and unrelated worktrees. Do not implement
+executable CD until the deployment/recovery process has been accepted.
+```
+
+## Prior continuation: private readiness complete (2026-10-23)
 
 Read repository guidance, latest PROGRESS, the
 [private execution record](../../deploy/RELEASE.md#private-staging-host-execution-2026-10-23),

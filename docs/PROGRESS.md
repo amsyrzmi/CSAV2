@@ -1,5 +1,19 @@
 # Progress
 
+Consolidated ingress readiness (proposed, not executed, 2026-10-23): PR #20
+merged as `df948b08`; main CI `39945835399` passed. Branch
+`feat/staging-ingress-readiness` prepares one
+[activation/acceptance/rollback runbook](../deploy/STAGING_INGRESS.md),
+focused synthetic connector-selection and command-syntax checks, and one
+current continuation. No runtime/Compose configuration changes. Account/zone
+authority, hostname conflicts and exposure policy remain owner decisions.
+No tunnel/token, external account inspection, restart, DNS/Caddy or deployment
+operation was performed. Runtime steps remain separately approved; batch their
+outcomes into one evidence update. Protected executable CD follows live
+acceptance, not unproven procedure automation.
+Current continuation:
+[consolidated ingress readiness](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-consolidated-ingress-readiness-2026-10-23).
+
 Private staging readiness accepted and stopped (2026-10-23): PR #19 merged
 as `8ff63c29`; PR, branch and main CI passed (main `39935706204`).
 The owner reported three healthy services, `/healthz ok`, `/readyz ready`,
@@ -8,8 +22,8 @@ database with both volumes retained. See the
 [host execution record](../deploy/RELEASE.md#private-staging-host-execution-2026-10-23).
 This is private readiness, not browser authentication, tenant/public-ingress,
 recovery or end-to-end conversation acceptance.
-Current continuation:
-[dedicated ingress planning](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-private-readiness-complete-2026-10-23).
+Historical continuation at private-readiness completion:
+[dedicated ingress planning](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-readiness-complete-2026-10-23).
 No restart, tunnel/token provisioning, hostname, shared connector or Caddy
 change is authorized. Review the next plan before separately approved execution.
 

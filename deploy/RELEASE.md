@@ -685,6 +685,25 @@ token provisioning, application restart, connector activation and hostname
 routing. Do not reuse or modify the shared connector or Caddy. Public
 browser/tenant/ingress and recovery acceptance precede protected staging CD.
 
+### Consolidated ingress readiness runbook (not executed)
+
+[STAGING_INGRESS.md](STAGING_INGRESS.md) consolidates dedicated tunnel and
+token provisioning, exact-host protection/routing, application restart,
+connector activation, browser/tenant acceptance, failure drills and
+non-destructive rollback. It also lists unresolved backup/restore and
+protected-CD prerequisites. It changes no runtime or Compose configuration.
+Current official Cloudflare guidance was checked directly; account/zone/
+hostname authority and exposure-policy decisions remain unresolved.
+
+The existing configuration tests additionally render the connector alone,
+verify no implicit dependencies, application-secret grants or host exposure,
+and syntax-check the runbook's shell and embedded provisioning Python without
+executing it. Render/syntax evidence is not a tunnel, token, DNS or ingress
+acceptance result. Every infrastructure step remains separately approved.
+After approved execution, batch outcomes into one evidence update rather
+than opening a separate PR for each owner command. Full hosted CI remains
+required before merge; no status-only commits are needed.
+
 ## Origin and route boundary
 
 `CSA_CONSOLE_API_ORIGIN` is a non-secret **server-only** bare HTTP(S) origin.
