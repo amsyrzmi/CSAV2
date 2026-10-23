@@ -1,5 +1,25 @@
 # Progress
 
+Staging seed prepared (2026-10-23, branch `feat/staging-seed`): the owner
+reversed the files-only rule and asked for the hosted staging console to be
+seeded with every role. [scripts/seed_staging.py](../scripts/seed_staging.py)
+onboards two synthetic tenants with the console onboarding SQL, creates
+tenant_admin/tenant_staff/read_only accounts by invite plus accept through
+`IdentityService` as the existing platform administrator (one-time passwords,
+forced change at first login, acceptance sessions revoked), assigns the HR owner
+through the HR bootstrap SQL, applies employees and role-appropriate grants
+through `public.hr_admin_apply` with canonical fingerprints, and inserts the
+synthetic retailer records from
+[db/sql/seed_staging/records.sql](../db/sql/seed_staging/records.sql).
+Guards mirror the staging migration: explicit approval, exact
+`staging-db/csa_staging` target, `csa` and `csa_identity` roles, advisory lock,
+idempotent re-runs. See [the seed runbook](../deploy/STAGING_SEED.md).
+Evidence: `tests/test_seed_staging.py` **12 passed** (two full seed runs on a
+disposable migrated Testcontainer; exact role, HR receipt and record counts),
+repository lint passed. Not seeded: KB documents/vectors, outbox, bot
+credentials, approvals, HR cases/leave/payroll data. The live staging run is a
+separate owner-approved step and had not been executed when this was written.
+
 Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
 repository runbook and Caddy snippet assumed a host-service connector reaching
 Caddy over loopback. Live inspection shows the shared connector is the
