@@ -499,6 +499,10 @@ accepted; this is not a production deployment.
 
 ### Private staging application startup (procedure only, not run)
 
+This heading preserves the original procedure anchor. The owner subsequently
+executed startup, private checks and stop; see the
+[host execution record](#private-staging-host-execution-2026-10-23).
+
 Prerequisite: the [bootstrap execution](#staging-bootstrap-host-execution-2026-10-23)
 is complete, the database is stopped and both volumes remain. Obtain separate
 approval before executing this block: it restarts the database, starts gateway
@@ -633,6 +637,53 @@ for the exact containers that exist. No destructive cleanup is authorized.
 The next gate after private startup acceptance is separately reviewed dedicated
 tunnel/hostname activation and authenticated browser/tenant/ingress acceptance;
 shared connector, Caddy, apex/www and existing websites remain untouched.
+
+### Private staging host execution (2026-10-23)
+
+PR #19 merged as `8ff63c29a37b8b9802b668e14594da286f7c6f12`.
+PR CI `39933597315`, branch CI `39933412519` and main CI `39935706204`
+passed. The owner executed the separately approved procedure from a clean
+detached checkout at `/home/amsyrzmi/CSAV2-staging-private-run`, using the
+previously accepted Python/frontend image digests (source `7cdc156`).
+The following is owner-supplied terminal evidence, not independent assistant
+queries of persistent staging.
+
+| Check | Reported result | Scope |
+| --- | --- | --- |
+| Secrets and volumes | Checker passed; both volume project labels were `csa-staging` | Preflight; no secret values displayed |
+| Explicit startup | Database, gateway and frontend healthy; project-local `app` and `edge` networks created | Three selected services, no connector startup |
+| Gateway liveness | `/healthz ok` | Process liveness |
+| Gateway readiness | `/readyz ready` | Domain app-role access and configured identity/HR readiness |
+| Frontend local page | `/login 200` | Unauthenticated login-page delivery |
+| Private network request | `frontend -> gateway ready` | Frontend can reach gateway readiness over the private app network |
+| Separately approved stop | All three containers `exited`; both volumes listed | Applications stopped before database; no data deletion |
+
+The inline Node check completed successfully during this execution. This
+resolves the earlier inability to syntax-check that snippet locally; it does
+not retroactively change that recorded validation limitation.
+
+Final reported state: `csa-staging-frontend-1`, `csa-staging-gateway-1` and
+`csa-staging-staging-db-1` are stopped. Volumes `csa-staging_staging-db` and
+`csa-staging_staging-uploads`, staging secrets and accepted images remain.
+Do not repeat baseline/migrations/admin bootstrap or remove volumes to
+continue. No host ports were configured by the procedure. No connector,
+tunnel, DNS, Caddy, shared network or existing website change was performed.
+
+Still unaccepted: browser login and required initial password change,
+tenant isolation, CSRF/proxy behaviour, public HTTPS ingress, checkpoint
+read/write, HTTP upload/ingestion, durable backup/restore and failure/recovery.
+No worker, delivery or KB consumers are configured; private readiness is not
+end-to-end agent-conversation acceptance, production readiness or completed CD.
+
+**Next bounded task:** prepare the dedicated staging tunnel/hostname activation
+and rollback plan, reconciling the pinned connector and token-file ownership
+requirements with current official Cloudflare guidance before execution.
+Resolve the account/zone authority and whether the planned staging hostname
+has an existing route without changing it. Never request credentials or a
+tunnel token in chat. Separate approvals remain required for tunnel creation,
+token provisioning, application restart, connector activation and hostname
+routing. Do not reuse or modify the shared connector or Caddy. Public
+browser/tenant/ingress and recovery acceptance precede protected staging CD.
 
 ## Origin and route boundary
 

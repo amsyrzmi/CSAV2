@@ -1,5 +1,18 @@
 # Progress
 
+Private staging readiness accepted and stopped (2026-10-23): PR #19 merged
+as `8ff63c29`; PR, branch and main CI passed (main `39935706204`).
+The owner reported three healthy services, `/healthz ok`, `/readyz ready`,
+`/login 200` and frontend-to-gateway readiness, then stopped applications and
+database with both volumes retained. See the
+[host execution record](../deploy/RELEASE.md#private-staging-host-execution-2026-10-23).
+This is private readiness, not browser authentication, tenant/public-ingress,
+recovery or end-to-end conversation acceptance.
+Current continuation:
+[dedicated ingress planning](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-private-readiness-complete-2026-10-23).
+No restart, tunnel/token provisioning, hostname, shared connector or Caddy
+change is authorized. Review the next plan before separately approved execution.
+
 Private staging startup procedure (proposed, not run, 2026-10-23): PR #18
 merged as `1012b705`; main CI `39928109213` passed. Branch
 `feat/staging-private-startup` adds a
@@ -11,8 +24,8 @@ validate existing volume project labels and start only explicit service targets.
 Private checks cover gateway readiness, login-page delivery and frontend-to-
 gateway reachability; stop commands retain data. No execution is authorized
 by this procedure, and no services were started during its preparation.
-Current continuation:
-[private startup procedure](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-private-staging-startup-procedure-2026-10-23).
+Historical continuation at proposal time:
+[private startup procedure](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-staging-startup-procedure-2026-10-23).
 
 Staging bootstrap executed and stopped (2026-10-23): PR #17 merged as
 `a5eb450`; PR CI `39914864494`, branch CI `39914798398` and main CI
@@ -23,8 +36,8 @@ is stopped; both volumes remain. See the
 [execution record](../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23)
 for results, the failed `stg` shortcut attempts and evidence limitations.
 
-Current continuation:
-[bootstrap complete; private application startup is next](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-staging-bootstrap-complete-2026-10-23).
+Historical continuation at bootstrap completion:
+[bootstrap complete; private application startup is next](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-staging-bootstrap-complete-2026-10-23).
 Review a bounded gateway/frontend startup procedure before separately approved
 execution. Do not repeat bootstrap, delete volumes or activate ingress.
 

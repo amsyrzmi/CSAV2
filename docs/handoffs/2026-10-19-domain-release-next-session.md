@@ -1,6 +1,68 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: private staging startup procedure (2026-10-23)
+## Current continuation: private readiness complete (2026-10-23)
+
+Read repository guidance, latest PROGRESS, the
+[private execution record](../../deploy/RELEASE.md#private-staging-host-execution-2026-10-23),
+the pinned connector configuration and token ownership evidence in RELEASE,
+and relevant LG09/LG15 gates. Do not replay historical handoffs.
+
+PR #19 merged as `8ff63c29a37b8b9802b668e14594da286f7c6f12`. PR CI
+`39933597315`, branch CI `39933412519` and main CI `39935706204` passed.
+Owner-reported private startup/checks succeeded on the accepted image digests,
+source `7cdc156`: three healthy services, gateway liveness/readiness, login
+page 200 and frontend-to-gateway readiness. The Node snippet executed
+successfully; its previous local syntax-check limitation remains historical.
+
+The owner separately stopped frontend/gateway, then the database: all three
+containers are `exited`; both staging volumes remain. Do not restart without
+approval, repeat bootstrap, regenerate secrets or delete volumes. Never
+inspect secret values or request the administrator password/session cookies.
+
+**Next local slice:** prepare the dedicated tunnel/hostname activation and
+rollback plan. Check current official Cloudflare requirements; establish
+account/zone authority and existing hostname-route state before selecting
+owner-run operations. No external account inspection or infrastructure change
+is implied. Keep planning separate from approvals for tunnel creation, token
+provisioning, application restart, connector activation and staging DNS/route.
+The connector token is still a separate gate (UID/GID 65532:65532, file 0400,
+restricted host parent; Compose bind mounts do not remap ownership).
+Shared connector, Caddy, apex/www and existing websites remain untouched.
+
+Private readiness does not establish authenticated browser/password change,
+tenant isolation, public ingress, recovery or protected promotion. No worker,
+delivery or KB consumers exist in the proposal; no real provider delivery
+or functioning end-to-end conversation is accepted.
+
+This evidence-only slice updates RELEASE, PROGRESS and this handoff. Ask
+before commit/push/PR; full hosted CI remains the merge gate and user merges.
+
+Local validation: whitespace, Markdown fences and six added/updated local
+links/anchors pass. Added-content credential-pattern checking found no matches
+and there are no untracked files; this is not a full Gitleaks scan. No runtime
+tests, container probes, database queries or services were run to validate the
+prose. Hosted Gitleaks/full CI remain required; no local scan container was
+started.
+
+```text
+Continue CSA roadmap: Staging/CD -> subscription -> WhatsApp test-number
+demo -> interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Read AGENTS.md, current PROGRESS and release handoff, then RELEASE's private
+staging host execution record. PR #19 merged at 8ff63c29; main CI 39935706204
+passed. Evidence branch docs/staging-private-accepted is based on that merge,
+worktree /home/amsyrzmi/CSAV2-staging-private-evidence; verify publication.
+Owner passed private readiness then stopped frontend/gateway/database;
+both volumes remain. Next: dedicated tunnel/hostname activation/rollback
+planning against current official guidance. Do not restart, create a tunnel,
+provision/read tokens, change routes/DNS/Caddy/shared connector, pull images
+or deploy without separate approval. Ask before commit/push/PR; user merges.
+Do not repeat bootstrap, delete volumes or inspect secret values. No real
+provider delivery or worker/delivery/KB consumer is authorized. Browser login,
+password change, tenant/ingress/recovery acceptance and protected CD remain.
+Preserve main's two pre-existing review deletions and unrelated worktrees.
+```
+
+## Prior continuation: private staging startup procedure (2026-10-23)
 
 Start with repository guidance, latest PROGRESS, the
 [private startup procedure](../../deploy/RELEASE.md#private-staging-application-startup-procedure-only-not-run)
