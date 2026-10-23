@@ -242,6 +242,208 @@ Not established: that PostgreSQL accepts these credentials; Compose secret
 mounts; the tunnel token; and any database, container, startup, network or
 ingress behaviour. Nothing was started.
 
+### Isolated staging database bootstrap (operator procedure, not yet run)
+
+This procedure initializes the isolated staging database, upload volume and
+first platform administrator. It never starts the gateway, frontend or
+connector, publishes no port, and joins no shared network. **Running it needs
+separate owner approval.**
+
+The [local proposal](compose.staging-local-proposal.yml) adds two one-shot
+services. Their configuration is verified only by synthetic render tests in
+[test_staging_compose.py](../tests/test_staging_compose.py):
+
+- `uploads-init` (`migration-approved`). It runs as root on the approved Python
+  image with only `CHOWN`, `network_mode: none`, a read-only root and no
+  secrets. It runs `chown 1000:1000` on the project's `staging-uploads` volume.
+  This matches the
+  [disposable storage rehearsal](#disposable-bootstrap-and-storage-rehearsal),
+  plus `no-new-privileges`, which keeps capabilities but blocks privilege gain
+  on exec.
+- `admin-bootstrap` (its own `admin-bootstrap-approved` profile). It is non-root
+  on the internal `data` network only, and its single secret is
+  `staging_identity_dsn`. An inline gate requires
+  `CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL=approved-isolated-staging` before reading
+  that file. It also requires a `csa_identity@staging-db:5432/csa_staging` target.
+  It then delegates to the packaged `scripts.bootstrap_console_admin`, which
+  asks for the password with `getpass`.
+
+The gate is inline because the approved image (`7cdc156`) predates it. The
+tests run that exact rendered code against a stub module. Between `7cdc156` and
+this procedure's base `2a4a037`, nothing changed in `db/`, `scripts/migrate.py`,
+`scripts/staging_migrate.py`, `scripts/lg_setup.py`,
+`scripts/bootstrap_console_admin.py` or `csa/console/identity.py`. The baseline
+SHA-256 is `1b716cf00067ca0c56664a1ce55398d8d5c530ddc79a9247a84cfe2c46656578`,
+with 31 migrations ending at `0410`.
+
+`stg` enables only the two one-shot approval profiles. The
+`staging-approved` profile (gateway, frontend, connector) is never enabled here.
+Run the commands from a clean, detached checkout of the commit that merged
+this procedure, as UID 1000 on the staging host. Run each step only after the
+previous step's expected output matches. On any mismatch, stop and use
+[teardown](#teardown-and-recovery).
+
+**0. Session variables and read-only preflight.**
+
+```bash
+export CSA_STAGING_PROJECT=csa-staging
+export CSA_STAGING_SECRET_DIR=/srv/csa-staging/secrets
+export CSA_STAGING_PYTHON_IMAGE=ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764
+export CSA_STAGING_FRONTEND_IMAGE=ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f
+export CSA_STAGING_CONSOLE_ORIGIN=https://staging-console.fourstacks.my
+stg() {
+  docker compose --file deploy/compose.staging-local-proposal.yml \
+    --profile migration-approved --profile admin-bootstrap-approved "$@"
+}
+python3 -m scripts.staging_secrets check --secret-dir "$CSA_STAGING_SECRET_DIR"
+docker ps -a --filter label=com.docker.compose.project=csa-staging --format '{{.Names}}'
+docker volume ls --filter label=com.docker.compose.project=csa-staging --format '{{.Name}}'
+stg config --quiet && echo RENDER-OK
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true --entrypoint sha256sum \
+  "$CSA_STAGING_PYTHON_IMAGE" /app/db/schema_baseline.sql
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true --entrypoint python "$CSA_STAGING_PYTHON_IMAGE" \
+  -c "import pathlib; v=sorted(p.name.split('_')[0] for p in pathlib.Path('/app/db/migrations').glob('*.sql')); print(len(v), v[-1])"
+```
+
+Expected results:
+
+- `OK 10 staging secret files; values not displayed`.
+- No container and no volume listed.
+- `RENDER-OK`.
+- Baseline hash `1b716cf0…6578`.
+- `31 0410`.
+
+The origin is used only for rendering; nothing serves it in this procedure.
+
+**1. Start only the database.**
+
+```bash
+stg up --detach --wait staging-db
+stg ps --format '{{.Service}} {{.Status}}'
+```
+
+Expect a single `staging-db` row reporting `healthy`. The entrypoint
+initializes `csa_staging` with owner `csa` from the `0400` password file. That
+file is owned by UID 1000; an earlier probe showed this works for init.
+
+If Compose refuses because the connector token file
+(`connector/staging_tunnel_token`) is absent, stop. Synthetic rendering accepts
+its absence, but `up` behaviour has not been observed. Never create a
+placeholder token.
+
+**2. Apply the baseline once, to an empty database.**
+
+```bash
+stg exec -T staging-db psql -U csa -d csa_staging -tAc \
+  "SELECT to_regclass('public.schema_migrations') IS NULL AND to_regclass('public.contacts') IS NULL"
+```
+
+Continue only if this prints `t`. Then:
+
+```bash
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true --entrypoint cat \
+  "$CSA_STAGING_PYTHON_IMAGE" /app/db/schema_baseline.sql \
+  | stg exec -T staging-db psql -U csa -d csa_staging -v ON_ERROR_STOP=1 -q -f - >/dev/null
+echo "baseline exit=${PIPESTATUS[*]}"
+```
+
+Expect `baseline exit=0 0`. Like the rehearsal, `psql` runs inside the database
+container over its local socket. The Python image has no `psql`.
+
+**3. Migrate and set up checkpoints (owner role, explicit approval).**
+
+```bash
+CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging \
+  stg run --rm migrate
+echo "migrate exit=$?"
+stg exec -T staging-db psql -U csa -d csa_staging -tA \
+  -c "SELECT count(*) || ' ' || max(version) FROM schema_migrations" \
+  -c "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('csa_app','csa_ro','csa_identity')" \
+  -c "SELECT to_regclass('lg.checkpoints') IS NOT NULL AND to_regclass('lg.checkpoint_blobs') IS NOT NULL AND to_regclass('lg.checkpoint_writes') IS NOT NULL"
+```
+
+Expected output:
+
+- `migrate exit=0`;
+- `31 0410`;
+- `csa_app,csa_identity,csa_ro`;
+- `t`.
+
+A successful migration proves that PostgreSQL accepts the generated owner DSN
+over TCP. It also sets the app, read-only and identity role passwords from the
+generated files.
+
+**4. Initialize the upload volume.**
+
+```bash
+stg run --rm uploads-init
+echo "uploads-init exit=$?"
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  -v csa-staging_staging-uploads:/var/lib/csa/uploads:ro --entrypoint python \
+  "$CSA_STAGING_PYTHON_IMAGE" \
+  -c "import os; s=os.stat('/var/lib/csa/uploads'); print(s.st_uid, s.st_gid)"
+```
+
+Expect `uploads-init exit=0` and `1000 1000`.
+
+**5. Create the first platform administrator (interactive).**
+
+Choose the administrator email and display name. The initial password must be
+at least 12 characters; keep it in a password manager, never in chat or files.
+It must be changed at first login.
+
+```bash
+CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL=approved-isolated-staging \
+  stg run --rm admin-bootstrap \
+  --email 'ADMIN_EMAIL' --display-name 'ADMIN_DISPLAY_NAME' --create-first-platform-admin
+stg exec -T staging-db psql -U csa -d csa_staging -tA \
+  -c "SELECT count(*) FROM console_users WHERE is_platform_admin AND must_change_password" \
+  -c "SELECT count(*) FROM console_audit WHERE action = 'identity.bootstrap'"
+```
+
+Expect `Created platform administrator <id>; password change required at first
+login.` followed by `1` and `1`. This proves PostgreSQL accepts the generated
+`csa_identity` DSN. Bootstrap then closes permanently, and a second run is
+refused.
+
+**6. Stop, keeping the volumes.**
+
+```bash
+stg stop staging-db
+docker volume ls --filter label=com.docker.compose.project=csa-staging --format '{{.Name}}'
+```
+
+Expect `csa-staging_staging-db` and `csa-staging_staging-uploads`. Application
+startup is the next, separately approved gate.
+
+#### Teardown and recovery
+
+Steps 1 to 5 create no customer data. If any expectation fails, remove only
+this project's containers, networks and volumes, then restart from step 0:
+
+```bash
+stg down --volumes --remove-orphans
+docker ps -a --filter label=com.docker.compose.project=csa-staging --format '{{.Names}}'
+docker volume ls --filter label=com.docker.compose.project=csa-staging --format '{{.Name}}'
+```
+
+Both listings must be empty. This leaves the secret directory and the images
+untouched. Teardown destroys the staging database, so it is **not** a recovery
+method once real staging data exists. Backup and restore for persistent
+staging is a separate gate.
+
+Not established by this procedure:
+
+- application-role (`csa_app`) credential acceptance at runtime;
+- gateway, frontend and connector startup;
+- HTTP uploads;
+- ingress;
+- backups.
+
 ## Origin and route boundary
 
 `CSA_CONSOLE_API_ORIGIN` is a non-secret **server-only** bare HTTP(S) origin.
