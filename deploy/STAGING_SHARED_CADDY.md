@@ -1,19 +1,33 @@
 # Shared host tunnel and Caddy: CSA public-login demo
 
-Status: configuration proposal, not applied. This is the owner's selected
+Status: applied on the host and reconciled with the live configuration on
+2026-10-23 (see below). This is the owner's selected
 alternative to the [dedicated connector plan](STAGING_INGRESS.md).
 It supersedes that plan's dedicated-tunnel/token/network requirements for
 this mode only, not application authentication, approval, acceptance or
 recovery gates. No paid Cloudflare plan or Access application is required.
 This document does not authorize infrastructure changes.
 
+**Live reconciliation (2026-10-23):** the shared connector is not a host
+system service. It is the `cloudflared` container of the separate `network`
+Compose project on the `network_default` bridge (`172.22.0.0/16`, shared only
+with the landing-page container). A container cannot reach host loopback, so
+the first public route to `127.0.0.1:80` returned 502 despite a local 200.
+The owner corrected the live route to the host LAN origin used by every other
+route on that tunnel and widened the Caddy peer restriction to loopback plus
+the connector's exact container address. The snippet, table and probes below
+now describe that live state. The connector address is assigned by Docker and
+is not guaranteed stable across connector recreation; re-verify it before
+trusting a passing render. Trusting the whole `172.22.0.0/16` subnet instead
+was not applied; it would also trust the landing-page container.
+
 ## Selected topology
 
 ```text
 HTTPS staging-console.fourstacks.my
-  -> existing shared Cloudflare Tunnel (host system service)
-  -> HTTP 127.0.0.1:80, original Host preserved
-  -> staging-only Caddy site
+  -> existing shared Cloudflare Tunnel (cloudflared container, network_default)
+  -> HTTP 192.168.0.50:80 (host LAN address), original Host preserved
+  -> staging-only Caddy site (peer must be loopback or the connector address)
   -> HTTP 127.0.0.1:18030
   -> frontend:3000 -> private gateway:8080 -> private staging database
 ```
@@ -47,12 +61,14 @@ has its previous dedicated-connector behaviour if used without the overlay.
 No startup occurs without explicit approval profiles. Use the overlay for
 all subsequent shared-host operations; do not switch modes inadvertently.
 
-The proposed [Caddy site](staging-console.Caddyfile) accepts only connections
-from loopback, then proxies to the frontend. This avoids exposing the new
-site directly on Caddy's existing public HTTP listener. It trusts the local
-host tunnel process, not arbitrary remote connections or spoofed
-`X-Forwarded-For`. Do not add global proxy trust or trust arbitrary forwarded
-headers. Any future remote connector topology needs review of this restriction.
+The [Caddy site](staging-console.Caddyfile) accepts only connections from
+loopback or the connector container's exact address, then proxies to the
+frontend. This avoids exposing the new site to every peer on Caddy's existing
+public HTTP listener. It trusts the local connector process by source address,
+not arbitrary remote connections or spoofed `X-Forwarded-For`. Do not add
+global proxy trust or trust arbitrary forwarded headers. If the connector is
+recreated with a different address, the site answers 403 until the snippet is
+updated; do not widen the restriction to a subnet or to `0.0.0.0/0` to recover.
 Caddy does not obtain a new origin certificate for this HTTP site; public
 HTTPS is Cloudflare's responsibility.
 
@@ -70,8 +86,10 @@ so validate the entire candidate configuration and prepare rollback first.
   existing database/upload volumes and unchanged staging secret files.
 - No exact staging DNS/route conflict; preserve wildcard, apex/www and mail.
   Owner previously reported removing the accidental staging route after 502.
-- Confirm the shared connector really runs on this host as reported and that
-  it can use `http://127.0.0.1:80`. Do not reinstall, restart or inspect its
+- Confirm the shared connector's current container address with a read-only
+  `docker network inspect network_default` and that it matches the snippet.
+  It must use the host LAN origin, not `http://127.0.0.1:80`, which is the
+  container's own loopback. Do not reinstall, restart or inspect its
   secret-bearing command/environment.
 - Public-login safeguards and unresolved proxy/aggregate-abuse checks from
   [the exposure review](STAGING_INGRESS.md#public-login-safeguards-and-publication-hold-points)
@@ -200,8 +218,11 @@ curl --noproxy '*' --silent --show-error --output /dev/null \
   http://127.0.0.1/login
 ```
 
-Require 200. If it is 403, check actual loopback source/topology before changing
-the restriction; if 502, verify frontend binding/readiness. Do not expose the
+Require 200. This loopback probe does not exercise the connector path; also
+confirm the connector address is allowed. If the public site returns 403,
+re-verify the connector's current container address before changing the
+restriction; if 502, verify frontend binding/readiness and that the route
+targets the host LAN origin rather than container loopback. Do not expose the
 frontend more widely to fix either error. Verify pre-agreed existing-site
 checks with owner approval without touching their routes.
 
@@ -216,11 +237,13 @@ the existing shared host tunnel and add **only**:
 | Hostname | `staging-console.fourstacks.my` |
 | Path | Empty |
 | Service type | HTTP |
-| Service URL | `127.0.0.1:80` |
+| Service URL | `192.168.0.50:80` (the host LAN origin used by the other routes) |
 | HTTP Host Header override | Leave unset; preserve original staging hostname |
 
-The effective origin is `http://127.0.0.1:80`, **not**
-`http://frontend:3000`: this connector runs on the host, outside Docker DNS.
+The effective origin is `http://192.168.0.50:80`, **not** `http://127.0.0.1:80`
+and **not** `http://frontend:3000`: the connector is a container on its own
+bridge, so loopback is its own namespace and the staging project's Docker DNS
+is not visible to it. Keep this consistent with the other routes on the tunnel.
 If an inherited Host override exists, stop and review it at route scope;
 never change shared defaults blindly. Do not route to the landing-page app,
 host port 3000, or gateway. No new tunnel/token/Access configuration is needed.

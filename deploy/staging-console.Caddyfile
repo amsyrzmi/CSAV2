@@ -1,5 +1,9 @@
 http://staging-console.fourstacks.my {
-	@not_local not remote_ip 127.0.0.1 ::1
-	respond @not_local 403
+	# Loopback plus the shared cloudflared container's Docker address
+	# (network_default, 172.22.0.2 as verified on 2026-10-23). The connector
+	# reaches Caddy via the host LAN address, not loopback. Re-verify this
+	# address after any connector recreation; it is not guaranteed stable.
+	@not_connector not remote_ip 127.0.0.1 ::1 172.22.0.2
+	respond @not_connector 403
 	reverse_proxy 127.0.0.1:18030
 }

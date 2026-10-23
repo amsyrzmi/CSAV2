@@ -1,5 +1,20 @@
 # Progress
 
+Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
+repository runbook and Caddy snippet assumed a host-service connector reaching
+Caddy over loopback. Live inspection shows the shared connector is the
+`cloudflared` container on `network_default` (`172.22.0.2`), the tunnel route
+targets the host LAN origin `192.168.0.50:80`, and the host Caddy block allows
+loopback plus that exact container address. [STAGING_SHARED_CADDY.md](
+../deploy/STAGING_SHARED_CADDY.md), [staging-console.Caddyfile](
+../deploy/staging-console.Caddyfile) and the snippet test now record that
+state, including the unresolved connector-address stability risk. No host
+Caddy, tunnel, DNS, container or secret was changed; the three staging
+services kept running. Public auth/CSRF/logout/tenant acceptance and
+backup/restore remain open.
+Current continuation:
+[topology reconciliation](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-shared-host-topology-reconciliation-2026-10-23).
+
 Shared-host publishing correction (local proposal, 2026-10-23): #22 merged
 as `a9a212f`; final branch/PR/main CI passed. Approved staging startup left
 all three services healthy but host access to 18030 failed (curl exit 7,

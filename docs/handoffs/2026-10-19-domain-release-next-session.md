@@ -1,6 +1,45 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: frontend host publishing correction (2026-10-23)
+## Current continuation: shared-host topology reconciliation (2026-10-23)
+
+Branch `docs/staging-live-topology` from `734550b` (#23 merge), worktree
+`/home/amsyrzmi/CSAV2-staging-reconcile`. Documentation, Caddy snippet and
+one test expectation only; no runtime, Compose or secret change.
+
+Live state found by read-only inspection: #23 merged as `734550b`; the
+`csa-staging` project runs `staging-db`, `gateway` and `frontend` (frontend
+published on `127.0.0.1:18030`, gateway/database unpublished, data/app/edge
+networks internal). The shared connector is the `cloudflared` container of the
+`network` Compose project on `network_default` at `172.22.0.2`, not a host
+service. Its route for `staging-console.fourstacks.my` targets
+`http://192.168.0.50:80`, the same host LAN origin as the other routes, after
+the earlier `127.0.0.1:80` route returned 502. The host Caddy block for the
+staging hostname allows `127.0.0.1`, `::1` and `172.22.0.2`, otherwise 403,
+and proxies to `127.0.0.1:18030`. Owner reports public login loads.
+
+The runbook, snippet and test previously described loopback-only trust and a
+loopback tunnel origin; they now match the live configuration. The connector
+address is Docker-assigned and its stability is not established; a recreated
+connector can turn the public site into 403 until the Caddy block is updated.
+Trusting the whole connector subnet was considered and not applied because it
+would also trust the landing-page container.
+
+Still open, unchanged by this slice: public authentication/CSRF/logout/tenant
+acceptance, abuse controls, application/database failure drills, persistent
+backup/restore, worker/delivery/KB activation and the manual testing pack on
+`feat/manual-acceptance-fixtures` in `CSAV2-staging-public-demo`.
+
+```text
+Continue from docs/staging-live-topology after review/merge. Live staging
+topology is reconciled in deploy/STAGING_SHARED_CADDY.md; do not reapply the
+obsolete host-service/loopback route. Next: public login/CSRF/logout/tenant
+acceptance against https://staging-console.fourstacks.my using the acceptance
+matrix in deploy/STAGING_INGRESS.md, then backup/restore of the staging
+volumes. Ask before any host Caddy, tunnel, DNS, container or secret change.
+Never repeat bootstrap/migrations or inspect secret values.
+```
+
+## Prior continuation: frontend host publishing correction (2026-10-23)
 
 Read repository guidance, latest PROGRESS and
 [shared-host procedure](../../deploy/STAGING_SHARED_CADDY.md).
