@@ -1,6 +1,65 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging bootstrap complete (2026-10-23)
+## Current continuation: private staging startup procedure (2026-10-23)
+
+Start with repository guidance, latest PROGRESS, the
+[private startup procedure](../../deploy/RELEASE.md#private-staging-application-startup-procedure-only-not-run)
+and [configuration tests](../../tests/test_staging_compose.py). Branch
+`feat/staging-private-startup`, worktree
+`/home/amsyrzmi/CSAV2-staging-private-startup`, is based on PR #18 merge
+`1012b705f3eb63f8d686f1dc926c8c7764307755` (main CI `39928109213` passed).
+
+The slice adds a procedure and one synthetic configuration test, not runtime
+or Compose changes. It selects database, gateway and frontend individually
+with `--no-deps`, `--pull never` and finite waits; it never starts the entire
+profile or connector. Existing volume presence/project labels are required.
+Checks use exec inside the existing containers, not host ports or shared
+networks. Expected outputs and a non-destructive stop sequence are documented.
+
+Validation: `NO_LOCAL_ENV=1 ENV=ci` focused pytest covering
+`test_staging_compose.py`, `test_staging_secrets.py`,
+`test_publish_staging_images.py` and `test_release_context.py`: **54 passed**
+in 7.37 seconds after formatting. Ruff lint/format and focused Pyright pass
+(0 errors/warnings). An initial format check failed and was corrected.
+Whitespace, Markdown fences, five added links/anchors, two Bash block syntax
+checks and Python probe syntax pass. Accepted-source comparison is unchanged.
+JavaScript syntax checking was attempted but Node is unavailable in this
+shell; no dependency was installed and no container substituted. The
+changed-content credential-pattern check passes with no untracked files; it
+is not a complete Gitleaks scan. Full runtime/database suites and resets were
+not run; full hosted CI/Gitleaks remain required before merge.
+
+No startup or probes have been run for this slice. Last owner-reported
+persistent state remains: staging DB stopped, both volumes retained,
+schema/checkpoints initialized, upload root owned by 1000:1000, and first
+administrator requiring password change. Do not repeat bootstrap or regenerate
+secrets. Do not read secrets, account identifiers or passwords into tools/chat.
+
+**Next gate:** review/publish this procedure with user approval; full hosted
+CI and user merge precede execution. Verify the accepted merge in a clean
+checkout, then obtain separate approval for DB restart, application startup
+and private checks. Stopping is separately approved. Public routing, tunnel
+token, DNS/Caddy and authenticated browser/tenant/recovery acceptance remain
+later gates. No worker/delivery/KB consumer or real provider delivery is wired.
+
+```text
+Continue CSA staging/CD. Read AGENTS.md, latest PROGRESS and the current
+release handoff, then deploy/RELEASE.md's private startup procedure.
+Verify publication/merge of feat/staging-private-startup (base 1012b705,
+main CI 39928109213 passed); worktree is CSAV2-staging-private-startup.
+The procedure and synthetic config test do not establish runtime acceptance.
+Staging DB remains stopped with both volumes retained after successful
+bootstrap. Ask before commit/push/PR and before DB restart, app startup,
+private probes or stop. Never enable the entire staging-approved profile:
+it includes cloudflared. No pulls, secret inspection, bootstrap repetition,
+volume deletion, Caddy/shared connector/DNS changes or real provider delivery.
+Use explicit self-contained Docker commands, not stg. User merges.
+Preserve the two main-worktree review deletions and unrelated worktrees.
+Roadmap: Staging/CD, subscription, WhatsApp test-number demo, interactive
+voice, Google mailbox/calendar, reporting/wallboards. Keep each gate explicit.
+```
+
+## Prior continuation: staging bootstrap complete (2026-10-23)
 
 Start with repository guidance, the latest progress entry, the
 [host execution record](../../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23),

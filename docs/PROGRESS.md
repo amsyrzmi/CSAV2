@@ -1,5 +1,19 @@
 # Progress
 
+Private staging startup procedure (proposed, not run, 2026-10-23): PR #18
+merged as `1012b705`; main CI `39928109213` passed. Branch
+`feat/staging-private-startup` adds a
+[private startup/readiness procedure](../deploy/RELEASE.md#private-staging-application-startup-procedure-only-not-run)
+and extends existing configuration tests for the explicit database/gateway/
+frontend selection without a connector token. Compose configuration and
+runtime code are unchanged. Commands prohibit pulls, skip environment files,
+validate existing volume project labels and start only explicit service targets.
+Private checks cover gateway readiness, login-page delivery and frontend-to-
+gateway reachability; stop commands retain data. No execution is authorized
+by this procedure, and no services were started during its preparation.
+Current continuation:
+[private startup procedure](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-private-staging-startup-procedure-2026-10-23).
+
 Staging bootstrap executed and stopped (2026-10-23): PR #17 merged as
 `a5eb450`; PR CI `39914864494`, branch CI `39914798398` and main CI
 `39917438918` passed. The owner reported successful baseline, migrations

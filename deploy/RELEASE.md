@@ -497,6 +497,143 @@ proposal has no worker, delivery or KB consumers and does not establish
 end-to-end agent conversations. Protected repeatable staging CD is not yet
 accepted; this is not a production deployment.
 
+### Private staging application startup (procedure only, not run)
+
+Prerequisite: the [bootstrap execution](#staging-bootstrap-host-execution-2026-10-23)
+is complete, the database is stopped and both volumes remain. Obtain separate
+approval before executing this block: it restarts the database, starts gateway
+and frontend, and performs private HTTP checks. It publishes no host ports and
+does not start the connector. Full hosted CI for the procedure's merge must
+pass first; run from a clean checkout of that accepted merge.
+
+Supported scope is private console process/schema readiness and unauthenticated
+login-page delivery. Gateway startup opens the domain and identity pools and
+checks identity/HR schema readiness. It does not start worker, delivery or KB
+consumers. Model access remains a disabled placeholder; HR assistant and KB
+ingestion are off by default. Do not submit turns, uploads or provider actions
+as part of these checks. No functioning end-to-end agent conversations are
+claimed.
+
+Source review at `1012b705` found no changes since accepted image source
+`7cdc156` in gateway, Python settings, console identity, either Dockerfile or
+the frontend runtime launcher. The gateway image healthcheck calls `/readyz`;
+the frontend image healthcheck requires `/login` to return 200. Frontend stays
+bound to its accepted build/runtime API origin, `http://gateway:8080`, and
+receives no database, model or encryption secrets.
+
+The configuration test renders exactly these three services with a missing
+connector token file and checks their hardening, secret targets, dependency
+health conditions and frontend API origin. This is not evidence that `up`
+will succeed or that mounts, credentials or HTTP work on this host.
+
+**Owner-run startup and private checks (separate approval).** The block is
+self-contained in a Bash subshell. It disables automatic Compose environment
+files and inherited profiles, forbids pulls and uses explicit service targets
+with `--no-deps`. The baseline, migrations and first-admin bootstrap are
+deliberately not invoked.
+
+```bash
+(
+  cd /home/amsyrzmi/CSAV2-staging-run || exit 1
+  export NO_LOCAL_ENV=1 ENV=ci COMPOSE_PROFILES=
+  export CSA_STAGING_PROJECT=csa-staging
+  export CSA_STAGING_SECRET_DIR=/srv/csa-staging/secrets
+  export CSA_STAGING_PYTHON_IMAGE=ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764
+  export CSA_STAGING_FRONTEND_IMAGE=ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f
+  export CSA_STAGING_CONSOLE_ORIGIN=https://staging-console.fourstacks.my
+
+  test -z "$(git status --porcelain)" || exit 1
+  git log --oneline -1
+  python3 -m scripts.staging_secrets check --secret-dir "$CSA_STAGING_SECRET_DIR" || exit 1
+  for volume in csa-staging_staging-db csa-staging_staging-uploads; do
+    project=$(docker volume inspect "$volume" \
+      --format '{{index .Labels "com.docker.compose.project"}}') || exit 1
+    if [ "$project" != csa-staging ]; then
+      printf 'Unexpected project label for %s\n' "$volume" >&2
+      exit 1
+    fi
+    printf '%s project=%s\n' "$volume" "$project"
+  done
+
+  csa_private_compose() {
+    docker compose --env-file /dev/null --project-name csa-staging \
+      --file deploy/compose.staging-local-proposal.yml \
+      --profile staging-approved "$@"
+  }
+
+  csa_private_compose config --quiet || exit 1
+  for service in staging-db gateway frontend; do
+    csa_private_compose up --detach --wait --wait-timeout 120 \
+      --no-deps --pull never "$service" || exit 1
+  done
+  csa_private_compose ps --format '{{.Service}} {{.Status}}' || exit 1
+
+  csa_private_compose exec -T gateway python - <<'PY'
+import json
+import urllib.request
+
+for path, expected in (("/healthz", "ok"), ("/readyz", "ready")):
+    with urllib.request.urlopen("http://127.0.0.1:8080" + path, timeout=5) as response:
+        body = json.load(response)
+        assert response.status == 200 and body["status"] == expected
+    print(path, expected)
+PY
+  result=$?
+  if [ "$result" -ne 0 ]; then exit "$result"; fi
+
+  csa_private_compose exec -T frontend node --input-type=module - <<'JS'
+const options = { signal: AbortSignal.timeout(5000), redirect: "manual" };
+const login = await fetch("http://127.0.0.1:3000/login", options);
+if (login.status !== 200) throw new Error(`Login status ${login.status}`);
+console.log("/login 200");
+const ready = await fetch("http://gateway:8080/readyz", {
+  signal: AbortSignal.timeout(5000), redirect: "manual",
+});
+if (ready.status !== 200 || (await ready.json()).status !== "ready") {
+  throw new Error("Gateway not ready from frontend network");
+}
+console.log("frontend -> gateway ready");
+JS
+)
+```
+
+Before startup, require the printed Git revision to be the accepted procedure
+merge (verify before issuing the command), the checker to pass and both volume
+labels to read `csa-staging`. The block exits if a volume is missing or its
+project label differs. Both existing volumes are
+required; this is not an empty-database initialization procedure.
+
+Expected runtime results: exactly three healthy service rows (`staging-db`,
+`gateway`, `frontend`), `/healthz ok`, `/readyz ready`, `/login 200` and
+`frontend -> gateway ready`. Gateway readiness demonstrates app-role database
+access plus configured identity/HR readiness, not full tenant authorization
+or checkpoint read/write acceptance. Login-page delivery is not authentication,
+password change, proxy/CSRF, browser or ingress acceptance. No responses,
+cookies or secret values are printed.
+
+If startup or a check fails, stop. Earlier services may remain running; do not
+retry blindly, create a connector token, rerun bootstrap, or use `down -v`.
+Request a bounded diagnostic operation rather than printing complete logs,
+container environments or secret files.
+
+**Stop/recovery command (separate approval):**
+
+```bash
+docker container stop csa-staging-frontend-1 csa-staging-gateway-1 &&
+docker container stop csa-staging-staging-db-1 &&
+docker container inspect csa-staging-frontend-1 csa-staging-gateway-1 \
+  csa-staging-staging-db-1 --format '{{.Name}} {{.State.Status}}' &&
+docker volume ls --filter label=com.docker.compose.project=csa-staging \
+  --format '{{.Name}}'
+```
+
+This stops applications before the database, preserving both volumes, secrets
+and images. If startup only partially completed, obtain an adjusted stop command
+for the exact containers that exist. No destructive cleanup is authorized.
+The next gate after private startup acceptance is separately reviewed dedicated
+tunnel/hostname activation and authenticated browser/tenant/ingress acceptance;
+shared connector, Caddy, apex/www and existing websites remain untouched.
+
 ## Origin and route boundary
 
 `CSA_CONSOLE_API_ORIGIN` is a non-secret **server-only** bare HTTP(S) origin.
