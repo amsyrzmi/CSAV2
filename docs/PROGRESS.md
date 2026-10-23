@@ -1,5 +1,19 @@
 # Progress
 
+Staging bootstrap executed and stopped (2026-10-23): PR #17 merged as
+`a5eb450`; PR CI `39914864494`, branch CI `39914798398` and main CI
+`39917438918` passed. The owner reported successful baseline, migrations
+(`31 0410`), checkpoint setup, upload ownership (`1000:1000`) and first-admin
+creation with forced password change and one audit entry. The staging database
+is stopped; both volumes remain. See the
+[execution record](../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23)
+for results, the failed `stg` shortcut attempts and evidence limitations.
+
+Current continuation:
+[bootstrap complete; private application startup is next](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-staging-bootstrap-complete-2026-10-23).
+Review a bounded gateway/frontend startup procedure before separately approved
+execution. Do not repeat bootstrap, delete volumes or activate ingress.
+
 Staging database bootstrap procedure (proposed, not run, 2026-10-23): PR #16
 merged as `2a4a037`. Branch `feat/staging-db-bootstrap` adds two one-shot
 services to the

@@ -1,6 +1,73 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: staging database bootstrap procedure (2026-10-23)
+## Current continuation: staging bootstrap complete (2026-10-23)
+
+Start with repository guidance, the latest progress entry, the
+[host execution record](../../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23),
+the [local proposal](../../deploy/compose.staging-local-proposal.yml) and its
+[configuration tests](../../tests/test_staging_compose.py). Reconcile LG09/LG15
+release gates with current source, not historical schema counts.
+
+PR #17 merged as `a5eb450ae6fdcbff71c673abaedc3bd8abb8639e`; PR CI
+`39914864494`, branch CI `39914798398` and main CI `39917438918` passed.
+The owner ran separately approved bootstrap steps from the clean detached
+`/home/amsyrzmi/CSAV2-staging-run` checkout. Results are recorded in RELEASE:
+baseline success reported, migrations/checkpoints verified, upload ownership
+verified, and one forced-change administrator plus one bootstrap audit entry.
+Do not record personal identifiers or credentials.
+
+**Persistent state:** `csa-staging-staging-db-1` is stopped (`status=exited`).
+Volumes `csa-staging_staging-db` and `csa-staging_staging-uploads` remain.
+Do not rerun baseline/admin bootstrap, regenerate secrets or delete volumes.
+The existing secret files must not be read into tools, logs or chat.
+The absent connector token did not prevent database-only startup.
+
+The failed `stg` attempts resolved an installed executable, not the temporary
+shell function; subsequent owner commands used explicit Docker/Compose
+commands. Future operator blocks must be self-contained, avoid that shortcut,
+disable automatic environment-file loading and prohibit image pulls.
+
+**Next bounded task:** review and synthetically validate a private
+gateway/frontend startup/readiness procedure, using accepted image identities
+and runtime mounts. Database restart and application startup require separate
+approval. Do not start an entire `staging-approved` profile: it includes the
+connector. Later gates remain tunnel/hostname, authenticated browser and
+password change, tenant isolation, ingress, recovery and protected promotion.
+No worker/delivery/KB consumer is configured; no end-to-end conversation or
+production readiness is claimed.
+
+This evidence-only slice changes RELEASE, PROGRESS and this handoff; it changes
+no runtime, SQL, tests or Compose configuration. Earlier synthetic validation
+is historical; hosted CI remains required for publication. Ask before
+commit/push/PR; the user merges.
+
+Local documentation checks passed: `git diff --check`, balanced fences in all
+three changed files, and all six added local links/anchors. A credential-pattern
+scan of added content found no matches; there are no untracked files. This is
+not Gitleaks: no local Gitleaks executable is available, and no scan container
+was started. Hosted Gitleaks remains required. No runtime tests, database
+queries, container probes or restarts were run to validate these prose edits.
+
+```text
+Continue CSA staging/CD. Read AGENTS.md, current PROGRESS, this continuation
+and deploy/RELEASE.md's staging bootstrap host execution record first.
+Verify Git/CI: PR #17 merged at a5eb450; main CI 39917438918 passed.
+Evidence docs are being prepared on docs/staging-bootstrap-evidence at
+/home/amsyrzmi/CSAV2-staging-bootstrap-evidence; verify publication state.
+Owner completed baseline, migration/checkpoints, upload ownership and first
+admin, then stopped csa-staging-staging-db-1; both staging volumes remain.
+Do not rerun bootstrap or read secrets. Next local task: review and validate
+the private gateway/frontend startup procedure against the accepted images,
+source and mounts. Ask separately before DB restart/app startup, any probes,
+pulls, tunnel/DNS/Caddy or deployment, and before commit/push/PR.
+No worker/delivery/KB consumer or real provider delivery is authorized.
+Keep shared connector, websites and other worktrees untouched; preserve the
+two pre-existing main-worktree review deletions. Roadmap remains Staging/CD,
+subscription, WhatsApp test-number demo, interactive voice, Google
+mailbox/calendar, then reporting/wallboards. Do not bypass release gates.
+```
+
+## Prior continuation: staging database bootstrap procedure (2026-10-23)
 
 Branch `feat/staging-db-bootstrap` (worktree `/home/amsyrzmi/CSAV2-staging-bootstrap`)
 is based on `2a4a037` (PR #16 merge). It adds:
