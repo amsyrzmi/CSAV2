@@ -692,8 +692,10 @@ token provisioning, exact-host protection/routing, application restart,
 connector activation, browser/tenant acceptance, failure drills and
 non-destructive rollback. It also lists unresolved backup/restore and
 protected-CD prerequisites. It changes no runtime or Compose configuration.
-Current official Cloudflare guidance was checked directly; account/zone/
-hostname authority and exposure-policy decisions remain unresolved.
+Current official Cloudflare guidance was checked directly. The owner later
+selected a public login page with owner-only CSA login, without Access.
+The runbook records subsequent owner-reported authority/route findings and
+public-login safeguard hold points; public routing is not yet approved.
 
 The existing configuration tests additionally render the connector alone,
 verify no implicit dependencies, application-secret grants or host exposure,
@@ -703,6 +705,55 @@ acceptance result. Every infrastructure step remains separately approved.
 After approved execution, batch outcomes into one evidence update rather
 than opening a separate PR for each owner command. Full hosted CI remains
 required before merge; no status-only commits are needed.
+
+### Public demo exposure revision (not activated)
+
+The owner subsequently approved local preparation of a shared host-tunnel/
+Caddy alternative; use the [shared hosting procedure](STAGING_SHARED_CADDY.md)
+rather than the dedicated connector instructions. The original no-host-port
+and no-Caddy-change proposal remains an alternative, not the selected mode.
+
+The current [ingress runbook](STAGING_INGRESS.md) supersedes its original
+owner-only Access recommendation with the owner's selected public-login/
+owner-presented demo. Anonymous console access, signup, shared credentials,
+visitor accounts and provider delivery are not authorized. Review of unchanged
+accepted-image identity source found login throttling, CSRF/Origin checks,
+secure sessions and initial password change; public proxy/abuse behaviour is
+not accepted. Exact-host abuse-control selection and compatibility remain
+explicit public-routing hold points.
+
+The owner reported adding staging to the shared tunnel and receiving 502,
+then separately approved removal of only that staging route. The owner
+reported both landing-page routes retained, no explicit staging DNS record,
+the existing wildcard unchanged, the zone Active, no dedicated staging tunnel
+and an empty Access application list. These are reported findings, not
+assistant dashboard verification. No DNS values, dashboard links, personal
+identifiers or credentials are reproduced. The failed route is not a staging
+acceptance result; do not repeat it. At that point no Caddy/shared-connector
+change was approved; the later shared-mode proposal below is still not applied.
+
+### Shared host tunnel and Caddy proposal (not applied)
+
+The owner explicitly selected the existing host-system-service connector and
+requested a staging Caddy site instead of a dedicated connector. The
+[shared-Caddy overlay](compose.staging-shared-caddy.yml) publishes only frontend
+`127.0.0.1:18030:3000` and moves the unused dedicated connector behind a
+separate profile. The original local proposal is unchanged. Compose 2.24.4+
+is required for profile replacement with `!override`.
+
+The [site snippet](staging-console.Caddyfile) matches only the staging
+hostname, refuses non-loopback peers and proxies to that loopback frontend.
+The proposed shared-tunnel route is `http://127.0.0.1:80` with the original
+Host preserved, not Docker's `frontend` hostname. No application secrets,
+database/gateway ports, shared Docker networks or new tunnel/token are needed.
+
+Read-only host checks found Caddy 2.6.2 on ports 80/443 and no listener on
+18030 during preparation. Port use must be rechecked at execution. No live
+Caddy edit/reload, startup, route or DNS change was performed. The
+[operator procedure](STAGING_SHARED_CADDY.md) requires separate approvals,
+full candidate validation, existing-site checks and scoped rollback before
+changing the shared service. Public-login abuse-control and proxy acceptance
+hold points remain unresolved; shared hosting does not waive them.
 
 ## Origin and route boundary
 

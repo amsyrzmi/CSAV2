@@ -322,8 +322,9 @@ def test_dedicated_connector_selection_has_no_implicit_dependencies(tmp_path: Pa
     assert SYNTHETIC_VALUE not in result.stdout
 
 
-def test_ingress_runbook_shell_blocks_are_syntax_valid() -> None:
-    runbook = (REPO_ROOT / "deploy" / "STAGING_INGRESS.md").read_text()
+@pytest.mark.parametrize("name", ["STAGING_INGRESS.md", "STAGING_SHARED_CADDY.md"])
+def test_ingress_runbook_shell_blocks_are_syntax_valid(name: str) -> None:
+    runbook = (REPO_ROOT / "deploy" / name).read_text()
     blocks = re.findall(r"^```bash\n(.*?)^```", runbook, re.MULTILINE | re.DOTALL)
     assert blocks
     for block in blocks:
@@ -335,8 +336,109 @@ def test_ingress_runbook_shell_blocks_are_syntax_valid() -> None:
             capture_output=True,
         )
     provisioning = re.search(r"sudo python3 - <<'PY'\n(.*?)\nPY", runbook, re.DOTALL)
-    assert provisioning is not None
-    compile(provisioning[1], "staging-token-provisioning", "exec")
+    if name == "STAGING_INGRESS.md":
+        assert provisioning is not None
+        compile(provisioning[1], "staging-token-provisioning", "exec")
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
+@pytest.mark.parametrize("profile", [None, "staging-approved"])
+def test_shared_caddy_overlay_exposes_only_loopback_frontend(
+    tmp_path: Path, profile: str | None
+) -> None:
+    secrets_dir = tmp_path / "synthetic-staging-secrets"
+    secrets_dir.mkdir(mode=0o700)
+    _make_synthetic_secrets(secrets_dir)
+    (secrets_dir / "connector/staging_tunnel_token").unlink()
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        "/dev/null",
+        "--project-name",
+        "csa-staging-synthetic",
+        "--file",
+        str(COMPOSE_FILE),
+        "--file",
+        str(REPO_ROOT / "deploy" / "compose.staging-shared-caddy.yml"),
+    ]
+    if profile:
+        command.extend(["--profile", profile])
+    result = subprocess.run(
+        [*command, "config", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**_compose_env(secrets_dir), "COMPOSE_PROFILES": ""},
+    )
+    rendered = json.loads(result.stdout)
+    services = rendered.get("services", {})
+    assert set(services) == ({"staging-db", "gateway", "frontend"} if profile else set())
+    if profile:
+        ports = services["frontend"]["ports"]
+        assert len(ports) == 1
+        assert ports[0]["host_ip"] == "127.0.0.1"
+        assert str(ports[0]["published"]) == "18030"
+        assert ports[0]["target"] == 3000
+        assert ports[0]["protocol"] == "tcp"
+        for name in ("staging-db", "gateway"):
+            assert not services[name].get("ports")
+        assert not services["frontend"].get("secrets")
+        assert set(services["frontend"]["networks"]) == {"app", "edge"}
+        assert set(services["gateway"]["networks"]) == {"app", "data"}
+        assert set(services["staging-db"]["networks"]) == {"data"}
+        assert set(rendered["networks"]) == {"data", "app", "edge"}
+        assert all(network["internal"] for network in rendered["networks"].values())
+        for name in ("frontend", "gateway"):
+            service = services[name]
+            assert service["user"] == "1000:1000"
+            assert service["read_only"] is True
+            assert service["cap_drop"] == ["ALL"]
+            assert service["security_opt"] == ["no-new-privileges:true"]
+        assert all(
+            not service.get("privileged", False) and service.get("network_mode") != "host"
+            for service in services.values()
+        )
+        assert "staging_tunnel_token" not in rendered["secrets"]
+        assert services["frontend"]["environment"]["CSA_CONSOLE_API_ORIGIN"] == (
+            "http://gateway:8080"
+        )
+        assert services["gateway"]["environment"]["CONSOLE_COOKIE_SECURE"] == "true"
+        assert services["gateway"]["environment"]["CONSOLE_ALLOWED_ORIGIN"] == (
+            "https://staging.invalid"
+        )
+        assert all(not network.get("external", False) for network in rendered["networks"].values())
+    assert SYNTHETIC_VALUE not in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("caddy") is None, reason="Caddy CLI is unavailable")
+def test_staging_caddy_site_adapts_to_exact_host_and_loopback_only() -> None:
+    result = subprocess.run(
+        [
+            "caddy",
+            "adapt",
+            "--config",
+            str(REPO_ROOT / "deploy" / "staging-console.Caddyfile"),
+            "--adapter",
+            "caddyfile",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={"PATH": os.defpath},
+    )
+    servers = json.loads(result.stdout)["apps"]["http"]["servers"]
+    assert len(servers) == 1
+    server = next(iter(servers.values()))
+    assert server["listen"] == [":80"]
+    assert server["routes"][0]["match"] == [{"host": ["staging-console.fourstacks.my"]}]
+    routes = server["routes"][0]["handle"][0]["routes"]
+    assert len(routes) == 2
+    assert routes[0]["match"] == [{"not": [{"remote_ip": {"ranges": ["127.0.0.1", "::1"]}}]}]
+    assert routes[0]["handle"] == [{"handler": "static_response", "status_code": 403}]
+    assert routes[1]["handle"] == [
+        {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:18030"}]}
+    ]
 
 
 def _render_admin_gate(tmp_path: Path) -> str:

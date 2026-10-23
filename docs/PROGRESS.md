@@ -1,5 +1,37 @@
 # Progress
 
+Shared-tunnel/Caddy hosting (proposed, not applied, 2026-10-23): owner selected
+the existing host cloudflared service and explicitly approved local preparation
+of a staging-only Caddy site and frontend loopback port. The
+[shared procedure](../deploy/STAGING_SHARED_CADDY.md), Compose overlay and
+Caddy snippet are prepared on `docs/staging-public-demo` as an extension of
+open #22, not an additional stacked PR. Original dedicated proposal unchanged.
+Database/gateway remain private; normal shared startup excludes dedicated
+connector. Host Caddy edits/reload, service startup, tunnel route and DNS still
+need separate approval. Public-login safeguards remain open.
+Current continuation:
+[shared hosting preparation](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-shared-tunnel-and-caddy-2026-10-23).
+Focused final checks: **52 passed**, no skips, 12 test-secret-directory warnings;
+Ruff/types, Caddy snippet and runbook syntax pass. This is configuration
+evidence, not live acceptance. Previous #22 head's PR CI failed the unchanged
+ingress latency threshold while push CI passed; full final-head CI remains
+required. See current continuation for exact evidence and limitations.
+
+Public-login demo revision (proposed, not activated, 2026-10-23): PR #21
+merged as `05b429ec`; main CI `39951244406` passed. The owner selected a public
+login page with owner-only CSA login, no Access, signup or visitor credentials.
+The [ingress runbook](../deploy/STAGING_INGRESS.md) now records this choice,
+unchanged-source authentication safeguards and unresolved proxy/abuse-control
+publication gates. It also preserves the owner's shared-tunnel 502 and
+separately approved staging-route cleanup. No explicit staging DNS record,
+dedicated tunnel or Access application was reported; wildcard/company routes
+remain untouched. Three staging services were last reported stopped, volumes
+retained. No runtime/Compose changes or infrastructure operations in this slice.
+Historical continuation at public-login revision:
+[public-login safeguards and remaining gates](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-public-login-demo-review-2026-10-23).
+Batch remaining local evidence; ask before publication and each infrastructure
+operation. Public routing remains blocked pending safeguard approval.
+
 Consolidated ingress readiness (proposed, not executed, 2026-10-23): PR #20
 merged as `df948b08`; main CI `39945835399` passed. Branch
 `feat/staging-ingress-readiness` prepares one
@@ -11,8 +43,8 @@ No tunnel/token, external account inspection, restart, DNS/Caddy or deployment
 operation was performed. Runtime steps remain separately approved; batch their
 outcomes into one evidence update. Protected executable CD follows live
 acceptance, not unproven procedure automation.
-Current continuation:
-[consolidated ingress readiness](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-consolidated-ingress-readiness-2026-10-23).
+Historical continuation at runbook proposal:
+[consolidated ingress readiness](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-consolidated-ingress-readiness-2026-10-23).
 
 Private staging readiness accepted and stopped (2026-10-23): PR #19 merged
 as `8ff63c29`; PR, branch and main CI passed (main `39935706204`).

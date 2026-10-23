@@ -1,0 +1,5 @@
+http://staging-console.fourstacks.my {
+	@not_local not remote_ip 127.0.0.1 ::1
+	respond @not_local 403
+	reverse_proxy 127.0.0.1:18030
+}

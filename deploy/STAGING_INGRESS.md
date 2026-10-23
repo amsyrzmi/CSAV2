@@ -1,15 +1,23 @@
 # Dedicated staging ingress: activation, acceptance and rollback
 
-Status: reviewed-source proposal, **not executed**. This consolidates the next
+Status: public-demo exposure revision, **not executed**. This consolidates the next
 owner-run gates so they can be reviewed in one PR. It does not authorize any
 operation. Start with [release authority and evidence](RELEASE.md), the
 [local Compose proposal](compose.staging-local-proposal.yml), and the current
 [continuation](../docs/handoffs/2026-10-19-domain-release-next-session.md).
 
+**Current hosting choice:** the owner subsequently selected the existing host
+tunnel plus Caddy. Follow [STAGING_SHARED_CADDY.md](STAGING_SHARED_CADDY.md)
+for that topology, startup overlay, Caddy/route changes and rollback.
+The dedicated-tunnel/token/connector instructions below are an alternative,
+not steps to execute for shared hosting. Public-login safeguards and
+application acceptance requirements below still apply. Shared hosting does
+not itself solve abuse controls or public proxy acceptance.
+
 ## Scope and starting state
 
-PR #20 merged as `df948b0882aefdb4fe01381fe47271fed81f31ff`; main CI
-`39945835399` passed. Last owner-reported state: database, gateway and frontend
+PR #21 merged as `05b429ec0856694de87dfb02bbd7ca74cbbf27bd`; main CI
+`39951244406` passed. Last owner-reported state: database, gateway and frontend
 stopped; both staging volumes retained after successful private readiness.
 Accepted Python/frontend source is `7cdc156`, not the latest procedure commit.
 Do not rebuild/pull images, repeat bootstrap, regenerate application secrets
@@ -22,6 +30,14 @@ No Caddy, host port, shared network, shared connector, apex/www, wildcard
 hostname, private-network/CIDR route or existing website change is included.
 HTTP inside the isolated edge network is intentional; public HTTPS terminates
 at Cloudflare. Do not turn off public TLS verification to pass acceptance.
+
+**Selected audience:** the owner selected a publicly reachable login page,
+without Cloudflare Access, and owner-only CSA login for a presented demo.
+Anonymous visitors must not gain console access. There is no visitor account,
+shared administrator password, public signup or anonymous tenant enrollment.
+Screen-share only synthetic content and avoid displaying identities, keys,
+browser storage or session tokens. This replaces the earlier owner-only Access
+recommendation; it does not approve publication or remove authentication gates.
 
 This staging scope is console authentication/readiness and explicitly selected
 synthetic tenant operations. Worker, delivery and KB consumers are absent.
@@ -49,7 +65,31 @@ process, not merely tunnel connectivity.
 The documentation connector failed authentication; the references above were
 read directly from official pages instead. Two older documentation URLs returned
 404 before the current paths were located. Recheck guidance before execution
-if it has changed. No Cloudflare account or DNS record was inspected.
+if it has changed. These documentation reads did not inspect account or DNS
+state; subsequent owner-reported dashboard findings are recorded below.
+
+## Owner-reported discovery and shared-route cleanup
+
+The owner reported the zone Active, an existing wildcard DNS record, and
+existing apex/www routes serving a separate company landing page. No dedicated
+staging tunnel exists. The owner initially confused a tunnel route with an
+Access application; the later explicit Access Applications check found the
+list empty. Do not treat the earlier coverage answer as evidence of protection.
+
+Before dedicated setup, the owner added the staging hostname to the shared
+tunnel with `http://frontend:3000` and received Cloudflare 502. At last report
+the staging services were stopped; the shared connector was not configured
+for staging's isolated edge network. No runtime diagnostic established the
+exact upstream failure. Waiting was not an acceptance strategy.
+
+After separately approving removal of only the new staging route, the owner
+reported it deleted, both company landing-page routes still present, and no
+explicit staging DNS record in the displayed list. The wildcard remains:
+staging may still resolve to an existing unrelated origin. Do not interpret
+its browser response as CSA ingress, no-exposure proof or DNS nonexistence.
+No Caddy change, shared connector restart or DNS deletion was requested.
+These are owner reports, not independent assistant account/DNS verification.
+Do not copy DNS values, account links or personal identifiers into this record.
 
 ## Gates and decisions
 
@@ -57,23 +97,61 @@ Record non-secret decisions before issuing execution commands:
 
 | Gate | Required decision/evidence | Operation needs explicit approval |
 | --- | --- | --- |
-| Authority | Owner controls the intended account and active zone; hostname has no conflicting DNS, published route, Access app or wildcard policy | Read-only dashboard inspection; no credential/API-token sharing |
-| Exposure | Approve exact hostname, controlled recipients and access policy | Creating/changing Access application or policy |
+| Authority | Owner controls intended account/active zone; recheck exact hostname conflicts and wildcard coverage; preserve existing wildcard and company routes | Read-only dashboard inspection; no credential/API-token sharing |
+| Exposure | Public login page, owner-only CSA account, no Access; review safeguards below and agree demo window/withdrawal | Public exposure, edge rules or future Access changes |
 | Tunnel | Dedicated staging-only name and identity; no existing/shared tunnel reuse | Tunnel creation |
 | Secret | Private token entry on host, owner/mode checks, no overwrite | Token provisioning |
 | Runtime | Accepted procedure merge/CI; accepted image digests remain locally available; both volumes remain | Database/app restart and private checks |
 | Connector | Frontend healthy, exact service URL, Access enforcement configured if selected | Dedicated connector start and external connectivity |
-| Route | No conflict; protection approved and configured first; exact hostname only | Published route/DNS creation |
+| Route | Safeguard gates satisfied; exact-host record supersedes wildcard only for staging; preserve wildcard/apex/www | Published route/DNS creation |
 | Acceptance | Controlled accounts/tenants and expected denials agreed | Browser, synthetic mutations, failure/recovery checks |
 | Closeout | Results and limits recorded; protected identities/secrets retained safely | Stop, route removal, token revocation or publication as applicable |
 
-Recommended exposure policy: an exact-host Cloudflare Access application with
-a small owner-approved Allow list, no Everyone/Bypass rule, and **Protect with
-Access** on the tunnel origin. The CSA login remains required; Access identity
-is not CSA tenant authority. Account feature availability, IdP/OTP and recipient
-eligibility must be confirmed. Do not enable email/identity services or buy a
-plan implicitly. If Access cannot be used, stop for a separately reviewed
-alternative rather than publishing an unrestricted route.
+Cloudflare Access is optional for Tunnel. For this selected demo, do not create
+an Access application or turn on **Protect with Access** as an unannounced
+requirement. Anyone can reach the public login page; CSA authentication and
+authorization remain mandatory. If a covering Access app is later discovered,
+stop rather than remove it or add a Bypass rule. A future audience change needs
+its own review. No IdP, email service or paid plan is implied.
+
+### Public-login safeguards and publication hold points
+
+Source review compares the accepted `7cdc156` image revision with this slice's
+base `05b429ec`; identity/auth/security and identity SQL are unchanged.
+The following source behaviour is not yet public browser acceptance:
+
+| Surface | Implemented behaviour | Remaining acceptance / limitation |
+| --- | --- | --- |
+| Password work | Salted scrypt, 12-1024 character new passwords, at most two concurrent derivations per process | Not a global request/memory/queue bound or DDoS guarantee |
+| Login attempts | Database buckets: default 5 attempts/email and 50/IP per 900-second window; 429 with Retry-After above limits; successful login clears email bucket | Verify actual proxy client-IP grouping. Counts include attempts, not only failures; do not throttle the real admin to test |
+| Errors/reset | Generic failed-login response; public reset returns a generic manual-support message, not a reset credential | Verify no identity enumeration through public responses; no automated email delivery is implied |
+| Request authority | Login/mutations require configured Origin and CSRF; protected routes derive identity from session, not browser role headers | Correct CSRF can be obtained by any visitor; CSRF is not bot protection |
+| Session | Secure, HttpOnly, SameSite=Lax session cookie; separate readable CSRF cookie; opaque hashed persisted tokens; idle/absolute expiry | Browser/proxy cookie handling, logout and cache isolation remain to test |
+| First login | Password-change-required gate; password change revokes existing sessions and issues replacement session | Owner completes change privately; no shared admin credentials |
+
+Before approving public routing:
+
+1. Confirm no real customer data/provider credentials are in the demo scope.
+   Verify exact images, networks, secure-origin settings and private readiness
+   using the accepted procedure. No public gateway/DB ports or legacy catch-all.
+2. Agree a short owner-attended demo window and explicit withdrawal sequence.
+   Visitors receive no credentials; do not advertise an operational AI service.
+3. Review available exact-host Cloudflare abuse/rate controls in the owner's
+   plan before selecting changes. Do not assume a paid feature exists, enable
+   account-wide rules or spend money. Public auth endpoints require more than
+   a login-page GET rule; do not place interactive challenges on JSON requests
+   without checking browser compatibility.
+4. Application throttling is implemented, but its per-IP behaviour behind the
+   tunnel/Next.js proxy and aggregate request protection remain unverified.
+   Record the chosen edge control, measurable limits and compatibility test
+   before publication. If an adequate control cannot be configured under the
+   approved plan, hold routing for review; do not claim app throttling alone
+   proves resistance to Internet abuse or silently disable it.
+5. After individually approved routing, immediately run anonymous-denial and
+   owner-login checks below. Withdraw the staging route on failed authority,
+   cookie, CSRF or unexpected exposure results. Infrastructure creation may be
+   prepared separately, but public routing stays blocked until these
+   preconditions and the explicit exposure approval are satisfied.
 
 For conflicts, stop: do not overwrite DNS or modify a wildcard/shared policy.
 Record only sanitized resource names/IDs and decisions; no token-bearing
@@ -196,14 +274,14 @@ tunnel's dashboard reports Healthy before routing. Dashboard connector health
 does not prove frontend reachability. If it fails, stop; do not pull a different
 image, run as root, relax token permissions or connect to a shared network.
 
-### 5. Protect, then route only the staging hostname
+### 5. Route only the staging hostname after safeguard approval
 
-Under separately approved Access setup, create the exact-host application and
-owner-approved policy before routing. Configure the tunnel's published
+With the safeguard hold points satisfied and separate public-routing approval,
+configure the dedicated tunnel's published
 application route with hostname `staging-console.fourstacks.my`, no path filter,
 service **HTTP**, URL `frontend:3000` (effective URL `http://frontend:3000`).
-Enable **Protect with Access** with the intended application/team/audience if
-using Access. Do not configure a second route to the gateway, TCP database,
+For the selected public-login model, do not enable **Protect with Access** or
+create an Access app. CSA login stays required. Do not configure a second route to the gateway, TCP database,
 host localhost, or an existing Caddy listener. Do not add wildcard/CIDR routes.
 
 Adding the route can create DNS automatically for a full Cloudflare zone.
@@ -218,13 +296,14 @@ nameservers or existing certificates.
 Use owner-controlled browser profiles, unique staging passwords and only
 synthetic tenant fixtures. Never export HAR files, cookies, CSRF tokens,
 passwords or response bodies containing identities. Record status/results
-and sanitized counts. Cloudflare Access denial and CSA denial are different
-layers; reach the CSA layer with an approved Access identity before testing it.
+and sanitized counts. The selected model has no Access perimeter; an
+anonymous browser must reach the login page but not protected CSA resources.
 
 | Check | Acceptance / failure condition |
 | --- | --- |
 | Public TLS and boundary | Exact staging hostname has trusted HTTPS; no public gateway/database port. Stop for TLS errors or unexpected host routing; never bypass warnings |
-| Access perimeter | Unapproved identity cannot reach CSA. Approved identity still needs CSA login. Verify full-host policy, not only `/login`; no Bypass/Everyone exception |
+| Public-login boundary | Anonymous `/login` loads without an Access challenge; `/console/v1/auth/me` denies anonymous requests and protected pages redirect/deny; no protected data in HTML or cached responses |
+| Abuse controls | Approved exact-host limits work without breaking CSRF/login/password change; controlled synthetic failures produce generic errors and the expected 429/Retry-After, without locking out the real admin or load-testing the home server |
 | CSA login | Anonymous protected page redirects to login or gets contract-standard denial; valid staging admin reaches forced password change, not unrestricted console |
 | Initial password change | New unique password accepted; old password/session cannot grant continued access as specified by current identity contracts. Relogin works |
 | Cookies and CSRF | Session Secure/HttpOnly/SameSite attributes match source; legitimate same-origin mutations work; missing/wrong CSRF or disallowed Origin is denied without mutation |
@@ -265,11 +344,15 @@ regeneration or shared-service restart in this plan.
    reconnect time; record actual timings and failures.
 4. **Exposure rollback:** disable/remove only the newly created staging
    published route and its dedicated DNS record after verifying resource
-   ownership. Keep Access protection in place during rollback. Stop the
+   ownership. No Access policy is created by this plan; preserve any other
+   protections that exist. Stop the
    dedicated connector; then frontend/gateway, then database. Confirm all
    stopped, both volumes remain, and the staging hostname no longer exposes
-   the origin. Access/DNS caching can affect observed results; verify dashboard
-   state as well as an approved external request.
+   the    CSA origin. Removing the explicit DNS record restores wildcard coverage;
+   it does not make the hostname nonexistent or necessarily inaccessible.
+   Verify withdrawal of the CSA mapping in the dashboard and through an
+   approved request; do not edit or test the wildcard's unrelated origin.
+   DNS/cache behaviour can affect observed results.
 5. **Token incident:** stop dedicated connector, rotate/revoke only its tunnel
    credential through an approved owner procedure, then explicitly provision
    the replacement. No token or previous file content goes into logs/chat.
