@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -31,6 +32,7 @@ def render(tmp_path: Path, *profiles: str) -> dict:
     _make_synthetic_secrets(secret_dir)
     (secret_dir / "pipeline").mkdir(mode=0o700)
     (secret_dir / "pipeline/staging_model_key").write_text("SYNTHETIC-ONLY")
+    (secret_dir / "pipeline/staging_telegram_bot_token").write_text("SYNTHETIC-ONLY")
     command = ["docker", "compose", "--env-file", "/dev/null"]
     for name in (
         "compose.staging-local-proposal.yml",
@@ -41,9 +43,8 @@ def render(tmp_path: Path, *profiles: str) -> dict:
     for profile in profiles:
         command += ["--profile", profile]
     command += ["config", "--format", "json"]
-    result = subprocess.run(
-        command, env=_compose_env(secret_dir), capture_output=True, text=True, check=True
-    )
+    env = _compose_env(secret_dir) | {"CSA_STAGING_HOOKS_ORIGIN": "https://hooks.invalid"}
+    result = subprocess.run(command, env=env, capture_output=True, text=True, check=True)
     assert "SYNTHETIC-ONLY" not in result.stdout
     return json.loads(result.stdout)
 
@@ -88,7 +89,11 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
     for name, service in services.items():
         for port in service.get("ports", []):
             assert port["host_ip"] == "127.0.0.1"
-            assert (name, str(port["published"])) in {("gateway", "18081"), ("frontend", "18030")}
+            assert (name, str(port["published"])) in {("gateway", "18031"), ("frontend", "18030")}
+    assert "gateway-host" in services["gateway"]["networks"]
+    assert not config["networks"]["gateway-host"].get("internal", False)
+    for name in ("worker", "delivery", "staging-db"):
+        assert "gateway-host" not in services[name]["networks"]
     assert "/tmp/worker.alive" in services["worker"]["healthcheck"]["test"][-1]
 
 
@@ -104,6 +109,10 @@ def test_pipeline_setup_mounts_only_operator_code_and_expected_secrets(tmp_path:
         tmp_path, "staging-approved", "test-bot-setup-approved", "pipeline-bootstrap-approved"
     )
     setup = config["services"]["staging-bot-setup"]
+    assert setup["environment"]["CSA_STAGING_HOOKS_ORIGIN"] == "https://hooks.invalid"
+    setup_secrets = {s["target"]: s["source"] for s in setup["secrets"]}
+    assert setup_secrets["TELEGRAM_BOT_TOKEN"] == "staging_telegram_bot_token"
+    assert setup_secrets["GROQ_API_KEY"] == "staging_disabled_model_key"
     assert all(v["read_only"] for v in setup["volumes"])
     assert {v["target"] for v in setup["volumes"]} == {
         "/app/scripts/staging_test_bot.py",
@@ -155,6 +164,76 @@ def test_test_bot_refuses_non_staging_targets(dsn: str) -> None:
 
 def test_test_bot_accepts_exact_staging_owner() -> None:
     staging_test_bot.validate_target("postgresql://csa:synthetic@staging-db:5432/csa_staging")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "http://hooks.example",
+        "https://hooks.example/path",
+        "https://u:p@hooks.example",
+        "https://hooks.example/?x=1",
+        "hooks.example",
+    ],
+)
+def test_hooks_origin_requires_bare_https(value: str | None) -> None:
+    with pytest.raises(staging_test_bot.SetupError, match="https origin"):
+        staging_test_bot.hooks_origin(value)
+
+
+def test_hooks_origin_normalises_trailing_slash() -> None:
+    assert staging_test_bot.hooks_origin("https://hooks.example/") == "https://hooks.example"
+
+
+def test_token_prefers_mounted_secret(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    secret = tmp_path / "TELEGRAM_BOT_TOKEN"
+    secret.write_text(" 123456:synthetic-token \n")
+    monkeypatch.setattr(staging_test_bot, "TOKEN_SECRET", secret)
+    monkeypatch.setattr(
+        staging_test_bot.getpass, "getpass", lambda *_: pytest.fail("prompt must not run")
+    )
+    assert staging_test_bot.read_token().get_secret_value() == "123456:synthetic-token"
+    secret.write_text("")
+    with pytest.raises(staging_test_bot.SetupError, match="token is required"):
+        staging_test_bot.read_token()
+
+
+@pytest.mark.skipif(shutil.which("caddy") is None, reason="Caddy CLI is unavailable")
+def test_hooks_caddy_site_forwards_only_webhook_posts_from_connector() -> None:
+    result = subprocess.run(
+        [
+            "caddy",
+            "adapt",
+            "--config",
+            str(ROOT / "deploy" / "staging-hooks.Caddyfile"),
+            "--adapter",
+            "caddyfile",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={"PATH": os.defpath},
+    )
+    servers = json.loads(result.stdout)["apps"]["http"]["servers"]
+    server = next(iter(servers.values()))
+    assert server["listen"] == [":80"]
+    assert server["routes"][0]["match"] == [{"host": ["hooks.fourstacks.my"]}]
+    outer = server["routes"][0]["handle"][0]["routes"]
+    assert len(outer) == 1 and outer[0].get("match") is None
+    routes = outer[0]["handle"][0]["routes"]
+    assert [route.get("match") for route in routes] == [
+        [{"not": [{"remote_ip": {"ranges": ["127.0.0.1", "::1", "172.22.0.2"]}}]}],
+        [{"method": ["POST"], "path": ["/hooks/*"]}],
+        None,
+    ]
+    assert routes[0]["handle"] == [{"handler": "static_response", "status_code": 403}]
+    assert routes[1]["handle"] == [
+        {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:18031"}]}
+    ]
+    assert routes[2]["handle"][0]["handler"] == "static_response"
+    assert routes[2]["handle"][0]["status_code"] == 404
 
 
 async def test_telegram_errors_do_not_expose_token() -> None:

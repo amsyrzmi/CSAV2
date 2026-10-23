@@ -1,7 +1,11 @@
-"""Explicit operator registration of one development bot in isolated staging.
+"""Explicit operator registration of one test bot in isolated staging.
 
-Run in the dedicated setup container. Tokens are entered with getpass, encrypted
-in the database and never printed. Existing bot/tenant bindings cannot be moved.
+Run in the dedicated setup container. The token comes from the mounted secret
+file ``/run/secrets/TELEGRAM_BOT_TOKEN`` (or getpass when absent), is encrypted
+in the database and never printed. The webhook origin comes from
+``CSA_STAGING_HOOKS_ORIGIN`` and must be the HTTPS hooks hostname that forwards
+only ``POST /hooks/*`` to the staging gateway. Existing bot/tenant bindings
+cannot be moved.
 """
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import os
 import secrets
 from pathlib import Path
 from typing import Any
@@ -26,7 +31,9 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, SecretStr
 
-WEBHOOK_ORIGIN = "https://csa-dev.nexusmandiri.com"
+HOOKS_ORIGIN_ENV = "CSA_STAGING_HOOKS_ORIGIN"
+TOKEN_SECRET = Path("/run/secrets/TELEGRAM_BOT_TOKEN")
+ALLOWED_TENANT_STATUS = frozenset({"onboarding", "pilot", "active"})
 
 
 class SetupError(Exception):
@@ -52,6 +59,33 @@ class BotBinding(BaseModel):
     client_id: UUID
     public_id: str
     webhook_secret: SecretStr
+
+
+def hooks_origin(value: str | None) -> str:
+    """Require an explicit HTTPS origin with no path, query, fragment or credentials."""
+    parsed = urlsplit(value or "")
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise SetupError(f"{HOOKS_ORIGIN_ENV} must be an https origin without a path")
+    return f"https://{parsed.netloc}"
+
+
+def read_token() -> SecretStr:
+    """Prefer the mounted secret file; fall back to a hidden prompt."""
+    if TOKEN_SECRET.exists():
+        token = TOKEN_SECRET.read_text().strip()
+    else:
+        token = getpass.getpass("Test bot token (hidden): ").strip()
+    if not token:
+        raise SetupError("Telegram bot token is required")
+    return SecretStr(token)
 
 
 def validate_target(dsn: str) -> None:
@@ -90,8 +124,8 @@ async def bind_bot(
     if len(rows) != 1:
         raise SetupError("Tenant name/slug must match exactly one staging tenant")
     tenant = Tenant.model_validate(rows[0])
-    if tenant.status not in {"active", "pilot"} or tenant.config.get("runtime") != "langgraph":
-        raise SetupError("Selected tenant must be active/pilot with runtime=langgraph")
+    if tenant.status not in ALLOWED_TENANT_STATUS or tenant.config.get("runtime") != "langgraph":
+        raise SetupError("Selected tenant must be onboarding/pilot/active with runtime=langgraph")
     async with tx(pool, str(tenant.id)) as conn:
         await db.q.execute("staging/lock_bot.sql", (f"staging-telegram:{bot.id}",), conn=conn)
         existing = await db.q.fetch_all("staging/find_bot.sql", (str(bot.id),), conn=conn)
@@ -175,9 +209,8 @@ async def telegram(
 async def setup(tenant_name: str, replace_webhook: bool) -> str:
     dsn = Path("/run/secrets/STAGING_OWNER_DSN").read_text().strip()
     validate_target(dsn)
-    token = SecretStr(getpass.getpass("Development bot token (hidden): ").strip())
-    if not token.get_secret_value():
-        raise SetupError("Development bot token is required")
+    origin = hooks_origin(os.environ.get(HOOKS_ORIGIN_ENV))
+    token = read_token()
     async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
         bot = Bot.model_validate(await telegram(client, token, "getMe", {}))
         info = await telegram(client, token, "getWebhookInfo", {})
@@ -192,7 +225,7 @@ async def setup(tenant_name: str, replace_webhook: bool) -> str:
             binding = await bind_bot(pool, tenant_name, bot, token)
         finally:
             await pool.close()
-        url = f"{WEBHOOK_ORIGIN}/hooks/{binding.public_id}"
+        url = f"{origin}/hooks/{binding.public_id}"
         result = await telegram(
             client,
             token,
@@ -212,7 +245,7 @@ async def setup(tenant_name: str, replace_webhook: bool) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tenant", required=True)
-    parser.add_argument("--development-bot", action="store_true", required=True)
+    parser.add_argument("--test-bot", action="store_true", required=True)
     parser.add_argument("--replace-webhook", action="store_true")
     args = parser.parse_args()
     try:
@@ -224,7 +257,7 @@ def main() -> int:
         # Operator traceback/driver validation errors can contain connection values.
         print(f"Test-bot setup failed ({type(exc).__name__}); no credential details printed.")
         return 1
-    print(f"Development webhook registered: {url}")
+    print(f"Staging webhook registered: {url}")
     return 0
 
 

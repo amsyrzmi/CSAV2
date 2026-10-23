@@ -27,10 +27,11 @@ services:
       KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
       TEI_QUERY_PREFIX: "query: "
       TEI_PASSAGE_PREFIX: "passage: "
-    networks: ["data", "app", "embeddings", "provider-egress"]
-    # Existing csa-dev Caddy rule forwards only POST /hooks/* here.
+    networks: ["data", "app", "embeddings", "provider-egress", "gateway-host"]
+    # Loopback-only publish for the staging hooks Caddy site (POST /hooks/* only).
+    # 18081 belongs to the development gateway; never reuse it here.
     ports:
-      - "127.0.0.1:18081:8080"
+      - "127.0.0.1:18031:8080"
 
   worker:
     <<: *runtime
@@ -123,6 +124,9 @@ services:
     entrypoint: ["python", "-m", "scripts.staging_test_bot"]
     stdin_open: true
     tty: true
+    environment:
+      <<: *environment
+      CSA_STAGING_HOOKS_ORIGIN: ${CSA_STAGING_HOOKS_ORIGIN:?approved staging hooks HTTPS origin required}
     # Reviewed operator code over the existing accepted runtime image.
     volumes:
       - "../scripts/staging_test_bot.py:/app/scripts/staging_test_bot.py:ro"
@@ -138,6 +142,8 @@ services:
         target: GROQ_API_KEY
       - source: staging_owner_dsn
         target: STAGING_OWNER_DSN
+      - source: staging_telegram_bot_token
+        target: TELEGRAM_BOT_TOKEN
     networks: ["data", "provider-egress"]
     healthcheck:
       disable: true
@@ -151,6 +157,9 @@ networks:
   model-egress:
     driver: bridge
     internal: false
+  gateway-host:
+    driver: bridge
+    internal: false
 
 volumes:
   staging-embeddings:
@@ -158,3 +167,5 @@ volumes:
 secrets:
   staging_model_key:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_model_key
+  staging_telegram_bot_token:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_telegram_bot_token

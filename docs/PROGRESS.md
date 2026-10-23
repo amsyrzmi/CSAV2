@@ -1,5 +1,25 @@
 # Progress
 
+Staging pipeline activation prepared (2026-10-23, branch
+`feat/staging-pipeline-activation`): the owner reported Telegram, KB ingestion,
+the sandbox and model answers not working on the hosted console. Read-only
+inspection showed the cause: only the database, gateway and frontend run; three
+KB jobs sit queued with zero attempts, four sandbox turns remain `received`, the
+gateway's model key is the disabled placeholder, no embedding service exists,
+zero Telegram credentials are bound, and the public hostname reaches only the
+frontend. The pipeline overlay merged in PR #25 was corrected rather than started
+as-is: the gateway now publishes `127.0.0.1:18031` on a dedicated `gateway-host`
+bridge instead of the development port 18081, the bot setup takes its webhook
+origin from `CSA_STAGING_HOOKS_ORIGIN` and its token from a mounted secret,
+accepts console-onboarded (`onboarding`) tenants, and a new
+[hooks Caddy site](../deploy/staging-hooks.Caddyfile) forwards only
+`POST /hooks/*` from loopback or the connector address, using an ordered
+`route` so the deny is evaluated first (a `handle`-based draft was found to
+sort the deny last). Activation steps, owner-run secret provisioning and
+acceptance are in [STAGING_PIPELINE.md](../deploy/STAGING_PIPELINE.md).
+Evidence: staging pipeline and Compose tests **50 passed**; no service, Caddy,
+tunnel, secret or database change was made in this slice.
+
 Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
 repository runbook and Caddy snippet assumed a host-service connector reaching
 Caddy over loopback. Live inspection shows the shared connector is the
