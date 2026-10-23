@@ -1,5 +1,19 @@
 # Progress
 
+Staging host images and secret files provisioned (2026-10-23): PR #15
+merged as `88a6711` (main CI 39882125951 passed). On the staging host, the
+owner pulled both approved images by digest using a temporary `DOCKER_CONFIG`
+and then logged out. Each image's `RepoDigests`, revision label `7cdc156…` and
+runtime user matched the approved values. The owner also created
+`/srv/csa-staging/secrets` with `staging_secrets create`; `check` printed `OK`
+and exited 0. Metadata confirms `0700` directories and `0400` files owned by
+UID 1000, with no connector directory. No value was displayed and nothing was
+started. See the
+[host execution record](../deploy/RELEASE.md#host-execution-2026-10-23).
+Next: a reviewed, not-yet-run operator procedure for isolated staging database
+bootstrap, migration, identity and upload-volume initialization. Running it
+needs separate approval.
+
 Staging secret provisioning tool (proposed, 2026-10-23): PR #14 merged as
 `f0a8d97` (PR CI 39840472983 and push CI 39840462467 passed). Branch
 `feat/staging-secret-provisioning` adds
@@ -12,7 +26,7 @@ logout). Synthetic tests use temporary directories only; no real secret, pull,
 container or database action occurred. Next gate: after merge, separate
 approval for the owner to pull the images and create the secret files on the
 staging host. See the
-[operator procedure](../deploy/RELEASE.md#staging-host-image-pull-and-secret-files-operator-procedure-not-yet-run).
+[operator procedure](../deploy/RELEASE.md#staging-host-image-pull-and-secret-files).
 
 Staging images published (2026-10-22): PR #13 merged as `b60cde5` (main CI
 39833976733 passed). The owner created protected environment `staging-images`
