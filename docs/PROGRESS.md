@@ -1,5 +1,29 @@
 # Progress
 
+Staff email assistant (2026-10-24, branch `feat/email-agent`): new draft-only
+staff module per LG13. Migration `0430` adds `email_settings` (tenant switch,
+admin-only via SECURITY DEFINER), per-user `email_mailboxes` with AES-GCM
+encrypted Gmail tokens under self-only RLS, single-use PKCE OAuth states, cached
+`email_threads`, local `email_drafts` and immutable `email_receipts`; session
+validation reuses `hr_lock_session`. `csa/email/` provides a bounded Gmail/OAuth
+client (readonly plus compose scopes, no send method), the service (connect,
+sync, analyse, draft, edit, export to the user's own Gmail drafts, disconnect,
+idempotency receipts, token refresh) and the `/console/v1/email` router with HR
+style error mapping. Email text reaches the model only as untrusted JSON data
+with strict output schemas; drafts are re-validated by the staged email contract
+and signed in the tenant persona. Console: Email assistant tab for admin and
+portal, typed client, nav/proxy/isolated-check entries. Gateway wiring behind
+`EMAIL_ASSISTANT_ENABLED` with `GOOGLE_CLIENT_ID/SECRET` and
+`GOOGLE_OAUTH_REDIRECT_URI`; `EXPECTED_SCHEMA_VERSION` is now `0430`.
+See [EMAIL_ASSISTANT.md](./EMAIL_ASSISTANT.md).
+Evidence: `tests/test_email_service.py` and `tests/test_email_contracts.py`
+**9 passed** on a disposable migrated database (fake Gmail transport, scripted
+model); existing console contract/catalog/settings/health/staged-agent tests
+**81 passed**; migration/health **12 passed**; repository lint and the isolated
+frontend check (transport tests, lint, typegen, tsc, build) passed. Not
+exercised: a live Google OAuth consent, real Gmail data, live model quality,
+Pub/Sub push. No staging service, secret or database was changed.
+
 Staging seed prepared (2026-10-23, branch `feat/staging-seed`): the owner
 reversed the files-only rule and asked for the hosted staging console to be
 seeded with every role. [scripts/seed_staging.py](../scripts/seed_staging.py)

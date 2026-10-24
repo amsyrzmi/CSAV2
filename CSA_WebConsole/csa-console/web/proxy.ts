@@ -24,6 +24,8 @@ const adoptedPages = new Set([
   "/portal/business",
   "/workspace",
   "/portal/workspace",
+  "/email",
+  "/portal/email",
 ]);
 
 export function proxy(req: NextRequest) {
