@@ -1458,6 +1458,21 @@
         "title": "ConfirmationProjection",
         "type": "object"
       },
+      "ConnectOut": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_url": {
+            "maxLength": 2048,
+            "title": "Authorization Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_url"
+        ],
+        "title": "ConnectOut",
+        "type": "object"
+      },
       "ContributionBand-Input": {
         "additionalProperties": false,
         "description": "An explicitly reviewed wage band, rather than an inferred flat percentage.",
@@ -1711,6 +1726,210 @@
           }
         },
         "title": "DirectoryValues",
+        "type": "object"
+      },
+      "DraftOut": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "gmail_draft_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gmail Draft Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "recipient": {
+            "title": "Recipient",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "model",
+              "human"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "exported"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "thread_id",
+          "recipient",
+          "subject",
+          "body",
+          "status",
+          "source",
+          "gmail_draft_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DraftOut",
+        "type": "object"
+      },
+      "DraftPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DraftOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "DraftPage",
+        "type": "object"
+      },
+      "DraftRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "language": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          }
+        },
+        "title": "DraftRequest",
+        "type": "object"
+      },
+      "DraftUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "recipient": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Recipient",
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient",
+          "subject",
+          "body"
+        ],
+        "title": "DraftUpdate",
+        "type": "object"
+      },
+      "EmailContext": {
+        "additionalProperties": false,
+        "properties": {
+          "can_connect": {
+            "title": "Can Connect",
+            "type": "boolean"
+          },
+          "can_manage": {
+            "title": "Can Manage",
+            "type": "boolean"
+          },
+          "disclosure": {
+            "default": "Analyse and Draft send the selected email text to the configured model provider. Nothing is sent to anyone; drafts are saved locally or to your own Gmail drafts.",
+            "title": "Disclosure",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "mailbox": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MailboxOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_configured": {
+            "title": "Model Configured",
+            "type": "boolean"
+          },
+          "provider_configured": {
+            "title": "Provider Configured",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "can_manage",
+          "can_connect",
+          "provider_configured",
+          "model_configured",
+          "mailbox"
+        ],
+        "title": "EmailContext",
         "type": "object"
       },
       "EmailInput": {
@@ -3775,6 +3994,64 @@
         "title": "LoginIn",
         "type": "object"
       },
+      "MailboxOut": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "connected",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "address",
+          "status",
+          "scopes",
+          "last_sync_at"
+        ],
+        "title": "MailboxOut",
+        "type": "object"
+      },
       "MeOut": {
         "additionalProperties": false,
         "properties": {
@@ -4900,6 +5177,40 @@
         "title": "QueuedTurn",
         "type": "object"
       },
+      "Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "duplicate": {
+            "default": false,
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "resource_id": {
+            "title": "Resource Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "resource_id",
+          "status"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
       "ReconcileOut": {
         "properties": {
           "removed_files": {
@@ -5362,6 +5673,20 @@
         "title": "ScheduleCancel",
         "type": "object"
       },
+      "SettingsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "SettingsIn",
+        "type": "object"
+      },
       "ShiftRecord": {
         "additionalProperties": false,
         "properties": {
@@ -5687,10 +6012,17 @@
         "title": "StoreRecord",
         "type": "object"
       },
-      "ThreadOut": {
+      "ThreadDetail": {
         "additionalProperties": false,
         "properties": {
-          "archived_at": {
+          "action_items": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Action Items",
+            "type": "array"
+          },
+          "analysed_at": {
             "anyOf": [
               {
                 "format": "date-time",
@@ -5700,59 +6032,129 @@
                 "type": "null"
               }
             ],
-            "title": "Archived At"
+            "title": "Analysed At"
           },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "sequence": {
-            "title": "Sequence",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "sequence",
-          "archived_at",
-          "created_at"
-        ],
-        "title": "ThreadOut",
-        "type": "object"
-      },
-      "ThreadPage": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ThreadOut"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "next_cursor": {
+          "body": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Next Cursor"
+            "title": "Body"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "customer_request",
+                  "order_or_delivery",
+                  "complaint",
+                  "billing",
+                  "vendor_or_partner",
+                  "internal",
+                  "newsletter_or_promotion",
+                  "spam_or_phishing",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "has_body": {
+            "title": "Has Body",
+            "type": "boolean"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "normal",
+                  "high"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "snippet": {
+            "title": "Snippet",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "boolean"
           }
         },
         "required": [
-          "items",
-          "next_cursor"
+          "thread_id",
+          "subject",
+          "sender",
+          "snippet",
+          "received_at",
+          "labels",
+          "unread",
+          "category",
+          "priority",
+          "summary",
+          "action_items",
+          "analysed_at",
+          "has_body",
+          "body"
         ],
-        "title": "ThreadPage",
+        "title": "ThreadDetail",
         "type": "object"
       },
       "TokenAcceptIn": {
@@ -6890,6 +7292,237 @@
           "retryable"
         ],
         "title": "WorkspaceUnavailableResult",
+        "type": "object"
+      },
+      "csa__console__chat__ThreadOut": {
+        "additionalProperties": false,
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "sequence",
+          "archived_at",
+          "created_at"
+        ],
+        "title": "ThreadOut",
+        "type": "object"
+      },
+      "csa__console__chat__ThreadPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/csa__console__chat__ThreadOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ThreadPage",
+        "type": "object"
+      },
+      "csa__email__models__ThreadOut": {
+        "additionalProperties": false,
+        "properties": {
+          "action_items": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Action Items",
+            "type": "array"
+          },
+          "analysed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysed At"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "customer_request",
+                  "order_or_delivery",
+                  "complaint",
+                  "billing",
+                  "vendor_or_partner",
+                  "internal",
+                  "newsletter_or_promotion",
+                  "spam_or_phishing",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "has_body": {
+            "title": "Has Body",
+            "type": "boolean"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "normal",
+                  "high"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "snippet": {
+            "title": "Snippet",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "thread_id",
+          "subject",
+          "sender",
+          "snippet",
+          "received_at",
+          "labels",
+          "unread",
+          "category",
+          "priority",
+          "summary",
+          "action_items",
+          "analysed_at",
+          "has_body"
+        ],
+        "title": "ThreadOut",
+        "type": "object"
+      },
+      "csa__email__models__ThreadPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/csa__email__models__ThreadOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          }
+        },
+        "required": [
+          "items",
+          "last_sync_at"
+        ],
+        "title": "ThreadPage",
         "type": "object"
       }
     }
@@ -8487,7 +9120,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ThreadPage"
+                  "$ref": "#/components/schemas/csa__console__chat__ThreadPage"
                 }
               }
             },
@@ -8571,7 +9204,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ThreadOut"
+                  "$ref": "#/components/schemas/csa__console__chat__ThreadOut"
                 }
               }
             },
@@ -8849,6 +9482,922 @@
           }
         },
         "summary": "Send"
+      }
+    },
+    "/console/v1/email/context": {
+      "get": {
+        "operationId": "context_console_v1_email_context_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailContext"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Context",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/drafts": {
+      "get": {
+        "operationId": "drafts_console_v1_email_drafts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Drafts",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/drafts/{draft_id}": {
+      "put": {
+        "operationId": "update_draft_console_v1_email_drafts__draft_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Draft",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/drafts/{draft_id}/delete": {
+      "post": {
+        "operationId": "delete_draft_console_v1_email_drafts__draft_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Draft",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/drafts/{draft_id}/export": {
+      "post": {
+        "operationId": "export_draft_console_v1_email_drafts__draft_id__export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Draft",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/mailbox/connect": {
+      "post": {
+        "operationId": "connect_console_v1_email_mailbox_connect_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/mailbox/disconnect": {
+      "post": {
+        "operationId": "disconnect_console_v1_email_mailbox_disconnect_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/oauth/callback": {
+      "get": {
+        "operationId": "callback_console_v1_email_oauth_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Callback",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/settings": {
+      "put": {
+        "operationId": "settings_console_v1_email_settings_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Settings",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/sync": {
+      "post": {
+        "operationId": "sync_console_v1_email_sync_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/threads": {
+      "get": {
+        "operationId": "threads_console_v1_email_threads_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/csa__email__models__ThreadPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Threads",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/threads/{thread_id}": {
+      "get": {
+        "operationId": "thread_console_v1_email_threads__thread_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Thread",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/threads/{thread_id}/analyse": {
+      "post": {
+        "operationId": "analyse_console_v1_email_threads__thread_id__analyse_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyse",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/threads/{thread_id}/draft": {
+      "post": {
+        "operationId": "draft_console_v1_email_threads__thread_id__draft_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft",
+        "tags": [
+          "Email"
+        ]
       }
     },
     "/console/v1/events": {
