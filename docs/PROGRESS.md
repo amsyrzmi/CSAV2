@@ -1,36 +1,46 @@
 # Progress
 
-Staging seed prepared (2026-10-23, branch `feat/staging-seed`): the owner
-reversed the files-only rule and asked for the hosted staging console to be
-seeded with every role. [scripts/seed_staging.py](../scripts/seed_staging.py)
-onboards two synthetic tenants with the console onboarding SQL, creates
-tenant_admin/tenant_staff/read_only accounts by invite plus accept through
-`IdentityService` as the existing platform administrator (one-time passwords,
-forced change at first login, acceptance sessions revoked), assigns the HR owner
-through the HR bootstrap SQL, applies employees and role-appropriate grants
-through `public.hr_admin_apply` with canonical fingerprints, and inserts the
-synthetic retailer records from
-[db/sql/seed_staging/records.sql](../db/sql/seed_staging/records.sql).
-Guards mirror the staging migration: explicit approval, exact
-`staging-db/csa_staging` target, `csa` and `csa_identity` roles, advisory lock,
-idempotent re-runs. See [the seed runbook](../deploy/STAGING_SEED.md).
-Evidence: `tests/test_seed_staging.py` **12 passed** (two full seed runs on a
-disposable migrated Testcontainer; exact role, HR receipt and record counts),
-repository lint passed. Not seeded: KB documents/vectors, outbox, bot
-credentials, approvals, HR cases/leave/payroll data. The live staging run is a
-separate owner-approved step.
+Staging pipeline activation prepared (2026-10-23, branch
+`feat/staging-pipeline-activation`): the owner reported Telegram, KB ingestion,
+the sandbox and model answers not working on the hosted console. Read-only
+inspection showed the cause: only the database, gateway and frontend run; three
+KB jobs sit queued with zero attempts, four sandbox turns remain `received`, the
+gateway's model key is the disabled placeholder, no embedding service exists,
+zero Telegram credentials are bound, and the public hostname reaches only the
+frontend. The pipeline overlay merged in PR #25 was corrected rather than started
+as-is: the gateway now publishes `127.0.0.1:18031` on a dedicated `gateway-host`
+bridge instead of the development port 18081, the bot setup takes its webhook
+origin from `CSA_STAGING_HOOKS_ORIGIN` and its token from a mounted secret,
+accepts console-onboarded (`onboarding`) tenants, and a new
+[hooks Caddy site](../deploy/staging-hooks.Caddyfile) forwards only
+`POST /hooks/*` from loopback or the connector address, using an ordered
+`route` so the deny is evaluated first (a `handle`-based draft was found to
+sort the deny last). Activation steps, owner-run secret provisioning and
+acceptance are in [STAGING_PIPELINE.md](../deploy/STAGING_PIPELINE.md).
+Evidence: staging pipeline and Compose tests **50 passed**; no service, Caddy,
+tunnel, secret or database change was made in this slice.
 
-Staging seed executed (2026-10-23, owner approved): one-off container on the
-accepted Python image, `csa-staging_data` network only, approval and exact
-target guards satisfied. Result: tenants `demo-meranti` and `demo-foreign`
-created, HR owner assigned, 11 HR operations recorded, 6 accounts created with
-one-time passwords handed to the owner privately, all forced to change password
-at first login, 0 open acceptance sessions. Counts: demo-meranti members 5,
-capabilities enabled 9, products 8, contacts 2, conversations 2, messages 3,
-orders 8, tickets 2, invoices 2, kb_gaps 2, hr_employees 3, hr_grants 18,
-hr_workflow_grants 22, hr_private_grants 4; demo-foreign members 1, products 1,
-contacts 1, conversations 1, messages 1, orders 1. Existing tenant and
-platform administrator untouched. No KB, outbox, bot, provider or worker change.
+Staging pipeline activated (2026-10-23, owner approved): secrets provisioned
+by the owner from `.env.local` into `pipeline/` (model key, bot token); the
+embeddings-init one-shot, `staging-embeddings`, recreated `gateway`
+(`127.0.0.1:18031`, embeddings settings), `worker` and `delivery` all healthy.
+First attempt claimed nothing: the worker's LG pool used the app-role
+checkpoint secret and row-level security hid every unscoped queue row with no
+error; fixed by mounting `staging_owner_dsn` as `LG_DATABASE_URL` for worker
+and delivery only (as the development stack does). The owner promoted `joe`
+and `demo-meranti` to `pilot` (background jobs visit only pilot/active tenants)
+and switched both from `shadow` to `auto` deployment mode (shadow rejects
+every reply by design); both changes audited. Result: 3 KB jobs `done`
+(3 documents, 75 chunks, `multilingual-e5-small-fd1525a`), all queued sandbox
+turns `completed`, Groq `openai/gpt-oss-120b` answering in about 1.3 s per
+turn. Owner appended the hooks Caddy site and reloaded; local and public
+checks returned 404 (webhook path only). Owner added the `hooks.fourstacks.my`
+tunnel route. Bot bound to `demo-meranti` with encrypted token and fresh
+webhook secret; webhook registered. Live acceptance: Telegram "hello" at
+22:53:26Z → ingress `completed` → `gate_verdict send/auto risk=0.0` → outbound
+message → `outbound_deliveries` `delivered`, attempt HTTP 200 in 978 ms.
+Remaining: public auth/CSRF/logout/tenant acceptance matrix, backup/restore of
+staging volumes, connector-address stability, Groq spend monitoring.
 
 Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
 repository runbook and Caddy snippet assumed a host-service connector reaching
