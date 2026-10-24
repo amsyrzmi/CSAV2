@@ -1,0 +1,16 @@
+http://hooks.fourstacks.my {
+	# Loopback plus the shared cloudflared container address (network_default,
+	# 172.22.0.2 as verified on 2026-10-23); re-verify after connector recreation.
+	@not_connector not remote_ip 127.0.0.1 ::1 172.22.0.2
+	@telegram_ingress {
+		method POST
+		path /hooks/*
+	}
+	# route keeps the written order: deny unknown peers first, then forward only
+	# webhook POSTs to the staging gateway, then 404 everything else.
+	route {
+		respond @not_connector 403
+		reverse_proxy @telegram_ingress 127.0.0.1:18031
+		respond "Not Found" 404
+	}
+}
