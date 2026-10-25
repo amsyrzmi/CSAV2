@@ -564,7 +564,40 @@ Semantic rejection details stay in turn state for regeneration; only their count
 Classifier comparisons are persisted separately in `decision_log`; a console endpoint for those rows
 is not implemented yet.
 
+## Services and packages
+Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`). Packages are the management surface; the capability switches below remain the runtime enforcement.
+
+| Package | Kind | Capabilities | Tabs | Sellable |
+|---|---|---|---|---|
+| `customer_support` | base | `kb_agent`, `ticket_agent`, `escalation_agent`, `order_approval` | inbox, knowledge_base | yes |
+| `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
+| `subscriptions` | addon | `subscription_agent` | | yes |
+| `bookings` | addon | `booking_agent` | | yes |
+| `marketplaces` | addon | `ecommerce_agent` | | no |
+| `e_invoicing` | addon | `lhdn_agent` | | no |
+| `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | | yes |
+| `staff_email` | standalone | none; covers `email_settings` | | yes |
+
+State is in `console_service_packages` (migration `0450`): `status` is `requested`, `active` or `suspended`, with requester, activator, `reference`, `note` and timestamps. Tenant RLS applies; only `csa_app` has grants. The migration backfills a package as `active` with reference `backfill-0450` when all its member capabilities are `is_enabled` (`hr`: any enabled `hr_agent_settings` row; `staff_email`: `email_settings.enabled`).
+
+- `GET /console/v1/services`: catalogue joined with the tenant's state, including `consistent` and `inconsistencies` (drift between the package record and member switches) per package. `staff_email` also reports `inner_switch`.
+- `GET /console/v1/services/active`: `{"packages": [...]}` of active package keys, used to build navigation. A platform admin without `client_id` receives `{"packages": []}`.
+- `POST /console/v1/services/{key}/request`: tenant admin or platform admin.
+- `POST /console/v1/services/{key}/activate` with body `{"reference": str, "note"?: str}`: platform admin. Flips member `is_enabled` and `client_enabled` through the same SQL as the capability toggle; audits `capability.updated` and `service.activated`.
+- `POST /console/v1/services/{key}/suspend` with body `{"note"?: str}`: platform admin. Sets `is_enabled=false` only for members not in another active package, and never for `escalation_agent` or `order_approval`.
+
+Errors: 409 on state conflicts (already active, requirements inactive, dependent add-on active); 422 for an unknown or unsellable key; 403 for the wrong role or `human session required` for machine tokens. Audits `service.requested`, `service.activated` and `service.suspended` carry details `{before, after, reference}`; `requested_by` and `activated_by` are user ids.
+
+Gates: a route behind an inactive package returns 403 `package_inactive`, and gates run before role checks, so every role sees it.
+- Inbox requires `customer_support`; Business requires `orders_products` or `marketplaces`.
+- All `/kb/*` routes (uploads, files and downloads for every role) require `customer_support`; `/invoices*` require `orders_products`.
+- The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
+- Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.
+
+Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Knowledge base, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
+
 ## Capabilities and specialised tabs (LG13)
+Packages (see Services and packages) are the management surface; the switches below remain the enforcement.
 - `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`.
 - `PATCH /console/v1/capabilities/{name}` with body `{"is_enabled"?: bool, "client_enabled"?: bool}`. A human platform admin controls subscriptions; a human tenant admin/platform admin controls tenant switches. Actor fields such as `changed_by` are rejected. Required safety capabilities cannot be disabled. Changes and before/after audit share one locked transaction.
 - `GET /console/v1/agents`: authoritative management catalogue. Each row has `name`, `title`,

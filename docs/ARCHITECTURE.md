@@ -86,6 +86,15 @@ Each graph node appends a redacted row to `agent_events` (node, agent, status, d
 A failed write is logged loudly but never fails the customer turn. The console reads them through
 `/console/v1` ([CONSOLE_API.md](./CONSOLE_API.md)). Every future agent shows up automatically.
 
+Above the per-agent switches sits a service package layer. The catalogue lives in code
+(`csa/console/packages.py`); the `console_service_packages` table (migration `0450`) records
+each tenant's request and activation. A package gate (`require_package`) returns 403
+`package_inactive` before any role check on the Inbox, Business, Knowledge base, Invoices, HR
+and Email routes, and the web navigation is built from `GET /console/v1/services/active`.
+Activating a package flips its member `is_enabled` and `client_enabled` switches through the
+same SQL as the capability toggle, so the switches stay the runtime enforcement. HR module and
+email inner switches are not flipped by activation.
+
 ## Evaluation and regression evidence
 
 - `csa/evals/decisions.py` compares live classifiers against 60 synthetic labelled messages;

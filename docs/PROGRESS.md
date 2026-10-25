@@ -1,5 +1,29 @@
 # Progress
 
+Service packages (2026-10-25, committed on `feat/service-packages`): capabilities
+are now grouped into service packages. Migration `0450_console_service_packages.sql`
+adds `console_service_packages` with tenant RLS (not forced) and `csa_app` grants,
+and backfills packages whose member capabilities are already enabled (reference
+`backfill-0450`). `csa/console/packages.py` holds the code catalogue
+(`customer_support`, `orders_products`, `subscriptions`, `bookings`, `marketplaces`,
+`e_invoicing`, `hr`, `staff_email`); `csa/console/services.py` adds
+`GET /console/v1/services`, `GET /console/v1/services/active` and
+`POST /console/v1/services/{key}/request|activate|suspend` with audits and drift
+reporting. Inbox, Business, Knowledge base, Invoices, HR and Email APIs return 403
+`package_inactive` when their package is not active. The web console builds
+navigation from active packages and replaces Agents with a Services tab (request,
+activate with a reference, suspend). Gateway readiness now expects schema `0450`.
+HR and email inner switches are not flipped by activation. Evidence on the branch
+with `NO_LOCAL_ENV=1 ENV=ci`: packages catalogue tests 6 passed; services, routes
+and gate selection (services, sessions, inbox, business, KB uploads, capabilities,
+contract snapshot) 102 passed; extended selection with HR and email gate tests
+204 passed; isolated frontend `check:isolated` passed (tests, lint, types, build)
+for the services client, navigation and Services tab; Playwright acceptance
+`tests/test_services_browser.py` 1 passed in 83.91 s after the proxy fix
+(`3273b68`); packaged-console slow run 6 passed in 1186.08 s; `make lint` clean
+(ruff, Pyright 0 errors, import-linter 1 kept). Final full-suite result: pending Task 13.
+
+
 Interactive voice session foundation (2026-10-25, committed on
 `feat/console-recorded-voice`): the interactive plan's Phase 2 was found implemented
 but unrecorded in the working tree and is now documented and committed together
