@@ -1,3 +1,4 @@
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -38,3 +39,11 @@ def test_migration_backfill_members_match_catalogue():
     for members in backfill_members().values():
         for member in members:
             assert f"'{member}'" in sql.split("-- BACKFILL")[1]
+
+
+def test_hr_package_modules_match_hr_agent_settings_check():
+    sql = Path("db/migrations/0410_hr_operations.sql").read_text()
+    match = re.search(r"ADD CHECK\(name IN \(([^)]*)\)\);", sql)
+    assert match is not None
+    names = tuple(n.strip().strip("'") for n in match.group(1).split(","))
+    assert package("hr").hr_modules == names

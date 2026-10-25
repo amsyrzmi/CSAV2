@@ -29,7 +29,6 @@ _HR_MODULES = (
     "hr_training",
     "hr_recruitment",
     "hr_attendance",
-    "hr_leave",
     "hr_payroll",
     "hr_assistant",
 )
