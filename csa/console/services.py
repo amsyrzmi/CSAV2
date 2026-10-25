@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
+from csa.console.access import tenant
 from csa.console.agents import REQUIRED, AgentOut, list_agents
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.packages import BY_KEY, PACKAGES, Package
@@ -369,3 +370,77 @@ async def suspend_package(
             )
         await _audit(conn, client_id, actor, "service.suspended", key, before, row)
     return await _service(pool, client_id, key, actor)
+
+
+def _human(request: Request) -> ConsoleActor:
+    actor = request.state.console_actor
+    if not isinstance(actor, ConsoleActor):
+        raise HTTPException(403, "human session required")
+    return actor
+
+
+def _pool(request: Request) -> AsyncConnectionPool:
+    return request.app.state.pool  # type: ignore[no-any-return]
+
+
+# Module level: handler annotations are strings and must resolve in module globals.
+# `Human` is declared before `Tenant` in each handler so machine principals fail first.
+Human = Annotated[ConsoleActor, Depends(_human)]
+Tenant = Annotated[UUID, Depends(tenant)]
+Pool = Annotated[AsyncConnectionPool, Depends(_pool)]
+
+
+async def active_tenant(
+    request: Request, actor: Human, client_id: Annotated[UUID | None, Query()] = None
+) -> UUID | None:
+    if actor.platform_admin and client_id is None:
+        return None
+    return await tenant(request, client_id)
+
+
+ActiveTenant = Annotated[UUID | None, Depends(active_tenant)]
+
+
+def build_services_router(kb_model: str | None, kb_tei_configured: bool) -> APIRouter:
+    router = APIRouter(prefix="/services", tags=["services"])
+
+    async def one(
+        db_pool: AsyncConnectionPool, client_id: UUID, key: str, actor: ConsoleActor
+    ) -> ServiceOut:
+        services = await list_services(
+            db_pool, client_id, actor=actor, kb_model=kb_model, kb_tei_configured=kb_tei_configured
+        )
+        return next(s for s in services if s.key == key)
+
+    @router.get("", response_model=list[ServiceOut])
+    async def get_services(actor: Human, client_id: Tenant, db_pool: Pool) -> list[ServiceOut]:
+        return await list_services(
+            db_pool, client_id, actor=actor, kb_model=kb_model, kb_tei_configured=kb_tei_configured
+        )
+
+    @router.get("/active")
+    async def get_active(client_id: ActiveTenant, db_pool: Pool) -> dict[str, list[PackageState]]:
+        if client_id is None:
+            return {"packages": []}
+        return {"packages": await active_packages(db_pool, client_id)}
+
+    @router.post("/{key}/request", response_model=ServiceOut)
+    async def post_request(key: str, actor: Human, client_id: Tenant, db_pool: Pool) -> ServiceOut:
+        await request_package(db_pool, client_id, key, actor=actor)
+        return await one(db_pool, client_id, key, actor)
+
+    @router.post("/{key}/activate", response_model=ServiceOut)
+    async def post_activate(
+        key: str, body: ActivateIn, actor: Human, client_id: Tenant, db_pool: Pool
+    ) -> ServiceOut:
+        await activate_package(db_pool, client_id, key, body, actor=actor)
+        return await one(db_pool, client_id, key, actor)
+
+    @router.post("/{key}/suspend", response_model=ServiceOut)
+    async def post_suspend(
+        key: str, body: SuspendIn, actor: Human, client_id: Tenant, db_pool: Pool
+    ) -> ServiceOut:
+        await suspend_package(db_pool, client_id, key, body, actor=actor)
+        return await one(db_pool, client_id, key, actor)
+
+    return router

@@ -24,6 +24,7 @@ from csa.console.kb_contracts import JobOut, public_job
 from csa.console.kb_uploads import audit as kb_audit
 from csa.console.kb_uploads import build_upload_router
 from csa.console.kb_uploads import writer as kb_writer
+from csa.console.services import build_services_router
 from csa.console.voice import build_voice_router
 from csa.console.voice_sessions import build_voice_sessions_router
 from csa.console.workspace import build_workspace_router
@@ -146,6 +147,7 @@ def build_router(
     router.include_router(build_workspace_router())
     router.include_router(build_inbox_router())
     router.include_router(build_business_router())
+    router.include_router(build_services_router(kb_model, kb_tei_configured))
 
     async def kb_enabled(
         client_id: Annotated[UUID, Depends(tenant)],

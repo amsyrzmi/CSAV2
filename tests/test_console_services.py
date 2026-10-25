@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, LiteralString, cast
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
 from csa.console.services import (
@@ -20,7 +21,7 @@ from csa.console.services import (
 from fastapi import HTTPException
 
 from tests.conftest import requires_docker
-from tests.test_console_sessions import SessionWorld
+from tests.test_console_sessions import MACHINE_TOKEN, ORIGIN, SessionWorld
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
@@ -309,3 +310,59 @@ async def test_staff_email_and_hr_have_no_capability_members_and_email_inner_swi
         )
         if s.can_request or s.can_activate or s.can_suspend
     ] == []
+
+
+@pytest.mark.parametrize("role", ["tenant_admin", "tenant_staff", "read_only"])
+async def test_services_routes_permissions(sessions: SessionWorld, role: str) -> None:
+    browser, _ = await sessions.member(role=role)
+    assert (await browser.get("/console/v1/services")).status_code == 200
+    req = await sessions.mutate(browser, "/console/v1/services/customer_support/request")
+    assert req.status_code == (200 if role == "tenant_admin" else 403)
+    act = await sessions.mutate(
+        browser, "/console/v1/services/customer_support/activate", {"reference": "Q"}
+    )
+    assert act.status_code == 403
+    other = await browser.get("/console/v1/services", params={"client_id": sessions.tenants[1]})
+    assert other.status_code == 403
+
+
+async def test_platform_admin_activates_requested_addon_only_after_base(
+    sessions: SessionWorld,
+) -> None:
+    t = sessions.tenants[0]
+    base = "/console/v1/services"
+    assert (
+        await sessions.mutate(sessions.admin, f"{base}/orders_products/request?client_id={t}")
+    ).status_code == 200
+    assert (
+        await sessions.mutate(
+            sessions.admin, f"{base}/orders_products/activate?client_id={t}", {"reference": "Q"}
+        )
+    ).status_code == 409
+    assert (
+        await sessions.mutate(
+            sessions.admin, f"{base}/customer_support/activate?client_id={t}", {"reference": "Q-1"}
+        )
+    ).status_code == 200
+    assert (
+        await sessions.mutate(
+            sessions.admin, f"{base}/orders_products/activate?client_id={t}", {"reference": "Q-2"}
+        )
+    ).status_code == 200
+    active = (await sessions.admin.get(f"{base}/active?client_id={t}")).json()
+    assert sorted(p["key"] for p in active["packages"]) == ["customer_support", "orders_products"]
+    assert (await sessions.admin.get(f"{base}/active")).json() == {"packages": []}
+
+
+async def test_machine_token_cannot_read_or_change_services(sessions: SessionWorld) -> None:
+    headers = {"Authorization": f"Bearer {MACHINE_TOKEN}", "X-Client-Id": sessions.tenants[0]}
+    # A fresh client: the admin client's cookie jar would trip the mixed-auth 400 instead.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=sessions.app), base_url=ORIGIN
+    ) as machine:
+        for path in ("/console/v1/services", "/console/v1/services/active"):
+            response = await machine.get(path, headers=headers)
+            assert response.status_code == 403
+            assert response.json()["detail"] == "human session required"
+        post = await machine.post("/console/v1/services/customer_support/request", headers=headers)
+        assert post.status_code == 403
