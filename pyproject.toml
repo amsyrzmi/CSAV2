@@ -44,7 +44,7 @@ packages = ["csa", "apps"]
 target-version = "py312"
 line-length = 100
 src = ["csa", "apps", "tests"]
-extend-exclude = ["CSA_WebConsole"]  # reference Python API is outside the active backend
+extend-exclude = ["CSA_WebConsole", "docs"]  # reference Python API is outside the active backend; docs hold plan sketches, not code
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
