@@ -7,7 +7,7 @@ description: Implement or review CSA marketplace adapters, authorization, creden
 
 Read [AGENTS.md](../../../AGENTS.md), current marketplace entries in
 [PROGRESS.md](../../../docs/PROGRESS.md), the relevant M6B sections of the
-[M6 roadmap](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md), and
+[M6 roadmap](../../../docs/archive/handoffs/2026-10-15-console-source-migration-plan.md), and
 the latest applicable handoff. Treat older handoffs as historical evidence and inspect
 current source before identifying the next gate.
 

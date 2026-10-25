@@ -4,7 +4,7 @@ Status: public-demo exposure revision, **not executed**. This consolidates the n
 owner-run gates so they can be reviewed in one PR. It does not authorize any
 operation. Start with [release authority and evidence](RELEASE.md), the
 [local Compose proposal](compose.staging-local-proposal.yml), and the current
-[continuation](../docs/handoffs/2026-10-19-domain-release-next-session.md).
+[continuation](../docs/archive/handoffs/2026-10-19-domain-release-next-session.md).
 
 **Current hosting choice:** the owner subsequently selected the existing host
 tunnel plus Caddy. Follow [STAGING_SHARED_CADDY.md](STAGING_SHARED_CADDY.md)

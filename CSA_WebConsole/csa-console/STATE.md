@@ -3,7 +3,7 @@
 > Historical source reference only. This describes the copied console before its
 > CSAV2 migration, including deferred PM features; it is not current runtime or
 > deployment guidance. Do not execute its live-system/tunnel/setup instructions.
-> Continue from the [current migration plan](../../docs/handoffs/2026-10-15-console-source-migration-plan.md)
+> Continue from the [current migration plan](../../docs/archive/handoffs/2026-10-15-console-source-migration-plan.md)
 > and [adopted frontend guide](./web/README.md). Its PM deliverable pack was removed
 > on 2026-10-20 as obsolete n8n-era design material; this file remains only as a
 > dated historical source snapshot.

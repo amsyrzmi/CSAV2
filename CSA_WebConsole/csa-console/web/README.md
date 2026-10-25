@@ -14,7 +14,7 @@ console snapshot and deferred PM design pack) was removed on 2026-10-20; none is
 adopted source or active implementation guidance. Use the commands below, not old
 console setup or tunnel instructions. The authoritative state is
 [CSAV2 progress](../../../docs/PROGRESS.md) and the
-[migration plan](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md).
+[migration plan](../../../docs/archive/handoffs/2026-10-15-console-source-migration-plan.md).
 
 ## Development configuration
 
@@ -176,7 +176,7 @@ See [the M4 API/safety contract](../../../docs/CONSOLE_API.md#private-sandbox-as
 Forward migration 0290 and guarded dev restarts were separately approved and completed.
 Functional acceptance, including reader controls/ownership, passes; the user accepted
 M4 closeout with a documented laptop-dev performance exception, not green latency tests.
-See [the closeout and M5 kickoff](../../../docs/handoffs/2026-10-16-m4-closeout-m5-start.md).
+See [the closeout and M5 kickoff](../../../docs/archive/handoffs/2026-10-16-m4-closeout-m5-start.md).
 Future migrations/restarts still require scoped approval; an isolated build is not
 live acceptance, and M5 must not expose owner-private sandbox history or held drafts.
 
@@ -216,7 +216,7 @@ tenant changes remount data state. Failures are visible, not converted to empty 
 Local empty states never claim the marketplace has no orders/listings; local timestamps
 are not sync freshness. No listing/stock/refund/payment writes, connection checks or
 provider calls are performed. Later features are explicitly unavailable. This is the
-[first slice of the expanded M6 roadmap](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation),
+[first slice of the expanded M6 roadmap](../../../docs/archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation),
 not a full seller platform or an approved replacement of the last approved M5 console.
 The workspace also has an opt-in synthetic demo mode for presentations. It displays only
 fictional sample listings and a local-only simulated create action; no tenant records or
