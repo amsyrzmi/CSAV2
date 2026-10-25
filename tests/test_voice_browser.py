@@ -25,6 +25,10 @@ async def test_handsfree_two_turns_recovery_and_stop(
 ) -> None:
     node = shutil.which("node")
     assert node, "Node is required for browser voice acceptance"
+    assert (WEB / "node_modules/next/dist/bin/next").is_file(), (
+        "Console dependencies are missing; run `npm ci --ignore-scripts` in "
+        "CSA_WebConsole/csa-console/web before browser voice acceptance"
+    )
     stage = tmp_path / "web"
     environment = {
         "PATH": os.environ["PATH"],

@@ -99,6 +99,19 @@ jobs:
       - name: Install Chromium for packaged browser acceptance
         run: uv run python -m playwright install --with-deps chromium
 
+      # The hands-free voice browser acceptance (tests/test_voice_browser.py) starts
+      # the console's Next.js dev server from its node_modules. Install them here with
+      # the same flags the isolated frontend check uses; that check installs into a
+      # temporary copy, so it does not populate this directory.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.0"
+      - name: Install console dependencies for browser acceptance
+        working-directory: CSA_WebConsole/csa-console/web
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Pytest
         env:
           # A freshly generated throwaway AES-256-GCM key for crypto tests.
