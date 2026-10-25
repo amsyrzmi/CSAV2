@@ -244,6 +244,7 @@ async def world(migrated_dsn: str) -> AsyncIterator[World]:
     app = FastAPI()
     app.state.identity_service = IdentityService(identity, IdentityConfig(origins=(ORIGIN,)))
     app.state.email_service = service
+    app.state.pool = domain
     app.include_router(build_identity_router())
     app.include_router(build_email_router())
     w = World(app, owner_pool, gmail, model)
@@ -259,6 +260,12 @@ async def world(migrated_dsn: str) -> AsyncIterator[World]:
                     "Meranti Gadget Lab",
                     json.dumps({"runtime": "langgraph", "persona": {"name": "Empat Tingkat"}}),
                 ),
+            )
+            await w.q(
+                "INSERT INTO public.console_service_packages "
+                "(client_id, package, status, activated_at, reference) "
+                "VALUES (%s, %s, 'active', now(), 'test-fixture')",
+                (tenant, "staff_email"),
             )
         for name, user in w.users.items():
             await w.q(

@@ -18,6 +18,8 @@ from csa.console.services import (
     request_package,
     suspend_package,
 )
+from csa.email.api import build_email_router
+from csa.hr.api import build_hr_router
 from fastapi import HTTPException
 
 from tests.conftest import requires_docker
@@ -408,3 +410,21 @@ async def test_inactive_packages_block_inbox_business_kb_for_every_role(sessions
     assert (await reader.get("/console/v1/business/orders")).status_code == 403
     staff, _ = await sessions.member(role="tenant_staff")
     assert (await staff.get("/console/v1/inbox/conversations")).status_code == 200
+
+
+@pytest.fixture
+def services_app(sessions: SessionWorld) -> SessionWorld:
+    sessions.app.include_router(build_hr_router())
+    sessions.app.include_router(build_email_router())
+    return sessions
+
+
+async def test_hr_and_email_apis_require_their_packages(sessions, services_app):
+    browser, _ = await sessions.member(role="tenant_admin")
+    for path in ("/console/v1/hr/guidance", "/console/v1/email/context"):
+        r = await browser.get(path)
+        assert r.status_code == 403 and r.json()["detail"] == "package_inactive", (path, r.text)
+    await activate(sessions, sessions.tenants[0], "hr")
+    assert (await browser.get("/console/v1/hr/guidance")).status_code != 403
+    r = await browser.get("/console/v1/email/context")
+    assert r.status_code == 403 and r.json()["detail"] == "package_inactive"
