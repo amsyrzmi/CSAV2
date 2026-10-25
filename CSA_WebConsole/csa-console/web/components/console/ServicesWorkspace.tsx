@@ -69,8 +69,8 @@ function ServiceList({ clientId, platform }: { clientId: string | null; platform
     return () => { live = false; };
   }, [clientId]);
   if (!services) return error ? <Notice error>{error}</Notice> : <Notice>Loading services...</Notice>;
-  const replace = (next: Service) =>
-    setServices((rows) => rows && rows.map((row) => row.key === next.key ? next : row));
+  // Any mutation can change other cards' permissions (add-ons follow the base), so reload all.
+  const reload = async () => setServices(await servicesClient(clientId).list());
   return (
     <div className="space-y-8">
       {GROUPS.map(({ kind, title }) => {
@@ -81,7 +81,7 @@ function ServiceList({ clientId, platform }: { clientId: string | null; platform
             <h2 className="mb-3 text-lg font-semibold">{title}</h2>
             <div className="grid gap-5 xl:grid-cols-2">
               {rows.map((service) => <ServiceCard key={service.key} service={service}
-                clientId={clientId} platform={platform} onChange={replace} />)}
+                clientId={clientId} platform={platform} onChanged={reload} />)}
             </div>
           </section>
         );
@@ -90,8 +90,8 @@ function ServiceList({ clientId, platform }: { clientId: string | null; platform
   );
 }
 
-function ServiceCard({ service, clientId, platform, onChange }: {
-  service: Service; clientId: string | null; platform: boolean; onChange: (next: Service) => void;
+function ServiceCard({ service, clientId, platform, onChanged }: {
+  service: Service; clientId: string | null; platform: boolean; onChanged: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -101,7 +101,7 @@ function ServiceCard({ service, clientId, platform, onChange }: {
   const [open, setOpen] = useState(false);
   const client = servicesClient(clientId);
   const query = clientId ? `client_id=${encodeURIComponent(clientId)}` : "";
-  const badge = !service.sellable
+  const badge = !service.sellable && service.status === "available"
     ? { text: "Coming soon", cls: "border-ink-300 bg-ink-50 text-ink-600" }
     : BADGE[service.status];
 
@@ -109,7 +109,8 @@ function ServiceCard({ service, clientId, platform, onChange }: {
     setBusy(true);
     setError("");
     try {
-      onChange(await call());
+      await call();
+      await onChanged();
       setConfirm("");
       setReference("");
       setNote("");
@@ -127,9 +128,7 @@ function ServiceCard({ service, clientId, platform, onChange }: {
     try {
       await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
         { [switchName]: !capability[switchName] });
-      const rows = await client.list();
-      const next = rows.find((row) => row.key === service.key);
-      if (next) onChange(next);
+      await onChanged();
     } catch (cause) {
       setError(message(cause));
     } finally {

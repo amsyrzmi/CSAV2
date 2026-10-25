@@ -245,6 +245,16 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         "customer_support": make_service(
             "customer_support", "Customer Support", "base", "requested", can_activate=True
         ),
+        "orders_products": make_service(
+            "orders_products", "Orders and Products", "addon", "available"
+        ),
+        # Backfilled staging state: an unsellable package can still be active.
+        "marketplaces": make_service(
+            "marketplaces", "Marketplaces", "addon", "active", sellable=False, can_suspend=True
+        ),
+        "e_invoicing": make_service(
+            "e_invoicing", "E-invoicing", "addon", "available", sellable=False
+        ),
     }
     calls: list[dict[str, Any]] = []
     unexpected: list[str] = []
@@ -287,6 +297,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 "can_activate": False,
                 "can_suspend": True,
             }
+            # The base is active now, so the add-on becomes activatable on the next list.
+            rows["orders_products"] = {**rows["orders_products"], "can_activate": True}
             data = rows["customer_support"]
         elif path in {"inbox/conversations", "inbox/approvals"}:
             status, data = 403, {"detail": "package_inactive"}
@@ -342,6 +354,12 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (e) Activation sends exactly the reference and a null note for the chosen tenant.
         await expect(page.get_by_test_id("services-tenant")).to_have_value(TENANT, timeout=WAIT)
+        # A real status wins over "Coming soon"; only an available unsellable package shows it.
+        await expect(page.get_by_test_id("services-status-marketplaces")).to_have_text(
+            "Active", timeout=WAIT
+        )
+        await expect(page.get_by_test_id("services-status-e_invoicing")).to_have_text("Coming soon")
+        await expect(page.get_by_test_id("services-activate-orders_products")).to_have_count(0)
         card = page.locator('[data-testid="services-card-customer_support"]')
         await card.get_by_test_id("services-activate-customer_support").click(timeout=WAIT)
         await card.get_by_test_id("services-activate-reference").fill("Q-1")
@@ -350,6 +368,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(card.get_by_test_id("services-activation-customer_support")).to_contain_text(
             "Reference: Q-1"
         )
+        # The whole list was reloaded, so the add-on card follows the new base state.
+        await expect(page.get_by_test_id("services-activate-orders_products")).to_be_visible()
         activations = [c for c in calls if c["path"] == "services/customer_support/activate"]
         assert activations == [
             {
