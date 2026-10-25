@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireIdentity } from "@/lib/server-identity";
+import { activePackages, requireIdentity } from "@/lib/server-identity";
 import { AppShell } from "@/components/AppShell";
 
 export default async function AdminLayout({
@@ -7,8 +7,8 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const me = await requireIdentity();
+  const [me, packages] = await Promise.all([requireIdentity(), activePackages()]);
   if (me.user.must_change_password) redirect("/change-password");
   if (me.role !== "platform_admin") redirect("/portal");
-  return <AppShell me={me}>{children}</AppShell>;
+  return <AppShell me={me} packages={packages}>{children}</AppShell>;
 }
