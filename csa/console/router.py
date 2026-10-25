@@ -24,7 +24,7 @@ from csa.console.kb_contracts import JobOut, public_job
 from csa.console.kb_uploads import audit as kb_audit
 from csa.console.kb_uploads import build_upload_router
 from csa.console.kb_uploads import writer as kb_writer
-from csa.console.services import build_services_router
+from csa.console.services import build_services_router, package_gate
 from csa.console.voice import build_voice_router
 from csa.console.voice_sessions import build_voice_sessions_router
 from csa.console.workspace import build_workspace_router
@@ -291,7 +291,12 @@ def build_router(
         ]
 
     # Knowledge Base
-    @router.get("/kb/documents", response_model=list[KbDocumentOut])
+    support = package_gate("customer_support")
+    orders = package_gate("orders_products")
+
+    @router.get(
+        "/kb/documents", response_model=list[KbDocumentOut], dependencies=[Depends(support)]
+    )
     async def list_kb_documents(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
@@ -304,7 +309,7 @@ def build_router(
                 conn=conn,
             )
 
-    @router.post("/kb/documents", dependencies=[Depends(kb_enabled)])
+    @router.post("/kb/documents", dependencies=[Depends(support), Depends(kb_enabled)])
     async def ingest_kb_document(
         doc: KbDocumentIn,
         client_id: Annotated[UUID, Depends(tenant)],
@@ -337,7 +342,7 @@ def build_router(
             )
         return {"status": "ok", "facts": [f.text for f in res.data.facts]}
 
-    @router.get("/kb/ingest-jobs", response_model=list[JobOut])
+    @router.get("/kb/ingest-jobs", response_model=list[JobOut], dependencies=[Depends(support)])
     async def list_kb_ingest_jobs(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
@@ -347,7 +352,7 @@ def build_router(
             rows = await db.q.fetch_all("kb/list_ingest_jobs.sql", (client_id, limit), conn=conn)
         return [public_job(row) for row in rows]
 
-    @router.get("/kb/ingest-jobs/{job_id}", response_model=JobOut)
+    @router.get("/kb/ingest-jobs/{job_id}", response_model=JobOut, dependencies=[Depends(support)])
     async def get_kb_ingest_job(
         job_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
@@ -359,7 +364,7 @@ def build_router(
             raise HTTPException(status_code=404, detail="ingest job not found")
         return public_job(row)
 
-    @router.get("/kb/gaps", response_model=list[KbGapOut])
+    @router.get("/kb/gaps", response_model=list[KbGapOut], dependencies=[Depends(support)])
     async def list_kb_gaps(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
@@ -372,7 +377,7 @@ def build_router(
                 conn=conn,
             )
 
-    @router.post("/kb/gaps/{gap_id}/resolve", dependencies=[Depends(kb_enabled)])
+    @router.post("/kb/gaps/{gap_id}/resolve", dependencies=[Depends(support), Depends(kb_enabled)])
     async def resolve_kb_gap(
         gap_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
@@ -387,7 +392,7 @@ def build_router(
         return {"status": "ok", "resolved_id": str(gap_id)}
 
     # Invoices
-    @router.get("/invoices", response_model=list[InvoiceItemOut])
+    @router.get("/invoices", response_model=list[InvoiceItemOut], dependencies=[Depends(orders)])
     async def list_invoices(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
@@ -418,7 +423,11 @@ def build_router(
             for r in rows
         ]
 
-    @router.get("/invoices/{invoice_id}/download-link", response_model=SignedDownloadLinkOut)
+    @router.get(
+        "/invoices/{invoice_id}/download-link",
+        response_model=SignedDownloadLinkOut,
+        dependencies=[Depends(orders)],
+    )
     async def get_invoice_download_link(
         invoice_id: str,
         client_id: Annotated[UUID, Depends(tenant)],

@@ -156,6 +156,8 @@ def test_invoices_console_endpoints(
     with (
         patch("csa.console.router.tx") as mock_tx,
         patch("csa.core.db.q.fetch_all") as mock_fetch,
+        # The pool is a mock; the package gate itself is covered against Postgres.
+        patch("csa.console.services.require_package", new_callable=AsyncMock) as gate,
     ):
         mock_conn = AsyncMock()
         mock_tx.return_value.__aenter__.return_value = mock_conn
@@ -173,3 +175,6 @@ def test_invoices_console_endpoints(
         dl_resp = client.get("/console/v1/invoices/INV-1001/download-link", headers=headers)
         assert dl_resp.status_code == 501
         assert "M6" in dl_resp.json()["detail"]
+        assert [c.args[1:] for c in gate.await_args_list] == [
+            (client_id, frozenset({"orders_products"}))
+        ] * 2

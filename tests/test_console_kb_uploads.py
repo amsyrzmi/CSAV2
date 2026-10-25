@@ -20,6 +20,7 @@ from csa.contracts.callbacks import PendingActionStore
 from psycopg.rows import dict_row
 
 from tests.conftest import requires_docker
+from tests.test_console_services import activate
 from tests.test_console_sessions import MACHINE_TOKEN, SessionWorld
 from tests.test_kb_ingest import FAQ_CSV, make_docx, make_pdf
 
@@ -54,11 +55,8 @@ async def test_gap_listing_resolution_and_audit(sessions: SessionWorld) -> None:
 
 async def enable(world: SessionWorld) -> str:
     tenant = world.tenants[0]
-    await world.q(
-        "UPDATE capability_registry SET is_enabled=true,client_enabled=true "
-        "WHERE client_id=%s AND name='kb_agent'",
-        tenant,
-    )
+    # customer_support activation gates the KB routes and switches kb_agent on.
+    await activate(world, tenant, "customer_support")
     return tenant
 
 
@@ -254,6 +252,8 @@ async def test_upload_roles_scoping_csrf_and_machine(sessions: SessionWorld, rol
     assert response.status_code == (403 if role == "read_only" else 202), response.text
     assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
     own = (await client.get("/console/v1/kb/files")).json()[0]
+    # The foreign tenant holds the package too, so the 404 proves isolation, not the gate.
+    await activate(sessions, sessions.tenants[1], "customer_support")
     foreign, _ = await sessions.member(tenant=sessions.tenants[1])
     assert (await foreign.get(f"/console/v1/kb/files/{own['id']}/download")).status_code == 404
     assert (

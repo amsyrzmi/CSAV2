@@ -381,6 +381,14 @@ async def test_packaged_identity_readiness_and_boundaries(
             )
             assert created.status_code == 201
             tenants.append(created.json()["id"])
+        # Business routes need an active orders package, which requires customer_support.
+        for key in ("customer_support", "orders_products"):
+            activated = mutate(
+                admin,
+                f"/console/v1/services/{key}/activate?client_id={tenants[0]}",
+                {"reference": "synthetic-packaged"},
+            )
+            assert activated.status_code == 200, activated.text
         order_ids = [f"packaged-{uuid4()}" for _ in tenants]
         async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
             for tenant, order_id in zip(tenants, order_ids, strict=True):
@@ -1436,6 +1444,13 @@ async def test_packaged_customer_inbox_browser_acceptance(
             )
             assert created.status_code == 201, created.text
             tenants.append(created.json()["id"])
+        # The inbox is gated by customer_support; both tenants hold it for isolation checks.
+        for tenant in tenants:
+            activated = mutate(
+                f"/console/v1/services/customer_support/activate?client_id={tenant}",
+                {"reference": "synthetic-packaged"},
+            )
+            assert activated.status_code == 200, activated.text
         for name, email in emails.items():
             invited = mutate(
                 "/console/v1/admin/invites",

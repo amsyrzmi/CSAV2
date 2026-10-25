@@ -366,3 +366,45 @@ async def test_machine_token_cannot_read_or_change_services(sessions: SessionWor
             assert response.json()["detail"] == "human session required"
         post = await machine.post("/console/v1/services/customer_support/request", headers=headers)
         assert post.status_code == 403
+
+
+async def activate(sessions: SessionWorld, tenant: str, *keys: str) -> None:
+    """Activate packages as the platform admin; add-ons get customer_support first."""
+    ordered = list(keys)
+    if any(k != "customer_support" for k in ordered) and "customer_support" not in ordered:
+        ordered.insert(0, "customer_support")
+    ordered.sort(key=lambda k: k != "customer_support")
+    for key in ordered:
+        r = await sessions.mutate(
+            sessions.admin,
+            f"/console/v1/services/{key}/activate?client_id={tenant}",
+            {"reference": "synthetic-test"},
+        )
+        assert r.status_code == 200, r.text
+
+
+async def test_inactive_packages_block_inbox_business_kb_for_every_role(sessions):
+    for role in ("tenant_admin", "tenant_staff", "read_only"):
+        browser, _ = await sessions.member(role=role)
+        for path in (
+            "/console/v1/kb/documents",
+            "/console/v1/inbox/conversations",
+            "/console/v1/business/orders",
+        ):
+            r = await browser.get(path)
+            assert r.status_code == 403 and r.json()["detail"] == "package_inactive", (
+                role,
+                path,
+                r.text,
+            )
+    t = sessions.tenants[0]
+    await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/customer_support/activate?client_id={t}",
+        {"reference": "Q"},
+    )
+    reader, _ = await sessions.member(role="read_only")
+    assert (await reader.get("/console/v1/kb/documents")).status_code == 200
+    assert (await reader.get("/console/v1/business/orders")).status_code == 403
+    staff, _ = await sessions.member(role="tenant_staff")
+    assert (await staff.get("/console/v1/inbox/conversations")).status_code == 200

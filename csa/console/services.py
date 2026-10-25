@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -370,6 +371,29 @@ async def suspend_package(
             )
         await _audit(conn, client_id, actor, "service.suspended", key, before, row)
     return await _service(pool, client_id, key, actor)
+
+
+async def require_package(pool: AsyncConnectionPool, client_id: UUID, keys: frozenset[str]) -> None:
+    """403 package_inactive unless at least one of the packages is active for the tenant."""
+    async with tx(pool, str(client_id)) as conn:
+        row = await db.q.fetch_one(
+            "console/service_package_any_active.sql", (client_id, sorted(keys)), conn=conn
+        )
+    if row is None:
+        raise HTTPException(403, "package_inactive")
+
+
+def package_gate(*keys: str) -> Callable[..., Coroutine[Any, Any, None]]:
+    """Dependency factory; runs after console authentication because it resolves the tenant."""
+    unknown = [k for k in keys if k not in BY_KEY]
+    if not keys or unknown:
+        raise ValueError(f"package_gate needs known package keys, got {keys}")
+    required = frozenset(keys)
+
+    async def gate(request: Request, client_id: Annotated[UUID, Depends(tenant)]) -> None:
+        await require_package(request.app.state.pool, client_id, required)
+
+    return gate
 
 
 def _human(request: Request) -> ConsoleActor:

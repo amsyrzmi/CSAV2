@@ -8,10 +8,18 @@ import httpx
 import pytest
 
 from tests.conftest import requires_docker
+from tests.test_console_services import activate
 from tests.test_console_sessions import MACHINE_TOKEN, SessionWorld
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
+
+
+@pytest.fixture(autouse=True)
+async def packages(sessions: SessionWorld) -> None:
+    """Both tenants hold orders_products so isolation checks get past the package gate."""
+    for tenant in sessions.tenants:
+        await activate(sessions, tenant, "orders_products")
 
 
 async def seed(w: SessionWorld, tenant: str) -> tuple[str, str]:

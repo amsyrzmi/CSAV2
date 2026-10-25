@@ -28,6 +28,7 @@ from csa.agents.kb.lifecycle import delete_document, lock
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.multipart import MAX_FILE_BYTES, upload_form
+from csa.console.services import package_gate
 from csa.contracts.registry import CapabilityRegistry
 from csa.core import db
 from csa.core.tenancy import tx
@@ -172,7 +173,8 @@ async def cleanup_storage(pool: AsyncConnectionPool, root: Path, client_id: UUID
 
 
 def build_upload_router(root: Path | None) -> APIRouter:
-    router = APIRouter()
+    # Every KB file route, reads and downloads included, belongs to customer_support.
+    router = APIRouter(dependencies=[Depends(package_gate("customer_support"))])
 
     def storage() -> Path:
         if root is None:

@@ -13,6 +13,7 @@ from csa.agents.ecommerce.models import MarketplacePlatform
 from csa.agents.ecommerce.stores import StoreBinding, StoreConnection, StoreRecord, expiry_state
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
+from csa.console.services import package_gate
 from csa.core import db
 from csa.core.tenancy import tx
 
@@ -168,7 +169,13 @@ def business_actor(request: Request) -> ConsoleActor:
 
 
 def build_business_router() -> APIRouter:
-    router = APIRouter(prefix="/business", dependencies=[Depends(business_actor)])
+    router = APIRouter(
+        prefix="/business",
+        dependencies=[
+            Depends(package_gate("orders_products", "marketplaces")),
+            Depends(business_actor),
+        ],
+    )
 
     @router.get("/stores", response_model=StorePage)
     async def stores(
