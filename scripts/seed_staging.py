@@ -343,8 +343,9 @@ def seeded_packages() -> list[str]:
     """Packages whose member capabilities the seed enables in full.
 
     Packages with a member the onboarding SQL does not provision (e_invoicing) are
-    skipped. HR and Staff Email have no capabilities; the seed never enables HR module
-    settings or ``email_settings``, so they are not activated.
+    skipped. HR and Staff Email have no capabilities: ``hr`` is activated by
+    :func:`_seed_hr` for the tenant given an HR owner; ``email_settings`` is never
+    configured, so Staff Email is not activated.
     """
     onboarded = {agent_class().name for agent_class in ONBOARDED_AGENTS}
     return [p.key for p in PACKAGES if p.capabilities and set(p.capabilities) <= onboarded]
@@ -457,6 +458,12 @@ async def _seed_hr(
         report.hr_owner_set = True
     elif owner_row["user_id"] != users["admin"]:
         raise RuntimeError("HR owner already assigned to another account; refusing to override")
+    # The tenant has an HR owner and HR data, so its People & HR tab must be reachable.
+    await db.q.execute(
+        "seed_staging/service_packages_activate.sql",
+        (MERANTI, admin_id, SEED_REFERENCE, ["hr"]),
+        conn=conn,
+    )
     await db.q.execute(
         "seed_staging/hr_context.sql", (str(MERANTI), str(users["admin"])), conn=conn
     )
