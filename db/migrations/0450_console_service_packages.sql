@@ -19,7 +19,7 @@ ALTER TABLE public.console_service_packages ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.console_service_packages
     USING (client_id = nullif(current_setting('app.client_id',true),'')::uuid)
     WITH CHECK (client_id = nullif(current_setting('app.client_id',true),'')::uuid);
-REVOKE ALL ON public.console_service_packages FROM PUBLIC, csa_app, csa_ro;
+REVOKE ALL ON public.console_service_packages FROM PUBLIC, csa_app, csa_ro, csa_identity;
 GRANT SELECT, INSERT, UPDATE ON public.console_service_packages TO csa_app;
 
 -- Member lists are duplicated from the code catalogue on purpose; a test compares them.
