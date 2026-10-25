@@ -40,6 +40,7 @@ try {
     "lib/api.ts",
     "lib/business.ts",
     "lib/hr-api.ts",
+    "lib/email-api.ts",
     "lib/hr-voice.ts",
     "lib/identity-contracts.ts",
     "lib/identity-api.ts",
@@ -56,6 +57,7 @@ try {
     "public/brand/fourstacks-mark.svg",
     "tests/identity-transport.test.mjs",
     "tests/hr-transport.test.mjs",
+    "tests/email-transport.test.mjs",
     "tests/sandbox-chat.test.mjs",
     "tests/workspace-paths.test.mjs",
     "tests/release-runtime.test.mjs",
@@ -123,6 +125,7 @@ try {
     const commands = [
       ["identity transport tests", "../tests/identity-transport.test.mjs"],
       ["HR transport tests", "../tests/hr-transport.test.mjs"],
+      ["email transport tests", "../tests/email-transport.test.mjs"],
       ["sandbox state tests", "../tests/sandbox-chat.test.mjs"],
       ["workspace path tests", "../tests/workspace-paths.test.mjs"],
       ["release origin tests", "../tests/release-runtime.test.mjs"],
