@@ -5,6 +5,8 @@ from pathlib import Path
 from csa.console.agents import CATALOG
 from csa.console.packages import PACKAGES, backfill_members, package, packages_for_capability
 
+MIGRATIONS = Path(__file__).resolve().parents[1] / "db" / "migrations"
+
 
 def test_every_customer_agent_belongs_to_exactly_one_package():
     counts = Counter(c for p in PACKAGES for c in p.capabilities)
@@ -35,14 +37,18 @@ def test_sellable_is_false_when_any_member_is_not_implemented():
 
 
 def test_migration_backfill_members_match_catalogue():
-    sql = Path("db/migrations/0450_console_service_packages.sql").read_text()
-    for members in backfill_members().values():
-        for member in members:
-            assert f"'{member}'" in sql.split("-- BACKFILL")[1]
+    sql = MIGRATIONS.joinpath("0450_console_service_packages.sql").read_text()
+    backfill = sql.split("-- BACKFILL")[1]
+    pairs = re.findall(r"\('([a-z_]+)',\s*'([a-z_]+)'\)", backfill)
+    migrated: dict[str, set[str]] = {}
+    for pkg, member in pairs:
+        migrated.setdefault(pkg, set()).add(member)
+    catalogue = {k: set(v) for k, v in backfill_members().items() if v}
+    assert migrated == catalogue
 
 
 def test_hr_package_modules_match_hr_agent_settings_check():
-    sql = Path("db/migrations/0410_hr_operations.sql").read_text()
+    sql = MIGRATIONS.joinpath("0410_hr_operations.sql").read_text()
     match = re.search(r"ADD CHECK\(name IN \(([^)]*)\)\);", sql)
     assert match is not None
     names = tuple(n.strip().strip("'") for n in match.group(1).split(","))
