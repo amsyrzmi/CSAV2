@@ -1409,7 +1409,7 @@ async def test_hr_migrations_reapply_and_gateway_readiness_use_shipped_schema(
 ) -> None:
     from apps.gateway.main import EXPECTED_SCHEMA_VERSION, check_readiness
 
-    assert EXPECTED_SCHEMA_VERSION == "0420"
+    assert EXPECTED_SCHEMA_VERSION == "0430"
     before = await world.q("SELECT version FROM schema_migrations ORDER BY version")
     result = await asyncio.to_thread(
         subprocess.run,

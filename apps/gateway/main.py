@@ -30,6 +30,7 @@ from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.middleware import ConsoleResponseHeaders
 from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
+from csa.console.voice_sessions import build_voice_media_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
 from csa.core.settings import get_settings
@@ -49,7 +50,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0420"
+EXPECTED_SCHEMA_VERSION = "0430"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -138,6 +139,7 @@ def create_app() -> FastAPI:
             voice_key = settings.voice_transcription_key()
             app.state.voice_api_key = voice_key.get_secret_value() if voice_key else None
             app.state.voice_model = settings.VOICE_STT_MODEL
+            app.state.voice_sessions_config = settings.voice_session_config()
             app.state.telegram_ingress = TelegramIngress(pool)
             if identity_pool is not None:
                 await identity_pool.open(wait=True)
@@ -188,6 +190,7 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if settings.ENV != "prod" else None,
     )
     app.add_middleware(ConsoleResponseHeaders)
+    app.include_router(build_voice_media_router())
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

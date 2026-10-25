@@ -1,5 +1,49 @@
 # Progress
 
+Interactive voice session foundation (2026-10-25, committed on
+`feat/console-recorded-voice`): the interactive plan's Phase 2 was found implemented
+but unrecorded in the working tree and is now documented and committed together
+with the Phase 1 stabilization patch. Migration `0430`, `csa/voice/` and
+`csa/console/voice_sessions.py` add sandbox-only voice sessions bound to the user,
+tenant, login session and private conversation; a `voice_lock_actor()` revalidation
+gate; room-scoped LiveKit participant tokens; HMAC-authenticated media callbacks;
+and atomic finalized-utterance queueing through the shared `enqueue_sandbox_turn`
+path with duplicate receipts. The feature is disabled by default and requires
+explicit `VOICE_INTERACTIVE_*` settings; `livekit-api==1.2.2` is pinned with the
+lockfile updated. Gateway readiness now expects schema `0430`. Evidence on the
+settled source with `NO_LOCAL_ENV=1 ENV=ci`: lint, formatting, Pyright and import
+contracts passed; focused voice session, migration, settings, contract snapshot and
+readiness tests **34 passed, 11 warnings** on a disposable database. The full suite
+was started on the same source; its result is recorded in the following entry when
+it completes. Staging still runs revision `7cdc156` at schema `0410` and main is 38
+commits ahead of this branch (only `PROGRESS.md` overlaps); rebase and migrations
+`0420`/`0430` precede any staging deployment. No media worker, browser LiveKit
+connection, STT/TTS wiring or interruption exists yet. See
+[the voice contract](./CONSOLE_VOICE.md#interactive-session-foundation) and the
+[recovery audit](./handoffs/2026-10-24-voice-recovery-audit.md#interactive-session-foundation--current-working-tree).
+
+Voice stabilization (2026-10-24, working tree): shared voice/text recovery now
+blocks duplicate ordinary Send during uncertain voice acceptance; individual
+voice requests and polling deadlines are bounded. The integrated sandbox browser
+check passed all four recovery/Stop/timeout/discard scenarios on the settled source
+(1 test, 189.49 seconds). Final repository lint and isolated frontend
+tests/lint/types/build/trace checks passed; full-suite validation is running.
+See the [current stabilization record](
+./handoffs/2026-10-24-voice-recovery-audit.md#stabilization-follow-up--current-working-tree)
+and [interactive voice plan](./handoffs/2026-10-24-interactive-voice-plan.md).
+
+Voice session recovery audit (2026-10-24): the saved implementation is commit
+`72f0e30` on `feat/console-recorded-voice`. It includes hands-free browser voice
+and Telegram voice-note transcription; the older entries below predate those
+additions. Recovered logs show passing focused checks/builds, a failed final browser
+check (`Target crashed`), and no complete full-suite pass. Fresh lint and isolated
+frontend checks passed; focused pytest finished **37 passed / 1 browser failure**
+(`Target crashed`), including a passing disposable reset. A synthetic component
+harness reproduced duplicate submission through ordinary text Send after an
+uncertain hands-free send. Source review also found unbounded individual network
+waits within the 15-minute voice session. See the [recovery audit and continuation prompt](
+./handoffs/2026-10-24-voice-recovery-audit.md) for evidence and the next bounded fix.
+
 Recorded voice implementation (2026-10-24, local working tree): the sandbox now
 records bounded audio and submits it through the authenticated gateway to an
 explicit OpenAI-compatible transcription endpoint. Jobs are private to the exact

@@ -92,3 +92,33 @@ def test_voice_key_is_bound_to_exact_groq_endpoint() -> None:
     assert explicit_key.get_secret_value() == "synthetic-voice-key"
     with pytest.raises(ValidationError, match="requires HTTPS"):
         _settings(ENV="prod", VOICE_STT_ENDPOINT="http://speech.example.test/transcriptions")
+
+
+def test_interactive_voice_requires_explicit_complete_secure_configuration() -> None:
+    assert _settings().voice_session_config() is None
+    with pytest.raises(ValidationError, match="requires explicit LiveKit"):
+        _settings(VOICE_INTERACTIVE_ENABLED="true")
+    configured = {
+        "VOICE_INTERACTIVE_ENABLED": "true",
+        "VOICE_LIVEKIT_URL": "wss://voice.example.test",
+        "VOICE_LIVEKIT_API_KEY": "synthetic-project-key",
+        "VOICE_LIVEKIT_API_SECRET": "synthetic-livekit-" + "x" * 32,
+        "VOICE_MEDIA_HMAC_SECRET": "synthetic-media-" + "x" * 32,
+    }
+    assert _settings(**configured).voice_session_config() is not None
+    for url in (
+        "http://voice.example.test",
+        "ws://voice.example.test",
+        "wss://user:pass@voice.example.test",
+        "wss://voice.example.test?secret=value",
+    ):
+        with pytest.raises(ValidationError, match="requires WSS"):
+            _settings(**{**configured, "VOICE_LIVEKIT_URL": url})
+    assert (
+        _settings(
+            **{**configured, "VOICE_LIVEKIT_URL": "ws://127.0.0.1:7880"}
+        ).voice_session_config()
+        is not None
+    )
+    with pytest.raises(ValidationError, match="requires WSS"):
+        _settings(**{**configured, "ENV": "prod", "VOICE_LIVEKIT_URL": "ws://127.0.0.1:7880"})

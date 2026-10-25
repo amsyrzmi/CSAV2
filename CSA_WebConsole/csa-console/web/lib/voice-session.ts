@@ -1,4 +1,11 @@
-/** Browser voice primitives. Recording ends before playback begins. */
+/** Bounded utterances and interruptible playback using installed browser voices. */
+export function voiceRequestSignal(signal: AbortSignal, timeout = 15_000, deadline = Infinity): AbortSignal {
+  const remaining = Math.min(timeout, deadline - Date.now());
+  return AbortSignal.any([signal, remaining <= 0
+    ? AbortSignal.abort(new DOMException("Voice request deadline exceeded.", "TimeoutError"))
+    : AbortSignal.timeout(Math.ceil(remaining))]);
+}
+
 export class SpeechBoundary {
   private started: number | null = null;
   private quiet: number | null = null;
@@ -17,7 +24,9 @@ export class SpeechBoundary {
   get heardSpeech() { return this.started !== null; }
 }
 
-export async function captureUtterance(signal: AbortSignal): Promise<Blob> {
+export async function captureUtterance(signal: AbortSignal, options: {
+  onSpeechStart?: () => void; waitForSpeech?: boolean;
+} = {}): Promise<Blob> {
   if (!window.isSecureContext || !navigator.mediaDevices || typeof MediaRecorder === "undefined") throw new Error("A secure browser with microphone recording is required.");
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   if (signal.aborted) { stream.getTracks().forEach(track => track.stop()); throw signal.reason; }
@@ -57,7 +66,10 @@ export async function captureUtterance(signal: AbortSignal): Promise<Blob> {
         analyser.getFloatTimeDomainData(samples);
         const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
         const now = performance.now();
-        if (boundary.sample(rms, now) || now - beginning >= 60_000 || (!boundary.heardSpeech && now - beginning >= 12_000)) {
+        const previouslyHeard = boundary.heardSpeech;
+        const finished = boundary.sample(rms, now);
+        if (!previouslyHeard && boundary.heardSpeech) options.onSpeechStart?.();
+        if (finished || now - beginning >= 60_000 || (!options.waitForSpeech && !boundary.heardSpeech && now - beginning >= 12_000)) {
           if (media.state === "recording") media.stop();
         }
       }, 100);

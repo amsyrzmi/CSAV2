@@ -14,6 +14,11 @@ export type SandboxTurn = {
   replies: { id: string; body: string }[];
 };
 export type Page<T> = { items: T[]; next_cursor: number | null };
+export type PendingSandboxTurn = {
+  source: "text" | "voice";
+  request_key: string;
+  body: string;
+};
 
 export const sandboxStatus: Record<SandboxTurn["status"], string> = {
   queued: "Queued - not delivered",

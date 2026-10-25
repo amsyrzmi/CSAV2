@@ -5,7 +5,24 @@ import ts from "typescript";
 const code = ts.transpileModule(await readFile(new URL("../lib/voice-session.ts", import.meta.url), "utf8"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 }).outputText;
-const { SpeechBoundary, playLocalReply, captureUtterance } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const { SpeechBoundary, playLocalReply, captureUtterance, voiceRequestSignal } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+
+test("voice network waits stop at the request limit, remaining deadline, or explicit Stop", async () => {
+  const stopped = new AbortController();
+  const signal = voiceRequestSignal(stopped.signal);
+  stopped.abort(new Error("Stopped by user"));
+  assert.equal(signal.aborted, true);
+  assert.match(signal.reason.message, /Stopped by user/);
+  const parent = new AbortController().signal;
+  const expired = voiceRequestSignal(parent, 15_000, Date.now() - 1);
+  assert.equal(expired.aborted, true);
+  const limited = voiceRequestSignal(parent, 10);
+  const deadline = voiceRequestSignal(parent, 15_000, Date.now() + 10);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(limited.aborted, true);
+  assert.equal(deadline.aborted, true);
+  assert.equal(parent.aborted, false, "one timed-out request does not abort a recovery attempt");
+});
 
 test("silence and a single noise spike never submit a question; sustained speech ends after pause", () => {
   const boundary = new SpeechBoundary();

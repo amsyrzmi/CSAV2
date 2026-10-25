@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
-import type { Page, SandboxThread, SandboxTurn } from "@/lib/sandbox-chat";
+import type { Page, PendingSandboxTurn, SandboxThread, SandboxTurn } from "@/lib/sandbox-chat";
 import { sandboxDelayed, sandboxStatus } from "@/lib/sandbox-chat";
 import { VoiceConversation } from "./VoiceConversation";
 import { RecordedVoice } from "./RecordedVoice";
@@ -54,7 +54,7 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
   const [turnCursor, setTurnCursor] = useState<number | null>(null);
   const [historyPages, setHistoryPages] = useState(1);
   const [text, setText] = useState("");
-  const [pending, setPending] = useState<{ request_key: string; body: string } | null>(null);
+  const [pending, setPending] = useState<PendingSandboxTurn | null>(null);
   const creationKey = useRef<string | null>(null);
   const observed = useRef(new Set<string>());
   const [creating, setCreating] = useState(false);
@@ -135,7 +135,7 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
         setTurns(items.sort((a, b) => a.id - b.id));
         items.forEach((turn) => observed.current.add(turn.request_key));
         setTurnCursor(cursor);
-        setPending((value) => value && items.some((turn) => turn.request_key === value.request_key) ? null : value);
+        setPending((value) => value?.source === "text" && items.some((turn) => turn.request_key === value.request_key) ? null : value);
         setPollError("");
         setNow(Date.now());
       } catch (cause) {
@@ -168,10 +168,11 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
     setPollError(""); setConfirmArchive(false); setText("");
   }
   async function send() {
-    const draft = pending ?? { request_key: crypto.randomUUID(), body: text };
+    if (pending?.source === "voice") return;
+    const draft = pending ?? { source: "text" as const, request_key: crypto.randomUUID(), body: text };
     setPending(draft); setText(""); setBusy(true); setError("");
     try {
-      await mutate(`/${thread}/turns`, draft);
+      await mutate(`/${thread}/turns`, { request_key: draft.request_key, body: draft.body });
       if (!alive.current) return;
       setPending(null); setText(""); setRevision((value) => value + 1);
     } catch (cause) {
@@ -242,10 +243,12 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
           </p>)}
         </article>)}
       </div>
-      {pending && <Notice>Uncertain send retained. Retry uses the original text and request key. Polling can confirm acceptance without resending.</Notice>}
+      {pending && <Notice>{pending.source === "voice"
+        ? "Voice request retained. Resume the same request or explicitly discard local recovery. Check history for any accepted message."
+        : "Uncertain send retained. Retry uses the original text and request key. Polling can confirm acceptance without resending."}</Notice>}
       <VoiceConversation key={`voice-${thread}`} conversation={thread} query={query}
-        disabled={!canWrite || busy || pending !== null || creating || listening || voiceBusy}
-        onBusy={setConversationVoiceBusy} onDraft={setText} />
+        disabled={!canWrite || busy || pending?.source === "text" || creating || listening || voiceBusy}
+        onBusy={setConversationVoiceBusy} onPending={setPending} />
       <RecordedVoice key={thread} conversation={thread} query={query}
         disabled={!canWrite || busy || pending !== null || creating || listening || conversationVoiceBusy}
         onText={setText} onBusy={setVoiceBusy} />
@@ -260,8 +263,8 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
         <option value="en-MY">English (Malaysia)</option>
       </select>
       <div className="mt-3 flex flex-wrap gap-3">
-        <button className={action} disabled={!canWrite || busy || creating || listening || voiceBusy || conversationVoiceBusy || (!pending && !text.trim())} onClick={() => void send()}>
-          {pending ? "Retry exact request" : "Send to sandbox"}</button>
+        <button className={action} disabled={!canWrite || busy || creating || listening || voiceBusy || conversationVoiceBusy || pending?.source === "voice" || (!pending && !text.trim())} onClick={() => void send()}>
+          {pending?.source === "text" ? "Retry exact request" : "Send to sandbox"}</button>
         <button type="button" className={secondary} disabled={!canWrite || busy || pending !== null || creating || voiceBusy || conversationVoiceBusy}
           onClick={listening ? stopVoice : dictate}>{listening ? "Stop microphone" : "Dictate locally"}</button>
         <button type="button" className={secondary} onClick={() => window.speechSynthesis?.cancel()}>Stop speech</button>
