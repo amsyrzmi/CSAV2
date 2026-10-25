@@ -16,7 +16,7 @@ from tests.conftest import (
     requires_docker,
 )
 
-EXPECTED_SCHEMA_VERSION = "0440"
+EXPECTED_SCHEMA_VERSION = "0450"
 LG01_SQL_VERSIONS = {"0100", "0110", "0120"}
 
 
