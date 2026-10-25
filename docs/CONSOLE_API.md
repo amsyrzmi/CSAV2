@@ -785,3 +785,13 @@ agent settings editing, channel/integration connect, notification targets, DLQ/r
 usage/billing. The offline Telegram M5 slice above does not complete broader M5–M8 acceptance.
 Authentication/onboarding, M2 agents/activity and M3 KB pages are adopted; all project/PM/terminal/Hermes/diagram/workroom/voice and
 unmigrated business pages return 404. No legacy API/n8n rewrite remains active.
+
+## Recorded sandbox voice
+
+The authenticated `/console/v1/chat/voice` configuration endpoint and
+`/console/v1/chat/conversations/{conversation_id}/voice/{request_key}` POST/GET
+routes support recorded audio to a reviewable text draft. They do not submit a
+chat turn automatically. Submission uses raw audio bytes and a supported audio
+Content-Type, with the normal session, CSRF, writer-role and private ownership
+checks. Jobs preserve exact-key replay and expose processing/completed/failed/
+timeout/expired states. See [configuration, retention and recovery limits](./CONSOLE_VOICE.md).

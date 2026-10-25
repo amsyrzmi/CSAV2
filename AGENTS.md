@@ -32,7 +32,8 @@ LangGraph, and PostgreSQL. Read the relevant phase plan under
 - `make up`: start the isolated dev Postgres (separate from production csa_db).
 - `make db-reset`: recreate the local database from the schema baseline and
   migrations. This is destructive to that local database.
-- `make test`: run the test suite.
+- `make test`: run the test suite, skipping tests marked `slow` (packaged image
+  builds). `make test-all` runs everything, as CI does.
 - `make lint`: run Ruff, formatting, Pyright, and import-linter.
 - `make run-dev`: start the local gateway, worker, and delivery processes.
 - `make run-gateway`: start only the local gateway process.

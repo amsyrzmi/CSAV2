@@ -4,8 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
-import type { Page, SandboxThread, SandboxTurn } from "@/lib/sandbox-chat";
+import type { Page, PendingSandboxTurn, SandboxThread, SandboxTurn } from "@/lib/sandbox-chat";
 import { sandboxDelayed, sandboxStatus } from "@/lib/sandbox-chat";
+import { VoiceConversation } from "./VoiceConversation";
+import { RecordedVoice } from "./RecordedVoice";
+import { localDictation, speakLocal } from "@/lib/hr-voice";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 export function SandboxWorkspace({ me }: { me: Me }) {
@@ -27,7 +30,8 @@ export function SandboxWorkspace({ me }: { me: Me }) {
   return <>
     <Heading title="Sandbox assistant" description="Private to your account and selected tenant. Knowledge and product-information questions only." />
     <Notice>No customer records, orders, bookings, tickets, invoices, payments, email or staff escalation.
-      No external customer sends. Business confirmations, voice and attachments are unavailable.
+      No external customer sends. Business confirmations and attachments are unavailable.
+      Browser dictation fills a draft for review; read aloud uses a local browser voice.
       Use Knowledge base for document uploads. Archive hides history; it does not delete it.</Notice>
     {error && <Notice error>{error}</Notice>}
     {platform && <div className="my-5">
@@ -50,7 +54,7 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
   const [turnCursor, setTurnCursor] = useState<number | null>(null);
   const [historyPages, setHistoryPages] = useState(1);
   const [text, setText] = useState("");
-  const [pending, setPending] = useState<{ request_key: string; body: string } | null>(null);
+  const [pending, setPending] = useState<PendingSandboxTurn | null>(null);
   const creationKey = useRef<string | null>(null);
   const observed = useRef(new Set<string>());
   const [creating, setCreating] = useState(false);
@@ -61,7 +65,39 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
   const [threadRevision, setThreadRevision] = useState(0);
   const [now, setNow] = useState(Date.now);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [conversationVoiceBusy, setConversationVoiceBusy] = useState(false);
+  const [voiceLanguage, setVoiceLanguage] = useState("en-US");
+  const stopDictation = useRef<(() => void) | null>(null);
   const alive = useRef(true);
+  useEffect(() => () => {
+    stopDictation.current?.();
+    window.speechSynthesis?.cancel();
+  }, []);
+  function stopVoice() {
+    stopDictation.current?.();
+    stopDictation.current = null;
+    setListening(false);
+  }
+  function dictate() {
+    setError("");
+    stopVoice();
+    try {
+      stopDictation.current = localDictation(
+        value => setText(value),
+        () => setListening(false),
+        problem => { setError(problem); setListening(false); },
+        voiceLanguage,
+      );
+      setListening(true);
+    } catch (cause) { setError((cause as Error).message); }
+  }
+  function readAloud(body: string) {
+    setError("");
+    try { speakLocal(body); }
+    catch (cause) { setError((cause as Error).message); }
+  }
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
@@ -99,7 +135,7 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
         setTurns(items.sort((a, b) => a.id - b.id));
         items.forEach((turn) => observed.current.add(turn.request_key));
         setTurnCursor(cursor);
-        setPending((value) => value && items.some((turn) => turn.request_key === value.request_key) ? null : value);
+        setPending((value) => value?.source === "text" && items.some((turn) => turn.request_key === value.request_key) ? null : value);
         setPollError("");
         setNow(Date.now());
       } catch (cause) {
@@ -125,15 +161,18 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
     } finally { if (alive.current) setBusy(false); }
   }
   function select(id: string) {
+    stopVoice();
+    window.speechSynthesis?.cancel();
     observed.current.clear();
     setThread(id); setTurns([]); setHistoryPages(1); setTurnCursor(null);
     setPollError(""); setConfirmArchive(false); setText("");
   }
   async function send() {
-    const draft = pending ?? { request_key: crypto.randomUUID(), body: text };
+    if (pending?.source === "voice") return;
+    const draft = pending ?? { source: "text" as const, request_key: crypto.randomUUID(), body: text };
     setPending(draft); setText(""); setBusy(true); setError("");
     try {
-      await mutate(`/${thread}/turns`, draft);
+      await mutate(`/${thread}/turns`, { request_key: draft.request_key, body: draft.body });
       if (!alive.current) return;
       setPending(null); setText(""); setRevision((value) => value + 1);
     } catch (cause) {
@@ -171,13 +210,13 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
     } catch (cause) { if (alive.current) setError((cause as Error).message); }
     finally { if (alive.current) setBusy(false); }
   }
-  const locked = busy || pending !== null || creating;
+  const locked = busy || pending !== null || creating || listening || voiceBusy || conversationVoiceBusy;
   return <div className="mt-5 space-y-5">
     {error && <Notice error>{error}</Notice>}
     {!canWrite && <Notice>Read-only membership: sending, creating and archiving conversations are disabled.</Notice>}
     <Panel title="Your private conversations">
       <div className="flex flex-wrap gap-3">
-        <button className={action} disabled={!canWrite || busy || pending !== null} onClick={() => void create()}>
+        <button className={action} disabled={!canWrite || busy || pending !== null || voiceBusy || conversationVoiceBusy || listening} onClick={() => void create()}>
           {creating ? "Retry conversation creation" : "New sandbox conversation"}</button>
         <label className="sr-only" htmlFor="sandbox-conversation">Conversation</label>
         <select id="sandbox-conversation" className={field} value={thread} disabled={locked}
@@ -199,18 +238,39 @@ function Sandbox({ query, canWrite }: { query: string; canWrite: boolean }) {
           <p className="whitespace-pre-wrap break-words"><strong>You:</strong> {turn.body}</p>
           <p className="my-2 text-sm text-ink-600">{sandboxStatus[turn.status]}</p>
           {sandboxDelayed(turn, now) && <Notice>Taking longer than the 90-second turn deadline. This is not a delivery confirmation or permission to resend. Check status; worker retries may still be pending.</Notice>}
-          {turn.replies.map((reply) => <p key={reply.id} className="mt-3 whitespace-pre-wrap break-words"><strong>Sandbox assistant:</strong> {reply.body}</p>)}
+          {turn.replies.map((reply) => <p key={reply.id} className="mt-3 whitespace-pre-wrap break-words"><strong>Sandbox assistant:</strong> {reply.body}
+            <button type="button" className={`${secondary} ml-3`} disabled={conversationVoiceBusy} onClick={() => readAloud(reply.body)}>Read reply aloud locally</button>
+          </p>)}
         </article>)}
       </div>
-      {pending && <Notice>Uncertain send retained. Retry uses the original text and request key. Polling can confirm acceptance without resending.</Notice>}
+      {pending && <Notice>{pending.source === "voice"
+        ? "Voice request retained. Resume the same request or explicitly discard local recovery. Check history for any accepted message."
+        : "Uncertain send retained. Retry uses the original text and request key. Polling can confirm acceptance without resending."}</Notice>}
+      <VoiceConversation key={`voice-${thread}`} conversation={thread} query={query}
+        disabled={!canWrite || busy || pending?.source === "text" || creating || listening || voiceBusy}
+        onBusy={setConversationVoiceBusy} onPending={setPending} />
+      <RecordedVoice key={thread} conversation={thread} query={query}
+        disabled={!canWrite || busy || pending !== null || creating || listening || conversationVoiceBusy}
+        onText={setText} onBusy={setVoiceBusy} />
       <label htmlFor="sandbox-text" className="block text-sm">Text question (maximum 4000 characters)</label>
       <textarea id="sandbox-text" className={field} maxLength={4000} value={pending?.body ?? text}
         disabled={!canWrite || locked} onChange={(event) => setText(event.target.value)} />
+      <label htmlFor="sandbox-voice-language" className="mt-3 block text-sm">Dictation language</label>
+      <select id="sandbox-voice-language" className={field} value={voiceLanguage} disabled={!canWrite || locked}
+        onChange={event => setVoiceLanguage(event.target.value)}>
+        <option value="en-US">English (US)</option>
+        <option value="en-GB">English (UK)</option>
+        <option value="en-MY">English (Malaysia)</option>
+      </select>
       <div className="mt-3 flex flex-wrap gap-3">
-        <button className={action} disabled={!canWrite || busy || creating || (!pending && !text.trim())} onClick={() => void send()}>
-          {pending ? "Retry exact request" : "Send to sandbox"}</button>
+        <button className={action} disabled={!canWrite || busy || creating || listening || voiceBusy || conversationVoiceBusy || pending?.source === "voice" || (!pending && !text.trim())} onClick={() => void send()}>
+          {pending?.source === "text" ? "Retry exact request" : "Send to sandbox"}</button>
+        <button type="button" className={secondary} disabled={!canWrite || busy || pending !== null || creating || voiceBusy || conversationVoiceBusy}
+          onClick={listening ? stopVoice : dictate}>{listening ? "Stop microphone" : "Dictate locally"}</button>
+        <button type="button" className={secondary} onClick={() => window.speechSynthesis?.cancel()}>Stop speech</button>
         <button className={secondary} disabled={!canWrite || locked} onClick={() => setConfirmArchive(true)}>Archive conversation</button>
       </div>
+      <p className="text-xs text-ink-500">Review dictated text before sending. Local dictation requires a secure browser with local speech support and an installed language pack matching your selection. Audio stays in your browser.</p>
       {confirmArchive && <div className="mt-4">
         <Notice>Hide this conversation from your list? History and queued work are retained. This does not delete messages or cancel an accepted turn.</Notice>
         <button className={secondary} disabled={locked} onClick={() => void archive()}>Confirm archive</button>

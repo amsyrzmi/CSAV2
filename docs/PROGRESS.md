@@ -1,5 +1,104 @@
 # Progress
 
+Interactive voice session foundation (2026-10-25, committed on
+`feat/console-recorded-voice`): the interactive plan's Phase 2 was found implemented
+but unrecorded in the working tree and is now documented and committed together
+with the Phase 1 stabilization patch. Migration `0440`, `csa/voice/` and
+`csa/console/voice_sessions.py` add sandbox-only voice sessions bound to the user,
+tenant, login session and private conversation; a `voice_lock_actor()` revalidation
+gate; room-scoped LiveKit participant tokens; HMAC-authenticated media callbacks;
+and atomic finalized-utterance queueing through the shared `enqueue_sandbox_turn`
+path with duplicate receipts. On merging main (PR #29 added `0430_email_assistant`)
+the session migration was renumbered from `0430` to `0440`; nothing persistent had
+applied the old number. The feature is disabled by default and requires
+explicit `VOICE_INTERACTIVE_*` settings; `livekit-api==1.2.2` is pinned with the
+lockfile updated. Gateway readiness now expects schema `0440`. Evidence on the
+settled source with `NO_LOCAL_ENV=1 ENV=ci`: lint, formatting, Pyright and import
+contracts passed; focused voice session, migration, settings, contract snapshot and
+readiness tests **34 passed, 11 warnings** on a disposable database. After merging
+main (`e9b0a2e`) and renumbering, `make lint` and the isolated frontend check passed
+and `make test` finished **3020 passed, 4 failed, 6 deselected** in 50m38s; the four
+failures were the identity gateway lifespan cases whose synthetic settings lacked
+`voice_session_config`, fixed with a stub so that file passes 10/10. The six deselected
+tests are `tests/test_packaged_console.py`, now marked `slow` (Docker image builds plus
+Chromium); `make test` skips `slow`, `make test-all` and CI run everything. CI on the
+pull request is the authoritative full run. Staging still runs revision `7cdc156` at schema `0410` and main is 38
+commits ahead of this branch (only `PROGRESS.md` overlaps); rebase and migrations
+`0420`/`0430`/`0440` precede any staging deployment. No media worker, browser LiveKit
+connection, STT/TTS wiring or interruption exists yet. See
+[the voice contract](./CONSOLE_VOICE.md#interactive-session-foundation) and the
+[recovery audit](./handoffs/2026-10-24-voice-recovery-audit.md#interactive-session-foundation--current-working-tree).
+
+Voice stabilization (2026-10-24, working tree): shared voice/text recovery now
+blocks duplicate ordinary Send during uncertain voice acceptance; individual
+voice requests and polling deadlines are bounded. The integrated sandbox browser
+check passed all four recovery/Stop/timeout/discard scenarios on the settled source
+(1 test, 189.49 seconds). Final repository lint and isolated frontend
+tests/lint/types/build/trace checks passed; full-suite validation is running.
+See the [current stabilization record](
+./handoffs/2026-10-24-voice-recovery-audit.md#stabilization-follow-up--current-working-tree)
+and [interactive voice plan](./handoffs/2026-10-24-interactive-voice-plan.md).
+
+Voice session recovery audit (2026-10-24): the saved implementation is commit
+`72f0e30` on `feat/console-recorded-voice`. It includes hands-free browser voice
+and Telegram voice-note transcription; the older entries below predate those
+additions. Recovered logs show passing focused checks/builds, a failed final browser
+check (`Target crashed`), and no complete full-suite pass. Fresh lint and isolated
+frontend checks passed; focused pytest finished **37 passed / 1 browser failure**
+(`Target crashed`), including a passing disposable reset. A synthetic component
+harness reproduced duplicate submission through ordinary text Send after an
+uncertain hands-free send. Source review also found unbounded individual network
+waits within the 15-minute voice session. See the [recovery audit and continuation prompt](
+./handoffs/2026-10-24-voice-recovery-audit.md) for evidence and the next bounded fix.
+
+Recorded voice implementation (2026-10-24, local working tree): the sandbox now
+records bounded audio and submits it through the authenticated gateway to an
+explicit OpenAI-compatible transcription endpoint. Jobs are private to the exact
+user/tenant/conversation, with staged RLS, composite ownership FK, atomic audit,
+exact-key replay/conflict handling and durable failure/timeout states. Audio is
+held in memory; transcripts are reviewable drafts and never auto-submitted.
+The user selected Groq; only the nonsecret endpoint/model settings were updated
+in ignored `.env.local`, with exact-URL-bound reuse of the existing server key.
+See [voice configuration, retention and recovery limits](./CONSOLE_VOICE.md).
+Migration 0420 and gateway readiness are implemented; no persistent database
+migration, service restart, live provider call or production access occurred.
+This replaces the unavailable n8n-dependent recorded upload flow; continuous
+LiveKit conversation and Telegram transcription are still not implemented.
+Evidence: 22 focused voice/migration/readiness/contract tests passed (1 existing
+warning), including disposable reset. After audit/timeout changes, all 7 voice
+integration tests passed (1 existing warning); final Groq settings tests: 9 passed
+(9 existing warnings). Final isolated frontend transport/state tests, lint, types, build and trace checks
+passed. Full-suite validation remains incomplete; one lint run reported settings
+attribute errors while the Groq settings method was being added, and a fresh run
+against the settled source is in progress. That run then found an optional-key
+typing issue in the settings regression test; explicit non-None assertions now
+correct it, and validation has been restarted. The earlier full run
+predating this backend change ended with 2910 passed, 1 load failure and 6
+packaged-console setup errors. The missing Node PATH prerequisite was confirmed
+and the latest run has the installed runtime on PATH; no full-suite pass is claimed.
+A run started without Node was interrupted and superseded. Live microphone,
+multilingual/provider quality, scheduled transcript erasure and reload recovery
+remain unverified or absent as documented.
+
+Browser voice restoration (2026-10-24, local working tree): investigation found
+that the adopted sandbox replaced the copied recorder page; its legacy
+`/api/voice` upload path and LiveKit runtime remain deferred by the console
+migration plan. The current gateway also has no voice submission/callback route.
+The sandbox now exposes the existing browser-local speech adapter for explicit
+reviewable dictation and reply playback, with English US/UK/Malaysia language
+selection. These are text submissions through the existing authenticated sandbox
+contract. No server audio upload, LiveKit call, Telegram transcription, automatic
+send or continuous voice conversation is implemented by this patch.
+Microphone callbacks are detached and recognition aborted on conversation change
+or unmount; sending and conversation selection are disabled while listening.
+Speech errors remain visible. No environment file was read or changed.
+Validation: final isolated frontend transport/state tests, lint, types, build
+and trace checks passed; speech/transport tests passed (5 tests), including
+language selection. Repository Ruff/Pyright/import checks passed. The disposable
+reset test passed (1 test, 1 existing warning). The full backend suite was started
+and remains in progress; no full-suite pass is claimed. Live microphone and
+installed language-pack acceptance are not established.
+
 Staff email assistant (2026-10-24, branch `feat/email-agent`): new draft-only
 staff module per LG13. Migration `0430` adds `email_settings` (tenant switch,
 admin-only via SECURITY DEFINER), per-user `email_mailboxes` with AES-GCM

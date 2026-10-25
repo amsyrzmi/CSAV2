@@ -10,7 +10,7 @@ interface Recognition {
   start(): void;
   abort(): void;
 }
-export function localDictation(text: (value: string) => void, ended: () => void, failed: (message: string) => void) {
+export function localDictation(text: (value: string) => void, ended: () => void, failed: (message: string) => void, language = "en-MY") {
   const browser = window as typeof window & {
     SpeechRecognition?: new () => Recognition;
     webkitSpeechRecognition?: new () => Recognition;
@@ -20,7 +20,7 @@ export function localDictation(text: (value: string) => void, ended: () => void,
   const recognition = new Constructor();
   if (!("processLocally" in recognition)) throw new Error("This browser cannot require local speech processing. Type your request instead.");
   recognition.processLocally = true;
-  recognition.lang = "en-MY";
+  recognition.lang = language;
   recognition.continuous = false;
   recognition.interimResults = false;
   recognition.onresult = event => text(event.results[0][0].transcript.slice(0, 2000));

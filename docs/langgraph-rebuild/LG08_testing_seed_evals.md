@@ -84,6 +84,16 @@ Rules: deterministic by default (cassettes + fake LLM). A separate `--live` mode
 ## Seed design (`db/seed/`)
 Idempotent scripts, one scenario per file, loadable per test. Entities: 2 clients (A: `suggest`, B: `auto`, different persona/policy/timezone/ops chat) to prove tenancy; contacts on each channel; products with edge stock; orders in every status; bookings; tickets; KB docs with gaps.
 
+The local operator seed lives in `sandbox_clients.sql` and
+`sandbox_scenarios.sql`. `make db-reset` applies both after migrations, while
+`make db-seed` reapplies them to an existing isolated dev database without
+dropping schemas. The seed is synthetic and repeatable: two sandbox tenants
+with suggest/auto modes, multilingual Telegram contacts, open conversations,
+regular/low/zero-stock products, orders across all supported statuses, bookings,
+open tickets and unresolved knowledge gaps. Both commands use the Makefile's
+loopback dev DSN; `db-seed` also checks that psql and Python point at the same
+isolated database before writing. Never point these commands at production.
+
 ### Edge-case matrix (each row = at least one golden case)
 | Area | Case | Expected |
 |---|---|---|

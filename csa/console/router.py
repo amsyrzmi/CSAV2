@@ -24,6 +24,8 @@ from csa.console.kb_contracts import JobOut, public_job
 from csa.console.kb_uploads import audit as kb_audit
 from csa.console.kb_uploads import build_upload_router
 from csa.console.kb_uploads import writer as kb_writer
+from csa.console.voice import build_voice_router
+from csa.console.voice_sessions import build_voice_sessions_router
 from csa.console.workspace import build_workspace_router
 from csa.contracts.callbacks import PendingActionStore
 from csa.contracts.registry import CapabilityRegistry
@@ -139,6 +141,8 @@ def build_router(
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(auth)])
     router.include_router(build_upload_router(kb_upload_root))
     router.include_router(build_chat_router())
+    router.include_router(build_voice_router())
+    router.include_router(build_voice_sessions_router())
     router.include_router(build_workspace_router())
     router.include_router(build_inbox_router())
     router.include_router(build_business_router())

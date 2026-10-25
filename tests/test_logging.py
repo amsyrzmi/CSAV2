@@ -162,3 +162,19 @@ def test_normal_shutdown_drains_queued_output() -> None:
         output.write(sink, f"event-{index}\n")
     output.close()
     assert len(sink.getvalue().splitlines()) == 10
+
+
+def test_telegram_api_and_download_urls_redact_bot_tokens() -> None:
+    from csa.core.logging import _redact_telegram_urls
+
+    event = _redact_telegram_urls(
+        None,
+        "info",
+        {
+            "event": 'HTTP POST https://api.telegram.org/bot123:synthetic/getFile "200 OK"',
+            "exception": "GET https://api.telegram.org/file/bot123:synthetic/voice/a.oga",
+        },
+    )
+    assert "123:synthetic" not in str(event)
+    assert "/getFile" in event["event"]
+    assert "/voice/a.oga" in event["exception"]

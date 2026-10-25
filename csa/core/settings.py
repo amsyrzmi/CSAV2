@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     GROQ_API_KEY: SecretStr
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     HR_ASSISTANT_ENABLED: bool = False
+    # Explicit opt-in; local/OpenAI-compatible transcription endpoint, never browser supplied.
+    VOICE_STT_ENDPOINT: HttpUrl | None = None
+    VOICE_STT_API_KEY: SecretStr | None = None
+    VOICE_STT_MODEL: str = "whisper-large-v3-turbo"
+    VOICE_INTERACTIVE_ENABLED: bool = False
+    VOICE_LIVEKIT_URL: str | None = None
+    VOICE_LIVEKIT_API_KEY: SecretStr | None = None
+    VOICE_LIVEKIT_API_SECRET: SecretStr | None = Field(default=None, min_length=32)
+    VOICE_MEDIA_HMAC_SECRET: SecretStr | None = Field(default=None, min_length=32)
     # Staff email assistant (draft-only Gmail). The OAuth client is shared with future
     # Google integrations; tokens live encrypted per connecting user, never in settings.
     EMAIL_ASSISTANT_ENABLED: bool = False
@@ -143,6 +152,77 @@ class Settings(BaseSettings):
                 f"got {len(decoded)}"
             )
         return value
+
+    def voice_transcription_key(self) -> SecretStr | None:
+        if self.VOICE_STT_API_KEY is not None:
+            return self.VOICE_STT_API_KEY
+        if str(self.VOICE_STT_ENDPOINT) == "https://api.groq.com/openai/v1/audio/transcriptions":
+            return self.GROQ_API_KEY
+        return None
+
+    @model_validator(mode="after")
+    def _validate_interactive_voice(self) -> Settings:
+        from urllib.parse import urlsplit
+
+        if self.VOICE_INTERACTIVE_ENABLED:
+            if not all(
+                (
+                    self.VOICE_LIVEKIT_URL,
+                    self.VOICE_LIVEKIT_API_KEY,
+                    self.VOICE_LIVEKIT_API_SECRET,
+                    self.VOICE_MEDIA_HMAC_SECRET,
+                )
+            ):
+                raise ValueError(
+                    "interactive voice requires explicit LiveKit and media credentials"
+                )
+            address = urlsplit(self.VOICE_LIVEKIT_URL or "")
+            if address.port == 0:
+                raise ValueError("interactive voice port must be positive")
+            if (
+                address.scheme not in {"ws", "wss"}
+                or not address.hostname
+                or address.username
+                or address.password
+                or address.query
+                or address.fragment
+                or (
+                    address.scheme == "ws"
+                    and (
+                        self.ENV == "prod"
+                        or address.hostname not in {"127.0.0.1", "localhost", "::1"}
+                    )
+                )
+            ):
+                raise ValueError("interactive voice requires WSS or a development loopback WS URL")
+        return self
+
+    def voice_session_config(self):
+        from csa.voice.contracts import VoiceSessionConfig
+
+        if not self.VOICE_INTERACTIVE_ENABLED:
+            return None
+        if (
+            self.VOICE_LIVEKIT_URL is None
+            or self.VOICE_LIVEKIT_API_KEY is None
+            or self.VOICE_LIVEKIT_API_SECRET is None
+            or self.VOICE_MEDIA_HMAC_SECRET is None
+        ):
+            raise ValueError("interactive voice is incompletely configured")
+        return VoiceSessionConfig(
+            server_url=self.VOICE_LIVEKIT_URL,
+            api_key=self.VOICE_LIVEKIT_API_KEY,
+            api_secret=self.VOICE_LIVEKIT_API_SECRET,
+            media_secret=self.VOICE_MEDIA_HMAC_SECRET,
+            session_idle_seconds=self.CONSOLE_SESSION_IDLE_SECONDS,
+        )
+
+    @model_validator(mode="after")
+    def _validate_voice(self) -> Settings:
+        if self.VOICE_STT_ENDPOINT is not None and self.ENV == "prod":
+            if self.VOICE_STT_ENDPOINT.scheme != "https":
+                raise ValueError("VOICE_STT_ENDPOINT in prod requires HTTPS")
+        return self
 
     @model_validator(mode="after")
     def _validate_email_assistant(self) -> Settings:

@@ -620,3 +620,24 @@ async def test_group_staff_edit_binds_to_the_alert_reply(
             "SELECT count(*) FROM outbound_deliveries WHERE client_id=%s", (client_id,)
         ).fetchone() == (1,)
     assert counts()[0] == before[0]
+
+
+@requires_docker
+async def test_voice_note_is_durably_queued_without_provider_calls(ingress_context: Any) -> None:
+    ingress, pool, client_id, public_id, secret = ingress_context
+    update = _message_update()
+    update["message"].pop("text")
+    update["message"]["voice"] = {
+        "file_id": "synthetic-voice-id",
+        "duration": 3,
+        "mime_type": "audio/ogg",
+    }
+    receipt = await ingress.receive(public_id, secret, json.dumps(update).encode())
+    assert receipt.accepted and not receipt.duplicate
+    duplicate = await ingress.receive(public_id, secret, json.dumps(update).encode())
+    assert duplicate.duplicate
+    async with tx(pool, client_id) as conn:
+        row = await db.q.fetch_one(
+            "ingress/get_event_hash.sql", (client_id, f"telegram:{public_id}:123"), conn=conn
+        )
+    assert row is not None

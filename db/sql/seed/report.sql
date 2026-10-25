@@ -1,0 +1,22 @@
+WITH tenants AS (
+    SELECT id FROM public.clients
+    WHERE id IN ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222')
+)
+SELECT 'contacts' AS feature, count(*) AS count FROM public.contacts WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'products', count(*) FROM public.products WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'orders', count(*) FROM public.orders WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'tickets', count(*) FROM public.tickets WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'bookings', count(*) FROM public.bookings WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'kb_documents', count(*) FROM public.kb_documents WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'messages', count(*) FROM public.messages WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'reply_approvals', count(*) FROM public.approvals WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'invoices', count(*) FROM public.invoices WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'plans', count(*) FROM public.plans WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'subscriptions', count(*) FROM public.subscriptions WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'hr_memberships', count(*) FROM public.console_memberships WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'hr_employees', count(*) FROM public.hr_employees WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'hr_training', count(*) FROM public.hr_training_requests WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'hr_cases', count(*) FROM public.hr_cases WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'hr_candidates', count(*) FROM public.hr_candidates WHERE client_id IN (SELECT id FROM tenants)
+UNION ALL SELECT 'hr_payroll_snapshots', count(*) FROM public.hr_payroll_snapshots WHERE client_id IN (SELECT id FROM tenants)
+ORDER BY feature;

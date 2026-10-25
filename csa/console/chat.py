@@ -91,12 +91,99 @@ async def _payload[Payload: Contract](request: Request, model: type[Payload]) ->
 async def _thread(
     conn: AsyncConnection[Any], client_id: UUID, actor: ConsoleActor, conversation_id: UUID
 ) -> dict[str, Any]:
+    return await _owned_thread(conn, client_id, actor.user_id, conversation_id)
+
+
+async def _owned_thread(
+    conn: AsyncConnection[Any], client_id: UUID, user_id: UUID, conversation_id: UUID
+) -> dict[str, Any]:
     row = await db.q.fetch_one(
-        "console/chat_thread_get.sql", (client_id, actor.user_id, conversation_id), conn=conn
+        "console/chat_thread_get.sql", (client_id, user_id, conversation_id), conn=conn
     )
     if row is None:
         raise HTTPException(404, "sandbox conversation not found")
     return row
+
+
+async def enqueue_sandbox_turn(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    user_id: UUID,
+    conversation_id: UUID,
+    payload: SendTurn,
+) -> QueuedTurn:
+    """Persist one turn in the caller's authorized transaction; media uses the same path."""
+    fingerprint = hashlib.sha256(payload.body.encode()).hexdigest()
+    thread = await _owned_thread(conn, client_id, user_id, conversation_id)
+    existing = await db.q.fetch_one(
+        "console/chat_turn_by_key.sql",
+        (client_id, conversation_id, payload.request_key),
+        conn=conn,
+    )
+    if existing is not None:
+        if existing["fingerprint"] != fingerprint:
+            raise HTTPException(409, "request key was already used with different text")
+        return QueuedTurn(id=existing["id"], trace_id=existing["trace_id"], duplicate=True)
+    if thread["archived_at"] is not None:
+        raise HTTPException(409, "sandbox conversation is archived")
+    trace_id = uuid4()
+    text = redact(payload.body)
+    if len(text) > 8000:
+        raise HTTPException(422, "redacted sandbox text is too large")
+    envelope = Envelope(
+        trace_id=trace_id,
+        received_at=datetime.now(UTC),
+        channel=Channel.WEB,
+        idempotency_key=f"web:{user_id}:{conversation_id}:{payload.request_key}",
+        client_id=client_id,
+        contact=Contact(
+            id=thread["contact_id"],
+            external_id=str(user_id),
+            channel=Channel.WEB,
+            display_name="Sandbox participant",
+        ),
+        conversation=ConversationRef(
+            id=conversation_id,
+            channel_thread=str(conversation_id),
+            turn_count=thread["turn_count"],
+            status=thread["status"],
+        ),
+        message=Message(body_raw=text, body_redacted=text, language="en"),
+        meta=Meta(is_first_contact=thread["turn_count"] == 0),
+    )
+    inserted = await db.q.fetch_one(
+        "ingress/insert_event.sql",
+        (
+            client_id,
+            thread["endpoint_id"],
+            thread["contact_id"],
+            envelope.idempotency_key,
+            fingerprint,
+            trace_id,
+            Jsonb(
+                {
+                    "envelope": envelope.model_dump(mode="json"),
+                    "source": {"channel": "web", "kind": "sandbox"},
+                }
+            ),
+        ),
+        conn=conn,
+    )
+    if inserted is None:
+        raise RuntimeError("sandbox ingress conflicts with another request")
+    row = await db.q.fetch_one(
+        "console/chat_turn_insert.sql",
+        (client_id, conversation_id, payload.request_key, fingerprint, trace_id, text),
+        conn=conn,
+    )
+    await db.q.execute(
+        "console/audit.sql",
+        (user_id, client_id, "chat.queued", str(trace_id), Jsonb({})),
+        conn=conn,
+    )
+    if row is None:
+        raise RuntimeError("sandbox turn was not persisted")
+    return QueuedTurn(id=row["id"], trace_id=row["trace_id"], duplicate=False)
 
 
 def build_chat_router() -> APIRouter:
@@ -227,74 +314,10 @@ def build_chat_router() -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> QueuedTurn:
         payload = await _payload(request, SendTurn)
-        fingerprint = hashlib.sha256(payload.body.encode()).hexdigest()
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            thread = await _thread(conn, client_id, actor, conversation_id)
-            existing = await db.q.fetch_one(
-                "console/chat_turn_by_key.sql",
-                (client_id, conversation_id, payload.request_key),
-                conn=conn,
+            return await enqueue_sandbox_turn(
+                conn, client_id, actor.user_id, conversation_id, payload
             )
-            if existing is not None:
-                if existing["fingerprint"] != fingerprint:
-                    raise HTTPException(409, "request key was already used with different text")
-                return QueuedTurn(id=existing["id"], trace_id=existing["trace_id"], duplicate=True)
-            if thread["archived_at"] is not None:
-                raise HTTPException(409, "sandbox conversation is archived")
-            trace_id = uuid4()
-            text = redact(payload.body)
-            if len(text) > 8000:
-                raise HTTPException(422, "redacted sandbox text is too large")
-            envelope = Envelope(
-                trace_id=trace_id,
-                received_at=datetime.now(UTC),
-                channel=Channel.WEB,
-                idempotency_key=f"web:{actor.user_id}:{conversation_id}:{payload.request_key}",
-                client_id=client_id,
-                contact=Contact(
-                    id=thread["contact_id"],
-                    external_id=str(actor.user_id),
-                    channel=Channel.WEB,
-                    display_name="Sandbox participant",
-                ),
-                conversation=ConversationRef(
-                    id=conversation_id,
-                    channel_thread=str(conversation_id),
-                    turn_count=thread["turn_count"],
-                    status=thread["status"],
-                ),
-                message=Message(body_raw=text, body_redacted=text, language="en"),
-                meta=Meta(is_first_contact=thread["turn_count"] == 0),
-            )
-            inserted = await db.q.fetch_one(
-                "ingress/insert_event.sql",
-                (
-                    client_id,
-                    thread["endpoint_id"],
-                    thread["contact_id"],
-                    envelope.idempotency_key,
-                    fingerprint,
-                    trace_id,
-                    Jsonb(
-                        {
-                            "envelope": envelope.model_dump(mode="json"),
-                            "source": {"channel": "web", "kind": "sandbox"},
-                        }
-                    ),
-                ),
-                conn=conn,
-            )
-            if inserted is None:
-                raise RuntimeError("sandbox ingress conflicts with another request")
-            row = await db.q.fetch_one(
-                "console/chat_turn_insert.sql",
-                (client_id, conversation_id, payload.request_key, fingerprint, trace_id, text),
-                conn=conn,
-            )
-            await audit(conn, actor, client_id, "chat.queued", str(trace_id))
-            if row is None:
-                raise RuntimeError("sandbox turn was not persisted")
-            return QueuedTurn(id=row["id"], trace_id=row["trace_id"], duplicate=False)
 
     @router.get("/conversations/{conversation_id}/turns", response_model=TurnPage)
     async def history(

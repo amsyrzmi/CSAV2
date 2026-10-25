@@ -12,6 +12,7 @@ Secrets are never logged (see §3, §6).
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 from collections import deque
@@ -179,6 +180,18 @@ def clear_context() -> None:
     structlog.contextvars.clear_contextvars()
 
 
+def _redact_telegram_urls(
+    _logger: object, _method: str, event: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    # Telegram embeds bot credentials in both API and download URLs, including HTTP logs.
+    for key, value in event.items():
+        if isinstance(value, str):
+            event[key] = re.sub(
+                r"(https?://api\.telegram\.org/(?:file/)?bot)[^/\s\"']+", r"\1[REDACTED]", value
+            )
+    return event
+
+
 def configure_logging(env: str = "prod") -> None:
     """Configure structlog + stdlib logging for the process.
 
@@ -195,6 +208,7 @@ def configure_logging(env: str = "prod") -> None:
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        _redact_telegram_urls,
     ]
 
     renderer: structlog.typing.Processor

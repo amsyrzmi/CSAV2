@@ -13,7 +13,9 @@ import psycopg
 import structlog
 from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, kb_ingest_loop
-from csa.contracts.envelope import Channel, Envelope
+from csa.channels.ingress import TelegramIngress
+from csa.channels.voice import transcribe_telegram_audio
+from csa.contracts.envelope import Channel, Envelope, Voice
 from csa.core import db
 from csa.core.langfuse import LangfuseSink
 from csa.core.liveness import WORKER_ALIVE_PATH, liveness_loop
@@ -29,6 +31,7 @@ from csa.graph.retention import CheckpointPool, retention_loop
 from csa.graph.saver import build_checkpoint_pool, build_saver
 from csa.jobs.runner import JobRunner, jobs_loop
 from csa.notify.notifier import notify
+from csa.speech import SpeechTranscriber, TranscriptionError
 from csa.turn.deps import CAPABILITIES, PostgresTurnDependencies, build_llm_provider
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -65,7 +68,9 @@ class IngressWorker:
         *,
         lock_conninfo: str,
         coordinator: CoordinatorRuntime | None = None,
+        speech: SpeechTranscriber | None = None,
     ) -> None:
+        self._speech = speech
         self._coordinator = coordinator
         self._owner_pool = owner_pool
         self._app_pool = app_pool
@@ -122,6 +127,7 @@ class IngressWorker:
                 return True
 
             try:
+                envelope = await self._transcribe_voice(item, envelope)
                 await self._complete_turn(item, envelope)
             except Exception as exc:
                 await self._record_failure(item, exc)
@@ -142,6 +148,49 @@ class IngressWorker:
             finally:
                 await lock_conn.close()
         return True
+
+    async def _transcribe_voice(self, item: ClaimedIngress, envelope: Envelope) -> Envelope:
+        if envelope.channel != Channel.TELEGRAM or item.raw.get("voice_processed"):
+            return envelope
+        audio = [part for part in envelope.message.attachments if part.kind == "audio"]
+        if not audio:
+            return envelope
+        if envelope.client_id != item.client_id or envelope.trace_id != item.trace_id:
+            raise ValueError("voice tenant or trace mismatch")
+        async with tx(self._app_pool, str(item.client_id)) as conn:
+            route = await db.q.fetch_one(
+                "ingress/get_channel_credentials.sql", (item.endpoint_id, item.client_id), conn=conn
+            )
+        if route is None or not route["is_enabled"] or route["channel"] != "telegram":
+            raise ValueError("voice endpoint is unavailable")
+        token = TelegramIngress._bot_token(route, route["credential_id"])
+        try:
+            if self._speech is None:
+                raise TranscriptionError("transcription_unavailable")
+            if len(audio) != 1:
+                raise TranscriptionError("invalid_audio")
+            text = redact(await transcribe_telegram_audio(token, audio[0], self._speech))
+            message = envelope.message.model_copy(
+                update={"body_raw": text, "body_redacted": text, "voice": Voice(transcript=text)}
+            )
+        except TranscriptionError as exc:
+            logger.warning("telegram_voice_failed", event_id=str(item.id), code=exc.code)
+            message = envelope.message.model_copy(
+                update={
+                    "body_raw": "I could not transcribe this voice message.",
+                    "body_redacted": "I could not transcribe this voice message.",
+                    "voice": Voice(),
+                }
+            )
+        envelope = envelope.model_copy(update={"message": message})
+        raw = {**item.raw, "envelope": envelope.model_dump(mode="json"), "voice_processed": True}
+        async with tx(self._app_pool, str(item.client_id)) as conn:
+            saved = await db.q.fetch_one(
+                "worker/cache_voice.sql", (Jsonb(raw), item.id, item.client_id), conn=conn
+            )
+        if saved is None:
+            raise RuntimeError("voice ingress lease is no longer active")
+        return envelope
 
     async def _complete_turn(self, item: ClaimedIngress, envelope: Envelope) -> None:
         if envelope.client_id != item.client_id or envelope.trace_id != item.trace_id:
@@ -522,11 +571,22 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             build_saver(checkpoint_pool),
             PostgresEventSink(app_pool, langfuse_sink=langfuse_sink),
         )
+    speech_key = settings.voice_transcription_key()
+    speech = (
+        SpeechTranscriber(
+            str(settings.VOICE_STT_ENDPOINT),
+            settings.VOICE_STT_MODEL,
+            speech_key.get_secret_value() if speech_key else None,
+        )
+        if settings.VOICE_STT_ENDPOINT
+        else None
+    )
     worker = IngressWorker(
         owner_pool,
         app_pool,
         lock_conninfo=owner_dsn,
         coordinator=coordinator,
+        speech=speech,
     )
     retention = register_retention_task(
         checkpoint_pool,
