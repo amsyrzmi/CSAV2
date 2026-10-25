@@ -41,7 +41,7 @@ from tests.conftest import (
     reset_console_identity,
 )
 
-pytestmark = [requires_docker, pytest.mark.asyncio]
+pytestmark = [requires_docker, pytest.mark.asyncio, pytest.mark.slow]
 PASSWORD = "synthetic-packaged-initial-password"
 CHANGED_PASSWORD = "synthetic-packaged-changed-password"
 IDENTITY_PASSWORD = "synthetic_packaged_identity_pw"

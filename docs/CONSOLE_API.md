@@ -29,7 +29,7 @@ The `/console/v1/hr` router and `/hr` / `/portal/hr` pages implement staff-only
 directory, training, recruitment, attendance, leave and local payroll-review
 workflows. See the [HR implementation and validation](./hr/PROGRESS.md) and
 [setup and operating boundaries](./hr/SETUP.md) before enabling anything.
-Ordered migrations 0380-0410 follow workspace migration 0370. This is not
+Ordered migrations 0380-0410 follow workspace migration 0370; 0430 adds the staff email assistant. This is not
 persistent migration, deployment, live-provider or payroll-compliance acceptance.
 
 - Only verified human sessions are accepted. Platform admins select a tenant

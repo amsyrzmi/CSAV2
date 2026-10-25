@@ -1,4 +1,4 @@
--- Preconditions: 0420 applied; additive sandbox media-session foundation.
+-- Preconditions: 0430 applied; additive sandbox media-session foundation.
 -- Rollback: disable interactive voice, stop its media worker, drop the new
 -- utterance/session tables and voice_lock_actor(), then the new turn constraint.
 -- Existing text/recorded-voice data and legacy owner access remain intact.

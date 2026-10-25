@@ -37,12 +37,12 @@ The interactive plan's second slice (trusted session/utterance contracts) was
 implemented in the same working tree on 2026-10-24 after the stabilization patch,
 but was not recorded until the 2026-10-25 review. It consists of untracked
 `csa/voice/` (contracts, media HMAC, service), `csa/console/voice_sessions.py`,
-migration `0430_console_voice_sessions.sql`, eight `db/sql/console/voice_session_*`
+migration `0440_console_voice_sessions.sql`, eight `db/sql/console/voice_session_*`
 and `voice_utterance_*` files, `tests/test_voice_sessions.py`, an exactly pinned
 `livekit-api==1.2.2` dependency with lockfile update, `VOICE_INTERACTIVE_*` settings,
 and a refactor of `csa/console/chat.py` that exposes `enqueue_sandbox_turn` so media
 finals and text sends persist through one path. Gateway and migration tests now
-expect schema `0430`. Behaviour is documented in
+expect schema `0440`. Behaviour is documented in
 [the voice contract](../CONSOLE_VOICE.md#interactive-session-foundation).
 
 Validation on 2026-10-25 against this settled source with `NO_LOCAL_ENV=1 ENV=ci`:
@@ -57,7 +57,7 @@ internal media route must not be forwarded by the public proxy.
 The branch is based on `97c9172` and main has since advanced 38 commits through
 PR #27 (staging deployment work). Only `docs/PROGRESS.md` overlaps and main added
 no migrations. Staging currently runs image revision `7cdc156` with schema `0410`;
-deploying this branch requires migrations `0420` and `0430` first or readiness fails.
+deploying this branch requires migrations `0420`, `0430` and `0440` first or readiness fails.
 
 ## Start here
 
@@ -229,7 +229,7 @@ Copy-ready continuation prompt:
 > Continue the voice work on `feat/console-recorded-voice`. Read `AGENTS.md`,
 > `docs/handoffs/2026-10-24-voice-recovery-audit.md`, `docs/CONSOLE_VOICE.md` and
 > `docs/handoffs/2026-10-24-interactive-voice-plan.md`. Phases 1 (stabilization) and
-> 2 (trusted sessions, migration 0430, disabled by default) are committed; the branch
+> 2 (trusted sessions, migration 0440, disabled by default) are committed; the branch
 > must be rebased onto main before a PR. Next is Phase 3: an isolated media worker and
 > one end-to-end sandbox conversation. Use only synthetic providers and disposable
 > PostgreSQL, with `NO_LOCAL_ENV=1 ENV=ci`.

@@ -1,0 +1,171 @@
+# Apply after the local staging proposal and shared-Caddy overlay.
+# Explicit service targets only; no bootstrap, migration or image pull is needed.
+x-runtime: &runtime
+  image: ${CSA_STAGING_PYTHON_IMAGE:?approved Python image digest required}
+  profiles: ["pipeline-approved"]
+  user: "1000:1000"
+  read_only: true
+  tmpfs: ["/tmp"]
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  environment: &environment
+    ENV: prod
+    NO_LOCAL_ENV: "1"
+    TURN_ENGINE: coordinator
+    CHANNEL_MODE: webhook
+    PUBLIC_BASE_URL: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging origin required}
+    KB_UPLOAD_ROOT: /var/lib/csa/uploads
+    TEI_ENDPOINT: http://staging-embeddings:8080
+    KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
+    TEI_QUERY_PREFIX: "query: "
+    TEI_PASSAGE_PREFIX: "passage: "
+
+services:
+  gateway:
+    environment:
+      TEI_ENDPOINT: http://staging-embeddings:8080
+      KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
+      TEI_QUERY_PREFIX: "query: "
+      TEI_PASSAGE_PREFIX: "passage: "
+    networks: ["data", "app", "embeddings", "provider-egress", "gateway-host"]
+    # Loopback-only publish for the staging hooks Caddy site (POST /hooks/* only).
+    # 18081 belongs to the development gateway; never reuse it here.
+    ports:
+      - "127.0.0.1:18031:8080"
+
+  worker:
+    <<: *runtime
+    command: ["python", "-m", "apps.worker.main"]
+    environment:
+      <<: *environment
+      KB_INGEST_ENABLED: "true"
+    secrets:
+      - source: staging_domain_dsn
+        target: DATABASE_URL
+      - source: staging_owner_dsn
+        target: LG_DATABASE_URL
+      - source: staging_credentials_key
+        target: CREDENTIALS_KEY
+      - source: staging_model_key
+        target: GROQ_API_KEY
+    volumes: ["staging-uploads:/var/lib/csa/uploads"]
+    networks: ["data", "embeddings", "provider-egress"]
+    depends_on:
+      staging-db:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,time; assert time.time()-pathlib.Path('/tmp/worker.alive').stat().st_mtime < 90"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+
+  delivery:
+    <<: *runtime
+    command: ["python", "-m", "apps.delivery.main"]
+    environment:
+      <<: *environment
+      KB_INGEST_ENABLED: "false"
+    secrets:
+      - source: staging_domain_dsn
+        target: DATABASE_URL
+      - source: staging_owner_dsn
+        target: LG_DATABASE_URL
+      - source: staging_credentials_key
+        target: CREDENTIALS_KEY
+      - source: staging_disabled_model_key
+        target: GROQ_API_KEY
+    networks: ["data", "provider-egress"]
+    depends_on:
+      staging-db:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,time; assert time.time()-pathlib.Path('/tmp/delivery.alive').stat().st_mtime < 30"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+  embeddings-init:
+    image: ${CSA_STAGING_PYTHON_IMAGE:?approved Python image digest required}
+    profiles: ["pipeline-bootstrap-approved"]
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    entrypoint: ["chown", "1000:1000", "/data"]
+    volumes: ["staging-embeddings:/data"]
+    healthcheck:
+      disable: true
+
+  staging-embeddings:
+    # Digest of the CPU image already present on this host; never cpu-latest.
+    image: ghcr.io/huggingface/text-embeddings-inference@sha256:cc1f06b5b2e38d979aca1cc054675426bf4d94247f6d22e399d73e09131dfe79
+    profiles: ["pipeline-approved"]
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      HF_HOME: /data
+    command: ["--model-id", "intfloat/multilingual-e5-small", "--revision", "fd1525a9fd15316a2d503bf26ab031a61d056e98", "--port", "8080", "--huggingface-hub-cache", "/data", "--tokenization-workers", "2", "--max-batch-tokens", "4096"]
+    volumes: ["staging-embeddings:/data"]
+    networks: ["embeddings", "model-egress"]
+
+  staging-bot-setup:
+    <<: *runtime
+    profiles: ["test-bot-setup-approved"]
+    entrypoint: ["python", "-m", "scripts.staging_test_bot"]
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *environment
+      CSA_STAGING_HOOKS_ORIGIN: ${CSA_STAGING_HOOKS_ORIGIN:?approved staging hooks HTTPS origin required}
+    # Reviewed operator code over the existing accepted runtime image.
+    volumes:
+      - "../scripts/staging_test_bot.py:/app/scripts/staging_test_bot.py:ro"
+      - "../db/sql/staging:/app/db/sql/staging:ro"
+    secrets:
+      - source: staging_domain_dsn
+        target: DATABASE_URL
+      - source: staging_checkpoint_dsn
+        target: LG_DATABASE_URL
+      - source: staging_credentials_key
+        target: CREDENTIALS_KEY
+      - source: staging_disabled_model_key
+        target: GROQ_API_KEY
+      - source: staging_owner_dsn
+        target: STAGING_OWNER_DSN
+      - source: staging_telegram_bot_token
+        target: TELEGRAM_BOT_TOKEN
+    networks: ["data", "provider-egress"]
+    healthcheck:
+      disable: true
+
+networks:
+  embeddings:
+    internal: true
+  provider-egress:
+    driver: bridge
+    internal: false
+  model-egress:
+    driver: bridge
+    internal: false
+  gateway-host:
+    driver: bridge
+    internal: false
+
+volumes:
+  staging-embeddings:
+
+secrets:
+  staging_model_key:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_model_key
+  staging_telegram_bot_token:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_telegram_bot_token

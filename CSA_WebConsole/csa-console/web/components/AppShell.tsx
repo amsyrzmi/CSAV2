@@ -7,6 +7,7 @@ import { useState } from "react";
 import {
   Building2,
   LayoutDashboard,
+  Mail,
   LogOut,
   Users,
   KeyRound,
@@ -42,6 +43,7 @@ export function AppShell({
       ? [{ href: admin ? "/workspace" : "/portal/workspace", label: "Staff workspace", icon: MessageSquare }]
       : []),
     ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/inbox" : "/portal/inbox", label: "Customer inbox", icon: MessageSquare }] : []),
+    ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/email" : "/portal/email", label: "Email assistant", icon: Mail }] : []),
     ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/business" : "/portal/business", label: "Business management", icon: Building2 }] : []),
     ...(admin
       ? [

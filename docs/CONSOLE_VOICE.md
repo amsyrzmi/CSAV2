@@ -75,7 +75,7 @@ separately before live use; source and synthetic checks do not establish rollout
 
 ## Interactive session foundation
 
-Migration `0430` and `csa/voice/` add the trusted session/utterance layer for the
+Migration `0440` and `csa/voice/` add the trusted session/utterance layer for the
 planned LiveKit conversation. It is disabled unless `VOICE_INTERACTIVE_ENABLED=true`
 with `VOICE_LIVEKIT_URL`, `VOICE_LIVEKIT_API_KEY`, `VOICE_LIVEKIT_API_SECRET` and a
 separate `VOICE_MEDIA_HMAC_SECRET` (both secrets at least 32 characters). The URL

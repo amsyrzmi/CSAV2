@@ -74,6 +74,19 @@ services:
       gateway:
         condition: service_healthy
 
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39
+    profiles: ["staging-approved"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command: ["tunnel", "run"]
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/staging_tunnel_token
+    secrets: ["staging_tunnel_token"]
+    networks: ["edge", "connector-egress"]
+
   migrate:
     <<: *python
     profiles: ["migration-approved"]
@@ -98,6 +111,61 @@ services:
     healthcheck:
       disable: true
 
+  # One-shot: give the upload volume to the runtime UID. Root with only CHOWN,
+  # no network and no secrets, as in the disposable storage rehearsal.
+  uploads-init:
+    image: ${CSA_STAGING_PYTHON_IMAGE:?approved Python image@sha256 digest required}
+    profiles: ["migration-approved"]
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["chown", "1000:1000", "/var/lib/csa/uploads"]
+    volumes: ["staging-uploads:/var/lib/csa/uploads"]
+    healthcheck:
+      disable: true
+
+  # One-shot, interactive (getpass): first platform admin via csa_identity only.
+  # The gate is inline so it runs on the already-approved image, which predates
+  # this service; it delegates to the packaged scripts.bootstrap_console_admin.
+  admin-bootstrap:
+    <<: *python
+    profiles: ["admin-bootstrap-approved"]
+    environment:
+      NO_LOCAL_ENV: "1"
+      CSA_ADMIN_BOOTSTRAP_APPROVAL: ${CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL:-disabled}
+      CSA_IDENTITY_DSN_FILE: /run/secrets/IDENTITY_DATABASE_URL
+    secrets:
+      - source: staging_identity_dsn
+        target: IDENTITY_DATABASE_URL
+    entrypoint:
+      - python
+      - -c
+      - |
+        import os, runpy, sys
+        from pathlib import Path
+        from urllib.parse import urlsplit
+        if os.environ.get("CSA_ADMIN_BOOTSTRAP_APPROVAL") != "approved-isolated-staging":
+            sys.exit("Explicit isolated-staging admin bootstrap approval required")
+        dsn = Path(os.environ["CSA_IDENTITY_DSN_FILE"]).read_text().strip()
+        url = urlsplit(dsn)
+        if (
+            url.scheme not in {"postgres", "postgresql"}
+            or url.hostname != "staging-db"
+            or url.port not in {None, 5432}
+            or url.username != "csa_identity"
+            or url.path != "/csa_staging"
+            or url.query
+            or url.fragment
+        ):
+            sys.exit("Identity target must be csa_identity on the isolated staging database")
+        os.environ["IDENTITY_DATABASE_URL"] = dsn
+        runpy.run_module("scripts.bootstrap_console_admin", run_name="__main__", alter_sys=True)
+    healthcheck:
+      disable: true
+
 networks:
   data:
     internal: true
@@ -105,6 +173,9 @@ networks:
     internal: true
   edge:
     internal: true
+  connector-egress:
+    driver: bridge
+    internal: false
 
 volumes:
   staging-db:
@@ -125,6 +196,8 @@ secrets:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/staging_credentials_key
   staging_disabled_model_key:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/staging_disabled_model_key
+  staging_tunnel_token:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/connector/staging_tunnel_token
   staging_app_password:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/migration/staging_app_password
   staging_ro_password:

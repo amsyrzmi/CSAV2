@@ -3,21 +3,28 @@
 Interactive voice session foundation (2026-10-25, committed on
 `feat/console-recorded-voice`): the interactive plan's Phase 2 was found implemented
 but unrecorded in the working tree and is now documented and committed together
-with the Phase 1 stabilization patch. Migration `0430`, `csa/voice/` and
+with the Phase 1 stabilization patch. Migration `0440`, `csa/voice/` and
 `csa/console/voice_sessions.py` add sandbox-only voice sessions bound to the user,
 tenant, login session and private conversation; a `voice_lock_actor()` revalidation
 gate; room-scoped LiveKit participant tokens; HMAC-authenticated media callbacks;
 and atomic finalized-utterance queueing through the shared `enqueue_sandbox_turn`
-path with duplicate receipts. The feature is disabled by default and requires
+path with duplicate receipts. On merging main (PR #29 added `0430_email_assistant`)
+the session migration was renumbered from `0430` to `0440`; nothing persistent had
+applied the old number. The feature is disabled by default and requires
 explicit `VOICE_INTERACTIVE_*` settings; `livekit-api==1.2.2` is pinned with the
-lockfile updated. Gateway readiness now expects schema `0430`. Evidence on the
+lockfile updated. Gateway readiness now expects schema `0440`. Evidence on the
 settled source with `NO_LOCAL_ENV=1 ENV=ci`: lint, formatting, Pyright and import
 contracts passed; focused voice session, migration, settings, contract snapshot and
-readiness tests **34 passed, 11 warnings** on a disposable database. The full suite
-was started on the same source; its result is recorded in the following entry when
-it completes. Staging still runs revision `7cdc156` at schema `0410` and main is 38
+readiness tests **34 passed, 11 warnings** on a disposable database. After merging
+main (`e9b0a2e`) and renumbering, `make lint` and the isolated frontend check passed
+and `make test` finished **3020 passed, 4 failed, 6 deselected** in 50m38s; the four
+failures were the identity gateway lifespan cases whose synthetic settings lacked
+`voice_session_config`, fixed with a stub so that file passes 10/10. The six deselected
+tests are `tests/test_packaged_console.py`, now marked `slow` (Docker image builds plus
+Chromium); `make test` skips `slow`, `make test-all` and CI run everything. CI on the
+pull request is the authoritative full run. Staging still runs revision `7cdc156` at schema `0410` and main is 38
 commits ahead of this branch (only `PROGRESS.md` overlaps); rebase and migrations
-`0420`/`0430` precede any staging deployment. No media worker, browser LiveKit
+`0420`/`0430`/`0440` precede any staging deployment. No media worker, browser LiveKit
 connection, STT/TTS wiring or interruption exists yet. See
 [the voice contract](./CONSOLE_VOICE.md#interactive-session-foundation) and the
 [recovery audit](./handoffs/2026-10-24-voice-recovery-audit.md#interactive-session-foundation--current-working-tree).
@@ -92,6 +99,300 @@ reset test passed (1 test, 1 existing warning). The full backend suite was start
 and remains in progress; no full-suite pass is claimed. Live microphone and
 installed language-pack acceptance are not established.
 
+Staff email assistant (2026-10-24, branch `feat/email-agent`): new draft-only
+staff module per LG13. Migration `0430` adds `email_settings` (tenant switch,
+admin-only via SECURITY DEFINER), per-user `email_mailboxes` with AES-GCM
+encrypted Gmail tokens under self-only RLS, single-use PKCE OAuth states, cached
+`email_threads`, local `email_drafts` and immutable `email_receipts`; session
+validation reuses `hr_lock_session`. `csa/email/` provides a bounded Gmail/OAuth
+client (readonly plus compose scopes, no send method), the service (connect,
+sync, analyse, draft, edit, export to the user's own Gmail drafts, disconnect,
+idempotency receipts, token refresh) and the `/console/v1/email` router with HR
+style error mapping. Email text reaches the model only as untrusted JSON data
+with strict output schemas; drafts are re-validated by the staged email contract
+and signed in the tenant persona. Console: Email assistant tab for admin and
+portal, typed client, nav/proxy/isolated-check entries. Gateway wiring behind
+`EMAIL_ASSISTANT_ENABLED` with `GOOGLE_CLIENT_ID/SECRET` and
+`GOOGLE_OAUTH_REDIRECT_URI`; `EXPECTED_SCHEMA_VERSION` is now `0430`.
+See [EMAIL_ASSISTANT.md](./EMAIL_ASSISTANT.md).
+Evidence: `tests/test_email_service.py` and `tests/test_email_contracts.py`
+**9 passed** on a disposable migrated database (fake Gmail transport, scripted
+model); existing console contract/catalog/settings/health/staged-agent tests
+**81 passed**; migration/health **12 passed**; repository lint and the isolated
+frontend check (transport tests, lint, typegen, tsc, build) passed. Not
+exercised: a live Google OAuth consent, real Gmail data, live model quality,
+Pub/Sub push. No staging service, secret or database was changed.
+
+Staging seed prepared (2026-10-23, branch `feat/staging-seed`): the owner
+reversed the files-only rule and asked for the hosted staging console to be
+seeded with every role. [scripts/seed_staging.py](../scripts/seed_staging.py)
+onboards two synthetic tenants with the console onboarding SQL, creates
+tenant_admin/tenant_staff/read_only accounts by invite plus accept through
+`IdentityService` as the existing platform administrator (one-time passwords,
+forced change at first login, acceptance sessions revoked), assigns the HR owner
+through the HR bootstrap SQL, applies employees and role-appropriate grants
+through `public.hr_admin_apply` with canonical fingerprints, and inserts the
+synthetic retailer records from
+[db/sql/seed_staging/records.sql](../db/sql/seed_staging/records.sql).
+Guards mirror the staging migration: explicit approval, exact
+`staging-db/csa_staging` target, `csa` and `csa_identity` roles, advisory lock,
+idempotent re-runs. See [the seed runbook](../deploy/STAGING_SEED.md).
+Evidence: `tests/test_seed_staging.py` **12 passed** (two full seed runs on a
+disposable migrated Testcontainer; exact role, HR receipt and record counts),
+repository lint passed. Not seeded: KB documents/vectors, outbox, bot
+credentials, approvals, HR cases/leave/payroll data. The live staging run is a
+separate owner-approved step.
+
+Staging seed executed (2026-10-23, owner approved): one-off container on the
+accepted Python image, `csa-staging_data` network only, approval and exact
+target guards satisfied. Result: tenants `demo-meranti` and `demo-foreign`
+created, HR owner assigned, 11 HR operations recorded, 6 accounts created with
+one-time passwords handed to the owner privately, all forced to change password
+at first login, 0 open acceptance sessions. Counts: demo-meranti members 5,
+capabilities enabled 9, products 8, contacts 2, conversations 2, messages 3,
+orders 8, tickets 2, invoices 2, kb_gaps 2, hr_employees 3, hr_grants 18,
+hr_workflow_grants 22, hr_private_grants 4; demo-foreign members 1, products 1,
+contacts 1, conversations 1, messages 1, orders 1. Existing tenant and
+platform administrator untouched. No KB, outbox, bot, provider or worker change.
+
+Shared-host topology reconciliation (docs/snippet only, 2026-10-23): the
+repository runbook and Caddy snippet assumed a host-service connector reaching
+Caddy over loopback. Live inspection shows the shared connector is the
+`cloudflared` container on `network_default` (`172.22.0.2`), the tunnel route
+targets the host LAN origin `192.168.0.50:80`, and the host Caddy block allows
+loopback plus that exact container address. [STAGING_SHARED_CADDY.md](
+../deploy/STAGING_SHARED_CADDY.md), [staging-console.Caddyfile](
+../deploy/staging-console.Caddyfile) and the snippet test now record that
+state, including the unresolved connector-address stability risk. No host
+Caddy, tunnel, DNS, container or secret was changed; the three staging
+services kept running. Public auth/CSRF/logout/tenant acceptance and
+backup/restore remain open.
+Current continuation:
+[topology reconciliation](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-shared-host-topology-reconciliation-2026-10-23).
+
+Shared-host publishing correction (local proposal, 2026-10-23): #22 merged
+as `a9a212f`; final branch/PR/main CI passed. Approved staging startup left
+all three services healthy but host access to 18030 failed (curl exit 7,
+HTTP 000). Requested Docker binding existed; actual binding was absent.
+Owner approved a frontend-only normal bridge correction and leaving services
+running privately. No Caddy/public route change or live correction applied.
+Current continuation:
+[host publishing correction](./handoffs/2026-10-19-domain-release-next-session.md#current-continuation-frontend-host-publishing-correction-2026-10-23).
+
+Shared-tunnel/Caddy hosting (proposed, not applied, 2026-10-23): owner selected
+the existing host cloudflared service and explicitly approved local preparation
+of a staging-only Caddy site and frontend loopback port. The
+[shared procedure](../deploy/STAGING_SHARED_CADDY.md), Compose overlay and
+Caddy snippet are prepared on `docs/staging-public-demo` as an extension of
+open #22, not an additional stacked PR. Original dedicated proposal unchanged.
+Database/gateway remain private; normal shared startup excludes dedicated
+connector. Host Caddy edits/reload, service startup, tunnel route and DNS still
+need separate approval. Public-login safeguards remain open.
+Historical continuation:
+[shared hosting preparation](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-shared-tunnel-and-caddy-2026-10-23).
+Focused final checks: **52 passed**, no skips, 12 test-secret-directory warnings;
+Ruff/types, Caddy snippet and runbook syntax pass. This is configuration
+evidence, not live acceptance. Previous #22 head's PR CI failed the unchanged
+ingress latency threshold while push CI passed; full final-head CI remains
+required. See current continuation for exact evidence and limitations.
+
+Public-login demo revision (proposed, not activated, 2026-10-23): PR #21
+merged as `05b429ec`; main CI `39951244406` passed. The owner selected a public
+login page with owner-only CSA login, no Access, signup or visitor credentials.
+The [ingress runbook](../deploy/STAGING_INGRESS.md) now records this choice,
+unchanged-source authentication safeguards and unresolved proxy/abuse-control
+publication gates. It also preserves the owner's shared-tunnel 502 and
+separately approved staging-route cleanup. No explicit staging DNS record,
+dedicated tunnel or Access application was reported; wildcard/company routes
+remain untouched. Three staging services were last reported stopped, volumes
+retained. No runtime/Compose changes or infrastructure operations in this slice.
+Historical continuation at public-login revision:
+[public-login safeguards and remaining gates](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-public-login-demo-review-2026-10-23).
+Batch remaining local evidence; ask before publication and each infrastructure
+operation. Public routing remains blocked pending safeguard approval.
+
+Consolidated ingress readiness (proposed, not executed, 2026-10-23): PR #20
+merged as `df948b08`; main CI `39945835399` passed. Branch
+`feat/staging-ingress-readiness` prepares one
+[activation/acceptance/rollback runbook](../deploy/STAGING_INGRESS.md),
+focused synthetic connector-selection and command-syntax checks, and one
+current continuation. No runtime/Compose configuration changes. Account/zone
+authority, hostname conflicts and exposure policy remain owner decisions.
+No tunnel/token, external account inspection, restart, DNS/Caddy or deployment
+operation was performed. Runtime steps remain separately approved; batch their
+outcomes into one evidence update. Protected executable CD follows live
+acceptance, not unproven procedure automation.
+Historical continuation at runbook proposal:
+[consolidated ingress readiness](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-consolidated-ingress-readiness-2026-10-23).
+
+Private staging readiness accepted and stopped (2026-10-23): PR #19 merged
+as `8ff63c29`; PR, branch and main CI passed (main `39935706204`).
+The owner reported three healthy services, `/healthz ok`, `/readyz ready`,
+`/login 200` and frontend-to-gateway readiness, then stopped applications and
+database with both volumes retained. See the
+[host execution record](../deploy/RELEASE.md#private-staging-host-execution-2026-10-23).
+This is private readiness, not browser authentication, tenant/public-ingress,
+recovery or end-to-end conversation acceptance.
+Historical continuation at private-readiness completion:
+[dedicated ingress planning](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-readiness-complete-2026-10-23).
+No restart, tunnel/token provisioning, hostname, shared connector or Caddy
+change is authorized. Review the next plan before separately approved execution.
+
+Private staging startup procedure (proposed, not run, 2026-10-23): PR #18
+merged as `1012b705`; main CI `39928109213` passed. Branch
+`feat/staging-private-startup` adds a
+[private startup/readiness procedure](../deploy/RELEASE.md#private-staging-application-startup-procedure-only-not-run)
+and extends existing configuration tests for the explicit database/gateway/
+frontend selection without a connector token. Compose configuration and
+runtime code are unchanged. Commands prohibit pulls, skip environment files,
+validate existing volume project labels and start only explicit service targets.
+Private checks cover gateway readiness, login-page delivery and frontend-to-
+gateway reachability; stop commands retain data. No execution is authorized
+by this procedure, and no services were started during its preparation.
+Historical continuation at proposal time:
+[private startup procedure](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-staging-startup-procedure-2026-10-23).
+
+Staging bootstrap executed and stopped (2026-10-23): PR #17 merged as
+`a5eb450`; PR CI `39914864494`, branch CI `39914798398` and main CI
+`39917438918` passed. The owner reported successful baseline, migrations
+(`31 0410`), checkpoint setup, upload ownership (`1000:1000`) and first-admin
+creation with forced password change and one audit entry. The staging database
+is stopped; both volumes remain. See the
+[execution record](../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23)
+for results, the failed `stg` shortcut attempts and evidence limitations.
+
+Historical continuation at bootstrap completion:
+[bootstrap complete; private application startup is next](./handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-staging-bootstrap-complete-2026-10-23).
+Review a bounded gateway/frontend startup procedure before separately approved
+execution. Do not repeat bootstrap, delete volumes or activate ingress.
+
+Staging database bootstrap procedure (proposed, not run, 2026-10-23): PR #16
+merged as `2a4a037`. Branch `feat/staging-db-bootstrap` adds two one-shot
+services to the
+[local staging proposal](../deploy/compose.staging-local-proposal.yml):
+
+- `uploads-init`: root, `CHOWN` only, no network or secrets.
+- `admin-bootstrap`: its own approval profile, `data` network only, and only
+  the `csa_identity` DSN. An inline gate checks the approval and the exact
+  target, then delegates to the packaged admin bootstrap. It is inline because
+  the approved `7cdc156` image predates it.
+
+The branch also adds the exact owner-run procedure for database start, baseline,
+migration, upload ownership, first admin, stop and teardown, with expected
+outputs, in [RELEASE.md](../deploy/RELEASE.md#isolated-staging-database-bootstrap-operator-procedure-not-yet-run).
+
+Evidence: synthetic Compose renders, plus execution of the rendered gate code
+against a stub. No container, database or volume was started or created.
+Next: after review and merge, separately approve the owner-run procedure.
+
+Staging host images and secret files provisioned (2026-10-23): PR #15
+merged as `88a6711` (main CI 39882125951 passed). On the staging host, the
+owner pulled both approved images by digest using a temporary `DOCKER_CONFIG`
+and then logged out. Each image's `RepoDigests`, revision label `7cdc156…` and
+runtime user matched the approved values. The owner also created
+`/srv/csa-staging/secrets` with `staging_secrets create`; `check` printed `OK`
+and exited 0. Metadata confirms `0700` directories and `0400` files owned by
+UID 1000, with no connector directory. No value was displayed and nothing was
+started. See the
+[host execution record](../deploy/RELEASE.md#host-execution-2026-10-23).
+Next: a reviewed, not-yet-run operator procedure for isolated staging database
+bootstrap, migration, identity and upload-volume initialization. Running it
+needs separate approval.
+
+Staging secret provisioning tool (proposed, 2026-10-23): PR #14 merged as
+`f0a8d97` (PR CI 39840472983 and push CI 39840462467 passed). Branch
+`feat/staging-secret-provisioning` adds
+[staging_secrets.py](../scripts/staging_secrets.py), which creates or checks the
+ten application secret files expected by the local staging Compose proposal.
+It never overwrites existing files, prints no values, and keeps DSNs and
+passwords consistent. The tunnel token is excluded. The branch also documents
+the host image-pull procedure (dedicated read-only token, digest pulls,
+logout). Synthetic tests use temporary directories only; no real secret, pull,
+container or database action occurred. Next gate: after merge, separate
+approval for the owner to pull the images and create the secret files on the
+staging host. See the
+[operator procedure](../deploy/RELEASE.md#staging-host-image-pull-and-secret-files).
+
+Staging images published (2026-10-22): PR #13 merged as `b60cde5` (main CI
+39833976733 passed). The owner created protected environment `staging-images`
+(required reviewer `amsyrzmi`, deployment branch `main`), dispatched publish run
+39838393620 for CI run 39754225130 and approved it; every step passed. GHCR now
+holds `ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764`
+and `ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f`,
+tagged with the full `7cdc156` SHA. Their digests equal the identity-verified,
+mount-probed artifact, so that evidence carries over. See the
+[publication record](../deploy/RELEASE.md#first-publication-pr-11-merge-images-2026-10-22).
+Nothing was deployed or started. Next gate: separately approved staging-host
+pull credential plus staging-only secrets and protected test identities.
+
+Staging image publication workflow (proposed, 2026-10-22): PR #12 merged as
+`12c74dd` (push CI 39826917861 and PR CI 39826987627 passed). Branch
+`ci/staging-image-publication` adds a manual, `staging-images`-environment-gated
+workflow that republishes the exact archive of one successful push-to-main CI
+run to GHCR by full SHA with preserved digests, then fails unless the registry
+digests match; no rebuild, no `latest`, `ci.yml` unchanged. Ten static and
+synthetic OCI-layout tests pass locally; no dispatch, registry or GitHub API
+call was made. Next gates: workflow PR review/CI/merge, owner-created protected
+`staging-images` environment, then a separately approved dispatch of CI run
+39754225130 before its artifact expires 2026-10-29. See the
+[workflow contract](../deploy/RELEASE.md#staging-image-publication-workflow)
+and [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+
+Staging connector configuration and exact-image mount probes: PR #11 merged as
+`7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Post-merge CI
+39754225130 passed gate, frontend and package, including Gitleaks. The current
+review artifact was downloaded and inspected offline with explicit approval:
+GitHub artifact digest and every internal `SHA256SUMS` entry verified; both OCI
+manifest/config digests, source revision, amd64 platform and runtime users were
+verified. Python runs as `1000:1000`; frontend's configured `node` resolves to
+`1000:1000`. Exact artifact identities and limits are in the
+[release evidence](../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22)
+and [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+
+The exact reviewed Python/frontend OCI archives were imported and
+tested with explicit approval using synthetic files and network-disabled
+containers. Python `Settings` loaded its expected secret files as UID/GID 1000;
+the five migration files were readable without invoking migrations. The
+frontend passed UID, baked-origin/mismatch, read-only-root, writable-tmpfs and
+no-secret-mount checks. One initial frontend probe used an incorrect baked-file
+path and failed; it was corrected to the Dockerfile's `/app/console-api-origin`
+location and passed. Containers, exact imported image tags, synthetic fixtures
+and temporary artifacts were removed. See the
+[artifact identity](../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22)
+and [runtime evidence](../deploy/RELEASE.md#exact-image-synthetic-mount-probes-2026-10-22).
+
+These probes did not start the application, Compose, database, tunnel or any
+staging service. They establish no Compose secret runtime, database readiness,
+network/ingress or end-to-end agent acceptance. The staging proposal still lacks
+worker, delivery and KB consumers and does not enable real provider delivery.
+Next prerequisite: select immutable Python/frontend registry image digests for
+the proposal. The checked artifacts are review archives, not registry images;
+publication/import into a registry or deployment needs separate approval. No
+real secret, staging database, tunnel, DNS, route, Caddy, service or deployment
+action occurred.
+
+Read-only registry metadata check (2026-10-22): the GitHub Packages list API
+returned HTTP 403 for the current token; candidate GHCR manifest HEAD requests
+returned HTTP 401, and anonymous token requests returned HTTP 403. These
+responses do not prove that matching packages are absent. Credentials were not
+changed; no image was downloaded or published. A metadata lookup using an
+already-authorized read-only identity is needed before selecting an existing
+registry digest; publishing remains a separate approval gate. The user then
+ran the metadata lookup under their authorized `gh` identity: the container
+package list returned no `csa-python`/`csa-frontend` entries without error, and
+both package-version lookups returned HTTP 404 `Package not found`. No matching
+registry image exists in the `amsyrzmi` namespace; the verified CI archives are
+the only artifacts. Next gate: separately approved registry publication.
+
+Staging connector probe (2026-10-22): PR #9 merged as `97c9172` (PR CI
+39730060082 and branch CI 39730054197 passed). The user resumed the staging
+lane. The dedicated connector candidate
+`cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1...ff39` runs as UID 65532
+with no root entrypoint; offline `--network none` probes with a fake token file
+showed `65532:65532` `0400` is readable while UID-1000-owned `0400` is denied.
+No connector, real token, tunnel, DNS, dashboard, Caddy or service change. See
+[RELEASE.md](../deploy/RELEASE.md#dedicated-connector-image-and-token-file-probe-2026-10-22)
+and the [active handoff](./handoffs/2026-10-19-domain-release-next-session.md).
 
 Customer-service routing/grounding/handoff goldens (2026-10-22): PR #8 merged
 as `b2dc7a2`; PR CI 39719424850, branch CI 39719295898 and post-merge main

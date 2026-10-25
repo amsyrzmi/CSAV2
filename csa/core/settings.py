@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     VOICE_LIVEKIT_API_KEY: SecretStr | None = None
     VOICE_LIVEKIT_API_SECRET: SecretStr | None = Field(default=None, min_length=32)
     VOICE_MEDIA_HMAC_SECRET: SecretStr | None = Field(default=None, min_length=32)
+    # Staff email assistant (draft-only Gmail). The OAuth client is shared with future
+    # Google integrations; tokens live encrypted per connecting user, never in settings.
+    EMAIL_ASSISTANT_ENABLED: bool = False
+    GOOGLE_CLIENT_ID: str | None = None
+    GOOGLE_CLIENT_SECRET: SecretStr | None = None
+    GOOGLE_OAUTH_REDIRECT_URI: str | None = None
     GOOGLE_AI_API_KEY: SecretStr | None = None
     GOOGLE_AI_MODEL: str = "gemini-3.1-flash-lite"
     DEV_STAFF_CHAT_ID: str | None = None
@@ -216,6 +222,30 @@ class Settings(BaseSettings):
         if self.VOICE_STT_ENDPOINT is not None and self.ENV == "prod":
             if self.VOICE_STT_ENDPOINT.scheme != "https":
                 raise ValueError("VOICE_STT_ENDPOINT in prod requires HTTPS")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_email_assistant(self) -> Settings:
+        if not self.EMAIL_ASSISTANT_ENABLED:
+            return self
+        if not (
+            self.GOOGLE_CLIENT_ID and self.GOOGLE_CLIENT_SECRET and self.GOOGLE_OAUTH_REDIRECT_URI
+        ):
+            raise ValueError(
+                "EMAIL_ASSISTANT_ENABLED requires GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET "
+                "and GOOGLE_OAUTH_REDIRECT_URI"
+            )
+        redirect = urlsplit(self.GOOGLE_OAUTH_REDIRECT_URI)
+        if (
+            redirect.scheme not in {"http", "https"}
+            or not redirect.hostname
+            or not redirect.path.endswith("/console/v1/email/oauth/callback")
+            or (self.ENV == "prod" and redirect.scheme != "https")
+        ):
+            raise ValueError(
+                "GOOGLE_OAUTH_REDIRECT_URI must be the console origin plus "
+                "/console/v1/email/oauth/callback (HTTPS in prod)"
+            )
         return self
 
     @model_validator(mode="after")

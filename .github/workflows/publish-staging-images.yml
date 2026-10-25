@@ -1,0 +1,149 @@
+# Publish the exact OCI archives from one successful main CI run to GHCR for
+# isolated staging. Manual dispatch only, gated by the `staging-images`
+# environment. Nothing is rebuilt: the CI archive is checksum-verified and
+# copied with its manifest digest preserved, then the registry digest is
+# re-read and compared. Tags are the full source SHA only, never `latest`.
+# Publishing does not deploy, start staging or provision secrets.
+name: publish-staging-images
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: "ID of a successful push-to-main `ci` run whose archives to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-staging-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: staging-images
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    env:
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      GH_TOKEN: ${{ github.token }}
+      REGISTRY_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+    steps:
+      - name: Verify the source CI run identity
+        id: run
+        run: |
+          set -euo pipefail
+          [[ "$CI_RUN_ID" =~ ^[0-9]+$ ]] || { echo "ci_run_id must be numeric" >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" > "$RUNNER_TEMP/run.json"
+          check() {
+            actual="$(jq -r "$1" "$RUNNER_TEMP/run.json")"
+            [ "$actual" = "$2" ] || { echo "run $1 is '$actual', expected '$2'" >&2; exit 1; }
+          }
+          check .path .github/workflows/ci.yml
+          check .event push
+          check .head_branch main
+          check .status completed
+          check .conclusion success
+          check .head_repository.full_name "$GITHUB_REPOSITORY"
+          head_sha="$(jq -r .head_sha "$RUNNER_TEMP/run.json")"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid head_sha" >&2; exit 1; }
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the source revision to be on main
+        env:
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
+        run: git merge-base --is-ancestor "$HEAD_SHA" HEAD
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: csa-review-only-${{ steps.run.outputs.head_sha }}
+          path: ${{ runner.temp }}/release
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify archive checksums, revision and single-manifest layout
+        id: archive
+        working-directory: ${{ runner.temp }}/release
+        env:
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          sha256sum --strict -c SHA256SUMS
+          grep -qx "source_revision=$HEAD_SHA" release.txt
+          grep -qx "platform=linux/amd64" release.txt
+          for app in python frontend; do
+            layout="$RUNNER_TEMP/$app.layout"
+            mkdir "$layout"
+            tar -xf "$app.oci.tar" -C "$layout" --no-same-owner
+            [ "$(jq '.manifests | length' "$layout/index.json")" = 1 ]
+            [ "$(jq -r '.manifests[0].mediaType' "$layout/index.json")" = \
+              application/vnd.oci.image.manifest.v1+json ]
+            digest="$(jq -r '.manifests[0].digest' "$layout/index.json")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            manifest="$layout/blobs/sha256/${digest#sha256:}"
+            [ "sha256:$(sha256sum "$manifest" | cut -d' ' -f1)" = "$digest" ]
+            config="$(jq -r .config.digest "$manifest")"
+            [[ "$config" =~ ^sha256:[0-9a-f]{64}$ ]]
+            config_blob="$layout/blobs/sha256/${config#sha256:}"
+            [ "sha256:$(sha256sum "$config_blob" | cut -d' ' -f1)" = "$config" ]
+            jq -e --arg sha "$HEAD_SHA" \
+              '.architecture == "amd64" and .os == "linux"
+               and .config.Labels["org.opencontainers.image.revision"] == $sha' \
+              "$config_blob" > /dev/null
+            echo "${app}_digest=$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Push archives with preserved manifest digests
+        working-directory: ${{ runner.temp }}/release
+        env:
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          skopeo --version
+          printf '%s' "$REGISTRY_TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for app in python frontend; do
+            skopeo copy --preserve-digests --retry-times 3 \
+              "oci-archive:$app.oci.tar" \
+              "docker://$REGISTRY_NAMESPACE/csa-$app:$HEAD_SHA"
+          done
+
+      - name: Re-read registry digests and compare
+        env:
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
+          PYTHON_DIGEST: ${{ steps.archive.outputs.python_digest }}
+          FRONTEND_DIGEST: ${{ steps.archive.outputs.frontend_digest }}
+        run: |
+          set -euo pipefail
+          for app in python frontend; do
+            expected="PYTHON_DIGEST"; [ "$app" = frontend ] && expected="FRONTEND_DIGEST"
+            expected="$(printenv "$expected")"
+            ref="$REGISTRY_NAMESPACE/csa-$app:$HEAD_SHA"
+            actual="sha256:$(skopeo inspect --raw "docker://$ref" | sha256sum | cut -d' ' -f1)"
+            [ "$actual" = "$expected" ] || { echo "$app registry digest $actual != $expected" >&2; exit 1; }
+            echo "| csa-$app | \`$REGISTRY_NAMESPACE/csa-$app@$actual\` |" >> "$RUNNER_TEMP/summary.md"
+          done
+          {
+            echo "### Published staging images for \`$HEAD_SHA\` (CI run $CI_RUN_ID)"
+            echo
+            echo "| Image | Digest reference |"
+            echo "| --- | --- |"
+            cat "$RUNNER_TEMP/summary.md"
+            echo
+            echo "Registry publication only: not deployed, not staging acceptance."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove registry login
+        if: always()
+        run: skopeo logout ghcr.io || true

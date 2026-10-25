@@ -77,7 +77,7 @@ the previously failed evidence.
 
 ## Phase 2 — Define and implement trusted voice sessions
 
-Status: implemented 2026-10-24 (migration `0430`, `csa/voice/`, sandbox profile only,
+Status: implemented 2026-10-24 (migration `0440`, `csa/voice/`, sandbox profile only,
 disabled by default); synthetic session/revocation/replay tests pass. Provider
 selection for STT/TTS (item 5) remains open.
 

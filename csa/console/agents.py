@@ -48,6 +48,12 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
         "not_implemented",
         "Sandbox validation, signing and submission are not implemented.",
     ),
+    "email_assistant": (
+        "Email assistant",
+        "local",
+        "Staff-only Gmail triage, summaries and reply drafts in the Email tab. "
+        "Draft-only: nothing is sent; drafts are saved to the user's own Gmail drafts.",
+    ),
 }
 SPECIALIZED = frozenset(
     {

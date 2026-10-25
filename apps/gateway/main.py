@@ -36,6 +36,9 @@ from csa.core.logging import configure_logging, logging_health, shutdown_logging
 from csa.core.settings import get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
 from csa.decide.groq import GroqClient
+from csa.email.api import build_email_router
+from csa.email.gmail import GmailClient
+from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
@@ -50,7 +53,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0430"
+EXPECTED_SCHEMA_VERSION = "0440"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -130,6 +133,7 @@ def create_app() -> FastAPI:
             else None
         )
         hr_http: httpx.AsyncClient | None = None
+        email_http: httpx.AsyncClient | None = None
         try:
             await pool.open(wait=True)
             app.state.pool = pool
@@ -165,13 +169,36 @@ def create_app() -> FastAPI:
                             settings.GROQ_API_KEY.get_secret_value(), settings.GROQ_MODEL, hr_http
                         ),
                     )
-            elif settings.HR_ASSISTANT_ENABLED:
-                raise RuntimeError("HR assistant requires console identity")
+                if settings.EMAIL_ASSISTANT_ENABLED:
+                    assert settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET
+                    assert settings.GOOGLE_OAUTH_REDIRECT_URI
+                    email_http = httpx.AsyncClient(trust_env=False)
+                    email = EmailService(
+                        pool,
+                        gmail=GmailClient(
+                            settings.GOOGLE_CLIENT_ID,
+                            settings.GOOGLE_CLIENT_SECRET,
+                            settings.GOOGLE_OAUTH_REDIRECT_URI,
+                            email_http,
+                        ),
+                        model=GroqClient(
+                            settings.GROQ_API_KEY.get_secret_value(),
+                            settings.GROQ_MODEL,
+                            email_http,
+                        ),
+                        session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
+                    )
+                    await email.check_ready()
+                    app.state.email_service = email
+            elif settings.HR_ASSISTANT_ENABLED or settings.EMAIL_ASSISTANT_ENABLED:
+                raise RuntimeError("HR and email assistants require console identity")
             yield
         finally:
             try:
                 if hr_http is not None:
                     await hr_http.aclose()
+                if email_http is not None:
+                    await email_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:
@@ -228,6 +255,11 @@ def create_app() -> FastAPI:
                 await app.state.hr_service.check_ready()
             except Exception as exc:
                 ready, reason = False, f"HR database unavailable: {exc.__class__.__name__}"
+        if ready and settings.EMAIL_ASSISTANT_ENABLED:
+            try:
+                await app.state.email_service.check_ready()
+            except Exception as exc:
+                ready, reason = False, f"email database unavailable: {exc.__class__.__name__}"
         status_code = 200 if ready else 503
         return JSONResponse(
             status_code=status_code,
@@ -295,6 +327,7 @@ def create_app() -> FastAPI:
 
     app.include_router(build_marketplace_router())
     app.include_router(build_hr_router())
+    app.include_router(build_email_router())
 
     instrument_fastapi(app)
     return app

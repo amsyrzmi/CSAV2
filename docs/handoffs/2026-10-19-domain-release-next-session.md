@@ -1,6 +1,904 @@
 # Fourstacks domain and release handoff (2026-10-19)
 
-## Current continuation: customer-service goldens (2026-10-22)
+## Current continuation: shared-host topology reconciliation (2026-10-23)
+
+Branch `docs/staging-live-topology` from `734550b` (#23 merge), worktree
+`/home/amsyrzmi/CSAV2-staging-reconcile`. Documentation, Caddy snippet and
+one test expectation only; no runtime, Compose or secret change.
+
+Live state found by read-only inspection: #23 merged as `734550b`; the
+`csa-staging` project runs `staging-db`, `gateway` and `frontend` (frontend
+published on `127.0.0.1:18030`, gateway/database unpublished, data/app/edge
+networks internal). The shared connector is the `cloudflared` container of the
+`network` Compose project on `network_default` at `172.22.0.2`, not a host
+service. Its route for `staging-console.fourstacks.my` targets
+`http://192.168.0.50:80`, the same host LAN origin as the other routes, after
+the earlier `127.0.0.1:80` route returned 502. The host Caddy block for the
+staging hostname allows `127.0.0.1`, `::1` and `172.22.0.2`, otherwise 403,
+and proxies to `127.0.0.1:18030`. Owner reports public login loads.
+
+The runbook, snippet and test previously described loopback-only trust and a
+loopback tunnel origin; they now match the live configuration. The connector
+address is Docker-assigned and its stability is not established; a recreated
+connector can turn the public site into 403 until the Caddy block is updated.
+Trusting the whole connector subnet was considered and not applied because it
+would also trust the landing-page container.
+
+Still open, unchanged by this slice: public authentication/CSRF/logout/tenant
+acceptance, abuse controls, application/database failure drills, persistent
+backup/restore, worker/delivery/KB activation and the manual testing pack on
+`feat/manual-acceptance-fixtures` in `CSAV2-staging-public-demo`.
+
+```text
+Continue from docs/staging-live-topology after review/merge. Live staging
+topology is reconciled in deploy/STAGING_SHARED_CADDY.md; do not reapply the
+obsolete host-service/loopback route. Next: public login/CSRF/logout/tenant
+acceptance against https://staging-console.fourstacks.my using the acceptance
+matrix in deploy/STAGING_INGRESS.md, then backup/restore of the staging
+volumes. Ask before any host Caddy, tunnel, DNS, container or secret change.
+Never repeat bootstrap/migrations or inspect secret values.
+```
+
+## Prior continuation: frontend host publishing correction (2026-10-23)
+
+Read repository guidance, latest PROGRESS and
+[shared-host procedure](../../deploy/STAGING_SHARED_CADDY.md).
+Worktree `/home/amsyrzmi/CSAV2-staging-public-demo`, corrective branch
+`fix/staging-frontend-host-network`, base `a9a212f` (#22 merge).
+Final branch CI `39970840315`, PR CI `39970848027`, main CI `39970918017`
+passed; the earlier latency failure below remains historical.
+
+Approved preflight confirmed clean accepted checkout, port 18030 unused,
+three stopped staging containers and both correctly labelled volumes.
+Retained image digests/revisions matched; the existing redacting checker
+reported ten secret files OK. No secret values displayed or regenerated.
+Shared Compose render selected only database/gateway/frontend.
+
+Separately approved startup used both Compose files, sequential health waits,
+`--no-deps --pull never`, existing secrets/volumes, no bootstrap/migrations.
+All three services became healthy. Frontend was recreated for the port
+configuration, but host curl failed exit 7 / HTTP 000; `docker port` showed
+no published port. Docker 29.1.3 inspect showed requested loopback binding
+but actual `3000/tcp: null`, frontend only on internal app/edge networks.
+This is a live failure of the accepted proposal, not a successful ingress test.
+
+Owner approved preparing a repository correction: normal bridge
+`frontend-host` joined only by frontend. This permits host publishing and
+adds frontend outbound capability; database/gateway remain private and the
+port remains loopback-only. No live network change/recreation is authorized
+by that approval. Services remain running privately with volumes intact.
+No Caddy edits/reload, DNS/route or external requests performed.
+
+Correction validation (`NO_LOCAL_ENV=1 ENV=ci`): staging Compose tests
+**24 passed in 7.93 s**, no skips/warnings; Ruff check/format and focused
+Pyright pass (zero errors/warnings). This checks the frontend-only bridge,
+loopback binding, internal data/app/edge networks and retained security/profile
+contracts in rendered configuration, not live Docker publishing. Both
+runbooks' Bash syntax is included. Full local runtime tests/reset not run
+under this non-starting correction scope; hosted full CI is still required.
+
+Next: focused non-starting checks, ask before commit/push/new PR (do not
+reuse merged #22), full hosted CI/user merge, then separately approve
+frontend recreation and exact binding/host request acceptance. Do not call
+the correction proven based on renders. Public abuse/authentication gates
+remain before route publication.
+
+```text
+Continue the shared-host publishing correction, not production promotion.
+Read AGENTS.md, latest PROGRESS/handoff and deploy/STAGING_SHARED_CADDY.md.
+Use worktree CSAV2-staging-public-demo, branch fix/staging-frontend-host-network.
+#22 is merged, final CI passed. Approved startup left all three services healthy
+but host port absent; curl to 127.0.0.1:18030 failed. Owner approved local
+frontend-only non-internal bridge correction, services left running privately.
+Do not change live networks, recreate, edit/reload Caddy or publish routes
+without separate approval. Never repeat bootstrap/migrations or inspect secrets.
+Validate focused configuration checks; ask before commit/push/new PR.
+Preserve unrelated main review deletions and other worktrees.
+```
+
+## Prior continuation: shared tunnel and Caddy (2026-10-23)
+
+Start with repository guidance, latest PROGRESS,
+[STAGING_SHARED_CADDY.md](../../deploy/STAGING_SHARED_CADDY.md), its overlay
+and Caddy snippet, plus the public-login safeguards in STAGING_INGRESS.
+Worktree `/home/amsyrzmi/CSAV2-staging-public-demo`, branch
+`docs/staging-public-demo`, currently extends open #22 (previous published
+head `cb764309`). Verify merge/CI/head before publication or execution.
+Base main `05b429ec` had passing CI `39951244406`.
+
+The owner rejected the dedicated connector requirement, reported shared
+cloudflared runs as a host system service, requested Caddy edits and approved
+local config/test/docs preparation. No live edit/reload/startup/routing
+approval was given. Selected topology: shared tunnel -> loopback Caddy port
+80, original Host preserved -> loopback-only frontend port 18030 -> private
+gateway/database. Caddy site rejects non-loopback peers. Existing sites and
+wildcard remain intact. No new tunnel/token or shared Docker network needed.
+
+The overlay uses Compose `!override` to exclude dedicated connector from the
+normal staging profile. Base proposal is unchanged. Use both files for shared
+mode. Tests render default (inert) and staging profile selection, validate
+only frontend loopback binding, and adapt the snippet when Caddy is installed.
+No application code or schema changes.
+
+Local validation of this shared-mode slice (`NO_LOCAL_ENV=1 ENV=ci`):
+
+- `python -m pytest tests/test_staging_compose.py
+  tests/test_console_identity_config.py tests/test_console_identity_gateway.py
+  tests/test_console_security.py -q`: **52 passed**, no skips, 12 warnings
+  (test environment has no `/run/secrets` directory), 21.92 s.
+- Ruff check/format and focused Pyright: pass, zero type errors/warnings.
+  Initial Ruff format check found one wrapping issue; formatted and reran.
+- Caddy 2.6.2 snippet validation/adaptation and formatting: pass. HTTP-only
+  warning expected; TLS terminates at Cloudflare. Both runbooks' Bash blocks
+  pass syntax checks. No live Caddy validation/reload or requests performed.
+- Changed/new Markdown links/fences checked; two unchanged older PROGRESS
+  anchors to the M6 migration-plan handoff are missing and remain outside this
+  slice. Changed/new links pass. Diff whitespace and credential-pattern scan
+  pass (all eight changed/new files, not a full Gitleaks run).
+- Full local runtime suite/reset not run under the focused non-starting scope.
+  Full hosted CI is still required on the final published head.
+
+Fresh check of #22's previously published `cb764309` head: push CI
+`39962276593` passed, PR CI `39962417228` **failed**: ingress ASGI p95
+336.72 ms against the unchanged <200 ms limit; 2,951 passed, one failed,
+140 warnings. Cause is not established. Do not describe the PR as green,
+waive the threshold or repeatedly rerun until a passing sample hides it.
+These runs predate the uncommitted shared-mode slice.
+
+Host read-only checks found Caddy 2.6.2, ports 80/443 listening, 18030 unused.
+Last owner-reported staging state remains three stopped services, both volumes
+retained, initial administrator still requiring password change. No bootstrap
+repetition, secret regeneration, volume deletion or secret inspection.
+
+Public audience: anyone can reach login; only owner signs in and presents.
+No Access/signup/visitor credentials or provider/worker/delivery/KB enablement.
+Shared hosting is not a substitute for unresolved public abuse/proxy gates.
+Review plan-available controls before separately approving publication.
+After config merge/full CI, exact staged Caddy edit/full validation/reload,
+frontend binding/startup and shared route each need separate approval.
+Do not repeat the failed shared route to `http://frontend:3000`; the new
+proposed route is HTTP `127.0.0.1:80`.
+
+```text
+Continue roadmap: Staging/CD -> subscription -> WhatsApp test-number demo ->
+interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Read AGENTS.md, latest PROGRESS/handoff and deploy/STAGING_SHARED_CADDY.md.
+Check #22 state/head: docs/staging-public-demo (previous head cb764309)
+now has locally prepared shared-Caddy configuration; ask before pushing it.
+Owner selected shared host tunnel/Caddy, frontend 127.0.0.1:18030:3000.
+No dedicated tunnel/token is needed. No live Caddy edits/reload, startup or
+route/DNS change approved. Public login only; owner presents, no visitors'
+credentials. Preserve existing sites/wildcard/shared service availability.
+Resolve public abuse/proxy safeguards; then explicit approval per host step.
+Use the shared Compose overlay, not base-only profile startup. Never repeat
+bootstrap/delete volumes/read secrets or enable real provider delivery.
+Three services last stopped, both volumes retained. Ask before commit/push/PR;
+reuse #22 if still open, user merges after full CI. Batch changes/evidence.
+Preserve main-worktree review deletions and all unrelated worktrees.
+```
+
+## Prior continuation: public login demo review (2026-10-23)
+
+Read repository guidance, current PROGRESS and
+[STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md) first. Branch
+`docs/staging-public-demo`, worktree `/home/amsyrzmi/CSAV2-staging-public-demo`,
+is based on PR #21 merge `05b429ec0856694de87dfb02bbd7ca74cbbf27bd`
+(main CI `39951244406` passed). Verify publication state.
+
+The owner selected Internet-reachable login without Access; only the owner
+signs in to present the demo. No signup, visitor accounts or shared admin
+credentials. The exposure revision documents source safeguards and keeps
+public proxy/abuse protection as acceptance gates, not assumed facts.
+Runtime, Compose and database contracts are unchanged.
+
+Owner-reported discoveries: zone Active, existing wildcard DNS, empty Access
+application list, no dedicated staging tunnel. Owner added staging to the
+shared tunnel, got 502, then separately approved/removal reported for only
+that route; both landing-page routes remained and no explicit staging DNS
+record was listed. No independent account/DNS verification performed. Never
+copy full DNS/account links or personal identifiers into this handoff. Do not
+reuse the failed shared-tunnel route, change Caddy or attach shared networks.
+
+Source review of accepted-image auth/identity/security and identity SQL found
+no changes from `7cdc156` to this base. App throttling is database-backed with
+email/IP buckets; CSRF and secure session/forced password-change controls exist.
+Effective per-IP behaviour behind proxy and aggregate abuse protection are
+not verified. Check plan-available exact-host edge controls, record limits and
+compatibility, and stop before publication if protection is unresolved. No
+account-wide WAF rule, paid plan, external probe or configuration is authorized.
+
+Last known staging state remains three stopped services and both volumes
+retained; initial password change has not been accepted. No tunnel, token,
+restart or replacement DNS/route is approved. Infrastructure preparation may
+be separately approved, but routing awaits safeguards and explicit exposure
+approval. After publication of this revision, next is owner-guided read-only
+inspection of available exact-host abuse controls, without saving changes.
+Batch local preparation/evidence, not a PR per dashboard click.
+
+Local validation (`NO_LOCAL_ENV=1 ENV=ci`): staging Compose, identity
+configuration, gateway identity lifecycle and password/security checks:
+**48 passed, 12 warnings in 44.84 seconds**, no skips. Warnings report the
+absent `/run/secrets` directory in identity configuration tests; no secret
+directory was read or created. These are non-starting/synthetic checks, not
+database-backed session-throttle, real cookie/proxy or public-browser tests.
+Accepted auth/identity/security/identity-SQL source comparison is unchanged.
+Whitespace, fences in four changed Markdown files and five updated local
+links/anchors pass. Added-content credential-pattern check found no matches;
+no untracked files. This is not Gitleaks; full hosted CI/Gitleaks remains
+required. No runtime suite, container, persistent database access or reset
+was used for this documentation-only change.
+
+```text
+Continue CSA roadmap: Staging/CD, subscription, WhatsApp test-number demo,
+interactive voice, Google mailbox/calendar, reporting/wallboards.
+Read AGENTS.md, current PROGRESS/handoff and deploy/STAGING_INGRESS.md.
+Verify docs/staging-public-demo publication; base 05b429ec, main CI
+39951244406 passed. Owner wants public login page, only owner signs in;
+no Access/signup/visitor credentials. Shared-tunnel staging route produced
+502 and was removed with approval; landing pages/wildcard intact, no exact
+staging DNS record, no dedicated tunnel, Access list empty (owner reports).
+Next: review plan-available exact-host abuse controls read-only and resolve
+proxy/throttle/publication gates. No account changes, probes, tunnel/token,
+restart, route/DNS/Caddy/shared connector changes without separate approval.
+Three services stopped, both volumes retained. Never repeat bootstrap,
+delete volumes, inspect secrets or enable provider/worker/delivery/KB traffic.
+Ask before commit/push/PR; user merges after full hosted CI. Batch evidence.
+Preserve main's two existing review deletions and other worktrees.
+```
+
+## Prior continuation: consolidated ingress readiness (2026-10-23)
+
+Start with repository guidance, latest PROGRESS,
+[STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md), the pinned local
+Compose proposal, configuration tests and RELEASE's private host execution.
+PR #20 merged as `df948b0882aefdb4fe01381fe47271fed81f31ff`; main CI
+`39945835399` passed. This consolidated local slice is prepared on
+`feat/staging-ingress-readiness` at `/home/amsyrzmi/CSAV2-staging-ingress`.
+Verify publication state before proceeding.
+
+User requested larger coherent batches to avoid repeated slow hosted CI.
+The runbook covers all currently actionable ingress planning: owner authority
+checks; protection-before-routing; dedicated tunnel; hidden token provisioning;
+private restart; connector-only activation; exact hostname routing; browser/
+tenant acceptance; failure drills; non-destructive rollback; and remaining
+backup/restore/CD gates. Official Cloudflare docs were read directly after the
+documentation connector failed authentication. No credentials were changed.
+No runtime/Compose configuration changed. Tests extend the existing harness.
+
+Do not execute the plan implicitly. First obtain non-secret owner decisions:
+account/zone control, hostname conflicts and intended controlled recipients/
+Access policy. The runbook recommends exact-host Access before publication;
+no new Access policy, IdP or cost is preapproved. Token provisioning, restart,
+connector activation, route/DNS, browser mutations, drills and stop each
+require explicit approval. Never request passwords/tokens/cookies in chat.
+
+Last owner-reported state remains three stopped staging containers and both
+volumes retained. Do not repeat bootstrap, remove volumes, regenerate secrets,
+pull images or touch shared connector/Caddy/apex/www. Private readiness passed;
+browser login/password change, tenant/public ingress/recovery and persistent
+restore are not accepted. No worker/delivery/KB consumer or real provider
+delivery is authorized. Executable protected CD follows the proven process.
+
+After approved execution, consolidate sanitized outcomes/failures and final
+state into one evidence PR. Do not create per-command or CI-status-only commits.
+Full hosted CI stays the merge gate; user merges. Ask before commit/push/PR.
+
+Validation with `NO_LOCAL_ENV=1 ENV=ci`: focused staging Compose, secrets,
+publication and release-context tests **56 passed in 6.70 seconds**. Ruff
+lint/format and focused Pyright pass (0 errors/warnings); an initial format
+check failed and was corrected. Tests render configuration and syntax-check
+all six runbook Bash blocks and embedded provisioning Python; they do not
+execute provisioning or any runtime command. Whitespace, Markdown fences and
+11 added/new local links/anchors pass. Credential-pattern checking covers
+the full working diff and complete new runbook, with no matches; it is not a
+complete Gitleaks scan. No local Gitleaks executable is available; no scan
+container or dependency installation was used. Full runtime/database suites,
+resets, account/DNS inspection and live checks were deliberately not run.
+Hosted full CI/Gitleaks remain required before merge.
+
+```text
+Continue agreed roadmap: Staging/CD -> subscription -> WhatsApp test-number
+demo -> interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Read AGENTS.md, current PROGRESS/handoff, deploy/STAGING_INGRESS.md and
+RELEASE evidence. Verify publication/merge of feat/staging-ingress-readiness
+(base df948b08, main CI 39945835399 passed); worktree CSAV2-staging-ingress.
+This is a consolidated plan plus synthetic checks, not live acceptance.
+Next: non-secret owner authority/hostname/exposure decisions, then separately
+approved tunnel/token/restart/connector/route and browser/tenant/recovery gates.
+No secret inspection or credentials in chat; no implicit spending, provider
+delivery, shared connector/Caddy/site changes, pulls, volume deletion or
+bootstrap repetition. Three services remain stopped; both volumes retained.
+Ask before commit/push/PR; user merges. Batch execution evidence into one PR,
+not a commit per command or CI status. Full hosted CI remains required.
+Preserve main's two review deletions and unrelated worktrees. Do not implement
+executable CD until the deployment/recovery process has been accepted.
+```
+
+## Prior continuation: private readiness complete (2026-10-23)
+
+Read repository guidance, latest PROGRESS, the
+[private execution record](../../deploy/RELEASE.md#private-staging-host-execution-2026-10-23),
+the pinned connector configuration and token ownership evidence in RELEASE,
+and relevant LG09/LG15 gates. Do not replay historical handoffs.
+
+PR #19 merged as `8ff63c29a37b8b9802b668e14594da286f7c6f12`. PR CI
+`39933597315`, branch CI `39933412519` and main CI `39935706204` passed.
+Owner-reported private startup/checks succeeded on the accepted image digests,
+source `7cdc156`: three healthy services, gateway liveness/readiness, login
+page 200 and frontend-to-gateway readiness. The Node snippet executed
+successfully; its previous local syntax-check limitation remains historical.
+
+The owner separately stopped frontend/gateway, then the database: all three
+containers are `exited`; both staging volumes remain. Do not restart without
+approval, repeat bootstrap, regenerate secrets or delete volumes. Never
+inspect secret values or request the administrator password/session cookies.
+
+**Next local slice:** prepare the dedicated tunnel/hostname activation and
+rollback plan. Check current official Cloudflare requirements; establish
+account/zone authority and existing hostname-route state before selecting
+owner-run operations. No external account inspection or infrastructure change
+is implied. Keep planning separate from approvals for tunnel creation, token
+provisioning, application restart, connector activation and staging DNS/route.
+The connector token is still a separate gate (UID/GID 65532:65532, file 0400,
+restricted host parent; Compose bind mounts do not remap ownership).
+Shared connector, Caddy, apex/www and existing websites remain untouched.
+
+Private readiness does not establish authenticated browser/password change,
+tenant isolation, public ingress, recovery or protected promotion. No worker,
+delivery or KB consumers exist in the proposal; no real provider delivery
+or functioning end-to-end conversation is accepted.
+
+This evidence-only slice updates RELEASE, PROGRESS and this handoff. Ask
+before commit/push/PR; full hosted CI remains the merge gate and user merges.
+
+Local validation: whitespace, Markdown fences and six added/updated local
+links/anchors pass. Added-content credential-pattern checking found no matches
+and there are no untracked files; this is not a full Gitleaks scan. No runtime
+tests, container probes, database queries or services were run to validate the
+prose. Hosted Gitleaks/full CI remain required; no local scan container was
+started.
+
+```text
+Continue CSA roadmap: Staging/CD -> subscription -> WhatsApp test-number
+demo -> interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Read AGENTS.md, current PROGRESS and release handoff, then RELEASE's private
+staging host execution record. PR #19 merged at 8ff63c29; main CI 39935706204
+passed. Evidence branch docs/staging-private-accepted is based on that merge,
+worktree /home/amsyrzmi/CSAV2-staging-private-evidence; verify publication.
+Owner passed private readiness then stopped frontend/gateway/database;
+both volumes remain. Next: dedicated tunnel/hostname activation/rollback
+planning against current official guidance. Do not restart, create a tunnel,
+provision/read tokens, change routes/DNS/Caddy/shared connector, pull images
+or deploy without separate approval. Ask before commit/push/PR; user merges.
+Do not repeat bootstrap, delete volumes or inspect secret values. No real
+provider delivery or worker/delivery/KB consumer is authorized. Browser login,
+password change, tenant/ingress/recovery acceptance and protected CD remain.
+Preserve main's two pre-existing review deletions and unrelated worktrees.
+```
+
+## Prior continuation: private staging startup procedure (2026-10-23)
+
+Start with repository guidance, latest PROGRESS, the
+[private startup procedure](../../deploy/RELEASE.md#private-staging-application-startup-procedure-only-not-run)
+and [configuration tests](../../tests/test_staging_compose.py). Branch
+`feat/staging-private-startup`, worktree
+`/home/amsyrzmi/CSAV2-staging-private-startup`, is based on PR #18 merge
+`1012b705f3eb63f8d686f1dc926c8c7764307755` (main CI `39928109213` passed).
+
+The slice adds a procedure and one synthetic configuration test, not runtime
+or Compose changes. It selects database, gateway and frontend individually
+with `--no-deps`, `--pull never` and finite waits; it never starts the entire
+profile or connector. Existing volume presence/project labels are required.
+Checks use exec inside the existing containers, not host ports or shared
+networks. Expected outputs and a non-destructive stop sequence are documented.
+
+Validation: `NO_LOCAL_ENV=1 ENV=ci` focused pytest covering
+`test_staging_compose.py`, `test_staging_secrets.py`,
+`test_publish_staging_images.py` and `test_release_context.py`: **54 passed**
+in 7.37 seconds after formatting. Ruff lint/format and focused Pyright pass
+(0 errors/warnings). An initial format check failed and was corrected.
+Whitespace, Markdown fences, five added links/anchors, two Bash block syntax
+checks and Python probe syntax pass. Accepted-source comparison is unchanged.
+JavaScript syntax checking was attempted but Node is unavailable in this
+shell; no dependency was installed and no container substituted. The
+changed-content credential-pattern check passes with no untracked files; it
+is not a complete Gitleaks scan. Full runtime/database suites and resets were
+not run; full hosted CI/Gitleaks remain required before merge.
+
+No startup or probes have been run for this slice. Last owner-reported
+persistent state remains: staging DB stopped, both volumes retained,
+schema/checkpoints initialized, upload root owned by 1000:1000, and first
+administrator requiring password change. Do not repeat bootstrap or regenerate
+secrets. Do not read secrets, account identifiers or passwords into tools/chat.
+
+**Next gate:** review/publish this procedure with user approval; full hosted
+CI and user merge precede execution. Verify the accepted merge in a clean
+checkout, then obtain separate approval for DB restart, application startup
+and private checks. Stopping is separately approved. Public routing, tunnel
+token, DNS/Caddy and authenticated browser/tenant/recovery acceptance remain
+later gates. No worker/delivery/KB consumer or real provider delivery is wired.
+
+```text
+Continue CSA staging/CD. Read AGENTS.md, latest PROGRESS and the current
+release handoff, then deploy/RELEASE.md's private startup procedure.
+Verify publication/merge of feat/staging-private-startup (base 1012b705,
+main CI 39928109213 passed); worktree is CSAV2-staging-private-startup.
+The procedure and synthetic config test do not establish runtime acceptance.
+Staging DB remains stopped with both volumes retained after successful
+bootstrap. Ask before commit/push/PR and before DB restart, app startup,
+private probes or stop. Never enable the entire staging-approved profile:
+it includes cloudflared. No pulls, secret inspection, bootstrap repetition,
+volume deletion, Caddy/shared connector/DNS changes or real provider delivery.
+Use explicit self-contained Docker commands, not stg. User merges.
+Preserve the two main-worktree review deletions and unrelated worktrees.
+Roadmap: Staging/CD, subscription, WhatsApp test-number demo, interactive
+voice, Google mailbox/calendar, reporting/wallboards. Keep each gate explicit.
+```
+
+## Prior continuation: staging bootstrap complete (2026-10-23)
+
+Start with repository guidance, the latest progress entry, the
+[host execution record](../../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23),
+the [local proposal](../../deploy/compose.staging-local-proposal.yml) and its
+[configuration tests](../../tests/test_staging_compose.py). Reconcile LG09/LG15
+release gates with current source, not historical schema counts.
+
+PR #17 merged as `a5eb450ae6fdcbff71c673abaedc3bd8abb8639e`; PR CI
+`39914864494`, branch CI `39914798398` and main CI `39917438918` passed.
+The owner ran separately approved bootstrap steps from the clean detached
+`/home/amsyrzmi/CSAV2-staging-run` checkout. Results are recorded in RELEASE:
+baseline success reported, migrations/checkpoints verified, upload ownership
+verified, and one forced-change administrator plus one bootstrap audit entry.
+Do not record personal identifiers or credentials.
+
+**Persistent state:** `csa-staging-staging-db-1` is stopped (`status=exited`).
+Volumes `csa-staging_staging-db` and `csa-staging_staging-uploads` remain.
+Do not rerun baseline/admin bootstrap, regenerate secrets or delete volumes.
+The existing secret files must not be read into tools, logs or chat.
+The absent connector token did not prevent database-only startup.
+
+The failed `stg` attempts resolved an installed executable, not the temporary
+shell function; subsequent owner commands used explicit Docker/Compose
+commands. Future operator blocks must be self-contained, avoid that shortcut,
+disable automatic environment-file loading and prohibit image pulls.
+
+**Next bounded task:** review and synthetically validate a private
+gateway/frontend startup/readiness procedure, using accepted image identities
+and runtime mounts. Database restart and application startup require separate
+approval. Do not start an entire `staging-approved` profile: it includes the
+connector. Later gates remain tunnel/hostname, authenticated browser and
+password change, tenant isolation, ingress, recovery and protected promotion.
+No worker/delivery/KB consumer is configured; no end-to-end conversation or
+production readiness is claimed.
+
+This evidence-only slice changes RELEASE, PROGRESS and this handoff; it changes
+no runtime, SQL, tests or Compose configuration. Earlier synthetic validation
+is historical; hosted CI remains required for publication. Ask before
+commit/push/PR; the user merges.
+
+Local documentation checks passed: `git diff --check`, balanced fences in all
+three changed files, and all six added local links/anchors. A credential-pattern
+scan of added content found no matches; there are no untracked files. This is
+not Gitleaks: no local Gitleaks executable is available, and no scan container
+was started. Hosted Gitleaks remains required. No runtime tests, database
+queries, container probes or restarts were run to validate these prose edits.
+
+```text
+Continue CSA staging/CD. Read AGENTS.md, current PROGRESS, this continuation
+and deploy/RELEASE.md's staging bootstrap host execution record first.
+Verify Git/CI: PR #17 merged at a5eb450; main CI 39917438918 passed.
+Evidence docs are being prepared on docs/staging-bootstrap-evidence at
+/home/amsyrzmi/CSAV2-staging-bootstrap-evidence; verify publication state.
+Owner completed baseline, migration/checkpoints, upload ownership and first
+admin, then stopped csa-staging-staging-db-1; both staging volumes remain.
+Do not rerun bootstrap or read secrets. Next local task: review and validate
+the private gateway/frontend startup procedure against the accepted images,
+source and mounts. Ask separately before DB restart/app startup, any probes,
+pulls, tunnel/DNS/Caddy or deployment, and before commit/push/PR.
+No worker/delivery/KB consumer or real provider delivery is authorized.
+Keep shared connector, websites and other worktrees untouched; preserve the
+two pre-existing main-worktree review deletions. Roadmap remains Staging/CD,
+subscription, WhatsApp test-number demo, interactive voice, Google
+mailbox/calendar, then reporting/wallboards. Do not bypass release gates.
+```
+
+## Prior continuation: staging database bootstrap procedure (2026-10-23)
+
+Branch `feat/staging-db-bootstrap` (worktree `/home/amsyrzmi/CSAV2-staging-bootstrap`)
+is based on `2a4a037` (PR #16 merge). It adds:
+
+- the `uploads-init` and `admin-bootstrap` one-shot services in
+  [compose.staging-local-proposal.yml](../../deploy/compose.staging-local-proposal.yml);
+- render and gate-execution tests in
+  [test_staging_compose.py](../../tests/test_staging_compose.py);
+- the owner-run
+  [procedure](../../deploy/RELEASE.md#isolated-staging-database-bootstrap-operator-procedure-not-yet-run).
+
+The admin gate is inline YAML Python because the approved image `7cdc156`
+predates any new module. It delegates to the packaged
+`scripts.bootstrap_console_admin`. The relevant database, migration and
+identity sources are unchanged between `7cdc156` and `2a4a037`.
+
+Not run: the procedure itself, so there is no evidence about the database,
+containers, volumes or credential acceptance. Also unverified: whether
+`compose up` accepts the absent connector token file. The procedure stops if
+it does not, and never creates a placeholder.
+
+**Next gate (separate approval):** the owner runs steps 0–6 and reports
+outputs, never secret values or the admin password. Later gates, each
+separately approved:
+
+1. Application startup (`csa_app` acceptance).
+2. Tunnel token and staging hostname.
+3. Browser, tenant-isolation, ingress and recovery acceptance.
+4. Protected promotion.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: the PR from
+feat/staging-db-bootstrap (base 2a4a037) and its CI/merge. If merged, give
+the owner the exact deploy/RELEASE.md "Isolated staging database bootstrap"
+steps from a clean detached checkout of that merge, with the approved digests
+(python f422...c764, frontend af62...3e4f, rev 7cdc156) and secret dir
+/srv/csa-staging/secrets. Ask for approval and actual outputs; never ask for
+secret values or the admin password. Starting the gateway, frontend or
+connector, the tunnel/hostname, acceptance and protected promotion are later
+separate approvals. No worker/delivery/KB consumer. Roadmap: Staging/CD ->
+subscription -> WhatsApp test-number demo -> interactive voice -> Google
+mailbox/calendar -> reporting/wallboards. Preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. The user merges.
+```
+
+## Prior continuation: staging host images and secrets provisioned (2026-10-23)
+
+PR #15 merged as `88a6711173e81d358802cb23995e81c0839f1108`; main CI
+39882125951 passed. The owner ran the image-pull and secret-file gate on the
+staging host. The approved digests are present locally, and their revision and
+users match. `/srv/csa-staging/secrets` passes `staging_secrets check`. See the
+[host execution record](../../deploy/RELEASE.md#host-execution-2026-10-23).
+
+**Next bounded task (authorized local work):** write and test, without
+running, the isolated database bootstrap procedure for
+[compose.staging-local-proposal.yml](../../deploy/compose.staging-local-proposal.yml).
+It covers:
+
+1. starting only `staging-db` under `migration-approved`;
+2. applying the baseline from the approved Python image with the database
+   image's `psql`;
+3. running `migrate` with `CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging`;
+4. initializing the upload volume as `1000:1000` with a network-disabled
+   initializer that has only `CHOWN`;
+5. bootstrapping the first platform admin through `csa_identity` with
+   interactive `getpass`;
+6. verification and teardown, including volume deletion before any data
+   exists.
+
+The [disposable bootstrap rehearsal](../../deploy/RELEASE.md#disposable-bootstrap-and-storage-rehearsal)
+is the model. Running the procedure is a **separate approval**.
+
+Later gates, each separately approved:
+
+1. Application startup.
+2. Tunnel token (`65532:65532`) and staging hostname.
+3. Browser, tenant-isolation, ingress and recovery acceptance.
+4. Protected promotion.
+
+No worker, delivery or KB consumer is configured.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: the docs PR
+recording the staging host image pull and secret files (main at or after
+88a6711) and its CI. Host state: approved images pulled by digest
+(csa-python@sha256:f422...c764, csa-frontend@sha256:af62...3e4f, rev 7cdc156);
+/srv/csa-staging/secrets passes `python3 -m scripts.staging_secrets check`.
+Do not read secret values. Next: in an isolated worktree, write and test (no
+execution) the isolated DB bootstrap procedure for the local staging Compose
+proposal: staging-db only, baseline via the db image's psql, the approved
+migrate profile, upload volume chown init, interactive csa_identity admin
+bootstrap, verification and teardown. Ask before commit/push/PR. Running it,
+app startup, tunnel/hostname, acceptance and protected promotion are separate
+approvals. No worker/delivery/KB consumer. Roadmap: Staging/CD ->
+subscription -> WhatsApp test-number demo -> interactive voice -> Google
+mailbox/calendar -> reporting/wallboards. Preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. The user merges.
+```
+
+## Prior continuation: staging secret provisioning tool (2026-10-23)
+
+PR #14 merged as `f0a8d974b022730056ef7fd86e4d629be95940f8` (PR CI 39840472983,
+push CI 39840462467 passed). Branch `feat/staging-secret-provisioning`
+(worktree `/home/amsyrzmi/CSAV2-staging-published`) adds
+[staging_secrets.py](../../scripts/staging_secrets.py) and its synthetic tests,
+plus the [operator procedure](../../deploy/RELEASE.md#staging-host-image-pull-and-secret-files)
+for the host image pull and secret files. Approved images are unchanged (see
+the publication record below).
+
+**Next gate (separate approval, owner-run on the staging host):**
+
+1. Create a classic token with only `read:packages`.
+2. Pull both digests using a dedicated `0700` `DOCKER_CONFIG`.
+3. Log out, then revoke the token.
+4. Verify each image's `RepoDigests` and revision label.
+5. Run `staging_secrets create` and `check` into a new absolute directory owned
+   by UID 1000.
+6. Report only the tool's path/`OK` output, never values.
+
+Afterwards these gates still remain, each separately approved:
+
+1. Isolated database bootstrap, migration and `csa_identity` admin/test
+   identities.
+2. Application startup.
+3. Tunnel token (`65532:65532`) and staging hostname.
+4. Browser, tenant-isolation, ingress and recovery acceptance.
+5. Protected promotion.
+
+No worker, delivery or KB consumer is configured.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: whether the
+feat/staging-secret-provisioning PR merged and its CI. If merged, give the
+owner exact host commands (dedicated DOCKER_CONFIG, read:packages-only classic
+token entered at docker's hidden prompt, pulls by digest of
+ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764
+and ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f,
+logout, inspect RepoDigests/revision, then scripts.staging_secrets create and
+check) and ask for separate approval. Never request or display secret values.
+Later separate gates: isolated DB bootstrap/migration/identities, app startup,
+tunnel/hostname, browser/tenant/ingress/recovery acceptance, protected
+promotion. No worker/delivery/KB consumer. Roadmap: Staging/CD -> subscription
+-> WhatsApp test-number demo -> interactive voice -> Google mailbox/calendar ->
+reporting/wallboards. Isolated worktrees; preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. Ask before commit, push or PR; user merges.
+```
+
+## Prior continuation: staging images published (2026-10-22)
+
+PR #13 merged as `b60cde5adca806a073b580a7fa80527e6344aaa4`; main CI
+39833976733 passed. The owner created environment `staging-images` with
+required reviewer `amsyrzmi` and deployment branch `main`, then dispatched and
+approved publish run 39838393620 (`ci_run_id=39754225130`). All steps passed;
+see the [publication record](../../deploy/RELEASE.md#first-publication-pr-11-merge-images-2026-10-22).
+
+Approved staging image references (source `7cdc1562a33bf3a33c4561e53d26263a6a08f731`):
+
+- `ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764`
+- `ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f`
+
+They match the identity-verified and mount-probed manifests. They are supplied
+at run time as `CSA_STAGING_PYTHON_IMAGE`/`CSA_STAGING_FRONTEND_IMAGE`, not
+committed. Package visibility was not read back (agent token lacks package
+access); expected private.
+
+**Next gates, each separately approved:** (1) staging-host GHCR pull
+credential, created and stored by the owner on the host, never pasted into chat
+or committed; (2) staging-only secret files under the absolute
+`CSA_STAGING_SECRET_DIR` layout and protected synthetic test identities; (3)
+isolated database bootstrap and migration; (4) application startup; (5)
+dedicated tunnel and staging hostname; (6) authenticated browser,
+tenant-isolation, ingress and recovery acceptance; (7) protected repeatable
+promotion. The staging proposal still has no worker, delivery or KB consumers;
+no end-to-end agent conversations or real provider delivery are claimed.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: main at or
+after b60cde5 (PR #13) plus the docs PR recording publish run 39838393620.
+Approved staging images (source 7cdc156):
+ghcr.io/amsyrzmi/csa-python@sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764
+ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f
+Next bounded task: plan, then request separate approval for, the staging-host
+GHCR pull credential and staging-only secret/test-identity provisioning, with
+exact owner-run commands, effects and cleanup. Never ask for secret values in
+chat. Later separate gates: isolated DB bootstrap, app startup, tunnel/hostname,
+browser/tenant/ingress/recovery acceptance, protected promotion. No
+worker/delivery/KB consumer is configured. Roadmap: Staging/CD -> subscription
+-> WhatsApp test-number demo -> interactive voice -> Google mailbox/calendar ->
+reporting/wallboards. Use isolated worktrees; preserve the two pre-existing
+deletions in /home/amsyrzmi/CSAV2. Ask before commit, push or PR; user merges.
+```
+
+## Prior continuation: staging image publication workflow proposed (2026-10-22)
+
+PR #12 (artifact identity, mount probes and registry lookup evidence) merged as
+`12c74dd23dde8d18800258c56cc22e4f190bae8d`; its push CI 39826917861 and PR CI
+39826987627 passed at `ca19a3c`. The user chose a protected CI publication path
+(option b) over a manual push of the verified archive.
+
+Branch `ci/staging-image-publication` (worktree
+`/home/amsyrzmi/CSAV2-staging-publish`) adds
+[publish-staging-images.yml](../../.github/workflows/publish-staging-images.yml),
+[test_publish_staging_images.py](../../tests/test_publish_staging_images.py) and
+the [workflow contract](../../deploy/RELEASE.md#staging-image-publication-workflow).
+It is manual `workflow_dispatch` with one `ci_run_id`, gated by environment
+`staging-images`. It verifies a successful push-to-main `ci.yml` run on an
+ancestor of `main`, downloads that run's exact archive, verifies checksums,
+revision, single amd64 manifest and blob hashes, copies with
+`skopeo copy --preserve-digests` to `ghcr.io/<owner>/csa-{python,frontend}:<full-sha>`,
+and fails unless the re-read registry digests match. Nothing is rebuilt;
+`latest` is never used; `ci.yml` stays build-only.
+
+Local evidence: 10 new tests passed (static permission/trigger/identity
+assertions plus the archive-verification block executed against synthetic OCI
+layouts, with wrong-revision, multiple-manifest and tampered-manifest
+rejections); the 7 staging Compose tests still pass; repository Ruff check and
+format check, Pyright on the new test, YAML parse and `bash -n` on every run
+block, `git diff --check` and a credential-pattern scan passed. Not run locally:
+Gitleaks (hosted CI runs it), actionlint/shellcheck (not installed), and any
+real dispatch, GitHub API or registry call. Static and synthetic checks do not
+prove GHCR authentication, `skopeo` behaviour on the runner or package creation.
+
+**Gates, in order (each separately approved):**
+
+1. Review and merge the workflow PR after full hosted CI.
+2. The repository owner creates environment `staging-images` with a required
+   reviewer and deployment branches limited to `main` **before** any dispatch;
+   GitHub otherwise auto-creates it unprotected.
+3. Approve one dispatch. Run 39754225130 (`7cdc156`, artifact `12414924895`,
+   expires 2026-10-29 09:36:53 UTC) would publish exactly the identity-verified
+   and mount-probed images; success requires registry digests
+   `sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764`
+   (Python) and
+   `sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f`
+   (frontend). Any other run is a new build needing its own verification.
+4. Then: staging-host pull credentials, staging-only secrets/test identities,
+   isolated DB bootstrap, application startup, dedicated tunnel/hostname,
+   authenticated browser/tenant-isolation/ingress/recovery acceptance, and
+   protected repeatable promotion.
+
+The staging proposal still has no worker, delivery or KB consumers; do not
+claim end-to-end agent conversations or enable real provider delivery. No
+registry write, deployment, real secret, Compose, database, tunnel or DNS
+action occurred.
+
+```text
+Continue CSA staging/CD in amsyrzmi/CSAV2. Verify, do not assume: PR #12 merged
+as 12c74dd; the ci/staging-image-publication PR (manual, environment-gated GHCR
+publication of exact CI archives with preserved digests) state and its CI.
+If merged, confirm the user created environment `staging-images` with a
+required reviewer and main-only deployment branches before asking separate
+approval to dispatch it with ci_run_id 39754225130 (artifact expires
+2026-10-29 09:36:53 UTC). Expected registry digests: Python
+sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764,
+frontend sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f.
+Record the job-summary @sha256 references and any failure verbatim. Later gates
+remain separate approvals: pull credentials, staging-only secrets/identities,
+isolated DB bootstrap, app startup, tunnel/hostname, browser/tenant/ingress/
+recovery acceptance, protected promotion. No worker/delivery/KB consumer is
+configured. Roadmap order: Staging/CD -> subscription -> WhatsApp test-number
+demo -> interactive voice -> Google mailbox/calendar -> reporting/wallboards.
+Use isolated worktrees; preserve the two pre-existing deletions in
+/home/amsyrzmi/CSAV2. Ask before commit, push or PR; the user merges.
+```
+
+## Prior continuation: staging artifact mount probes verified (2026-10-22)
+
+PR #11 merged as `7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Fresh checks:
+PR #11 CI 39748495863 and branch CI 39748381545 passed at source head
+`97d98e199c28604c1ae938371d5d83e98983862d`; post-merge main CI 39754225130
+passed gate, frontend and package at merge commit `7cdc1562a33bf3a33c4561e53d26263a6a08f731`,
+including Gitleaks. No merge was performed by this session.
+
+The post-merge review artifact (ID `12414924895`, GitHub digest
+`sha256:920ac9637341ef6ed38e7763a867a6d2cf6e5f3329c6cfb274c5f168d800cf91`,
+expires 2026-10-29 09:36:53 UTC) was downloaded for offline verification with
+explicit approval and removed afterward. It was then downloaded a second time
+under separate approval for exact-image synthetic mount probes and removed
+afterward. GitHub artifact metadata remained available for the same run and
+artifact ID; all downloaded artifact `SHA256SUMS` entries passed, as did OCI
+manifest/config hashes. Both images identify source revision
+`7cdc1562a33bf3a33c4561e53d26263a6a08f731`,
+`linux/amd64`; frontend origin is `http://gateway:8080`, and promotion is
+disabled.
+
+| Image | Manifest digest | Config digest | Runtime user |
+| --- | --- | --- | --- |
+| Python | `sha256:f42239697940243492cfbc8fabcd691e7479328ff013c4675b52634ffbbfc764` | `sha256:c7c681096ddd73b17177ec642157a9ee887a80cab4cf88b2519784230c2ac0b1` | `1000:1000` |
+| Frontend | `sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f` | `sha256:af86f20a3d23e942d91e68f2fd9962f8273ae56ebf9a3708e3d1bd61638ba210` | `node` = `1000:1000` from image `/etc/passwd` |
+
+The exact images were imported locally with separate approval after checking
+their identities and the absence of the exact commit-specific tags. Three
+short-lived `--pull=never --network none --read-only --rm` probes passed:
+
+1. Python `Settings` read synthetic `DATABASE_URL`, `LG_DATABASE_URL`,
+   `IDENTITY_DATABASE_URL`, `CREDENTIALS_KEY` and disabled `GROQ_API_KEY`
+   files as UID/GID 1000. The synthetic credentials key passed model validation;
+   no DB connection was attempted.
+2. All five migration-target files were readable as UID/GID 1000. The
+   migration runner and database were not invoked.
+3. Frontend assertions passed for UID/GID 1000, baked
+   `http://gateway:8080` origin and rejection of a mismatch, root read-only
+   mount, writable `/tmp` and `/app/.next/cache` tmpfs, and absence of a
+   `/run/secrets` mount. The Node assertion process did not start the server.
+
+The first frontend probe failed on an incorrect baked-origin path assumption;
+the Dockerfile shows the standalone tree is copied to `/app`, so the corrected
+`/app/console-api-origin` path passed. This initial failure is retained as
+evidence, not hidden. All containers auto-removed; the two exact imported image
+tags, task-owned synthetic files and private temporary artifact directory were
+then removed. No database, Compose service, app server, real secret or network
+connection was used.
+
+The review archives are not published registry images, and matching immutable
+Python/frontend registry references have not been identified, so staging
+Compose has no verified image references. **Next bounded prerequisite:**
+identify eligible existing registry image digests matching these reviewed
+source artifacts, or obtain separate approval to publish/import them into the
+chosen registry. No registry write or deployment is authorized by the completed
+runtime probes. A read-only lookup attempted with approval was blocked: the
+GitHub Packages list API returned 403 for the current token; unauthenticated
+HEAD requests for candidate GHCR manifests returned 401, and anonymous token
+requests returned 403. This does not prove the packages are absent. No
+credential was changed, and no registry image was downloaded or published.
+The user then ran the lookup under their authorized `gh` identity: the package
+list returned no `csa-python`/`csa-frontend` entries without error, and both
+version lookups returned HTTP 404 `Package not found`. (An earlier attempt's
+exit code 1 is consistent with `set -eu` stopping on that 404.) No matching
+registry image exists in the `amsyrzmi` namespace. A local `docker inspect` of
+`:latest` tags also found nothing, which is local-only and irrelevant to
+digest selection; staging must never use `latest`.
+Staging-only secrets, isolated database bootstrap, application
+startup, tunnel/hostname routing and public acceptance remain separate gates.
+
+The inert proposal includes database, gateway, frontend, migration and the
+dedicated connector only. It has **no worker, delivery or KB consumer**, so it
+does not support accepted end-to-end agent conversations; no real provider
+delivery is enabled or implied. Despite the image-mount probe passing,
+staging-only secrets/test identities, DB bootstrap, app startup, tunnel/hostname
+and public acceptance remain separate approvals. Protected repeatable staging
+promotion is later still. Subscription acceptance is next in the agreed roadmap
+only after these staging gates are met; do not bypass them.
+
+Read this section, current [progress](../PROGRESS.md), the
+[release contract](../../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22),
+and the [staging proposal](../../deploy/compose.staging-local-proposal.yml)
+before continuing. Keep all work in an isolated worktree; the original main
+worktree still has only the two pre-existing review-report deletions. Preserve
+the six-phase order: Staging/CD, subscription, WhatsApp test demo, interactive
+voice, Google mailbox/calendar, reporting/wallboards.
+
+The original PR #11 publication and merge are already complete; these current
+documentation changes have not been committed or published. Preserve the
+unrelated deletions in `/home/amsyrzmi/CSAV2`. Keep the user's roadmap order:
+Staging/CD -> subscription -> WhatsApp test-number demo -> interactive voice
+-> Google mailbox/calendar -> reporting/wallboards. Ask before commit, push or
+PR; the user merges.
+
+```text
+Continue in `/home/amsyrzmi/CSAV2-staging-artifacts`, branch
+`docs/staging-artifact-verification`, based on PR #11 merge
+`7cdc1562a33bf3a33c4561e53d26263a6a08f731`. First verify worktree, branch and
+CI. PR #11 CI 39748495863 and branch CI 39748381545 passed at
+97d98e199c28604c1ae938371d5d83e98983862d; post-merge main CI 39754225130
+passed all jobs at 7cdc1562a33bf3a33c4561e53d26263a6a08f731.
+
+Artifact 12414924895 was verified twice: all listed SHA256SUMS entries, OCI
+manifest/config hashes, source revision, linux/amd64 platform, origin and
+promotion-disabled metadata matched. Exact Python and frontend OCI images were
+loaded locally under separate approval. Python Settings synthetic secret-file
+resolution and all five migration secret-file readability checks passed as
+UID/GID 1000 without DB access or running migrations. Frontend passed UID,
+baked-origin/mismatch, root-read-only, /tmp and /app/.next/cache tmpfs, and no
+secret-mount assertions; server not started. The first frontend attempt used an
+incorrect baked-origin path and failed; corrected to /app/console-api-origin
+per Dockerfile and passed. Containers, exact imported tags, synthetic files
+and temporary artifact files were removed.
+
+No matching registry image refs have been identified; review archives are not
+registry images. The approved read-only lookup was blocked: GitHub Packages
+returned 403 for the current token; anonymous manifest HEADs returned 401 and
+anonymous token requests returned 403. This does not prove package absence.
+A user-run lookup under an authorized identity then found no `csa-python` or
+`csa-frontend` package (list empty; versions HTTP 404). Next bounded gate is a
+separately approved registry-publication design: how the verified archives
+reach GHCR (CI job with `packages: write` vs. manual push of the verified
+archive), package visibility, and post-push digest verification. Do not publish,
+deploy, start Compose, provision real staging secrets, bootstrap DB, activate
+tunnel/DNS, or merge without separate approval. No worker/delivery/KB consumer
+is configured, so do not claim end-to-end agent conversations. Keep the order:
+Staging/CD -> subscription -> WhatsApp test-number demo -> interactive voice
+-> Google mailbox/calendar -> reporting/wallboards. Preserve the unrelated
+deletions in /home/amsyrzmi/CSAV2. Ask before commit, push or PR; user merges.
+```
+
+## Prior continuation: customer-service goldens (2026-10-22)
 
 PR #8 merged as `b2dc7a2695a349bd94ed6a75b76fa479473fe95e`. PR CI
 39719424850, branch CI 39719295898 and post-merge main CI 39725222410 passed,

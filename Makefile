@@ -22,7 +22,7 @@ PSQL := psql "$(DEV_OWNER_DSN)"
 
 DEV_GATEWAY_PORT ?= 18080
 
-.PHONY: db-image db-reset db-seed test coverage load-test lint run-dev run-gateway stop-gateway restart-gateway setup-dev-telegram up down
+.PHONY: db-image db-reset db-seed test test-all coverage load-test lint run-dev run-gateway stop-gateway restart-gateway setup-dev-telegram up down
 CHANNEL_MODE ?= webhook
 export CHANNEL_MODE
 
@@ -63,8 +63,12 @@ db-seed:
 	done
 	@echo ">> db-seed complete"
 
-## test: run the test suite (testcontainers spin their own PG; no dev DB needed)
+## test: run the test suite without slow image-build tests (testcontainers spin their own PG; no dev DB needed)
 test:
+	uv run pytest -m "not slow"
+
+## test-all: run every test including slow packaged image builds (what CI runs)
+test-all:
 	uv run pytest
 
 ## coverage: policy branch coverage (timing benchmarks run separately without instrumentation)

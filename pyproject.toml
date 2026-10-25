@@ -58,6 +58,9 @@ reportMissingImports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: builds Docker images or a packaged frontend; `make test` skips these, CI runs them",
+]
 
 [tool.importlinter]
 root_packages = ["csa", "apps"]
