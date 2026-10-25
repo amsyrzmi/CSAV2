@@ -21,7 +21,7 @@ contract snapshot) 102 passed; extended selection with HR and email gate tests
 for the services client, navigation and Services tab; Playwright acceptance
 `tests/test_services_browser.py` 1 passed in 83.91 s after the proxy fix
 (`3273b68`); packaged-console slow run 6 passed in 1186.08 s; `make lint` clean
-(ruff, Pyright 0 errors, import-linter 1 kept). Final full-suite result: pending Task 13.
+Final verification on the settled source (`NO_LOCAL_ENV=1 ENV=ci`, 2026-10-25): `make lint` passed; isolated frontend tests/lint/types/build passed; `make test` **3045 passed, 6 deselected (slow), 145 warnings** in 52m20s; `test_make_reset_only_disposable_container` passed (1 test, 43.47s). The six deselected packaged-console tests passed separately (6 passed, 19m46s).
 
 
 Interactive voice session foundation (2026-10-25, committed on
