@@ -78,10 +78,10 @@ adoption before their fixes. No full/load/reset suite or live acceptance was run
   still at the same base; the old `/tmp/csav2-hr-foundation` path is no longer a Git
   worktree. Its dirty HR source, SQL and tests were not edited or integrated.
 
-Read [A0 authority design](./2026-10-21-workspace-a0-authority-design.md),
-[console API contract](../CONSOLE_API.md), [LG15](../langgraph-rebuild/LG15_console_turnover.md),
-the frontend's [AGENTS.md](../../CSA_WebConsole/csa-console/web/AGENTS.md) and
-[README](../../CSA_WebConsole/csa-console/web/README.md) before continuing. The
+Read [A0 authority design](2026-10-21-workspace-a0-authority-design.md),
+[console API contract](../../CONSOLE_API.md), [LG15](../../langgraph-rebuild/LG15_console_turnover.md),
+the frontend's [AGENTS.md](../../../CSA_WebConsole/csa-console/web/AGENTS.md) and
+[README](../../../CSA_WebConsole/csa-console/web/README.md) before continuing. The
 installed Next.js 16.3.8 Server/Client Components guide was read before final frontend
 edits.
 
@@ -222,9 +222,9 @@ The integration reviewer ran the deferred validation on this worktree with
   inside the full suite and passed; bare `make db-reset` was not run.
 
 A read-only code review found one medium hardening item: `_fingerprint` in
-[service.py](../../csa/workspace/service.py) stores an unsalted SHA-256 of the unredacted
+[service.py](../../../csa/workspace/service.py) stores an unsalted SHA-256 of the unredacted
 turn payload, so stored rows allow guess-confirmation of short messages. The existing
-sandbox chat already uses the same pattern ([chat.py](../../csa/console/chat.py)), so this is
+sandbox chat already uses the same pattern ([chat.py](../../../csa/console/chat.py)), so this is
 not a regression. A follow-up should switch both surfaces to a keyed HMAC after the key
 source and rotation are decided.
 

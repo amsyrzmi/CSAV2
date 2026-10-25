@@ -593,7 +593,7 @@ git commit -m "test(console): browser acceptance for package navigation and serv
 
 - [ ] **Step 2: Verify links and whitespace**
 
-Run: `git diff --check && python3 - <<'PY'` (the link checker used earlier in this repository: resolve every relative `](...)` target and `#anchor` in the touched files) `PY`
+Run: `git diff --check && python3 - <<'PY'` (the link checker used earlier in this repository: resolve every relative markdown link target and `#anchor` in the touched files) `PY`
 Expected: no output from `git diff --check`; "all local links resolve".
 
 - [ ] **Step 3: Commit**

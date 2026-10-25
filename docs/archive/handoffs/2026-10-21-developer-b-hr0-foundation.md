@@ -2,7 +2,7 @@
 
 Current continuation: the user authorized HR implementation and agents and
 removed Developer A's review/integration as a gate. The active branch is now at
-`/home/amsyrzmi/CSAV2-hr`. Read [current HR progress](../hr/PROGRESS.md) for code,
+`/home/amsyrzmi/CSAV2-hr`. Read [current HR progress](../../hr/PROGRESS.md) for code,
 validation and remaining work. This note preserves historical HR-0 evidence;
 its freeze/review-first gates and temporary worktree paths are superseded.
 A's worktree and the original dirty main are preserved.
@@ -13,12 +13,12 @@ Worktree: `/tmp/csav2-hr-foundation`; branch: `feat/hr-foundation`.
 Inspected base: `0264c0ade3739f1285ab1a06e577573b71984d44`.
 No commit, push, PR, merge or deployment was performed.
 
-Read [repository rules](../../AGENTS.md), [orientation](../PROJECT_OVERVIEW.md),
-[LG02](../langgraph-rebuild/LG02_contracts_state_registry.md),
-[LG05](../langgraph-rebuild/LG05_spokes_and_tools.md),
-[LG07](../langgraph-rebuild/LG07_egress_outbox_hitl.md),
-[LG13](../langgraph-rebuild/LG13_agent_catalog_and_console.md), and
-[LG15](../langgraph-rebuild/LG15_console_turnover.md).
+Read [repository rules](../../../AGENTS.md), [orientation](../../PROJECT_OVERVIEW.md),
+[LG02](../../langgraph-rebuild/LG02_contracts_state_registry.md),
+[LG05](../../langgraph-rebuild/LG05_spokes_and_tools.md),
+[LG07](../../langgraph-rebuild/LG07_egress_outbox_hitl.md),
+[LG13](../../langgraph-rebuild/LG13_agent_catalog_and_console.md), and
+[LG15](../../langgraph-rebuild/LG15_console_turnover.md).
 The supplied uncommitted `2026-10-21-workspace-agents-roadmap.md`, current
 progress and active release handoff were read in the original worktree;
 those newer planning edits are absent from this branch's base. Obtain their
@@ -32,13 +32,13 @@ at `/home/amsyrzmi/CSAV2-workspace-a0`. No A-owned file was edited or imported.
 The original HR-0 slice introduced these eight files; HR-1 additions are recorded
 in the feature-specific progress document linked above:
 
-- [Package boundary](../../csa/hr/__init__.py)
-- [Models](../../csa/hr/models.py)
-- [Field and relationship policy](../../csa/hr/policy.py)
-- [Training proposals and projection](../../csa/hr/training.py)
-- [Contract tests](../../tests/test_hr_contracts.py)
-- [Policy tests](../../tests/test_hr_policy.py)
-- [Training tests](../../tests/test_hr_training.py)
+- [Package boundary](../../../csa/hr/__init__.py)
+- [Models](../../../csa/hr/models.py)
+- [Field and relationship policy](../../../csa/hr/policy.py)
+- [Training proposals and projection](../../../csa/hr/training.py)
+- [Contract tests](../../../tests/test_hr_contracts.py)
+- [Policy tests](../../../tests/test_hr_policy.py)
+- [Training tests](../../../tests/test_hr_training.py)
 - This handoff, `docs/handoffs/2026-10-21-developer-b-hr0-foundation.md`
 
 ## Implemented pure behavior

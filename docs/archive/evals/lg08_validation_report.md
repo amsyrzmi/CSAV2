@@ -40,7 +40,7 @@ is not a valid uninstrumented runtime measurement.
 
 ## Load measurements
 
-Runner: [test_load_acceptance.py](../../tests/test_load_acceptance.py).
+Runner: [test_load_acceptance.py](../../../tests/test_load_acceptance.py).
 150 unique Telegram-shaped messages from 150 first-time contacts, evenly scheduled at
 50 requests/s for 3 seconds. Initial measurements used `httpx.ASGITransport`;
 the socket follow-up below also runs a separate real Uvicorn gateway process. Neither
@@ -369,7 +369,7 @@ Both focused tests passed. These cases demonstrate process-level claiming, order
 release and recovery for the echo worker path. They do not establish coordinator/checkpoint
 parallel throughput, a crash after arbitrary graph side effects, or a sustained capacity target.
 The current process entrypoint is still a single consumer; cloud replicas require independent
-processes and database connection budgeting as described in the [runbook](../RUNBOOK.md).
+processes and database connection budgeting as described in the [runbook](../../RUNBOOK.md).
 
 ### Final regression after adding process-level tests
 

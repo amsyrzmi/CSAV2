@@ -10,8 +10,8 @@ services are running or deployed.
 |---|---|
 | Rules and safe commands | [AGENTS.md](../AGENTS.md), then [README](../README.md) |
 | Current implementation status and validation | [PROGRESS.md](./PROGRESS.md) |
-| Continue the current bounded task | [Active release handoff](./handoffs/2026-10-19-domain-release-next-session.md) |
-| Full architecture, trust boundaries and limitations | [Architecture information](./information.md) |
+| Continue the current bounded task | [Active release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md) |
+| Full architecture, trust boundaries and limitations | [Architecture reference](./ARCHITECTURE.md) |
 | Runtime request flow | [Architecture summary](./ARCHITECTURE.md) |
 | Console HTTP contract | [CONSOLE_API.md](./CONSOLE_API.md) and [OpenAPI snapshot](./console_openapi.json) |
 | Phase requirements | [LG00–LG15 plans](./langgraph-rebuild/) and the linked milestone plan |
@@ -70,7 +70,7 @@ Key safety boundaries:
 - External provider calls, credentials and live seller eligibility are separate
   gates. Synthetic adapter tests do not constitute a live integration.
 - The inbox/outbox and graph are durable, but external delivery is not exactly-once.
-  See [architecture limitations](./information.md#26-current-limitations-and-release-conditions).
+  See [architecture limitations](./PROJECT_OVERVIEW.md#current-status-and-release-boundary).
 
 ## Current status and release boundary
 

@@ -176,7 +176,7 @@ RLS applies (LG01). No raw PII — store hash + redacted state only if needed fo
   (`jev:jev-1.13.0`, 1267 ms) completed signals/verify/gate/finalize.
 - Evidence: 25 mocked LLM tests, 11 decision-eval tests, 10 mode/persistence tests, seven
   real-DB golden cases; `make lint` clean and 285 tests passed on 2026-10-12.
-  [Live comparison](../evals/decision_report.md): 60 synthetic messages, Jev intent 100%,
+  [Live comparison](../archive/evals/decision_report.md): 60 synthetic messages, Jev intent 100%,
   p95 409 ms and no errors; Groq intent 90%, p95 4457 ms and four timeouts. Both human-request
   recall scores were 83%; this small set is not production calibration.
 - Remaining: per-question uncertainty thresholds, the complete calibration/edge matrix,

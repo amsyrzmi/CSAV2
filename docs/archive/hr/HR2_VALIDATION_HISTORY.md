@@ -1,4 +1,4 @@
-> Historical record before the remaining local HR implementation. See [current progress](./PROGRESS.md).
+> Historical record before the remaining local HR implementation. See [current progress](../../hr/PROGRESS.md).
 
 # HR feature implementation progress
 
@@ -47,18 +47,18 @@ No environment file was read or copied.
 
 | Area | Source and behavior |
 |---|---|
-| HR domain | [models](../../csa/hr/models.py), [policy](../../csa/hr/policy.py), [training](../../csa/hr/training.py): constrained contracts, explicit field projection, tenant/resource and transition rules. |
-| Verified service | [service](../../csa/hr/service.py), [records](../../csa/hr/records.py): live session and CSRF proof, locked membership/authority, directory/training persistence, bounded keyset pages, atomic receipts/audit/CAS. |
-| Staff agents | [entry point](../../csa/agents/hr.py), [dispatcher](../../csa/hr/agents.py): directory, training, recruitment guides, attendance/leave preparation, payroll status. Typed action schemas; read/draft/commit risk; 10-second timeout; no automatic retry. Observe loops can only read. |
+| HR domain | [models](../../../csa/hr/models.py), [policy](../../../csa/hr/policy.py), [training](../../../csa/hr/training.py): constrained contracts, explicit field projection, tenant/resource and transition rules. |
+| Verified service | [service](../../../csa/hr/service.py), [records](../../../csa/hr/records.py): live session and CSRF proof, locked membership/authority, directory/training persistence, bounded keyset pages, atomic receipts/audit/CAS. |
+| Staff agents | [entry point](../../../csa/agents/hr.py), [dispatcher](../../../csa/hr/agents.py): directory, training, recruitment guides, attendance/leave preparation, payroll status. Typed action schemas; read/draft/commit risk; 10-second timeout; no automatic retry. Observe loops can only read. |
 | Human decisions | Agent training approve/reject returns an immutable, session/user/tenant-bound confirmation. Explicit human confirmation rechecks current grants, switch, version and expiry and atomically consumes once. Other workflow decisions use the manual API only. |
-| HR workflows | [contracts](../../csa/hr/workflows.py), [service](../../csa/hr/cases.py): recruitment interview guides, attendance/corrections, leave, local payroll preparation requests. Explicit domain grants, immutable content, current permission checks, CAS and atomic immutable events/idempotency. |
+| HR workflows | [contracts](../../../csa/hr/workflows.py), [service](../../../csa/hr/cases.py): recruitment interview guides, attendance/corrections, leave, local payroll preparation requests. Explicit domain grants, immutable content, current permission checks, CAS and atomic immutable events/idempotency. |
 | Attendance | Aware Malaysia timestamps, bounded intervals, no future completed attendance, active manager for decisions, employee lock for concurrent approvals, overlap check, approved same-employee corrections and prevention of a second replacement of one original. |
 | Recruitment | Job competency interview guides. No ranking, hiring/rejection automation or candidate data ingestion. Caller-provided consent UUIDs do not establish verified consent; candidate-linked preparation is denied. |
 | Payroll | Manual review-request metadata only: region, legal entity, MYR, explicit cycle/period/rule reference. Financial operator/reviewer grants are separate from general HR. Maker cannot approve their own run. Approval records a local workflow decision, not calculation, payment or filing. Pure private Decimal amount validation exists but is not wired to payroll persistence. |
-| HTTP | [router](../../csa/hr/api.py): authenticated human routes, origin/CSRF, safe errors, no-store, bounded bodies and inputs; no caller-supplied authority. Mounted by [gateway](../../apps/gateway/main.py) when real identity is configured. |
-| Console | [HR workspace](../../CSA_WebConsole/csa-console/web/components/console/HrWorkspace.tsx), [transport](../../CSA_WebConsole/csa-console/web/lib/hr-api.ts), protected `/hr` and `/portal/hr`: directory, training, workflow forms, review and confirmation, owner-managed agent switches. Exact retries retain keys and bodies in memory; no HR localStorage. |
-| Schema | Ordered [0380](../../db/migrations/0380_hr_foundation.sql), [0390](../../db/migrations/0390_hr_staff_agents.sql), [0400](../../db/migrations/0400_hr_workflows.sql); tenant/composite FKs, staged RLS, no FORCE, narrow session/authority helpers. Application cannot provision employee/account/owner/grant authority. All runtime SQL is under [db/sql/hr](../../db/sql/hr/). |
-| Runtime contract | Gateway and migration test expect `0400`; HR readiness verifies all 12 tables and required helpers. [OpenAPI exporter](../../scripts/export_console_openapi.py) includes HR. [Published snapshot](../console_openapi.json) regenerated without connections. |
+| HTTP | [router](../../../csa/hr/api.py): authenticated human routes, origin/CSRF, safe errors, no-store, bounded bodies and inputs; no caller-supplied authority. Mounted by [gateway](../../../apps/gateway/main.py) when real identity is configured. |
+| Console | [HR workspace](../../../CSA_WebConsole/csa-console/web/components/console/HrWorkspace.tsx), [transport](../../../CSA_WebConsole/csa-console/web/lib/hr-api.ts), protected `/hr` and `/portal/hr`: directory, training, workflow forms, review and confirmation, owner-managed agent switches. Exact retries retain keys and bodies in memory; no HR localStorage. |
+| Schema | Ordered [0380](../../../db/migrations/0380_hr_foundation.sql), [0390](../../../db/migrations/0390_hr_staff_agents.sql), [0400](../../../db/migrations/0400_hr_workflows.sql); tenant/composite FKs, staged RLS, no FORCE, narrow session/authority helpers. Application cannot provision employee/account/owner/grant authority. All runtime SQL is under [db/sql/hr](../../../db/sql/hr/). |
+| Runtime contract | Gateway and migration test expect `0400`; HR readiness verifies all 12 tables and required helpers. [OpenAPI exporter](../../../scripts/export_console_openapi.py) includes HR. [Published snapshot](../../console_openapi.json) regenerated without connections. |
 
 The customer/contact-oriented AgentContext, customer capability registry, sandbox
 chat and A0’s workspace union are unchanged. HR has a separate staff catalog and
@@ -68,7 +68,7 @@ implementation. No A-owned unmerged module is imported.
 ## Validation
 
 Previous HR-1 slice: **195 passed**, lint passed. That evidence predates the
-current expansion; preserved in [HR-1 history](./HR1_VALIDATION_HISTORY.md).
+current expansion; preserved in [HR-1 history](HR1_VALIDATION_HISTORY.md).
 
 Current expansion:
 

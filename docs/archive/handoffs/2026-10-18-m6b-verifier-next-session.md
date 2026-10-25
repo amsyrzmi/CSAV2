@@ -1,7 +1,7 @@
 # M6B offline authorization verifier handoff (2026-10-18)
 
 > Dated subsystem evidence. Current continuation:
-> [domain/release handoff](./2026-10-19-domain-release-next-session.md).
+> [domain/release handoff](2026-10-19-domain-release-next-session.md).
 > Source now expects 0360, not the historical 0350 below. Persistent dev0300 is the
 > last recorded approval, not a fresh probe. "No callback" here refers to the new M6B
 > verifier flow; separately mounted legacy marketplace OAuth routes exist and must not
@@ -10,10 +10,10 @@
 ## Start here
 
 Continue the offline M6B TikTok authorization work in `/home/amsyrzmi/CSAV2`.
-Read [repository rules](../../AGENTS.md), [current progress](../PROGRESS.md),
-[this M6B implementation plan](./2026-10-15-console-source-migration-plan.md),
+Read [repository rules](../../../AGENTS.md), [current progress](../../PROGRESS.md),
+[this M6B implementation plan](2026-10-15-console-source-migration-plan.md),
 and the relevant authorization sections in
-[LG15](../langgraph-rebuild/LG15_console_turnover.md) before editing.
+[LG15](../../langgraph-rebuild/LG15_console_turnover.md) before editing.
 
 The current worktree is intentionally dirty and contains a broad set of earlier console,
 runtime, M6 and user changes. Preserve them. Do not reset, stash, restore or broadly

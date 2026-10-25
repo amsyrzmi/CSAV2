@@ -1,4 +1,4 @@
-> Historical HR-1 record. Its scope gates and paths are superseded by [current progress](./PROGRESS.md).
+> Historical HR-1 record. Its scope gates and paths are superseded by [current progress](../../hr/PROGRESS.md).
 
 # HR feature implementation progress
 
@@ -117,9 +117,9 @@ and lockfile remain unchanged; validation used the worktree's offline environmen
 
 ## Implemented backend and integration contract
 
-Sources: [records](../../csa/hr/records.py), [service](../../csa/hr/service.py),
-[router](../../csa/hr/api.py), [schema candidate](../../db/migrations/0380_hr_foundation.sql),
-[database/API tests](../../tests/test_hr_persistence.py). The service reuses
+Sources: [records](../../../csa/hr/records.py), [service](../../../csa/hr/service.py),
+[router](../../../csa/hr/api.py), [schema candidate](../../../db/migrations/0380_hr_foundation.sql),
+[database/API tests](../../../tests/test_hr_persistence.py). The service reuses
 the existing HR-0 policy/transition functions without modifying their contracts.
 
 | Manual API operation | Endpoint under `/console/v1/hr` |

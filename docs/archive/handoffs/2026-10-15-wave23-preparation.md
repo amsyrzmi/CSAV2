@@ -1,12 +1,12 @@
 # Handoff: Wave 2/3 provider-neutral preparation (2026-10-15)
 
 > Console source has since been supplied at `CSA_WebConsole/`. For console work use
-> [the source-based migration plan](./2026-10-15-console-source-migration-plan.md);
+> [the source-based migration plan](2026-10-15-console-source-migration-plan.md);
 > use its current M2 continuation prompt for console work.
 
-Read [LG13](../langgraph-rebuild/LG13_agent_catalog_and_console.md),
-[LG15](../langgraph-rebuild/LG15_console_turnover.md), and
-[the current console migration plan](./2026-10-15-console-source-migration-plan.md)
+Read [LG13](../../langgraph-rebuild/LG13_agent_catalog_and_console.md),
+[LG15](../../langgraph-rebuild/LG15_console_turnover.md), and
+[the current console migration plan](2026-10-15-console-source-migration-plan.md)
 for the larger migration.
 
 ## Agreed scope

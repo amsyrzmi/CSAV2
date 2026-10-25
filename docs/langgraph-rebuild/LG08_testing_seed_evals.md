@@ -216,7 +216,7 @@ Intent accuracy, escalation precision/recall, grounding-failure rate, auto-send 
   rejection then regeneration, repeated rejection, checker timeout. The status cases bypass
   the planner and assert no order-id question; multiple orders render tracking buttons.
 - 60 synthetic decision labels compared live with Groq and Jev; results and errors are in
-  [decision_report.md](../evals/decision_report.md). Offline scoring/provider tests are separate
+  [decision_report.md](../archive/evals/decision_report.md). Offline scoring/provider tests are separate
   from this explicit live CLI.
 - `ENV=ci make test`: 285 passed in 8m07s; `make lint`: clean. Reset verified using
   `make db-reset` against a disposable isolated Postgres; two seed tenants, migration 0220.
@@ -231,7 +231,7 @@ Intent accuracy, escalation precision/recall, grounding-failure rate, auto-send 
   persisted agent runs are now checked alongside delivery counts.
 - `make coverage`: 78 passed, two timing tests excluded; **100% statement/branch coverage**
   across `csa/graph/policy` (153 statements, 78 branches). CI enforces a 90% floor.
-- [Load and coverage report](../evals/lg08_validation_report.md): 150 real-SQL ingress requests
+- [Load and coverage report](../archive/evals/lg08_validation_report.md): 150 real-SQL ingress requests
   at 50/s; steady-state ack p95 109.642 ms, scheduled ack p95 112.704 ms, 150 completed durable
   turns and unique replies. Cold pool expansion failed the latency target; worker backlog
   throughput measured 2.051 turns/s, not 50 turns/s. No socket/proxy/provider delivery test is
@@ -268,7 +268,7 @@ Intent accuracy, escalation precision/recall, grounding-failure rate, auto-send 
 - Tracing is batched/compact and retains request spans; contact resolution reduces SQL round
   trips; gateway-only autocommit removes implicit transactions for endpoint reads. Explicit
   tenant transactions and eight-connection capacity are preserved. Focused safety/TCP run:
-  **25 passed**. See the [report](../evals/lg08_validation_report.md) for failed attempts and limits.
+  **25 passed**. See the [report](../archive/evals/lg08_validation_report.md) for failed attempts and limits.
 - Backlog drain remains about two turns/s, after ingress, without external providers/delivery.
   Full matrix and sustained simultaneous ingress/worker/proxy evidence remain open.
 - Earlier lint/full suite, before the additional process-level worker tests: **325 passed**

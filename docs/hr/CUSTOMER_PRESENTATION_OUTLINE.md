@@ -472,7 +472,7 @@ The HR implementation includes configurable and reviewable workflows, but it sho
 This brief reflects the repository's implementation and progress documentation, not a live readiness check of a particular customer deployment.
 
 - [HR implementation progress and feature matrix](PROGRESS.md)
-- [Current domain and release handoff](../handoffs/2026-10-19-domain-release-next-session.md)
+- [Current domain and release handoff](../archive/handoffs/2026-10-19-domain-release-next-session.md)
 - [Current product progress](../PROGRESS.md)
 - [Runtime agent catalogue](../../csa/console/agents.py)
 - [Customer runtime capability registration](../../csa/turn/deps.py)

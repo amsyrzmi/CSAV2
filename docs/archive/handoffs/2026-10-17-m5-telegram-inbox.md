@@ -12,7 +12,7 @@ Tenant-admin/staff representative browser replay also passes, with exact limits 
 Current base: PR #7 merged as `650bc08`, with PR/branch/main CI success freshly
 verified. The `test/customer-service-browser` branch in
 `/home/amsyrzmi/CSAV2-customer-service` adds
-[`test_packaged_customer_inbox_browser_acceptance`](../../tests/test_packaged_console.py)
+[`test_packaged_customer_inbox_browser_acceptance`](../../../tests/test_packaged_console.py)
 to the existing packaged test harness. This is test/documentation-only work, not
 a runtime rollout or a change to the previously approved Telegram-only scope.
 
@@ -189,7 +189,7 @@ run now passes all 692 tests, including the five new regression cases and actual
 disposable-only reset through 0300. The earlier version mismatch was an implementation
 error, not the accepted latency exception.
 Canonical evidence is also in
-[progress](../PROGRESS.md).
+[progress](../../PROGRESS.md).
 
 Review found and fixed three coupled gaps: temporary mutes were incorrectly treated as
 completed indefinite takeover; late escalation could overwrite ownership after takeover/

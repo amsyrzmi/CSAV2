@@ -1,24 +1,24 @@
 # Runtime stabilization and dev-recovery handoff
 
 Updated 2026-10-16. Historical recovery/stabilization record; this is not a production rollout.
-For the next session start with [M5 guarded dev and current evidence](./2026-10-17-m5-telegram-inbox.md).
-The [M4 closeout](./2026-10-16-m4-closeout-m5-start.md) retains prior acceptance decisions.
+For the next session start with [M5 guarded dev and current evidence](2026-10-17-m5-telegram-inbox.md).
+The [M4 closeout](2026-10-16-m4-closeout-m5-start.md) retains prior acceptance decisions.
 
 ## Read first
 
-- [Repository guidance](../../AGENTS.md)
-- [Current evidence and incident record](../PROGRESS.md)
-- [Console API and guarded dev tasks](../CONSOLE_API.md)
-- [Console migration plan](./2026-10-15-console-source-migration-plan.md)
-- Relevant [LG03 ingress](../langgraph-rebuild/LG03_ingress_gateway_channels.md),
-  [LG10 jobs](../langgraph-rebuild/LG10_scheduled_jobs_expiry_sweep.md) and
-  [LG15 console](../langgraph-rebuild/LG15_console_turnover.md) plans.
+- [Repository guidance](../../../AGENTS.md)
+- [Current evidence and incident record](../../PROGRESS.md)
+- [Console API and guarded dev tasks](../../CONSOLE_API.md)
+- [Console migration plan](2026-10-15-console-source-migration-plan.md)
+- Relevant [LG03 ingress](../../langgraph-rebuild/LG03_ingress_gateway_channels.md),
+  [LG10 jobs](../../langgraph-rebuild/LG10_scheduled_jobs_expiry_sweep.md) and
+  [LG15 console](../../langgraph-rebuild/LG15_console_turnover.md) plans.
 
 ## Current state and safety
 
 - M4 continuation implemented the explicitly selected read-only **Sandbox assistant**
   and rolled it out after explicit approval despite the disclosed latency failure; see
-  [progress](../PROGRESS.md) and [the M4 API contract](../CONSOLE_API.md).
+  [progress](../../PROGRESS.md) and [the M4 API contract](../../CONSOLE_API.md).
   Migration **0290** was applied forward-only to isolated dev, without reset, followed
   by guarded gateway/worker/delivery/frontend replacement. Health/readiness pass.
   User-operated KB and archive checks are metadata-corroborated. Invoice clarification
@@ -185,7 +185,7 @@ guarded isolated-dev rollout and current live acceptance are now recorded below 
   resolve denial is integration-test evidence, not a live reader browser replay. See
   `docs/PROGRESS.md` and the console migration plan for details.
 - These rollout records predate the later M4 closeout. Continue from the
-  [current M5 handoff](./2026-10-16-m4-closeout-m5-start.md); preserve the dirty worktree,
+  [current M5 handoff](2026-10-16-m4-closeout-m5-start.md); preserve the dirty worktree,
   verify existing services and ask before replacements. Never promote dev or change
   `ENV` to production as an implicit continuation.
 
@@ -200,5 +200,5 @@ were retained. The attached read-only version snapshot was not changed.
 ## Current next-session prompt
 
 The older stabilization kickoff is superseded by the single
-[M5 kickoff prompt](./2026-10-16-m4-closeout-m5-start.md#paste-into-the-new-session).
+[M5 kickoff prompt](2026-10-16-m4-closeout-m5-start.md#paste-into-the-new-session).
 Recovery evidence and safety instructions above remain applicable.

@@ -27,7 +27,7 @@ STT-to-CSA-to-TTS conversation loop. This is evidence about the source found,
 not proof about every historical deployment. Do not assume existing containers
 prove interactive acceptance.
 
-Follow [the workspace voice roadmap](2026-10-21-workspace-agents-roadmap.md#voice-ingress-plus-conversational-rendering-not-a-privileged-agent),
+Follow [the workspace voice roadmap](../archive/handoffs/2026-10-21-workspace-agents-roadmap.md#voice-ingress-plus-conversational-rendering-not-a-privileged-agent),
 [LG03](../langgraph-rebuild/LG03_ingress_gateway_channels.md),
 [LG15](../langgraph-rebuild/LG15_console_turnover.md), and `AGENTS.md`.
 Current source takes precedence over older descriptions of unimplemented features.

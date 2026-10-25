@@ -4,7 +4,7 @@
 > Each phase file starts with a **CONTEXT FOR CODING AGENT** block so it can be pasted straight into Claude Code as a prompt.
 
 Current implementation/acceptance is in [progress](../PROGRESS.md), with the
-[domain/release continuation](../handoffs/2026-10-19-domain-release-next-session.md).
+[domain/release continuation](../archive/handoffs/2026-10-19-domain-release-next-session.md).
 The architectural plan, time estimates and original n8n findings below are historical
 design context, not deployment or current phase-completion claims.
 

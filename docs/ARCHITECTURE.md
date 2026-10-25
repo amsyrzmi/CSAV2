@@ -3,10 +3,11 @@
 CSA is a multi-tenant customer-service runtime: Python 3.12, FastAPI, LangGraph, PostgreSQL (psycopg 3 async).
 Phase plans live in [langgraph-rebuild/](./langgraph-rebuild/LG00_master_plan.md).
 The [project overview](./PROJECT_OVERVIEW.md) explains the repository map and
-document authority; the [long-form architecture reference](./information.md)
-covers trust boundaries, data lifecycle, limitations and dated evidence.
+document authority, and its
+[current status and release boundary](./PROJECT_OVERVIEW.md#current-status-and-release-boundary)
+section covers limitations.
 Current release/domain boundaries are in the
-[domain/release handoff](./handoffs/2026-10-19-domain-release-next-session.md).
+[domain/release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
 This is the runtime-flow summary, not proof of running services or public deployment.
 
 ## Request pipeline
@@ -98,14 +99,14 @@ email inner switches are not flipped by activation.
 ## Evaluation and regression evidence
 
 - `csa/evals/decisions.py` compares live classifiers against 60 synthetic labelled messages;
-  [decision_report.md](./evals/decision_report.md) records the measured results, not an SLA.
+  [decision_report.md](archive/evals/decision_report.md) records the measured results, not an SLA.
 - `tests/golden/` uses JSON cases and schema-keyed model cassettes with real Postgres, agents,
   worker, graph, timeline and outbox. Twenty-two cases cover order-status resolution, semantic
   rejection/regeneration/failure, tenant review/suppression, injection/mute, classifier timeout
   order/ticket callback repetition, wrong-contact/expired tokens and multi-agent partial results;
   they do not yet cover the entire LG08 matrix.
 - Policy coverage is 100% with branch instrumentation; `make coverage` and CI enforce a 90% floor.
-  [LG08 validation report](./evals/lg08_validation_report.md) distinguishes measured steady-state
+  [LG08 validation report](archive/evals/lg08_validation_report.md) distinguishes measured steady-state
   ingress latency from cold-start failures and durable backlog throughput; neither is a cloud SLA.
 - The dev tenant uses `cascade`. Other tenants retain the `llm` default. Jev vendor retention,
   regional hosting and operational guarantees still require review before real-client rollout.
