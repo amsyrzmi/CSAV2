@@ -11,6 +11,8 @@ const adoptedPages = new Set([
   "/agents",
   "/activity",
   "/portal/agents",
+  "/services",
+  "/portal/services",
   "/portal/activity",
   "/knowledge-base",
   "/portal/faq",
