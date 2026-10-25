@@ -571,12 +571,12 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 |---|---|---|---|---|
 | `customer_support` | base | `kb_agent`, `ticket_agent`, `escalation_agent`, `order_approval` | inbox, knowledge_base | yes |
 | `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
-| `subscriptions` | addon | `subscription_agent` | | yes |
-| `bookings` | addon | `booking_agent` | | yes |
-| `marketplaces` | addon | `ecommerce_agent` | | no |
-| `e_invoicing` | addon | `lhdn_agent` | | no |
-| `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | | yes |
-| `staff_email` | standalone | none; covers `email_settings` | | yes |
+| `subscriptions` | addon | `subscription_agent` | subscriptions | yes |
+| `bookings` | addon | `booking_agent` | bookings | yes |
+| `marketplaces` | addon | `ecommerce_agent` | ecommerce | no |
+| `e_invoicing` | addon | `lhdn_agent` | lhdn_myinvois | no |
+| `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | hr | yes |
+| `staff_email` | standalone | none; covers `email_settings` | email | yes |
 
 State is in `console_service_packages` (migration `0450`): `status` is `requested`, `active` or `suspended`, with requester, activator, `reference`, `note` and timestamps. Tenant RLS applies; only `csa_app` has grants. The migration backfills a package as `active` with reference `backfill-0450` when all its member capabilities are `is_enabled` (`hr`: any enabled `hr_agent_settings` row; `staff_email`: `email_settings.enabled`).
 

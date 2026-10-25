@@ -36,6 +36,7 @@ import psycopg
 from csa.console.contracts import ConsoleActor, InviteIn
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.onboarding import _AGENTS as ONBOARDED_AGENTS
+from csa.console.packages import PACKAGES
 from csa.core import db
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -338,6 +339,17 @@ def _actor(admin: dict[str, Any]) -> ConsoleActor:
     )
 
 
+def seeded_packages() -> list[str]:
+    """Packages whose member capabilities the seed enables in full.
+
+    Packages with a member the onboarding SQL does not provision (e_invoicing) are
+    skipped. HR and Staff Email have no capabilities; the seed never enables HR module
+    settings or ``email_settings``, so they are not activated.
+    """
+    onboarded = {agent_class().name for agent_class in ONBOARDED_AGENTS}
+    return [p.key for p in PACKAGES if p.capabilities and set(p.capabilities) <= onboarded]
+
+
 async def _ensure_tenant(
     conn: psycopg.AsyncConnection[Any], spec: TenantSpec, admin_id: UUID, report: SeedReport
 ) -> None:
@@ -390,6 +402,11 @@ async def _ensure_tenant(
     if spec.enable_capabilities:
         await db.q.execute(
             "seed_staging/capability_enable.sql", (SEED_REFERENCE, spec.id), conn=conn
+        )
+        await db.q.execute(
+            "seed_staging/service_packages_activate.sql",
+            (spec.id, admin_id, SEED_REFERENCE, seeded_packages()),
+            conn=conn,
         )
 
 

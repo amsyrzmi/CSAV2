@@ -392,6 +392,7 @@ async def test_inactive_packages_block_inbox_business_kb_for_every_role(sessions
             "/console/v1/kb/documents",
             "/console/v1/inbox/conversations",
             "/console/v1/business/orders",
+            "/console/v1/invoices",
         ):
             r = await browser.get(path)
             assert r.status_code == 403 and r.json()["detail"] == "package_inactive", (
@@ -408,8 +409,45 @@ async def test_inactive_packages_block_inbox_business_kb_for_every_role(sessions
     reader, _ = await sessions.member(role="read_only")
     assert (await reader.get("/console/v1/kb/documents")).status_code == 200
     assert (await reader.get("/console/v1/business/orders")).status_code == 403
+    invoices = await reader.get("/console/v1/invoices")
+    assert invoices.status_code == 403 and invoices.json()["detail"] == "package_inactive"
     staff, _ = await sessions.member(role="tenant_staff")
     assert (await staff.get("/console/v1/inbox/conversations")).status_code == 200
+    r = await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/orders_products/activate?client_id={t}",
+        {"reference": "Q-2"},
+    )
+    assert r.status_code == 200, r.text
+    assert (await reader.get("/console/v1/invoices")).status_code == 200
+
+
+async def test_machine_token_is_refused_on_gated_route_without_active_package(
+    sessions: SessionWorld,
+) -> None:
+    headers = {"Authorization": f"Bearer {MACHINE_TOKEN}", "X-Client-Id": sessions.tenants[0]}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=sessions.app), base_url=ORIGIN
+    ) as machine:
+        for path in ("/console/v1/business/orders", "/console/v1/invoices"):
+            response = await machine.get(path, headers=headers)
+            assert response.status_code == 403, (path, response.text)
+            assert response.json()["detail"] == "package_inactive"
+
+
+async def test_platform_admin_suspends_active_package_over_http(sessions: SessionWorld) -> None:
+    t = sessions.tenants[0]
+    await activate(sessions, t, "customer_support")
+    url = f"/console/v1/services/customer_support/suspend?client_id={t}"
+    tenant_admin, _ = await sessions.member(role="tenant_admin")
+    denied = await sessions.mutate(
+        tenant_admin, "/console/v1/services/customer_support/suspend", {}
+    )
+    assert denied.status_code == 403
+    response = await sessions.mutate(sessions.admin, url, {"note": "trial ended"})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "suspended"
+    assert response.json()["note"] == "trial ended"
 
 
 @pytest.fixture
