@@ -17,7 +17,7 @@ decisions: `docs/superpowers/specs/2026-10-26-workspace-assistant-design.md`; be
 documented in [CONSOLE_API.md](CONSOLE_API.md#workspace-assistant). Evidence: backend
 tasks 1-10 merged on the branch with their per-task tests, and `docs/console_openapi.json`
 regenerated; the tab wiring and browser acceptance (tasks 11-12) were still in progress
-when this entry was written. Final verification: pending Task 14.
+when this entry was written. Final verification on the settled source (`NO_LOCAL_ENV=1 ENV=ci`, 2026-10-26): `make lint` passed; `make test` **3131 passed, 3 failed, 6 deselected (slow), 145 warnings** in 1h06m on `817081b` (the three failures were one identity-gateway test whose fake settings lacked `WORKSPACE_ASSISTANT_ENABLED`; fixed in `a65cb2e`, after which that file passes 10/10 and lint is clean; the full suite was not rerun for a fixture-only change); the six packaged-console tests passed separately (6 passed, 9m31s); isolated frontend tests/lint/types/build passed (`check:isolated`); `test_make_reset_only_disposable_container` passed (38.7s). Whole-branch review (strongest model) plus one fix wave and its re-review: clean, three minor items parked in the PR description.
 
 Package hardening (2026-10-26, branch `feat/package-hardening`): follow-up to PR #32
 after the staging rollout to `5972b80` (schema `0450`, backfilled packages confirmed for
