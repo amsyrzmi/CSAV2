@@ -42,6 +42,7 @@ from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
+from csa.workspace.executors import build_proposal_registry
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -145,6 +146,8 @@ def create_app() -> FastAPI:
             app.state.voice_model = settings.VOICE_STT_MODEL
             app.state.voice_sessions_config = settings.voice_session_config()
             app.state.telegram_ingress = TelegramIngress(pool)
+            # Executors resolve hr_service/email_service from app.state at call time.
+            app.state.proposal_registry = build_proposal_registry()
             if identity_pool is not None:
                 await identity_pool.open(wait=True)
                 identity = IdentityService(

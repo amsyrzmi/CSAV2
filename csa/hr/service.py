@@ -91,6 +91,12 @@ class HrService:
         if not row or row["enabled"] is not True:
             raise HrPolicyError("agent_disabled")
 
+    async def require_capability(self, session: HrSession, name: str) -> None:
+        """Raise ``agent_disabled`` unless the tenant switch is on for this valid session."""
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_capability(conn, session, name)
+
     async def context(self, session: HrSession) -> HrContext:
         async with tx(self.pool, str(session.tenant_id)) as conn:
             access = await self._access(conn, session)

@@ -320,6 +320,20 @@ class EmailService:
             await self._session(conn, session)
         return DraftPage(items=[DraftOut.model_validate(row) for row in rows])
 
+    async def draft_by_id(self, session: EmailSession, draft_id: UUID) -> DraftOut:
+        """One of the caller's own drafts; read only, for confirmation cards."""
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            mailbox = await self._mailbox(conn, session, connected=False)
+            row = await q.fetch_one(
+                "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
+            )
+            await self._session(conn, session)
+        if row is None:
+            raise EmailPolicyError("resource_unavailable")
+        return DraftOut.model_validate(row)
+
     # ------------------------------------------------------------------ writes
 
     async def set_enabled(self, session: EmailSession, enabled: bool, key: UUID) -> Receipt:

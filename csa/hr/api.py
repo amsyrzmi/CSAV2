@@ -18,6 +18,7 @@ from fastapi.routing import APIRoute
 from pydantic import SecretStr
 
 from csa.agents.hr import HrAgentDispatcher, HrAgentInput
+from csa.console.contracts import ConsoleActor
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
 from csa.console.services import require_package
@@ -52,6 +53,37 @@ from csa.hr.workflows import WorkflowCommand, WorkflowInput, WorkflowRecord
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
 
 
+def hr_http_error(exc: HrPolicyError) -> HTTPException:
+    """Content-free HTTP form of an HR policy refusal, shared with workspace proposals."""
+    code = exc.code
+    if code in {"session_unavailable", "csrf_required"}:
+        return HTTPException(401 if code == "session_unavailable" else 403, code)
+    if code in {
+        "permission_denied",
+        "cross_tenant_reference",
+        "resource_unavailable",
+        "request_employee_mismatch",
+    }:
+        return HTTPException(404, "resource_unavailable")
+    return HTTPException(409, code)
+
+
+def hr_session_from(
+    request: Request, actor: ConsoleActor, tenant_id: UUID, *, mutation: bool
+) -> HrSession:
+    """Session proof for an authenticated actor; HrService revalidates every field.
+
+    Callers have already authenticated the actor and, for mutations, checked CSRF.
+    """
+    return HrSession(
+        session_id=actor.session_id,
+        subject_id=actor.user_id,
+        tenant_id=tenant_id,
+        token_hash=SecretStr(digest(request.cookies.get(SESSION_COOKIE, ""))),
+        csrf_hash=SecretStr(digest(request.headers.get("x-csrf-token", ""))) if mutation else None,
+    )
+
+
 class HrRoute(APIRoute):
     """Bound request bytes before parsing and never echo HR content on validation errors."""
 
@@ -75,19 +107,10 @@ class HrRoute(APIRoute):
                     content={"detail": "invalid_hr_input", "invalid_fields": len(exc.errors())},
                 )
             except HrPolicyError as exc:
-                code = exc.code
-                if code in {"session_unavailable", "csrf_required"}:
-                    status = 401 if code == "session_unavailable" else 403
-                elif code in {
-                    "permission_denied",
-                    "cross_tenant_reference",
-                    "resource_unavailable",
-                    "request_employee_mismatch",
-                }:
-                    status, code = 404, "resource_unavailable"
-                else:
-                    status = 409
-                response = JSONResponse(status_code=status, content={"detail": code})
+                error = hr_http_error(exc)
+                response = JSONResponse(
+                    status_code=error.status_code, content={"detail": error.detail}
+                )
             except HTTPException as exc:
                 response = JSONResponse(
                     status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers
@@ -147,19 +170,12 @@ async def _session(
             raise HTTPException(403, "tenant_not_authorized")
         tenant_id = actor.client_id
     await require_package(request.app.state.pool, tenant_id, frozenset({"hr"}))
-    csrf_hash = None
-    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+    mutation = request.method not in {"GET", "HEAD", "OPTIONS"}
+    if mutation:
         if actor.role == "read_only":
             raise HTTPException(403, "read_only_session")
         await identity.require_csrf(request, actor)
-        csrf_hash = SecretStr(digest(request.headers.get("x-csrf-token", "")))
-    return HrSession(
-        session_id=actor.session_id,
-        subject_id=actor.user_id,
-        tenant_id=tenant_id,
-        token_hash=SecretStr(digest(request.cookies.get(SESSION_COOKIE, ""))),
-        csrf_hash=csrf_hash,
-    )
+    return hr_session_from(request, actor, tenant_id, mutation=mutation)
 
 
 def _service(request: Request) -> HrService:

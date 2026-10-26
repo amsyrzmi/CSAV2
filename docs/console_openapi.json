@@ -384,6 +384,26 @@
         "title": "AgentSwitch",
         "type": "object"
       },
+      "AnswerResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "answer",
+            "title": "Action",
+            "type": "string"
+          },
+          "markdown": {
+            "title": "Markdown",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "markdown"
+        ],
+        "title": "AnswerResult",
+        "type": "object"
+      },
       "AttendanceImport": {
         "additionalProperties": false,
         "properties": {
@@ -1333,6 +1353,25 @@
         "title": "CapabilityToggleIn",
         "type": "object"
       },
+      "CardField": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "CardField",
+        "type": "object"
+      },
       "CasePage": {
         "additionalProperties": false,
         "properties": {
@@ -1361,6 +1400,57 @@
           "items"
         ],
         "title": "CasePage",
+        "type": "object"
+      },
+      "ClarificationOption": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "ClarificationOption",
+        "type": "object"
+      },
+      "ClarificationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "clarification",
+            "title": "Action",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationOption"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "question",
+          "options"
+        ],
+        "title": "ClarificationResult",
         "type": "object"
       },
       "ClientIn": {
@@ -1720,6 +1810,29 @@
           "employee_id"
         ],
         "title": "DirectoryRead",
+        "type": "object"
+      },
+      "DirectoryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "directory_lookup",
+            "title": "Action",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/PersonOut"
+            },
+            "title": "Candidates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "candidates"
+        ],
+        "title": "DirectoryResult",
         "type": "object"
       },
       "DirectoryValues": {
@@ -4307,6 +4420,63 @@
         "title": "MessageOut",
         "type": "object"
       },
+      "NavigateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "navigate",
+            "title": "Action",
+            "type": "string"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecordRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resume": {
+            "default": false,
+            "title": "Resume",
+            "type": "boolean"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section"
+          },
+          "tab": {
+            "enum": [
+              "overview",
+              "services",
+              "inbox",
+              "knowledge_base",
+              "business",
+              "hr",
+              "email",
+              "activity",
+              "chat"
+            ],
+            "title": "Tab",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "tab"
+        ],
+        "title": "NavigateResult",
+        "type": "object"
+      },
       "NotificationRead": {
         "additionalProperties": false,
         "properties": {
@@ -5165,6 +5335,50 @@
         "title": "PayrollSnapshotRecord",
         "type": "object"
       },
+      "PersonOut": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          }
+        },
+        "required": [
+          "employee_id",
+          "display_name",
+          "job_title",
+          "work_email"
+        ],
+        "title": "PersonOut",
+        "type": "object"
+      },
       "PrivateAccessSave": {
         "additionalProperties": false,
         "properties": {
@@ -5241,6 +5455,152 @@
         "title": "ProductPage",
         "type": "object"
       },
+      "ProposalCard": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/CardField"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "email_export",
+              "training_submit",
+              "inbox_decision"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "kind",
+          "title",
+          "summary",
+          "fields",
+          "expires_at",
+          "expected_version"
+        ],
+        "title": "ProposalCard",
+        "type": "object"
+      },
+      "ProposalOut": {
+        "additionalProperties": false,
+        "properties": {
+          "card": {
+            "$ref": "#/components/schemas/ProposalCard"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "email_export",
+              "training_submit",
+              "inbox_decision"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "status": {
+            "enum": [
+              "requested",
+              "confirmed",
+              "executed",
+              "expired",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "card",
+          "result",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "ProposalOut",
+        "type": "object"
+      },
+      "ProposalResult": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "proposal",
+            "title": "Action",
+            "type": "string"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/ProposalOut"
+          }
+        },
+        "required": [
+          "action",
+          "proposal"
+        ],
+        "title": "ProposalResult",
+        "type": "object"
+      },
       "QueuedTurn": {
         "additionalProperties": false,
         "properties": {
@@ -5311,6 +5671,46 @@
           "removed_files"
         ],
         "title": "ReconcileOut",
+        "type": "object"
+      },
+      "RecordRef": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "conversation",
+              "approval",
+              "training_request",
+              "draft",
+              "order",
+              "employee"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "RecordRef",
         "type": "object"
       },
       "Records": {
@@ -7727,6 +8127,21 @@
               },
               {
                 "$ref": "#/components/schemas/WorkspaceUnavailableResult"
+              },
+              {
+                "$ref": "#/components/schemas/ProposalResult"
+              },
+              {
+                "$ref": "#/components/schemas/AnswerResult"
+              },
+              {
+                "$ref": "#/components/schemas/NavigateResult"
+              },
+              {
+                "$ref": "#/components/schemas/DirectoryResult"
+              },
+              {
+                "$ref": "#/components/schemas/ClarificationResult"
               }
             ],
             "title": "Result"
@@ -16422,6 +16837,93 @@
                     ],
                     "title": "OverviewPageHint",
                     "type": "object"
+                  },
+                  "PageContext": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "record": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/RecordRef"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "section": {
+                        "anyOf": [
+                          {
+                            "maxLength": 40,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "title": "Section"
+                      },
+                      "tab": {
+                        "enum": [
+                          "overview",
+                          "services",
+                          "inbox",
+                          "knowledge_base",
+                          "business",
+                          "hr",
+                          "email",
+                          "activity",
+                          "chat"
+                        ],
+                        "title": "Tab",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "tab"
+                    ],
+                    "title": "PageContext",
+                    "type": "object"
+                  },
+                  "RecordRef": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "maxLength": 100,
+                        "minLength": 1,
+                        "title": "Id",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "conversation",
+                          "approval",
+                          "training_request",
+                          "draft",
+                          "order",
+                          "employee"
+                        ],
+                        "title": "Kind",
+                        "type": "string"
+                      },
+                      "version": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "title": "Version"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "title": "RecordRef",
+                    "type": "object"
                   }
                 },
                 "additionalProperties": false,
@@ -16431,6 +16933,16 @@
                     "minLength": 1,
                     "title": "Body",
                     "type": "string"
+                  },
+                  "page_context": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/paths/~1console~1v1~1workspace~1conversations~1{thread_id}~1turns/post/requestBody/content/application~1json/schema/$defs/PageContext"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "page_hint": {
                     "anyOf": [
@@ -16498,6 +17010,337 @@
           }
         },
         "summary": "Turn"
+      }
+    },
+    "/console/v1/workspace/proposals": {
+      "post": {
+        "operationId": "create_proposal_console_v1_workspace_proposals_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Direct proposal creation from a tab; ``payload`` is validated by the kind's executor.",
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "email_export",
+                      "training_submit",
+                      "inbox_decision"
+                    ],
+                    "title": "Kind",
+                    "type": "string"
+                  },
+                  "payload": {
+                    "additionalProperties": true,
+                    "title": "Payload",
+                    "type": "object"
+                  },
+                  "thread_id": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Thread Id"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "payload"
+                ],
+                "title": "ProposalCreate",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Proposal"
+      }
+    },
+    "/console/v1/workspace/proposals/{proposal_id}": {
+      "get": {
+        "operationId": "get_proposal_console_v1_workspace_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Proposal"
+      }
+    },
+    "/console/v1/workspace/proposals/{proposal_id}/cancel": {
+      "post": {
+        "operationId": "cancel_proposal_console_v1_workspace_proposals__proposal_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Proposal"
+      }
+    },
+    "/console/v1/workspace/proposals/{proposal_id}/confirm": {
+      "post": {
+        "operationId": "confirm_proposal_console_v1_workspace_proposals__proposal_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Proposal"
       }
     }
   }

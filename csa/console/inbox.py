@@ -188,6 +188,50 @@ async def record(
     await audit(conn, actor, client_id, f"inbox.{action}", target)
 
 
+async def decide_approval(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    actor: ConsoleActor,
+    approval_id: int,
+    decision: Literal["approve", "reject", "edit"],
+    text: str | None,
+    request_key: UUID,
+) -> InboxResult:
+    """Decide a held reply on the caller's tenant transaction; replays per request key."""
+    payload = ReplyDecision(request_key=request_key, decision=decision, text=text)
+    fingerprint, old = await replay(conn, client_id, actor, payload, f"approval:{approval_id}")
+    if old is not None:
+        return old
+    reference = await db.q.fetch_one("inbox/get_approval.sql", (client_id, approval_id), conn=conn)
+    if reference is None:
+        raise HTTPException(404, "reply approval not found")
+    try:
+        result: ReplyDecisionResult = await transition_reply(
+            conn,
+            client_id=client_id,
+            approval_id=approval_id,
+            decision={"approve": "approved", "reject": "rejected", "edit": "edited"}[
+                payload.decision
+            ],  # type: ignore[arg-type]
+            actor=f"console_user:{actor.user_id}",
+            text=payload.text,
+        )
+    except EditTextError as exc:
+        raise HTTPException(422, str(exc)) from None
+    out = InboxResult(**result.model_dump())
+    await record(
+        conn,
+        client_id,
+        actor,
+        payload.request_key,
+        fingerprint,
+        out,
+        "reply_decided",
+        str(approval_id),
+    )
+    return out
+
+
 def build_inbox_router() -> APIRouter:
     # The package gate runs first so every role sees package_inactive before role errors.
     # A suspended Customer Support package keeps the Inbox reachable: escalation and order
@@ -416,40 +460,14 @@ def build_inbox_router() -> APIRouter:
     ) -> InboxResult:
         actor = inbox_actor(request)
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            fingerprint, old = await replay(
-                conn, client_id, actor, payload, f"approval:{approval_id}"
-            )
-            if old is not None:
-                return old
-            reference = await db.q.fetch_one(
-                "inbox/get_approval.sql", (client_id, approval_id), conn=conn
-            )
-            if reference is None:
-                raise HTTPException(404, "reply approval not found")
-            try:
-                decision: ReplyDecisionResult = await transition_reply(
-                    conn,
-                    client_id=client_id,
-                    approval_id=approval_id,
-                    decision={"approve": "approved", "reject": "rejected", "edit": "edited"}[
-                        payload.decision
-                    ],  # type: ignore[arg-type]
-                    actor=f"console_user:{actor.user_id}",
-                    text=payload.text,
-                )
-            except EditTextError as exc:
-                raise HTTPException(422, str(exc)) from None
-            result = InboxResult(**decision.model_dump())
-            await record(
+            return await decide_approval(
                 conn,
                 client_id,
                 actor,
+                approval_id,
+                payload.decision,
+                payload.text,
                 payload.request_key,
-                fingerprint,
-                result,
-                "reply_decided",
-                str(approval_id),
             )
-            return result
 
     return router

@@ -192,6 +192,19 @@ WorkspaceActionProposal = WorkspaceProposal
 ProposalKind = Literal["email_export", "training_submit", "inbox_decision"]
 
 
+class EmailExportProposal(_Contract):
+    action: Literal["email_export"]
+    draft_id: UUID
+
+
+class ProposalCreate(_Contract):
+    """Direct proposal creation from a tab; ``payload`` is validated by the kind's executor."""
+
+    kind: ProposalKind
+    payload: dict[str, object]
+    thread_id: UUID | None = None
+
+
 class CardField(_Contract):
     label: str
     value: str

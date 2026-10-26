@@ -61,11 +61,16 @@ class ProposalExecutor(Protocol):
     async def card(
         self,
         conn: AsyncConnection[Any],
+        request: Request,
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict[str, Any],
     ) -> tuple[CardContent, str | None]:
-        """Validate the payload, load the record as the user, return content and version."""
+        """Gate and validate the payload, load the record as the user, return content and version.
+
+        ``request`` carries the caller's session cookie and CSRF header, which the owning
+        services need to revalidate the login session.
+        """
         ...
 
     async def execute(
@@ -75,8 +80,14 @@ class ProposalExecutor(Protocol):
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict[str, Any],
+        *,
+        proposal_id: UUID,
+        expected_version: str | None,
     ) -> dict[str, Any]:
-        """Perform the action through the owning service and return its JSON receipt."""
+        """Perform the action through the owning service and return its JSON receipt.
+
+        Idempotency keys derive from ``proposal_id`` so a retry replays in the service.
+        """
         ...
 
 
@@ -109,8 +120,10 @@ class ProposalRegistry:
         payload: dict[str, Any],
         *,
         thread_id: UUID | None,
+        request: Request,
     ) -> ProposalOut:
-        content, version = await self._executor(kind).card(conn, actor, client_id, payload)
+        executor = self._executor(kind)
+        content, version = await executor.card(conn, request, actor, client_id, payload)
         card = {
             "kind": kind,
             "title": content.title,
@@ -167,12 +180,20 @@ class ProposalRegistry:
         if payload_sha256(payload) != row["payload_sha256"]:
             raise ProposalError("proposal_stale")
         executor = self._executor(row["kind"])
-        _, version = await executor.card(conn, actor, client_id, payload)
+        _, version = await executor.card(conn, request, actor, client_id, payload)
         if version != row["expected_version"]:
             raise ProposalError("proposal_stale")
         row = await _set_status(conn, client_id, proposal_id, "confirmed", None)
         await _audit(conn, actor, client_id, "workspace.proposal.confirmed", row)
-        receipt = await executor.execute(conn, request, actor, client_id, payload)
+        receipt = await executor.execute(
+            conn,
+            request,
+            actor,
+            client_id,
+            payload,
+            proposal_id=proposal_id,
+            expected_version=version,
+        )
         row = await _set_status(conn, client_id, proposal_id, "executed", Jsonb(receipt))
         await _audit(conn, actor, client_id, "workspace.proposal.executed", row)
         return _out(row)

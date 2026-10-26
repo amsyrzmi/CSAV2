@@ -4,22 +4,38 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
+import httpx
 import psycopg
 import pytest
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
+from csa.core import crypto
 from csa.core.tenancy import tx
+from csa.email.api import build_email_router
+from csa.email.gmail import GmailClient
+from csa.email.service import EmailService
+from csa.hr.api import build_hr_router
+from csa.hr.service import HrService
 from csa.workspace.contracts import CardField, ProposalKind
+from csa.workspace.executors import build_proposal_registry
 from csa.workspace.registry import CardContent, ProposalError, ProposalRegistry
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from pydantic import SecretStr
 from starlette.requests import Request
 
 from tests.conftest import requires_docker
-from tests.test_console_sessions import MEMBER_PASSWORD, SessionWorld
+from tests.test_console_inbox import held, seed
+from tests.test_console_services import activate
+from tests.test_console_sessions import MEMBER_PASSWORD, ORIGIN, SessionWorld
+from tests.test_email_service import FakeGmail, ScriptedModel
+
+EMAIL_REDIRECT = f"{ORIGIN}/console/v1/email/oauth/callback"
 
 pytest_plugins = ["tests.test_console_sessions"]
 
@@ -141,7 +157,12 @@ class FakeTrainingExecutor:
         self.executed: list[dict[str, Any]] = []
 
     async def card(
-        self, conn: AsyncConnection[Any], actor: ConsoleActor, client_id: UUID, payload: dict
+        self,
+        conn: AsyncConnection[Any],
+        request: Request,
+        actor: ConsoleActor,
+        client_id: UUID,
+        payload: dict,
     ) -> tuple[CardContent, str | None]:
         content = CardContent(
             title="Submit training request",
@@ -157,6 +178,9 @@ class FakeTrainingExecutor:
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict,
+        *,
+        proposal_id: UUID,
+        expected_version: str | None,
     ) -> dict:
         self.executed.append(payload)
         return {"receipt": len(self.executed), "title": payload["title"]}
@@ -211,7 +235,13 @@ async def _create(
     tenant = sessions.tenants[0]
     async with tx(sessions.pool, tenant) as conn:
         return await registry.create(
-            conn, actor, UUID(tenant), "training_submit", {"title": title}, thread_id=thread_id
+            conn,
+            actor,
+            UUID(tenant),
+            "training_submit",
+            {"title": title},
+            thread_id=thread_id,
+            request=_request(),
         )
 
 
@@ -365,7 +395,7 @@ async def test_executor_failure_rolls_back_to_requested(sessions: SessionWorld) 
     fake, registry = _world()
     out = await _create(sessions, registry, actor)
 
-    async def boom(*_: Any) -> dict:
+    async def boom(*_: Any, **__: Any) -> dict:
         raise RuntimeError("synthetic executor failure")
 
     fake.execute = boom  # type: ignore[method-assign]
@@ -494,3 +524,264 @@ async def test_audit_rows_carry_the_proposal_id(sessions: SessionWorld) -> None:
         assert r["actor_id"] == actor.user_id
         assert str(r["client_id"]) == sessions.tenants[0]
         assert r["details"] == {"kind": "training_submit"}
+
+
+# --------------------------------------------------------------------- HTTP: executors
+
+
+@pytest.fixture
+async def proposals_app(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[tuple[SessionWorld, FakeGmail]]:
+    """SessionWorld app with HR and email routers, their services and the registry."""
+    monkeypatch.setattr(crypto, "_key", lambda: b"\x07" * 32)
+    sessions.app.include_router(build_hr_router())
+    sessions.app.include_router(build_email_router())
+    gmail = FakeGmail()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(gmail.handler))
+    sessions.app.state.hr_service = HrService(sessions.pool, session_idle_seconds=1800)
+    sessions.app.state.email_service = EmailService(
+        sessions.pool,
+        gmail=GmailClient("client-id", SecretStr("client-secret"), EMAIL_REDIRECT, http),
+        model=ScriptedModel(),
+        session_idle_seconds=1800,
+    )
+    sessions.app.state.proposal_registry = build_proposal_registry()
+    try:
+        yield sessions, gmail
+    finally:
+        await http.aclose()
+
+
+PROPOSALS = "/console/v1/workspace/proposals"
+
+
+async def _propose(
+    w: SessionWorld, browser: httpx.AsyncClient, kind: str, payload: dict[str, Any]
+) -> httpx.Response:
+    return await w.mutate(browser, PROPOSALS, {"kind": kind, "payload": payload})
+
+
+async def _http_confirm(
+    w: SessionWorld, browser: httpx.AsyncClient, proposal_id: str
+) -> httpx.Response:
+    return await w.mutate(browser, f"{PROPOSALS}/{proposal_id}/confirm")
+
+
+async def _hr_member(w: SessionWorld, *, switch: bool = True) -> httpx.AsyncClient:
+    tenant = w.tenants[0]
+    await activate(w, tenant, "hr")
+    await w.q(
+        "UPDATE hr_agent_settings SET enabled=%s WHERE client_id=%s AND name='hr_assistant'",
+        switch,
+        tenant,
+    )
+    browser, me = await w.member(role="tenant_staff")
+    user, employee, manager = me["user"]["id"], uuid4(), uuid4()
+    await w.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,manager_id) VALUES"
+        " (%s,%s,'Synthetic Manager',NULL),(%s,%s,'Synthetic Staff',%s)",
+        tenant, manager, tenant, employee, manager,
+    )  # fmt: skip
+    await w.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        tenant, user, employee,
+    )  # fmt: skip
+    for action in ("training.read", "training.draft", "training.submit"):
+        await w.q(
+            "INSERT INTO hr_grants(client_id,user_id,action,scope,fields)"
+            " VALUES (%s,%s,%s,'self','{}')",
+            tenant, user, action,
+        )  # fmt: skip
+    return browser
+
+
+async def test_training_submit_proposal_end_to_end(proposals_app) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    draft = await browser.post(
+        "/console/v1/hr/training-requests",
+        json={"title": "Forklift safety", "learning_objective": "Operate forklifts safely"},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+    assert draft.status_code == 201, draft.text
+    request_id = draft.json()["request"]["request_id"]
+    created = await _propose(
+        w, browser, "training_submit", {"action": "training_submit", "request_id": request_id}
+    )
+    assert created.status_code == 201, created.text
+    out = created.json()
+    assert out["status"] == "requested" and out["card"]["expected_version"] == "0"
+    assert [f["value"] for f in out["card"]["fields"]][0] == "Forklift safety"
+    assert created.headers["Cache-Control"] == "no-store"
+    seen = await browser.get(f"{PROPOSALS}/{out['id']}")
+    assert seen.status_code == 200 and seen.json() == out
+    done = await _http_confirm(w, browser, out["id"])
+    assert done.status_code == 200, done.text
+    receipt = done.json()["result"]
+    assert done.json()["status"] == "executed"
+    assert receipt["kind"] == "persisted_training"
+    assert receipt["request"]["status"] == "submitted" and receipt["request"]["version"] == 1
+    replay = await _http_confirm(w, browser, out["id"])
+    assert replay.status_code == 200 and replay.json() == done.json()
+    rows = await w.q("SELECT status FROM hr_training_requests WHERE id=%s", request_id)
+    assert rows == [{"status": "submitted"}]
+
+
+async def test_training_submit_new_draft_proposal_creates_and_submits(proposals_app) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    created = await _propose(
+        w,
+        browser,
+        "training_submit",
+        {"title": "First aid", "learning_objective": "Certify in first aid"},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["card"]["expected_version"] is None
+    done = await _http_confirm(w, browser, created.json()["id"])
+    assert done.status_code == 200, done.text
+    request = done.json()["result"]["request"]
+    assert request["status"] == "submitted" and request["content"]["title"] == "First aid"
+    rows = await w.q("SELECT count(*) n FROM hr_training_requests WHERE client_id=%s", w.tenants[0])
+    assert rows[0]["n"] == 1
+
+
+async def test_training_submit_refused_when_hr_assistant_switch_is_off(proposals_app) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w, switch=False)
+    created = await _propose(
+        w, browser, "training_submit", {"title": "First aid", "learning_objective": "Certify"}
+    )
+    assert created.status_code == 409 and created.json()["detail"] == "agent_disabled"
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 0
+
+
+async def test_kind_without_its_package_is_refused_before_any_row(proposals_app) -> None:
+    w, _ = proposals_app
+    browser, _ = await w.member(role="tenant_staff")
+    payload = {"title": "First aid", "learning_objective": "Certify"}
+    created = await _propose(w, browser, "training_submit", payload)
+    assert created.status_code == 403 and created.json()["detail"] == "package_inactive"
+    exported = await _propose(w, browser, "email_export", {"draft_id": str(uuid4())})
+    assert exported.status_code == 403 and exported.json()["detail"] == "package_inactive"
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 0
+    reader, _ = await w.member(role="read_only")
+    denied = await _propose(w, reader, "training_submit", payload)
+    assert denied.status_code == 403
+
+
+async def _held_approval(w: SessionWorld) -> tuple[int, str, int]:
+    await activate(w, w.tenants[0], "customer_support")
+    env, conversation_id = await seed(w)
+    approval = await held(w, env)
+    rows = await w.q("SELECT inbox_version FROM conversations WHERE id=%s", conversation_id)
+    return approval, conversation_id, rows[0]["inbox_version"]
+
+
+def _decision(approval: int, conversation_id: str, version: int) -> dict[str, Any]:
+    return {
+        "action": "inbox_decision",
+        "approval_id": approval,
+        "conversation_id": conversation_id,
+        "decision": "approve",
+        "expected_version": version,
+    }
+
+
+async def test_inbox_decision_proposal_end_to_end(proposals_app) -> None:
+    w, _ = proposals_app
+    approval, conversation_id, version = await _held_approval(w)
+    browser, _ = await w.member(role="tenant_staff")
+    created = await _propose(
+        w, browser, "inbox_decision", _decision(approval, conversation_id, version)
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["card"]["expected_version"] == str(version)
+    done = await _http_confirm(w, browser, created.json()["id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "executed"
+    assert done.json()["result"]["outcome"] == "applied"
+    rows = await w.q("SELECT status FROM approvals WHERE id=%s", approval)
+    assert rows == [{"status": "approved"}]
+    replay = await _http_confirm(w, browser, created.json()["id"])
+    assert replay.status_code == 200 and replay.json() == done.json()
+    decided = await w.q(
+        "SELECT count(*) n FROM console_audit WHERE action='inbox.reply_decided' AND target_id=%s",
+        str(approval),
+    )
+    assert decided[0]["n"] == 1
+
+
+async def test_inbox_decision_after_conversation_moved_is_stale(proposals_app) -> None:
+    w, _ = proposals_app
+    approval, conversation_id, version = await _held_approval(w)
+    browser, _ = await w.member(role="tenant_staff")
+    created = await _propose(
+        w, browser, "inbox_decision", _decision(approval, conversation_id, version)
+    )
+    assert created.status_code == 201, created.text
+    await w.q("UPDATE conversations SET inbox_version=inbox_version+1 WHERE id=%s", conversation_id)
+    stale = await _http_confirm(w, browser, created.json()["id"])
+    assert stale.status_code == 409 and stale.json()["detail"] == "proposal_stale"
+    rows = await w.q("SELECT status FROM approvals WHERE id=%s", approval)
+    assert rows == [{"status": "pending"}]
+    row = await _row(w, UUID(created.json()["id"]))
+    assert row["status"] == "requested" and row["result"] is None
+    mismatch = await _propose(
+        w, browser, "inbox_decision", _decision(approval, conversation_id, version)
+    )
+    assert mismatch.status_code == 409 and mismatch.json()["detail"] == "proposal_stale"
+
+
+async def test_expired_confirm_over_http_persists_expired(proposals_app) -> None:
+    w, _ = proposals_app
+    approval, conversation_id, version = await _held_approval(w)
+    browser, _ = await w.member(role="tenant_staff")
+    created = await _propose(
+        w, browser, "inbox_decision", _decision(approval, conversation_id, version)
+    )
+    await w.q(
+        "UPDATE console_proposals SET created_at = now() - interval '10 minutes',"
+        " expires_at = now() - interval '1 second' WHERE id=%s",
+        created.json()["id"],
+    )
+    expired = await _http_confirm(w, browser, created.json()["id"])
+    assert expired.status_code == 409 and expired.json()["detail"] == "proposal_expired"
+    assert (await _row(w, UUID(created.json()["id"])))["status"] == "expired"
+    cancelled = await w.mutate(browser, f"{PROPOSALS}/{created.json()['id']}/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["status"] == "expired"
+
+
+async def test_email_export_proposal_end_to_end(proposals_app) -> None:
+    w, gmail = proposals_app
+    tenant = w.tenants[0]
+    await activate(w, tenant, "staff_email")
+    await w.q("UPDATE email_settings SET enabled=true WHERE client_id=%s", tenant)
+    browser, _ = await w.member(role="tenant_staff")
+
+    async def call(method: str, path: str, body: Any = None) -> httpx.Response:
+        headers = {**w.headers(browser), "Idempotency-Key": str(uuid4())}
+        return await browser.request(method, path, json=body, headers=headers)
+
+    started = await call("POST", "/console/v1/email/mailbox/connect")
+    assert started.status_code == 200, started.text
+    state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+    done = await browser.get(f"/console/v1/email/oauth/callback?code=abc&state={state}")
+    assert done.status_code == 303 and "error" not in done.headers["location"], done.text
+    assert (await call("POST", "/console/v1/email/sync")).status_code == 200
+    drafted = await call("POST", "/console/v1/email/threads/t1/draft", {"instructions": "Hi"})
+    assert drafted.status_code == 201, drafted.text
+    draft_id = drafted.json()["id"]
+    created = await _propose(w, browser, "email_export", {"draft_id": draft_id})
+    assert created.status_code == 201, created.text
+    fields = {f["label"]: f["value"] for f in created.json()["card"]["fields"]}
+    assert fields == {"To": "aina@example.test", "Subject": "Re: Order MGL-TEST-005"}
+    exported = await _http_confirm(w, browser, created.json()["id"])
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["result"]["gmail_draft_id"] == "gmail-draft-1"
+    assert exported.json()["result"]["status"] == "exported"
+    assert sum(1 for m, p, _ in gmail.requests if m == "POST" and p.endswith("/drafts")) == 1
+    replay = await _http_confirm(w, browser, created.json()["id"])
+    assert replay.status_code == 200 and replay.json() == exported.json()
+    assert sum(1 for m, p, _ in gmail.requests if m == "POST" and p.endswith("/drafts")) == 1

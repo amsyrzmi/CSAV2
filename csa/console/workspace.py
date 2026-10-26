@@ -14,12 +14,15 @@ from csa.console.contracts import ConsoleActor
 from csa.core.tenancy import tx
 from csa.workspace.contracts import (
     CreateWorkspaceThread,
+    ProposalCreate,
+    ProposalOut,
     WorkspaceThreadOut,
     WorkspaceThreadPage,
     WorkspaceTurnInput,
     WorkspaceTurnOut,
     WorkspaceTurnPage,
 )
+from csa.workspace.registry import ProposalError, ProposalRegistry
 from csa.workspace.service import (
     WorkspaceConflict,
     WorkspaceNotFound,
@@ -57,6 +60,13 @@ def _workspace_access(actor: ConsoleActor, client_id: UUID) -> None:
 
 def workspace_actor(request: Request) -> ConsoleActor:
     return business_actor(request)
+
+
+def _registry(request: Request) -> ProposalRegistry:
+    registry = getattr(request.app.state, "proposal_registry", None)
+    if not isinstance(registry, ProposalRegistry):
+        raise HTTPException(503, "proposal_registry_unavailable")
+    return registry
 
 
 def build_workspace_router() -> APIRouter:
@@ -159,5 +169,92 @@ def build_workspace_router() -> APIRouter:
             raise HTTPException(404, "workspace conversation not found") from exc
         response.headers["Cache-Control"] = "no-store"
         return WorkspaceTurnPage(items=items, next_cursor=cursor)
+
+    @router.post(
+        "/proposals",
+        response_model=ProposalOut,
+        status_code=201,
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {"application/json": {"schema": ProposalCreate.model_json_schema()}},
+            }
+        },
+    )
+    async def create_proposal(
+        request: Request,
+        response: Response,
+        actor: Annotated[ConsoleActor, Depends(workspace_actor)],
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> ProposalOut:
+        _workspace_access(actor, client_id)
+        body = await _payload(request, ProposalCreate)
+        registry = _registry(request)
+        # The kind's executor gates the package and validates the payload before any row.
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            result = await registry.create(
+                conn,
+                actor,
+                client_id,
+                body.kind,
+                dict(body.payload),
+                thread_id=body.thread_id,
+                request=request,
+            )
+        response.headers["Cache-Control"] = "no-store"
+        return result
+
+    @router.get("/proposals/{proposal_id}", response_model=ProposalOut)
+    async def get_proposal(
+        proposal_id: UUID,
+        request: Request,
+        response: Response,
+        actor: Annotated[ConsoleActor, Depends(workspace_actor)],
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> ProposalOut:
+        _workspace_access(actor, client_id)
+        registry = _registry(request)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            result = await registry.get(conn, actor, client_id, proposal_id)
+        response.headers["Cache-Control"] = "no-store"
+        return result
+
+    @router.post("/proposals/{proposal_id}/confirm", response_model=ProposalOut)
+    async def confirm_proposal(
+        proposal_id: UUID,
+        request: Request,
+        response: Response,
+        actor: Annotated[ConsoleActor, Depends(workspace_actor)],
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> ProposalOut:
+        _workspace_access(actor, client_id)
+        registry = _registry(request)
+        refusal: ProposalError | None = None
+        result: ProposalOut | None = None
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            try:
+                result = await registry.confirm(conn, request, actor, client_id, proposal_id)
+            except ProposalError as exc:
+                refusal = exc  # commit first so an `expired` status write persists
+        if refusal is not None:
+            raise refusal
+        assert result is not None
+        response.headers["Cache-Control"] = "no-store"
+        return result
+
+    @router.post("/proposals/{proposal_id}/cancel", response_model=ProposalOut)
+    async def cancel_proposal(
+        proposal_id: UUID,
+        request: Request,
+        response: Response,
+        actor: Annotated[ConsoleActor, Depends(workspace_actor)],
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> ProposalOut:
+        _workspace_access(actor, client_id)
+        registry = _registry(request)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            result = await registry.cancel(conn, actor, client_id, proposal_id)
+        response.headers["Cache-Control"] = "no-store"
+        return result
 
     return router
