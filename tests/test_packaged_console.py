@@ -255,6 +255,9 @@ def packaged_console(
                     "PUBLIC_BASE_URL": origin,
                     "CREDENTIALS_KEY": "base64:c3ludGhldGljLXBhY2thZ2VkLWZpeHR1cmUta2V5ISE=",
                     "GROQ_API_KEY": "synthetic-disabled-not-a-provider-key",
+                    # /auth/me then reports workspace_assistant, so the dock button renders;
+                    # no assistant turn is driven against the synthetic provider key.
+                    "WORKSPACE_ASSISTANT_ENABLED": "true",
                     "TURN_ENGINE": "coordinator",
                     "CHANNEL_MODE": "webhook",
                     "KB_INGEST_ENABLED": "false",
@@ -2069,8 +2072,8 @@ async def test_packaged_hr_browser_acceptance(
             assert (await hr_fetch(anonymous, "/console/v1/hr/context"))["status"] == 401
             assert (await hr_fetch(anonymous, "/console/v1/hr/guidance"))["status"] == 401
 
-            # The Staff workspace page is gone; the assistant dock (button only here, since
-            # the planner is off) is on every tab for staff and for admins naming a tenant.
+            # The Staff workspace page is gone; the assistant dock (button only here; no turn
+            # is driven) is on every tab for staff and for admins naming a tenant.
             platform = await new_page("platform")
             await platform.goto(f"{w.origin}/hr")
             await platform.get_by_text("Select a tenant to continue.", exact=True).wait_for()
@@ -2086,6 +2089,7 @@ async def test_packaged_hr_browser_acceptance(
             staff = await new_page("staff")
             await staff.goto(f"{w.origin}/portal/hr?section=directory")
             await staff.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
+            assert await staff.get_by_text("private-staff@example.test", exact=True).count() == 0
             await staff.get_by_test_id("assistant-open").wait_for()
             projection = await hr_fetch(staff, f"/console/v1/hr/employees/{employees['staff']}")
             assert projection["status"] == 200 and projection["cache"] == "no-store"

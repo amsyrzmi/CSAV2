@@ -99,11 +99,14 @@ def build_identity_router() -> APIRouter:
             previous_session=request.cookies.get(SESSION_COOKIE, ""),
         )
         service.set_cookies(response, raw, csrf_token)
-        return actor.me(csrf_token)
+        return actor.me(csrf_token, workspace_assistant=service.config.workspace_assistant)
 
     @router.get("/auth/me", response_model=MeOut)
-    async def me(request: Request, actor: LifecycleActor) -> MeOut:
-        return actor.me(request.cookies.get(CSRF_COOKIE, ""))
+    async def me(request: Request, actor: LifecycleActor, service: Service) -> MeOut:
+        return actor.me(
+            request.cookies.get(CSRF_COOKIE, ""),
+            workspace_assistant=service.config.workspace_assistant,
+        )
 
     @router.post("/auth/logout", status_code=204)
     async def logout(
@@ -140,7 +143,7 @@ def build_identity_router() -> APIRouter:
             actor, body.current_password.get_secret_value(), body.new_password.get_secret_value()
         )
         service.set_cookies(response, raw, csrf_token)
-        return changed.me(csrf_token)
+        return changed.me(csrf_token, workspace_assistant=service.config.workspace_assistant)
 
     @router.post("/auth/password/reset", response_model=MessageOut, status_code=202)
     async def password_reset(body: EmailInput, request: Request, service: Service) -> MessageOut:
@@ -179,7 +182,7 @@ def build_identity_router() -> APIRouter:
             previous_session=request.cookies.get(SESSION_COOKIE, ""),
         )
         service.set_cookies(response, raw, csrf_token)
-        return actor.me(csrf_token)
+        return actor.me(csrf_token, workspace_assistant=service.config.workspace_assistant)
 
     @router.post("/admin/invites", response_model=IssuedTokenOut, status_code=201)
     async def admin_invite(body: InviteIn, actor: Mutation, service: Service) -> IssuedTokenOut:

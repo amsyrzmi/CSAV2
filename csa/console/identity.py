@@ -49,6 +49,8 @@ class IdentityConfig(BaseModel):
     token_seconds: int = Field(default=172800, ge=60, le=604800)
     login_attempts: int = Field(default=5, ge=1, le=20)
     login_window_seconds: int = Field(default=900, ge=1, le=3600)
+    # Mirrors WORKSPACE_ASSISTANT_ENABLED so /auth/me can tell the console to show the dock.
+    workspace_assistant: bool = False
 
 
 class IdentityService:

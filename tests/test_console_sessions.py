@@ -238,6 +238,18 @@ async def test_login_me_logout_cookie_policy_and_hashed_persistence(sessions: Se
     )
 
 
+async def test_me_reports_the_workspace_assistant_flag(sessions: SessionWorld) -> None:
+    me = await sessions.admin.get("/console/v1/auth/me")
+    assert me.status_code == 200 and me.json()["workspace_assistant"] is False
+    default = sessions.service.config
+    sessions.service.config = default.model_copy(update={"workspace_assistant": True})
+    try:
+        me = await sessions.admin.get("/console/v1/auth/me")
+        assert me.status_code == 200 and me.json()["workspace_assistant"] is True
+    finally:
+        sessions.service.config = default
+
+
 async def test_password_change_supports_unicode_and_rejects_reusing_it(
     sessions: SessionWorld,
 ) -> None:

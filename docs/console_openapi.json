@@ -4326,6 +4326,11 @@
           },
           "user": {
             "$ref": "#/components/schemas/UserOut"
+          },
+          "workspace_assistant": {
+            "default": false,
+            "title": "Workspace Assistant",
+            "type": "boolean"
           }
         },
         "required": [

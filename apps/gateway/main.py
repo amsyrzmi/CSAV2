@@ -159,6 +159,7 @@ def create_app() -> FastAPI:
                         secure_cookies=settings.CONSOLE_COOKIE_SECURE,
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
                         session_absolute_seconds=settings.CONSOLE_SESSION_ABSOLUTE_SECONDS,
+                        workspace_assistant=settings.WORKSPACE_ASSISTANT_ENABLED,
                     ),
                 )
                 await identity.check_ready()
