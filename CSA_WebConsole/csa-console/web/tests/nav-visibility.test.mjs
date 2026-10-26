@@ -44,3 +44,11 @@ test("business accepts either package, inactive statuses hide, hrefs follow the 
   assert.equal(admin.find((l) => l.label === "Overview").href, "/");
   assert.ok(admin.some((l) => l.label === "Tenants") && !portal.some((l) => l.label === "Tenants"));
 });
+
+test("the Staff workspace tab is gone for every role; the assistant dock replaces it", () => {
+  const all = active("customer_support", "hr", "staff_email", "orders_products");
+  for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"]) {
+    const links = navigationFor({ ...staff, role }, all);
+    assert.ok(!links.some((l) => l.label === "Staff workspace" || l.key === "workspace"), role);
+  }
+});

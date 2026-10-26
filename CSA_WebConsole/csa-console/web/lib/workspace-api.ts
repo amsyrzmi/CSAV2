@@ -1,5 +1,4 @@
 import { api } from "@/lib/api";
-import { workspaceEndpoint } from "@/lib/workspace-paths.mjs";
 
 export type WorkspacePageKey =
   | "workspace_home"
@@ -103,7 +102,31 @@ export interface WorkspaceTurn {
   result: WorkspaceResult;
 }
 
+export interface ClarificationOption {
+  label: string;
+  value: string;
+}
+
+/** Planner results (csa/workspace/contracts.py ProposalResult … ClarificationResult). */
+export type WorkspaceActionResult =
+  | { action: "proposal"; proposal: ProposalOut }
+  | { action: "answer"; markdown: string }
+  | {
+      action: "navigate";
+      tab: TabKey;
+      section: string | null;
+      record: RecordRef | null;
+      resume: boolean;
+    }
+  | { action: "directory_lookup"; candidates: PersonOut[] }
+  | {
+      action: "clarification";
+      question: string;
+      options: ClarificationOption[];
+    };
+
 export type WorkspaceResult =
+  | WorkspaceActionResult
   | {
       status: "completed";
       action: "page_guidance";
@@ -149,6 +172,21 @@ interface WorkspaceThreadPage {
 interface WorkspaceTurnPage {
   items: WorkspaceTurn[];
   next_cursor: number | null;
+}
+
+/** Tenant-scoped query; platform admins must always name the tenant. */
+function tenantQuery(tenantId?: string | null): string {
+  return tenantId ? `?${new URLSearchParams({ client_id: tenantId })}` : "";
+}
+
+export function workspaceEndpoint(
+  tenantId: string | null,
+  threadId: string | null = null,
+  turns = false,
+): string {
+  const threadPath = threadId ? `/${encodeURIComponent(threadId)}` : "";
+  const suffix = turns ? "/turns" : "";
+  return `/console/v1/workspace/conversations${threadPath}${suffix}${tenantQuery(tenantId)}`;
 }
 
 function request<T>(
@@ -201,7 +239,7 @@ export function createWorkspaceTurn(
   tenantId: string,
   threadId: string,
   body: string,
-  pageHint: WorkspacePageHint,
+  pageHint: WorkspacePageHint | null,
   requestKey: string,
   signal?: AbortSignal,
   pageContext?: PageContext | null,
@@ -212,7 +250,7 @@ export function createWorkspaceTurn(
     {
       request_key: requestKey,
       body,
-      page_hint: pageHint,
+      ...(pageHint ? { page_hint: pageHint } : {}),
       ...(pageContext ? { page_context: pageContext } : {}),
     },
     signal,
@@ -239,9 +277,10 @@ export function createProposal(
 export function confirmProposal(
   id: string,
   signal?: AbortSignal,
+  tenantId?: string | null,
 ): Promise<ProposalOut> {
   return request(
-    `${PROPOSALS}/${encodeURIComponent(id)}/confirm`,
+    `${PROPOSALS}/${encodeURIComponent(id)}/confirm${tenantQuery(tenantId)}`,
     "POST",
     undefined,
     signal,
@@ -251,9 +290,10 @@ export function confirmProposal(
 export function cancelProposal(
   id: string,
   signal?: AbortSignal,
+  tenantId?: string | null,
 ): Promise<ProposalOut> {
   return request(
-    `${PROPOSALS}/${encodeURIComponent(id)}/cancel`,
+    `${PROPOSALS}/${encodeURIComponent(id)}/cancel${tenantQuery(tenantId)}`,
     "POST",
     undefined,
     signal,

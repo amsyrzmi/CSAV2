@@ -1,6 +1,6 @@
-import { WorkspaceAssistant } from "@/components/console/WorkspaceAssistant";
-import { requireIdentity } from "@/lib/server-identity";
+import { redirect } from "next/navigation";
 
-export default async function WorkspacePage() {
-  return <WorkspaceAssistant me={await requireIdentity()} />;
+/** The assistant dock on every tab replaced the Staff workspace page. */
+export default function WorkspacePage() {
+  redirect("/");
 }
