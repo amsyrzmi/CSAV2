@@ -1,5 +1,24 @@
 # Progress
 
+Workspace assistant (2026-10-26, branch `feat/workspace-assistant`): the staff
+workspace becomes a floating assistant dock on every console tab, replacing the Staff
+workspace tab (its routes redirect). Migration `0460_workspace_assistant.sql` (gateway
+readiness now expects schema `0460`) adds `console_proposals` with the stored card and a
+2-minute claim lease, relaxes the workspace turn CHECKs, and creates the
+`company_directory` and caller-only `company_directory_me` views. A planner behind
+`WORKSPACE_ASSISTANT_ENABLED` (default false) turns a message into one typed proposal;
+every mutation (email export, training submit, inbox decision) is confirmed on a card by
+the same login session within 15 minutes, executes once under idempotency keys derived
+from the proposal id, and is audited (`workspace.proposal.*`, `workspace.people.lookup`).
+New routes: `/console/v1/workspace/proposals` (create, get, confirm, cancel),
+`/workspace/people`, `/workspace/people/me` and `POST /console/v1/email/compose`;
+`POST /console/v1/hr/assistant` now returns a proposal for a training submit. Plan and
+decisions: `docs/superpowers/specs/2026-10-26-workspace-assistant-design.md`; behaviour is
+documented in [CONSOLE_API.md](CONSOLE_API.md#workspace-assistant). Evidence: backend
+tasks 1-10 merged on the branch with their per-task tests, and `docs/console_openapi.json`
+regenerated; the tab wiring and browser acceptance (tasks 11-12) were still in progress
+when this entry was written. Final verification: pending Task 14.
+
 Package hardening (2026-10-26, branch `feat/package-hardening`): follow-up to PR #32
 after the staging rollout to `5972b80` (schema `0450`, backfilled packages confirmed for
 `demo-meranti` and `joe`). Three owner decisions: the Inbox gate now accepts a
