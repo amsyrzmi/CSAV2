@@ -406,7 +406,7 @@ Every mutation is a proposal the user confirms on a card. Kinds: `email_export`
 (freeze a draft and save it to the user's own Gmail drafts), `training_submit` (submit a
 training request) and `inbox_decision` (approve or reject a held customer reply).
 `ProposalOut` is `{id, kind, status, card, result, created_at, expires_at}`; the card
-holds `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
+holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
 
 Statuses are `requested`, then `confirmed`, then `executed`, or `cancelled` / `expired`.
 A proposal lives 15 minutes and is visible only to its owner.
@@ -430,7 +430,7 @@ version. The package gate is re-run at confirm.
 
 | Code | Status | Meaning |
 |---|---|---|
-| `package_inactive` | 403 | The required package (or switch) does not allow the kind |
+| `package_inactive` | 403 | The required package is not active (a tenant switch that is off surfaces as 409 `agent_disabled` instead) |
 | `proposal_session_mismatch` | 403 | Confirmed from a different login session than the one that created it |
 | `proposal_not_found` | 404 | Unknown, foreign or not owned by the caller |
 | `proposal_expired` | 409 | Past its 15-minute lifetime; the status is persisted as `expired` |
@@ -471,7 +471,7 @@ identity and never on an HR grant. `reason` is `no_employee_link`, `no_manager` 
 `POST /console/v1/email/compose` (201, with the usual email idempotency key) takes exactly
 one of `recipient_employee_id` (resolved through the directory; 422
 `recipient_unresolved` when the person has no work email) or `recipient_address`, plus a
-subject and optional instructions and language. It returns a model-written draft with
+subject, instructions and an optional language (default `auto`). It returns a model-written draft with
 `thread_id` null and `source="model"`, exported through the existing export flow (and so
 through an `email_export` proposal). Nothing is sent.
 
