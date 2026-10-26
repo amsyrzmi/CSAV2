@@ -38,6 +38,9 @@ class ScriptedCompletion:
         self.replies: list[str] = []
         self.calls: list[tuple[str, str, str]] = []
 
+    def fail(self, code: str) -> None:
+        self.replies.append(f"!{code}")
+
     def reply(self, proposal: dict[str, Any]) -> None:
         self.replies.append(json.dumps({"proposal": proposal}))
 
@@ -46,6 +49,8 @@ class ScriptedCompletion:
     ) -> Any:
         self.calls.append((schema.__name__, system, user))
         raw = self.replies.pop(0)
+        if raw.startswith("!"):
+            raise GroqError(raw[1:])
         assert issubclass(schema, BaseModel)
         try:
             return schema.model_validate_json(raw)
@@ -349,6 +354,19 @@ async def test_invalid_planner_output_is_502_and_stores_nothing(planned) -> None
     blank = await _turn(w, browser, thread, "Everyone", "hr")
     assert blank.status_code == 502 and blank.json()["detail"] == "planner_invalid_output"
     assert await _turn_rows(w) == []
+
+
+@requires_docker
+@pytest.mark.parametrize("code", ["groq_timeout", "groq_transport_error", "groq_http_500"])
+async def test_planner_provider_failure_is_503_and_stores_nothing(planned, code: str) -> None:
+    w, model = planned
+    browser = await _hr_member(w)
+    thread = await _thread(w, browser)
+    model.fail(code)
+    turn = await _turn(w, browser, thread, "Request first aid training", "hr")
+    assert turn.status_code == 503 and turn.json()["detail"] == "planner_unavailable"
+    assert await _turn_rows(w) == []
+    assert await _proposal_count(w) == 0
 
 
 @requires_docker

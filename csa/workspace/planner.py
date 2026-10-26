@@ -74,11 +74,13 @@ class PlannerInvalidOutput(PlannerError):
         super().__init__("planner_invalid_output")
 
 
-class PlannerUpstreamError(PlannerError):
-    """The model provider failed (timeout, transport or HTTP error)."""
+class PlannerUnavailable(PlannerError):
+    """The model provider failed (timeout, transport or HTTP error); retryable."""
+
+    status_code = 503
 
     def __init__(self) -> None:
-        super().__init__("planner_upstream_error")
+        super().__init__("planner_unavailable")
 
 
 _MALAY_MARKERS = frozenset(
@@ -152,7 +154,7 @@ class WorkspacePlanner:
         except CompletionError as exc:
             if exc.code == "groq_invalid_output":
                 raise PlannerInvalidOutput() from None
-            raise PlannerUpstreamError() from None
+            raise PlannerUnavailable() from None
         if not isinstance(output, PlannerOutput):
             raise PlannerInvalidOutput()
         return output.proposal
