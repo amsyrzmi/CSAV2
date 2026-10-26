@@ -13,6 +13,14 @@ export class ApiError extends Error {
 const explained: Record<string, string> = {
   package_inactive:
     "This area is not part of your organisation's active service packages. Ask your administrator to activate it in Services.",
+  proposal_stale:
+    "The record changed after this was proposed. Nothing was changed; review it and ask again.",
+  proposal_consumed: "This proposal was already decided. Nothing more was changed.",
+  proposal_expired: "This proposal expired. Nothing was changed; ask again if you still need it.",
+  agent_disabled:
+    "This assistant is switched off for your organisation. An administrator can turn it on in its settings.",
+  planner_unavailable: "The assistant is unavailable right now. Try again in a moment.",
+  mailbox_not_connected: "Connect your Gmail in the Email tab first.",
 };
 
 async function decode<T>(response: Response): Promise<T> {

@@ -1,10 +1,12 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { hrClient, type AgentResult } from "@/lib/hr-api";
+import { hrClient, isProposal, type AgentResult } from "@/lib/hr-api";
 import { localDictation, speakLocal } from "@/lib/hr-voice";
+import type { ProposalOut } from "@/lib/workspace-api";
+import { ProposalCard } from "./ProposalCard";
 import { action, field, secondary, Notice, Panel } from "./ui";
 
-function status(result: AgentResult): string {
+function status(result: Exclude<AgentResult, ProposalOut>): string {
   if ("operation" in result) return `${result.status.replaceAll("_", " ")} · reference ${result.resource_id}`;
   if ("clarification" in result) return ({ request_details: "Please provide the request details, dates or reference needed to continue.",
     manual_decision_required: "This action needs a human decision. Open the request in Training or HR requests.",
@@ -21,6 +23,7 @@ export function HrAssistant({ tenant, readonly }: { tenant: string; readonly: bo
   const [message, setMessage] = useState("");
   const [source, setSource] = useState<"text" | "voice">("text");
   const [result, setResult] = useState("");
+  const [proposal, setProposal] = useState<ProposalOut | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
@@ -38,8 +41,11 @@ export function HrAssistant({ tenant, readonly }: { tenant: string; readonly: bo
   }
   async function send(event: React.FormEvent) {
     event.preventDefault(); if (inFlight.current) return;
-    inFlight.current = true; setBusy(true); setError("");
-    try { setResult(status(await client.chat(message, source))); }
+    inFlight.current = true; setBusy(true); setError(""); setResult(""); setProposal(null);
+    try {
+      const reply = await client.chat(message, source);
+      if (isProposal(reply)) setProposal(reply); else setResult(status(reply));
+    }
     catch (cause) { setError(`${(cause as Error).message}. Check saved requests before retrying; an identical retry keeps its key.`); }
     finally { inFlight.current = false; setBusy(false); }
   }
@@ -52,6 +58,7 @@ export function HrAssistant({ tenant, readonly }: { tenant: string; readonly: bo
       <p className="text-xs text-ink-500">Review dictated text before sending. Local dictation needs browser support and an installed language pack.</p>
     </form>
     {error && <Notice error>{error}</Notice>}
+    {proposal && <ProposalCard key={proposal.id} proposal={proposal} tenantId={tenant} />}
     {result && <><Notice>{result}</Notice><button className={secondary} onClick={() => { try { speakLocal(result); } catch (cause) { setError((cause as Error).message); } }}>Read status aloud locally</button></>}
   </div></Panel>;
 }

@@ -17,6 +17,8 @@ export interface Me {
   active_client_id: string | null;
   role: ConsoleRole | null;
   csrf_token: string;
+  /** WORKSPACE_ASSISTANT_ENABLED on the gateway; the dock renders only when true. */
+  workspace_assistant?: boolean;
 }
 export interface TokenInfo {
   email: string;

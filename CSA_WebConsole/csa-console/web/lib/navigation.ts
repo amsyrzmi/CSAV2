@@ -3,7 +3,7 @@ import type { PackageState } from "./services-api";
 
 export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base" | "chat"
-  | "workspace" | "inbox" | "email" | "business" | "tenants" | "members"
+  | "inbox" | "email" | "business" | "tenants" | "members"
   | "team" | "password";
 export interface NavLink { href: string; label: string; key: NavKey }
 
@@ -36,7 +36,6 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "activity", label: "Runtime activity", href: to("activity") },
     { key: "knowledge_base", label: "Knowledge base", href: admin ? "/knowledge-base" : "/portal/faq" },
     { key: "chat", label: "Sandbox assistant", href: to("chat") },
-    { key: "workspace", label: "Staff workspace", href: to("workspace"), show: writer },
     { key: "inbox", label: "Customer inbox", href: to("inbox"), show: writer },
     { key: "email", label: "Email assistant", href: to("email"), show: writer },
     { key: "business", label: "Business management", href: to("business"), show: writer },

@@ -52,6 +52,13 @@ class HrChatPlan(HrModel):
         return self
 
 
+class TrainingSubmitIntent(HrModel):
+    """Planned submit of an existing draft; the route turns it into a confirmable proposal."""
+
+    request_id: UUID
+    replayed: bool = False  # the plan came from hr_chat_plans, so a proposal may already exist
+
+
 class HrAssistant:
     def __init__(self, service: HrService, client: JsonCompletionClient):
         self.service, self.client = service, client
@@ -126,4 +133,12 @@ class HrAssistant:
             await self.service._session(conn, bound)
         if plan.action is None:
             return plan
+        if (
+            isinstance(plan.action, TrainingTransition)
+            and plan.action.command.action == TrainingAction.SUBMIT
+        ):
+            # Mutations are never applied here; the shared proposal registry owns them.
+            return TrainingSubmitIntent(
+                request_id=plan.action.request_id, replayed=stored is not None
+            )
         return await HrAgentDispatcher(self.service).execute(bound, plan.action, key)

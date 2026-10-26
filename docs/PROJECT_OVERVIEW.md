@@ -77,17 +77,20 @@ Key safety boundaries:
 - The adopted runtime is Python 3.12, FastAPI, async psycopg 3, LangGraph and
   PostgreSQL; the adopted UI is the Next.js application under
   `CSA_WebConsole/csa-console/web/`.
-- The authenticated internal staff workspace has distinct owner-private
-  conversations and deterministic page guidance plus a tenant-scoped local order
-  read. It is separate from the customer sandbox and has no mutation, HR, model-tool
-  or voice integration.
+- The authenticated internal staff workspace assistant (floating dock on every tab)
+  has distinct owner-private conversations, deterministic page guidance, a tenant-scoped
+  local order read and, behind `WORKSPACE_ASSISTANT_ENABLED` (default off), a planner
+  that proposes one typed action per message. Every mutation (email export, training
+  submit, inbox decision) is a proposal the user confirms on a card; a basic company
+  directory and the caller's manager lookup serve it. It is separate from the customer
+  sandbox and has no voice integration. See [CONSOLE_API.md](./CONSOLE_API.md#workspace-assistant).
 - M5 Telegram staff inbox/reply approval has historical guarded-dev acceptance.
   M6 remains incomplete: local business reads are not marketplace synchronization
   or authoritative stock management.
 - M6B verifier/completion pieces are synthetic/offline foundations and are not
   callback/runtime registered. No real app registry, provider credential
   resolution or live seller authorization is established.
-- Source currently expects schema 0450. The last approved persistent-dev schema
+- Source currently expects schema 0460. The last approved persistent-dev schema
   was recorded as 0300; that record is not a fresh probe or migration approval.
 - CI/package and exact hosted-artifact disposable acceptance passed for the
   reviewed build. See [current progress](./PROGRESS.md) for run IDs, exact evidence

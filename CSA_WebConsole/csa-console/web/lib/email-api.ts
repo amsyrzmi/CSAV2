@@ -90,6 +90,5 @@ export function emailClient(tenant: string) {
     updateDraft: (id: string, body: { recipient: string; subject: string; body: string }) =>
       write<Draft>(`/drafts/${id}`, body, "PUT"),
     deleteDraft: (id: string) => write<Receipt>(`/drafts/${id}/delete`, undefined),
-    exportDraft: (id: string) => write<Draft>(`/drafts/${id}/export`, undefined),
   };
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unicodedata
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Union
 from uuid import UUID
 
 from pydantic import (
@@ -54,10 +54,36 @@ class OrderPageHint(_Contract):
 PageHint = Annotated[OverviewPageHint | OrderPageHint, Field(discriminator="page")]
 
 
+TabKey = Literal[
+    "overview",
+    "services",
+    "inbox",
+    "knowledge_base",
+    "business",
+    "hr",
+    "email",
+    "activity",
+    "chat",
+]
+
+
+class RecordRef(_Contract):
+    kind: Literal["conversation", "approval", "training_request", "draft", "order", "employee"]
+    id: str = Field(min_length=1, max_length=100)
+    version: int | None = None
+
+
+class PageContext(_Contract):
+    tab: TabKey
+    section: str | None = Field(default=None, max_length=40)
+    record: RecordRef | None = None
+
+
 class WorkspaceTurnInput(_Contract):
     request_key: UUID
     body: str = Field(min_length=1, max_length=4000)
-    page_hint: PageHint | None = None
+    page_context: PageContext | None = None
+    page_hint: PageHint | None = None  # legacy page-guidance path
 
     @field_validator("body")
     @classmethod
@@ -77,9 +103,144 @@ class OrderReadProposal(_Contract):
     resource: OrderHint
 
 
-WorkspaceActionProposal = Annotated[
-    GuidanceProposal | OrderReadProposal, Field(discriminator="action")
+class AnswerProposal(_Contract):
+    action: Literal["answer"]
+    markdown: str = Field(min_length=1, max_length=8000)
+    reads: list[Literal["read_current_record", "my_profile", "my_packages"]] = Field(
+        default_factory=list, max_length=3
+    )
+
+
+class NavigateProposal(_Contract):
+    action: Literal["navigate"]
+    tab: TabKey
+    section: str | None = Field(default=None, max_length=40)
+    record: RecordRef | None = None
+    resume: bool = False
+
+
+class DirectoryLookupProposal(_Contract):
+    action: Literal["directory_lookup"]
+    query: str = Field(min_length=1, max_length=120)
+
+
+class EmailComposeProposal(_Contract):
+    action: Literal["email_compose"]
+    recipient_employee_id: UUID | None = None
+    recipient_address: str | None = Field(default=None, min_length=3, max_length=254)
+    subject: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(default="", max_length=1000)
+    language: Literal["auto", "en", "ms"] = "auto"
+
+    @model_validator(mode="after")
+    def one_recipient(self) -> EmailComposeProposal:
+        if (self.recipient_employee_id is None) == (self.recipient_address is None):
+            raise ValueError("set exactly one of recipient_employee_id and recipient_address")
+        return self
+
+
+class TrainingSubmitProposal(_Contract):
+    action: Literal["training_submit"]
+    request_id: UUID | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    learning_objective: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def request_or_new(self) -> TrainingSubmitProposal:
+        new = self.title is not None and self.learning_objective is not None
+        partial = (self.title is not None) != (self.learning_objective is not None)
+        if partial or (self.request_id is not None) == new:
+            raise ValueError("give request_id alone, or both title and learning_objective")
+        return self
+
+
+class InboxDecisionProposal(_Contract):
+    action: Literal["inbox_decision"]
+    approval_id: int = Field(ge=1)
+    conversation_id: UUID
+    decision: Literal["approve", "reject"]
+    expected_version: int = Field(ge=0)
+
+
+class ClarificationOption(_Contract):
+    label: str = Field(min_length=1, max_length=100)
+    value: str = Field(min_length=1, max_length=200)
+
+
+class ClarificationProposal(_Contract):
+    action: Literal["clarification"]
+    question: str = Field(min_length=1, max_length=500)
+    options: list[ClarificationOption] = Field(default_factory=list, max_length=5)
+
+
+WorkspaceProposal = Annotated[
+    Union[  # noqa: UP007 - Annotated discriminated union of named members
+        AnswerProposal,
+        NavigateProposal,
+        DirectoryLookupProposal,
+        EmailComposeProposal,
+        TrainingSubmitProposal,
+        InboxDecisionProposal,
+        ClarificationProposal,
+        GuidanceProposal,
+        OrderReadProposal,
+    ],
+    Field(discriminator="action"),
 ]
+WorkspaceActionProposal = WorkspaceProposal
+
+ProposalKind = Literal["email_export", "training_submit", "inbox_decision"]
+
+
+class EmailExportProposal(_Contract):
+    action: Literal["email_export"]
+    draft_id: UUID
+
+
+class ProposalCreate(_Contract):
+    """Direct proposal creation from a tab; ``payload`` is validated by the kind's executor."""
+
+    kind: ProposalKind
+    payload: dict[str, object]
+    thread_id: UUID | None = None
+
+
+class CardField(_Contract):
+    label: str
+    value: str
+
+
+class ProposalCard(_Contract):
+    proposal_id: UUID
+    kind: ProposalKind
+    title: str
+    summary: str
+    fields: list[CardField]
+    expires_at: AwareDatetime
+    expected_version: str | None
+
+
+class ProposalOut(_Contract):
+    id: UUID
+    kind: ProposalKind
+    status: Literal["requested", "confirmed", "executed", "expired", "cancelled"]
+    card: ProposalCard
+    result: dict[str, object] | None
+    created_at: AwareDatetime
+    expires_at: AwareDatetime
+
+
+class PersonOut(_Contract):
+    employee_id: UUID
+    display_name: str
+    job_title: str | None
+    work_email: str | None
+
+
+class MyPeopleOut(_Contract):
+    employee_id: UUID | None
+    manager: PersonOut | None
+    reason: Literal["no_employee_link", "no_manager", "package_inactive"] | None
 
 
 class VerifiedWorkspacePrincipal(_Contract):
@@ -281,7 +442,47 @@ class WorkspaceUnavailableResult(_Contract):
 
 
 CompletedResult = GuidanceResult | OrderReadResult
-WorkspaceActionResult = CompletedResult | WorkspaceDeniedResult | WorkspaceUnavailableResult
+
+
+class ProposalResult(_Contract):
+    action: Literal["proposal"]
+    proposal: ProposalOut
+
+
+class AnswerResult(_Contract):
+    action: Literal["answer"]
+    markdown: str
+
+
+class NavigateResult(_Contract):
+    action: Literal["navigate"]
+    tab: TabKey
+    section: str | None = None
+    record: RecordRef | None = None
+    resume: bool = False
+
+
+class DirectoryResult(_Contract):
+    action: Literal["directory_lookup"]
+    candidates: list[PersonOut]
+
+
+class ClarificationResult(_Contract):
+    action: Literal["clarification"]
+    question: str
+    options: list[ClarificationOption]
+
+
+WorkspaceActionResult = (
+    CompletedResult
+    | WorkspaceDeniedResult
+    | WorkspaceUnavailableResult
+    | ProposalResult
+    | AnswerResult
+    | NavigateResult
+    | DirectoryResult
+    | ClarificationResult
+)
 
 
 class CreateWorkspaceThread(_Contract):

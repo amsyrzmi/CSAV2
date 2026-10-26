@@ -1,5 +1,4 @@
 import { api } from "@/lib/api";
-import { workspaceEndpoint } from "@/lib/workspace-paths.mjs";
 
 export type WorkspacePageKey =
   | "workspace_home"
@@ -12,6 +11,80 @@ export type WorkspacePageHint =
       page: "business_order";
       entity: { kind: "local_order"; order_id: string };
     };
+
+export type TabKey =
+  | "overview"
+  | "services"
+  | "inbox"
+  | "knowledge_base"
+  | "business"
+  | "hr"
+  | "email"
+  | "activity"
+  | "chat";
+
+export interface RecordRef {
+  kind:
+    | "conversation"
+    | "approval"
+    | "training_request"
+    | "draft"
+    | "order"
+    | "employee";
+  id: string;
+  version?: number | null;
+}
+
+export interface PageContext {
+  tab: TabKey;
+  section?: string | null;
+  record?: RecordRef | null;
+}
+
+export type ProposalKind = "email_export" | "training_submit" | "inbox_decision";
+
+export interface ProposalCard {
+  proposal_id: string;
+  kind: ProposalKind;
+  title: string;
+  summary: string;
+  fields: { label: string; value: string }[];
+  expires_at: string;
+  expected_version: string | null;
+}
+
+export interface ProposalOut {
+  id: string;
+  kind: ProposalKind;
+  status: "requested" | "confirmed" | "executed" | "expired" | "cancelled";
+  card: ProposalCard;
+  result: Record<string, unknown> | null;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface PersonOut {
+  employee_id: string;
+  display_name: string;
+  job_title: string | null;
+  work_email: string | null;
+}
+
+export interface MyPeopleOut {
+  employee_id: string | null;
+  manager: PersonOut | null;
+  reason: "no_employee_link" | "no_manager" | "package_inactive" | null;
+}
+
+/** Server error codes callers branch on via `ApiError.code`. */
+export type WorkspaceErrorCode =
+  | "package_inactive"
+  | "proposal_expired"
+  | "proposal_consumed"
+  | "proposal_session_mismatch"
+  | "proposal_stale"
+  | "planner_unavailable"
+  | "planner_invalid_output";
 
 export interface WorkspaceThread {
   id: string;
@@ -29,7 +102,31 @@ export interface WorkspaceTurn {
   result: WorkspaceResult;
 }
 
+export interface ClarificationOption {
+  label: string;
+  value: string;
+}
+
+/** Planner results (csa/workspace/contracts.py ProposalResult … ClarificationResult). */
+export type WorkspaceActionResult =
+  | { action: "proposal"; proposal: ProposalOut }
+  | { action: "answer"; markdown: string }
+  | {
+      action: "navigate";
+      tab: TabKey;
+      section: string | null;
+      record: RecordRef | null;
+      resume: boolean;
+    }
+  | { action: "directory_lookup"; candidates: PersonOut[] }
+  | {
+      action: "clarification";
+      question: string;
+      options: ClarificationOption[];
+    };
+
 export type WorkspaceResult =
+  | WorkspaceActionResult
   | {
       status: "completed";
       action: "page_guidance";
@@ -75,6 +172,21 @@ interface WorkspaceThreadPage {
 interface WorkspaceTurnPage {
   items: WorkspaceTurn[];
   next_cursor: number | null;
+}
+
+/** Tenant-scoped query; platform admins must always name the tenant. */
+function tenantQuery(tenantId?: string | null): string {
+  return tenantId ? `?${new URLSearchParams({ client_id: tenantId })}` : "";
+}
+
+export function workspaceEndpoint(
+  tenantId: string | null,
+  threadId: string | null = null,
+  turns = false,
+): string {
+  const threadPath = threadId ? `/${encodeURIComponent(threadId)}` : "";
+  const suffix = turns ? "/turns" : "";
+  return `/console/v1/workspace/conversations${threadPath}${suffix}${tenantQuery(tenantId)}`;
 }
 
 function request<T>(
@@ -127,14 +239,75 @@ export function createWorkspaceTurn(
   tenantId: string,
   threadId: string,
   body: string,
-  pageHint: WorkspacePageHint,
+  pageHint: WorkspacePageHint | null,
   requestKey: string,
   signal?: AbortSignal,
+  pageContext?: PageContext | null,
 ): Promise<WorkspaceTurn> {
   return request(
     workspaceEndpoint(tenantId, threadId, true),
     "POST",
-    { request_key: requestKey, body, page_hint: pageHint },
+    {
+      request_key: requestKey,
+      body,
+      ...(pageHint ? { page_hint: pageHint } : {}),
+      ...(pageContext ? { page_context: pageContext } : {}),
+    },
     signal,
   );
+}
+
+const PROPOSALS = "/console/v1/workspace/proposals";
+const PEOPLE = "/console/v1/workspace/people";
+
+export function createProposal(
+  kind: ProposalKind,
+  payload: Record<string, unknown>,
+  threadId?: string,
+  signal?: AbortSignal,
+  tenantId?: string | null,
+): Promise<ProposalOut> {
+  return request(
+    `${PROPOSALS}${tenantQuery(tenantId)}`,
+    "POST",
+    { kind, payload, ...(threadId ? { thread_id: threadId } : {}) },
+    signal,
+  );
+}
+
+export function confirmProposal(
+  id: string,
+  signal?: AbortSignal,
+  tenantId?: string | null,
+): Promise<ProposalOut> {
+  return request(
+    `${PROPOSALS}/${encodeURIComponent(id)}/confirm${tenantQuery(tenantId)}`,
+    "POST",
+    undefined,
+    signal,
+  );
+}
+
+export function cancelProposal(
+  id: string,
+  signal?: AbortSignal,
+  tenantId?: string | null,
+): Promise<ProposalOut> {
+  return request(
+    `${PROPOSALS}/${encodeURIComponent(id)}/cancel${tenantQuery(tenantId)}`,
+    "POST",
+    undefined,
+    signal,
+  );
+}
+
+export function searchPeople(
+  q: string,
+  signal?: AbortSignal,
+): Promise<PersonOut[]> {
+  return request(`${PEOPLE}?${new URLSearchParams({ q })}`, "GET", undefined, signal);
+}
+
+export function myPeople(signal?: AbortSignal): Promise<MyPeopleOut> {
+  return request(`${PEOPLE}/me`, "GET", undefined, signal);
 }

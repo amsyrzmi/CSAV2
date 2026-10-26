@@ -40,6 +40,8 @@ class MeOut(Contract):
     active_client_id: UUID | None
     role: Role | None
     csrf_token: str
+    # WORKSPACE_ASSISTANT_ENABLED: the console renders the assistant dock only when true.
+    workspace_assistant: bool = False
 
 
 class ConsoleActor(Contract):
@@ -54,7 +56,7 @@ class ConsoleActor(Contract):
     memberships: list[MembershipOut]
     csrf_hash: str = Field(exclude=True, repr=False)
 
-    def me(self, csrf_token: str) -> MeOut:
+    def me(self, csrf_token: str, *, workspace_assistant: bool = False) -> MeOut:
         return MeOut(
             user=UserOut(
                 id=self.user_id,
@@ -67,6 +69,7 @@ class ConsoleActor(Contract):
             active_client_id=self.client_id,
             role=self.role,
             csrf_token=csrf_token,
+            workspace_assistant=workspace_assistant,
         )
 
 

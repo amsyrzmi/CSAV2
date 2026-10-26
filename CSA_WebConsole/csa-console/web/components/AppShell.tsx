@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import {
   Building2,
   LayoutDashboard,
@@ -22,7 +22,9 @@ import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
 import { navigationFor, type NavKey } from "@/lib/navigation";
 import type { PackageState } from "@/lib/services-api";
+import { AssistantDock } from "@/components/console/AssistantDock";
 import { Notice } from "@/components/console/ui";
+import { PageContextProvider } from "@/lib/page-context";
 
 const icons: Record<NavKey, LucideIcon> = {
   overview: LayoutDashboard,
@@ -31,7 +33,6 @@ const icons: Record<NavKey, LucideIcon> = {
   activity: Activity,
   knowledge_base: BookOpen,
   chat: MessageSquare,
-  workspace: MessageSquare,
   inbox: MessageSquare,
   email: Mail,
   business: Building2,
@@ -133,7 +134,13 @@ export function AppShell({
               <Notice error>{error}</Notice>
             </div>
           )}
-          {children}
+          <PageContextProvider>
+            {children}
+            {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}
+            <Suspense fallback={null}>
+              <AssistantDock me={me} packages={packages} />
+            </Suspense>
+          </PageContextProvider>
         </main>
       </div>
     </div>

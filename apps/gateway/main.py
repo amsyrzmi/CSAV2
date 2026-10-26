@@ -42,6 +42,8 @@ from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
+from csa.workspace.executors import build_proposal_registry
+from csa.workspace.planner import WorkspacePlanner
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -53,7 +55,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0450"
+EXPECTED_SCHEMA_VERSION = "0460"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -134,6 +136,7 @@ def create_app() -> FastAPI:
         )
         hr_http: httpx.AsyncClient | None = None
         email_http: httpx.AsyncClient | None = None
+        workspace_http: httpx.AsyncClient | None = None
         try:
             await pool.open(wait=True)
             app.state.pool = pool
@@ -145,6 +148,8 @@ def create_app() -> FastAPI:
             app.state.voice_model = settings.VOICE_STT_MODEL
             app.state.voice_sessions_config = settings.voice_session_config()
             app.state.telegram_ingress = TelegramIngress(pool)
+            # Executors resolve hr_service/email_service from app.state at call time.
+            app.state.proposal_registry = build_proposal_registry()
             if identity_pool is not None:
                 await identity_pool.open(wait=True)
                 identity = IdentityService(
@@ -154,6 +159,7 @@ def create_app() -> FastAPI:
                         secure_cookies=settings.CONSOLE_COOKIE_SECURE,
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
                         session_absolute_seconds=settings.CONSOLE_SESSION_ABSOLUTE_SECONDS,
+                        workspace_assistant=settings.WORKSPACE_ASSISTANT_ENABLED,
                     ),
                 )
                 await identity.check_ready()
@@ -190,8 +196,21 @@ def create_app() -> FastAPI:
                     )
                     await email.check_ready()
                     app.state.email_service = email
-            elif settings.HR_ASSISTANT_ENABLED or settings.EMAIL_ASSISTANT_ENABLED:
-                raise RuntimeError("HR and email assistants require console identity")
+                if settings.WORKSPACE_ASSISTANT_ENABLED:
+                    workspace_http = httpx.AsyncClient()
+                    app.state.workspace_planner = WorkspacePlanner(
+                        GroqClient(
+                            settings.GROQ_API_KEY.get_secret_value(),
+                            settings.GROQ_MODEL,
+                            workspace_http,
+                        )
+                    )
+            elif (
+                settings.HR_ASSISTANT_ENABLED
+                or settings.EMAIL_ASSISTANT_ENABLED
+                or settings.WORKSPACE_ASSISTANT_ENABLED
+            ):
+                raise RuntimeError("HR, email and workspace assistants require console identity")
             yield
         finally:
             try:
@@ -199,6 +218,8 @@ def create_app() -> FastAPI:
                     await hr_http.aclose()
                 if email_http is not None:
                     await email_http.aclose()
+                if workspace_http is not None:
+                    await workspace_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:

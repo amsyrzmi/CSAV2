@@ -50,6 +50,8 @@ class FakeGmail:
     def __init__(self) -> None:
         self.requests: list[tuple[str, str, bytes]] = []
         self.access_counter = 0
+        self.expected_thread_id: str | None = "t1"
+        self.expected_to = "aina@example.test"
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.method, request.url.path, request.content))
@@ -127,9 +129,9 @@ class FakeGmail:
             )
         if path.endswith("/drafts") and request.method == "POST":
             body = json.loads(request.content)
-            assert body["message"]["threadId"] == "t1"
+            assert body["message"].get("threadId") == self.expected_thread_id
             raw = base64.urlsafe_b64decode(body["message"]["raw"] + "==").decode()
-            assert "To: aina@example.test" in raw
+            assert f"To: {self.expected_to}" in raw
             return httpx.Response(200, json={"id": "gmail-draft-1"})
         return httpx.Response(404, json={"error": "unexpected"})
 
@@ -267,6 +269,13 @@ async def world(migrated_dsn: str) -> AsyncIterator[World]:
                 "VALUES (%s, %s, 'active', now(), 'test-fixture')",
                 (tenant, "staff_email"),
             )
+        # Directory-resolved recipients need the hr package (design: Email compose).
+        await w.q(
+            "INSERT INTO public.console_service_packages "
+            "(client_id, package, status, activated_at, reference) "
+            "VALUES (%s, 'hr', 'active', now(), 'test-fixture')",
+            (w.tenant,),
+        )
         for name, user in w.users.items():
             await w.q(
                 "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,%s)",
@@ -522,3 +531,141 @@ async def test_machine_tokens_and_identity_headers_are_refused(world: World) -> 
         assert extra.status_code == 400
     finally:
         await browser.aclose()
+
+
+COMPOSE = "/console/v1/email/compose"
+
+
+async def _enable_and_connect(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(crypto, "_key", lambda: b"\x07" * 32)
+    enabled = await world.call("admin", "PUT", "/console/v1/email/settings", {"enabled": True})
+    assert enabled.status_code == 200, enabled.text
+    started = await world.call("staff", "POST", "/console/v1/email/mailbox/connect")
+    state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+    done = await world.call(
+        "staff", "GET", f"/console/v1/email/oauth/callback?code=abc&state={state}"
+    )
+    assert done.status_code == 303 and "connected=1" in done.headers["location"]
+
+
+async def _employee(world: World, work_email: str | None, name: str = "Nur Aisyah") -> UUID:
+    employee = uuid4()
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,job_title,department,"
+        "work_email,manager_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (world.tenant, employee, name, "Manager", "Operations", work_email, None),
+    )
+    return employee
+
+
+async def test_compose_to_directory_employee_and_export(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    boss = await _employee(world, "aisyah@example.test")
+    body = {
+        "recipient_employee_id": str(boss),
+        "subject": "Leave next week",
+        "instructions": "Ask to take Friday off",
+        "language": "en",
+    }
+    key = uuid4()
+    composed = await world.call("staff", "POST", COMPOSE, body, key=key)
+    assert composed.status_code == 201, composed.text
+    draft = composed.json()
+    assert draft["recipient"] == "aisyah@example.test"
+    assert draft["thread_id"] is None and draft["source"] == "model"
+    assert draft["status"] == "draft"
+    assert "Nur Aisyah" in world.model.calls[-1][1]
+    world.gmail.expected_thread_id, world.gmail.expected_to = None, "aisyah@example.test"
+    again = await world.call("staff", "POST", COMPOSE, body, key=key)
+    assert again.status_code == 201 and again.json()["id"] == draft["id"]
+    exported = await world.call("staff", "POST", f"/console/v1/email/drafts/{draft['id']}/export")
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["status"] == "exported"
+
+
+async def test_compose_to_plain_address(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    composed = await world.call(
+        "staff",
+        "POST",
+        COMPOSE,
+        {"recipient_address": "boss@example.test", "subject": "Hello", "instructions": "Greet"},
+    )
+    assert composed.status_code == 201, composed.text
+    assert composed.json()["recipient"] == "boss@example.test"
+    bad = await world.call(
+        "staff",
+        "POST",
+        COMPOSE,
+        {"recipient_address": "Boss <b@example.test>", "subject": "Hello", "instructions": "x"},
+    )
+    assert bad.status_code == 422
+
+
+async def test_compose_recipient_rules(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    boss = await _employee(world, "aisyah@example.test")
+    both = await world.call(
+        "staff",
+        "POST",
+        COMPOSE,
+        {
+            "recipient_employee_id": str(boss),
+            "recipient_address": "x@example.test",
+            "subject": "s",
+            "instructions": "i",
+        },
+    )
+    assert both.status_code == 422
+    neither = await world.call("staff", "POST", COMPOSE, {"subject": "s", "instructions": "i"})
+    assert neither.status_code == 422
+    no_email = await _employee(world, None, "No Mail")
+    unresolved = await world.call(
+        "staff",
+        "POST",
+        COMPOSE,
+        {"recipient_employee_id": str(no_email), "subject": "s", "instructions": "i"},
+    )
+    assert unresolved.status_code == 422 and unresolved.json()["detail"] == "recipient_unresolved"
+    unknown = await world.call(
+        "staff",
+        "POST",
+        COMPOSE,
+        {"recipient_employee_id": str(uuid4()), "subject": "s", "instructions": "i"},
+    )
+    assert unknown.status_code == 422 and unknown.json()["detail"] == "recipient_unresolved"
+
+
+async def test_compose_to_directory_employee_needs_hr_package(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    boss = await _employee(world, "aisyah@example.test")
+    await world.q(
+        "DELETE FROM public.console_service_packages WHERE client_id=%s AND package='hr'",
+        (world.tenant,),
+    )
+    calls = len(world.model.calls)
+    body = {"recipient_employee_id": str(boss), "subject": "s", "instructions": "i"}
+    refused = await world.call("staff", "POST", COMPOSE, body)
+    assert refused.status_code == 403 and refused.json()["detail"] == "package_inactive"
+    assert len(world.model.calls) == calls
+    drafts = await world.q(
+        "SELECT count(*) n FROM email_drafts WHERE client_id=%s", (world.tenant,)
+    )
+    assert drafts[0]["n"] == 0
+    plain = {"recipient_address": "boss@example.test", "subject": "s", "instructions": "i"}
+    assert (await world.call("staff", "POST", COMPOSE, plain)).status_code == 201
+
+
+async def test_compose_needs_mailbox_and_enabled_switch(world: World) -> None:
+    body = {"recipient_address": "boss@example.test", "subject": "s", "instructions": "i"}
+    disabled = await world.call("staff", "POST", COMPOSE, body)
+    assert disabled.status_code == 409 and disabled.json()["detail"] == "assistant_disabled"
+    await world.call("admin", "PUT", "/console/v1/email/settings", {"enabled": True})
+    nobox = await world.call("staff", "POST", COMPOSE, body)
+    assert nobox.status_code == 409 and nobox.json()["detail"] == "mailbox_not_connected"
+    reader = await world.call("reader", "POST", COMPOSE, body)
+    assert reader.status_code == 403

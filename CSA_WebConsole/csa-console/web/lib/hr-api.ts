@@ -1,4 +1,5 @@
 import { api } from "./api";
+import type { ProposalOut } from "./workspace-api";
 
 export interface HrContext {
   employee: { tenant_id: string; employee_id: string } | null;
@@ -41,7 +42,12 @@ export interface Confirmation {
   expires_at: string;
   command: { action: string; expected_version: number; decision_note?: string | null };
 }
-export type AgentResult = { operation: string; status: string; resource_id: string } | Confirmation | { kind: "persisted_training"; request: Training } | Workflow | Employee | Training | { clarification: string; action?: null };
+export type AgentResult = { operation: string; status: string; resource_id: string } | Confirmation | { kind: "persisted_training"; request: Training } | Workflow | Employee | Training | { clarification: string; action?: null } | ProposalOut;
+
+/** A planned training submit comes back as a shared proposal (201) to confirm on its card. */
+export function isProposal(result: AgentResult): result is ProposalOut {
+  return "card" in result && "id" in result;
+}
 export interface Page<T> { items: T[]; next_cursor: string | null }
 
 /** Keys stay with an exact operation after an uncertain response. No HR data is stored locally. */

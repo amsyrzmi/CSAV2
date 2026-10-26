@@ -18,12 +18,14 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from pydantic import SecretStr
 
+from csa.console.contracts import ConsoleActor
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
 from csa.console.services import require_package
 from csa.decide.completion import CompletionError
 from csa.email.gmail import GmailError
 from csa.email.models import (
+    ComposeRequest,
     ConnectOut,
     DraftOut,
     DraftPage,
@@ -45,6 +47,47 @@ _CALLBACK_QUERY = {"client_id", "code", "state", "scope", "authuser", "prompt", 
 _MAX_BODY = 32768
 
 
+def email_http_error(exc: EmailPolicyError | GmailError) -> HTTPException:
+    """Content-free HTTP form of an email refusal, shared with workspace proposals."""
+    code = exc.code
+    if isinstance(exc, GmailError):
+        status = 502 if code in {"provider_unreachable", "provider_invalid_response"} else 409
+    elif code == "session_unavailable":
+        status = 401
+    elif code in {"permission_denied", "csrf_required"}:
+        status = 403
+    elif code == "recipient_unresolved":
+        status = 422
+    elif code == "resource_unavailable":
+        status = 404
+    elif code in {"provider_not_configured", "model_not_configured"}:
+        status = 503
+    else:
+        status = 409
+    return HTTPException(status, code)
+
+
+def email_session_from(
+    request: Request, actor: ConsoleActor, tenant_id: UUID, *, mutation: bool
+) -> EmailSession:
+    """Session proof for an authenticated actor; EmailService revalidates every field.
+
+    Callers have already authenticated the actor and, for mutations, checked CSRF.
+    """
+    if actor.platform_admin:
+        role = next((m.role for m in actor.memberships if m.client_id == tenant_id), None)
+    else:
+        role = actor.role.value if actor.role is not None else None
+    return EmailSession(
+        session_id=actor.session_id,
+        subject_id=actor.user_id,
+        tenant_id=tenant_id,
+        role=role,  # type: ignore[arg-type]
+        token_hash=SecretStr(digest(request.cookies.get(SESSION_COOKIE, ""))),
+        csrf_hash=SecretStr(digest(request.headers.get("x-csrf-token", ""))) if mutation else None,
+    )
+
+
 class EmailRoute(APIRoute):
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         handler = super().get_route_handler()
@@ -63,26 +106,11 @@ class EmailRoute(APIRoute):
                     status_code=422,
                     content={"detail": "invalid_email_input", "invalid_fields": len(exc.errors())},
                 )
-            except EmailPolicyError as exc:
-                code = exc.code
-                if code == "session_unavailable":
-                    status = 401
-                elif code in {"permission_denied", "csrf_required"}:
-                    status = 403
-                elif code == "resource_unavailable":
-                    status = 404
-                elif code in {"provider_not_configured", "model_not_configured"}:
-                    status = 503
-                else:
-                    status = 409
-                response = JSONResponse(status_code=status, content={"detail": code})
-            except GmailError as exc:
-                status = (
-                    502
-                    if exc.code in {"provider_unreachable", "provider_invalid_response"}
-                    else 409
+            except (EmailPolicyError, GmailError) as exc:
+                error = email_http_error(exc)
+                response = JSONResponse(
+                    status_code=error.status_code, content={"detail": error.detail}
                 )
-                response = JSONResponse(status_code=status, content={"detail": exc.code})
             except HTTPException as exc:
                 response = JSONResponse(
                     status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers
@@ -127,27 +155,18 @@ async def _resolve(request: Request, client_id: UUID | None, allowed: set[str]) 
         if client_id is None:
             raise HTTPException(400, "explicit_tenant_required")
         tenant_id = client_id
-        role = next((m.role for m in actor.memberships if m.client_id == client_id), None)
     else:
         if actor.client_id is None or (client_id is not None and client_id != actor.client_id):
             raise HTTPException(403, "tenant_not_authorized")
         tenant_id = actor.client_id
-        role = actor.role.value if actor.role is not None else None
     await require_package(request.app.state.pool, tenant_id, frozenset({"staff_email"}))
-    csrf_hash = None
-    if request.method not in {"GET", "HEAD", "OPTIONS"}:
-        if role == "read_only":
+    mutation = request.method not in {"GET", "HEAD", "OPTIONS"}
+    session = email_session_from(request, actor, tenant_id, mutation=mutation)
+    if mutation:
+        if session.role == "read_only":
             raise HTTPException(403, "read_only_session")
         await identity.require_csrf(request, actor)
-        csrf_hash = SecretStr(digest(request.headers.get("x-csrf-token", "")))
-    return EmailSession(
-        session_id=actor.session_id,
-        subject_id=actor.user_id,
-        tenant_id=tenant_id,
-        role=role,  # type: ignore[arg-type]
-        token_hash=SecretStr(digest(request.cookies.get(SESSION_COOKIE, ""))),
-        csrf_hash=csrf_hash,
-    )
+    return session
 
 
 async def _session(
@@ -249,6 +268,19 @@ def build_email_router() -> APIRouter:
         request_key: RequestKey,
     ) -> DraftOut:
         return await service.draft(session, thread_id, body, request_key)
+
+    @router.post("/compose", response_model=DraftOut, status_code=201)
+    async def compose(
+        request: Request,
+        body: ComposeRequest,
+        session: Session,
+        service: Service,
+        request_key: RequestKey,
+    ) -> DraftOut:
+        if body.recipient_employee_id is not None:
+            # Directory-resolved recipients come from HR records; gate before any write.
+            await require_package(request.app.state.pool, session.tenant_id, frozenset({"hr"}))
+        return await service.compose(session, body, request_key)
 
     @router.get("/drafts", response_model=DraftPage)
     async def drafts(session: Session, service: Service) -> DraftPage:

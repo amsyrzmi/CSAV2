@@ -29,6 +29,7 @@ from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
 from csa.email.gmail import FetchedThread, GmailClient, GmailError, build_reply_mime, pkce_pair
 from csa.email.models import (
+    ComposeRequest,
     ConnectOut,
     DraftOut,
     DraftPage,
@@ -319,6 +320,20 @@ class EmailService:
             )
             await self._session(conn, session)
         return DraftPage(items=[DraftOut.model_validate(row) for row in rows])
+
+    async def draft_by_id(self, session: EmailSession, draft_id: UUID) -> DraftOut:
+        """One of the caller's own drafts; read only, for confirmation cards."""
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            mailbox = await self._mailbox(conn, session, connected=False)
+            row = await q.fetch_one(
+                "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
+            )
+            await self._session(conn, session)
+        if row is None:
+            raise EmailPolicyError("resource_unavailable")
+        return DraftOut.model_validate(row)
 
     # ------------------------------------------------------------------ writes
 
@@ -665,6 +680,121 @@ class EmailService:
             )
             await self._session(conn, session)
         return DraftOut.model_validate(saved)
+
+    async def compose(self, session: EmailSession, request: ComposeRequest, key: UUID) -> DraftOut:
+        """Write a new internal email to a resolved recipient; saved as a draft, never sent."""
+        self._require_write(session)
+        if self.model is None:
+            raise EmailPolicyError("model_not_configured")
+        fingerprint = _fingerprint("draft.compose", request.model_dump(mode="json"))
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            replay = await self._replay(conn, session, key, "draft.compose", fingerprint)
+            mailbox = await self._mailbox(conn, session, connected=False)
+            if replay is not None:
+                existing = await q.fetch_one(
+                    "email/draft_get.sql",
+                    (session.tenant_id, mailbox["id"], UUID(replay.resource_id)),
+                    conn=conn,
+                )
+                await self._session(conn, session)
+                if existing is None:
+                    raise EmailPolicyError("resource_unavailable")
+                return DraftOut.model_validate(existing)
+            recipient_name: str | None = None
+            address = request.recipient_address
+            if request.recipient_employee_id is not None:
+                person = await q.fetch_one(
+                    "email/recipient_get.sql",
+                    (session.tenant_id, request.recipient_employee_id),
+                    conn=conn,
+                )
+                if person is None or not person["work_email"]:
+                    raise EmailPolicyError("recipient_unresolved")
+                recipient_name, address = person["display_name"], person["work_email"]
+            brand = await q.fetch_one("turn/get_client_brand.sql", (session.tenant_id,), conn=conn)
+            await self._session(conn, session)
+        assert address is not None
+        proposal = await self._compose_with_model(request, recipient_name, brand or {})
+        try:
+            checked = validated_draft(
+                mailbox["id"], "compose", address, proposal.subject, proposal.body
+            )
+        except ValidationError as exc:
+            raise EmailPolicyError("draft_rejected") from exc
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            replay = await self._replay(conn, session, key, "draft.compose", fingerprint)
+            if replay is not None:
+                existing = await q.fetch_one(
+                    "email/draft_get.sql",
+                    (session.tenant_id, mailbox["id"], UUID(replay.resource_id)),
+                    conn=conn,
+                )
+                await self._session(conn, session)
+                if existing is None:
+                    raise EmailPolicyError("resource_unavailable")
+                return DraftOut.model_validate(existing)
+            draft_id = uuid4()
+            saved = await q.fetch_one(
+                "email/draft_insert.sql",
+                (
+                    session.tenant_id,
+                    mailbox["id"],
+                    draft_id,
+                    None,
+                    checked.recipient,
+                    checked.subject,
+                    checked.body,
+                    "model",
+                ),
+                conn=conn,
+            )
+            await self._record(
+                conn,
+                session,
+                key,
+                "draft.compose",
+                fingerprint,
+                Receipt(
+                    operation="draft.compose",
+                    resource_id=str(draft_id),
+                    status="drafted",
+                    detail={"needs_facts_from_staff": proposal.needs_facts_from_staff},
+                ),
+            )
+            await self._session(conn, session)
+        return DraftOut.model_validate(saved)
+
+    async def _compose_with_model(
+        self, request: ComposeRequest, recipient_name: str | None, brand: dict[str, Any]
+    ) -> DraftProposal:
+        assert self.model is not None
+        business = brand.get("brand_name") or "the business"
+        language = {"auto": "English", "en": "English", "ms": "Bahasa Melayu"}[request.language]
+        to = recipient_name or "the recipient"
+        system = (
+            f"You write a short internal email at {business} for a staff member to review. "
+            f"It goes to one colleague, {to}: address them by that name, in a friendly, "
+            f"professional colleague tone. Write in {language}. Plain text, no markdown. "
+            "Use only the staff instructions; never invent facts, dates or commitments, and "
+            "where a fact is missing write a bracketed placeholder such as [STAFF: confirm "
+            "date] and list it in needs_facts_from_staff. Keep the requested subject unless "
+            "it is clearly unusable. Return JSON only."
+        )
+        user = json.dumps(
+            {"subject": request.subject, "staff_instructions": request.instructions},
+            ensure_ascii=False,
+        )
+        async with asyncio.timeout(MODEL_TIMEOUT_SECONDS + 5):
+            return await self.model.json_completion(
+                DraftProposal,
+                system=system,
+                user=user,
+                timeout=MODEL_TIMEOUT_SECONDS,
+                max_tokens=1500,
+            )
 
     @staticmethod
     def _reply_address(sender: str) -> str:

@@ -1,4 +1,4 @@
-SELECT a.id, a.conversation_id
+SELECT a.id, a.conversation_id, a.draft, a.status
 FROM public.approvals a
 JOIN public.conversations c ON c.client_id = a.client_id AND c.id = a.conversation_id
 WHERE a.client_id = %s AND a.id = %s AND c.channel = 'telegram'

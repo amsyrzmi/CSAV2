@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     GROQ_API_KEY: SecretStr
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     HR_ASSISTANT_ENABLED: bool = False
+    # Planner-driven workspace turns (page_context); off means those turns get 503.
+    WORKSPACE_ASSISTANT_ENABLED: bool = False
     # Explicit opt-in; local/OpenAI-compatible transcription endpoint, never browser supplied.
     VOICE_STT_ENDPOINT: HttpUrl | None = None
     VOICE_STT_API_KEY: SecretStr | None = None

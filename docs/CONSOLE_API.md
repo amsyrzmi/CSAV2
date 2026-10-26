@@ -338,40 +338,176 @@ Post-review offline full validation passes **692 tests** plus lint; ASGI/TCP ack
 Neither offline nor guarded-dev evidence is a guarantee under all laptop loads or
 approval for public deployment.
 
-## Authenticated internal workspace (A1)
+## Workspace assistant
 
-The `/workspace` (platform) and `/portal/workspace` (tenant) pages use a distinct,
-session-authenticated internal staff surface. It does not reuse customer sandbox
-conversations, customer contacts, `AgentContext`, Telegram staff actions, model tools
-or callback authority. Platform administrators must select a tenant explicitly;
-tenant administrators and staff are constrained to their active membership. Readers,
-machine principals and anonymous callers are denied. Browser identity/role/tenant
-claims are not accepted, and cookie-authenticated writes retain the global Origin/CSRF
-checks.
+The floating assistant dock (on every console tab) and the tab actions share one
+session-authenticated, owner-private surface under `/console/v1/workspace`. It does not
+reuse customer sandbox conversations, customer contacts, `AgentContext`, Telegram staff
+actions or callback authority. The Staff workspace tab is removed and its routes
+redirect. Platform administrators must select a tenant explicitly (`?client_id=`);
+tenant administrators and staff are constrained to their active membership. `read_only`
+members, machine principals and anonymous callers are denied by the workspace router,
+and the dock is hidden for `read_only` and for platform admins without `?client_id=`.
+`GET /auth/me` (and the other `MeOut` responses) carries `workspace_assistant`, which
+mirrors `WORKSPACE_ASSISTANT_ENABLED`; while it is `false` (the default) the dock is not
+rendered for anyone.
+Browser identity, role and tenant claims are never accepted, and cookie-authenticated
+writes keep the global Origin/CSRF checks. Responses are `Cache-Control: no-store`.
 
-Migration **0370** adds owner-private workspace threads and turns with tenant RLS,
-session-bound turn provenance and same-owner idempotency. Reads require both the
-transaction tenant and current human owner. Inputs are strict bounded page/entity
-hints; an order ID is only an untrusted lookup hint and never grants access. Turn text
-is redacted before persistence. No bearer, cookie, CSRF token, unrestricted HR payload
-or employee/contact identity mapping is stored.
+Migration **0370** added owner-private threads and turns (tenant RLS, session-bound
+provenance, same-owner idempotency). Migration **0460** adds `console_proposals`
+(including the stored `card`, its `origin`, `claim_token` and `claimed_at`), relaxes the turn CHECKs for
+the new actions, and creates the `company_directory` and `company_directory_me` views.
+Turn text is redacted before persistence. No bearer, cookie, CSRF token, unrestricted HR
+payload or employee/contact identity mapping is stored.
 
 | Method/path | Body/query | Result |
 |---|---|---|
-| `POST /workspace/conversations` | `{request_key: UUID}`, tenant query | Creates an owner-private thread; same owner/tenant/key returns the same thread |
+| `POST /workspace/conversations` | `{request_key: UUID}`, tenant query | Creates an owner-private thread; same owner/tenant/key returns the same thread (200) |
 | `GET /workspace/conversations` | optional positive `before` sequence, tenant query | Active owner's threads, newest first, 20/page |
-| `POST /workspace/conversations/{id}/turns` | `{request_key, body, page_hint}`, tenant query | 201 completed/denied read result; same-key replay is 200 when the original local resource version is unchanged |
+| `POST /workspace/conversations/{id}/turns` | `{request_key, body (1..4000), page_context \| page_hint}`, tenant query | 201 turn with the planned result; same-key replay is 200. `page_context` and `page_hint` together are 422 |
 | `GET /workspace/conversations/{id}/turns` | optional positive `before` turn ID, tenant query | Owner-only turn history, newest ID first, 50/page |
+| `POST /workspace/proposals` | `{kind, payload, thread_id?}`, tenant query | 201 `ProposalOut` for a tab-initiated action; the kind's executor gates the package and validates the payload before any row exists |
+| `GET /workspace/proposals/{id}` | tenant query | The owner's proposal with its stored card and, once executed, its result |
+| `POST /workspace/proposals/{id}/confirm` | none, tenant query | 200 `ProposalOut` (see below) |
+| `POST /workspace/proposals/{id}/cancel` | none, tenant query | 200 `ProposalOut`; cancelling a requested proposal sets `cancelled` |
+| `GET /workspace/people` | `q` (1..80), tenant query | Up to 10 people (see People) |
+| `GET /workspace/people/me` | tenant query | The caller's employee link and manager |
 
-The only actions are fixed application guidance for supported workspace/business pages
-and a single local order read through the same authorized `get_local_order` service as
-the manual business console. Order projections identify `source:"local_records"`,
-`marketplace_sync:"unavailable"` and an `as_of` timestamp; a missing/foreign order
-returns only `resource_unavailable`. Reusing an idempotency key with different input,
-or replaying an order result after its resource version changes, returns 409. This is
-a synchronous read-only slice: no queued worker, model-generated instruction, business
-mutation, approval, HR access, marketplace request or interactive voice service is
-introduced.
+`page_context` is `{tab, section?, record?}` where `tab` is one of `overview`,
+`services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `activity`, `chat` and
+`record` is `{kind, id, version?}`. The legacy `page_hint` path (fixed page guidance and a
+single local order read with `source:"local_records"`, `marketplace_sync:"unavailable"`
+and an `as_of` timestamp) is unchanged; reusing a request key with different input, or
+replaying an order result after its resource version changes, returns 409. A
+missing or foreign order returns only `resource_unavailable`.
+
+### Planner
+
+A turn with `page_context` is planned by one model call that returns exactly one typed
+proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `training_submit`,
+`inbox_decision` or `clarification`. The planner only proposes; role, package, switch and
+record-version gates are enforced afterwards by the turn service and the proposal
+registry, so a wrong plan can at worst produce a refused turn or a card the user
+declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; the
+gateway then builds the planner from `GROQ_API_KEY` and `GROQ_MODEL`). Without a
+configured planner a `page_context` turn returns 503 `planner_unavailable`.
+
+- The prompt receives a server-built summary only: role, package states, the page, a
+  redacted record summary (ids, statuses, versions, redacted titles/subjects; an open
+  customer conversation also lists its pending held-reply approval ids and statuses), and
+  the thread's last 6 stored turns. Each stored turn contributes its (already redacted)
+  body, its action and result kind, and for a directory result or clarification the
+  employee ids or option values it offered and which one the next message picked.
+  Directory listings, names, addresses and record bodies are never sent.
+- When the message mentions the user's boss or manager, the server resolves the caller's
+  own manager (as `GET /workspace/people/me` does) before planning and passes only the
+  manager's `employee_id`, or a reason (`no_employee_link`, `no_manager`,
+  `package_inactive`).
+- The dock repeats the originating request in follow-up turns: picking a directory
+  candidate sends `Use employee <id> for: <original message>`, and a clarification answer
+  sends the option value with its question and the original message.
+- A `directory_lookup` without the `hr` package is answered ("not part of the subscribed
+  services") rather than refused. An `email_compose` to a directory employee
+  (`recipient_employee_id`) requires the `hr` package, on this path and on
+  `POST /email/compose`, and is refused with 403 `package_inactive` before any draft is
+  written.
+- The user's own message is sent to the planner unredacted; the stored turn body is
+  redacted before it is persisted.
+- A `navigate` to a tab that the role or packages do not unlock is turned into an
+  `answer` explaining that the package is not active.
+- Planner failures return 503 `planner_unavailable` (provider timeout, transport or HTTP
+  error; retryable) or 502 `planner_invalid_output` (output failed the strict schema).
+
+### Proposals and confirmation
+
+Every mutation is a proposal the user confirms on a card. Kinds: `email_export`
+(freeze a draft and save it to the user's own Gmail drafts), `training_submit` (submit a
+training request) and `inbox_decision` (approve or reject a held customer reply).
+`ProposalOut` is `{id, kind, status, card, result, created_at, expires_at}`; the card
+holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
+
+Statuses are `requested`, then `confirmed`, then `executed`, or `cancelled` / `expired`.
+A proposal lives 15 minutes and is visible only to its owner.
+
+Confirm succeeds only when all of these hold: the caller is the login session that
+created the proposal (and the request carries its CSRF token); the status is
+`requested`; it has not expired; the stored payload still matches its SHA-256 hash; and,
+when `expected_version` is set, the executor's re-read of the record still returns that
+version. The package gate is re-run at confirm.
+
+- Confirm takes an exclusive 2-minute claim lease (`claim_token`, `claimed_at`, measured
+  on the database clock). A second confirm during the lease gets 409 `proposal_consumed`.
+  A stale claim, left by a confirm that died, may be retaken after re-checking expiry and
+  the package gate; the executor then runs again and replays its receipt.
+- A repeat confirm of an executed proposal returns 200 with the stored result (replay).
+- Executors use idempotency keys derived from the proposal id, so the underlying action
+  never runs twice. If an executor fails, the caller's own claim is released.
+- Navigating to a different tab (a planned turn whose tab differs from the thread's last
+  turn) cancels the thread's `requested` proposals on the server. In the browser the dock
+  also cancels its requested cards whenever the route's tab changes (sidebar links, back
+  button or a `navigate` result), when the tenant changes, and when "New conversation"
+  drops them. Logout does not cancel proposals: it ends the login session, and because
+  confirm is bound to the session that created a proposal, its requested proposals can no
+  longer be confirmed and simply expire.
+
+| Code | Status | Meaning |
+|---|---|---|
+| `package_inactive` | 403 | The required package is not active (a tenant switch that is off surfaces as 409 `agent_disabled` instead) |
+| `proposal_session_mismatch` | 403 | Confirmed from a different login session than the one that created it |
+| `proposal_not_found` | 404 | Unknown, foreign or not owned by the caller |
+| `proposal_expired` | 409 | Past its 15-minute lifetime; the status is persisted as `expired` |
+| `proposal_consumed` | 409 | Already confirmed or cancelled, or another confirm holds the lease |
+| `proposal_stale` | 409 | Payload hash or `expected_version` no longer matches |
+| `planner_unavailable` | 503 | No planner configured, or the model provider failed |
+| `planner_invalid_output` | 502 | The model output failed the strict proposal schema |
+
+Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
+`workspace.proposal.created`, `workspace.proposal.confirmed`,
+`workspace.proposal.executed` and `workspace.proposal.cancelled`. A people search writes
+`workspace.people.lookup` with details `{"candidates": n}` only, never the query or a name.
+
+### Gates
+
+| Action | Requires |
+|---|---|
+| Inbox decision | `customer_support` package `active` or `suspended` |
+| Training submit | `hr` package active; training proposals created by the assistant (planner or HR chat) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
+| People search and `people/me` | `hr` package active (`people/me` reports `package_inactive` as a `reason`, not an error) |
+| Email export and compose | `staff_email` package active and `email_settings.enabled` |
+
+### People
+
+`GET /console/v1/workspace/people?q=` returns up to 10 of `employee_id`, `display_name`,
+`job_title` and `work_email` from the `company_directory` view, for every tenant staff
+member whose tenant has the `hr` package active. Nothing else about a person is exposed.
+A best-effort, in-memory throttle allows 60 lookups per minute per login session (429
+`people_lookup_rate_limited`); it resets on restart and is not shared across workers.
+
+`GET /console/v1/workspace/people/me` returns `{employee_id, manager, reason}` for the
+caller from the caller-only `company_directory_me` view, which is keyed on the caller's
+identity and never on an HR grant. `reason` is `no_employee_link`, `no_manager` or
+`package_inactive`. The organisation chart is not exposed to colleagues.
+
+### Email compose
+
+`POST /console/v1/email/compose` (201, with the usual email idempotency key) takes exactly
+one of `recipient_employee_id` (resolved through the directory; 422
+`recipient_unresolved` when the person has no work email) or `recipient_address`, plus a
+subject, instructions and an optional language (default `auto`). It returns a model-written draft with
+`thread_id` null and `source="model"`, exported through the existing export flow (and so
+through an `email_export` proposal). Nothing is sent.
+
+### HR assistant delegation
+
+`POST /console/v1/hr/assistant` keeps its HR planner and plan replay (`hr_chat_plans` is
+still written). A training submit no longer executes: it returns a `ProposalOut` with 201
+(a replay of the same request key returns 200 with the same proposal id), to be confirmed
+through the workspace proposals API. With the tenant `hr_assistant` switch off the call
+returns 409 `agent_disabled`: training proposals created by the assistant also require the
+tenant's `hr_assistant` switch (rechecked at confirm); tab-originated proposals
+(`POST /console/v1/workspace/proposals`) do not, because the human confirming the card is
+the safety boundary. Each stored proposal records its `origin` (`tab` or `assistant`).
 
 ## Business management (M6A/B; offline local reads and store records)
 
@@ -480,7 +616,7 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 |---|---|---|
 | GET `/auth/csrf` | — | Obtain/refresh CSRF; recover from stale session cookies |
 | POST `/auth/login` | `{email,password}` | Verified session; generic invalid-credential error |
-| GET `/auth/me` | — | Verified identity, current roles/memberships |
+| GET `/auth/me` | — | Verified identity, current roles/memberships, `workspace_assistant` flag (dock shown only when true) |
 | POST `/auth/logout` | — | Revoke current session, clear cookies; 204 |
 | POST `/auth/password/change` | `{current_password,new_password}` | Change own password (12–1024 chars), rotate session |
 | POST `/auth/password/reset` | `{email}` | Generic 202 directing user to admin; no account disclosure |
