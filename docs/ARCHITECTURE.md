@@ -96,6 +96,17 @@ Activating a package flips its member `is_enabled` and `client_enabled` switches
 same SQL as the capability toggle, so the switches stay the runtime enforcement. HR module and
 email inner switches are not flipped by activation.
 
+The staff workspace assistant sits above these gates rather than around them. Its
+proposals (`console_proposals`, migration `0460`) are session-bound, single-use and
+expire after 15 minutes; confirming one re-runs the same package gate and calls the
+owning HR, email or inbox service, so the assistant adds no authority of its own. The
+planner (behind `WORKSPACE_ASSISTANT_ENABLED`) sees only a server-built redacted summary.
+Who can see what is unchanged: a basic company directory (name, job title, work email)
+is visible to every tenant staff member whose `hr` package is active through the
+`company_directory` view, while the caller's own manager comes from the caller-only
+`company_directory_me` view and the organisation chart is not exposed to colleagues. See
+[CONSOLE_API.md](./CONSOLE_API.md#workspace-assistant).
+
 ## Evaluation and regression evidence
 
 - `csa/evals/decisions.py` compares live classifiers against 60 synthetic labelled messages;
