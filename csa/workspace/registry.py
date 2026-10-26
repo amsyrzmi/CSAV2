@@ -159,8 +159,13 @@ class ProposalRegistry:
         prepared: PreparedProposal,
         *,
         thread_id: UUID | None,
+        proposal_id: UUID | None = None,
     ) -> ProposalOut:
-        """Store a prepared proposal on the caller's tenant transaction."""
+        """Store a prepared proposal on the caller's tenant transaction.
+
+        With a caller-derived ``proposal_id`` the insert is idempotent: a second insert of the
+        same id (a retry or a concurrent twin) returns the stored proposal and audits nothing.
+        """
         card = {
             "kind": prepared.kind,
             "title": prepared.content.title,
@@ -171,6 +176,7 @@ class ProposalRegistry:
         row = await db.q.fetch_one(
             "workspace/proposal_insert.sql",
             (
+                proposal_id,
                 client_id,
                 actor.user_id,
                 actor.session_id,
@@ -184,7 +190,9 @@ class ProposalRegistry:
             conn=conn,
         )
         if row is None:
-            raise RuntimeError("proposal insert returned no row")
+            if proposal_id is None:
+                raise RuntimeError("proposal insert returned no row")
+            return await self.get(conn, actor, client_id, proposal_id)
         await _audit(conn, actor, client_id, "workspace.proposal.created", row)
         return _out(row)
 
@@ -198,10 +206,13 @@ class ProposalRegistry:
         payload: dict[str, Any],
         *,
         thread_id: UUID | None,
+        proposal_id: UUID | None = None,
     ) -> ProposalOut:
         prepared = await self.prepare(request, actor, client_id, kind, payload)
         async with tx(pool, str(client_id)) as conn:
-            return await self.insert(conn, actor, client_id, prepared, thread_id=thread_id)
+            return await self.insert(
+                conn, actor, client_id, prepared, thread_id=thread_id, proposal_id=proposal_id
+            )
 
     async def get(
         self, conn: AsyncConnection[Any], actor: ConsoleActor, client_id: UUID, proposal_id: UUID

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 from typing import Annotated, Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import psycopg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -22,7 +22,6 @@ from csa.console.contracts import ConsoleActor
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
 from csa.console.services import require_package
-from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError
 from csa.hr.agents import HrAgentDescription, describe_agent
@@ -52,8 +51,9 @@ from csa.hr.records import (
 from csa.hr.service import HrService
 from csa.hr.workflows import WorkflowCommand, WorkflowInput, WorkflowRecord
 from csa.workspace.contracts import ProposalOut
-from csa.workspace.registry import ProposalRegistry
+from csa.workspace.registry import ProposalError, ProposalRegistry
 
+_PROPOSAL_NS = UUID("5f0b8a3e-3c1d-4b57-9a52-7d2f1c6e8b40")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
 
 
@@ -222,7 +222,6 @@ def build_hr_router() -> APIRouter:
     async def assistant(
         body: HrChatInput,
         request: Request,
-        response: Response,
         session: Session,
         request_key: RequestKey,
     ):
@@ -236,36 +235,29 @@ def build_hr_router() -> APIRouter:
         if not isinstance(registry, ProposalRegistry):
             raise HTTPException(503, "proposal_registry_unavailable")
         actor = await request.app.state.identity_service.actor_for_request(request)
-        if result.replayed_plan_at is not None:
-            # hr_chat_plans is immutable, so the first proposal made from this replayed plan
-            # (same actor, session and draft, created after the plan) is the one to return.
+        # Deterministic id: a retry or a concurrent twin of this request resolves to one row.
+        proposal_id = uuid5(
+            _PROPOSAL_NS, f"{session.tenant_id}:{actor.user_id}:{actor.session_id}:{request_key}"
+        )
+        if result.replayed:
             async with tx(request.app.state.pool, str(session.tenant_id)) as conn:
-                found = await q.fetch_one(
-                    "workspace/proposal_by_hr_plan.sql",
-                    (
-                        session.tenant_id,
-                        actor.user_id,
-                        actor.session_id,
-                        str(result.request_id),
-                        result.replayed_plan_at,
-                    ),
-                    conn=conn,
-                )
-                if found is not None:
-                    return await registry.get(conn, actor, session.tenant_id, found["id"])
-        prepared = await registry.prepare(
+                try:
+                    existing = await registry.get(conn, actor, session.tenant_id, proposal_id)
+                except ProposalError:
+                    existing = None
+            if existing is not None:
+                return JSONResponse(existing.model_dump(mode="json"), status_code=200)
+        created = await registry.create(
+            request.app.state.pool,
             request,
             actor,
             session.tenant_id,
             "training_submit",
             {"action": "training_submit", "request_id": str(result.request_id)},
+            thread_id=None,
+            proposal_id=proposal_id,
         )
-        async with tx(request.app.state.pool, str(session.tenant_id)) as conn:
-            proposal = await registry.insert(
-                conn, actor, session.tenant_id, prepared, thread_id=None
-            )
-        response.status_code = 201
-        return proposal
+        return JSONResponse(created.model_dump(mode="json"), status_code=201)
 
     @router.post("/operations", response_model=OperationReceipt)
     async def operation(

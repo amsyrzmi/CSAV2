@@ -998,6 +998,66 @@ async def test_hr_assistant_submit_replay_returns_the_same_proposal(proposals_ap
         await http.aclose()
 
 
+async def _submit_ready_draft(w: SessionWorld, browser: httpx.AsyncClient) -> httpx.AsyncClient:
+    draft = await browser.post(
+        "/console/v1/hr/training-requests",
+        json={"title": "Forklift safety", "learning_objective": "Operate forklifts safely"},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+    return _hr_assistant(
+        w,
+        {
+            "action": "training.transition",
+            "request_id": draft.json()["request"]["request_id"],
+            "command": {"action": "submit", "expected_version": 0},
+        },
+    )
+
+
+async def test_hr_assistant_concurrent_same_key_creates_one_proposal(proposals_app) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    http = await _submit_ready_draft(w, browser)
+    key = str(uuid4())
+
+    async def ask() -> httpx.Response:
+        return await browser.post(
+            "/console/v1/hr/assistant",
+            json={"message": "Submit my forklift training"},
+            headers={**w.headers(browser), "Idempotency-Key": key},
+        )
+
+    try:
+        replies = await asyncio.gather(*[ask() for _ in range(4)])
+    finally:
+        await http.aclose()
+    assert all(r.status_code in {200, 201} for r in replies), [r.text for r in replies]
+    assert len({r.json()["id"] for r in replies}) == 1
+    assert len({r.json()["status"] for r in replies}) == 1
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 1
+    audits = await w.q(
+        "SELECT count(*) n FROM console_audit WHERE action='workspace.proposal.created'"
+    )
+    assert audits[0]["n"] == 1
+
+
+async def test_hr_assistant_different_keys_create_distinct_proposals(proposals_app) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    http = await _submit_ready_draft(w, browser)
+
+    async def ask() -> httpx.Response:
+        return await _ask_hr(w, browser)
+
+    try:
+        first, second = await asyncio.gather(ask(), ask())
+    finally:
+        await http.aclose()
+    assert first.status_code == second.status_code == 201, (first.text, second.text)
+    assert first.json()["id"] != second.json()["id"]
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 2
+
+
 async def test_hr_assistant_submit_refused_when_switch_is_off(proposals_app) -> None:
     w, _ = proposals_app
     browser = await _hr_member(w, switch=False)
