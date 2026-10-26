@@ -271,8 +271,15 @@ def build_email_router() -> APIRouter:
 
     @router.post("/compose", response_model=DraftOut, status_code=201)
     async def compose(
-        body: ComposeRequest, session: Session, service: Service, request_key: RequestKey
+        request: Request,
+        body: ComposeRequest,
+        session: Session,
+        service: Service,
+        request_key: RequestKey,
     ) -> DraftOut:
+        if body.recipient_employee_id is not None:
+            # Directory-resolved recipients come from HR records; gate before any write.
+            await require_package(request.app.state.pool, session.tenant_id, frozenset({"hr"}))
         return await service.compose(session, body, request_key)
 
     @router.get("/drafts", response_model=DraftPage)

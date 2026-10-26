@@ -269,6 +269,13 @@ async def world(migrated_dsn: str) -> AsyncIterator[World]:
                 "VALUES (%s, %s, 'active', now(), 'test-fixture')",
                 (tenant, "staff_email"),
             )
+        # Directory-resolved recipients need the hr package (design: Email compose).
+        await w.q(
+            "INSERT INTO public.console_service_packages "
+            "(client_id, package, status, activated_at, reference) "
+            "VALUES (%s, 'hr', 'active', now(), 'test-fixture')",
+            (w.tenant,),
+        )
         for name, user in w.users.items():
             await w.q(
                 "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,%s)",
@@ -629,6 +636,28 @@ async def test_compose_recipient_rules(world: World, monkeypatch: pytest.MonkeyP
         {"recipient_employee_id": str(uuid4()), "subject": "s", "instructions": "i"},
     )
     assert unknown.status_code == 422 and unknown.json()["detail"] == "recipient_unresolved"
+
+
+async def test_compose_to_directory_employee_needs_hr_package(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    boss = await _employee(world, "aisyah@example.test")
+    await world.q(
+        "DELETE FROM public.console_service_packages WHERE client_id=%s AND package='hr'",
+        (world.tenant,),
+    )
+    calls = len(world.model.calls)
+    body = {"recipient_employee_id": str(boss), "subject": "s", "instructions": "i"}
+    refused = await world.call("staff", "POST", COMPOSE, body)
+    assert refused.status_code == 403 and refused.json()["detail"] == "package_inactive"
+    assert len(world.model.calls) == calls
+    drafts = await world.q(
+        "SELECT count(*) n FROM email_drafts WHERE client_id=%s", (world.tenant,)
+    )
+    assert drafts[0]["n"] == 0
+    plain = {"recipient_address": "boss@example.test", "subject": "s", "instructions": "i"}
+    assert (await world.call("staff", "POST", COMPOSE, plain)).status_code == 201
 
 
 async def test_compose_needs_mailbox_and_enabled_switch(world: World) -> None:
