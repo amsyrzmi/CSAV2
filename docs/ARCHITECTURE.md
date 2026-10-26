@@ -99,7 +99,9 @@ email inner switches are not flipped by activation.
 The staff workspace assistant sits above these gates rather than around them. Its
 proposals (`console_proposals`, migration `0460`) are session-bound, single-use and
 expire after 15 minutes; confirming one re-runs the same package gate and calls the
-owning HR, email or inbox service, so the assistant adds no authority of its own. The
+owning HR, email or inbox service, so the assistant adds no authority of its own.
+Training proposals created by the assistant also require the tenant's `hr_assistant`
+switch; tab-originated proposals do not (each row stores its `origin`). The
 planner (behind `WORKSPACE_ASSISTANT_ENABLED`) sees only a server-built redacted summary.
 Who can see what is unchanged: a basic company directory (name, job title, work email)
 is visible to every tenant staff member whose `hr` package is active through the

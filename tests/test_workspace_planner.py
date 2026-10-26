@@ -229,8 +229,8 @@ async def test_training_submit_turn_creates_a_requested_proposal(planned) -> Non
     assert result["action"] == "proposal"
     proposal = result["proposal"]
     assert proposal["kind"] == "training_submit" and proposal["status"] == "requested"
-    rows = await w.q("SELECT thread_id, status FROM console_proposals")
-    assert rows == [{"thread_id": UUID(thread), "status": "requested"}]
+    rows = await w.q("SELECT thread_id, status, origin FROM console_proposals")
+    assert rows == [{"thread_id": UUID(thread), "status": "requested", "origin": "assistant"}]
     assert [(r["action"], r["page_key"]) for r in await _turn_rows(w)] == [
         ("training_submit", "hr")
     ]
@@ -250,6 +250,38 @@ async def test_training_submit_without_hr_is_refused_before_any_row(planned) -> 
     assert turn.status_code == 403 and turn.json()["detail"] == "package_inactive"
     assert await _proposal_count(w) == 0
     assert await _turn_rows(w) == []
+
+
+@requires_docker
+async def test_training_submit_turn_with_hr_assistant_off_is_refused_before_any_row(
+    planned,
+) -> None:
+    w, model = planned
+    browser = await _hr_member(w, switch=False)
+    thread = await _thread(w, browser)
+    model.reply({"action": "training_submit", "title": "First aid", "learning_objective": "Go"})
+    turn = await _turn(w, browser, thread, "Request first aid training", "hr")
+    assert turn.status_code == 409 and turn.json()["detail"] == "agent_disabled"
+    assert await _proposal_count(w) == 0
+    assert await _turn_rows(w) == []
+
+
+@requires_docker
+async def test_assistant_training_proposal_rechecks_the_switch_at_confirm(planned) -> None:
+    w, model = planned
+    browser = await _hr_member(w)
+    thread = await _thread(w, browser)
+    model.reply({"action": "training_submit", "title": "First aid", "learning_objective": "Go"})
+    turn = await _turn(w, browser, thread, "Request first aid training", "hr")
+    assert turn.status_code == 201, turn.text
+    proposal = turn.json()["result"]["proposal"]
+    await w.q(
+        "UPDATE hr_agent_settings SET enabled=false WHERE client_id=%s AND name='hr_assistant'",
+        w.tenants[0],
+    )
+    done = await w.mutate(browser, f"{PROPOSALS}/{proposal['id']}/confirm")
+    assert done.status_code == 409 and done.json()["detail"] == "agent_disabled"
+    assert (await w.q("SELECT count(*) n FROM hr_training_requests"))[0]["n"] == 0
 
 
 @requires_docker

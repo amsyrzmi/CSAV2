@@ -40,7 +40,7 @@ from csa.workspace.contracts import (
     ProposalKind,
     TrainingSubmitProposal,
 )
-from csa.workspace.registry import CardContent, ProposalError, ProposalRegistry
+from csa.workspace.registry import CardContent, ProposalError, ProposalOrigin, ProposalRegistry
 
 _ACTIVE = frozenset({"active"})
 _ACTIVE_OR_SUSPENDED = frozenset({"active", "suspended"})
@@ -70,16 +70,23 @@ class TrainingSubmitExecutor:
         return service
 
     @staticmethod
-    def _session(request: Request, actor: ConsoleActor, client_id: UUID) -> HrSession:
-        # assistant=True makes HrService enforce the tenant's hr_assistant switch on every call.
+    def _session(
+        request: Request, actor: ConsoleActor, client_id: UUID, origin: ProposalOrigin
+    ) -> HrSession:
+        # For assistant proposals, assistant=True makes HrService enforce the tenant's
+        # hr_assistant switch on every call; a tab proposal is the user's own action.
         session = hr_session_from(request, actor, client_id, mutation=True)
-        return session.model_copy(update={"assistant": True})
+        return session.model_copy(update={"assistant": origin == "assistant"})
 
-    async def gate(self, request: Request, actor: ConsoleActor, client_id: UUID) -> None:
+    async def gate(
+        self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
+    ) -> None:
         await require_package(request.app.state.pool, client_id, frozenset({"hr"}), _ACTIVE)
+        if origin != "assistant":
+            return
         try:
             await self._service(request).require_capability(
-                self._session(request, actor, client_id), "hr_assistant"
+                self._session(request, actor, client_id, origin), "hr_assistant"
             )
         except HrPolicyError as exc:
             raise hr_http_error(exc) from None
@@ -90,11 +97,13 @@ class TrainingSubmitExecutor:
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict[str, Any],
+        *,
+        origin: ProposalOrigin,
     ) -> tuple[CardContent, str | None]:
         proposal = _parse(TrainingSubmitProposal, self.kind, payload)
-        await self.gate(request, actor, client_id)
+        await self.gate(request, actor, client_id, origin=origin)
         service = self._service(request)
-        session = self._session(request, actor, client_id)
+        session = self._session(request, actor, client_id, origin)
         try:
             if proposal.request_id is None:
                 assert proposal.title is not None and proposal.learning_objective is not None
@@ -135,10 +144,11 @@ class TrainingSubmitExecutor:
         *,
         proposal_id: UUID,
         expected_version: str | None,
+        origin: ProposalOrigin,
     ) -> dict[str, Any]:
         proposal = _parse(TrainingSubmitProposal, self.kind, payload)
         service = self._service(request)
-        session = self._session(request, actor, client_id)
+        session = self._session(request, actor, client_id, origin)
         try:
             if proposal.request_id is None:
                 assert proposal.title is not None and proposal.learning_objective is not None
@@ -175,7 +185,9 @@ class EmailExportExecutor:
             raise HTTPException(503, "email_assistant_not_configured")
         return service
 
-    async def gate(self, request: Request, actor: ConsoleActor, client_id: UUID) -> None:
+    async def gate(
+        self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
+    ) -> None:
         await require_package(
             request.app.state.pool, client_id, frozenset({"staff_email"}), _ACTIVE
         )
@@ -186,9 +198,11 @@ class EmailExportExecutor:
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict[str, Any],
+        *,
+        origin: ProposalOrigin,
     ) -> tuple[CardContent, str | None]:
         proposal = _parse(EmailExportProposal, self.kind, payload)
-        await self.gate(request, actor, client_id)
+        await self.gate(request, actor, client_id, origin=origin)
         session = email_session_from(request, actor, client_id, mutation=True)
         try:
             draft = await self._service(request).draft_by_id(session, proposal.draft_id)
@@ -224,6 +238,7 @@ class EmailExportExecutor:
         *,
         proposal_id: UUID,
         expected_version: str | None,
+        origin: ProposalOrigin,
     ) -> dict[str, Any]:
         proposal = _parse(EmailExportProposal, self.kind, payload)
         session = email_session_from(request, actor, client_id, mutation=True)
@@ -239,7 +254,9 @@ class EmailExportExecutor:
 class InboxDecisionExecutor:
     kind: ProposalKind = "inbox_decision"
 
-    async def gate(self, request: Request, actor: ConsoleActor, client_id: UUID) -> None:
+    async def gate(
+        self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
+    ) -> None:
         await require_package(
             request.app.state.pool, client_id, frozenset({"customer_support"}), _ACTIVE_OR_SUSPENDED
         )
@@ -250,9 +267,11 @@ class InboxDecisionExecutor:
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict[str, Any],
+        *,
+        origin: ProposalOrigin,
     ) -> tuple[CardContent, str | None]:
         proposal = _parse(InboxDecisionProposal, self.kind, payload)
-        await self.gate(request, actor, client_id)
+        await self.gate(request, actor, client_id, origin=origin)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             approval = await db.q.fetch_one(
                 "inbox/get_approval.sql", (client_id, proposal.approval_id), conn=conn
@@ -284,6 +303,7 @@ class InboxDecisionExecutor:
         *,
         proposal_id: UUID,
         expected_version: str | None,
+        origin: ProposalOrigin,
     ) -> dict[str, Any]:
         proposal = _parse(InboxDecisionProposal, self.kind, payload)
         async with tx(request.app.state.pool, str(client_id)) as conn:

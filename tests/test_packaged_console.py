@@ -1994,10 +1994,8 @@ async def test_packaged_hr_browser_acceptance(
                 "VALUES (%s,%s,%s,'assigned_manager',%s)",
                 (tenants[0], users["manager"], action, fields),
             )
-        # Shared training_submit proposals run under the tenant's hr_assistant switch.
         await owner.execute(
-            "UPDATE hr_agent_settings SET enabled=true WHERE client_id=%s "
-            "AND name IN ('hr_training','hr_assistant')",
+            "UPDATE hr_agent_settings SET enabled=true WHERE client_id=%s AND name='hr_training'",
             (tenants[0],),
         )
 

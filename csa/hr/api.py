@@ -255,6 +255,7 @@ def build_hr_router() -> APIRouter:
             "training_submit",
             {"action": "training_submit", "request_id": str(result.request_id)},
             thread_id=None,
+            origin="assistant",
             proposal_id=proposal_id,
         )
         return JSONResponse(created.model_dump(mode="json"), status_code=201)

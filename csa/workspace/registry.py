@@ -44,6 +44,14 @@ _ERROR_STATUS: dict[ProposalErrorCode, int] = {
 }
 
 
+ProposalOrigin = Literal["tab", "assistant"]
+"""Who proposed it: a human on a console tab, or the assistant (planner or HR chat).
+
+Executors gate assistant-origin proposals on the tenant's assistant switches; a tab
+proposal is a human action, so only its package and the user's own permissions apply.
+"""
+
+
 CLAIM_LEASE = timedelta(minutes=2)
 """How long a confirm's execution claim excludes others (hard-coded in proposal_get.sql)."""
 
@@ -73,8 +81,10 @@ class ProposalExecutor(Protocol):
 
     kind: ProposalKind
 
-    async def gate(self, request: Request, actor: ConsoleActor, client_id: UUID) -> None:
-        """Refuse unless the tenant's package (and any switch) still allows this kind."""
+    async def gate(
+        self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
+    ) -> None:
+        """Refuse unless the tenant's package (and, for the assistant, any switch) allows it."""
         ...
 
     async def card(
@@ -83,6 +93,8 @@ class ProposalExecutor(Protocol):
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict[str, Any],
+        *,
+        origin: ProposalOrigin,
     ) -> tuple[CardContent, str | None]:
         """Run ``gate``, validate the payload, load the record as the user; return card+version.
 
@@ -100,6 +112,7 @@ class ProposalExecutor(Protocol):
         *,
         proposal_id: UUID,
         expected_version: str | None,
+        origin: ProposalOrigin,
     ) -> dict[str, Any]:
         """Perform the action through the owning service and return its JSON receipt.
 
@@ -117,6 +130,7 @@ class PreparedProposal:
     payload: dict[str, Any]
     content: CardContent
     version: str | None
+    origin: ProposalOrigin
 
 
 def payload_sha256(payload: Mapping[str, Any]) -> str:
@@ -146,10 +160,16 @@ class ProposalRegistry:
         client_id: UUID,
         kind: ProposalKind,
         payload: dict[str, Any],
+        *,
+        origin: ProposalOrigin,
     ) -> PreparedProposal:
         """Run the executor's gate and card read; call with no connection held."""
-        content, version = await self._executor(kind).card(request, actor, client_id, payload)
-        return PreparedProposal(kind=kind, payload=payload, content=content, version=version)
+        content, version = await self._executor(kind).card(
+            request, actor, client_id, payload, origin=origin
+        )
+        return PreparedProposal(
+            kind=kind, payload=payload, content=content, version=version, origin=origin
+        )
 
     async def insert(
         self,
@@ -159,6 +179,7 @@ class ProposalRegistry:
         prepared: PreparedProposal,
         *,
         thread_id: UUID | None,
+        origin: ProposalOrigin,
         proposal_id: UUID | None = None,
     ) -> ProposalOut:
         """Store a prepared proposal on the caller's tenant transaction.
@@ -166,6 +187,8 @@ class ProposalRegistry:
         With a caller-derived ``proposal_id`` the insert is idempotent: a second insert of the
         same id (a retry or a concurrent twin) returns the stored proposal and audits nothing.
         """
+        if origin != prepared.origin:
+            raise ValueError(f"proposal prepared as {prepared.origin} inserted as {origin}")
         card = {
             "kind": prepared.kind,
             "title": prepared.content.title,
@@ -186,6 +209,7 @@ class ProposalRegistry:
                 payload_sha256(prepared.payload),
                 prepared.version,
                 Jsonb(card),
+                origin,
             ),
             conn=conn,
         )
@@ -206,12 +230,19 @@ class ProposalRegistry:
         payload: dict[str, Any],
         *,
         thread_id: UUID | None,
+        origin: ProposalOrigin,
         proposal_id: UUID | None = None,
     ) -> ProposalOut:
-        prepared = await self.prepare(request, actor, client_id, kind, payload)
+        prepared = await self.prepare(request, actor, client_id, kind, payload, origin=origin)
         async with tx(pool, str(client_id)) as conn:
             return await self.insert(
-                conn, actor, client_id, prepared, thread_id=thread_id, proposal_id=proposal_id
+                conn,
+                actor,
+                client_id,
+                prepared,
+                thread_id=thread_id,
+                origin=origin,
+                proposal_id=proposal_id,
             )
 
     async def get(
@@ -259,13 +290,15 @@ class ProposalRegistry:
             raise ProposalError("proposal_expired")
         executor = self._executor(row["kind"])
         payload: dict[str, Any] = row["payload"]
+        origin: ProposalOrigin = row["origin"]
         seen_status, seen_token = row["status"], row["claim_token"]
         if seen_status == "requested":
-            _, version = await executor.card(request, actor, client_id, payload)
+            _, version = await executor.card(request, actor, client_id, payload, origin=origin)
             if version != row["expected_version"]:
                 raise ProposalError("proposal_stale")
         else:
-            await executor.gate(request, actor, client_id)  # retaking a stale claim
+            # Retaking a stale claim.
+            await executor.gate(request, actor, client_id, origin=origin)
         token = uuid4()
         async with tx(pool, client) as conn:
             row = await _locked(conn, actor, client_id, proposal_id)
@@ -291,6 +324,7 @@ class ProposalRegistry:
                 payload,
                 proposal_id=proposal_id,
                 expected_version=row["expected_version"],
+                origin=origin,
             )
         except Exception:
             # The service's own transaction rolled back; release our claim (only ours).

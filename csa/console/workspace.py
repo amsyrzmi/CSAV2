@@ -280,6 +280,7 @@ def build_workspace_router() -> APIRouter:
             body.kind,
             dict(body.payload),
             thread_id=body.thread_id,
+            origin="tab",
         )
         response.headers["Cache-Control"] = "no-store"
         return result

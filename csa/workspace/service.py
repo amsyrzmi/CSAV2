@@ -617,7 +617,7 @@ async def _compose(
     except EmailPolicyError as exc:
         raise email_http_error(exc) from None
     return await registry.prepare(
-        request, actor, client_id, "email_export", {"draft_id": str(draft.id)}
+        request, actor, client_id, "email_export", {"draft_id": str(draft.id)}, origin="assistant"
     )
 
 
@@ -664,7 +664,7 @@ async def _resolve(
         )
     if isinstance(proposal, TrainingSubmitProposal | InboxDecisionProposal):
         prepared = await registry.prepare(
-            request, actor, client_id, proposal.action, _payload(proposal)
+            request, actor, client_id, proposal.action, _payload(proposal), origin="assistant"
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailComposeProposal):
@@ -718,7 +718,9 @@ async def _finish(
         return planned.result
     if planned.prepared is not None:
         prepared = planned.prepared
-        stored = await registry.insert(conn, actor, client_id, prepared, thread_id=thread_id)
+        stored = await registry.insert(
+            conn, actor, client_id, prepared, thread_id=thread_id, origin="assistant"
+        )
         return ProposalResult(action="proposal", proposal=stored)
     if planned.lookup is not None:
         found = await search_people(conn, client_id, planned.lookup)

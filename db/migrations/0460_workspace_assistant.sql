@@ -17,6 +17,8 @@ CREATE TABLE public.console_proposals (
     payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
     expected_version text,
     card jsonb NOT NULL CHECK (jsonb_typeof(card) = 'object'),
+    -- Who proposed it: assistant-origin proposals also need the tenant's assistant switch.
+    origin text NOT NULL CHECK (origin IN ('tab','assistant')),
     status text NOT NULL CHECK (status IN ('requested','confirmed','executed','expired','cancelled')),
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL,

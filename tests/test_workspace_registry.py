@@ -27,7 +27,13 @@ from csa.hr.service import HrService
 from csa.workspace import registry as registry_module
 from csa.workspace.contracts import CardField, ProposalKind
 from csa.workspace.executors import build_proposal_registry
-from csa.workspace.registry import CLAIM_LEASE, CardContent, ProposalError, ProposalRegistry
+from csa.workspace.registry import (
+    CLAIM_LEASE,
+    CardContent,
+    ProposalError,
+    ProposalOrigin,
+    ProposalRegistry,
+)
 from fastapi import HTTPException
 from psycopg.rows import dict_row
 from pydantic import SecretStr
@@ -47,8 +53,8 @@ pytestmark = requires_docker
 
 INSERT_PROPOSAL = (
     "INSERT INTO console_proposals (client_id,user_id,login_session_id,kind,payload,"
-    "payload_sha256,card,status,expires_at) "
-    "VALUES (%s,%s,%s,%s,'{}',%s,'{}','requested',now()+interval '1 minute')"
+    "payload_sha256,card,origin,status,expires_at) "
+    "VALUES (%s,%s,%s,%s,'{}',%s,'{}','tab','requested',now()+interval '1 minute')"
 )
 TURN_COLUMNS = (
     "INSERT INTO console_workspace_turns (client_id,thread_id,owner_user_id,session_id,"
@@ -70,11 +76,21 @@ async def test_proposals_table_rls_grants_and_checks(sessions: SessionWorld) -> 
         await sessions.q(INSERT_PROPOSAL, t, sessions.admin_id, uuid4(), "nope", "0" * 64)
     with pytest.raises(Exception, match="payload_sha256|violates check"):
         await sessions.q(INSERT_PROPOSAL, t, sessions.admin_id, uuid4(), "email_export", "xyz")
+    with pytest.raises(Exception, match="console_proposals_origin_check"):
+        await sessions.q(
+            INSERT_PROPOSAL.replace("'tab'", "'planner'"),
+            t, sessions.admin_id, uuid4(), "email_export", "0" * 64,
+        )  # fmt: skip
+    with pytest.raises(Exception, match="origin"):  # NOT NULL
+        await sessions.q(
+            INSERT_PROPOSAL.replace("'tab'", "NULL"),
+            t, sessions.admin_id, uuid4(), "email_export", "0" * 64,
+        )  # fmt: skip
     with pytest.raises(Exception, match="expires_at|violates check"):
         await sessions.q(
             "INSERT INTO console_proposals (client_id,user_id,login_session_id,kind,payload,"
-            "payload_sha256,card,status,expires_at) VALUES (%s,%s,%s,'email_export','{}',%s,"
-            "'{}','requested',now()+interval '16 minutes')",
+            "payload_sha256,card,origin,status,expires_at) VALUES (%s,%s,%s,'email_export','{}',"
+            "%s,'{}','tab','requested',now()+interval '16 minutes')",
             t,
             sessions.admin_id,
             uuid4(),
@@ -82,7 +98,7 @@ async def test_proposals_table_rls_grants_and_checks(sessions: SessionWorld) -> 
         )
     with pytest.raises(Exception, match="card|violates check"):
         await sessions.q(
-            INSERT_PROPOSAL.replace("'{}','requested'", "'[]','requested'"),
+            INSERT_PROPOSAL.replace("'{}','tab'", "'[]','tab'"),
             t, sessions.admin_id, uuid4(), "email_export", "0" * 64,
         )  # fmt: skip
     with pytest.raises(Exception, match="violates check"):
@@ -168,6 +184,7 @@ class FakeTrainingExecutor:
         self.held: list[int] = []  # connections checked out of `pool` during each call
         self.gated = 0
         self.gate_error: Exception | None = None
+        self.origins: list[tuple[str, str]] = []  # (gate|card|execute, origin) per call
         self.plan: list[tuple[asyncio.Event, bool]] = []  # per execute: (release, fail)
         self.entered: asyncio.Queue[int] = asyncio.Queue()
 
@@ -176,8 +193,11 @@ class FakeTrainingExecutor:
             stats = self.pool.get_stats()
             self.held.append(stats.get("pool_size", 0) - stats.get("pool_available", 0))
 
-    async def gate(self, request: Request, actor: ConsoleActor, client_id: UUID) -> None:
+    async def gate(
+        self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
+    ) -> None:
         self.gated += 1
+        self.origins.append(("gate", origin))
         if self.gate_error is not None:
             raise self.gate_error
 
@@ -187,8 +207,11 @@ class FakeTrainingExecutor:
         actor: ConsoleActor,
         client_id: UUID,
         payload: dict,
+        *,
+        origin: ProposalOrigin,
     ) -> tuple[CardContent, str | None]:
-        await self.gate(request, actor, client_id)
+        self.origins.append(("card", origin))
+        await self.gate(request, actor, client_id, origin=origin)
         content = CardContent(
             title="Submit training request",
             summary=f"Submit {payload['title']}",
@@ -206,7 +229,9 @@ class FakeTrainingExecutor:
         *,
         proposal_id: UUID,
         expected_version: str | None,
+        origin: ProposalOrigin,
     ) -> dict:
+        self.origins.append(("execute", origin))
         self._note_held()
         call = len(self.executed)
         self.executed.append(payload)
@@ -264,6 +289,7 @@ async def _create(
     *,
     thread_id: UUID | None = None,
     title: str = "Forklift safety",
+    origin: ProposalOrigin = "tab",
 ) -> Any:
     tenant = sessions.tenants[0]
     return await registry.create(
@@ -274,6 +300,7 @@ async def _create(
         "training_submit",
         {"title": title},
         thread_id=thread_id,
+        origin=origin,
     )
 
 
@@ -401,6 +428,40 @@ async def test_confirm_executes_once_and_replay_returns_stored_result(
         str(out.id),
     )
     assert executed_audits[0]["n"] == 1
+
+
+@pytest.mark.parametrize("origin", ["tab", "assistant"])
+async def test_origin_is_stored_and_passed_to_every_executor_call(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch, origin: ProposalOrigin
+) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    out = await _create(sessions, registry, actor, origin=origin)
+    assert (await _row(sessions, out.id))["origin"] == origin
+    _fail_recording_executed_once(monkeypatch)
+    with pytest.raises(RuntimeError):
+        await _confirm(sessions, registry, actor, out.id)
+    await _age_claim(sessions, out.id)
+    assert (await _confirm(sessions, registry, actor, out.id)).status == "executed"
+    # create: card+gate; confirm: card+gate, execute; stale retake: gate, execute.
+    assert [step for step, _ in fake.origins] == [
+        "card", "gate", "card", "gate", "execute", "gate", "execute",
+    ]  # fmt: skip
+    assert {o for _, o in fake.origins} == {origin}
+
+
+async def test_insert_refuses_an_origin_other_than_the_prepared_one(
+    sessions: SessionWorld,
+) -> None:
+    actor, _ = await _member_actor(sessions)
+    _, registry = _world()
+    tenant = UUID(sessions.tenants[0])
+    prepared = await registry.prepare(
+        _request(), actor, tenant, "training_submit", {"title": "X"}, origin="tab"
+    )
+    async with tx(sessions.pool, str(tenant)) as conn:
+        with pytest.raises(ValueError, match="prepared as tab"):
+            await registry.insert(conn, actor, tenant, prepared, thread_id=None, origin="assistant")
 
 
 async def test_stored_card_survives_executor_card_failure(sessions: SessionWorld) -> None:
@@ -818,6 +879,7 @@ async def test_training_submit_proposal_end_to_end(proposals_app) -> None:
     assert created.status_code == 201, created.text
     out = created.json()
     assert out["status"] == "requested" and out["card"]["expected_version"] == "0"
+    assert (await _row(w, UUID(out["id"])))["origin"] == "tab"
     assert [f["value"] for f in out["card"]["fields"]][0] == "Forklift safety"
     assert created.headers["Cache-Control"] == "no-store"
     seen = await browser.get(f"{PROPOSALS}/{out['id']}")
@@ -889,14 +951,27 @@ async def test_training_submit_new_draft_proposal_creates_and_submits(proposals_
     assert rows[0]["n"] == 1
 
 
-async def test_training_submit_refused_when_hr_assistant_switch_is_off(proposals_app) -> None:
+async def test_tab_training_submit_needs_no_hr_assistant_switch(proposals_app) -> None:
+    """The switch governs the AI assistant; a human confirming a tab card is not gated by it."""
     w, _ = proposals_app
     browser = await _hr_member(w, switch=False)
-    created = await _propose(
-        w, browser, "training_submit", {"title": "First aid", "learning_objective": "Certify"}
+    draft = await browser.post(
+        "/console/v1/hr/training-requests",
+        json={"title": "First aid", "learning_objective": "Certify in first aid"},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
     )
-    assert created.status_code == 409 and created.json()["detail"] == "agent_disabled"
-    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 0
+    assert draft.status_code == 201, draft.text
+    request_id = draft.json()["request"]["request_id"]
+    created = await _propose(
+        w, browser, "training_submit", {"action": "training_submit", "request_id": request_id}
+    )
+    assert created.status_code == 201, created.text
+    assert (await _row(w, UUID(created.json()["id"])))["origin"] == "tab"
+    done = await _http_confirm(w, browser, created.json()["id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["result"]["request"]["status"] == "submitted"
+    rows = await w.q("SELECT status FROM hr_training_requests WHERE id=%s", request_id)
+    assert rows == [{"status": "submitted"}]
 
 
 def _hr_assistant(w: SessionWorld, action: dict[str, Any]) -> httpx.AsyncClient:
@@ -948,6 +1023,7 @@ async def test_hr_assistant_submit_returns_proposal_confirmed_through_workspace(
     out = asked.json()
     assert out["kind"] == "training_submit" and out["status"] == "requested"
     assert out["card"]["expected_version"] == "0"
+    assert (await _row(w, UUID(out["id"])))["origin"] == "assistant"
     rows = await w.q("SELECT status FROM hr_training_requests WHERE id=%s", request_id)
     assert rows == [{"status": "draft"}]  # nothing is applied before confirmation
     done = await _http_confirm(w, browser, out["id"])

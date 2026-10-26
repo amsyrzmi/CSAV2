@@ -353,7 +353,7 @@ writes keep the global Origin/CSRF checks. Responses are `Cache-Control: no-stor
 
 Migration **0370** added owner-private threads and turns (tenant RLS, session-bound
 provenance, same-owner idempotency). Migration **0460** adds `console_proposals`
-(including the stored `card`, `claim_token` and `claimed_at`), relaxes the turn CHECKs for
+(including the stored `card`, its `origin`, `claim_token` and `claimed_at`), relaxes the turn CHECKs for
 the new actions, and creates the `company_directory` and `company_directory_me` views.
 Turn text is redacted before persistence. No bearer, cookie, CSRF token, unrestricted HR
 payload or employee/contact identity mapping is stored.
@@ -449,7 +449,7 @@ Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 | Action | Requires |
 |---|---|
 | Inbox decision | `customer_support` package `active` or `suspended` |
-| Training submit | `hr` package active and the tenant `hr_assistant` switch on |
+| Training submit | `hr` package active; training proposals created by the assistant (planner or HR chat) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
 | People search and `people/me` | `hr` package active (`people/me` reports `package_inactive` as a `reason`, not an error) |
 | Email export and compose | `staff_email` package active and `email_settings.enabled` |
 
@@ -481,7 +481,10 @@ through an `email_export` proposal). Nothing is sent.
 still written). A training submit no longer executes: it returns a `ProposalOut` with 201
 (a replay of the same request key returns 200 with the same proposal id), to be confirmed
 through the workspace proposals API. With the tenant `hr_assistant` switch off the call
-returns 409 `agent_disabled`.
+returns 409 `agent_disabled`: training proposals created by the assistant also require the
+tenant's `hr_assistant` switch (rechecked at confirm); tab-originated proposals
+(`POST /console/v1/workspace/proposals`) do not, because the human confirming the card is
+the safety boundary. Each stored proposal records its `origin` (`tab` or `assistant`).
 
 ## Business management (M6A/B; offline local reads and store records)
 
