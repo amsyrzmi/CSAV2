@@ -22,9 +22,10 @@ from csa.console.contracts import ConsoleActor
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
 from csa.console.services import require_package
+from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError
 from csa.hr.agents import HrAgentDescription, describe_agent
-from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan
+from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan, TrainingSubmitIntent
 from csa.hr.automation_models import HrOperation, OperationReceipt
 from csa.hr.cases import CasePage, HrWorkflowService
 from csa.hr.models import (
@@ -49,6 +50,8 @@ from csa.hr.records import (
 )
 from csa.hr.service import HrService
 from csa.hr.workflows import WorkflowCommand, WorkflowInput, WorkflowRecord
+from csa.workspace.contracts import ProposalOut
+from csa.workspace.registry import ProposalRegistry
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
 
@@ -210,16 +213,41 @@ def build_hr_router() -> APIRouter:
         | TrainingReceipt
         | ConfirmationProjection
         | WorkflowRecord
-        | OperationReceipt,
+        | OperationReceipt
+        | ProposalOut,
         response_model_exclude_none=True,
+        responses={201: {"model": ProposalOut}},
     )
     async def assistant(
-        body: HrChatInput, request: Request, session: Session, request_key: RequestKey
+        body: HrChatInput,
+        request: Request,
+        response: Response,
+        session: Session,
+        request_key: RequestKey,
     ):
         planner = getattr(request.app.state, "hr_assistant", None)
         if not isinstance(planner, HrAssistant):
             raise HTTPException(503, "hr_assistant_not_configured")
-        return await planner.run(session, body, request_key)
+        result = await planner.run(session, body, request_key)
+        if not isinstance(result, TrainingSubmitIntent):
+            return result
+        registry = getattr(request.app.state, "proposal_registry", None)
+        if not isinstance(registry, ProposalRegistry):
+            raise HTTPException(503, "proposal_registry_unavailable")
+        actor = await request.app.state.identity_service.actor_for_request(request)
+        prepared = await registry.prepare(
+            request,
+            actor,
+            session.tenant_id,
+            "training_submit",
+            {"action": "training_submit", "request_id": str(result.request_id)},
+        )
+        async with tx(request.app.state.pool, str(session.tenant_id)) as conn:
+            proposal = await registry.insert(
+                conn, actor, session.tenant_id, prepared, thread_id=None
+            )
+        response.status_code = 201
+        return proposal
 
     @router.post("/operations", response_model=OperationReceipt)
     async def operation(

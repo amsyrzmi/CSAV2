@@ -17,10 +17,12 @@ import pytest
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
 from csa.core import crypto
 from csa.core.tenancy import tx
+from csa.decide.groq import GroqClient
 from csa.email.api import build_email_router
 from csa.email.gmail import GmailClient
 from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
+from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.workspace import registry as registry_module
 from csa.workspace.contracts import CardField, ProposalKind
@@ -894,6 +896,83 @@ async def test_training_submit_refused_when_hr_assistant_switch_is_off(proposals
         w, browser, "training_submit", {"title": "First aid", "learning_objective": "Certify"}
     )
     assert created.status_code == 409 and created.json()["detail"] == "agent_disabled"
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 0
+
+
+def _hr_assistant(w: SessionWorld, action: dict[str, Any]) -> httpx.AsyncClient:
+    """Install an HrAssistant whose scripted model plans the given action."""
+
+    def provider(_: httpx.Request) -> httpx.Response:
+        content = json.dumps({"action": action})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+    w.app.state.hr_assistant = HrAssistant(
+        w.app.state.hr_service, GroqClient("synthetic-key", "synthetic-model", http)
+    )
+    return http
+
+
+async def _ask_hr(w: SessionWorld, browser: httpx.AsyncClient) -> httpx.Response:
+    return await browser.post(
+        "/console/v1/hr/assistant",
+        json={"message": "Submit my forklift training"},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+
+
+async def test_hr_assistant_submit_returns_proposal_confirmed_through_workspace(
+    proposals_app,
+) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    draft = await browser.post(
+        "/console/v1/hr/training-requests",
+        json={"title": "Forklift safety", "learning_objective": "Operate forklifts safely"},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+    request_id = draft.json()["request"]["request_id"]
+    http = _hr_assistant(
+        w,
+        {
+            "action": "training.transition",
+            "request_id": request_id,
+            "command": {"action": "submit", "expected_version": 0},
+        },
+    )
+    try:
+        asked = await _ask_hr(w, browser)
+    finally:
+        await http.aclose()
+    assert asked.status_code == 201, asked.text
+    out = asked.json()
+    assert out["kind"] == "training_submit" and out["status"] == "requested"
+    assert out["card"]["expected_version"] == "0"
+    rows = await w.q("SELECT status FROM hr_training_requests WHERE id=%s", request_id)
+    assert rows == [{"status": "draft"}]  # nothing is applied before confirmation
+    done = await _http_confirm(w, browser, out["id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["result"]["request"]["status"] == "submitted"
+    rows = await w.q("SELECT status FROM hr_training_requests WHERE id=%s", request_id)
+    assert rows == [{"status": "submitted"}]
+
+
+async def test_hr_assistant_submit_refused_when_switch_is_off(proposals_app) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w, switch=False)
+    http = _hr_assistant(
+        w,
+        {
+            "action": "training.transition",
+            "request_id": str(uuid4()),
+            "command": {"action": "submit", "expected_version": 0},
+        },
+    )
+    try:
+        asked = await _ask_hr(w, browser)
+    finally:
+        await http.aclose()
+    assert asked.status_code == 409 and asked.json()["detail"] == "agent_disabled"
     assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 0
 
 

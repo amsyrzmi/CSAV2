@@ -12532,6 +12532,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/OperationReceipt"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProposalOut"
                     }
                   ],
                   "title": "Response Assistant Console V1 Hr Assistant Post"
@@ -12539,6 +12542,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalOut"
+                }
+              }
+            },
+            "description": "Created"
           },
           "422": {
             "content": {
