@@ -9,7 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
-from pydantic import Field, model_validator
+from pydantic import AwareDatetime, Field, model_validator
 
 from csa.core.db import q
 from csa.core.tenancy import tx
@@ -56,6 +56,8 @@ class TrainingSubmitIntent(HrModel):
     """Planned submit of an existing draft; the route turns it into a confirmable proposal."""
 
     request_id: UUID
+    # Set when the plan was replayed from hr_chat_plans (immutable): when it was first stored.
+    replayed_plan_at: AwareDatetime | None = None
 
 
 class HrAssistant:
@@ -82,7 +84,9 @@ class HrAssistant:
             stored = await q.fetch_one(
                 "hr/chat_plan_get.sql", (session.tenant_id, session.subject_id, key), conn=conn
             )
+            replayed_at = None
             if stored is not None:
+                replayed_at = stored["created_at"]
                 if (
                     stored["fingerprint"] != fingerprint
                     or stored["session_id"] != session.session_id
@@ -137,5 +141,7 @@ class HrAssistant:
             and plan.action.command.action == TrainingAction.SUBMIT
         ):
             # Mutations are never applied here; the shared proposal registry owns them.
-            return TrainingSubmitIntent(request_id=plan.action.request_id)
+            return TrainingSubmitIntent(
+                request_id=plan.action.request_id, replayed_plan_at=replayed_at
+            )
         return await HrAgentDispatcher(self.service).execute(bound, plan.action, key)

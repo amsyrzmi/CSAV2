@@ -957,6 +957,47 @@ async def test_hr_assistant_submit_returns_proposal_confirmed_through_workspace(
     assert rows == [{"status": "submitted"}]
 
 
+async def test_hr_assistant_submit_replay_returns_the_same_proposal(proposals_app) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    draft = await browser.post(
+        "/console/v1/hr/training-requests",
+        json={"title": "Forklift safety", "learning_objective": "Operate forklifts safely"},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+    request_id = draft.json()["request"]["request_id"]
+    http = _hr_assistant(
+        w,
+        {
+            "action": "training.transition",
+            "request_id": request_id,
+            "command": {"action": "submit", "expected_version": 0},
+        },
+    )
+
+    async def ask(key: UUID) -> httpx.Response:
+        return await browser.post(
+            "/console/v1/hr/assistant",
+            json={"message": "Submit my forklift training"},
+            headers={**w.headers(browser), "Idempotency-Key": str(key)},
+        )
+
+    try:
+        key = uuid4()
+        first = await ask(key)
+        second = await ask(key)
+        assert first.status_code == 201, first.text
+        assert second.status_code == 200 and second.json() == first.json()
+        assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 1
+        done = await _http_confirm(w, browser, first.json()["id"])
+        assert done.status_code == 200, done.text
+        replay = await ask(key)
+        assert replay.json()["id"] == first.json()["id"] and replay.json()["status"] == "executed"
+        assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 1
+    finally:
+        await http.aclose()
+
+
 async def test_hr_assistant_submit_refused_when_switch_is_off(proposals_app) -> None:
     w, _ = proposals_app
     browser = await _hr_member(w, switch=False)

@@ -22,6 +22,7 @@ from csa.console.contracts import ConsoleActor
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
 from csa.console.services import require_package
+from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError
 from csa.hr.agents import HrAgentDescription, describe_agent
@@ -235,6 +236,23 @@ def build_hr_router() -> APIRouter:
         if not isinstance(registry, ProposalRegistry):
             raise HTTPException(503, "proposal_registry_unavailable")
         actor = await request.app.state.identity_service.actor_for_request(request)
+        if result.replayed_plan_at is not None:
+            # hr_chat_plans is immutable, so the first proposal made from this replayed plan
+            # (same actor, session and draft, created after the plan) is the one to return.
+            async with tx(request.app.state.pool, str(session.tenant_id)) as conn:
+                found = await q.fetch_one(
+                    "workspace/proposal_by_hr_plan.sql",
+                    (
+                        session.tenant_id,
+                        actor.user_id,
+                        actor.session_id,
+                        str(result.request_id),
+                        result.replayed_plan_at,
+                    ),
+                    conn=conn,
+                )
+                if found is not None:
+                    return await registry.get(conn, actor, session.tenant_id, found["id"])
         prepared = await registry.prepare(
             request,
             actor,
