@@ -28,10 +28,12 @@ from csa.workspace.contracts import (
     WorkspaceTurnPage,
 )
 from csa.workspace.directory import my_people, search_people, throttle_lookup
+from csa.workspace.planner import PlannerError, WorkspacePlanner
 from csa.workspace.registry import ProposalRegistry
 from csa.workspace.service import (
     WorkspaceConflict,
     WorkspaceNotFound,
+    create_planned_turn,
     create_thread,
     create_turn,
     list_threads,
@@ -73,6 +75,13 @@ def _registry(request: Request) -> ProposalRegistry:
     if not isinstance(registry, ProposalRegistry):
         raise HTTPException(503, "proposal_registry_unavailable")
     return registry
+
+
+def _planner(request: Request) -> WorkspacePlanner:
+    planner = getattr(request.app.state, "workspace_planner", None)
+    if not isinstance(planner, WorkspacePlanner):
+        raise HTTPException(503, "planner_unavailable")
+    return planner
 
 
 def build_workspace_router() -> APIRouter:
@@ -192,13 +201,30 @@ def build_workspace_router() -> APIRouter:
     ) -> WorkspaceTurnOut:
         _workspace_access(actor, client_id)
         payload = await _payload(request, WorkspaceTurnInput)
+        if payload.page_context is not None and payload.page_hint is not None:
+            raise HTTPException(422, "invalid workspace request")
         try:
-            async with tx(request.app.state.pool, str(client_id)) as conn:
-                result = await create_turn(conn, actor, client_id, thread_id, payload)
+            if payload.page_context is not None:
+                # Planner and proposal gates run with no connection held; the service opens
+                # its own short transactions.
+                result = await create_planned_turn(
+                    request,
+                    actor,
+                    client_id,
+                    thread_id,
+                    payload,
+                    planner=_planner(request),
+                    registry=_registry(request),
+                )
+            else:
+                async with tx(request.app.state.pool, str(client_id)) as conn:
+                    result = await create_turn(conn, actor, client_id, thread_id, payload)
         except WorkspaceNotFound as exc:
             raise HTTPException(404, "workspace conversation or resource not found") from exc
         except WorkspaceConflict as exc:
             raise HTTPException(409, str(exc)) from exc
+        except PlannerError as exc:
+            raise HTTPException(exc.status_code, exc.code) from None
         if result.duplicate:
             response.status_code = 200
         response.headers["Cache-Control"] = "no-store"

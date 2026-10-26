@@ -43,6 +43,7 @@ from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.workspace.executors import build_proposal_registry
+from csa.workspace.planner import WorkspacePlanner
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -135,6 +136,7 @@ def create_app() -> FastAPI:
         )
         hr_http: httpx.AsyncClient | None = None
         email_http: httpx.AsyncClient | None = None
+        workspace_http: httpx.AsyncClient | None = None
         try:
             await pool.open(wait=True)
             app.state.pool = pool
@@ -193,8 +195,21 @@ def create_app() -> FastAPI:
                     )
                     await email.check_ready()
                     app.state.email_service = email
-            elif settings.HR_ASSISTANT_ENABLED or settings.EMAIL_ASSISTANT_ENABLED:
-                raise RuntimeError("HR and email assistants require console identity")
+                if settings.WORKSPACE_ASSISTANT_ENABLED:
+                    workspace_http = httpx.AsyncClient()
+                    app.state.workspace_planner = WorkspacePlanner(
+                        GroqClient(
+                            settings.GROQ_API_KEY.get_secret_value(),
+                            settings.GROQ_MODEL,
+                            workspace_http,
+                        )
+                    )
+            elif (
+                settings.HR_ASSISTANT_ENABLED
+                or settings.EMAIL_ASSISTANT_ENABLED
+                or settings.WORKSPACE_ASSISTANT_ENABLED
+            ):
+                raise RuntimeError("HR, email and workspace assistants require console identity")
             yield
         finally:
             try:
@@ -202,6 +217,8 @@ def create_app() -> FastAPI:
                     await hr_http.aclose()
                 if email_http is not None:
                     await email_http.aclose()
+                if workspace_http is not None:
+                    await workspace_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:
