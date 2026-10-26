@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
@@ -24,7 +25,8 @@ from csa.hr.service import HrService
 from csa.workspace import registry as registry_module
 from csa.workspace.contracts import CardField, ProposalKind
 from csa.workspace.executors import build_proposal_registry
-from csa.workspace.registry import CardContent, ProposalError, ProposalRegistry
+from csa.workspace.registry import CLAIM_LEASE, CardContent, ProposalError, ProposalRegistry
+from fastapi import HTTPException
 from psycopg.rows import dict_row
 from pydantic import SecretStr
 from starlette.requests import Request
@@ -79,6 +81,11 @@ async def test_proposals_table_rls_grants_and_checks(sessions: SessionWorld) -> 
     with pytest.raises(Exception, match="card|violates check"):
         await sessions.q(
             INSERT_PROPOSAL.replace("'{}','requested'", "'[]','requested'"),
+            t, sessions.admin_id, uuid4(), "email_export", "0" * 64,
+        )  # fmt: skip
+    with pytest.raises(Exception, match="violates check"):
+        await sessions.q(
+            INSERT_PROPOSAL.replace("'requested'", "'confirmed'"),
             t, sessions.admin_id, uuid4(), "email_export", "0" * 64,
         )  # fmt: skip
     # Valid shape passes CHECKs and is stopped only by the session foreign key.
@@ -157,11 +164,20 @@ class FakeTrainingExecutor:
         self.executed: list[dict[str, Any]] = []
         self.pool = pool
         self.held: list[int] = []  # connections checked out of `pool` during each call
+        self.gated = 0
+        self.gate_error: Exception | None = None
+        self.plan: list[tuple[asyncio.Event, bool]] = []  # per execute: (release, fail)
+        self.entered: asyncio.Queue[int] = asyncio.Queue()
 
     def _note_held(self) -> None:
         if self.pool is not None:
             stats = self.pool.get_stats()
             self.held.append(stats.get("pool_size", 0) - stats.get("pool_available", 0))
+
+    async def gate(self, request: Request, actor: ConsoleActor, client_id: UUID) -> None:
+        self.gated += 1
+        if self.gate_error is not None:
+            raise self.gate_error
 
     async def card(
         self,
@@ -170,6 +186,7 @@ class FakeTrainingExecutor:
         client_id: UUID,
         payload: dict,
     ) -> tuple[CardContent, str | None]:
+        await self.gate(request, actor, client_id)
         content = CardContent(
             title="Submit training request",
             summary=f"Submit {payload['title']}",
@@ -189,7 +206,14 @@ class FakeTrainingExecutor:
         expected_version: str | None,
     ) -> dict:
         self._note_held()
+        call = len(self.executed)
         self.executed.append(payload)
+        if self.plan:
+            release, fail = self.plan.pop(0)
+            await self.entered.put(call)
+            await release.wait()
+            if fail:
+                raise RuntimeError(f"synthetic failure of execute {call}")
         return {"receipt": len(self.executed), "title": payload["title"]}
 
 
@@ -444,6 +468,16 @@ def _fail_recording_executed_once(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return failed
 
 
+async def _age_claim(sessions: SessionWorld, pid: UUID | str) -> None:
+    """Make a confirmed row's lease stale, as if its confirm died after claiming."""
+    await sessions.q(
+        "UPDATE console_proposals SET claimed_at = now() - %s - interval '1 second'"
+        " WHERE id=%s AND status='confirmed'",
+        CLAIM_LEASE,
+        pid,
+    )
+
+
 async def test_confirm_interrupted_after_execute_retries_without_a_new_card_check(
     sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -460,11 +494,119 @@ async def test_confirm_interrupted_after_execute_retries_without_a_new_card_chec
         with pytest.raises(ProposalError) as exc:
             await registry.cancel(conn, actor, UUID(tenant), out.id)
     assert exc.value.detail == "proposal_consumed"
+    with pytest.raises(ProposalError) as live:
+        await _confirm(sessions, registry, actor, out.id)  # lease still live
+    assert live.value.detail == "proposal_consumed" and len(fake.executed) == 1
+    await _age_claim(sessions, out.id)
     fake.version = "v2"  # the record moved because the first run acted; no stale refusal
+    gated = fake.gated
     done = await _confirm(sessions, registry, actor, out.id)
+    assert fake.gated == gated + 1  # the package gate is re-checked when retaking a claim
     assert done.status == "executed" and len(fake.executed) == 2  # idempotent service replays
     assert (await _confirm(sessions, registry, actor, out.id)) == done
     assert len(fake.executed) == 2
+
+
+async def test_concurrent_confirms_execute_once(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    out = await _create(sessions, registry, actor)
+    release = asyncio.Event()
+    fake.plan = [(release, False)]
+    first = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
+    await asyncio.wait_for(fake.entered.get(), 10)
+    with pytest.raises(ProposalError) as loser:
+        await _confirm(sessions, registry, actor, out.id)
+    assert loser.value.status_code == 409 and loser.value.detail == "proposal_consumed"
+    row = await _row(sessions, out.id)
+    assert row["status"] == "confirmed" and row["claim_token"] is not None
+    release.set()
+    done = await asyncio.wait_for(first, 10)
+    assert done.status == "executed" and len(fake.executed) == 1
+    assert (await _confirm(sessions, registry, actor, out.id)) == done
+    assert len(fake.executed) == 1
+    row = await _row(sessions, out.id)
+    assert row["claim_token"] is None and row["claimed_at"] is None
+
+
+async def test_failed_execute_reverts_only_its_own_claim(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    out = await _create(sessions, registry, actor)
+    first_release, second_release = asyncio.Event(), asyncio.Event()
+    fake.plan = [(first_release, True), (second_release, False)]
+    first = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
+    assert await asyncio.wait_for(fake.entered.get(), 10) == 0
+    first_token = (await _row(sessions, out.id))["claim_token"]
+    await _age_claim(sessions, out.id)
+    second = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
+    assert await asyncio.wait_for(fake.entered.get(), 10) == 1
+    second_token = (await _row(sessions, out.id))["claim_token"]
+    assert second_token not in (None, first_token)
+    first_release.set()
+    with pytest.raises(RuntimeError, match="synthetic failure of execute 0"):
+        await asyncio.wait_for(first, 10)
+    row = await _row(sessions, out.id)
+    assert row["status"] == "confirmed" and row["claim_token"] == second_token  # not reverted
+    second_release.set()
+    done = await asyncio.wait_for(second, 10)
+    assert done.status == "executed" and done.result == {"receipt": 2, "title": "Forklift safety"}
+
+
+async def test_record_requires_the_recorders_own_claim(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    out = await _create(sessions, registry, actor)
+    first_release, second_release = asyncio.Event(), asyncio.Event()
+    fake.plan = [(first_release, False), (second_release, False)]
+    first = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
+    await asyncio.wait_for(fake.entered.get(), 10)
+    await _age_claim(sessions, out.id)
+    second = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
+    await asyncio.wait_for(fake.entered.get(), 10)
+    first_release.set()  # its lease was retaken: it must not record over the live claim
+    with pytest.raises(ProposalError) as lost:
+        await asyncio.wait_for(first, 10)
+    assert lost.value.detail == "proposal_consumed"
+    assert (await _row(sessions, out.id))["status"] == "confirmed"
+    second_release.set()
+    done = await asyncio.wait_for(second, 10)
+    assert done.status == "executed" and done.result is not None
+    assert done.result["receipt"] == 2
+    executed = await sessions.q(
+        "SELECT count(*) n FROM console_audit WHERE target_id=%s"
+        " AND action='workspace.proposal.executed'",
+        str(out.id),
+    )
+    assert executed[0]["n"] == 1
+
+
+async def test_retaking_a_stale_claim_rechecks_gate_and_expiry(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    out = await _create(sessions, registry, actor)
+    _fail_recording_executed_once(monkeypatch)
+    with pytest.raises(RuntimeError):
+        await _confirm(sessions, registry, actor, out.id)
+    await _age_claim(sessions, out.id)
+    fake.gate_error = HTTPException(403, "package_inactive")
+    with pytest.raises(HTTPException) as gated:
+        await _confirm(sessions, registry, actor, out.id)
+    assert gated.value.detail == "package_inactive" and len(fake.executed) == 1
+    assert (await _row(sessions, out.id))["status"] == "confirmed"
+    fake.gate_error = None
+    await sessions.q(
+        "UPDATE console_proposals SET created_at = now() - interval '10 minutes',"
+        " expires_at = now() - interval '1 second' WHERE id=%s",
+        out.id,
+    )
+    with pytest.raises(ProposalError) as expired:
+        await _confirm(sessions, registry, actor, out.id)
+    assert expired.value.detail == "proposal_expired" and len(fake.executed) == 1
+    row = await _row(sessions, out.id)
+    assert row["status"] == "expired" and row["claim_token"] is None
 
 
 async def test_changed_expected_version_is_stale(sessions: SessionWorld) -> None:
@@ -713,6 +855,9 @@ async def test_training_confirm_retried_after_registry_failure_replays_receipt(
     rows = await w.q("SELECT status, version FROM hr_training_requests WHERE id=%s", request_id)
     assert rows == [{"status": "submitted", "version": 1}]
     assert (await _row(w, UUID(pid)))["status"] == "confirmed"
+    busy = await _http_confirm(w, browser, pid)
+    assert busy.status_code == 409 and busy.json()["detail"] == "proposal_consumed"
+    await _age_claim(w, pid)
     retried = await _http_confirm(w, browser, pid)
     assert retried.status_code == 200, retried.text
     receipt = retried.json()["result"]

@@ -14,8 +14,9 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Literal, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, Request
 from psycopg import AsyncConnection
@@ -43,6 +44,10 @@ _ERROR_STATUS: dict[ProposalErrorCode, int] = {
 }
 
 
+CLAIM_LEASE = timedelta(minutes=2)
+"""How long a confirm's execution claim excludes others (hard-coded in proposal_get.sql)."""
+
+
 class ProposalError(HTTPException):
     """Registry refusal; ``detail`` is one stable code from ``_ERROR_STATUS``."""
 
@@ -68,6 +73,10 @@ class ProposalExecutor(Protocol):
 
     kind: ProposalKind
 
+    async def gate(self, request: Request, actor: ConsoleActor, client_id: UUID) -> None:
+        """Refuse unless the tenant's package (and any switch) still allows this kind."""
+        ...
+
     async def card(
         self,
         request: Request,
@@ -75,7 +84,7 @@ class ProposalExecutor(Protocol):
         client_id: UUID,
         payload: dict[str, Any],
     ) -> tuple[CardContent, str | None]:
-        """Gate and validate the payload, load the record as the user, return content and version.
+        """Run ``gate``, validate the payload, load the record as the user; return card+version.
 
         ``request`` carries the caller's session cookie and CSRF header, which the owning
         services need to revalidate the login session.
@@ -210,10 +219,13 @@ class ProposalRegistry:
     ) -> ProposalOut:
         """Check, claim, execute, record: each registry step is its own short transaction.
 
-        No registry connection is held while the executor runs. ``confirmed`` is the claim:
-        it commits before ``execute`` so a confirm interrupted after the service committed
-        is retried from ``confirmed`` (no second card check), and the idempotent service
-        replays its receipt. A failed ``execute`` returns the claim to ``requested``.
+        No registry connection is held while the executor runs. The claim is an exclusive
+        lease (``claim_token``, ``claimed_at``; see ``CLAIM_LEASE``): while it is live every
+        other confirm gets ``proposal_consumed``. A lease left behind by a confirm that died
+        after claiming goes stale and may be retaken; the retaker re-checks expiry and the
+        package gate (not the card version: the first run may already have acted) and runs
+        the idempotent ``execute`` again, so the service replays its receipt. Revert and
+        record both require the caller's own claim token.
         """
         client = str(client_id)
         expired = False
@@ -225,31 +237,41 @@ class ProposalRegistry:
                 return _out(row)  # replay: the stored receipt, nothing runs again
             if row["status"] not in ("requested", "confirmed"):
                 raise ProposalError("proposal_consumed")
+            if row["status"] == "confirmed" and row["claim_live"]:
+                raise ProposalError("proposal_consumed")  # another confirm is executing
             if payload_sha256(row["payload"]) != row["payload_sha256"]:
                 raise ProposalError("proposal_stale")
-            if row["status"] == "requested" and row["is_expired"]:
+            if row["is_expired"]:
                 await _set_status(conn, client_id, proposal_id, "expired", None)
                 expired = True  # committed on block exit, raised below
         if expired:
             raise ProposalError("proposal_expired")
         executor = self._executor(row["kind"])
         payload: dict[str, Any] = row["payload"]
-        if row["status"] == "requested":
+        seen_status, seen_token = row["status"], row["claim_token"]
+        if seen_status == "requested":
             _, version = await executor.card(request, actor, client_id, payload)
             if version != row["expected_version"]:
                 raise ProposalError("proposal_stale")
-            async with tx(pool, client) as conn:
-                row = await _locked(conn, actor, client_id, proposal_id)
-                if row["status"] != "requested":
-                    raise ProposalError("proposal_consumed")  # a concurrent confirm won
-                if row["is_expired"]:
-                    await _set_status(conn, client_id, proposal_id, "expired", None)
-                    expired = True
-                else:
-                    row = await _set_status(conn, client_id, proposal_id, "confirmed", None)
-                    await _audit(conn, actor, client_id, "workspace.proposal.confirmed", row)
-            if expired:
-                raise ProposalError("proposal_expired")
+        else:
+            await executor.gate(request, actor, client_id)  # retaking a stale claim
+        token = uuid4()
+        async with tx(pool, client) as conn:
+            row = await _locked(conn, actor, client_id, proposal_id)
+            if (
+                row["status"] != seen_status
+                or row["claim_token"] != seen_token
+                or row["claim_live"]
+            ):
+                raise ProposalError("proposal_consumed")  # a concurrent confirm won
+            if row["is_expired"]:
+                await _set_status(conn, client_id, proposal_id, "expired", None)
+                expired = True
+            else:
+                row = await _claim(conn, client_id, proposal_id, token)
+                await _audit(conn, actor, client_id, "workspace.proposal.confirmed", row)
+        if expired:
+            raise ProposalError("proposal_expired")
         try:
             receipt = await executor.execute(
                 request,
@@ -260,16 +282,18 @@ class ProposalRegistry:
                 expected_version=row["expected_version"],
             )
         except Exception:
-            # The service's own transaction rolled back; release the claim for a new attempt.
+            # The service's own transaction rolled back; release our claim (only ours).
             async with tx(pool, client) as conn:
                 current = await _locked(conn, actor, client_id, proposal_id)
-                if current["status"] == "confirmed":
+                if current["status"] == "confirmed" and current["claim_token"] == token:
                     await _set_status(conn, client_id, proposal_id, "requested", None)
             raise
         async with tx(pool, client) as conn:
             current = await _locked(conn, actor, client_id, proposal_id)
             if current["status"] == "executed":
-                return _out(current)  # a concurrent retry recorded the same receipt first
+                return _out(current)  # a retaker of our stale claim recorded it first
+            if current["status"] != "confirmed" or current["claim_token"] != token:
+                raise ProposalError("proposal_consumed")  # our claim was lost
             row = await _set_status(conn, client_id, proposal_id, "executed", Jsonb(receipt))
             await _audit(conn, actor, client_id, "workspace.proposal.executed", row)
         return _out(row)
@@ -308,6 +332,17 @@ async def _locked(
     )
     if row is None:
         raise ProposalError("proposal_not_found")
+    return row
+
+
+async def _claim(
+    conn: AsyncConnection[Any], client_id: UUID, proposal_id: UUID, token: UUID
+) -> dict[str, Any]:
+    row = await db.q.fetch_one(
+        "workspace/proposal_claim.sql", (token, proposal_id, client_id), conn=conn
+    )
+    if row is None:
+        raise RuntimeError(f"proposal {proposal_id} claim returned no row")
     return row
 
 

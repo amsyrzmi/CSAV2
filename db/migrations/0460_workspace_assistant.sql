@@ -1,7 +1,7 @@
 -- Cross-tab workspace assistant: proposal registry, company directory view, relaxed turns.
 -- Preconditions: 0450 applied (0370 workspace tables, 0380 HR tables, 0440 console sessions).
 -- Rollback: DROP VIEW public.company_directory; DROP TABLE public.console_proposals (with its
---   stored card column);
+--   stored card and claim lease columns);
 --   then restore on public.console_workspace_turns the CHECKs
 --   console_workspace_turns_action_check (action IN ('page_guidance','local_order_read')),
 --   console_workspace_turns_page_key_check (page_key IN ('workspace_home','business_orders',
@@ -22,7 +22,11 @@ CREATE TABLE public.console_proposals (
     expires_at timestamptz NOT NULL,
     executed_at timestamptz,
     result jsonb,
+    -- Exclusive execution lease: set when a confirm claims the row, checked on revert/record.
+    claim_token uuid,
+    claimed_at timestamptz,
     CHECK (expires_at > created_at AND expires_at <= created_at + interval '15 minutes'),
+    CHECK (status <> 'confirmed' OR (claim_token IS NOT NULL AND claimed_at IS NOT NULL)),
     FOREIGN KEY (login_session_id, user_id) REFERENCES public.console_sessions(id, user_id)
 );
 CREATE INDEX console_proposals_owner_status
