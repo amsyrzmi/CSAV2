@@ -27,8 +27,8 @@ pytestmark = requires_docker
 
 INSERT_PROPOSAL = (
     "INSERT INTO console_proposals (client_id,user_id,login_session_id,kind,payload,"
-    "payload_sha256,status,expires_at) "
-    "VALUES (%s,%s,%s,%s,'{}',%s,'requested',now()+interval '1 minute')"
+    "payload_sha256,card,status,expires_at) "
+    "VALUES (%s,%s,%s,%s,'{}',%s,'{}','requested',now()+interval '1 minute')"
 )
 TURN_COLUMNS = (
     "INSERT INTO console_workspace_turns (client_id,thread_id,owner_user_id,session_id,"
@@ -53,13 +53,18 @@ async def test_proposals_table_rls_grants_and_checks(sessions: SessionWorld) -> 
     with pytest.raises(Exception, match="expires_at|violates check"):
         await sessions.q(
             "INSERT INTO console_proposals (client_id,user_id,login_session_id,kind,payload,"
-            "payload_sha256,status,expires_at) VALUES (%s,%s,%s,'email_export','{}',%s,"
-            "'requested',now()+interval '16 minutes')",
+            "payload_sha256,card,status,expires_at) VALUES (%s,%s,%s,'email_export','{}',%s,"
+            "'{}','requested',now()+interval '16 minutes')",
             t,
             sessions.admin_id,
             uuid4(),
             "0" * 64,
         )
+    with pytest.raises(Exception, match="card|violates check"):
+        await sessions.q(
+            INSERT_PROPOSAL.replace("'{}','requested'", "'[]','requested'"),
+            t, sessions.admin_id, uuid4(), "email_export", "0" * 64,
+        )  # fmt: skip
     # Valid shape passes CHECKs and is stopped only by the session foreign key.
     with pytest.raises(Exception, match="foreign key"):
         await sessions.q(INSERT_PROPOSAL, t, sessions.admin_id, uuid4(), "email_export", "0" * 64)
@@ -310,7 +315,7 @@ async def test_expiry_persists_even_when_the_confirm_transaction_rolls_back(
     assert fake.executed == []
 
 
-async def test_confirm_executes_once_and_second_confirm_is_consumed(
+async def test_confirm_executes_once_and_replay_returns_stored_result(
     sessions: SessionWorld,
 ) -> None:
     actor, _ = await _member_actor(sessions)
@@ -322,10 +327,37 @@ async def test_confirm_executes_once_and_second_confirm_is_consumed(
     row = await _row(sessions, out.id)
     assert row["status"] == "executed" and row["executed_at"] is not None
     assert row["result"] == done.result
-    with pytest.raises(ProposalError) as exc:
-        await _confirm(sessions, registry, actor, out.id)
-    assert exc.value.status_code == 409 and exc.value.detail == "proposal_consumed"
+    replay = await _confirm(sessions, registry, actor, out.id)
+    assert replay == done
     assert len(fake.executed) == 1
+    executed_audits = await sessions.q(
+        "SELECT count(*) n FROM console_audit WHERE target_id=%s"
+        " AND action='workspace.proposal.executed'",
+        str(out.id),
+    )
+    assert executed_audits[0]["n"] == 1
+
+
+async def test_stored_card_survives_executor_card_failure(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    done_p = await _create(sessions, registry, actor)
+    done = await _confirm(sessions, registry, actor, done_p.id)
+    open_p = await _create(sessions, registry, actor, title="Ladder safety")
+
+    async def broken(*_: Any) -> tuple[CardContent, str | None]:
+        raise RuntimeError("record gone")
+
+    fake.card = broken  # type: ignore[method-assign]
+    tenant = sessions.tenants[0]
+    async with tx(sessions.pool, tenant) as conn:
+        seen = await registry.get(conn, actor, UUID(tenant), done_p.id)
+        cancelled = await registry.cancel(conn, actor, UUID(tenant), open_p.id)
+    assert seen == done and seen.card == done_p.card
+    assert cancelled.status == "cancelled"
+    assert cancelled.card == open_p.card
+    assert [f.value for f in cancelled.card.fields] == ["Ladder safety"]
+    assert (await _row(sessions, done_p.id))["card"]["title"] == "Submit training request"
 
 
 async def test_executor_failure_rolls_back_to_requested(sessions: SessionWorld) -> None:
@@ -423,6 +455,24 @@ async def test_cancel_and_cancel_thread_scope(sessions: SessionWorld) -> None:
         "SELECT target_id FROM console_audit WHERE action='workspace.proposal.cancelled'"
     )
     assert sorted(r["target_id"] for r in audits) == sorted(str(p.id) for p in (a, b, d))
+
+
+async def test_cancel_thread_records_past_expiry_rows_as_expired(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    _, registry = _world()
+    thread = uuid4()
+    stale = await _create(sessions, registry, actor, thread_id=thread)
+    live = await _create(sessions, registry, actor, thread_id=thread)
+    await sessions.q(
+        "UPDATE console_proposals SET created_at = now() - interval '10 minutes',"
+        " expires_at = now() - interval '1 second' WHERE id=%s",
+        stale.id,
+    )
+    tenant = sessions.tenants[0]
+    async with tx(sessions.pool, tenant) as conn:
+        assert await registry.cancel_thread(conn, actor, UUID(tenant), thread) == 1
+    assert (await _row(sessions, stale.id))["status"] == "expired"
+    assert (await _row(sessions, live.id))["status"] == "cancelled"
 
 
 async def test_audit_rows_carry_the_proposal_id(sessions: SessionWorld) -> None:

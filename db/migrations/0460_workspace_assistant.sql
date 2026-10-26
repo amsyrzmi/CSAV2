@@ -1,6 +1,7 @@
 -- Cross-tab workspace assistant: proposal registry, company directory view, relaxed turns.
 -- Preconditions: 0450 applied (0370 workspace tables, 0380 HR tables, 0440 console sessions).
--- Rollback: DROP VIEW public.company_directory; DROP TABLE public.console_proposals;
+-- Rollback: DROP VIEW public.company_directory; DROP TABLE public.console_proposals (with its
+--   stored card column);
 --   then restore on public.console_workspace_turns the CHECKs
 --   console_workspace_turns_action_check (action IN ('page_guidance','local_order_read')),
 --   console_workspace_turns_page_key_check (page_key IN ('workspace_home','business_orders',
@@ -15,6 +16,7 @@ CREATE TABLE public.console_proposals (
     payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
     payload_sha256 text NOT NULL CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
     expected_version text,
+    card jsonb NOT NULL CHECK (jsonb_typeof(card) = 'object'),
     status text NOT NULL CHECK (status IN ('requested','confirmed','executed','expired','cancelled')),
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL,

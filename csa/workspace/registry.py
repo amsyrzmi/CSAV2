@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from fastapi import HTTPException, Request
@@ -23,7 +23,14 @@ from csa.console.contracts import ConsoleActor
 from csa.core import db
 from csa.workspace.contracts import CardField, ProposalCard, ProposalKind, ProposalOut
 
-_ERROR_STATUS = {
+ProposalErrorCode = Literal[
+    "proposal_session_mismatch",
+    "proposal_not_found",
+    "proposal_expired",
+    "proposal_consumed",
+    "proposal_stale",
+]
+_ERROR_STATUS: dict[ProposalErrorCode, int] = {
     "proposal_session_mismatch": 403,
     "proposal_not_found": 404,
     "proposal_expired": 409,
@@ -35,7 +42,7 @@ _ERROR_STATUS = {
 class ProposalError(HTTPException):
     """Registry refusal; ``detail`` is one stable code from ``_ERROR_STATUS``."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: ProposalErrorCode) -> None:
         super().__init__(_ERROR_STATUS[code], code)
 
 
@@ -104,6 +111,13 @@ class ProposalRegistry:
         thread_id: UUID | None,
     ) -> ProposalOut:
         content, version = await self._executor(kind).card(conn, actor, client_id, payload)
+        card = {
+            "kind": kind,
+            "title": content.title,
+            "summary": content.summary,
+            "fields": [f.model_dump(mode="json") for f in content.fields],
+            "expected_version": version,
+        }
         row = await db.q.fetch_one(
             "workspace/proposal_insert.sql",
             (
@@ -115,20 +129,20 @@ class ProposalRegistry:
                 Jsonb(payload),
                 payload_sha256(payload),
                 version,
+                Jsonb(card),
             ),
             conn=conn,
         )
         if row is None:
             raise RuntimeError("proposal insert returned no row")
         await _audit(conn, actor, client_id, "workspace.proposal.created", row)
-        return _out(row, content)
+        return _out(row)
 
     async def get(
         self, conn: AsyncConnection[Any], actor: ConsoleActor, client_id: UUID, proposal_id: UUID
     ) -> ProposalOut:
         await _expire_owned(conn, actor, client_id)
-        row = await _locked(conn, actor, client_id, proposal_id)
-        return await self._render(conn, actor, client_id, row)
+        return _out(await _locked(conn, actor, client_id, proposal_id))
 
     async def confirm(
         self,
@@ -141,6 +155,8 @@ class ProposalRegistry:
         row = await _locked(conn, actor, client_id, proposal_id)
         if row["login_session_id"] != actor.session_id:
             raise ProposalError("proposal_session_mismatch")
+        if row["status"] == "executed":
+            return _out(row)  # replay: the stored receipt, nothing runs again
         if row["status"] != "requested":
             raise ProposalError("proposal_consumed")
         if row["is_expired"]:
@@ -151,7 +167,7 @@ class ProposalRegistry:
         if payload_sha256(payload) != row["payload_sha256"]:
             raise ProposalError("proposal_stale")
         executor = self._executor(row["kind"])
-        content, version = await executor.card(conn, actor, client_id, payload)
+        _, version = await executor.card(conn, actor, client_id, payload)
         if version != row["expected_version"]:
             raise ProposalError("proposal_stale")
         row = await _set_status(conn, client_id, proposal_id, "confirmed", None)
@@ -159,7 +175,7 @@ class ProposalRegistry:
         receipt = await executor.execute(conn, request, actor, client_id, payload)
         row = await _set_status(conn, client_id, proposal_id, "executed", Jsonb(receipt))
         await _audit(conn, actor, client_id, "workspace.proposal.executed", row)
-        return _out(row, content)
+        return _out(row)
 
     async def cancel(
         self, conn: AsyncConnection[Any], actor: ConsoleActor, client_id: UUID, proposal_id: UUID
@@ -171,11 +187,12 @@ class ProposalRegistry:
         if row["status"] == "requested":
             row = await _set_status(conn, client_id, proposal_id, "cancelled", None)
             await _audit(conn, actor, client_id, "workspace.proposal.cancelled", row)
-        return await self._render(conn, actor, client_id, row)
+        return _out(row)
 
     async def cancel_thread(
         self, conn: AsyncConnection[Any], actor: ConsoleActor, client_id: UUID, thread_id: UUID
     ) -> int:
+        await _expire_owned(conn, actor, client_id)
         rows = await db.q.fetch_all(
             "workspace/proposal_cancel_thread.sql",
             (client_id, actor.user_id, thread_id),
@@ -184,17 +201,6 @@ class ProposalRegistry:
         for row in rows:
             await _audit(conn, actor, client_id, "workspace.proposal.cancelled", row)
         return len(rows)
-
-    async def _render(
-        self,
-        conn: AsyncConnection[Any],
-        actor: ConsoleActor,
-        client_id: UUID,
-        row: dict[str, Any],
-    ) -> ProposalOut:
-        executor = self._executor(row["kind"])
-        content, _ = await executor.card(conn, actor, client_id, row["payload"])
-        return _out(row, content)
 
 
 async def _locked(
@@ -243,15 +249,10 @@ async def _audit(
     )
 
 
-def _out(row: Mapping[str, Any], content: CardContent) -> ProposalOut:
-    card = ProposalCard(
-        proposal_id=row["id"],
-        kind=row["kind"],
-        title=content.title,
-        summary=content.summary,
-        fields=content.fields,
-        expires_at=row["expires_at"],
-        expected_version=row["expected_version"],
+def _out(row: Mapping[str, Any]) -> ProposalOut:
+    """Render from the stored card; records may have changed since creation."""
+    card = ProposalCard.model_validate(
+        {**row["card"], "proposal_id": row["id"], "expires_at": row["expires_at"]}
     )
     return ProposalOut(
         id=row["id"],
