@@ -60,6 +60,8 @@ ALI_B = UUID("44444444-4444-4444-8444-444444444442")
 EMAIL_PROPOSAL = UUID("55555555-5555-4555-8555-555555555551")
 TRAINING_PROPOSAL = UUID("55555555-5555-4555-8555-555555555552")
 ABANDONED_PROPOSAL = UUID("55555555-5555-4555-8555-555555555553")
+SIDEBAR_PROPOSAL = UUID("55555555-5555-4555-8555-555555555554")
+RESET_PROPOSAL = UUID("55555555-5555-4555-8555-555555555555")
 PACKAGES = [
     {"key": "customer_support", "status": "active"},
     {"key": "hr", "status": "active"},
@@ -74,7 +76,7 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def make_me(role: str) -> dict[str, Any]:
+def make_me(role: str, *, assistant: bool = True) -> dict[str, Any]:
     admin = role == "platform_admin"
     return {
         "user": {
@@ -88,6 +90,7 @@ def make_me(role: str) -> dict[str, Any]:
         "active_client_id": None if admin else TENANT,
         "role": role,
         "csrf_token": CSRF,
+        "workspace_assistant": assistant,
     }
 
 
@@ -210,7 +213,7 @@ def planner(text: str, context: dict[str, Any] | None) -> WorkspaceActionResult 
                 ),
             ],
         )
-    if text == f"Use employee {ALI_B}":
+    if text == f"Use employee {ALI_B} for: email Ali about the roster":
         return ProposalResult(action="proposal", proposal=email_proposal(EMAIL_PROPOSAL))
     if text == "submit my training request" and tab != "hr":
         return NavigateResult(action="navigate", tab="hr", resume=True)
@@ -218,14 +221,19 @@ def planner(text: str, context: dict[str, Any] | None) -> WorkspaceActionResult 
         return ProposalResult(action="proposal", proposal=training_proposal())
     if text == "draft the roster follow-up":
         return ProposalResult(action="proposal", proposal=email_proposal(ABANDONED_PROPOSAL))
+    if text == "draft the leave note":
+        return ProposalResult(action="proposal", proposal=email_proposal(SIDEBAR_PROPOSAL))
+    if text == "draft the shift swap":
+        return ProposalResult(action="proposal", proposal=email_proposal(RESET_PROPOSAL))
     if text == "open the inbox":
         return NavigateResult(action="navigate", tab="inbox")
     return None
 
 
 def settled(proposal_id: str, action: str) -> ProposalOut | None:
-    if action == "cancel" and proposal_id == str(ABANDONED_PROPOSAL):
-        return email_proposal(ABANDONED_PROPOSAL, status="cancelled")
+    for withdrawn in (ABANDONED_PROPOSAL, SIDEBAR_PROPOSAL, RESET_PROPOSAL):
+        if action == "cancel" and proposal_id == str(withdrawn):
+            return email_proposal(withdrawn, status="cancelled")
     if action == "confirm" and proposal_id == str(EMAIL_PROPOSAL):
         return email_proposal(
             EMAIL_PROPOSAL,
@@ -431,7 +439,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         assert first["csrf"] == CSRF and first["query"] == f"client_id={TENANT}"
         assert first["body"]["body"] == "email Ali about the roster"
         assert first["body"]["page_context"] == {"tab": "inbox"}
-        assert follow_up["body"]["body"] == f"Use employee {ALI_B}"
+        # The pick repeats the originating request so the planner can finish it.
+        assert follow_up["body"]["body"] == f"Use employee {ALI_B} for: email Ali about the roster"
         assert follow_up["body"]["page_context"] == {"tab": "inbox"}
 
         # (c) Confirm posts the decision with CSRF and the executor's receipt is shown.
@@ -482,8 +491,38 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         assert navigate_at < cancel_at < inbox_at, "cancel must precede the Inbox load"
         assert len(said("open the inbox")) == 1
 
+        # (e2) Sidebar navigation (no assistant turn) also withdraws a requested card.
+        await say(page, "draft the leave note")
+        sidebar_card = card.nth(3)
+        await expect(sidebar_card.get_by_test_id("proposal-confirm")).to_be_visible(timeout=WAIT)
+        await page.get_by_role("link", name="People & HR").click()
+        await expect(page).to_have_url(f"{base}/portal/hr", timeout=WAIT)
+        await expect(sidebar_card.get_by_test_id("proposal-outcome")).to_have_text(
+            "Cancelled. Nothing was changed.", timeout=WAIT
+        )
+        assert [c["path"] for c in posts("/cancel")][-1] == (
+            f"workspace/proposals/{SIDEBAR_PROPOSAL}/cancel"
+        )
+        assert len(posts("/cancel")) == 2 and not said("People & HR")
+
+        # (e3) Starting a new conversation withdraws the cards it drops.
+        await say(page, "draft the shift swap")
+        reset_card = card.nth(4)
+        await expect(reset_card.get_by_test_id("proposal-confirm")).to_be_visible(timeout=WAIT)
+        reset_cancel = re.compile(rf"/workspace/proposals/{RESET_PROPOSAL}/cancel")
+        async with page.expect_request(reset_cancel):
+            await page.get_by_role("button", name="New conversation").click()
+        await expect(card).to_have_count(0, timeout=WAIT)
+        assert len(posts("/cancel")) == 3
+
         # (f) A read-only member never gets the dock (HR's own load proves hydration).
         upstream.me = make_me("read_only")
+        async with page.expect_request(re.compile(r"/console/v1/hr/context")):
+            await page.goto(f"{base}/portal/hr")
+        await expect(page.get_by_test_id("assistant-open")).to_have_count(0)
+
+        # (f2) With WORKSPACE_ASSISTANT_ENABLED off (/auth/me says so) nobody gets the dock.
+        upstream.me = make_me("tenant_admin", assistant=False)
         async with page.expect_request(re.compile(r"/console/v1/hr/context")):
             await page.goto(f"{base}/portal/hr")
         await expect(page.get_by_test_id("assistant-open")).to_have_count(0)

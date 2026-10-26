@@ -25,10 +25,12 @@ const TABS: readonly TabKey[] = [
 ];
 
 /**
- * The tenant the dock talks to, or null when the dock must not render: read-only
- * members never see it, and platform admins only on pages that name `?client_id=`.
+ * The tenant the dock talks to, or null when the dock must not render: the gateway's
+ * assistant flag is off, read-only members never see it, and platform admins only on
+ * pages that name `?client_id=`.
  */
 export function dockTenant(me: Me, clientIdParam: string | null): string | null {
+  if (!me.workspace_assistant) return null; // WORKSPACE_ASSISTANT_ENABLED is off
   if (me.role === "platform_admin") return clientIdParam?.trim() || null;
   if (me.role === "tenant_admin" || me.role === "tenant_staff")
     return me.active_client_id || null;
@@ -89,9 +91,26 @@ export function resumeContext(
   return target.section ? { tab: target.tab, section: target.section } : { tab: target.tab };
 }
 
-/** Follow-up turn text when the user picks a directory candidate. */
-export function candidateFollowUp(person: PersonOut): string {
-  return `Use employee ${person.employee_id}`;
+/** How much of the originating message a follow-up turn repeats. */
+const ORIGIN_CHARS = 1000;
+
+function originOf(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length > ORIGIN_CHARS ? `${trimmed.slice(0, ORIGIN_CHARS)}…` : trimmed;
+}
+
+/** Follow-up turn text when the user picks a directory candidate from `origin`'s result. */
+export function candidateFollowUp(person: PersonOut, origin: string): string {
+  return `Use employee ${person.employee_id} for: ${originOf(origin)}`;
+}
+
+/** Follow-up turn text answering a clarification, carrying its question and request. */
+export function clarificationAnswer(
+  option: ClarificationOption,
+  question: string,
+  origin: string,
+): string {
+  return `${option.value}\n(Answer to “${question}” for: ${originOf(origin)})`;
 }
 
 const guidance: Record<string, string> = {

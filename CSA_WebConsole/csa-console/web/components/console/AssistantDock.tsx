@@ -5,6 +5,7 @@ import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
 import {
   candidateFollowUp,
+  clarificationAnswer,
   dockTenant,
   effectiveContext,
   openProposals,
@@ -34,6 +35,8 @@ import { action, field, Notice, secondary } from "./ui";
 
 /** How long a resumed turn waits for the new tab to publish its context. */
 const RESUME_GRACE_MS = 1000;
+/** How long a resume waits for the route to reach its target before giving up. */
+const RESUME_TIMEOUT_MS = 10000;
 
 interface Attempt {
   key: string;
@@ -67,7 +70,8 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
   const router = useRouter();
   const pathname = usePathname();
   const published = usePageContext();
-  const context = effectiveContext(published, tabForPath(pathname, me, packages));
+  const pathTab = tabForPath(pathname, me, packages);
+  const context = effectiveContext(published, pathTab);
   const panelId = useId();
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -139,6 +143,27 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     setOutcomes((current) => ({ ...current, [proposal.id]: proposal }));
   }
 
+  /** Cancel every card still awaiting a decision; a failed cancel leaves it to the server. */
+  function withdrawOpen() {
+    return Promise.all(
+      openProposals(turns, outcomes).map((proposal) =>
+        cancelProposal(proposal.id, undefined, tenant).then(settle, () => undefined),
+      ),
+    );
+  }
+
+  // Any tab change (sidebar link, back button, a navigate result) withdraws requested cards:
+  // a card must not stay confirmable once the user has left the page it was proposed on.
+  const withdrawOnTabChange = useEffectEvent(() => {
+    void withdrawOpen();
+  });
+  const shownTab = useRef(pathTab);
+  useEffect(() => {
+    if (shownTab.current === pathTab) return;
+    shownTab.current = pathTab;
+    withdrawOnTabChange();
+  }, [pathTab]);
+
   async function navigate(
     result: Extract<WorkspaceResult, { action: "navigate" }>,
     attempt: Attempt,
@@ -148,13 +173,8 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
       setError(`${tabLabel(result.tab, me, packages)} is not available to you.`);
       return;
     }
-    // A requested card must not survive the page it was proposed on.
-    const pendingCards = openProposals(turns, outcomes);
-    await Promise.all(
-      pendingCards.map((proposal) =>
-        cancelProposal(proposal.id, undefined, tenant).then(settle, () => undefined),
-      ),
-    );
+    // A requested card must not survive the page it was proposed on; cancel before leaving.
+    await withdrawOpen();
     if (result.resume && !attempt.resumed)
       setResume({
         text: attempt.text,
@@ -239,7 +259,19 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     return () => clearTimeout(timer);
   }, [targetReached, targetPublished, busy]);
 
+  // A route that never reaches the resume target must not leave the input locked.
+  const waitingForRoute = resume !== null && !targetReached;
+  useEffect(() => {
+    if (!waitingForRoute) return;
+    const timer = setTimeout(() => {
+      setResume(null);
+      setError("The tab did not open, so the request was not continued. Send it again.");
+    }, RESUME_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [waitingForRoute]);
+
   function newConversation() {
+    void withdrawOpen();
     mutation.current?.abort();
     mutation.current = null;
     setThreadId("");
@@ -322,6 +354,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
             <p className="ml-8 whitespace-pre-wrap rounded-md bg-ink-50 p-3 text-sm">{turn.body}</p>
             <TurnResult
               result={turn.result}
+              origin={turn.body}
               me={me}
               packages={packages}
               tenant={tenant}
@@ -395,6 +428,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
 
 function TurnResult({
   result,
+  origin,
   me,
   packages,
   tenant,
@@ -404,6 +438,8 @@ function TurnResult({
   onAsk,
 }: {
   result: WorkspaceResult;
+  /** The message that produced this result; follow-ups repeat it for the planner. */
+  origin: string;
   me: Me;
   packages: PackageState[];
   tenant: string;
@@ -475,7 +511,7 @@ function TurnResult({
                   data-testid="assistant-candidate"
                   className={`${secondary} w-full justify-start text-left`}
                   disabled={disabled}
-                  onClick={() => onAsk(candidateFollowUp(person))}
+                  onClick={() => onAsk(candidateFollowUp(person, origin))}
                 >
                   <span>
                     <span className="font-medium">{person.display_name}</span>
@@ -503,7 +539,7 @@ function TurnResult({
                   type="button"
                   className={secondary}
                   disabled={disabled}
-                  onClick={() => onAsk(option.value)}
+                  onClick={() => onAsk(clarificationAnswer(option, view.question, origin))}
                 >
                   {option.label}
                 </button>

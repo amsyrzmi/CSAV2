@@ -15,7 +15,7 @@ const view = await import(await load("assistant-view.ts", {
   '"@/lib/navigation"': JSON.stringify(await load("navigation.ts")),
 }));
 
-const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t1", csrf_token: "" };
+const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t1", csrf_token: "", workspace_assistant: true };
 const admin = { ...staff, role: "platform_admin", active_client_id: null };
 const all = ["customer_support", "hr", "staff_email", "orders_products"].map((key) => ({ key, status: "active" }));
 const proposal = (id, extra = {}) => ({
@@ -34,6 +34,12 @@ test("the dock renders only for writers with a tenant; admins need ?client_id=",
   assert.equal(view.dockTenant(admin, null), null);
   assert.equal(view.dockTenant(admin, "  "), null);
   assert.equal(view.dockTenant(admin, "t9"), "t9");
+});
+
+test("the dock stays hidden while the gateway's workspace assistant flag is off", () => {
+  assert.equal(view.dockTenant({ ...staff, workspace_assistant: false }, null), null);
+  assert.equal(view.dockTenant({ ...staff, workspace_assistant: undefined }, null), null);
+  assert.equal(view.dockTenant({ ...admin, workspace_assistant: false }, "t9"), null);
 });
 
 test("tab routes follow the shell navigation and keep the admin tenant", () => {
@@ -81,7 +87,15 @@ test("results map onto views", () => {
   assert.deepEqual(view.resultView({ action: "directory_lookup", candidates: [person] }), { kind: "directory", candidates: [person] });
   assert.equal(view.resultView({ action: "directory_lookup", candidates: [] }).kind, "notice");
   assert.equal(view.resultView({ action: "clarification", question: "Which?", options: [] }).question, "Which?");
-  assert.equal(view.candidateFollowUp(person), "Use employee e1");
+  assert.equal(
+    view.candidateFollowUp(person, " email Ali about the roster "),
+    "Use employee e1 for: email Ali about the roster",
+  );
+  assert.equal(view.candidateFollowUp(person, "x".repeat(1200)).length, "Use employee e1 for: ".length + 1001);
+  assert.equal(
+    view.clarificationAnswer({ label: "HR", value: "hr" }, "Which tab?", "take me there"),
+    "hr\n(Answer to “Which tab?” for: take me there)",
+  );
 });
 
 test("open proposals honour local outcomes and expiry", () => {

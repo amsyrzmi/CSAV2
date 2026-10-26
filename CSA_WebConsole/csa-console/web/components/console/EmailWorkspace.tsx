@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ApiError } from "@/lib/api";
 import type { Me } from "@/lib/identity-contracts";
 import { emailClient, type Draft, type EmailContext, type Thread, type ThreadDetail } from "@/lib/email-api";
 import { usePublishContext } from "@/lib/page-context";
@@ -69,7 +70,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
     inFlight.current = true; setBusy(true); setError("");
     try { const value = await work(); done?.(value); }
     catch (reason) {
-      const code = reason instanceof Error ? reason.message : String(reason);
+      const code = reason instanceof ApiError ? reason.code : reason instanceof Error ? reason.message : String(reason);
       setError(errorText[code] ?? `Request failed: ${code}`);
     } finally { inFlight.current = false; setBusy(false); }
   }
@@ -87,7 +88,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
         setContext(ctx);
         await reloadLists(ctx);
       } catch (reason) {
-        if (active) setError(reason instanceof Error ? (errorText[reason.message] ?? reason.message) : "Unavailable");
+        if (active) setError(reason instanceof ApiError ? (errorText[reason.code] ?? reason.message) : reason instanceof Error ? reason.message : "Unavailable");
       } finally { if (active) { inFlight.current = false; setBusy(false); } }
     })();
     return () => { active = false; };
