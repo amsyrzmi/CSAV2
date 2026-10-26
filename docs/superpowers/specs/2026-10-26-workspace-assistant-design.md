@@ -95,6 +95,9 @@ receiving `me` and `packages`; `lib/navigation.ts` keys; package gates in
 5. First actions: email compose and export, training request submit, held-reply decision.
    Everything else is answer-and-navigate.
 6. Approach A.
+7. Read-only members: **decision pending with the owner** (see the open question in the
+   handover); the A0 design denied them the workspace entirely, and the directory decision
+   said "every staff member".
 
 ## Design
 
@@ -134,15 +137,21 @@ against the `WorkspaceProposal` union; anything else is a visible planner error.
 - `AnswerProposal`: markdown answer grounded on server-fetched facts for the current tab;
   the planner may request up to three typed reads (`read_current_record`, `my_profile`,
   `my_packages`) which the server executes before answering.
-- `NavigateProposal`: `{tab, section?, record?}` restricted to tabs the user's role and the
-  tenant's active packages allow (`lib/navigation.ts` rule mirrored server-side).
+- `NavigateProposal`: `{tab, section?, record?, resume: bool}` restricted to tabs the user's
+  role and the tenant's active packages allow (`lib/navigation.ts` rule mirrored
+  server-side). When `resume` is true the panel navigates and then automatically posts the
+  user's original message again as a new turn with the new `page_context` (builder-check
+  call: two audited turns, one request key each; no hidden follow-on intent is stored).
 - `DirectoryLookupProposal`: `{query}`; the server resolves and returns candidates.
 - `EmailComposeProposal`: `{recipients: [{employee_id} | {address}], subject, instructions,
   language}` → a draft created through a new compose endpoint; export is a separate
   confirmed step.
 - `TrainingSubmitProposal`: `{training_request_id}` or `{employee_id, title, ...}` mapped
   onto `HrAgentInput.training.prepare`/`transition(submit)`.
-- `InboxDecisionProposal`: `{approval_id, decision: approve|reject, expected_version}`.
+- `InboxDecisionProposal`: `{approval_id, conversation_id, decision: approve|reject,
+  expected_version}` where `expected_version` is the conversation's `inbox_version` at
+  proposal time; execution additionally relies on the approval's `pending` status fence
+  (builder-check call: approvals carry no version column of their own).
 - `ClarificationProposal`: a question with up to five typed options (used for ambiguous
   people and missing fields).
 
@@ -152,9 +161,12 @@ Migration `0460_console_proposals.sql` creates `console_proposals(id uuid pk, cl
 user_id, login_session_id, thread_id null, kind text, payload jsonb, payload_sha256 text,
 expected_version text null, status requested|confirmed|executed|expired|cancelled,
 created_at, expires_at (≤ 15 minutes), executed_at null, result jsonb null)` with tenant
-RLS (not forced), `csa_app` grants, and an index on `(client_id, user_id, status)`. HR's
-existing `prepare_confirmation` rows are not migrated; the registry wraps them for the
-approve/reject kind, which keeps HR's own policy checks intact.
+RLS (not forced), `csa_app` grants, an index on `(client_id, user_id, status)`, and a CHECK
+on `kind IN ('email_export','training_submit','inbox_decision')`. HR training approve and
+reject are **not** registry kinds in this version (builder-check call): they keep HR's own
+`prepare_confirmation` rows and the HR tab's review button, and the planner refuses them.
+`0460` also relaxes the `console_workspace_turns` CHECK constraints on `action` and `page_key`
+to the new proposal kinds and tab keys.
 
 Endpoints under `/console/v1/workspace`:
 - `POST /conversations/{id}/turns` (existing) now returns the planner's proposal; mutating
@@ -190,26 +202,36 @@ identity throttle pattern.
 
 ### Email compose
 
-`POST /console/v1/email/compose` creates a draft with `thread_id` NULL, `recipients` as a
-list of resolved work emails (server-side from `employee_id`) plus validated free
-addresses, `subject`, `instructions`, `language`, using an internal staff persona prompt
-that names the recipients only by display name. Export remains
-`POST /drafts/{id}/export` and becomes a proposal confirmation. The `staff_email` package
-gate applies; recipients resolved from the directory require the `hr` package.
+`POST /console/v1/email/compose` creates a draft with `thread_id` NULL for **one recipient**
+in this version (builder-check call: `email_drafts.recipient` is a single validated address
+and the MIME builder takes one `to`; multiple recipients are a later schema change). The
+recipient is either `{employee_id}` resolved server-side to the work email or a validated
+free address. Inputs: `subject`, `instructions`, `language`; an internal staff persona
+prompt names the recipient only by display name. Export remains `POST /drafts/{id}/export`
+and becomes a proposal confirmation. Gating: the `staff_email` package **and** the tenant's
+`email_settings.enabled` switch both apply; a user with no mailbox row cannot hold a draft,
+so the card says "Connect your Gmail in the Email tab first" and offers navigation there
+instead of creating a draft. Recipients resolved from the directory require the `hr` package.
 
 ### HR planner delegation
 
-`POST /console/v1/hr/assistant` keeps its contract but delegates to the workspace planner
-with `page_context = {tab: "hr", section}`; its clarification and action shapes map onto
-`ClarificationProposal` and `TrainingSubmitProposal`. Payroll and approve/reject remain
-refused by the planner prompt and by the registry's allowed kinds.
+`POST /console/v1/hr/assistant` delegates to the workspace planner with
+`page_context = {tab: "hr", section}`. Its response changes (builder-check call): reads and
+clarifications are returned as before, but a training submit now returns
+`{proposal_id, card}` and the HR tab confirms it through `/workspace/proposals/{id}/confirm`
+like every other mutation; the HR tab's assistant panel adopts the shared `ProposalCard`.
+The `hr_chat_plans` store is retired in favour of workspace turns (its table stays until a
+later cleanup migration). Payroll and approve/reject remain refused by the planner prompt
+and by the registry's allowed kinds. Tenant switch `hr_assistant` (in `hr_agent_settings`)
+continues to gate HR planning: when it is off, the dock answers HR questions with the
+existing static guidance only and emits no `TrainingSubmitProposal`.
 
 ### Frontend
 
 - `components/console/AssistantDock.tsx` mounted in `AppShell` beside `{children}`:
-  collapsed button on every tab for roles with a tenant membership; expanded panel with
-  the conversation, the current tab chip, a text box, the proposal card, candidate pickers
-  and a "new conversation" action. Read-only users get answer-and-navigate only.
+  collapsed button on every tab for eligible roles; expanded panel with the conversation,
+  the current tab chip, a text box, the proposal card, candidate pickers and a "new
+  conversation" action.
 - `components/console/ProposalCard.tsx`: one component for all kinds, with the tab's
   existing copy; `Confirm` posts to `/proposals/{id}/confirm` with CSRF; shows the
   service's receipt or `ApiError.message`.
@@ -222,10 +244,21 @@ refused by the planner prompt and by the registry's allowed kinds.
 
 ### Gating and roles
 
-The dock appears for any role with an active tenant; per-kind availability follows the
-package gates (`customer_support` or suspended for inbox decisions, `hr` for training and
-people, `staff_email` for email) and the role rules (`read_only` never gets mutating kinds).
-Platform admins use the dock only with a selected tenant.
+Per-kind availability follows the package gates (`customer_support` or suspended for inbox
+decisions, `hr` for training and people, `staff_email` for email), the tenant switches
+(`hr_assistant`, `email_settings.enabled`) and the role rules. The planner itself is behind a
+new `WORKSPACE_ASSISTANT_ENABLED` setting (default false; requires the Groq key when on),
+mirroring `HR_ASSISTANT_ENABLED` (builder-check call). Platform admins get the dock only on
+pages that carry `?client_id=`; the dock derives the tenant from that parameter and a
+change of tenant cancels the thread's requested proposals (builder-check call). Whether
+`read_only` members see the dock at all is an owner decision recorded below.
+
+### The Staff workspace tab
+
+The dock replaces the standalone page (builder-check call): the `workspace` navigation item
+is removed, `/workspace` and `/portal/workspace` redirect to the tab home, the page's HR
+guidance panel becomes an answer the dock gives on the HR tab, and `lib/workspace-paths.mjs`
+keeps only the HR guidance path helper.
 
 ### Audit and observability
 
