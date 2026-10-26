@@ -209,3 +209,23 @@ async def test_me_read_only_denied(sessions: SessionWorld) -> None:
     await activate(w, w.tenants[0], "hr")
     reader, _ = await w.member(role="read_only")
     assert (await mine(reader, w.tenants[0])).status_code == 403
+
+
+async def test_platform_admin_reads_the_directory_of_the_named_tenant(
+    sessions: SessionWorld,
+) -> None:
+    """Platform admins get the dock on tenant pages, so the tenant comes from ?client_id=."""
+    w = sessions
+    t0, t1 = w.tenants
+    await activate(w, t0, "hr")
+    await employee(w, t0, "Ali Hassan", email="ali.h@example.test")
+    await employee(w, t1, "Ali Other Tenant", email="ali@other.test")
+    found = await search(w.admin, t0, "ali")
+    assert found.status_code == 200, found.text
+    assert [p["display_name"] for p in found.json()] == ["Ali Hassan"]
+    me = await mine(w.admin, t0)
+    assert me.status_code == 200, me.text
+    assert me.json() == {"employee_id": None, "manager": None, "reason": "no_employee_link"}
+    unnamed = await w.admin.get(BASE, params={"q": "ali"})
+    assert unnamed.status_code == 400
+    assert (await w.admin.get(f"{BASE}/me")).status_code == 400
