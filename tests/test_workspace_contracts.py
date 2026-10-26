@@ -8,19 +8,32 @@ import pytest
 from csa.workspace.contracts import (
     MAX_EVIDENCE_AGE,
     MAX_WORK_TTL,
+    AnswerProposal,
+    AnswerResult,
+    ClarificationProposal,
+    DirectoryLookupProposal,
+    DirectoryResult,
+    EmailComposeProposal,
     GuidanceProposal,
     GuidanceResult,
+    InboxDecisionProposal,
     LocalOrderSummary,
+    NavigateProposal,
     OrderHint,
     OrderPageHint,
     OrderReadProposal,
     OrderReadResult,
+    PageContext,
+    ProposalCard,
+    RecordRef,
     ResolvedWorkspaceAuthority,
+    TrainingSubmitProposal,
     VerifiedWorkspacePrincipal,
     WorkspaceActionProposal,
     WorkspaceActionResult,
     WorkspaceAllowed,
     WorkspaceDeniedResult,
+    WorkspaceProposal,
     WorkspaceTurnInput,
     WorkspaceWorkBinding,
     validate_workspace_execution,
@@ -397,7 +410,7 @@ def test_result_discriminators_source_freshness_and_decimal_serialization() -> N
     assert order["order"]["total"] == "12.34"
     assert results[2].model_dump() == {"status": "denied", "code": "resource_unavailable"}
     schema = adapter.json_schema()
-    assert len(schema["anyOf"]) == 4
+    assert len(schema["anyOf"]) == 9
 
 
 @pytest.mark.parametrize(
@@ -429,3 +442,110 @@ def test_completed_result_cannot_claim_live_source_or_unrelated_guidance() -> No
     ):
         with pytest.raises(ValidationError):
             changed(result, **updates)
+
+
+# --- Task 2: page context, proposals and registry contracts ---
+
+
+def test_email_compose_requires_exactly_one_recipient() -> None:
+    base = {"action": "email_compose", "subject": "Hi", "instructions": ""}
+    EmailComposeProposal.model_validate({**base, "recipient_address": "a@example.com"})
+    EmailComposeProposal.model_validate({**base, "recipient_employee_id": uuid4()})
+    with pytest.raises(ValidationError):
+        EmailComposeProposal.model_validate(
+            {**base, "recipient_address": "a@example.com", "recipient_employee_id": uuid4()}
+        )
+    with pytest.raises(ValidationError):
+        EmailComposeProposal.model_validate(base)
+
+
+def test_training_submit_request_xor_new_fields() -> None:
+    action = {"action": "training_submit"}
+    TrainingSubmitProposal.model_validate({**action, "request_id": uuid4()})
+    TrainingSubmitProposal.model_validate({**action, "title": "T", "learning_objective": "O"})
+    for bad in (
+        {"request_id": uuid4(), "title": "T"},
+        {"request_id": uuid4(), "title": "T", "learning_objective": "O"},
+        {"title": "T"},
+        {"learning_objective": "O"},
+        {},
+    ):
+        with pytest.raises(ValidationError):
+            TrainingSubmitProposal.model_validate({**action, **bad})
+
+
+def test_page_context_and_record_ref() -> None:
+    ctx = PageContext(tab="hr", record=RecordRef(kind="training_request", id="x"))
+    assert ctx.section is None
+    with pytest.raises(ValidationError):
+        RecordRef.model_validate({"kind": "customer", "id": "x"})
+    with pytest.raises(ValidationError):
+        RecordRef.model_validate({"kind": "order", "id": ""})
+    with pytest.raises(ValidationError):
+        PageContext.model_validate({"tab": "nope"})
+    turn = WorkspaceTurnInput(request_key=uuid4(), body="hi", page_context=ctx)
+    assert turn.page_context == ctx and turn.page_hint is None
+
+
+def test_workspace_proposal_discriminator_parses_every_kind() -> None:
+    adapter = TypeAdapter(WorkspaceProposal)
+    cid = uuid4()
+    cases = {
+        "answer": {"markdown": "x", "reads": ["my_profile"]},
+        "navigate": {"tab": "inbox", "section": None, "record": None},
+        "directory_lookup": {"query": "ann"},
+        "email_compose": {"recipient_address": "a@example.com", "subject": "s", "instructions": ""},
+        "training_submit": {"request_id": uuid4()},
+        "inbox_decision": {
+            "approval_id": 1,
+            "conversation_id": cid,
+            "decision": "approve",
+            "expected_version": 0,
+        },
+        "clarification": {"question": "which?", "options": [{"label": "a", "value": "b"}]},
+        "page_guidance": {"page": "workspace_home"},
+        "local_order_read": {"resource": {"kind": "local_order", "order_id": "o"}},
+    }
+    for action, rest in cases.items():
+        assert adapter.validate_python({"action": action, **rest}).action == action
+    assert WorkspaceActionProposal is not None
+    with pytest.raises(ValidationError):
+        adapter.validate_python({"action": "unknown"})
+
+
+def test_answer_reads_and_clarification_options_bounded() -> None:
+    reads = ["read_current_record", "my_profile", "my_packages"]
+    AnswerProposal(action="answer", markdown="x", reads=reads)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        AnswerProposal.model_validate({"action": "answer", "markdown": "x", "reads": reads * 2})
+    with pytest.raises(ValidationError):
+        AnswerProposal.model_validate({"action": "answer", "markdown": "x", "reads": ["secrets"]})
+    opts = [{"label": str(i), "value": str(i)} for i in range(6)]
+    ClarificationProposal.model_validate(
+        {"action": "clarification", "question": "q", "options": opts[:5]}
+    )
+    with pytest.raises(ValidationError):
+        ClarificationProposal.model_validate(
+            {"action": "clarification", "question": "q", "options": opts}
+        )
+
+
+def test_proposal_card_forbids_extra_and_results_join_union() -> None:
+    card = {
+        "proposal_id": uuid4(),
+        "kind": "email_export",
+        "title": "t",
+        "summary": "s",
+        "fields": [{"label": "a", "value": "b"}],
+        "expires_at": NOW,
+        "expected_version": None,
+    }
+    ProposalCard.model_validate(card)
+    with pytest.raises(ValidationError):
+        ProposalCard.model_validate({**card, "extra": 1})
+    adapter = TypeAdapter(WorkspaceActionResult)
+    answer = adapter.validate_python({"action": "answer", "markdown": "x"})
+    assert isinstance(answer, AnswerResult)
+    people = adapter.validate_python({"action": "directory_lookup", "candidates": []})
+    assert isinstance(people, DirectoryResult)
+    assert InboxDecisionProposal and NavigateProposal and DirectoryLookupProposal
