@@ -28,7 +28,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from docker.models.containers import Container
-from playwright.async_api import BrowserContext, Page, Request, Route, async_playwright
+from playwright.async_api import BrowserContext, Locator, Page, Request, Route, async_playwright
 from psycopg import sql
 from scripts.release_context import materialize
 from testcontainers.core.network import Network
@@ -1032,6 +1032,12 @@ async def test_packaged_m2_browser_acceptance(
         await page.get_by_role("button", name="Sign in", exact=True).click()
         await page.wait_for_url(f"{w.origin}{destination}")
 
+    async def invoice_card(page: Page) -> Locator:
+        # Agents live in collapsed package cards on the Services tab; invoices is orders_products.
+        await page.get_by_test_id("services-agents-toggle-orders_products").click()
+        agents = page.get_by_test_id("services-agents-orders_products")
+        return agents.get_by_role("heading", name="Invoices").locator("xpath=..")
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
 
@@ -1171,25 +1177,25 @@ async def test_packaged_m2_browser_acceptance(
                     run_ids[(tenant, agent)] = run_id
                     traces[(tenant, agent)] = str(trace_id)
 
-            await admin_page.goto(f"{w.origin}/agents")
-            await admin_page.get_by_label("Tenant").select_option(tenants[0])
-            admin_invoice = admin_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await admin_page.goto(f"{w.origin}/services?client_id={tenants[0]}")
+            await admin_page.get_by_test_id("services-tenant").select_option(tenants[0])
+            admin_invoice = await invoice_card(admin_page)
             await admin_invoice.get_by_role("button", name="Subscribe", exact=True).click()
             await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
             await admin_invoice.get_by_text("Off", exact=True).wait_for()
 
             await admin_page.reload()
-            await admin_page.get_by_label("Tenant").select_option(tenants[0])
-            admin_invoice = admin_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await admin_page.get_by_test_id("services-tenant").select_option(tenants[0])
+            admin_invoice = await invoice_card(admin_page)
             await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
-            await admin_page.get_by_label("Tenant").select_option(tenants[1])
-            other_invoice = admin_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await admin_page.get_by_test_id("services-tenant").select_option(tenants[1])
+            other_invoice = await invoice_card(admin_page)
             await other_invoice.get_by_text("Not subscribed", exact=True).wait_for()
 
             _, tenant_page = await new_page()
             await login(tenant_page, tenant_admin_email, member_password, "/portal")
-            await tenant_page.goto(f"{w.origin}/portal/agents")
-            tenant_invoice = tenant_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await tenant_page.goto(f"{w.origin}/portal/services")
+            tenant_invoice = await invoice_card(tenant_page)
             assert (
                 await tenant_page.get_by_role("button", name="Subscribe", exact=True).count() == 0
             )
@@ -1198,7 +1204,7 @@ async def test_packaged_m2_browser_acceptance(
             ).click()
             await tenant_invoice.get_by_text("On", exact=True).wait_for()
             await tenant_page.reload()
-            tenant_invoice = tenant_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            tenant_invoice = await invoice_card(tenant_page)
             await tenant_invoice.get_by_text("On", exact=True).wait_for()
             forbidden_tenant = await tenant_page.evaluate(
                 """async (clientId) => (await fetch(
@@ -1309,8 +1315,8 @@ async def test_packaged_m2_browser_acceptance(
 
             _, reader_page = await new_page()
             await login(reader_page, reader_email, member_password, "/portal")
-            await reader_page.goto(f"{w.origin}/portal/agents")
-            reader_invoice = reader_page.get_by_role("heading", name="Invoices").locator("xpath=..")
+            await reader_page.goto(f"{w.origin}/portal/services")
+            reader_invoice = await invoice_card(reader_page)
             await reader_invoice.get_by_text("Not subscribed", exact=True).wait_for()
             assert (
                 await reader_page.get_by_role(
@@ -1356,7 +1362,7 @@ async def test_packaged_m2_browser_acceptance(
             )
             stale_session = session_cookie.get("value")
             assert stale_session is not None
-            await admin_page.goto(f"{w.origin}/agents")
+            await admin_page.goto(f"{w.origin}/services")
             await admin_page.get_by_role("button", name="Sign out", exact=True).click()
             await admin_page.wait_for_url(f"{w.origin}/login")
             await admin_page.go_back()
@@ -1874,6 +1880,14 @@ async def test_packaged_hr_browser_acceptance(
             )
             assert response.status_code == 201, response.text
             tenants.append(response.json()["id"])
+        # The HR API is package-gated. The foreign tenant needs hr too, so its cross-tenant
+        # employee lookup reaches the HR service (404) instead of stopping at the gate (403).
+        for tenant in tenants:
+            activated = mutate(
+                f"/console/v1/services/hr/activate?client_id={tenant}",
+                {"reference": "synthetic-hr-browser"},
+            )
+            assert activated.status_code == 200, activated.text
         for name, email in emails.items():
             role = (
                 "tenant_admin"
