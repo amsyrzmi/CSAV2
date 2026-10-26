@@ -348,6 +348,9 @@ redirect. Platform administrators must select a tenant explicitly (`?client_id=`
 tenant administrators and staff are constrained to their active membership. `read_only`
 members, machine principals and anonymous callers are denied by the workspace router,
 and the dock is hidden for `read_only` and for platform admins without `?client_id=`.
+`GET /auth/me` (and the other `MeOut` responses) carries `workspace_assistant`, which
+mirrors `WORKSPACE_ASSISTANT_ENABLED`; while it is `false` (the default) the dock is not
+rendered for anyone.
 Browser identity, role and tenant claims are never accepted, and cookie-authenticated
 writes keep the global Origin/CSRF checks. Responses are `Cache-Control: no-store`.
 
@@ -390,9 +393,25 @@ declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; t
 gateway then builds the planner from `GROQ_API_KEY` and `GROQ_MODEL`). Without a
 configured planner a `page_context` turn returns 503 `planner_unavailable`.
 
-- The prompt receives a server-built summary only: role, package states, the page, and a
-  redacted record summary (ids, statuses, versions, redacted titles/subjects). Directory
-  listings and record bodies are never sent.
+- The prompt receives a server-built summary only: role, package states, the page, a
+  redacted record summary (ids, statuses, versions, redacted titles/subjects; an open
+  customer conversation also lists its pending held-reply approval ids and statuses), and
+  the thread's last 6 stored turns. Each stored turn contributes its (already redacted)
+  body, its action and result kind, and for a directory result or clarification the
+  employee ids or option values it offered and which one the next message picked.
+  Directory listings, names, addresses and record bodies are never sent.
+- When the message mentions the user's boss or manager, the server resolves the caller's
+  own manager (as `GET /workspace/people/me` does) before planning and passes only the
+  manager's `employee_id`, or a reason (`no_employee_link`, `no_manager`,
+  `package_inactive`).
+- The dock repeats the originating request in follow-up turns: picking a directory
+  candidate sends `Use employee <id> for: <original message>`, and a clarification answer
+  sends the option value with its question and the original message.
+- A `directory_lookup` without the `hr` package is answered ("not part of the subscribed
+  services") rather than refused. An `email_compose` to a directory employee
+  (`recipient_employee_id`) requires the `hr` package, on this path and on
+  `POST /email/compose`, and is refused with 403 `package_inactive` before any draft is
+  written.
 - The user's own message is sent to the planner unredacted; the stored turn body is
   redacted before it is persisted.
 - A `navigate` to a tab that the role or packages do not unlock is turned into an
@@ -425,8 +444,12 @@ version. The package gate is re-run at confirm.
 - Executors use idempotency keys derived from the proposal id, so the underlying action
   never runs twice. If an executor fails, the caller's own claim is released.
 - Navigating to a different tab (a planned turn whose tab differs from the thread's last
-  turn) cancels the thread's `requested` proposals. Tenant switch and logout do the same
-  by design; those two paths are client behaviour in the frontend work.
+  turn) cancels the thread's `requested` proposals on the server. In the browser the dock
+  also cancels its requested cards whenever the route's tab changes (sidebar links, back
+  button or a `navigate` result), when the tenant changes, and when "New conversation"
+  drops them. Logout does not cancel proposals: it ends the login session, and because
+  confirm is bound to the session that created a proposal, its requested proposals can no
+  longer be confirmed and simply expire.
 
 | Code | Status | Meaning |
 |---|---|---|
@@ -593,7 +616,7 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 |---|---|---|
 | GET `/auth/csrf` | — | Obtain/refresh CSRF; recover from stale session cookies |
 | POST `/auth/login` | `{email,password}` | Verified session; generic invalid-credential error |
-| GET `/auth/me` | — | Verified identity, current roles/memberships |
+| GET `/auth/me` | — | Verified identity, current roles/memberships, `workspace_assistant` flag (dock shown only when true) |
 | POST `/auth/logout` | — | Revoke current session, clear cookies; 204 |
 | POST `/auth/password/change` | `{current_password,new_password}` | Change own password (12–1024 chars), rotate session |
 | POST `/auth/password/reset` | `{email}` | Generic 202 directing user to admin; no account disclosure |

@@ -2,7 +2,10 @@
 -- Preconditions: 0450 applied (0370 workspace tables, 0380 HR tables, 0440 console sessions).
 -- Rollback: DROP VIEW public.company_directory; DROP TABLE public.console_proposals (with its
 --   stored card and claim lease columns);
---   then restore on public.console_workspace_turns the CHECKs
+--   then DELETE the console_workspace_turns rows whose action or page_key uses the values
+--   added here (answer, navigate, directory_lookup, email_compose, training_submit,
+--   inbox_decision, clarification; tab page keys) — the old CHECKs cannot be restored while
+--   such rows exist — and restore on public.console_workspace_turns the CHECKs
 --   console_workspace_turns_action_check (action IN ('page_guidance','local_order_read')),
 --   console_workspace_turns_page_key_check (page_key IN ('workspace_home','business_orders',
 --   'business_order')) and the combined action/resource_id CHECK from 0370.
