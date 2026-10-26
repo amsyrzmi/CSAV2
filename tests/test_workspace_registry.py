@@ -21,10 +21,10 @@ from csa.email.gmail import GmailClient
 from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.service import HrService
+from csa.workspace import registry as registry_module
 from csa.workspace.contracts import CardField, ProposalKind
 from csa.workspace.executors import build_proposal_registry
 from csa.workspace.registry import CardContent, ProposalError, ProposalRegistry
-from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from pydantic import SecretStr
 from starlette.requests import Request
@@ -152,13 +152,19 @@ class FakeTrainingExecutor:
 
     kind: ProposalKind = "training_submit"
 
-    def __init__(self) -> None:
+    def __init__(self, pool: Any = None) -> None:
         self.version: str | None = "v1"
         self.executed: list[dict[str, Any]] = []
+        self.pool = pool
+        self.held: list[int] = []  # connections checked out of `pool` during each call
+
+    def _note_held(self) -> None:
+        if self.pool is not None:
+            stats = self.pool.get_stats()
+            self.held.append(stats.get("pool_size", 0) - stats.get("pool_available", 0))
 
     async def card(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -169,11 +175,11 @@ class FakeTrainingExecutor:
             summary=f"Submit {payload['title']}",
             fields=[CardField(label="Title", value=str(payload["title"]))],
         )
+        self._note_held()
         return content, self.version
 
     async def execute(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -182,6 +188,7 @@ class FakeTrainingExecutor:
         proposal_id: UUID,
         expected_version: str | None,
     ) -> dict:
+        self._note_held()
         self.executed.append(payload)
         return {"receipt": len(self.executed), "title": payload["title"]}
 
@@ -233,22 +240,20 @@ async def _create(
     title: str = "Forklift safety",
 ) -> Any:
     tenant = sessions.tenants[0]
-    async with tx(sessions.pool, tenant) as conn:
-        return await registry.create(
-            conn,
-            actor,
-            UUID(tenant),
-            "training_submit",
-            {"title": title},
-            thread_id=thread_id,
-            request=_request(),
-        )
+    return await registry.create(
+        sessions.pool,
+        _request(),
+        actor,
+        UUID(tenant),
+        "training_submit",
+        {"title": title},
+        thread_id=thread_id,
+    )
 
 
 async def _confirm(sessions: SessionWorld, registry: ProposalRegistry, actor, pid) -> Any:
     tenant = sessions.tenants[0]
-    async with tx(sessions.pool, tenant) as conn:
-        return await registry.confirm(conn, _request(), actor, UUID(tenant), pid)
+    return await registry.confirm(sessions.pool, _request(), actor, UUID(tenant), pid)
 
 
 async def _row(sessions: SessionWorld, pid: UUID) -> dict[str, Any]:
@@ -310,10 +315,8 @@ async def test_expired_proposal_is_refused_and_marked_expired(sessions: SessionW
         " expires_at = now() - interval '1 second' WHERE id=%s",
         out.id,
     )
-    tenant = sessions.tenants[0]
-    async with tx(sessions.pool, tenant) as conn:
-        with pytest.raises(ProposalError) as exc:
-            await registry.confirm(conn, _request(), actor, UUID(tenant), out.id)
+    with pytest.raises(ProposalError) as exc:
+        await _confirm(sessions, registry, actor, out.id)
     assert exc.value.status_code == 409 and exc.value.detail == "proposal_expired"
     assert (await _row(sessions, out.id))["status"] == "expired"
     assert fake.executed == []
@@ -322,7 +325,7 @@ async def test_expired_proposal_is_refused_and_marked_expired(sessions: SessionW
     assert again.value.status_code == 409 and again.value.detail == "proposal_consumed"
 
 
-async def test_expiry_persists_even_when_the_confirm_transaction_rolls_back(
+async def test_expiry_write_commits_before_the_refusal_is_raised(
     sessions: SessionWorld,
 ) -> None:
     actor, _ = await _member_actor(sessions)
@@ -334,9 +337,15 @@ async def test_expiry_persists_even_when_the_confirm_transaction_rolls_back(
         out.id,
     )
     with pytest.raises(ProposalError) as exc:
-        await _confirm(sessions, registry, actor, out.id)  # error escapes: tx rolls back
+        await _confirm(sessions, registry, actor, out.id)
     assert exc.value.detail == "proposal_expired"
-    assert (await _row(sessions, out.id))["status"] == "requested"
+    assert (await _row(sessions, out.id))["status"] == "expired"
+    audits = await sessions.q(
+        "SELECT count(*) n FROM console_audit WHERE target_id=%s"
+        " AND action='workspace.proposal.confirmed'",
+        str(out.id),
+    )
+    assert audits[0]["n"] == 0
     tenant = sessions.tenants[0]
     async with tx(sessions.pool, tenant) as conn:
         seen = await registry.get(conn, actor, UUID(tenant), out.id)
@@ -403,6 +412,59 @@ async def test_executor_failure_rolls_back_to_requested(sessions: SessionWorld) 
         await _confirm(sessions, registry, actor, out.id)
     row = await _row(sessions, out.id)
     assert row["status"] == "requested" and row["result"] is None
+    del fake.execute  # restore the class method
+    done = await _confirm(sessions, registry, actor, out.id)
+    assert done.status == "executed" and len(fake.executed) == 1
+
+
+async def test_registry_holds_no_connection_while_the_executor_runs(
+    sessions: SessionWorld,
+) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake = FakeTrainingExecutor(sessions.pool)
+    registry = ProposalRegistry({"training_submit": fake})
+    out = await _create(sessions, registry, actor)
+    done = await _confirm(sessions, registry, actor, out.id)
+    assert done.status == "executed"
+    assert fake.held == [0, 0, 0]  # card at create, card at confirm, execute
+
+
+def _fail_recording_executed_once(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make the registry's final `executed` write fail once, after the executor ran."""
+    real = registry_module._set_status
+    failed: list[str] = []
+
+    async def flaky(conn: Any, client_id: UUID, proposal_id: UUID, status: str, result: Any):
+        if status == "executed" and not failed:
+            failed.append(status)
+            raise RuntimeError("synthetic registry commit failure")
+        return await real(conn, client_id, proposal_id, status, result)
+
+    monkeypatch.setattr(registry_module, "_set_status", flaky)
+    return failed
+
+
+async def test_confirm_interrupted_after_execute_retries_without_a_new_card_check(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    out = await _create(sessions, registry, actor)
+    failed = _fail_recording_executed_once(monkeypatch)
+    with pytest.raises(RuntimeError, match="synthetic registry commit failure"):
+        await _confirm(sessions, registry, actor, out.id)
+    assert failed == ["executed"] and len(fake.executed) == 1
+    assert (await _row(sessions, out.id))["status"] == "confirmed"
+    tenant = sessions.tenants[0]
+    async with tx(sessions.pool, tenant) as conn:
+        with pytest.raises(ProposalError) as exc:
+            await registry.cancel(conn, actor, UUID(tenant), out.id)
+    assert exc.value.detail == "proposal_consumed"
+    fake.version = "v2"  # the record moved because the first run acted; no stale refusal
+    done = await _confirm(sessions, registry, actor, out.id)
+    assert done.status == "executed" and len(fake.executed) == 2  # idempotent service replays
+    assert (await _confirm(sessions, registry, actor, out.id)) == done
+    assert len(fake.executed) == 2
 
 
 async def test_changed_expected_version_is_stale(sessions: SessionWorld) -> None:
@@ -626,6 +688,39 @@ async def test_training_submit_proposal_end_to_end(proposals_app) -> None:
     assert replay.status_code == 200 and replay.json() == done.json()
     rows = await w.q("SELECT status FROM hr_training_requests WHERE id=%s", request_id)
     assert rows == [{"status": "submitted"}]
+
+
+async def test_training_confirm_retried_after_registry_failure_replays_receipt(
+    proposals_app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    draft = await browser.post(
+        "/console/v1/hr/training-requests",
+        json={"title": "Forklift safety", "learning_objective": "Operate forklifts safely"},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+    request_id = draft.json()["request"]["request_id"]
+    created = await _propose(
+        w, browser, "training_submit", {"action": "training_submit", "request_id": request_id}
+    )
+    assert created.status_code == 201, created.text
+    pid = created.json()["id"]
+    failed = _fail_recording_executed_once(monkeypatch)
+    with pytest.raises(RuntimeError, match="synthetic registry commit failure"):
+        await _http_confirm(w, browser, pid)  # HR transition committed, registry write failed
+    assert failed == ["executed"]
+    rows = await w.q("SELECT status, version FROM hr_training_requests WHERE id=%s", request_id)
+    assert rows == [{"status": "submitted", "version": 1}]
+    assert (await _row(w, UUID(pid)))["status"] == "confirmed"
+    retried = await _http_confirm(w, browser, pid)
+    assert retried.status_code == 200, retried.text
+    receipt = retried.json()["result"]
+    assert retried.json()["status"] == "executed"
+    assert receipt["duplicate"] is True and receipt["request"]["status"] == "submitted"
+    assert receipt["request"]["version"] == 1
+    replay = await _http_confirm(w, browser, pid)
+    assert replay.status_code == 200 and replay.json() == retried.json()
 
 
 async def test_training_submit_new_draft_proposal_creates_and_submits(proposals_app) -> None:

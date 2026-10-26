@@ -2,8 +2,10 @@
 
 ``card()`` runs at create and again at confirm, so the package gate and the record read
 are rechecked before anything executes. Services come from ``request.app.state`` at call
-time. Idempotency keys derive from the proposal id, so a retry after a failed registry
-commit replays inside the owning service instead of acting twice.
+time. The registry holds no connection while an executor runs, so each step here borrows
+at most one pool connection at a time. Idempotency keys derive from the proposal id, so a
+confirm retried after the service committed replays inside the owning service instead of
+acting twice.
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ from typing import Any
 from uuid import UUID, uuid5
 
 from fastapi import HTTPException, Request
-from psycopg import AsyncConnection
 from pydantic import BaseModel, ValidationError
 
 from csa.console.contracts import ConsoleActor
@@ -22,6 +23,7 @@ from csa.console.inbox import conversation, decide_approval
 from csa.console.services import require_package
 from csa.core import db
 from csa.core.pii import redact
+from csa.core.tenancy import tx
 from csa.email.api import email_http_error, email_session_from
 from csa.email.gmail import GmailError
 from csa.email.models import EmailPolicyError
@@ -75,7 +77,6 @@ class TrainingSubmitExecutor:
 
     async def card(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -119,7 +120,6 @@ class TrainingSubmitExecutor:
 
     async def execute(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -169,7 +169,6 @@ class EmailExportExecutor:
 
     async def card(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -207,7 +206,6 @@ class EmailExportExecutor:
 
     async def execute(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -232,7 +230,6 @@ class InboxDecisionExecutor:
 
     async def card(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -242,12 +239,13 @@ class InboxDecisionExecutor:
         await require_package(
             request.app.state.pool, client_id, frozenset({"customer_support"}), _ACTIVE_OR_SUSPENDED
         )
-        approval = await db.q.fetch_one(
-            "inbox/get_approval.sql", (client_id, proposal.approval_id), conn=conn
-        )
-        if approval is None or approval["conversation_id"] != proposal.conversation_id:
-            raise HTTPException(404, "reply approval not found")
-        current = await conversation(conn, client_id, proposal.conversation_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            approval = await db.q.fetch_one(
+                "inbox/get_approval.sql", (client_id, proposal.approval_id), conn=conn
+            )
+            if approval is None or approval["conversation_id"] != proposal.conversation_id:
+                raise HTTPException(404, "reply approval not found")
+            current = await conversation(conn, client_id, proposal.conversation_id)
         if current.inbox_version != proposal.expected_version:
             raise ProposalError("proposal_stale")
         verb = "Approve" if proposal.decision == "approve" else "Reject"
@@ -265,7 +263,6 @@ class InboxDecisionExecutor:
 
     async def execute(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -275,15 +272,16 @@ class InboxDecisionExecutor:
         expected_version: str | None,
     ) -> dict[str, Any]:
         proposal = _parse(InboxDecisionProposal, self.kind, payload)
-        result = await decide_approval(
-            conn,
-            client_id,
-            actor,
-            proposal.approval_id,
-            proposal.decision,
-            None,
-            _key(proposal_id, "inbox_decision"),
-        )
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            result = await decide_approval(
+                conn,
+                client_id,
+                actor,
+                proposal.approval_id,
+                proposal.decision,
+                None,
+                _key(proposal_id, "inbox_decision"),
+            )
         return result.model_dump(mode="json")
 
 

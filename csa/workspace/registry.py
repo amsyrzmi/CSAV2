@@ -1,6 +1,8 @@
 """Proposal registry: session-bound, single-use confirmation of assistant mutations.
 
-Every method runs on a caller-owned tenant transaction (``csa.core.tenancy.tx``). A
+``get``, ``cancel``, ``cancel_thread`` and ``insert`` run on a caller-owned tenant
+transaction (``csa.core.tenancy.tx``); ``create`` and ``confirm`` take the pool and open
+their own short transactions so no connection is held across executor calls. A
 proposal is visible only to its owner; only the login session that created it may confirm
 it, once, before it expires, and only while the payload hash and the executor's bound
 record version still match.
@@ -18,9 +20,11 @@ from uuid import UUID
 from fastapi import HTTPException, Request
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 
 from csa.console.contracts import ConsoleActor
 from csa.core import db
+from csa.core.tenancy import tx
 from csa.workspace.contracts import CardField, ProposalCard, ProposalKind, ProposalOut
 
 ProposalErrorCode = Literal[
@@ -56,11 +60,16 @@ class CardContent:
 
 
 class ProposalExecutor(Protocol):
+    """Acts through the owning service, which opens its own short transactions.
+
+    The registry never holds a connection while it calls an executor, so an executor may
+    borrow pool connections (one at a time) without nesting inside the registry's.
+    """
+
     kind: ProposalKind
 
     async def card(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -75,7 +84,6 @@ class ProposalExecutor(Protocol):
 
     async def execute(
         self,
-        conn: AsyncConnection[Any],
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
@@ -86,9 +94,20 @@ class ProposalExecutor(Protocol):
     ) -> dict[str, Any]:
         """Perform the action through the owning service and return its JSON receipt.
 
-        Idempotency keys derive from ``proposal_id`` so a retry replays in the service.
+        Must be idempotent per ``proposal_id`` (keys derive from it): a confirm interrupted
+        after the service committed runs ``execute`` again, and the service replays.
         """
         ...
+
+
+@dataclass(frozen=True)
+class PreparedProposal:
+    """Executor output for a proposal not yet stored; built with no connection held."""
+
+    kind: ProposalKind
+    payload: dict[str, Any]
+    content: CardContent
+    version: str | None
 
 
 def payload_sha256(payload: Mapping[str, Any]) -> str:
@@ -111,25 +130,34 @@ class ProposalRegistry:
             raise LookupError(f"no proposal executor registered for kind {kind!r}")
         return executor
 
-    async def create(
+    async def prepare(
         self,
-        conn: AsyncConnection[Any],
+        request: Request,
         actor: ConsoleActor,
         client_id: UUID,
         kind: ProposalKind,
         payload: dict[str, Any],
+    ) -> PreparedProposal:
+        """Run the executor's gate and card read; call with no connection held."""
+        content, version = await self._executor(kind).card(request, actor, client_id, payload)
+        return PreparedProposal(kind=kind, payload=payload, content=content, version=version)
+
+    async def insert(
+        self,
+        conn: AsyncConnection[Any],
+        actor: ConsoleActor,
+        client_id: UUID,
+        prepared: PreparedProposal,
         *,
         thread_id: UUID | None,
-        request: Request,
     ) -> ProposalOut:
-        executor = self._executor(kind)
-        content, version = await executor.card(conn, request, actor, client_id, payload)
+        """Store a prepared proposal on the caller's tenant transaction."""
         card = {
-            "kind": kind,
-            "title": content.title,
-            "summary": content.summary,
-            "fields": [f.model_dump(mode="json") for f in content.fields],
-            "expected_version": version,
+            "kind": prepared.kind,
+            "title": prepared.content.title,
+            "summary": prepared.content.summary,
+            "fields": [f.model_dump(mode="json") for f in prepared.content.fields],
+            "expected_version": prepared.version,
         }
         row = await db.q.fetch_one(
             "workspace/proposal_insert.sql",
@@ -138,10 +166,10 @@ class ProposalRegistry:
                 actor.user_id,
                 actor.session_id,
                 thread_id,
-                kind,
-                Jsonb(payload),
-                payload_sha256(payload),
-                version,
+                prepared.kind,
+                Jsonb(prepared.payload),
+                payload_sha256(prepared.payload),
+                prepared.version,
                 Jsonb(card),
             ),
             conn=conn,
@@ -151,6 +179,21 @@ class ProposalRegistry:
         await _audit(conn, actor, client_id, "workspace.proposal.created", row)
         return _out(row)
 
+    async def create(
+        self,
+        pool: AsyncConnectionPool,
+        request: Request,
+        actor: ConsoleActor,
+        client_id: UUID,
+        kind: ProposalKind,
+        payload: dict[str, Any],
+        *,
+        thread_id: UUID | None,
+    ) -> ProposalOut:
+        prepared = await self.prepare(request, actor, client_id, kind, payload)
+        async with tx(pool, str(client_id)) as conn:
+            return await self.insert(conn, actor, client_id, prepared, thread_id=thread_id)
+
     async def get(
         self, conn: AsyncConnection[Any], actor: ConsoleActor, client_id: UUID, proposal_id: UUID
     ) -> ProposalOut:
@@ -159,43 +202,76 @@ class ProposalRegistry:
 
     async def confirm(
         self,
-        conn: AsyncConnection[Any],
+        pool: AsyncConnectionPool,
         request: Request,
         actor: ConsoleActor,
         client_id: UUID,
         proposal_id: UUID,
     ) -> ProposalOut:
-        row = await _locked(conn, actor, client_id, proposal_id)
-        if row["login_session_id"] != actor.session_id:
-            raise ProposalError("proposal_session_mismatch")
-        if row["status"] == "executed":
-            return _out(row)  # replay: the stored receipt, nothing runs again
-        if row["status"] != "requested":
-            raise ProposalError("proposal_consumed")
-        if row["is_expired"]:
-            # Persisted when the caller commits; otherwise the next read's sweep persists it.
-            await _set_status(conn, client_id, proposal_id, "expired", None)
+        """Check, claim, execute, record: each registry step is its own short transaction.
+
+        No registry connection is held while the executor runs. ``confirmed`` is the claim:
+        it commits before ``execute`` so a confirm interrupted after the service committed
+        is retried from ``confirmed`` (no second card check), and the idempotent service
+        replays its receipt. A failed ``execute`` returns the claim to ``requested``.
+        """
+        client = str(client_id)
+        expired = False
+        async with tx(pool, client) as conn:
+            row = await _locked(conn, actor, client_id, proposal_id)
+            if row["login_session_id"] != actor.session_id:
+                raise ProposalError("proposal_session_mismatch")
+            if row["status"] == "executed":
+                return _out(row)  # replay: the stored receipt, nothing runs again
+            if row["status"] not in ("requested", "confirmed"):
+                raise ProposalError("proposal_consumed")
+            if payload_sha256(row["payload"]) != row["payload_sha256"]:
+                raise ProposalError("proposal_stale")
+            if row["status"] == "requested" and row["is_expired"]:
+                await _set_status(conn, client_id, proposal_id, "expired", None)
+                expired = True  # committed on block exit, raised below
+        if expired:
             raise ProposalError("proposal_expired")
-        payload: dict[str, Any] = row["payload"]
-        if payload_sha256(payload) != row["payload_sha256"]:
-            raise ProposalError("proposal_stale")
         executor = self._executor(row["kind"])
-        _, version = await executor.card(conn, request, actor, client_id, payload)
-        if version != row["expected_version"]:
-            raise ProposalError("proposal_stale")
-        row = await _set_status(conn, client_id, proposal_id, "confirmed", None)
-        await _audit(conn, actor, client_id, "workspace.proposal.confirmed", row)
-        receipt = await executor.execute(
-            conn,
-            request,
-            actor,
-            client_id,
-            payload,
-            proposal_id=proposal_id,
-            expected_version=version,
-        )
-        row = await _set_status(conn, client_id, proposal_id, "executed", Jsonb(receipt))
-        await _audit(conn, actor, client_id, "workspace.proposal.executed", row)
+        payload: dict[str, Any] = row["payload"]
+        if row["status"] == "requested":
+            _, version = await executor.card(request, actor, client_id, payload)
+            if version != row["expected_version"]:
+                raise ProposalError("proposal_stale")
+            async with tx(pool, client) as conn:
+                row = await _locked(conn, actor, client_id, proposal_id)
+                if row["status"] != "requested":
+                    raise ProposalError("proposal_consumed")  # a concurrent confirm won
+                if row["is_expired"]:
+                    await _set_status(conn, client_id, proposal_id, "expired", None)
+                    expired = True
+                else:
+                    row = await _set_status(conn, client_id, proposal_id, "confirmed", None)
+                    await _audit(conn, actor, client_id, "workspace.proposal.confirmed", row)
+            if expired:
+                raise ProposalError("proposal_expired")
+        try:
+            receipt = await executor.execute(
+                request,
+                actor,
+                client_id,
+                payload,
+                proposal_id=proposal_id,
+                expected_version=row["expected_version"],
+            )
+        except Exception:
+            # The service's own transaction rolled back; release the claim for a new attempt.
+            async with tx(pool, client) as conn:
+                current = await _locked(conn, actor, client_id, proposal_id)
+                if current["status"] == "confirmed":
+                    await _set_status(conn, client_id, proposal_id, "requested", None)
+            raise
+        async with tx(pool, client) as conn:
+            current = await _locked(conn, actor, client_id, proposal_id)
+            if current["status"] == "executed":
+                return _out(current)  # a concurrent retry recorded the same receipt first
+            row = await _set_status(conn, client_id, proposal_id, "executed", Jsonb(receipt))
+            await _audit(conn, actor, client_id, "workspace.proposal.executed", row)
         return _out(row)
 
     async def cancel(

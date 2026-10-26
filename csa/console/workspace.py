@@ -22,7 +22,7 @@ from csa.workspace.contracts import (
     WorkspaceTurnOut,
     WorkspaceTurnPage,
 )
-from csa.workspace.registry import ProposalError, ProposalRegistry
+from csa.workspace.registry import ProposalRegistry
 from csa.workspace.service import (
     WorkspaceConflict,
     WorkspaceNotFound,
@@ -191,16 +191,15 @@ def build_workspace_router() -> APIRouter:
         body = await _payload(request, ProposalCreate)
         registry = _registry(request)
         # The kind's executor gates the package and validates the payload before any row.
-        async with tx(request.app.state.pool, str(client_id)) as conn:
-            result = await registry.create(
-                conn,
-                actor,
-                client_id,
-                body.kind,
-                dict(body.payload),
-                thread_id=body.thread_id,
-                request=request,
-            )
+        result = await registry.create(
+            request.app.state.pool,
+            request,
+            actor,
+            client_id,
+            body.kind,
+            dict(body.payload),
+            thread_id=body.thread_id,
+        )
         response.headers["Cache-Control"] = "no-store"
         return result
 
@@ -229,16 +228,11 @@ def build_workspace_router() -> APIRouter:
     ) -> ProposalOut:
         _workspace_access(actor, client_id)
         registry = _registry(request)
-        refusal: ProposalError | None = None
-        result: ProposalOut | None = None
-        async with tx(request.app.state.pool, str(client_id)) as conn:
-            try:
-                result = await registry.confirm(conn, request, actor, client_id, proposal_id)
-            except ProposalError as exc:
-                refusal = exc  # commit first so an `expired` status write persists
-        if refusal is not None:
-            raise refusal
-        assert result is not None
+        # The registry runs its own short transactions (the `expired` write commits before
+        # the refusal is raised) and holds none of them while the executor runs.
+        result = await registry.confirm(
+            request.app.state.pool, request, actor, client_id, proposal_id
+        )
         response.headers["Cache-Control"] = "no-store"
         return result
 
