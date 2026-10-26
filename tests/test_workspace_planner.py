@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
@@ -35,7 +37,7 @@ class ScriptedCompletion:
     model = "scripted"
 
     def __init__(self) -> None:
-        self.replies: list[str] = []
+        self.replies: list[str | Callable[[dict[str, Any]], dict[str, Any]]] = []
         self.calls: list[tuple[str, str, str]] = []
 
     def fail(self, code: str) -> None:
@@ -44,11 +46,18 @@ class ScriptedCompletion:
     def reply(self, proposal: dict[str, Any]) -> None:
         self.replies.append(json.dumps({"proposal": proposal}))
 
+    def respond(self, decide: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        """Reply computed from the prompt's facts, so a test can prove what the prompt held."""
+        self.replies.append(decide)
+
     async def json_completion(
         self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
     ) -> Any:
         self.calls.append((schema.__name__, system, user))
         raw = self.replies.pop(0)
+        if callable(raw):
+            start = user.index("<facts>") + len("<facts>")
+            raw = json.dumps({"proposal": raw(json.loads(user[start : user.index("</facts>")]))})
         if raw.startswith("!"):
             raise GroqError(raw[1:])
         assert issubclass(schema, BaseModel)
@@ -103,6 +112,21 @@ async def _turn_rows(w: SessionWorld) -> list[dict[str, Any]]:
 
 async def _proposal_count(w: SessionWorld) -> int:
     return (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"]
+
+
+async def _mail_ready(w: SessionWorld, *packages: str) -> httpx.AsyncClient:
+    """A tenant_staff browser with staff_email (plus ``packages``) and a connected mailbox."""
+    tenant = w.tenants[0]
+    await activate(w, tenant, "staff_email", *packages)
+    await w.q("UPDATE email_settings SET enabled=true WHERE client_id=%s", tenant)
+    browser, _ = await w.member(role="tenant_staff")
+    headers = {**w.headers(browser), "Idempotency-Key": str(uuid4())}
+    started = await browser.post("/console/v1/email/mailbox/connect", headers=headers)
+    assert started.status_code == 200, started.text
+    state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+    done = await browser.get(f"/console/v1/email/oauth/callback?code=abc&state={state}")
+    assert done.status_code == 303, done.text
+    return browser
 
 
 def test_detect_language_recognises_malay() -> None:
@@ -314,15 +338,7 @@ async def test_inbox_decision_turn_uses_the_redacted_record_summary(planned) -> 
 async def test_email_compose_turn_drafts_and_proposes_export(planned) -> None:
     w, model = planned
     tenant = w.tenants[0]
-    await activate(w, tenant, "staff_email")
-    await w.q("UPDATE email_settings SET enabled=true WHERE client_id=%s", tenant)
-    browser, _ = await w.member(role="tenant_staff")
-    headers = {**w.headers(browser), "Idempotency-Key": str(uuid4())}
-    started = await browser.post("/console/v1/email/mailbox/connect", headers=headers)
-    assert started.status_code == 200, started.text
-    state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
-    done = await browser.get(f"/console/v1/email/oauth/callback?code=abc&state={state}")
-    assert done.status_code == 303, done.text
+    browser = await _mail_ready(w, "hr")
     ada = uuid4()
     await w.q(
         "INSERT INTO hr_employees(client_id,id,display_name,work_email) VALUES (%s,%s,%s,%s)",
@@ -427,3 +443,216 @@ async def test_page_context_turn_without_a_planner_is_503(proposals_app) -> None
     )
     assert legacy.status_code == 201, legacy.text
     assert legacy.json()["result"]["action"] == "page_guidance"
+
+
+@requires_docker
+async def test_directory_recipient_without_hr_is_refused_before_any_write(planned) -> None:
+    w, model = planned
+    tenant = w.tenants[0]
+    browser = await _mail_ready(w)
+    ada = uuid4()
+    await w.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,work_email) VALUES (%s,%s,%s,%s)",
+        tenant, ada, "Ada Directory", SEEDED_EMAIL,
+    )  # fmt: skip
+    thread = await _thread(w, browser)
+    model.reply({"action": "email_compose", "recipient_employee_id": str(ada), "subject": "Leave"})
+    turn = await _turn(w, browser, thread, f"Email employee {ada} about leave", "email")
+    assert turn.status_code == 403 and turn.json()["detail"] == "package_inactive"
+    assert (await w.q("SELECT count(*) n FROM email_drafts"))[0]["n"] == 0
+    assert await _proposal_count(w) == 0
+    assert await _turn_rows(w) == []
+
+
+@requires_docker
+async def test_directory_lookup_without_hr_is_answered_not_refused(planned) -> None:
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply({"action": "directory_lookup", "query": "Ada"})
+    turn = await _turn(w, browser, thread, "Find Ada", "overview")
+    assert turn.status_code == 201, turn.text
+    result = turn.json()["result"]
+    assert result["action"] == "answer" and "not part of" in result["markdown"]
+    audits = await w.q(
+        "SELECT count(*) n FROM console_audit WHERE action='workspace.people.lookup'"
+    )
+    assert audits[0]["n"] == 0
+
+
+@requires_docker
+async def test_planner_remembers_the_thread_across_a_directory_pick(planned) -> None:
+    """The compose only succeeds because the prompt carries the earlier turn's request."""
+    w, model = planned
+    tenant = w.tenants[0]
+    browser = await _mail_ready(w, "hr")
+    ali = uuid4()
+    await w.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,work_email) VALUES (%s,%s,%s,%s)",
+        tenant, ali, "Ali Roster", "ali.roster@example.test",
+    )  # fmt: skip
+    thread = await _thread(w, browser)
+    model.reply({"action": "directory_lookup", "query": "Ali"})
+    found = await _turn(w, browser, thread, "Email Ali about the roster", "email")
+    assert found.status_code == 201, found.text
+    assert [c["employee_id"] for c in found.json()["result"]["candidates"]] == [str(ali)]
+
+    def compose_from_history(facts: dict[str, Any]) -> dict[str, Any]:
+        earlier = [t for t in facts["history"] if str(ali) in t["offered_employee_ids"]]
+        if not earlier or "roster" not in earlier[-1]["message"]:
+            return {"action": "answer", "markdown": "What should the email be about?"}
+        return {
+            "action": "email_compose",
+            "recipient_employee_id": str(ali),
+            "subject": "Roster",
+            "instructions": "Ask about the roster",
+        }
+
+    model.respond(compose_from_history)
+    picked = await _turn(w, browser, thread, f"Use employee {ali}", "email")
+    assert picked.status_code == 201, picked.text
+    proposal = picked.json()["result"]["proposal"]
+    assert proposal["kind"] == "email_export"
+    fields = {f["label"]: f["value"] for f in proposal["card"]["fields"]}
+    assert fields["To"] == "ali.roster@example.test"
+    prompt = model.calls[-1][2]
+    assert "Email Ali about the roster" in prompt and str(ali) in prompt
+    assert "Ali Roster" not in prompt and "ali.roster@example.test" not in prompt
+    model.reply({"action": "answer", "markdown": "Done."})
+    thanks = await _turn(w, browser, thread, "Thanks", "email")
+    assert thanks.status_code == 201, thanks.text
+    history = model.facts()["history"]
+    assert [t["result"] for t in history] == ["directory_lookup", "proposal"]
+    assert history[0]["chosen"] == str(ali)
+    assert history[1]["proposal_kind"] == "email_export"
+
+
+@requires_docker
+async def test_clarification_answer_reaches_the_planner_with_its_question(planned) -> None:
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply(
+        {
+            "action": "clarification",
+            "question": "Which tab?",
+            "options": [{"label": "HR", "value": "hr"}, {"label": "Inbox", "value": "inbox"}],
+        }
+    )
+    asked = await _turn(w, browser, thread, "Take me there", "overview")
+    assert asked.status_code == 201, asked.text
+    model.reply({"action": "navigate", "tab": "overview"})
+    await _turn(w, browser, thread, "hr", "overview")
+    first = model.facts()["history"][0]
+    assert first["question"] == "Which tab?" and first["offered_options"] == ["hr", "inbox"]
+    assert first["chosen"] == "hr" and first["message"] == "Take me there"
+
+
+@requires_docker
+async def test_email_my_boss_resolves_the_manager_before_planning(planned) -> None:
+    w, model = planned
+    tenant = w.tenants[0]
+    browser = await _mail_ready(w, "hr")
+    me = (await browser.get("/console/v1/auth/me")).json()
+    boss, staff = uuid4(), uuid4()
+    await w.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,work_email,manager_id)"
+        " VALUES (%s,%s,'Bea Boss','bea.boss@example.test',NULL),"
+        " (%s,%s,'Synthetic Staff',NULL,%s)",
+        tenant, boss, tenant, staff, boss,
+    )  # fmt: skip
+    await w.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        tenant, me["user"]["id"], staff,
+    )  # fmt: skip
+    thread = await _thread(w, browser)
+
+    def to_manager(facts: dict[str, Any]) -> dict[str, Any]:
+        manager = facts["my_manager"]
+        if manager is None or manager["employee_id"] is None:
+            return {"action": "answer", "markdown": "No manager is recorded."}
+        return {
+            "action": "email_compose",
+            "recipient_employee_id": manager["employee_id"],
+            "subject": "Leave",
+            "instructions": "Ask for Friday off",
+        }
+
+    model.respond(to_manager)
+    turn = await _turn(w, browser, thread, "Email my boss about leave on Friday", "email")
+    assert turn.status_code == 201, turn.text
+    fields = {f["label"]: f["value"] for f in turn.json()["result"]["proposal"]["card"]["fields"]}
+    assert fields["To"] == "bea.boss@example.test"
+    assert model.facts()["my_manager"] == {"employee_id": str(boss), "reason": None}
+    assert "Bea Boss" not in model.calls[-1][2] and "bea.boss@" not in model.calls[-1][2]
+    model.reply({"action": "answer", "markdown": "Hello."})
+    await _turn(w, browser, thread, "Hello there", "email")
+    assert model.facts()["my_manager"] is None  # only resolved when the message asks
+
+
+@requires_docker
+async def test_email_my_boss_without_a_manager_or_hr_is_answered(planned) -> None:
+    w, model = planned
+    tenant = w.tenants[0]
+    browser = await _mail_ready(w, "hr")
+    me = (await browser.get("/console/v1/auth/me")).json()
+    staff = uuid4()
+    await w.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,manager_id)"
+        " VALUES (%s,%s,'Synthetic Staff',NULL)",
+        tenant, staff,
+    )  # fmt: skip
+    await w.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        tenant, me["user"]["id"], staff,
+    )  # fmt: skip
+    thread = await _thread(w, browser)
+    model.reply({"action": "answer", "markdown": "No manager is recorded for you."})
+    turn = await _turn(w, browser, thread, "Email my boss", "email")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["result"]["action"] == "answer"
+    assert model.facts()["my_manager"] == {"employee_id": None, "reason": "no_manager"}
+    await w.q("DELETE FROM console_service_packages WHERE client_id=%s AND package='hr'", tenant)
+    model.reply({"action": "answer", "markdown": "HR is not active."})
+    await _turn(w, browser, thread, "Siapa bos saya?", "email")
+    assert model.facts()["my_manager"] == {"employee_id": None, "reason": "package_inactive"}
+    assert await _proposal_count(w) == 0
+
+
+@requires_docker
+async def test_inbox_decision_from_a_published_conversation_context(planned) -> None:
+    w, model = planned
+    approval, conversation_id, version = await _held_approval(w)
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+
+    def decide(facts: dict[str, Any]) -> dict[str, Any]:
+        summary = facts["record_summary"]
+        found = re.search(r"approval (\d+) \(status pending\)", summary)
+        current = re.search(r"inbox_version (\d+)", summary)
+        if found is None or current is None:
+            return {"action": "answer", "markdown": "No held reply is pending."}
+        return {
+            "action": "inbox_decision",
+            "approval_id": int(found.group(1)),
+            "conversation_id": facts["page_context"]["record"]["id"],
+            "decision": "reject",
+            "expected_version": int(current.group(1)),
+        }
+
+    model.respond(decide)
+    record = {"kind": "conversation", "id": conversation_id}
+    turn = await _turn(w, browser, thread, "Reject the held reply", "inbox", record=record)
+    assert turn.status_code == 201, turn.text
+    proposal = turn.json()["result"]["proposal"]
+    assert proposal["kind"] == "inbox_decision" and proposal["status"] == "requested"
+    summary = model.facts()["record_summary"]
+    assert f"approval {approval} (status pending)" in summary
+    assert f"inbox_version {version}" in summary
+    draft = (await w.q("SELECT draft FROM approvals WHERE id=%s", approval))[0]["draft"]
+    assert draft not in model.calls[-1][2]
+    done = await w.mutate(browser, f"{PROPOSALS}/{proposal['id']}/confirm")
+    assert done.status_code == 200, done.text
+    assert (await w.q("SELECT status FROM approvals WHERE id=%s", approval)) == [
+        {"status": "rejected"}
+    ]

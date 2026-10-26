@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -64,8 +65,10 @@ from csa.workspace.contracts import (
 )
 from csa.workspace.directory import my_people, search_people, throttle_lookup
 from csa.workspace.planner import (
+    ManagerFact,
     PlannerFacts,
     PlannerInvalidOutput,
+    PriorTurn,
     WorkspacePlanner,
     detect_language,
 )
@@ -438,6 +441,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_employee_link": "Your account is not linked to an employee record.",
         "packages": "Services: {packages}.",
         "no_packages": "No services are active.",
+        "people_unavailable": "Looking up colleagues is not part of this workspace's "
+        "subscribed services; it needs the HR service.",
     },
     "ms": {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
@@ -449,6 +454,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_employee_link": "Akaun anda tidak dipautkan kepada rekod pekerja.",
         "packages": "Perkhidmatan: {packages}.",
         "no_packages": "Tiada perkhidmatan aktif.",
+        "people_unavailable": "Carian rakan sekerja bukan sebahagian daripada perkhidmatan "
+        "yang dilanggan ruang kerja ini; ia memerlukan perkhidmatan HR.",
     },
 }
 
@@ -487,9 +494,20 @@ async def _summarize(
         if record.kind == "conversation":
             async with tx(pool, str(client_id)) as conn:
                 current = await conversation(conn, client_id, UUID(record.id))
+                pending = await db.q.fetch_all(
+                    "inbox/list_approvals.sql",
+                    (client_id, None, None, current.id, current.id, False, 5),
+                    conn=conn,
+                )
+            held = (
+                "pending held reply approvals: "
+                + ", ".join(f"approval {row['id']} (status {row['status']})" for row in pending)
+                if pending
+                else "no pending held reply approval"
+            )
             return (
                 f"Customer conversation {current.id}: status {current.status}, "
-                f"inbox_version {current.inbox_version}."
+                f"inbox_version {current.inbox_version}; {held}."
             )
         if record.kind == "approval":
             async with tx(pool, str(client_id)) as conn:
@@ -549,23 +567,93 @@ async def record_summary(
     return await _summarize(request, actor, client_id, record)
 
 
+HISTORY_TURNS = 6
+HISTORY_CHARS = 1000  # per stored body, bounding the prompt
+# "my boss" in English and Bahasa Melayu; resolved from the caller's own HR record.
+_MANAGER_WORDS = re.compile(
+    r"\b(boss|manager|supervisor|line manager|bos|pengurus|penyelia|ketua)\b", re.IGNORECASE
+)
+
+
+def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
+    """Oldest-first memory: stored bodies (redacted at storage) and what each turn offered.
+
+    ``chosen`` is the offered id/option that the next message (the current one for the last
+    stored turn) picked.
+    """
+    rows = list(reversed(rows))
+    history: list[PriorTurn] = []
+    for index, row in enumerate(rows):
+        result = _stored_result(row["result"])
+        following = rows[index + 1]["body"] if index + 1 < len(rows) else current
+        item: dict[str, Any] = {
+            "message": row["body"][:HISTORY_CHARS],
+            "action": row["action"],
+            "result": getattr(result, "action", None) or getattr(result, "status", "unknown"),
+        }
+        if isinstance(result, ProposalResult):
+            item["proposal_kind"] = result.proposal.kind
+        elif isinstance(result, DirectoryResult):
+            offered = [person.employee_id for person in result.candidates]
+            item["offered_employee_ids"] = offered
+            item["chosen"] = next((str(i) for i in offered if str(i) in following), None)
+        elif isinstance(result, ClarificationResult):
+            values = [option.value for option in result.options]
+            item["question"] = result.question
+            item["offered_options"] = values
+            item["chosen"] = next(
+                (v for v in values if re.search(rf"(?<!\w){re.escape(v)}(?!\w)", following)),
+                None,
+            )
+        history.append(PriorTurn.model_validate(item))
+    return history
+
+
+async def _my_manager(
+    request: Request, actor: ConsoleActor, client_id: UUID, packages: list[PackageState]
+) -> ManagerFact:
+    if not _unlocked(packages, _TAB_GATES["hr"]):
+        return ManagerFact(employee_id=None, reason="package_inactive")
+    async with tx(request.app.state.pool, str(client_id)) as conn:
+        mine = await my_people(conn, client_id, actor.user_id)
+    if mine.manager is None:
+        return ManagerFact(employee_id=None, reason=mine.reason or "no_manager")
+    return ManagerFact(employee_id=mine.manager.employee_id, reason=None)
+
+
 async def planner_facts(
-    request: Request, actor: ConsoleActor, client_id: UUID, turn: WorkspaceTurnInput
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    thread_id: UUID,
+    turn: WorkspaceTurnInput,
 ) -> PlannerFacts:
     """Run with no connection held; each read borrows one pool connection at a time."""
     if actor.role is None:
         raise RuntimeError("workspace actor has no role")
     context = turn.page_context
-    packages = await active_packages(request.app.state.pool, client_id)
+    pool = request.app.state.pool
+    packages = await active_packages(pool, client_id)
     summary = None
     if context is not None and context.record is not None:
         summary = await record_summary(request, actor, client_id, context.record, packages)
+    async with tx(pool, str(client_id)) as conn:
+        rows = await db.q.fetch_all(
+            "workspace/turn_history.sql",
+            (client_id, thread_id, actor.user_id, HISTORY_TURNS),
+            conn=conn,
+        )
+    manager = None
+    if _MANAGER_WORDS.search(turn.body):
+        manager = await _my_manager(request, actor, client_id, packages)
     return PlannerFacts(
         role=actor.role,
         packages=packages,
         page_context=context,
         record_summary=summary,
         language=detect_language(turn.body),
+        history=_prior_turns(rows, turn.body),
+        my_manager=manager,
     )
 
 
@@ -597,6 +685,9 @@ async def _compose(
     if not isinstance(service, EmailService):
         raise HTTPException(503, "email_assistant_not_configured")
     await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
+    if proposal.recipient_employee_id is not None:
+        # Directory-resolved recipients need the hr package, as on POST /email/compose.
+        await require_package(request.app.state.pool, client_id, frozenset({"hr"}))
     try:
         compose = ComposeRequest(
             recipient_employee_id=proposal.recipient_employee_id,
@@ -649,8 +740,10 @@ async def _resolve(
             )
         )
     if isinstance(proposal, DirectoryLookupProposal):
-        # Same gate and throttle as GET /workspace/people.
-        await require_package(request.app.state.pool, client_id, frozenset({"hr"}))
+        # Same gate and throttle as GET /workspace/people; without hr the assistant says so.
+        if not _unlocked(facts.packages, _TAB_GATES["hr"]):
+            text = _TEXT[facts.language]["people_unavailable"]
+            return _Planned(result=AnswerResult(action="answer", markdown=text))
         query = proposal.query.strip()
         if not query:
             raise PlannerInvalidOutput()  # a blank pattern would list the whole directory
@@ -783,7 +876,7 @@ async def create_planned_turn(
         known = await _known_turn(conn, actor, client_id, thread_id, turn, fingerprint)
     if known is not None:
         return known  # a replay never re-plans or re-prepares
-    facts = await planner_facts(request, actor, client_id, turn)
+    facts = await planner_facts(request, actor, client_id, thread_id, turn)
     proposal = await planner.plan(turn.body, facts)
     planned = await _resolve(request, actor, client_id, thread_id, turn, proposal, facts, registry)
     async with tx(pool, str(client_id)) as conn:
