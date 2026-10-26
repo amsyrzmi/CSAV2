@@ -23,9 +23,9 @@ missing. No further product-scope choices were reopened.
 - Read the supplied uncommitted roadmap and B prompt in the original worktree;
   they are not present automatically in this branch. Do not copy evolving shared
   planning files into this branch or attribute them to A0.
-- Read [repository guidance](../../AGENTS.md), [README](../../README.md),
-  [overview](../PROJECT_OVERVIEW.md), current original-worktree progress,
-  [API contract](../CONSOLE_API.md), LG02/LG05 and relevant LG07/LG13/LG15 and
+- Read [repository guidance](../../../AGENTS.md), [README](../../../README.md),
+  [overview](../../PROJECT_OVERVIEW.md), current original-worktree progress,
+  [API contract](../../CONSOLE_API.md), LG02/LG05 and relevant LG07/LG13/LG15 and
   console migration-plan sections. Original-worktree release handoff was read
   only for preserved environment/staging gates.
 
@@ -33,19 +33,19 @@ Source findings:
 
 | Existing boundary | Evidence and implication |
 | --- | --- |
-| Human identity | [ConsoleActor](../../csa/console/contracts.py) includes session UUID and broad role; [identity resolution](../../csa/console/identity.py) checks active user/session/membership and forced password change. It also carries a CSRF hash: never serialize the entire actor to queued work. |
-| Tenant selection | [Access](../../csa/console/access.py) requires explicit existing tenant selection for platform admins, rejects tenant-member cross-selection and separates machine access. No proxy/actor headers establish human authority. |
-| Sandbox | [Chat](../../csa/console/chat.py) has owner-bound threads and separate sandbox contacts. [Runner](../../csa/agents/runner.py) allows only KB query and product search/detail for web. [Turn dependencies](../../csa/turn/deps.py) separately refuse callbacks, restricted composition and invalid outbound bindings. Preserve all layers. |
-| Business reads | [Business](../../csa/console/business.py) permits human platform/tenant admins and staff, denies readers/machines, projects local summaries only. Order queries currently live in router closures, not a reusable authorized service. A1 must extract one, preserving current behavior. |
-| Agent identity | [AgentContext](../../csa/agents/base.py) requires a customer contact, pool and pending-action store. It is not a verified human, HR employee or manager contract. |
-| Reply approvals | [Inbox contract](../CONSOLE_API.md#telegram-customer-inbox-m5-guarded-dev) governs customer-message takeover/reply decisions, not order, HR or finance authorization. |
+| Human identity | [ConsoleActor](../../../csa/console/contracts.py) includes session UUID and broad role; [identity resolution](../../../csa/console/identity.py) checks active user/session/membership and forced password change. It also carries a CSRF hash: never serialize the entire actor to queued work. |
+| Tenant selection | [Access](../../../csa/console/access.py) requires explicit existing tenant selection for platform admins, rejects tenant-member cross-selection and separates machine access. No proxy/actor headers establish human authority. |
+| Sandbox | [Chat](../../../csa/console/chat.py) has owner-bound threads and separate sandbox contacts. [Runner](../../../csa/agents/runner.py) allows only KB query and product search/detail for web. [Turn dependencies](../../../csa/turn/deps.py) separately refuse callbacks, restricted composition and invalid outbound bindings. Preserve all layers. |
+| Business reads | [Business](../../../csa/console/business.py) permits human platform/tenant admins and staff, denies readers/machines, projects local summaries only. Order queries currently live in router closures, not a reusable authorized service. A1 must extract one, preserving current behavior. |
+| Agent identity | [AgentContext](../../../csa/agents/base.py) requires a customer contact, pool and pending-action store. It is not a verified human, HR employee or manager contract. |
+| Reply approvals | [Inbox contract](../../CONSOLE_API.md#telegram-customer-inbox-m5-guarded-dev) governs customer-message takeover/reply decisions, not order, HR or finance authorization. |
 | Execution switches | Runner freshly checks tenant capability switches on attempts/retries. Switches are necessary but do not establish human/resource/field authority. |
 
 Relevant existing tests inspected, not executed here:
-[business](../../tests/test_console_business.py),
-[sessions](../../tests/test_console_sessions.py),
-[chat](../../tests/test_console_chat.py) and
-[runner](../../tests/test_agents_runner.py).
+[business](../../../tests/test_console_business.py),
+[sessions](../../../tests/test_console_sessions.py),
+[chat](../../../tests/test_console_chat.py) and
+[runner](../../../tests/test_agents_runner.py).
 These are regression targets, not evidence for a new workspace surface.
 
 ## 1. Separate INTERNAL surface and permission matrix
@@ -78,9 +78,9 @@ contents, customer facts or employee facts.
 
 Repository search found no existing workspace module to extend. Approved A0
 files:
-[package marker](../../csa/workspace/__init__.py),
-[contracts and deterministic policy](../../csa/workspace/contracts.py),
-[tests](../../tests/test_workspace_contracts.py). Validation and policy checks
+[package marker](../../../csa/workspace/__init__.py),
+[contracts and deterministic policy](../../../csa/workspace/contracts.py),
+[tests](../../../tests/test_workspace_contracts.py). Validation and policy checks
 stay in the contracts module; no framework or plugin abstraction was added.
 
 Use Pydantic v2 with `extra="forbid"`, `strict=True`, `frozen=True`; reject

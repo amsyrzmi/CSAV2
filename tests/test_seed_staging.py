@@ -174,6 +174,22 @@ async def test_seed_creates_roles_hr_and_records_idempotently(migrated_dsn: str)
             == 0
         )
         assert await _count(conn, "SELECT count(*) FROM capability_registry") == 18
+        packages = await (
+            await conn.execute(
+                "SELECT client_id, package, status, reference, activated_by IS NOT NULL, "
+                "activated_at IS NOT NULL FROM console_service_packages ORDER BY package"
+            )
+        ).fetchall()
+        assert {row[1] for row in packages if row[0] == seed_staging.MERANTI} == {
+            "customer_support",
+            "orders_products",
+            "subscriptions",
+            "bookings",
+            "marketplaces",
+            "hr",
+        }
+        assert all(row[2:] == ("active", "staging-seed-v1", True, True) for row in packages)
+        assert not [row for row in packages if row[0] == seed_staging.FOREIGN]
         events = await _count(conn, "SELECT count(*) FROM hr_authority_events")
         assert events == report.hr_operations
         assert await _count(conn, "SELECT count(*) FROM hr_employee_accounts") == 3
@@ -197,3 +213,4 @@ async def test_seed_creates_roles_hr_and_records_idempotently(migrated_dsn: str)
     async with await psycopg.AsyncConnection.connect(migrated_dsn) as conn:
         assert await _count(conn, "SELECT count(*) FROM order_items") == 8
         assert await _count(conn, "SELECT count(*) FROM hr_employees") == 3
+        assert await _count(conn, "SELECT count(*) FROM console_service_packages") == 6

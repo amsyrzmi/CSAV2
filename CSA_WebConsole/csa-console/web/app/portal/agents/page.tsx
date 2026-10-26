@@ -1,6 +1,5 @@
-import { requireIdentity } from "@/lib/server-identity";
-import { RuntimeWorkspace } from "@/components/console/RuntimeWorkspace";
+import { redirect } from "next/navigation";
 
-export default async function AgentsPage() {
-  return <RuntimeWorkspace me={await requireIdentity()} mode="agents" />;
+export default function AgentsPage() {
+  redirect("/portal/services");
 }

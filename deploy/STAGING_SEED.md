@@ -16,6 +16,16 @@ fabricate deliveries, approvals or runtime traces.
 | HR | Meranti admin becomes HR client owner via the HR owner bootstrap SQL. Three employees (manager, support linked to the staff account, finance reviewer) and role-appropriate grants are applied through `public.hr_admin_apply`, so `hr_operations` receipts and `hr_authority_events` are genuine. Payroll preparer (admin) and reviewer are different people; the reader has no HR access |
 | Business records | 8 Meranti products plus one foreign marker, 3 contacts, 3 Telegram-labelled conversations, 4 historical messages, orders `MGL-TEST-001` to `008` covering every status, 8 charger line items, one foreign order, 2 tickets, 2 invoices, 2 knowledge gaps |
 
+Service packages: for a capability-enabled tenant (`demo-meranti`) the seed also
+writes `active` rows in `console_service_packages` (reference `staging-seed-v1`,
+activated by the seeding platform administrator) for every package whose
+capabilities it enables: `customer_support`, `orders_products`, `subscriptions`,
+`bookings` and `marketplaces`. It activates `hr` for every tenant it assigns an
+HR owner (`demo-meranti`), in the same transaction as the HR step.
+`e_invoicing` is not activated because onboarding provisions no `lhdn_agent`
+row, and `staff_email` is not activated because the seed never configures
+`email_settings`; activate them from the Services tab. `demo-foreign` gets no package rows.
+
 Not created: KB documents or vectors (prod requires TEI and the ingestion
 worker), outbox or deliveries, bot credentials or endpoints, approvals,
 marketplace grants, subscriptions, HR cases, candidates, leave or payroll data.

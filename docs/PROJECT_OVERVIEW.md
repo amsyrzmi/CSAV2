@@ -10,8 +10,8 @@ services are running or deployed.
 |---|---|
 | Rules and safe commands | [AGENTS.md](../AGENTS.md), then [README](../README.md) |
 | Current implementation status and validation | [PROGRESS.md](./PROGRESS.md) |
-| Continue the current bounded task | [Active release handoff](./handoffs/2026-10-19-domain-release-next-session.md) |
-| Full architecture, trust boundaries and limitations | [Architecture information](./information.md) |
+| Continue the current bounded task | [Active release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md) |
+| Full architecture, trust boundaries and limitations | [Architecture reference](./ARCHITECTURE.md) |
 | Runtime request flow | [Architecture summary](./ARCHITECTURE.md) |
 | Console HTTP contract | [CONSOLE_API.md](./CONSOLE_API.md) and [OpenAPI snapshot](./console_openapi.json) |
 | Phase requirements | [LG00–LG15 plans](./langgraph-rebuild/) and the linked milestone plan |
@@ -70,7 +70,7 @@ Key safety boundaries:
 - External provider calls, credentials and live seller eligibility are separate
   gates. Synthetic adapter tests do not constitute a live integration.
 - The inbox/outbox and graph are durable, but external delivery is not exactly-once.
-  See [architecture limitations](./information.md#26-current-limitations-and-release-conditions).
+  See [architecture limitations](./PROJECT_OVERVIEW.md#current-status-and-release-boundary).
 
 ## Current status and release boundary
 
@@ -87,7 +87,7 @@ Key safety boundaries:
 - M6B verifier/completion pieces are synthetic/offline foundations and are not
   callback/runtime registered. No real app registry, provider credential
   resolution or live seller authorization is established.
-- Source currently expects schema 0370. The last approved persistent-dev schema
+- Source currently expects schema 0450. The last approved persistent-dev schema
   was recorded as 0300; that record is not a fresh probe or migration approval.
 - CI/package and exact hosted-artifact disposable acceptance passed for the
   reviewed build. See [current progress](./PROGRESS.md) for run IDs, exact evidence
@@ -96,6 +96,25 @@ Key safety boundaries:
 - The future `console.fourstacks.my` selection preserves the existing
   `fourstacks.my`/`www` landing page. No DNS, tunnel, provider, persistent database
   or service change is authorized by this documentation.
+
+## Service packages
+
+Capabilities are sold and managed as service packages defined in
+`csa/console/packages.py`. A tenant's active packages decide which console pages
+and APIs are available (`package_inactive` otherwise); the per-agent switches
+still enforce runtime behaviour. Add-ons require `customer_support`.
+See [console API](./CONSOLE_API.md#services-and-packages).
+
+| Package | Kind | Capabilities | Console surface | Sellable |
+|---|---|---|---|---|
+| `customer_support` | base | `kb_agent`, `ticket_agent`, `escalation_agent`, `order_approval` | Inbox, Knowledge base | yes |
+| `orders_products` | add-on | `order_agent`, `invoice_agent` | Business | yes |
+| `subscriptions` | add-on | `subscription_agent` | Subscriptions (specialised) | yes |
+| `bookings` | add-on | `booking_agent` | Bookings (specialised) | yes |
+| `marketplaces` | add-on | `ecommerce_agent` | Business, E-commerce (specialised) | no |
+| `e_invoicing` | add-on | `lhdn_agent` | LHDN (specialised) | no |
+| `hr` | standalone | none; covers `hr_agent_settings` modules | People & HR | yes |
+| `staff_email` | standalone | none; covers `email_settings` | Email | yes |
 
 ## Repository map
 

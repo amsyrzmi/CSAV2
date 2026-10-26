@@ -113,7 +113,18 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
       </Panel>}
       {!agents ? <Notice>{error ? "Agent state unavailable. Refresh to retry." : "Loading agents..."}</Notice> :
         <div className="grid gap-5 xl:grid-cols-2">
-          {agents.map((agent) => <Panel key={agent.name} title={agent.title}>
+          {agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle} />)}
+        </div>}
+    </div>
+  );
+}
+
+export function AgentCard({ agent, busy, onToggle }: {
+  agent: Agent; busy: boolean;
+  onToggle: (agent: Agent, switchName: "is_enabled" | "client_enabled") => void;
+}) {
+  return (
+  <Panel title={agent.title}>
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div><dt className="text-ink-500">Subscription</dt><dd>{agent.capability?.is_enabled ? "Subscribed" : "Not subscribed"}</dd></div>
               <div><dt className="text-ink-500">Tenant switch</dt><dd>{agent.capability?.client_enabled ? "On" : "Off"}</dd></div>
@@ -130,17 +141,15 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
             {agent.required_system && <p className="mb-3 text-sm">Required safety capability; disabling is prohibited.</p>}
               <div className="flex flex-wrap gap-2">
                 {agent.can_subscribe && <button className={secondary} disabled={busy}
-                  onClick={() => toggle(agent, "is_enabled")}>
+                  onClick={() => onToggle(agent, "is_enabled")}>
                   {agent.capability?.is_enabled ? "Remove subscription" : "Subscribe"}
                 </button>}
                 {agent.can_toggle && <button className={secondary} disabled={busy}
-                  onClick={() => toggle(agent, "client_enabled")}>
+                  onClick={() => onToggle(agent, "client_enabled")}>
                   Turn tenant switch {agent.capability?.client_enabled ? "off" : "on"}
                 </button>}
               </div>
-          </Panel>)}
-        </div>}
-    </div>
+          </Panel>
   );
 }
 

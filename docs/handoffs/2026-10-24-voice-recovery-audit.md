@@ -68,7 +68,7 @@ changes were the existing deletions of two `docs/reviews/2026-10-17-*` documents
 Those deletions were preserved. No voice source changes were pending.
 
 Read this record, [the voice contract](../CONSOLE_VOICE.md),
-[the workspace voice roadmap](2026-10-21-workspace-agents-roadmap.md#voice-ingress-plus-conversational-rendering-not-a-privileged-agent),
+[the workspace voice roadmap](../archive/handoffs/2026-10-21-workspace-agents-roadmap.md#voice-ingress-plus-conversational-rendering-not-a-privileged-agent),
 and [LG15](../langgraph-rebuild/LG15_console_turnover.md) before continuing.
 The earlier voice entries in `PROGRESS.md` and `CONSOLE_VOICE.md` predate the final
 saved implementation: their statements that hands-free browser voice and Telegram

@@ -2,14 +2,14 @@
 
 Date: 2026-10-15; guarded M5 dev rollout 2026-10-16. Status: **M0–M3 implemented with isolated-dev acceptance; M4 functionally closed with accepted laptop-dev performance exception. M5 Telegram slice reviewed/validated: 692 full tests pass; approved forward-only dev0300 and coordinated replacement complete, platform-admin UI/synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff replay verified. M3 tenant-role and broader M5–M8 acceptance pending. Historical latency failures retained despite latest ASGI/TCP p95 108.284/174.623 ms passing unchanged <200 ms. No public deployment or production cutover.**
 
-Start the next session from the [domain/release handoff and prompt](./2026-10-19-domain-release-next-session.md).
+Start the next session from the [domain/release handoff and prompt](2026-10-19-domain-release-next-session.md).
 The opening status above is dated M5 evidence. Current source expects 0360; M6A local
 reads, M6B synthetic authorization and M6D prototype/test-local persistence remain
 separate from rollout. Repository-only CI/release packaging is implemented; public
 hosting and promotion remain disabled/unverified. See the
-[release contract](../../deploy/RELEASE.md). Packaging does not complete M6 or
+[release contract](../../../deploy/RELEASE.md). Packaging does not complete M6 or
 authorize production changes. The existing apex/`www` landing page must be preserved.
-The [M4 closeout](./2026-10-16-m4-closeout-m5-start.md) retains prior acceptance decisions.
+The [M4 closeout](2026-10-16-m4-closeout-m5-start.md) retains prior acceptance decisions.
 The implementation/review sections below retain historical evidence, not old next-step instructions.
 
 ## M4 read-only sandbox implementation (2026-10-16)
@@ -41,7 +41,7 @@ The implementation/review sections below retain historical evidence, not old nex
   stronger trace bindings and system-refusal-only grounding exemption. Isolated frontend
   **11 transport/routing/cancellation + 2 state/deadline tests**, lint/types/production
   build and safe traces pass. Final full validation is recorded in
-  [progress](../PROGRESS.md); do not add overlapping test selections.
+  [progress](../../PROGRESS.md); do not add overlapping test selections.
 - Final full validation after fixing gateway readiness's expected schema version to
   0290: **674 passed / 1 failed**. TCP ack p95 **202.643 ms** exceeds the unchanged
   `<200 ms` bound; ASGI ack p95 **79.734 ms** passes, with 150 completed turns/deliveries
@@ -68,7 +68,7 @@ The implementation/review sections below retain historical evidence, not old nex
   1 failed**: ASGI **93.234 ms** passes; TCP **261.451 ms** fails. Instrumented passing
   runs do not supersede this or full-run failures. No cause is established and no
   speculative runtime optimization was applied.
-  No production, infrastructure or webhook changes. See [the API contract](../CONSOLE_API.md).
+  No production, infrastructure or webhook changes. See [the API contract](../../CONSOLE_API.md).
 - Closeout decision: the user explicitly accepted functional M4 with a laptop-dev
   performance exception and carried latency work forward. Laptop hardware is reported
   context, not a measured cause. Do not claim green tests or relax `<200 ms`; performance
@@ -102,10 +102,10 @@ The implementation/review sections below retain historical evidence, not old nex
   active sources and audits are DB-corroborated. One synthetic DOCX/chunk remains for testing.
   Live acceptance found/fixed gap-list SQL argument drift in both callers; regression/
   launcher/upload/agent/contract selection **34 passed**, final lint passed. See
-  [run instructions](../CONSOLE_API.md#isolated-dev-rollout-prerequisites).
+  [run instructions](../../CONSOLE_API.md#isolated-dev-rollout-prerequisites).
   Tenant-role M3 browser replay and customer conversation retrieval remain unverified;
   populated gap UI, live version progression and disposable crash-window acceptance
-  subsequently passed on 2026-10-16 (see [progress](../PROGRESS.md)). Read-only role
+  subsequently passed on 2026-10-16 (see [progress](../../PROGRESS.md)). Read-only role
   denial is covered by disposable integration tests, not a live reader browser replay.
   No Gemini/provider-general claim.
 - M3 follow-up: an unmatched synthetic KB-agent query appeared in authenticated
@@ -133,7 +133,7 @@ The implementation/review sections below retain historical evidence, not old nex
   Unchanged isolated repeat **2 passed**: ASGI **123.840 ms**, TCP **137.444 ms**,
   150 completed turns/pending deliveries each. Full acceptance is not green and
   no cause for the variability is claimed. Detailed evidence is in
-  [progress](../PROGRESS.md#m3-authenticated-kb-upload-and-lifecycle-2026-10-15).
+  [progress](../PROGRESS-2026-10-early.md#m3-authenticated-kb-upload-and-lifecycle-2026-10-15).
 
 ## M2 browser follow-up (supersedes earlier pending notes)
 
@@ -1113,12 +1113,12 @@ migration, followed by separately reviewed integrity and ledger work. This is a 
 scope, not authorization to create migration files, run the migration runner or change
 gateway readiness. No version number is reserved here.
 
-Source reviewed: [baseline](../../db/schema_baseline.sql),
-[role/default grants](../../db/migrations/0100_roles.sql),
-[grant audit/RLS pattern](../../db/migrations/0310_ecommerce_grants.sql),
-[identity memberships](../../db/migrations/0270_console_identity.sql),
-[migration runner](../../scripts/migrate.py) and
-[migration tests](../../tests/test_migrate.py). No database rows or environment files
+Source reviewed: [baseline](../../../db/schema_baseline.sql),
+[role/default grants](../../../db/migrations/0100_roles.sql),
+[grant audit/RLS pattern](../../../db/migrations/0310_ecommerce_grants.sql),
+[identity memberships](../../../db/migrations/0270_console_identity.sql),
+[migration runner](../../../scripts/migrate.py) and
+[migration tests](../../../tests/test_migrate.py). No database rows or environment files
 were inspected. The runner applies each unrecorded migration and its version stamp in
 one transaction; apply/reapply means runner-level ledger idempotency, not executing raw
 CREATE statements twice.
@@ -1211,7 +1211,7 @@ lint result remain prior evidence; no new code or database validation run was ne
 
 **Stage A implementation evidence (2026-10-19; user-approved bounded continuation)**
 
-Added [0360_inventory_identity.sql](../../db/migrations/0360_inventory_identity.sql)
+Added [0360_inventory_identity.sql](../../../db/migrations/0360_inventory_identity.sql)
 with the three proposed composite unique anchors and the empty warehouse registry.
 Existing global PKs, text order IDs, UUID product/item IDs and nullable product lines
 are preserved. Warehouse constraints enforce tenant/code uniqueness, a nonblank code,
@@ -1223,7 +1223,7 @@ Gateway source and migration-test expected schema version are 0360. This changes
 readiness requirements, not the persistent database or running services; rollout requires
 separate approval and the corresponding migration.
 
-[test_inventory_identity.py](../../tests/test_inventory_identity.py) covers the catalog,
+[test_inventory_identity.py](../../../tests/test_inventory_identity.py) covers the catalog,
 actual non-owner role isolation and write denial, warehouse constraints, existing-row
 synthetic upgrade preservation, unchanged stock SQL/null lines/global PKs, runner reapply
 and transactional migration-failure rollback. A synthetic pre-existing cross-tenant
@@ -1250,7 +1250,7 @@ fingerprints and pending-count freeze semantics before proposing writable ledger
 
 **Offline count-command contracts (2026-10-19)**
 
-Added [contracts.py](../../csa/inventory/contracts.py), a frozen extra-forbidden Pydantic
+Added [contracts.py](../../../csa/inventory/contracts.py), a frozen extra-forbidden Pydantic
 count/adjustment request and review contract, not a repository, authentication mechanism
 or runtime adapter. Account identity is UUID tenant/product/warehouse. Admin evidence
 retains tenant/user/session, explicit tenant-admin role and aware UTC verification time;
@@ -1382,7 +1382,7 @@ provider access occurred.
 
 **Disposable count-transaction evidence (2026-10-19)**
 
-Added [test_inventory_count_transactions.py](../../tests/test_inventory_count_transactions.py),
+Added [test_inventory_count_transactions.py](../../../tests/test_inventory_count_transactions.py),
 a **20-case test-local harness** using a private schema in disposable Testcontainers
 PostgreSQL, async independent connections and synthetic actors. It does not apply
 application migrations or connect a runtime stock writer. Fixture state is one account,
@@ -1434,7 +1434,7 @@ transaction rollback, not that an arbitrary writer cannot omit audit.
 **Immutable count audit envelope and disposable composition (2026-10-19)**
 
 Added a frozen `StockChangeAuditEvent` in
-[contracts.py](../../csa/inventory/contracts.py). It retains event UUID, typed command,
+[contracts.py](../../../csa/inventory/contracts.py). It retains event UUID, typed command,
 transition kind, actor evidence, timezone-aware occurrence time, canonical command
 fingerprint, observed ledger and authority revisions, before/after on-hand, resulting
 version and optional decision. Shape validation binds tenant and fingerprint, keeps event
@@ -1489,10 +1489,10 @@ means that owner bypass and deployment compatibility must be explicitly designed
 runtime privilege change is approved here.
 
 The identity integration review also found a transaction-boundary gap. In
-[identity.py](../../csa/console/identity.py), `IdentityService.resolve` reads/locks the
+[identity.py](../../../csa/console/identity.py), `IdentityService.resolve` reads/locks the
 session and fetches memberships using a dedicated `csa_identity` pool transaction, then
 returns an actor after that transaction commits. Tenant writes use a separate
-[transaction helper](../../csa/core/tenancy.py) and `csa_app` connection. The session
+[transaction helper](../../../csa/core/tenancy.py) and `csa_app` connection. The session
 lookup uses `FOR UPDATE`, but that lock ends before any subsequent domain write; the
 membership list is not locked. `csa_app` has no identity-table access. Therefore a
 previously authenticated tenant-admin snapshot is not transaction-bound to a future
@@ -1610,8 +1610,8 @@ wiring, stock mutation or provider synchronization.
 **Offline domain prototype evidence (unwired)**
 
 An immutable in-memory rules prototype now lives in
-[`csa/inventory/domain.py`](../../csa/inventory/domain.py), with synthetic unit tests in
-[`tests/test_inventory_domain.py`](../../tests/test_inventory_domain.py). It exercises
+[`csa/inventory/domain.py`](../../../csa/inventory/domain.py), with synthetic unit tests in
+[`tests/test_inventory_domain.py`](../../../tests/test_inventory_domain.py). It exercises
 exact tenant/variant/warehouse scoping, explicit CSA authority, local reservation
 idempotency and fulfil/cancel transitions, the selected second-admin count/adjustment
 approval rule, ledger-version and authority-revision fences, fixed allocation caps with
@@ -1836,7 +1836,7 @@ and live-acceptance gates remain applicable before any provider access or write.
 - Targeted backend/contract **6 passed**; isolated frontend **13 transport + 2 state
   tests**, lint/types/build/trace checks pass. Full lint passes; **695 passed / 1 TCP
   latency failure**, ack p95 **788.334 ms** against unchanged **<200 ms**. Disposable-only
-  reset tests pass. Exact metrics and warnings are in [progress](../PROGRESS.md).
+  reset tests pass. Exact metrics and warnings are in [progress](../../PROGRESS.md).
   Full validation is not green; M4's accepted exception is not an M6 waiver.
   M6A is not the whole M6 exit or a live rollout claim.
 
@@ -1858,7 +1858,7 @@ and live-acceptance gates remain applicable before any provider access or write.
   tests. Full lint passes; **732 passed / 1 TCP latency failure**, 136 warnings,
   2701.96 s. TCP ack p95 **608.321 ms** against unchanged **<200 ms**; disposable-only
   reset checks pass. Full validation remains **not green**, with no new performance waiver.
-  Exact full-suite results are recorded in [progress](../PROGRESS.md).
+  Exact full-suite results are recorded in [progress](../../PROGRESS.md).
   No browser route, provider call, credential lookup, runtime wiring or store badge added.
 - This validates the repository's existing synthetic payload assumptions, **not current
   official endpoint/response compatibility**. Public official documentation returned only
@@ -1891,7 +1891,7 @@ and live-acceptance gates remain applicable before any provider access or write.
   Full lint passes; **736 passed / 1 TCP latency failure**, 136 warnings, **2713.67 s**.
   TCP ack p95 **235.195 ms** against unchanged **<200 ms**; ASGI p95 **104.607 ms**
   passes. Disposable-only reset checks pass. Full validation is **not green**, no new
-  waiver or latency retry. Exact metrics are recorded in [progress](../PROGRESS.md).
+  waiver or latency retry. Exact metrics are recorded in [progress](../../PROGRESS.md).
 - A temporary synthetic-only API/frontend fixture passed loopback HTTP readiness, but the
   shared browser could not reach either loopback hostname (connection refused). It was
   stopped and removed; no browser rendering, pagination or abort-race acceptance is claimed.
@@ -1929,7 +1929,7 @@ and live-acceptance gates remain applicable before any provider access or write.
   TCP ack p95 **200.161 ms** against unchanged **<200 ms**, scheduled ack **204.904 ms**.
   ASGI p95 **98.408 ms** passes. Disposable-only reset checks pass; full validation
   remains **not green**, without a latency retry, threshold change or new waiver.
-  Exact final full validation is recorded in [progress](../PROGRESS.md).
+  Exact final full validation is recorded in [progress](../../PROGRESS.md).
 - Keep authoritative current provider-spec verification, explicit dev-store approval,
   durable permission/revocation/verification evidence and a separately guarded credential
   resolver ahead of any provider-backed console reads. This does not close M6B.
@@ -1996,13 +1996,13 @@ ack p95 **102.572/150.074 ms** pass unchanged **<200 ms** checks. Disposable-onl
 checks pass. Simultaneous TCP p95 **1184.752 ms** remains diagnostic evidence, not a
 200 ms performance claim. Prior failures remain recorded; one pass is not a capacity
 guarantee or proof of a latency cause. No retry/threshold change/new waiver.
-Exact full lint/test/disposable-reset evidence is recorded in [progress](../PROGRESS.md).
+Exact full lint/test/disposable-reset evidence is recorded in [progress](../../PROGRESS.md).
 No live request was sent; M6B remains incomplete.
 
 #### M6B provider-native order snapshots (2026-10-17; offline continuation)
 
 Added selected, immutable Pydantic contracts in
-[`tiktok_models.py`](../../csa/agents/ecommerce/tiktok_models.py) and explicit
+[`tiktok_models.py`](../../../csa/agents/ecommerce/tiktok_models.py) and explicit
 `get_order_snapshot` / `search_order_snapshot_page` adapter reads. These are internal
 provider projections, not normalized `EcommerceOrder`, persisted sync records or console
 response contracts. They retain order identity/status/payment currency and total, plus
@@ -2025,7 +2025,7 @@ Repository Ruff/format/Pyright/import-linter pass. Full synthetic suite:
 Standalone ASGI/TCP ack p95 **102.295/189.661 ms** pass unchanged **<200 ms**.
 Simultaneous TCP ack/scheduled p95 **1256.362/1467.896 ms** remains diagnostic,
 not sub-200 ms acceptance. Historical failures remain; no retry, threshold change
-or capacity guarantee. Exact evidence is in [progress](../PROGRESS.md).
+or capacity guarantee. Exact evidence is in [progress](../../PROGRESS.md).
 No frontend, DB schema or dependency changed.
 No live seller call, account/credential inspection, persistent-dev reset, service
 replacement, infrastructure/webhook or UI-guide change occurred.
@@ -2044,7 +2044,7 @@ search page is a new server-created operation. Verification must occur between t
 operation's start and its evaluation time; no guessed TTL is added.
 
 Added internal immutable Pydantic contracts and a pure metadata gate in
-[`authorization.py`](../../csa/agents/ecommerce/authorization.py):
+[`authorization.py`](../../../csa/agents/ecommerce/authorization.py):
 
 - Exact tenant/credential-record/platform/shop/app/credential-generation context.
 - Trusted grant identity, revision, active/revoked/disconnected state, verified-exchange
@@ -2072,7 +2072,7 @@ TCP ack/scheduled p95 **643.091/853.983 ms** fails the unchanged **<200 ms**
 ack check; ASGI **90.558/91.601 ms** passes. Both transports completed 150
 requests with 150 durable deliveries. Disposable-only reset checks pass.
 Full validation is **not green**; no retry, threshold change or new waiver.
-See [progress](../PROGRESS.md) for exact results and diagnostic metrics.
+See [progress](../../PROGRESS.md) for exact results and diagnostic metrics.
 No DB migration, credential lookup/decryption, OAuth/token refresh/revoke, live provider
 request, service replacement, infrastructure/webhook change or UI-guide edit occurred.
 
@@ -2083,9 +2083,9 @@ separate approval. Quantity/bundle/discount normalization remains an independent
 
 #### M6B durable grant metadata (2026-10-17; offline continuation)
 
-Added additive [0310](../../db/migrations/0310_ecommerce_grants.sql), internal
-[`grants.py`](../../csa/agents/ecommerce/grants.py) and parameterized queries under
-[`db/sql/ecommerce/`](../../db/sql/ecommerce/). The migration creates empty grant and
+Added additive [0310](../../../db/migrations/0310_ecommerce_grants.sql), internal
+[`grants.py`](../../../csa/agents/ecommerce/grants.py) and parameterized queries under
+[`db/sql/ecommerce/`](../../../db/sql/ecommerce/). The migration creates empty grant and
 lifecycle-event tables; it does not backfill local credentials into verified authority.
 It is tested on disposable databases only and **not applied to persistent dev0300**.
 
@@ -2126,7 +2126,7 @@ deliveries. Full validation is **not green**; no further latency retry, threshol
 change or waiver. Earlier failures remain evidence, not a proven laptop diagnosis.
 The new gateway build must not be deployed to persistent dev0300 without separately
 approved forward migration; it deliberately requires0310.
-See [progress](../PROGRESS.md) for final full-suite evidence when available.
+See [progress](../../PROGRESS.md) for final full-suite evidence when available.
 
 **Remaining gates:** current-credential generation ownership/linkage and rotation fencing,
 trusted live verifier, per-operation persistence/consumption and atomic dispatch checks.
@@ -2143,8 +2143,8 @@ an invalidation/rotation that wins the database fence prevents dispatch; a read 
 wins may finish its bounded in-flight callback while invalidation/rotation waits.
 This cannot recall a request already sent or guarantee provider-side exactly-once behavior.
 
-Added additive [0320](../../db/migrations/0320_ecommerce_read_fences.sql) and internal
-[`dispatch.py`](../../csa/agents/ecommerce/dispatch.py). No persistent migration is
+Added additive [0320](../../../db/migrations/0320_ecommerce_read_fences.sql) and internal
+[`dispatch.py`](../../../csa/agents/ecommerce/dispatch.py). No persistent migration is
 applied; the new gateway's readiness expectation is0320, while approved persistent dev
 remains0300. Do not deploy this build without a separately approved forward migration.
 
@@ -2184,7 +2184,7 @@ Standalone ASGI ack/scheduled p95 **156.515/165.059 ms** and TCP
 **146.065/147.137 ms** pass unchanged **<200 ms** checks. Each completed
 150 requests with 150 durable deliveries. Simultaneous TCP ack/scheduled p95
 **1418.025/1485.486 ms** remains diagnostic, not sub-200 ms acceptance.
-Exact evidence is in [progress](../PROGRESS.md). The previous
+Exact evidence is in [progress](../../PROGRESS.md). The previous
 **831 passed / 1 ASGI latency failure** remains historical; one pass does not
 establish stable capacity or resolve earlier causes. No threshold change or new waiver.
 
@@ -2249,7 +2249,7 @@ Standalone ASGI ack/scheduled p95 **64.403/64.999 ms** and TCP
 requests with 150 durable deliveries. Simultaneous TCP ack/scheduled p95
 **450.294/470.276 ms** is diagnostic, not sub-200 ms acceptance. Historical failures
 remain; no latency-only retry, threshold change, waiver or stable capacity claim.
-See [progress](../PROGRESS.md). No schema/dependency/frontend
+See [progress](../../PROGRESS.md). No schema/dependency/frontend
 change or persistent migration/reset/rollout occurred. Gateway still requires0320 in
 source; persistent dev remains approved0300.
 
@@ -2260,7 +2260,7 @@ semantics and named dev-store acceptance remain separate gates.
 
 #### M6B bound-reader composition (2026-10-18; offline continuation)
 
-Added server-only [`reader.py`](../../csa/agents/ecommerce/reader.py). A trusted injected
+Added server-only [`reader.py`](../../../csa/agents/ecommerce/reader.py). A trusted injected
 resolver receives the persisted operation context and returns a bound reader. The wrapper
 checks the resolver's exact context and expected app key/configured shop, snapshots
 credentials privately and exposes only shop verification and native detail/search reads.
@@ -2299,7 +2299,7 @@ Standalone ASGI ack/scheduled p95 **96.040/100.194 ms** and TCP
 150 requests with 150 durable deliveries. Simultaneous TCP ack/scheduled p95
 **535.413/564.530 ms** remains diagnostic, not sub-200 ms acceptance. Historical
 failures remain; no threshold change, new waiver or stable capacity/root-cause claim.
-Exact evidence is in [progress](../PROGRESS.md).
+Exact evidence is in [progress](../../PROGRESS.md).
 
 No console/agent wiring, real credential lookup/decryption, live seller calls, schema/
 dependency/frontend change, persistent migration/reset, restart or UI-guide edit occurred.
@@ -2318,7 +2318,7 @@ and public/multi-seller distribution remain gated on confirmed eligible access.
 
 #### M6B offline credential-resolver contract (2026-10-18)
 
-Added [`resolver.py`](../../csa/agents/ecommerce/resolver.py): immutable secret-masked
+Added [`resolver.py`](../../../csa/agents/ecommerce/resolver.py): immutable secret-masked
 Pydantic app/credential material contracts and a callable resolver for the existing
 bound-reader coordinator. Every dependency is explicit: trusted app-registry loader,
 exact-context credential loader, decryptor and caller-owned HTTP client. There is no
@@ -2360,7 +2360,7 @@ Standalone ASGI ack/scheduled p95 **64.075/64.510 ms**, TCP **128.870/130.786 ms
 both pass unchanged `<200 ms` ack acceptance, each with 150 requests/150 durable deliveries.
 Simultaneous TCP **2583.780/2639.902 ms** remains diagnostic, not latency acceptance;
 graph-only p95 **100.422 ms**. Historical failures and host-capacity uncertainty remain.
-See [progress](../PROGRESS.md) for results.
+See [progress](../../PROGRESS.md) for results.
 
 No DB schema/SQL/dependency/frontend change, real credential read/decryption, provider
 request, persistent migration/reset, service change, console endpoint or UI-guide edit.
@@ -2371,8 +2371,8 @@ provider-native normalization and separately approved live acceptance remain ope
 #### M6B trusted shop-binding storage (2026-10-18)
 
 User selected external app secrets plus explicit database binding evidence. Added
-[0330](../../db/migrations/0330_ecommerce_shop_bindings.sql) and
-[storage.py](../../csa/agents/ecommerce/storage.py), with no default runtime registration
+[0330](../../../db/migrations/0330_ecommerce_shop_bindings.sql) and
+[storage.py](../../../csa/agents/ecommerce/storage.py), with no default runtime registration
 or real key/app-registry lookup. All execution uses synthetic disposable fixtures.
 
 - Immutable tenant/grant-linked shop evidence inherits the grant's immutable exact
@@ -2427,8 +2427,8 @@ Keep the failed **259.251 ms** measurement and unchanged **<200 ms** threshold;
 home-server causality is not established, and no production performance waiver is implied.
 User selected an app-wide gate across tenants, not individually coordinated tenant gates.
 
-Added [0340](../../db/migrations/0340_ecommerce_app_lifecycle.sql) and internal
-[app lifecycle helpers](../../csa/agents/ecommerce/apps.py):
+Added [0340](../../../db/migrations/0340_ecommerce_app_lifecycle.sql) and internal
+[app lifecycle helpers](../../../csa/agents/ecommerce/apps.py):
 
 - Global tables contain only app ID, monotonic revision, state and transition timestamps.
   They intentionally have no tenant RLS: runtime/analytics may read non-secret global
@@ -2485,8 +2485,8 @@ Offline contracts and synthetic lifecycle development may continue.
 User selected **preserve existing connection until successful completion** and
 **consume before exchange; no automatic replay after uncertain results**.
 
-Added [0350](../../db/migrations/0350_ecommerce_authorization_attempts.sql) and internal
-[connection choreography](../../csa/agents/ecommerce/connections.py):
+Added [0350](../../../db/migrations/0350_ecommerce_authorization_attempts.sql) and internal
+[connection choreography](../../../csa/agents/ecommerce/connections.py):
 
 - Server-selected existing local-store context only. Attempt creation checks active
   app revision and exact current credential generation; it does not create arbitrary
@@ -2651,7 +2651,7 @@ Implementation prerequisites and deliberate limits:
   automatic code replay, caller cancellation honored, fixed safe failure codes and
   no provider-message/body/URL echo. No query-string request may reach live networking
   during offline tests.
-- Legacy [`oauth.py`](../../csa/channels/marketplace/oauth.py) is not reused: its
+- Legacy [`oauth.py`](../../../csa/channels/marketplace/oauth.py) is not reused: its
   duration interpretation/defaults, inferred shop identity, error/log text and
   webhook-producing saver do not satisfy the new contract. It remains unchanged
   and is not wired to the Business workspace.
@@ -2671,8 +2671,8 @@ trusted external registry/key integration and approved live acceptance remain ga
 
 #### M6B selected token-response parser (2026-10-18)
 
-Added [token_response.py](../../csa/agents/ecommerce/token_response.py) and
-[synthetic parser tests](../../tests/test_tiktok_token_response.py), without transport
+Added [token_response.py](../../../csa/agents/ecommerce/token_response.py) and
+[synthetic parser tests](../../../tests/test_tiktok_token_response.py), without transport
 or live verifier composition. This implements only the selected response portion of
 the verified public token-exchange contract above.
 
@@ -2726,8 +2726,8 @@ service/webhook/UI-guide edit. Gateway source0350, persistent dev0300 remain unc
 
 #### M6B isolated token-exchange transport (2026-10-18)
 
-Added [token_exchange.py](../../csa/agents/ecommerce/token_exchange.py) and
-[synthetic transport tests](../../tests/test_tiktok_token_exchange.py). This module is
+Added [token_exchange.py](../../../csa/agents/ecommerce/token_exchange.py) and
+[synthetic transport tests](../../../tests/test_tiktok_token_exchange.py). This module is
 not registered with the authorization-attempt completion flow and does not verify
 app identity, exact shop/cipher, or trusted provenance.
 
@@ -2773,7 +2773,7 @@ acceptance remain gated.
 
 #### M6B trusted app/shop verifier composition (2026-10-18)
 
-Added [authorization_verifier.py](../../csa/agents/ecommerce/authorization_verifier.py)
+Added [authorization_verifier.py](../../../csa/agents/ecommerce/authorization_verifier.py)
 to compose the strict exchange parser/transport with the existing authorized-shops
 primitive. It has the verifier signature accepted by `complete_authorization`; when
 passed there, the existing attempt/app locks remain held. No callback route or runtime
@@ -2941,6 +2941,6 @@ old `.env` into CSAV2 or assume its hostnames/keys are valid.
 - [ ] All deployment actions remain separately approved; runtime cutover is not implied.
 
 The obsolete M2/M3 kickoff prompt has been removed. Use
-[M5 current scope and evidence](./2026-10-17-m5-telegram-inbox.md).
+[M5 current scope and evidence](2026-10-17-m5-telegram-inbox.md).
 The recovery handoff, phase plans and earlier implementation evidence remain reference
 material; they do not authorize resets, service replacements or new channel authority.

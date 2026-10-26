@@ -153,7 +153,7 @@ This is source/disposable-test implementation, not an activated deployment or
 certification of Malaysian payroll compliance. Follow [setup and boundaries](./SETUP.md).
 
 The user removed Developer A’s review/integration as a gate. Earlier review-first
-and code-freeze instructions in [HR-0 history](../handoffs/2026-10-21-developer-b-hr0-foundation.md)
+and code-freeze instructions in [HR-0 history](../archive/handoffs/2026-10-21-developer-b-hr0-foundation.md)
 are superseded. A’s worktree and the dirty original main remain untouched.
 The old `/tmp/csav2-hr-foundation` directory is a backup; the active worktree is the
 stable path above. No environment file was read or copied.
@@ -264,8 +264,8 @@ shared-host validation window is still uncoordinated. No image-build fixture or
 load test was substituted. Authenticated live browser, real microphone, live
 provider and persistent runtime acceptance remain **not run**.
 
-Earlier evidence and failures remain in [HR-1 history](./HR1_VALIDATION_HISTORY.md)
-and [prior expansion history](./HR2_VALIDATION_HISTORY.md).
+Earlier evidence and failures remain in [HR-1 history](../archive/hr/HR1_VALIDATION_HISTORY.md)
+and [prior expansion history](../archive/hr/HR2_VALIDATION_HISTORY.md).
 
 Final structural checks passed: five HR notes, 73 local link targets, balanced
 fences and no trailing whitespace; all new source files have final newlines.

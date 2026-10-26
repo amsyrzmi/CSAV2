@@ -20,6 +20,7 @@ from pydantic import SecretStr
 
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
+from csa.console.services import require_package
 from csa.decide.completion import CompletionError
 from csa.email.gmail import GmailError
 from csa.email.models import (
@@ -132,6 +133,7 @@ async def _resolve(request: Request, client_id: UUID | None, allowed: set[str]) 
             raise HTTPException(403, "tenant_not_authorized")
         tenant_id = actor.client_id
         role = actor.role.value if actor.role is not None else None
+    await require_package(request.app.state.pool, tenant_id, frozenset({"staff_email"}))
     csrf_hash = None
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         if role == "read_only":

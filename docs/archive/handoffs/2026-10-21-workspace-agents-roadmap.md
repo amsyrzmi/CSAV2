@@ -12,21 +12,21 @@ These are product-scope decisions, not grants to read real employee data.
 
 ## Start and authority
 
-Read [repository guidance](../../AGENTS.md), [project overview](../PROJECT_OVERVIEW.md),
-[progress](../PROGRESS.md), [console API](../CONSOLE_API.md), then only the relevant
-[LG02](../langgraph-rebuild/LG02_contracts_state_registry.md),
-[LG05](../langgraph-rebuild/LG05_spokes_and_tools.md),
-[LG07](../langgraph-rebuild/LG07_egress_outbox_hitl.md),
-[LG13](../langgraph-rebuild/LG13_agent_catalog_and_console.md) and
-[LG15](../langgraph-rebuild/LG15_console_turnover.md) sections.
+Read [repository guidance](../../../AGENTS.md), [project overview](../../PROJECT_OVERVIEW.md),
+[progress](../../PROGRESS.md), [console API](../../CONSOLE_API.md), then only the relevant
+[LG02](../../langgraph-rebuild/LG02_contracts_state_registry.md),
+[LG05](../../langgraph-rebuild/LG05_spokes_and_tools.md),
+[LG07](../../langgraph-rebuild/LG07_egress_outbox_hitl.md),
+[LG13](../../langgraph-rebuild/LG13_agent_catalog_and_console.md) and
+[LG15](../../langgraph-rebuild/LG15_console_turnover.md) sections.
 
 For the next two implementation sessions use:
 
-- [Developer A: workspace-assistant foundation](./2026-10-21-developer-a-workspace-prompt.md).
-- [Developer B: independent HR foundation](./2026-10-21-developer-b-hr-prompt.md).
+- Developer A: workspace-assistant foundation prompt (retired).
+- Developer B: independent HR foundation prompt (retired).
 
-The [release handoff](./2026-10-19-domain-release-next-session.md) and
-[release contract](../../deploy/RELEASE.md) retain staging gates. This roadmap
+The [release handoff](2026-10-19-domain-release-next-session.md) and
+[release contract](../../../deploy/RELEASE.md) retain staging gates. This roadmap
 does not waive them. Public staging is not a prerequisite for pure contracts
 and disposable development, but public acceptance and deployment remain gated.
 
@@ -37,10 +37,10 @@ Source inspected at local `main`
 
 | Area | Source-grounded status | Consequence |
 |---|---|---|
-| Identity | Human sessions, membership, selected tenant, CSRF and four broad console roles exist in [console contracts](../../csa/console/contracts.py) and [access checks](../../csa/console/access.py). | Broad tenant staff/admin roles are not a payroll or employee-record permission model. |
-| Web chat | [Chat routes](../../csa/console/chat.py), durable ingress/history and private local delivery exist. [API scope](../CONSOLE_API.md#private-sandbox-assistant-m4) is explicitly owner-private and read-only for business operations. | Do not widen the sandbox or reuse its histories as a staff/customer inbox. |
-| Spokes | [Runtime wiring](../../csa/turn/deps.py) includes orders, tickets, escalation, KB, invoice reads and staged booking/subscription. [Runner](../../csa/agents/runner.py) enforces the web sandbox allowlist. | Reuse capabilities; do not build a second order/ticket implementation inside chat. |
-| Execution context | [AgentContext](../../csa/agents/base.py) carries tenant/contact/conversation, not a general verified staff principal. | Staff authority needs an explicit reviewed contract; a user UUID is not a customer contact or employee UUID. |
+| Identity | Human sessions, membership, selected tenant, CSRF and four broad console roles exist in [console contracts](../../../csa/console/contracts.py) and [access checks](../../../csa/console/access.py). | Broad tenant staff/admin roles are not a payroll or employee-record permission model. |
+| Web chat | [Chat routes](../../../csa/console/chat.py), durable ingress/history and private local delivery exist. [API scope](../../CONSOLE_API.md#private-sandbox-assistant-m4) is explicitly owner-private and read-only for business operations. | Do not widen the sandbox or reuse its histories as a staff/customer inbox. |
+| Spokes | [Runtime wiring](../../../csa/turn/deps.py) includes orders, tickets, escalation, KB, invoice reads and staged booking/subscription. [Runner](../../../csa/agents/runner.py) enforces the web sandbox allowlist. | Reuse capabilities; do not build a second order/ticket implementation inside chat. |
+| Execution context | [AgentContext](../../../csa/agents/base.py) carries tenant/contact/conversation, not a general verified staff principal. | Staff authority needs an explicit reviewed contract; a user UUID is not a customer contact or employee UUID. |
 | Customer service | Coordinator, grounding, KB, tickets, escalation, order callbacks, durable outbox and Telegram staff inbox/approval paths exist. | Refinement is an evaluated bundle of these capabilities, not a new competing coordinator. |
 | Commerce | Local business reads and offline marketplace foundations exist; adapter registration does not establish configured provider access. Inventory authority remains staged. | Report source/freshness truthfully; do not promise live stock, refunds or seller operations. |
 | Voice | Voice fields/failure handling and historical voice-note plans exist. Separate legacy LiveKit containers were observed. | Neither proves an authenticated interactive CSAV2 voice workflow. Do not attach or modify legacy services. |
@@ -328,7 +328,7 @@ The maintained Markdown check passed for 48 files and 444 local targets with
 zero link/fence errors; `git diff --check` passed. No runtime tests were run
 for this documentation-only planning slice.
 
-For later code use [verification guidance](../../.agents/skills/csa-verify-change/SKILL.md):
+For later code use [verification guidance](../../../.agents/skills/csa-verify-change/SKILL.md):
 focused checks then `NO_LOCAL_ENV=1 ENV=ci make lint test`; migration reset
 acceptance only via the disposable-container test, never bare persistent reset.
 Frontend changes require the adopted isolated check and scoped authenticated

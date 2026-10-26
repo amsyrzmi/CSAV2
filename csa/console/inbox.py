@@ -24,6 +24,7 @@ from csa.approval.service import (
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
 from csa.console.kb_uploads import audit
+from csa.console.services import package_gate
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
@@ -188,7 +189,12 @@ async def record(
 
 
 def build_inbox_router() -> APIRouter:
-    router = APIRouter(prefix="/inbox", dependencies=[Depends(inbox_actor)], route_class=InboxRoute)
+    # The package gate runs first so every role sees package_inactive before role errors.
+    router = APIRouter(
+        prefix="/inbox",
+        dependencies=[Depends(package_gate("customer_support")), Depends(inbox_actor)],
+        route_class=InboxRoute,
+    )
 
     @router.get("/conversations", response_model=InboxConversationPage)
     async def list_conversations(

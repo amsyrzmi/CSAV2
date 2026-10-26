@@ -114,7 +114,7 @@ request spans without ASGI receive/send child spans. Pool capacity remains eight
 `ENV=ci make lint test` passed **325 tests**. Separate-process TCP ingress, using synthetic
 traffic and a disposable database, passed 150 arrivals at 50/s: latest ack p95 **108.808 ms**,
 scheduled p95 **110.330 ms**, 150 unique durable turns/replies/pending deliveries. The
-[LG08 report](../evals/lg08_validation_report.md) retains failed experiments and a post-fix
+[LG08 report](../archive/evals/lg08_validation_report.md) retains failed experiments and a post-fix
 ASGI scheduling failure. These short bursts do not prove proxy/provider delivery latency or
 sustained 50-turn/s worker capacity. No new live Telegram exchange is claimed in this slice.
 Two spawned-process echo-worker tests also verify per-conversation ordering, idempotent

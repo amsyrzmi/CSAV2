@@ -153,8 +153,8 @@ development hostname. Nothing is printed except the registered URL.
 
 Send one consented test message to the bot. Expect, in order: an
 `ingress_events` row for the Meranti tenant, a worker-produced reply held in the
-console inbox (the tenant is in `shadow` deployment mode, so replies wait for
-approval), approval in the inbox, a delivery row, and the message arriving in
+console inbox (the tenant is in `auto` mode after the 2026-10-23 activation;
+replies that the gate holds appear here for approval), approval in the inbox, a delivery row, and the message arriving in
 Telegram. Record the trace id and the counts in PROGRESS. Also upload a PDF to
 the knowledge base and confirm the job completes and a question about it is
 answered in the sandbox.

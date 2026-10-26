@@ -15,46 +15,49 @@ import {
   Activity,
   BookOpen,
   MessageSquare,
+  type LucideIcon,
 } from "lucide-react";
 import { identity } from "@/lib/identity-api";
 import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
+import { navigationFor, type NavKey } from "@/lib/navigation";
+import type { PackageState } from "@/lib/services-api";
 import { Notice } from "@/components/console/ui";
+
+const icons: Record<NavKey, LucideIcon> = {
+  overview: LayoutDashboard,
+  services: Bot,
+  hr: Users,
+  activity: Activity,
+  knowledge_base: BookOpen,
+  chat: MessageSquare,
+  workspace: MessageSquare,
+  inbox: MessageSquare,
+  email: Mail,
+  business: Building2,
+  tenants: Building2,
+  members: Users,
+  team: Users,
+  password: KeyRound,
+};
 
 export function AppShell({
   me,
+  packages,
   children,
 }: {
   me: Me;
+  packages: PackageState[];
   children: React.ReactNode;
 }) {
   const path = usePathname();
   const router = useRouter();
   const admin = me.role === "platform_admin";
   const home = admin ? "/" : "/portal";
-  const links = [
-    { href: home, label: "Overview", icon: LayoutDashboard },
-    { href: admin ? "/agents" : "/portal/agents", label: "Agents", icon: Bot },
-    { href: admin ? "/hr" : "/portal/hr", label: "People & HR", icon: Users },
-    { href: admin ? "/activity" : "/portal/activity", label: "Runtime activity", icon: Activity },
-    { href: admin ? "/knowledge-base" : "/portal/faq", label: "Knowledge base", icon: BookOpen },
-    { href: admin ? "/chat" : "/portal/chat", label: "Sandbox assistant", icon: MessageSquare },
-    ...(me.role && me.role !== "read_only"
-      ? [{ href: admin ? "/workspace" : "/portal/workspace", label: "Staff workspace", icon: MessageSquare }]
-      : []),
-    ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/inbox" : "/portal/inbox", label: "Customer inbox", icon: MessageSquare }] : []),
-    ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/email" : "/portal/email", label: "Email assistant", icon: Mail }] : []),
-    ...(me.role && me.role !== "read_only" ? [{ href: admin ? "/business" : "/portal/business", label: "Business management", icon: Building2 }] : []),
-    ...(admin
-      ? [
-          { href: "/settings/clients", label: "Tenants", icon: Building2 },
-          { href: "/settings/team", label: "Members", icon: Users },
-        ]
-      : me.role === "tenant_admin"
-        ? [{ href: "/portal/team", label: "Team", icon: Users }]
-        : []),
-    { href: "/change-password", label: "Password", icon: KeyRound },
-  ];
+  const links = navigationFor(me, packages).map((link) => ({
+    ...link,
+    icon: icons[link.key],
+  }));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   async function signOut() {

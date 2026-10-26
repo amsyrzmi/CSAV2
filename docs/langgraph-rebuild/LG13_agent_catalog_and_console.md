@@ -41,7 +41,7 @@ Rules for every agent below:
 ## Where each request lands
 | Request | Phase | Why |
 |---|---|---|
-| E-Commerce operations agent (TikTok Shop, Shopee, Lazada) | M6 staged/offline | Follow the current [M6 roadmap](../handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation); do not use the superseded 12-Oct draft as an implementation contract. |
+| E-Commerce operations agent (TikTok Shop, Shopee, Lazada) | M6 staged/offline | Follow the current [M6 roadmap](../archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation); do not use the superseded 12-Oct draft as an implementation contract. |
 | Booking agent (Google Calendar) | Already in LG05 outline; build as wave 2 (needs OAuth + test calendar) | Spec and acceptance gate exist in LG05 |
 | Email management agent | Wave 2 | Builds on the Gmail channel from LG03 |
 | KB agent | Wave 1 | Needed first; also feeds the webscraping agent |
@@ -95,7 +95,7 @@ Rules for every agent below:
   downloads, duplicates, deletion and reconciliation pass. A guarded KB-only task claims
   only the synthetic M1 tenant; no full runtime or old FAQ import was started. See
   [startup and scope](../CONSOLE_API.md#isolated-dev-rollout-prerequisites) and
-  [live evidence/remaining checks](../PROGRESS.md#m3-authenticated-kb-upload-and-lifecycle-2026-10-15).
+  [live evidence/remaining checks](../archive/PROGRESS-2026-10-early.md#m3-authenticated-kb-upload-and-lifecycle-2026-10-15).
 - If TEI is unavailable, the job goes back to the queue and is retried with a delay, up to 3 attempts, then fails. The worker never silently falls back to a different embedding. Search only compares chunks with the same `embed_model`, so hash-embedded (dev) and TEI-embedded content are never mixed.
 - Embeddings: `TEI_ENDPOINT` (required in prod). The dev TEI runs `intfloat/multilingual-e5-small` (384-dim) and uses the `TEI_QUERY_PREFIX="query: "` and `TEI_PASSAGE_PREFIX="passage: "` prefixes. Without TEI, dev and ci use a lexical `hash-384` embedder.
 - Cutover: confirm the legacy n8n `kb_documents.embed_model` label and model. If they don't match `KB_EMBED_MODEL_LABEL`, re-index.
@@ -113,7 +113,7 @@ The user selected backend preparation for all waves before choosing payment prov
 supplying the console source. This is **not completion of the external integrations below**.
 Implementation: `csa/agents/staged/models.py`, `csa/agents/staged/service.py`;
 migration `0260_staged_agent_requests.sql`. See
-[the latest handoff](../handoffs/2026-10-15-wave23-preparation.md).
+[the latest handoff](../archive/handoffs/2026-10-15-wave23-preparation.md).
 
 | Surface | Implemented now | Still gated / not built |
 |---|---|---|
@@ -192,7 +192,7 @@ For each proposed agent, write down: purpose, who triggers it (customer, staff, 
 Source supplied 2026-10-15 at `CSA_WebConsole/csa-console/`. The user approved retaining
 the Next.js UI and replacing its API with one CSAV2 backend, session authentication and
 membership-based roles. PM/terminal/Hermes/workroom features are deferred.
-See [the detailed migration plan](../handoffs/2026-10-15-console-source-migration-plan.md).
+See [the detailed migration plan](../archive/handoffs/2026-10-15-console-source-migration-plan.md).
 The feature catalogue below remains a roadmap, not a claim of implemented endpoints.
 
 Boundaries:
@@ -253,7 +253,7 @@ Suggested order: publish the OpenAPI contract and mock server first (days), then
 > not current release acceptance. Current source registers `EcommerceAgent`, but its
 > default instance has no platform adapters. The M6B verifier is not wired as a
 > callback/runtime flow, and no live seller authorization/provider acceptance is
-> established. Consult [current progress](../PROGRESS.md), the [M6 roadmap](../handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation)
+> established. Consult [current progress](../PROGRESS.md), the [M6 roadmap](../archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation)
 > and the source/tests before relying on these historical counts or claims.
 
 - [x] Agent intake/design material exists. The old ecommerce proposal was superseded by the M6 roadmap; this checklist entry does not establish live marketplace readiness.

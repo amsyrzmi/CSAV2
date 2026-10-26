@@ -23,10 +23,18 @@ from csa.core.tenancy import tx
 from csa.turn.deps import PostgresTurnDependencies, _insert_outbound
 
 from tests.conftest import requires_docker
+from tests.test_console_services import activate
 from tests.test_console_sessions import MACHINE_TOKEN, SessionWorld
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
+
+
+@pytest.fixture(autouse=True)
+async def packages(sessions: SessionWorld) -> None:
+    """Both tenants hold customer_support so isolation checks get past the package gate."""
+    for tenant in sessions.tenants:
+        await activate(sessions, tenant, "customer_support")
 
 
 async def test_pagination_validation_redaction_and_mutation_role_denials(

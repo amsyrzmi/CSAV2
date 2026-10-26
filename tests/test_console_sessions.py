@@ -751,6 +751,18 @@ async def test_m2_runtime_keyset_pagination_detail_redaction_and_overview(
 async def test_m2_kb_console_execution_cannot_bypass_disabled_switch(
     sessions: SessionWorld,
 ) -> None:
+    from tests.test_console_services import activate
+
+    # The package is active, so the 409 comes from the switch, not the package gate.
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    off = await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/capabilities/kb_agent?client_id={tenant}",
+        {"is_enabled": False},
+        method="PATCH",
+    )
+    assert off.status_code == 200, off.text
     admin, _ = await sessions.member(role="tenant_admin")
     response = await sessions.mutate(
         admin, "/console/v1/kb/documents", {"title": "Synthetic", "content": "Synthetic"}

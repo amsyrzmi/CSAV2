@@ -42,7 +42,7 @@ Never repeat bootstrap/migrations or inspect secret values.
 ## Prior continuation: frontend host publishing correction (2026-10-23)
 
 Read repository guidance, latest PROGRESS and
-[shared-host procedure](../../deploy/STAGING_SHARED_CADDY.md).
+[shared-host procedure](../../../deploy/STAGING_SHARED_CADDY.md).
 Worktree `/home/amsyrzmi/CSAV2-staging-public-demo`, corrective branch
 `fix/staging-frontend-host-network`, base `a9a212f` (#22 merge).
 Final branch CI `39970840315`, PR CI `39970848027`, main CI `39970918017`
@@ -99,7 +99,7 @@ Preserve unrelated main review deletions and other worktrees.
 ## Prior continuation: shared tunnel and Caddy (2026-10-23)
 
 Start with repository guidance, latest PROGRESS,
-[STAGING_SHARED_CADDY.md](../../deploy/STAGING_SHARED_CADDY.md), its overlay
+[STAGING_SHARED_CADDY.md](../../../deploy/STAGING_SHARED_CADDY.md), its overlay
 and Caddy snippet, plus the public-login safeguards in STAGING_INGRESS.
 Worktree `/home/amsyrzmi/CSAV2-staging-public-demo`, branch
 `docs/staging-public-demo`, currently extends open #22 (previous published
@@ -180,7 +180,7 @@ Preserve main-worktree review deletions and all unrelated worktrees.
 ## Prior continuation: public login demo review (2026-10-23)
 
 Read repository guidance, current PROGRESS and
-[STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md) first. Branch
+[STAGING_INGRESS.md](../../../deploy/STAGING_INGRESS.md) first. Branch
 `docs/staging-public-demo`, worktree `/home/amsyrzmi/CSAV2-staging-public-demo`,
 is based on PR #21 merge `05b429ec0856694de87dfb02bbd7ca74cbbf27bd`
 (main CI `39951244406` passed). Verify publication state.
@@ -249,7 +249,7 @@ Preserve main's two existing review deletions and other worktrees.
 ## Prior continuation: consolidated ingress readiness (2026-10-23)
 
 Start with repository guidance, latest PROGRESS,
-[STAGING_INGRESS.md](../../deploy/STAGING_INGRESS.md), the pinned local
+[STAGING_INGRESS.md](../../../deploy/STAGING_INGRESS.md), the pinned local
 Compose proposal, configuration tests and RELEASE's private host execution.
 PR #20 merged as `df948b0882aefdb4fe01381fe47271fed81f31ff`; main CI
 `39945835399` passed. This consolidated local slice is prepared on
@@ -317,7 +317,7 @@ executable CD until the deployment/recovery process has been accepted.
 ## Prior continuation: private readiness complete (2026-10-23)
 
 Read repository guidance, latest PROGRESS, the
-[private execution record](../../deploy/RELEASE.md#private-staging-host-execution-2026-10-23),
+[private execution record](../../../deploy/RELEASE.md#private-staging-host-execution-2026-10-23),
 the pinned connector configuration and token ownership evidence in RELEASE,
 and relevant LG09/LG15 gates. Do not replay historical handoffs.
 
@@ -379,8 +379,8 @@ Preserve main's two pre-existing review deletions and unrelated worktrees.
 ## Prior continuation: private staging startup procedure (2026-10-23)
 
 Start with repository guidance, latest PROGRESS, the
-[private startup procedure](../../deploy/RELEASE.md#private-staging-application-startup-procedure-only-not-run)
-and [configuration tests](../../tests/test_staging_compose.py). Branch
+[private startup procedure](../../../deploy/RELEASE.md#private-staging-application-startup-procedure-only-not-run)
+and [configuration tests](../../../tests/test_staging_compose.py). Branch
 `feat/staging-private-startup`, worktree
 `/home/amsyrzmi/CSAV2-staging-private-startup`, is based on PR #18 merge
 `1012b705f3eb63f8d686f1dc926c8c7764307755` (main CI `39928109213` passed).
@@ -438,9 +438,9 @@ voice, Google mailbox/calendar, reporting/wallboards. Keep each gate explicit.
 ## Prior continuation: staging bootstrap complete (2026-10-23)
 
 Start with repository guidance, the latest progress entry, the
-[host execution record](../../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23),
-the [local proposal](../../deploy/compose.staging-local-proposal.yml) and its
-[configuration tests](../../tests/test_staging_compose.py). Reconcile LG09/LG15
+[host execution record](../../../deploy/RELEASE.md#staging-bootstrap-host-execution-2026-10-23),
+the [local proposal](../../../deploy/compose.staging-local-proposal.yml) and its
+[configuration tests](../../../tests/test_staging_compose.py). Reconcile LG09/LG15
 release gates with current source, not historical schema counts.
 
 PR #17 merged as `a5eb450ae6fdcbff71c673abaedc3bd8abb8639e`; PR CI
@@ -508,11 +508,11 @@ Branch `feat/staging-db-bootstrap` (worktree `/home/amsyrzmi/CSAV2-staging-boots
 is based on `2a4a037` (PR #16 merge). It adds:
 
 - the `uploads-init` and `admin-bootstrap` one-shot services in
-  [compose.staging-local-proposal.yml](../../deploy/compose.staging-local-proposal.yml);
+  [compose.staging-local-proposal.yml](../../../deploy/compose.staging-local-proposal.yml);
 - render and gate-execution tests in
-  [test_staging_compose.py](../../tests/test_staging_compose.py);
+  [test_staging_compose.py](../../../tests/test_staging_compose.py);
 - the owner-run
-  [procedure](../../deploy/RELEASE.md#isolated-staging-database-bootstrap-operator-procedure-not-yet-run).
+  [procedure](../../../deploy/RELEASE.md#isolated-staging-database-bootstrap-operator-procedure-not-yet-run).
 
 The admin gate is inline YAML Python because the approved image `7cdc156`
 predates any new module. It delegates to the packaged
@@ -554,11 +554,11 @@ PR #15 merged as `88a6711173e81d358802cb23995e81c0839f1108`; main CI
 39882125951 passed. The owner ran the image-pull and secret-file gate on the
 staging host. The approved digests are present locally, and their revision and
 users match. `/srv/csa-staging/secrets` passes `staging_secrets check`. See the
-[host execution record](../../deploy/RELEASE.md#host-execution-2026-10-23).
+[host execution record](../../../deploy/RELEASE.md#host-execution-2026-10-23).
 
 **Next bounded task (authorized local work):** write and test, without
 running, the isolated database bootstrap procedure for
-[compose.staging-local-proposal.yml](../../deploy/compose.staging-local-proposal.yml).
+[compose.staging-local-proposal.yml](../../../deploy/compose.staging-local-proposal.yml).
 It covers:
 
 1. starting only `staging-db` under `migration-approved`;
@@ -572,7 +572,7 @@ It covers:
 6. verification and teardown, including volume deletion before any data
    exists.
 
-The [disposable bootstrap rehearsal](../../deploy/RELEASE.md#disposable-bootstrap-and-storage-rehearsal)
+The [disposable bootstrap rehearsal](../../../deploy/RELEASE.md#disposable-bootstrap-and-storage-rehearsal)
 is the model. Running the procedure is a **separate approval**.
 
 Later gates, each separately approved:
@@ -607,8 +607,8 @@ deletions in /home/amsyrzmi/CSAV2. The user merges.
 PR #14 merged as `f0a8d974b022730056ef7fd86e4d629be95940f8` (PR CI 39840472983,
 push CI 39840462467 passed). Branch `feat/staging-secret-provisioning`
 (worktree `/home/amsyrzmi/CSAV2-staging-published`) adds
-[staging_secrets.py](../../scripts/staging_secrets.py) and its synthetic tests,
-plus the [operator procedure](../../deploy/RELEASE.md#staging-host-image-pull-and-secret-files)
+[staging_secrets.py](../../../scripts/staging_secrets.py) and its synthetic tests,
+plus the [operator procedure](../../../deploy/RELEASE.md#staging-host-image-pull-and-secret-files)
 for the host image pull and secret files. Approved images are unchanged (see
 the publication record below).
 
@@ -656,7 +656,7 @@ PR #13 merged as `b60cde5adca806a073b580a7fa80527e6344aaa4`; main CI
 39833976733 passed. The owner created environment `staging-images` with
 required reviewer `amsyrzmi` and deployment branch `main`, then dispatched and
 approved publish run 39838393620 (`ci_run_id=39754225130`). All steps passed;
-see the [publication record](../../deploy/RELEASE.md#first-publication-pr-11-merge-images-2026-10-22).
+see the [publication record](../../../deploy/RELEASE.md#first-publication-pr-11-merge-images-2026-10-22).
 
 Approved staging image references (source `7cdc1562a33bf3a33c4561e53d26263a6a08f731`):
 
@@ -704,9 +704,9 @@ PR #12 (artifact identity, mount probes and registry lookup evidence) merged as
 
 Branch `ci/staging-image-publication` (worktree
 `/home/amsyrzmi/CSAV2-staging-publish`) adds
-[publish-staging-images.yml](../../.github/workflows/publish-staging-images.yml),
-[test_publish_staging_images.py](../../tests/test_publish_staging_images.py) and
-the [workflow contract](../../deploy/RELEASE.md#staging-image-publication-workflow).
+[publish-staging-images.yml](../../../.github/workflows/publish-staging-images.yml),
+[test_publish_staging_images.py](../../../tests/test_publish_staging_images.py) and
+the [workflow contract](../../../deploy/RELEASE.md#staging-image-publication-workflow).
 It is manual `workflow_dispatch` with one `ci_run_id`, gated by environment
 `staging-images`. It verifies a successful push-to-main `ci.yml` run on an
 ancestor of `main`, downloads that run's exact archive, verifies checksums,
@@ -846,9 +846,9 @@ and public acceptance remain separate approvals. Protected repeatable staging
 promotion is later still. Subscription acceptance is next in the agreed roadmap
 only after these staging gates are met; do not bypass them.
 
-Read this section, current [progress](../PROGRESS.md), the
-[release contract](../../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22),
-and the [staging proposal](../../deploy/compose.staging-local-proposal.yml)
+Read this section, current [progress](../../PROGRESS.md), the
+[release contract](../../../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22),
+and the [staging proposal](../../../deploy/compose.staging-local-proposal.yml)
 before continuing. Keep all work in an isolated worktree; the original main
 worktree still has only the two pre-existing review-report deletions. Preserve
 the six-phase order: Staging/CD, subscription, WhatsApp test demo, interactive
@@ -909,7 +909,7 @@ The isolated `test/customer-service-goldens` branch in
 tenant-scoped KB policy/review regeneration, foreign-only KB gap, wrong-customer
 ticket denial, and durable human-handoff suppression of follow-up automation.
 Only tests and documentation change. Read
-[LG08 exact evidence/limitations](../langgraph-rebuild/LG08_testing_seed_evals.md#customer-service-evaluation-expansion-2026-10-22).
+[LG08 exact evidence/limitations](../../langgraph-rebuild/LG08_testing_seed_evals.md#customer-service-evaluation-expansion-2026-10-22).
 All golden, KB and staff-path regressions: **71 passed / 63 existing warnings in
 94.12 s**; repository lint/types/import checks passed. Initial fixture and command
 failures are retained. No live model/TEI/provider, delivery worker, persistent
@@ -935,7 +935,7 @@ review-document deletions. HR guidance is merged; no deployment occurred.
 The next isolated branch is `test/customer-service-browser` in
 `/home/amsyrzmi/CSAV2-customer-service`. Its test/documentation-only slice adds
 real-session packaged customer inbox browser acceptance. Read the
-[M5 evidence](./2026-10-17-m5-telegram-inbox.md#packaged-customer-service-browser-acceptance-2026-10-22)
+[M5 evidence](2026-10-17-m5-telegram-inbox.md#packaged-customer-service-browser-acceptance-2026-10-22)
 for exact scope, commands, durable counts and initial failures.
 Focused inbox regression: **14 passed / 1 warning in 102.20 s**; final browser:
 **1 passed / 1 warning in 215.34 s**; lint/types/import checks passed.
@@ -969,8 +969,8 @@ workspace chat, using existing HR session/authority checks and fixed same-origin
 directory/training links. Platform navigation preserves selected tenant; HR
 services still decide record eligibility and mutations. No employee records,
 new mutations, model calls, workspace action-union changes or migrations.
-Read [HR evidence](../hr/PROGRESS.md#workspace-hr-guidance) and
-[API contract](../CONSOLE_API.md#staff-hr-contract-source-implementation-2026-10-21).
+Read [HR evidence](../../hr/PROGRESS.md#workspace-hr-guidance) and
+[API contract](../../CONSOLE_API.md#staff-hr-contract-source-implementation-2026-10-21).
 
 Focused affected tests: **198 passed in 189.28 s**. Expanded synthetic packaged HR
 browser: **1 passed / 1 existing warning in 227.78 s**. Repository lint and isolated
@@ -1002,8 +1002,8 @@ repeat the old missing-library diagnosis as a current blocker.
 
 The `test/hr-browser-acceptance` branch in `/home/amsyrzmi/CSAV2-hr-browser`
 adds a synthetic real-session HR directory/training browser scenario to the
-existing packaged acceptance harness. Read [HR progress](../hr/PROGRESS.md)
-and [setup/test command](../hr/SETUP.md#acceptance-before-rollout).
+existing packaged acceptance harness. Read [HR progress](../../hr/PROGRESS.md)
+and [setup/test command](../../hr/SETUP.md#acceptance-before-rollout).
 It proves scoped fields, tenant/role/CSRF denial, current-grant revocation,
 training submission, bound human confirmation, committed-write lost-response
 recovery and exact durable outcomes. It changes only tests/documentation.
@@ -1029,7 +1029,7 @@ PR #4 merged to main as `bb197ae`; main CI 39638334024 passed. Local main
 matches it and retains only the two pre-existing review-document deletions.
 HR integration is on `integration/hr-foundation` in
 `/home/amsyrzmi/CSAV2-hr-integration`; B's original dirty HR worktree is unchanged.
-Read [HR progress](../hr/PROGRESS.md) and [setup](../hr/SETUP.md) first for
+Read [HR progress](../../hr/PROGRESS.md) and [setup](../../hr/SETUP.md) first for
 implemented scope, explicit authority and exact integration evidence.
 
 Both workspace A1 (0370) and HR (0380-0410) are present, with schema readiness
@@ -1057,8 +1057,8 @@ remain separate gates. No deployment or persistent database action occurred.
 
 PR #3 (workspace A0/A1) merged to `main` as `b3b84c7`; local `main` was
 fast-forwarded with the dirty documentation/staging files preserved. Read the
-[A1 handoff](./2026-10-21-workspace-a1-implementation.md) and the
-[PROGRESS entry](../PROGRESS.md) for scope and evidence, including the flaky
+[A1 handoff](2026-10-21-workspace-a1-implementation.md) and the
+[PROGRESS entry](../../PROGRESS.md) for scope and evidence, including the flaky
 first CI run. Main now expects schema 0370. Developer B's HR work in the
 separate `feat/hr-foundation` worktree is uncommitted and based on `0264c0a`
 with migrations 0380–0410; B must rebase onto `b3b84c7`, set gateway/test/
@@ -1072,7 +1072,7 @@ fingerprint key and voice consent/retention remain open decisions.
 The user changed the immediate priority before further staging preparation:
 business web chat, HR, customer-service refinement and interactive voice are
 the first four priorities; Teach-a-task is last. Start with the
-[two-developer roadmap](./2026-10-21-workspace-agents-roadmap.md) and its separate
+[two-developer roadmap](2026-10-21-workspace-agents-roadmap.md) and its separate
 workspace/HR prompts. It records recommendations and unresolved authority
 decisions, not implementation or deployment approval. Preserve the existing
 owner-private, read-only sandbox. No broad workspace tool enablement is authorized
@@ -1091,14 +1091,14 @@ cleanup failure cause or turn this into production troubleshooting.
 
 ## Prior continuation: local Compose staging design validated (2026-10-21)
 
-Start with the [local-Compose staging section](../../deploy/RELEASE.md#local-compose-staging-variant-configuration-only-validation-2026-10-21)
-and the [selected staging design](../../deploy/RELEASE.md#verified-artifact-and-selected-staging-design-2026-10-21).
+Start with the [local-Compose staging section](../../../deploy/RELEASE.md#local-compose-staging-variant-configuration-only-validation-2026-10-21)
+and the [selected staging design](../../../deploy/RELEASE.md#verified-artifact-and-selected-staging-design-2026-10-21).
 Local `main` is at `0264c0a`, matching `origin/main` at the last check. The user
 selected protected staging-only secret files outside the repo, dashboard-managed
 Cloudflare routes, and `https://staging-console.fourstacks.my` for planning only.
 Do not ask for or inspect secrets, change `.env.local`, or use production services.
 
-The inert [local-Compose proposal](../../deploy/compose.staging-local-proposal.yml)
+The inert [local-Compose proposal](../../../deploy/compose.staging-local-proposal.yml)
 uses `file:` sources, explicit approval profiles, no host ports, and internal
 `data`, `app`, and frontend-only `edge` networks. It contains no connector. Its
 synthetic validation passed:
@@ -1181,7 +1181,7 @@ The final read-only listener check found no listeners on private console ports
 13000/18081. This task did not stop or restart them; the cause is not established.
 Earlier pre-merge publication prompts below are historical.
 
-Read the [staging preparation checklist](../../deploy/RELEASE.md#post-merge-planning-checkpoint-2026-10-21)
+Read the [staging preparation checklist](../../../deploy/RELEASE.md#post-merge-planning-checkpoint-2026-10-21)
 and the inert Compose proposal before designing any executable staging step.
 No staging-named containers or volumes were found. Docker Compose 2.40.3 is
 installed; the proposal assumes external secrets whose provisioning mechanism
@@ -1796,8 +1796,8 @@ promotion remains disabled.
 ## Earlier slice: synthetic database backup/restore rehearsal (2026-10-20)
 
 Added `test_packaged_synthetic_backup_restore` to
-[the packaged acceptance module](../../tests/test_packaged_console.py).
-See [the restore contract and exclusions](../../deploy/RELEASE.md#disposable-synthetic-database-restore).
+[the packaged acceptance module](../../../tests/test_packaged_console.py).
+See [the restore contract and exclusions](../../../deploy/RELEASE.md#disposable-synthetic-database-restore).
 The source is the module's migrated synthetic Testcontainer; the destination is
 a second fresh Testcontainer. No real dev, persistent staging or production data
 is used, and no application/runtime/schema behavior changed.
@@ -1851,11 +1851,11 @@ change occurred.
 
 ## Earlier slice: disposable staging bootstrap and storage rehearsal
 
-Extended [the packaged acceptance module](../../tests/test_packaged_console.py)
+Extended [the packaged acceptance module](../../../tests/test_packaged_console.py)
 with a second independent test. Fresh allowlisted image builds are shared within
 the module, but bootstrap uses its own fresh Testcontainer/database, internal
 network and upload volume. It does not reuse the identity test's migrated fixture.
-See [the release contract](../../deploy/RELEASE.md#disposable-bootstrap-and-storage-rehearsal).
+See [the release contract](../../../deploy/RELEASE.md#disposable-bootstrap-and-storage-rehearsal).
 
 The test proves:
 
@@ -1920,7 +1920,7 @@ unverified. Existing M6 labels/gates and historical latency failures remain inta
 
 ## Earlier slice: disposable packaged-console acceptance
 
-Added [the packaged-console harness](../../tests/test_packaged_console.py).
+Added [the packaged-console harness](../../../tests/test_packaged_console.py).
 It builds fresh Python/Next candidates from the existing allowlisted materializers
 and uses the module's synthetic Testcontainers PostgreSQL, not persistent Compose.
 The non-root, read-only application containers have no published ports and only a
@@ -1970,7 +1970,7 @@ Validation chronology:
 - Documentation validation: **80 local targets** and balanced fences across the
   release contract, progress, LG15 and this handoff; `git diff --check` passed.
 
-See [the release contract](../../deploy/RELEASE.md#disposable-packaged-console-acceptance)
+See [the release contract](../../../deploy/RELEASE.md#disposable-packaged-console-acceptance)
 for prerequisites and limitations. This is HTTP-client/server-rendered acceptance,
 not authenticated JavaScript browser, Cloudflare/cookie-forwarding, DNS,
 hosted Actions/OCI, persistent staging, uploads/worker or provider acceptance.
@@ -1982,11 +1982,11 @@ was performed. M6 and live seller eligibility remain incomplete/gated.
 ## Earlier slice: repository-only packaging implemented
 
 The CI/release-packaging continuation below has now been implemented, **not
-deployed**. See [release packaging and staging proposal](../../deploy/RELEASE.md)
+deployed**. See [release packaging and staging proposal](../../../deploy/RELEASE.md)
 for the build contract and operator gates. The earlier host observations and
 domain/provider planning below remain dated context, not fresh runtime evidence.
 
-- [CI](../../.github/workflows/ci.yml) preserves the Python checks, ephemeral
+- [CI](../../../.github/workflows/ci.yml) preserves the Python checks, ephemeral
   schema setup, Testcontainers, secret scan and coverage. Service-level GHCR
   credentials fix the pull-before-login bootstrap ordering. Global
   `NO_LOCAL_ENV=1 ENV=ci` prevents local development configuration loading.
@@ -2013,7 +2013,7 @@ domain/provider planning below remain dated context, not fresh runtime evidence.
 - The frontend artifact is origin-bound. Build and runtime must agree on the
   private `CSA_CONSOLE_API_ORIGIN`; its launcher refuses missing, invalid or
   mismatched origins before starting Next. Changing it requires a new artifact.
-- The [staging proposal](../../deploy/compose.staging-proposal.yml) has an
+- The [staging proposal](../../../deploy/compose.staging-proposal.yml) has an
   isolated database/volume/internal network, separate uppercase domain,
   checkpoint and identity secret targets, HTTPS origin/secure cookies, readiness
   dependencies and **no host bindings/external network**. Every service needs
@@ -2125,7 +2125,7 @@ proxy cookie forwarding, backup restore, migrations on a persistent database,
 real ingress connectivity, live provider or landing-page HTTP smoke check was run.
 No push, commit, SSH, DNS/tunnel/provider change or service replacement occurred.
 Source still expects 0360; persistent dev0300 is only the last recorded approval.
-Earlier latency failures remain in [progress](../PROGRESS.md); packaging does not
+Earlier latency failures remain in [progress](../../PROGRESS.md); packaging does not
 change thresholds or establish capacity.
 The four explicitly task-owned build-context directories were removed after
 validation; candidate images remain local, unpublished. Existing temporary
@@ -2133,11 +2133,11 @@ directories, Docker services and unrelated worktree changes were not cleaned up.
 
 ## Original domain-planning scope (historical)
 
-This is the current continuation entry point. Read [AGENTS](../../AGENTS.md),
-[progress](../PROGRESS.md), [LG15](../langgraph-rebuild/LG15_console_turnover.md),
-the [M6 roadmap](./2026-10-15-console-source-migration-plan.md), and
-[LG09](../langgraph-rebuild/LG09_cutover_ops_cloud.md). The
-[M6B verifier handoff](./2026-10-18-m6b-verifier-next-session.md) is retained as dated
+This is the current continuation entry point. Read [AGENTS](../../../AGENTS.md),
+[progress](../../PROGRESS.md), [LG15](../../langgraph-rebuild/LG15_console_turnover.md),
+the [M6 roadmap](2026-10-15-console-source-migration-plan.md), and
+[LG09](../../langgraph-rebuild/LG09_cutover_ops_cloud.md). The
+[M6B verifier handoff](2026-10-18-m6b-verifier-next-session.md) is retained as dated
 subsystem evidence, not the current schema/deployment instruction.
 
 The user selected:
@@ -2159,15 +2159,15 @@ database were changed or inspected in this slice.
 
 | Area | Evidence and implication |
 |---|---|
-| Source schema | [Gateway](../../apps/gateway/main.py) expects every shipped SQL migration and maximum `0360`; [0360](../../db/migrations/0360_inventory_identity.sql) is identity-only inventory scaffolding. |
+| Source schema | [Gateway](../../../apps/gateway/main.py) expects every shipped SQL migration and maximum `0360`; [0360](../../../db/migrations/0360_inventory_identity.sql) is identity-only inventory scaffolding. |
 | Persistent dev | Last approved recorded state is `0300`. Not probed in this task; do not call it the current observed version or start the latest build against it without reviewed forward migrations. |
 | Existing host | User-supplied `docker ps` shows landing service `fourstacks-web` on loopback 8088, `cloudflared`, legacy `csa-platform` DB/MCP/KB/embeddings, n8n and LiveKit. Running containers alone do not prove traffic, dependency usage or safe retirement. |
-| Port conflict | The supplied snapshot binds another application to host 8080, while [production Compose](../../deploy/compose.yml) tries loopback 8080. Select a verified free port or private network route; do not run this manifest unchanged. |
+| Port conflict | The supplied snapshot binds another application to host 8080, while [production Compose](../../../deploy/compose.yml) tries loopback 8080. Select a verified free port or private network route; do not run this manifest unchanged. |
 | Runtime uncertainty | No new CSAV2 gateway/frontend containers appear in that snapshot. Host processes, reverse-proxy rules, tunnel ingress, Docker networks and image digests were not supplied or inspected; deployment status remains unknown. |
 | Temporary databases | Two random-name Postgres containers in the snapshot could be test infrastructure, but ownership/lifecycle is unverified. Do not delete them by name or assume they are abandoned. |
 | Production Compose | Gateway/worker/delivery plus automatic migration dependency; no adopted Next.js frontend, console identity DSN/origin wiring, or complete upload/KB-worker packaging. It omits required `PUBLIC_BASE_URL`, mounts lowercase secrets while settings are case-sensitive, and leaves `TURN_ENGINE` at its `echo` default. It targets the external legacy `csa-net`/`postgres` stack, not a new isolated staging database. |
-| Image | [Dockerfile](../../deploy/Dockerfile) builds only the Python app, not the Next.js console. Its runtime does not install `curl`, although Compose's gateway health check invokes `curl`; `/healthz` also proves only liveness, not schema/identity readiness. |
-| CI | [Existing CI](../../.github/workflows/ci.yml) already runs Python lint/types/import checks, schema setup, pytest, secret scan and coverage. No frontend gate, application image publishing or CD is implemented there. |
+| Image | [Dockerfile](../../../deploy/Dockerfile) builds only the Python app, not the Next.js console. Its runtime does not install `curl`, although Compose's gateway health check invokes `curl`; `/healthz` also proves only liveness, not schema/identity readiness. |
+| CI | [Existing CI](../../../.github/workflows/ci.yml) already runs Python lint/types/import checks, schema setup, pytest, secret scan and coverage. No frontend gate, application image publishing or CD is implemented there. |
 
 The original proxy attachment was unavailable; the user subsequently supplied port and
 Compose status summaries, not proxy configuration. Obtain only sanitized hostname/path
@@ -2204,7 +2204,7 @@ token, process environment or environment-file dump.
 
 Do not globally search-and-replace an environment file or regenerate credential keys.
 The app, Compose and frontend do not all load configuration the same way:
-[Settings](../../csa/core/settings.py) reads `.env.local` only in development unless
+[Settings](../../../csa/core/settings.py) reads `.env.local` only in development unless
 `NO_LOCAL_ENV=1`; production requires process configuration/secrets. Compose interpolation
 and Next.js automatic environment loading are separate mechanisms.
 
@@ -2222,13 +2222,13 @@ and Next.js automatic environment loading are separate mechanisms.
 
 ### TikTok caveat: a legacy callback exists
 
-[Marketplace router](../../csa/channels/marketplace/router.py) is mounted by the gateway.
+[Marketplace router](../../../csa/channels/marketplace/router.py) is mounted by the gateway.
 It includes `/api/v1/channels/tiktok_shop/oauth/authorize` and
 `/api/v1/channels/tiktok_shop/oauth/callback`, using the older
-[OAuth helper](../../csa/channels/marketplace/oauth.py).
+[OAuth helper](../../../csa/channels/marketplace/oauth.py).
 Those are **not** the supported M6B verifier/completion flow.
-The newer [verifier](../../csa/agents/ecommerce/authorization_verifier.py) and
-[completion](../../csa/agents/ecommerce/connections.py) compose only in synthetic tests;
+The newer [verifier](../../../csa/agents/ecommerce/authorization_verifier.py) and
+[completion](../../../csa/agents/ecommerce/connections.py) compose only in synthetic tests;
 no runtime/default app-material/key source or supported console callback is registered.
 
 Do not register/expose that legacy callback merely by changing `PUBLIC_BASE_URL` or a
@@ -2283,7 +2283,7 @@ release; do not equate `main`, image-build success or latest schema with product
 | Synthetic demo | Persistent visible "Synthetic demo" label; page-local state only, no provider effects or saved business records. |
 
 These M6 local/demo/unavailable distinctions already exist in
-[BusinessWorkspace](../../CSA_WebConsole/csa-console/web/components/console/BusinessWorkspace.tsx).
+[BusinessWorkspace](../../../CSA_WebConsole/csa-console/web/components/console/BusinessWorkspace.tsx).
 This slice changes documentation only, not UI. A release must test that unfinished
 features fail closed in the backend as well as hiding/disabling controls.
 

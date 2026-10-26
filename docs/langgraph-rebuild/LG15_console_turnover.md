@@ -2,7 +2,7 @@
 
 ## Current continuation (2026-10-19)
 
-Current entry point: [domain/release handoff and prompt](../handoffs/2026-10-19-domain-release-next-session.md).
+Current entry point: [domain/release handoff and prompt](../archive/handoffs/2026-10-19-domain-release-next-session.md).
 Source expects 0360; persistent dev0300 is last recorded approval, not a fresh probe.
 Repository-only CI/release packaging is implemented; hosted workflow/OCI integrity
 and exact-artifact disposable runtime acceptance pass as of 2026-10-20 (see handoff).
@@ -16,8 +16,8 @@ show incomplete M6 features as local-only, unavailable or synthetic demo.
 
 ### Dated implementation and validation chronology
 
-M5 evidence: [Telegram scope and evidence](../handoffs/2026-10-17-m5-telegram-inbox.md).
-Prior evidence: [M4 closeout](../handoffs/2026-10-16-m4-closeout-m5-start.md).
+M5 evidence: [Telegram scope and evidence](../archive/handoffs/2026-10-17-m5-telegram-inbox.md).
+Prior evidence: [M4 closeout](../archive/handoffs/2026-10-16-m4-closeout-m5-start.md).
 M4 is functionally closed by explicit user decision with a laptop-dev performance
 exception; M5's authorized Telegram-only staff inbox/reply-approval slice is implemented;
 post-review full lint/tests **692 passed**, including unchanged ASGI/TCP ingress thresholds.
@@ -29,7 +29,7 @@ M6 is now staged as a Business management seller workspace: local read foundatio
 verified seller reads/connections, separately authorized TikTok operations, multi-platform
 inventory authority/mapping, and business support/staff preparation. The local orders/
 tracking/catalogue/stock read foundation is implemented offline, not live-rolled out.
-See the [expanded M6 scope and gates](../handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
+See the [expanded M6 scope and gates](../archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
 M6D has a user-selected offline authority direction and a user-approved rule requiring a
 second distinct tenant admin for every non-zero on-hand change, with no self-approval.
 Count/adjustment contracts, prototype behavior and test-local audit enforcement now
@@ -310,7 +310,7 @@ Subsequent public-doc verification confirms token exchange query shape, explicit
 User identity is not shop identity. Query-secret logging isolation must precede real
 transport; next offline slice is a strict selected-response parser with synthetic tests.
 No runtime change or new validation run; latest975 full pass remains prior evidence.
-See the [exchange contract](../handoffs/2026-10-15-console-source-migration-plan.md#m6b-public-token-exchange-contract-verification-2026-10-18).
+See the [exchange contract](../archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-public-token-exchange-contract-verification-2026-10-18).
 Subsequent offline selected-response parser validates absolute Unix expiry, standard
 seller0 and exact distinct required scopes, returning only frozen secret-masked token
 material/expiry/scopes. No app/shop binding or grant authority is inferred; no transport
@@ -337,7 +337,7 @@ The user approved replacing its backend logic, retaining the Next.js UI and usin
 disabled for a separate phase.
 
 The authoritative implementation sequence and source-to-target route inventory are in
-[the detailed migration plan](../handoffs/2026-10-15-console-source-migration-plan.md).
+[the detailed migration plan](../archive/handoffs/2026-10-15-console-source-migration-plan.md).
 It supersedes earlier assumptions about a separate console backend, actor headers,
 unknown console endpoints and source availability in this document and older handoffs.
 M0–M3 source adoption, identity/onboarding, controls/activity and KB lifecycle are
@@ -503,7 +503,7 @@ database reads. This phase moves every console feature onto the CSA console API 
 `csa/console/`) and moves each client's runtime from n8n to LangGraph, using the LG09 strangler
 flag. n8n core workflows are then retired. Read `AGENTS.md`, `LG09`, `LG13` (console and KB upload
 contract), `LG07` (approval semantics), `docs/CONSOLE_API.md`, and
-the [current source-based migration plan](../handoffs/2026-10-15-console-source-migration-plan.md)
+the [current source-based migration plan](../archive/handoffs/2026-10-15-console-source-migration-plan.md)
 first.
 
 Two separate turnovers must not be confused:
@@ -612,7 +612,7 @@ enable `FORCE ROW LEVEL SECURITY` and move n8n off the owner role (LG11 M14).
 - [x] Guided M1 browser lifecycle/RBAC/logout acceptance, user-operated and DB-corroborated.
 - [x] M2 runtime/readiness/UI implementation with focused disposable integration evidence.
 - [x] Authenticated synthetic packaged M2 Agents/Runtime browser acceptance; see the
-      [2026-10-20 handoff](../handoffs/2026-10-19-domain-release-next-session.md#latest-slice-synthetic-m2-browser-acceptance-2026-10-20).
+      [2026-10-20 handoff](../archive/handoffs/2026-10-19-domain-release-next-session.md#latest-slice-synthetic-m2-browser-acceptance-2026-10-20).
 - [ ] Full-suite performance acceptance.
 - [ ] Every active frontend feature actually uses an implemented CSAV2 endpoint, not n8n;
       the old Python API and deferred PM/voice runtimes are not mounted or started.

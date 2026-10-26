@@ -16,7 +16,7 @@ plans; a feature appearing in a plan or UI is not proof it is live.
 
 Detailed references:
 
-- [Long-form architecture and trust boundaries](docs/information.md)
+- [Architecture and trust boundaries](docs/ARCHITECTURE.md)
 - [Runtime architecture summary](docs/ARCHITECTURE.md)
 - [Console API contract](docs/CONSOLE_API.md) and [OpenAPI snapshot](docs/console_openapi.json)
 - [Development runbook](docs/RUNBOOK.md)

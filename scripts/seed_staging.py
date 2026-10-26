@@ -36,6 +36,7 @@ import psycopg
 from csa.console.contracts import ConsoleActor, InviteIn
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.onboarding import _AGENTS as ONBOARDED_AGENTS
+from csa.console.packages import PACKAGES
 from csa.core import db
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -338,6 +339,18 @@ def _actor(admin: dict[str, Any]) -> ConsoleActor:
     )
 
 
+def seeded_packages() -> list[str]:
+    """Packages whose member capabilities the seed enables in full.
+
+    Packages with a member the onboarding SQL does not provision (e_invoicing) are
+    skipped. HR and Staff Email have no capabilities: ``hr`` is activated by
+    :func:`_seed_hr` for the tenant given an HR owner; ``email_settings`` is never
+    configured, so Staff Email is not activated.
+    """
+    onboarded = {agent_class().name for agent_class in ONBOARDED_AGENTS}
+    return [p.key for p in PACKAGES if p.capabilities and set(p.capabilities) <= onboarded]
+
+
 async def _ensure_tenant(
     conn: psycopg.AsyncConnection[Any], spec: TenantSpec, admin_id: UUID, report: SeedReport
 ) -> None:
@@ -391,6 +404,11 @@ async def _ensure_tenant(
         await db.q.execute(
             "seed_staging/capability_enable.sql", (SEED_REFERENCE, spec.id), conn=conn
         )
+        await db.q.execute(
+            "seed_staging/service_packages_activate.sql",
+            (spec.id, admin_id, SEED_REFERENCE, seeded_packages()),
+            conn=conn,
+        )
 
 
 async def _ensure_account(
@@ -440,6 +458,12 @@ async def _seed_hr(
         report.hr_owner_set = True
     elif owner_row["user_id"] != users["admin"]:
         raise RuntimeError("HR owner already assigned to another account; refusing to override")
+    # The tenant has an HR owner and HR data, so its People & HR tab must be reachable.
+    await db.q.execute(
+        "seed_staging/service_packages_activate.sql",
+        (MERANTI, admin_id, SEED_REFERENCE, ["hr"]),
+        conn=conn,
+    )
     await db.q.execute(
         "seed_staging/hr_context.sql", (str(MERANTI), str(users["admin"])), conn=conn
     )

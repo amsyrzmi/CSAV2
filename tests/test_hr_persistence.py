@@ -352,6 +352,7 @@ async def world(hr_database: str) -> AsyncIterator[HrWorld]:
     app = FastAPI()
     app.state.identity_service = IdentityService(identity, IdentityConfig(origins=(ORIGIN,)))
     app.state.hr_service = service
+    app.state.pool = domain
     app.include_router(build_identity_router())
     app.include_router(build_hr_router())
     w = HrWorld(hr_database, app, service, owner_pool)
@@ -360,6 +361,12 @@ async def world(hr_database: str) -> AsyncIterator[HrWorld]:
             await w.q(
                 "INSERT INTO clients(id,slug,name,platform_version) VALUES (%s,%s,%s,'test')",
                 (tenant, f"hr-{tenant}", "Synthetic HR tenant"),
+            )
+            await w.q(
+                "INSERT INTO public.console_service_packages "
+                "(client_id, package, status, activated_at, reference) "
+                "VALUES (%s, %s, 'active', now(), 'test-fixture')",
+                (tenant, "hr"),
             )
         for name, user in w.users.items():
             await w.q(
@@ -1409,7 +1416,7 @@ async def test_hr_migrations_reapply_and_gateway_readiness_use_shipped_schema(
 ) -> None:
     from apps.gateway.main import EXPECTED_SCHEMA_VERSION, check_readiness
 
-    assert EXPECTED_SCHEMA_VERSION == "0440"
+    assert EXPECTED_SCHEMA_VERSION == "0450"
     before = await world.q("SELECT version FROM schema_migrations ORDER BY version")
     result = await asyncio.to_thread(
         subprocess.run,

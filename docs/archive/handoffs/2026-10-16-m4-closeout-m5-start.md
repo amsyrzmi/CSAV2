@@ -18,14 +18,14 @@ unchanged and must be revisited before release/public deployment (M7/M8).
 
 ## Read first
 
-1. [Repository guidance](../../AGENTS.md).
-2. [Current evidence](../PROGRESS.md), especially M4 and its latency investigation.
-3. [Console API](../CONSOLE_API.md) and
-   [source migration plan, M5](./2026-10-15-console-source-migration-plan.md#m5--staff-conversation-inbox-and-approvals).
-4. [LG15 console](../langgraph-rebuild/LG15_console_turnover.md),
-   [LG07 approvals/outbox](../langgraph-rebuild/LG07_egress_outbox_hitl.md) and
-   [frontend guide](../../CSA_WebConsole/csa-console/web/README.md).
-5. [Runtime recovery handoff](./2026-10-16-runtime-stabilization.md) for incident history,
+1. [Repository guidance](../../../AGENTS.md).
+2. [Current evidence](../../PROGRESS.md), especially M4 and its latency investigation.
+3. [Console API](../../CONSOLE_API.md) and
+   [source migration plan, M5](2026-10-15-console-source-migration-plan.md#m5--staff-conversation-inbox-and-approvals).
+4. [LG15 console](../../langgraph-rebuild/LG15_console_turnover.md),
+   [LG07 approvals/outbox](../../langgraph-rebuild/LG07_egress_outbox_hitl.md) and
+   [frontend guide](../../../CSA_WebConsole/csa-console/web/README.md).
+5. [Runtime recovery handoff](2026-10-16-runtime-stabilization.md) for incident history,
    reset guards and synthetic fixture provenance. Its older startup instructions are
    historical; this handoff is the current entry point.
 

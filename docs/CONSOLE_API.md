@@ -1,7 +1,7 @@
 # Console API contract (v1)
 
 Current release/domain continuation:
-[handoff and prompt](./handoffs/2026-10-19-domain-release-next-session.md).
+[handoff and prompt](archive/handoffs/2026-10-19-domain-release-next-session.md).
 M6 remains incomplete; this contract is not public deployment approval. M6A local
 records are not a live provider feed, and the new M6B verifier has no supported
 console callback/runtime registration. Mounted legacy marketplace OAuth routes are
@@ -13,7 +13,7 @@ acceptance; public browser/ingress and staging have not. See
 
 M0–M5 plus offline M6A implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
-See the [migration plan](./handoffs/2026-10-15-console-source-migration-plan.md) and
+See the [migration plan](archive/handoffs/2026-10-15-console-source-migration-plan.md) and
 [frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
 Offline M6B TikTok order-page validation is internal adapter groundwork only: it adds no
 console routes or live connection claims. Complete provider response-contract verification,
@@ -21,7 +21,7 @@ tenant/store-bound credential resolution and safe browser projections remain req
 the normalized internal ecommerce order is not a console response model.
 Official v202309 request paths, pagination placement and detail envelope have since been
 verified/corrected; line-item quantity/price normalization still blocks provider readiness.
-See the [verified scope and remaining response/grant gates](./handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
+See the [verified scope and remaining response/grant gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
 
 ## Staff HR contract (source implementation, 2026-10-21)
 
@@ -264,7 +264,7 @@ The user subsequently accepted **functional M4 closeout with a laptop-dev perfor
 exception**, carrying latency work forward. Laptop hardware is reported context, not a
 proven cause. Benchmarks and `<200 ms` remain unchanged; release performance acceptance
 is still required. M5 may begin as a separate staff surface, not expanded sandbox
-authority. See [the closeout and M5 prompt](./handoffs/2026-10-16-m4-closeout-m5-start.md).
+authority. See [the closeout and M5 prompt](archive/handoffs/2026-10-16-m4-closeout-m5-start.md).
 See [current evidence](./PROGRESS.md). Offline tests/build are not live-browser evidence.
 Future replacements still require scoped approval. No public rollout is implied.
 
@@ -398,7 +398,7 @@ Local update timestamps are not marketplace-sync evidence. Product local active 
 is not a published listing; stock is not synchronized and is not cross-store authority.
 These pages do not claim live tracking, connection health or import completeness.
 Tickets, invoices/PDFs, preparation and provider-backed operations remain staged in the
-[expanded M6 plan](./handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
+[expanded M6 plan](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
 Implementation is offline; the last approved M5 services have not been replaced.
 
 Order filters match persisted `channel` (`telegram`, `web`, `tiktok_shop`, `shopee`,
@@ -564,7 +564,40 @@ Semantic rejection details stay in turn state for regeneration; only their count
 Classifier comparisons are persisted separately in `decision_log`; a console endpoint for those rows
 is not implemented yet.
 
+## Services and packages
+Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`). Packages are the management surface; the capability switches below remain the runtime enforcement.
+
+| Package | Kind | Capabilities | Tabs | Sellable |
+|---|---|---|---|---|
+| `customer_support` | base | `kb_agent`, `ticket_agent`, `escalation_agent`, `order_approval` | inbox, knowledge_base | yes |
+| `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
+| `subscriptions` | addon | `subscription_agent` | subscriptions | yes |
+| `bookings` | addon | `booking_agent` | bookings | yes |
+| `marketplaces` | addon | `ecommerce_agent` | ecommerce | no |
+| `e_invoicing` | addon | `lhdn_agent` | lhdn_myinvois | no |
+| `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | hr | yes |
+| `staff_email` | standalone | none; covers `email_settings` | email | yes |
+
+State is in `console_service_packages` (migration `0450`): `status` is `requested`, `active` or `suspended`, with requester, activator, `reference`, `note` and timestamps. Tenant RLS applies; only `csa_app` has grants. The migration backfills a package as `active` with reference `backfill-0450` when all its member capabilities are `is_enabled` (`hr`: any enabled `hr_agent_settings` row; `staff_email`: `email_settings.enabled`).
+
+- `GET /console/v1/services`: catalogue joined with the tenant's state, including `consistent` and `inconsistencies` (drift between the package record and member switches) per package. `staff_email` also reports `inner_switch`.
+- `GET /console/v1/services/active`: `{"packages": [...]}` of active package keys, used to build navigation. A platform admin without `client_id` receives `{"packages": []}`.
+- `POST /console/v1/services/{key}/request`: tenant admin or platform admin.
+- `POST /console/v1/services/{key}/activate` with body `{"reference": str, "note"?: str}`: platform admin. Flips member `is_enabled` and `client_enabled` through the same SQL as the capability toggle; audits `capability.updated` and `service.activated`.
+- `POST /console/v1/services/{key}/suspend` with body `{"note"?: str}`: platform admin. Sets `is_enabled=false` only for members not in another active package, and never for `escalation_agent` or `order_approval`.
+
+Errors: 409 on state conflicts (already active, requirements inactive, dependent add-on active); 422 for an unknown or unsellable key; 403 for the wrong role or `human session required` for machine tokens. Audits `service.requested`, `service.activated` and `service.suspended` carry details `{before, after, reference}`; `requested_by` and `activated_by` are user ids.
+
+Gates: a route behind an inactive package returns 403 `package_inactive`, and gates run before role checks, so every role sees it.
+- Inbox requires `customer_support`; Business requires `orders_products` or `marketplaces`.
+- All `/kb/*` routes (uploads, files and downloads for every role) require `customer_support`; `/invoices*` require `orders_products`.
+- The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
+- Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.
+
+Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Knowledge base, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
+
 ## Capabilities and specialised tabs (LG13)
+Packages (see Services and packages) are the management surface; the switches below remain the enforcement.
 - `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`.
 - `PATCH /console/v1/capabilities/{name}` with body `{"is_enabled"?: bool, "client_enabled"?: bool}`. A human platform admin controls subscriptions; a human tenant admin/platform admin controls tenant switches. Actor fields such as `changed_by` are rejected. Required safety capabilities cannot be disabled. Changes and before/after audit share one locked transaction.
 - `GET /console/v1/agents`: authoritative management catalogue. Each row has `name`, `title`,

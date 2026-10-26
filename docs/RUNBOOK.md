@@ -5,8 +5,8 @@ The development environment may share a physical host with production; verify th
 configuration and use only the isolated dev stack.
 
 For the latest guarded console runtime and recovery constraints, start with the
-[domain/release handoff](./handoffs/2026-10-19-domain-release-next-session.md) and retained
-[runtime history](./handoffs/2026-10-16-runtime-stabilization.md). The generic
+[domain/release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md) and retained
+[runtime history](archive/handoffs/2026-10-16-runtime-stabilization.md). The generic
 first-time commands below are not instructions to reset or reprovision the recovered dev.
 Repository-only CI/image packaging is implemented; see the
 [release contract and inert staging proposal](../deploy/RELEASE.md). Public hosting,
@@ -94,7 +94,7 @@ ENV=ci uv run pytest -q tests/test_golden.py tests/test_decide_providers.py test
 Policy coverage: `make coverage` enforces at least 90% with branch instrumentation.
 Synthetic load: `make load-test` exercises real ingress SQL and durable queue/outbox in disposable
 testcontainers (no external provider or Telegram calls). Do not run timing tests under coverage
-or alongside builds. See the [LG08 validation report](./evals/lg08_validation_report.md) for
+or alongside builds. See the [LG08 validation report](archive/evals/lg08_validation_report.md) for
 steady-state results, cold-pool failures, queue throughput and measurement limitations.
 
 The gateway now opens all eight existing pool connections before accepting traffic. Startup
@@ -182,7 +182,7 @@ Optional live evaluation (sends **synthetic** case text to the configured extern
 ENV=dev uv run python -m csa.evals.decisions --provider both --concurrency 1 --out docs/evals/decision_report.md
 ```
 
-See [decision_report.md](./evals/decision_report.md) for the measured comparison. Review Jev
+See [decision_report.md](archive/evals/decision_report.md) for the measured comparison. Review Jev
 retention and operational terms before real-client rollout. This evaluation does not calibrate
 all decision thresholds or prove production throughput.
 

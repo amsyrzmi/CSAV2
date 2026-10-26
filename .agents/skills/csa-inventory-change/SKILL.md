@@ -7,7 +7,7 @@ description: Design, implement or review CSA-managed inventory authority, reserv
 
 Read [AGENTS.md](../../../AGENTS.md), current inventory entries in
 [PROGRESS.md](../../../docs/PROGRESS.md), and the M6D sections of the
-[M6 roadmap](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md).
+[M6 roadmap](../../../docs/archive/handoffs/2026-10-15-console-source-migration-plan.md).
 Reconcile plans with current contracts, migrations and tests before choosing the next
 slice. Preserve the existing distinction between design evidence, test-local SQL,
 application schema, runtime wiring and live cutover.

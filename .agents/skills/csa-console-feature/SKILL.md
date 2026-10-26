@@ -6,7 +6,7 @@ description: Implement or review an authenticated CSA console feature across Fas
 # Build a CSA console feature
 
 Read [AGENTS.md](../../../AGENTS.md), [LG15](../../../docs/langgraph-rebuild/LG15_console_turnover.md),
-the relevant M-stage in the [console migration plan](../../../docs/handoffs/2026-10-15-console-source-migration-plan.md),
+the relevant M-stage in the [console migration plan](../../../docs/archive/handoffs/2026-10-15-console-source-migration-plan.md),
 and [CONSOLE_API.md](../../../docs/CONSOLE_API.md). For frontend edits also read the
 [frontend AGENTS.md](../../../CSA_WebConsole/csa-console/web/AGENTS.md) and installed
 Next.js documentation required there.

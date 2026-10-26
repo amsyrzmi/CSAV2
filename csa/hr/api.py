@@ -20,6 +20,7 @@ from pydantic import SecretStr
 from csa.agents.hr import HrAgentDispatcher, HrAgentInput
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
+from csa.console.services import require_package
 from csa.decide.completion import CompletionError
 from csa.hr.agents import HrAgentDescription, describe_agent
 from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan
@@ -145,6 +146,7 @@ async def _session(
         if actor.client_id is None or (client_id is not None and client_id != actor.client_id):
             raise HTTPException(403, "tenant_not_authorized")
         tenant_id = actor.client_id
+    await require_package(request.app.state.pool, tenant_id, frozenset({"hr"}))
     csrf_hash = None
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         if actor.role == "read_only":
