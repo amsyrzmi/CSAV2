@@ -50,6 +50,8 @@ class FakeGmail:
     def __init__(self) -> None:
         self.requests: list[tuple[str, str, bytes]] = []
         self.access_counter = 0
+        self.expected_thread_id: str | None = "t1"
+        self.expected_to = "aina@example.test"
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.method, request.url.path, request.content))
@@ -127,9 +129,9 @@ class FakeGmail:
             )
         if path.endswith("/drafts") and request.method == "POST":
             body = json.loads(request.content)
-            assert body["message"].get("threadId") in {"t1", None}
+            assert body["message"].get("threadId") == self.expected_thread_id
             raw = base64.urlsafe_b64decode(body["message"]["raw"] + "==").decode()
-            assert "To: " in raw
+            assert f"To: {self.expected_to}" in raw
             return httpx.Response(200, json={"id": "gmail-draft-1"})
         return httpx.Response(404, json={"error": "unexpected"})
 
@@ -568,6 +570,7 @@ async def test_compose_to_directory_employee_and_export(
     assert draft["thread_id"] is None and draft["source"] == "model"
     assert draft["status"] == "draft"
     assert "Nur Aisyah" in world.model.calls[-1][1]
+    world.gmail.expected_thread_id, world.gmail.expected_to = None, "aisyah@example.test"
     again = await world.call("staff", "POST", COMPOSE, body, key=key)
     assert again.status_code == 201 and again.json()["id"] == draft["id"]
     exported = await world.call("staff", "POST", f"/console/v1/email/drafts/{draft['id']}/export")
