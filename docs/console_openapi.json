@@ -1516,6 +1516,65 @@
         "title": "ClientOut",
         "type": "object"
       },
+      "ComposeRequest": {
+        "additionalProperties": false,
+        "description": "A new internal email: exactly one recipient, a directory employee or a plain address.",
+        "properties": {
+          "instructions": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "language": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "recipient_address": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Address"
+          },
+          "recipient_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Employee Id"
+          },
+          "subject": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "instructions"
+        ],
+        "title": "ComposeRequest",
+        "type": "object"
+      },
       "ConfirmationAccept": {
         "additionalProperties": false,
         "description": "Opaque path reference only; callers cannot replace the prepared command.",
@@ -10968,6 +11027,76 @@
           }
         },
         "summary": "Receipt"
+      }
+    },
+    "/console/v1/email/compose": {
+      "post": {
+        "operationId": "compose_console_v1_email_compose_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compose",
+        "tags": [
+          "Email"
+        ]
       }
     },
     "/console/v1/email/context": {

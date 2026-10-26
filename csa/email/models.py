@@ -5,7 +5,15 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from csa.agents.staged.models import EmailDraftInput
 
@@ -132,6 +140,27 @@ class ThreadAnalysis(EmailModel):
 class DraftRequest(EmailModel):
     instructions: str = Field(default="", max_length=1000)
     language: Literal["auto", "en", "ms"] = "auto"
+
+
+class ComposeRequest(EmailModel):
+    """A new internal email: exactly one recipient, a directory employee or a plain address."""
+
+    recipient_employee_id: UUID | None = None
+    recipient_address: str | None = Field(default=None, min_length=3, max_length=254)
+    subject: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(min_length=1, max_length=1000)
+    language: Literal["auto", "en", "ms"] = "auto"
+
+    @field_validator("recipient_address")
+    @classmethod
+    def plain_address(cls, value: str | None) -> str | None:
+        return None if value is None else EmailDraftInput.validate_recipient(value)
+
+    @model_validator(mode="after")
+    def one_recipient(self) -> ComposeRequest:
+        if (self.recipient_employee_id is None) == (self.recipient_address is None):
+            raise ValueError("exactly one recipient required")
+        return self
 
 
 class DraftProposal(EmailModel):

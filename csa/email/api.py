@@ -25,6 +25,7 @@ from csa.console.services import require_package
 from csa.decide.completion import CompletionError
 from csa.email.gmail import GmailError
 from csa.email.models import (
+    ComposeRequest,
     ConnectOut,
     DraftOut,
     DraftPage,
@@ -55,6 +56,8 @@ def email_http_error(exc: EmailPolicyError | GmailError) -> HTTPException:
         status = 401
     elif code in {"permission_denied", "csrf_required"}:
         status = 403
+    elif code == "recipient_unresolved":
+        status = 422
     elif code == "resource_unavailable":
         status = 404
     elif code in {"provider_not_configured", "model_not_configured"}:
@@ -265,6 +268,12 @@ def build_email_router() -> APIRouter:
         request_key: RequestKey,
     ) -> DraftOut:
         return await service.draft(session, thread_id, body, request_key)
+
+    @router.post("/compose", response_model=DraftOut, status_code=201)
+    async def compose(
+        body: ComposeRequest, session: Session, service: Service, request_key: RequestKey
+    ) -> DraftOut:
+        return await service.compose(session, body, request_key)
 
     @router.get("/drafts", response_model=DraftPage)
     async def drafts(session: Session, service: Service) -> DraftPage:
