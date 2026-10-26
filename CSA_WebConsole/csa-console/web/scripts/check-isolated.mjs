@@ -53,6 +53,7 @@ try {
     "lib/workspace-api.ts",
     "lib/page-context.tsx",
     "lib/page-context-state.ts",
+    "lib/assistant-view.ts",
     "lib/workspace-paths.mjs",
     "lib/workspace-paths.d.mts",
     "components/AppShell.tsx",
@@ -70,6 +71,7 @@ try {
     "tests/workspace-paths.test.mjs",
     "tests/workspace-api.test.mjs",
     "tests/page-context.test.mjs",
+    "tests/assistant-view.test.mjs",
     "tests/release-runtime.test.mjs",
     "scripts/release-runtime.mjs",
   ];
@@ -143,6 +145,7 @@ try {
       ["workspace path tests", "../tests/workspace-paths.test.mjs"],
       ["workspace API tests", "../tests/workspace-api.test.mjs"],
       ["page context tests", "../tests/page-context.test.mjs"],
+      ["assistant view tests", "../tests/assistant-view.test.mjs"],
       ["release origin tests", "../tests/release-runtime.test.mjs"],
       ["lint", "eslint/bin/eslint.js", "."],
       ["typegen", "next/dist/bin/next", "typegen"],

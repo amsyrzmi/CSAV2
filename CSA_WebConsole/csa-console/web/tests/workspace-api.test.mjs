@@ -12,10 +12,8 @@ async function load(name, replacements = {}) {
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
 const apiUrl = await load("api.ts");
-const pathsUrl = new URL("../lib/workspace-paths.mjs", import.meta.url).href;
 const client = await import(await load("workspace-api.ts", {
   '"@/lib/api"': JSON.stringify(apiUrl),
-  '"@/lib/workspace-paths.mjs"': JSON.stringify(pathsUrl),
 }));
 const { ApiError } = await import(apiUrl);
 
@@ -71,4 +69,30 @@ test("error codes flow through ApiError.code", async () => {
     reply = () => new Response(JSON.stringify({ detail: code }), { status: 409 });
     await assert.rejects(client.confirmProposal("p1"), (e) => e instanceof ApiError && e.code === code);
   }
+});
+
+test("workspace endpoints keep thread IDs path-encoded and the tenant explicit", () => {
+  assert.equal(
+    client.workspaceEndpoint("tenant /one"),
+    "/console/v1/workspace/conversations?client_id=tenant+%2Fone",
+  );
+  assert.equal(client.workspaceEndpoint(null), "/console/v1/workspace/conversations");
+  assert.equal(
+    client.workspaceEndpoint("tenant-id", "thread/one", true),
+    "/console/v1/workspace/conversations/thread%2Fone/turns?client_id=tenant-id",
+  );
+});
+
+test("a turn without a legacy page hint omits page_hint", async () => {
+  reply = () => new Response(JSON.stringify({ ok: true }), { status: 200 });
+  await client.createWorkspaceTurn("tenant", "th", "hi", null, "rk", undefined, { tab: "hr" });
+  assert.deepEqual(JSON.parse(last().body), { request_key: "rk", body: "hi", page_context: { tab: "hr" } });
+});
+
+test("confirm and cancel name the tenant when one is given", async () => {
+  reply = () => new Response(JSON.stringify({ ok: true }), { status: 200 });
+  await client.confirmProposal("p1", undefined, "tenant /one");
+  assert.equal(last().url, "/console/v1/workspace/proposals/p1/confirm?client_id=tenant+%2Fone");
+  await client.cancelProposal("p1", undefined, "t");
+  assert.equal(last().url, "/console/v1/workspace/proposals/p1/cancel?client_id=t");
 });
