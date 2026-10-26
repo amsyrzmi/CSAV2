@@ -95,9 +95,9 @@ receiving `me` and `packages`; `lib/navigation.ts` keys; package gates in
 5. First actions: email compose and export, training request submit, held-reply decision.
    Everything else is answer-and-navigate.
 6. Approach A.
-7. Read-only members: **decision pending with the owner** (see the open question in the
-   handover); the A0 design denied them the workspace entirely, and the directory decision
-   said "every staff member".
+7. Read-only members do not see the dock in this version (owner decision, 2026-10-26):
+   the A0 rule stands; tenant staff and tenant admins get the full assistant, and the
+   company directory is reachable by those roles only.
 
 ## Design
 
@@ -250,8 +250,8 @@ decisions, `hr` for training and people, `staff_email` for email), the tenant sw
 new `WORKSPACE_ASSISTANT_ENABLED` setting (default false; requires the Groq key when on),
 mirroring `HR_ASSISTANT_ENABLED` (builder-check call). Platform admins get the dock only on
 pages that carry `?client_id=`; the dock derives the tenant from that parameter and a
-change of tenant cancels the thread's requested proposals (builder-check call). Whether
-`read_only` members see the dock at all is an owner decision recorded below.
+change of tenant cancels the thread's requested proposals (builder-check call). `read_only`
+members do not see the dock (decision 7); the workspace router keeps denying that role.
 
 ### The Staff workspace tab
 
