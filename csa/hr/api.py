@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 from typing import Annotated, Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import psycopg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -22,9 +22,10 @@ from csa.console.contracts import ConsoleActor
 from csa.console.identity import SESSION_COOKIE, IdentityService
 from csa.console.security import digest
 from csa.console.services import require_package
+from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError
 from csa.hr.agents import HrAgentDescription, describe_agent
-from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan
+from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan, TrainingSubmitIntent
 from csa.hr.automation_models import HrOperation, OperationReceipt
 from csa.hr.cases import CasePage, HrWorkflowService
 from csa.hr.models import (
@@ -49,7 +50,10 @@ from csa.hr.records import (
 )
 from csa.hr.service import HrService
 from csa.hr.workflows import WorkflowCommand, WorkflowInput, WorkflowRecord
+from csa.workspace.contracts import ProposalOut
+from csa.workspace.registry import ProposalError, ProposalRegistry
 
+_PROPOSAL_NS = UUID("5f0b8a3e-3c1d-4b57-9a52-7d2f1c6e8b40")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
 
 
@@ -210,16 +214,50 @@ def build_hr_router() -> APIRouter:
         | TrainingReceipt
         | ConfirmationProjection
         | WorkflowRecord
-        | OperationReceipt,
+        | OperationReceipt
+        | ProposalOut,
         response_model_exclude_none=True,
+        responses={201: {"model": ProposalOut}},
     )
     async def assistant(
-        body: HrChatInput, request: Request, session: Session, request_key: RequestKey
+        body: HrChatInput,
+        request: Request,
+        session: Session,
+        request_key: RequestKey,
     ):
         planner = getattr(request.app.state, "hr_assistant", None)
         if not isinstance(planner, HrAssistant):
             raise HTTPException(503, "hr_assistant_not_configured")
-        return await planner.run(session, body, request_key)
+        result = await planner.run(session, body, request_key)
+        if not isinstance(result, TrainingSubmitIntent):
+            return result
+        registry = getattr(request.app.state, "proposal_registry", None)
+        if not isinstance(registry, ProposalRegistry):
+            raise HTTPException(503, "proposal_registry_unavailable")
+        actor = await request.app.state.identity_service.actor_for_request(request)
+        # Deterministic id: a retry or a concurrent twin of this request resolves to one row.
+        proposal_id = uuid5(
+            _PROPOSAL_NS, f"{session.tenant_id}:{actor.user_id}:{actor.session_id}:{request_key}"
+        )
+        if result.replayed:
+            async with tx(request.app.state.pool, str(session.tenant_id)) as conn:
+                try:
+                    existing = await registry.get(conn, actor, session.tenant_id, proposal_id)
+                except ProposalError:
+                    existing = None
+            if existing is not None:
+                return JSONResponse(existing.model_dump(mode="json"), status_code=200)
+        created = await registry.create(
+            request.app.state.pool,
+            request,
+            actor,
+            session.tenant_id,
+            "training_submit",
+            {"action": "training_submit", "request_id": str(result.request_id)},
+            thread_id=None,
+            proposal_id=proposal_id,
+        )
+        return JSONResponse(created.model_dump(mode="json"), status_code=201)
 
     @router.post("/operations", response_model=OperationReceipt)
     async def operation(
