@@ -6,14 +6,19 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ValidationError
 
 from csa.console.access import tenant
 from csa.console.business import business_actor, require_business_read
 from csa.console.contracts import ConsoleActor
+from csa.console.services import require_package
+from csa.core import db
 from csa.core.tenancy import tx
 from csa.workspace.contracts import (
     CreateWorkspaceThread,
+    MyPeopleOut,
+    PersonOut,
     ProposalCreate,
     ProposalOut,
     WorkspaceThreadOut,
@@ -22,6 +27,7 @@ from csa.workspace.contracts import (
     WorkspaceTurnOut,
     WorkspaceTurnPage,
 )
+from csa.workspace.directory import my_people, search_people, throttle_lookup
 from csa.workspace.registry import ProposalRegistry
 from csa.workspace.service import (
     WorkspaceConflict,
@@ -116,6 +122,55 @@ def build_workspace_router() -> APIRouter:
             items, cursor = await list_threads(conn, client_id, actor.user_id, before)
         response.headers["Cache-Control"] = "no-store"
         return WorkspaceThreadPage(items=items, next_cursor=cursor)
+
+    @router.get("/people", response_model=list[PersonOut])
+    async def people(
+        request: Request,
+        response: Response,
+        actor: Annotated[ConsoleActor, Depends(workspace_actor)],
+        client_id: Annotated[UUID, Depends(tenant)],
+        q: Annotated[str, Query(min_length=1, max_length=80)],
+    ) -> list[PersonOut]:
+        _workspace_access(actor, client_id)
+        query = q.strip()
+        if not query:
+            raise HTTPException(422, "invalid workspace request")
+        await require_package(request.app.state.pool, client_id, frozenset({"hr"}))
+        throttle_lookup(actor.session_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            found = await search_people(conn, client_id, query)
+            # Never the query or any name: only how many candidates were returned.
+            await db.q.execute(
+                "console/audit.sql",
+                (
+                    actor.user_id,
+                    client_id,
+                    "workspace.people.lookup",
+                    "company_directory",
+                    Jsonb({"candidates": len(found)}),
+                ),
+                conn=conn,
+            )
+        response.headers["Cache-Control"] = "no-store"
+        return found
+
+    @router.get("/people/me", response_model=MyPeopleOut)
+    async def people_me(
+        request: Request,
+        response: Response,
+        actor: Annotated[ConsoleActor, Depends(workspace_actor)],
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> MyPeopleOut:
+        _workspace_access(actor, client_id)
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            await require_package(request.app.state.pool, client_id, frozenset({"hr"}))
+        except HTTPException as exc:
+            if exc.status_code == 403 and exc.detail == "package_inactive":
+                return MyPeopleOut(employee_id=None, manager=None, reason="package_inactive")
+            raise
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await my_people(conn, client_id, actor.user_id)
 
     @router.post(
         "/conversations/{thread_id}/turns",

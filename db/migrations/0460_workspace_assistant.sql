@@ -60,3 +60,20 @@ WHERE e.is_active
   AND e.client_id = nullif(current_setting('app.client_id',true),'')::uuid;
 REVOKE ALL ON public.company_directory FROM PUBLIC, csa_app, csa_ro, csa_identity;
 GRANT SELECT ON public.company_directory TO csa_app;
+
+-- Caller-only view: a staff member sees their own employee link and their manager's basic fields.
+-- Row visibility is the caller's identity (app.hr_user_id, set by the route to the authenticated
+-- user), not an HR grant, so the org chart is never exposed to colleagues.
+-- Rollback: DROP VIEW public.company_directory_me;
+CREATE VIEW public.company_directory_me WITH (security_barrier = true) AS
+SELECT e.client_id, a.user_id, e.id AS employee_id,
+       m.id AS manager_employee_id, m.display_name AS manager_display_name,
+       m.job_title AS manager_job_title, m.work_email AS manager_work_email
+FROM public.hr_employee_accounts a
+JOIN public.hr_employees e ON e.client_id = a.client_id AND e.id = a.employee_id
+LEFT JOIN public.hr_employees m ON m.client_id = e.client_id AND m.id = e.manager_id AND m.is_active
+WHERE e.is_active
+  AND e.client_id = nullif(current_setting('app.client_id',true),'')::uuid
+  AND a.user_id = nullif(current_setting('app.hr_user_id',true),'')::uuid;
+REVOKE ALL ON public.company_directory_me FROM PUBLIC, csa_app, csa_ro, csa_identity;
+GRANT SELECT ON public.company_directory_me TO csa_app;
