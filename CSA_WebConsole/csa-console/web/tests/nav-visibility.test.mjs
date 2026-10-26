@@ -32,6 +32,10 @@ test("business accepts either package, inactive statuses hide, hrefs follow the 
   assert.ok(labels(staff, active("marketplaces")).includes("Business management"));
   assert.ok(labels(staff, active("orders_products")).includes("Business management"));
   assert.ok(!labels(staff, [{ key: "hr", status: "suspended" }]).includes("People & HR"));
+  const suspended = labels(staff, [{ key: "customer_support", status: "suspended" }]);
+  assert.ok(suspended.includes("Customer inbox"), "suspended Customer Support keeps the Inbox link");
+  assert.ok(!suspended.includes("Knowledge base"), "but the Knowledge base stays locked");
+  assert.ok(!labels(staff, [{ key: "customer_support", status: "requested" }]).includes("Customer inbox"));
   const portal = navigationFor(staff, active("staff_email"));
   assert.equal(portal.find((l) => l.label === "Services").href, "/portal/services");
   assert.equal(portal.find((l) => l.label === "Email assistant").href, "/portal/email");

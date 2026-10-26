@@ -251,12 +251,18 @@ async def list_services(
 
 
 async def active_packages(pool: AsyncConnectionPool, client_id: UUID) -> list[PackageState]:
+    """Navigation feed: active and suspended packages with their status.
+
+    Suspended rows are included so the console can keep the Inbox link visible while a
+    client's Customer Support package is suspended (its API gate accepts that status);
+    the frontend decides per tab which statuses unlock it. Requested rows are omitted.
+    """
     async with tx(pool, str(client_id)) as conn:
         rows = await db.q.fetch_all("console/service_packages_list.sql", (client_id,), conn=conn)
     return [
         PackageState(key=r["package"], status=r["status"])
         for r in sorted(rows, key=lambda r: r["package"])
-        if r["status"] == "active"
+        if r["status"] in _GATE_STATUSES
     ]
 
 

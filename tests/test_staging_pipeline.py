@@ -330,6 +330,13 @@ def test_pipeline_long_running_services_restart_unless_stopped(tmp_path: Path) -
         "migration-approved",
         "admin-bootstrap-approved",
         "pipeline-bootstrap-approved",
+        "test-bot-setup-approved",
     )["services"]
-    for name in ("migrate", "uploads-init", "admin-bootstrap", "embeddings-init"):
+    for name in (
+        "migrate",
+        "uploads-init",
+        "admin-bootstrap",
+        "embeddings-init",
+        "staging-bot-setup",
+    ):
         assert "restart" not in one_shots[name], name
