@@ -22,6 +22,7 @@ def application(monkeypatch: pytest.MonkeyPatch, *, env: str = "ci") -> FastAPI:
         voice_transcription_key=lambda: None,
         voice_session_config=lambda: None,
         EMAIL_ASSISTANT_ENABLED=False,
+        WORKSPACE_ASSISTANT_ENABLED=False,
         DATABASE_URL="postgresql://csa_app:test@localhost:1/disposable_fixture",
         IDENTITY_DATABASE_URL="postgresql://csa_identity:test@localhost:1/disposable_fixture",
         CONSOLE_ALLOWED_ORIGIN="https://console.example.test",
