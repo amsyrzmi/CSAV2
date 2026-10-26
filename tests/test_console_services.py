@@ -448,6 +448,11 @@ async def test_platform_admin_suspends_active_package_over_http(sessions: Sessio
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "suspended"
     assert response.json()["note"] == "trial ended"
+    # Suspension keeps the Inbox reachable (held replies stay resolvable) but gates the KB.
+    staff, _ = await sessions.member(role="tenant_staff")
+    assert (await staff.get("/console/v1/inbox/conversations")).status_code == 200
+    kb = await staff.get("/console/v1/kb/documents")
+    assert kb.status_code == 403 and kb.json()["detail"] == "package_inactive"
 
 
 @pytest.fixture

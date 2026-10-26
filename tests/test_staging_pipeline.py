@@ -317,3 +317,19 @@ async def test_bot_binding_is_atomic_encrypted_and_cannot_move_tenants(
             ).fetchone() == (0,)
     finally:
         await pool.close()
+
+
+def test_pipeline_long_running_services_restart_unless_stopped(tmp_path: Path) -> None:
+    (tmp_path / "long").mkdir()
+    (tmp_path / "once").mkdir()
+    services = render(tmp_path / "long", "staging-approved", "pipeline-approved")["services"]
+    for name in ("staging-db", "gateway", "worker", "delivery", "staging-embeddings", "frontend"):
+        assert services[name].get("restart") == "unless-stopped", name
+    one_shots = render(
+        tmp_path / "once",
+        "migration-approved",
+        "admin-bootstrap-approved",
+        "pipeline-bootstrap-approved",
+    )["services"]
+    for name in ("migrate", "uploads-init", "admin-bootstrap", "embeddings-init"):
+        assert "restart" not in one_shots[name], name

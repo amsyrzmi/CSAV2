@@ -90,7 +90,7 @@ A failed write is logged loudly but never fails the customer turn. The console r
 Above the per-agent switches sits a service package layer. The catalogue lives in code
 (`csa/console/packages.py`); the `console_service_packages` table (migration `0450`) records
 each tenant's request and activation. A package gate (`require_package`) returns 403
-`package_inactive` before any role check on the Inbox, Business, Knowledge base, Invoices, HR
+`package_inactive` before any role check on the Inbox (which also accepts a suspended Customer Support package), Business, Knowledge base, Invoices, HR
 and Email routes, and the web navigation is built from `GET /console/v1/services/active`.
 Activating a package flips its member `is_enabled` and `client_enabled` switches through the
 same SQL as the capability toggle, so the switches stay the runtime enforcement. HR module and

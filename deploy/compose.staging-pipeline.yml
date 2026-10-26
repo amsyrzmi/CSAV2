@@ -22,6 +22,7 @@ x-runtime: &runtime
 
 services:
   gateway:
+    restart: unless-stopped
     environment:
       TEI_ENDPOINT: http://staging-embeddings:8080
       KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
@@ -34,6 +35,7 @@ services:
       - "127.0.0.1:18031:8080"
 
   worker:
+    restart: unless-stopped
     <<: *runtime
     command: ["python", "-m", "apps.worker.main"]
     environment:
@@ -63,6 +65,7 @@ services:
       start_period: 60s
 
   delivery:
+    restart: unless-stopped
     <<: *runtime
     command: ["python", "-m", "apps.delivery.main"]
     environment:
@@ -104,6 +107,7 @@ services:
       disable: true
 
   staging-embeddings:
+    restart: unless-stopped
     # Digest of the CPU image already present on this host; never cpu-latest.
     image: ghcr.io/huggingface/text-embeddings-inference@sha256:cc1f06b5b2e38d979aca1cc054675426bf4d94247f6d22e399d73e09131dfe79
     profiles: ["pipeline-approved"]

@@ -589,7 +589,7 @@ State is in `console_service_packages` (migration `0450`): `status` is `requeste
 Errors: 409 on state conflicts (already active, requirements inactive, dependent add-on active); 422 for an unknown or unsellable key; 403 for the wrong role or `human session required` for machine tokens. Audits `service.requested`, `service.activated` and `service.suspended` carry details `{before, after, reference}`; `requested_by` and `activated_by` are user ids.
 
 Gates: a route behind an inactive package returns 403 `package_inactive`, and gates run before role checks, so every role sees it.
-- Inbox requires `customer_support`; Business requires `orders_products` or `marketplaces`.
+- Inbox requires `customer_support` in status `active` **or `suspended`**, so staff can still resolve held replies and escalations while a client is suspended (the required safety capabilities keep running); Business requires `orders_products` or `marketplaces` active.
 - All `/kb/*` routes (uploads, files and downloads for every role) require `customer_support`; `/invoices*` require `orders_products`.
 - The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
 - Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.

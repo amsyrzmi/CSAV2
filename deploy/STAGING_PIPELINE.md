@@ -83,7 +83,8 @@ loopback port; the console is unavailable for a few seconds while that happens.
 ```
 
 Expected services: `staging-db`, `gateway`, `frontend`, `staging-embeddings`,
-`worker`, `delivery`. The first embeddings start downloads the pinned
+`worker`, `delivery`. All six carry `restart: unless-stopped` in the compose files, so they
+return after a host reboot or crash; one-shot services (migrate, init, bootstrap) do not. The first embeddings start downloads the pinned
 `intfloat/multilingual-e5-small` revision through `model-egress` and can take a
 few minutes; the worker waits for the gateway health check, not for the model.
 
