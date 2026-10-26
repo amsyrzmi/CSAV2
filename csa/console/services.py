@@ -251,12 +251,18 @@ async def list_services(
 
 
 async def active_packages(pool: AsyncConnectionPool, client_id: UUID) -> list[PackageState]:
+    """Navigation feed: active and suspended packages with their status.
+
+    Suspended rows are included so the console can keep the Inbox link visible while a
+    client's Customer Support package is suspended (its API gate accepts that status);
+    the frontend decides per tab which statuses unlock it. Requested rows are omitted.
+    """
     async with tx(pool, str(client_id)) as conn:
         rows = await db.q.fetch_all("console/service_packages_list.sql", (client_id,), conn=conn)
     return [
         PackageState(key=r["package"], status=r["status"])
         for r in sorted(rows, key=lambda r: r["package"])
-        if r["status"] == "active"
+        if r["status"] in _GATE_STATUSES
     ]
 
 
@@ -373,25 +379,46 @@ async def suspend_package(
     return await _service(pool, client_id, key, actor)
 
 
-async def require_package(pool: AsyncConnectionPool, client_id: UUID, keys: frozenset[str]) -> None:
-    """403 package_inactive unless at least one of the packages is active for the tenant."""
+ACTIVE_ONLY: frozenset[str] = frozenset({"active"})
+_GATE_STATUSES: frozenset[str] = frozenset({"active", "suspended"})
+
+
+async def require_package(
+    pool: AsyncConnectionPool,
+    client_id: UUID,
+    keys: frozenset[str],
+    statuses: frozenset[str] = ACTIVE_ONLY,
+) -> None:
+    """403 package_inactive unless one of the packages is in an accepted status for the tenant.
+
+    Gates accept ``active`` only, except the Inbox, which also accepts ``suspended`` so staff
+    can still resolve held replies while the required safety capabilities keep running.
+    """
+    if not statuses or not statuses <= _GATE_STATUSES:
+        raise ValueError(f"package gate statuses must be a subset of {sorted(_GATE_STATUSES)}")
     async with tx(pool, str(client_id)) as conn:
         row = await db.q.fetch_one(
-            "console/service_package_any_active.sql", (client_id, sorted(keys)), conn=conn
+            "console/service_package_any_in_status.sql",
+            (client_id, sorted(keys), sorted(statuses)),
+            conn=conn,
         )
     if row is None:
         raise HTTPException(403, "package_inactive")
 
 
-def package_gate(*keys: str) -> Callable[..., Coroutine[Any, Any, None]]:
+def package_gate(
+    *keys: str, statuses: tuple[str, ...] = ("active",)
+) -> Callable[..., Coroutine[Any, Any, None]]:
     """Dependency factory; runs after console authentication because it resolves the tenant."""
     unknown = [k for k in keys if k not in BY_KEY]
     if not keys or unknown:
         raise ValueError(f"package_gate needs known package keys, got {keys}")
-    required = frozenset(keys)
+    required, accepted = frozenset(keys), frozenset(statuses)
+    if not accepted or not accepted <= _GATE_STATUSES:
+        raise ValueError(f"package_gate statuses must be a subset of {sorted(_GATE_STATUSES)}")
 
     async def gate(request: Request, client_id: Annotated[UUID, Depends(tenant)]) -> None:
-        await require_package(request.app.state.pool, client_id, required)
+        await require_package(request.app.state.pool, client_id, required, accepted)
 
     return gate
 

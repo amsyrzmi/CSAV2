@@ -15,6 +15,7 @@ x-python: &python
 
 services:
   staging-db:
+    restart: unless-stopped
     image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
     profiles: ["staging-approved", "migration-approved"]
     environment:
@@ -60,6 +61,7 @@ services:
         condition: service_healthy
 
   frontend:
+    restart: unless-stopped
     image: ${CSA_STAGING_FRONTEND_IMAGE:?approved frontend image@sha256 digest required}
     profiles: ["staging-approved"]
     user: "1000:1000"

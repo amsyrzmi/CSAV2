@@ -81,3 +81,21 @@ test("package keys are URL-encoded", async () => {
   const [, requests] = await capture(() => servicesClient(null).request("a/b"));
   assert.equal(requests[0][0], "/console/v1/services/a%2Fb/request");
 });
+
+
+test("a package_inactive refusal is explained in plain words and keeps its code", async () => {
+  const { api, ApiError } = await import(apiUrl);
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ detail: "package_inactive" }, { status: 403 });
+  try {
+    await assert.rejects(api("/console/v1/inbox/conversations"), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.status, 403);
+      assert.equal(error.code, "package_inactive");
+      assert.match(error.message, /not part of your organisation's active service packages/);
+      return true;
+    });
+  } finally {
+    globalThis.fetch = original;
+  }
+});

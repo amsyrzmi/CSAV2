@@ -581,7 +581,7 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 State is in `console_service_packages` (migration `0450`): `status` is `requested`, `active` or `suspended`, with requester, activator, `reference`, `note` and timestamps. Tenant RLS applies; only `csa_app` has grants. The migration backfills a package as `active` with reference `backfill-0450` when all its member capabilities are `is_enabled` (`hr`: any enabled `hr_agent_settings` row; `staff_email`: `email_settings.enabled`).
 
 - `GET /console/v1/services`: catalogue joined with the tenant's state, including `consistent` and `inconsistencies` (drift between the package record and member switches) per package. `staff_email` also reports `inner_switch`.
-- `GET /console/v1/services/active`: `{"packages": [...]}` of active package keys, used to build navigation. A platform admin without `client_id` receives `{"packages": []}`.
+- `GET /console/v1/services/active`: `{"packages": [{key, status}]}` for packages that are `active` or `suspended`, used to build navigation; the console shows the Inbox for a suspended Customer Support package and every other gated tab only when its package is active. A platform admin without `client_id` receives `{"packages": []}`.
 - `POST /console/v1/services/{key}/request`: tenant admin or platform admin.
 - `POST /console/v1/services/{key}/activate` with body `{"reference": str, "note"?: str}`: platform admin. Flips member `is_enabled` and `client_enabled` through the same SQL as the capability toggle; audits `capability.updated` and `service.activated`.
 - `POST /console/v1/services/{key}/suspend` with body `{"note"?: str}`: platform admin. Sets `is_enabled=false` only for members not in another active package, and never for `escalation_agent` or `order_approval`.
@@ -589,7 +589,7 @@ State is in `console_service_packages` (migration `0450`): `status` is `requeste
 Errors: 409 on state conflicts (already active, requirements inactive, dependent add-on active); 422 for an unknown or unsellable key; 403 for the wrong role or `human session required` for machine tokens. Audits `service.requested`, `service.activated` and `service.suspended` carry details `{before, after, reference}`; `requested_by` and `activated_by` are user ids.
 
 Gates: a route behind an inactive package returns 403 `package_inactive`, and gates run before role checks, so every role sees it.
-- Inbox requires `customer_support`; Business requires `orders_products` or `marketplaces`.
+- Inbox requires `customer_support` in status `active` **or `suspended`**, so staff can still resolve held replies and escalations while a client is suspended (the required safety capabilities keep running); Business requires `orders_products` or `marketplaces` active.
 - All `/kb/*` routes (uploads, files and downloads for every role) require `customer_support`; `/invoices*` require `orders_products`.
 - The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
 - Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.

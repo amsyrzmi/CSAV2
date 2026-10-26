@@ -2,14 +2,23 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The server's raw `detail` code when it differs from the shown message. */
+    public code: string = message,
   ) {
     super(message);
   }
 }
 
+/** Server detail codes that deserve a sentence instead of the raw code. */
+const explained: Record<string, string> = {
+  package_inactive:
+    "This area is not part of your organisation's active service packages. Ask your administrator to activate it in Services.",
+};
+
 async function decode<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
+    let code = message;
     try {
       const body: unknown = await response.json();
       if (
@@ -17,12 +26,14 @@ async function decode<T>(response: Response): Promise<T> {
         body !== null &&
         "detail" in body &&
         typeof body.detail === "string"
-      )
-        message = body.detail;
+      ) {
+        code = body.detail;
+        message = explained[code] ?? code;
+      }
     } catch {
       /* Non-JSON gateway failures keep their HTTP status. */
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, code);
   }
   return response.status === 204
     ? (undefined as T)

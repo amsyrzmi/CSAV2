@@ -384,7 +384,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         # (f) A gated page opened directly shows the API's refusal and no conversations.
         upstream.me, upstream.packages = make_me("tenant_admin"), []
         await page.goto(f"{base}/portal/inbox")
-        await expect(page.get_by_text("package_inactive", exact=True)).to_be_visible(timeout=WAIT)
+        await expect(
+            page.get_by_text("not part of your organisation's active service packages")
+        ).to_be_visible(timeout=WAIT)
         await expect(page.get_by_text("· Telegram")).to_have_count(0)
         await expect_navigation(page, ("Services",), GATED)
         assert any(c["path"] == "inbox/conversations" for c in calls)

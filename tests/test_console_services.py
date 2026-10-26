@@ -448,6 +448,24 @@ async def test_platform_admin_suspends_active_package_over_http(sessions: Sessio
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "suspended"
     assert response.json()["note"] == "trial ended"
+    # Suspension keeps the Inbox reachable (held replies stay resolvable) but gates the KB.
+    staff, _ = await sessions.member(role="tenant_staff")
+    assert (await staff.get("/console/v1/inbox/conversations")).status_code == 200
+    kb = await staff.get("/console/v1/kb/documents")
+    assert kb.status_code == 403 and kb.json()["detail"] == "package_inactive"
+    # The navigation feed carries the suspended row so the Inbox link stays visible.
+    feed = (await staff.get("/console/v1/services/active")).json()["packages"]
+    assert {"key": "customer_support", "status": "suspended"} in feed
+    # A package that is only requested still keeps the Inbox shut.
+    other = sessions.tenants[1]
+    requested = await sessions.mutate(
+        sessions.admin, f"/console/v1/services/customer_support/request?client_id={other}"
+    )
+    assert requested.status_code == 200, requested.text
+    other_staff, _ = await sessions.member(role="tenant_staff", tenant=other)
+    shut = await other_staff.get("/console/v1/inbox/conversations")
+    assert shut.status_code == 403 and shut.json()["detail"] == "package_inactive"
+    assert (await other_staff.get("/console/v1/services/active")).json() == {"packages": []}
 
 
 @pytest.fixture

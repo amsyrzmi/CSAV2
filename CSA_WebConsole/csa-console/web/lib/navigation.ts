@@ -15,11 +15,19 @@ const gate: Partial<Record<NavKey, string[]>> = {
   hr: ["hr"],
   email: ["staff_email"],
 };
+// Statuses that unlock a tab; mirrors the server gates. The Inbox stays reachable while
+// Customer Support is suspended so staff can resolve held replies and escalations.
+const unlocks: Partial<Record<NavKey, PackageState["status"][]>> = { inbox: ["active", "suspended"] };
+const ACTIVE_ONLY: PackageState["status"][] = ["active"];
 
 export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
   const admin = me.role === "platform_admin";
   const writer = Boolean(me.role) && me.role !== "read_only";
-  const active = new Set(packages.filter((p) => p.status === "active").map((p) => p.key));
+  const status = new Map(packages.map((p) => [p.key, p.status] as const));
+  const unlocked = (key: NavKey, pkg: string) => {
+    const current = status.get(pkg);
+    return current !== undefined && (unlocks[key] ?? ACTIVE_ONLY).includes(current);
+  };
   const to = (path: string) => (admin ? `/${path}` : `/portal/${path}`);
   const entries: Array<NavLink & { show?: boolean }> = [
     { key: "overview", label: "Overview", href: admin ? "/" : "/portal" },
@@ -41,7 +49,7 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     .filter((e) => {
       if (e.show === false) return false;
       const needs = gate[e.key];
-      return admin || !needs || needs.some((k) => active.has(k));
+      return admin || !needs || needs.some((k) => unlocked(e.key, k));
     })
     .map(({ href, label, key }) => ({ href, label, key }));
 }

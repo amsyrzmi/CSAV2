@@ -176,5 +176,5 @@ def test_invoices_console_endpoints(
         assert dl_resp.status_code == 501
         assert "M6" in dl_resp.json()["detail"]
         assert [c.args[1:] for c in gate.await_args_list] == [
-            (client_id, frozenset({"orders_products"}))
+            (client_id, frozenset({"orders_products"}), frozenset({"active"}))
         ] * 2

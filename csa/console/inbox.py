@@ -190,9 +190,14 @@ async def record(
 
 def build_inbox_router() -> APIRouter:
     # The package gate runs first so every role sees package_inactive before role errors.
+    # A suspended Customer Support package keeps the Inbox reachable: escalation and order
+    # approval never switch off, so staff must still be able to resolve held replies.
     router = APIRouter(
         prefix="/inbox",
-        dependencies=[Depends(package_gate("customer_support")), Depends(inbox_actor)],
+        dependencies=[
+            Depends(package_gate("customer_support", statuses=("active", "suspended"))),
+            Depends(inbox_actor),
+        ],
         route_class=InboxRoute,
     )
 

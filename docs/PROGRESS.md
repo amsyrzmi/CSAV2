@@ -1,5 +1,19 @@
 # Progress
 
+Package hardening (2026-10-26, branch `feat/package-hardening`): follow-up to PR #32
+after the staging rollout to `5972b80` (schema `0450`, backfilled packages confirmed for
+`demo-meranti` and `joe`). Three owner decisions: the Inbox gate now accepts a
+`customer_support` package in status `active` or `suspended`, so staff can still resolve
+held replies while a client is suspended (KB, Business, Invoices, HR and Email stay
+`active`-only); the six long-running staging services carry `restart: unless-stopped` in
+the compose files, replacing the runtime-only policy set during the 2026-10-24 recovery;
+and the console API client explains `package_inactive` in plain words while keeping the
+raw code on `ApiError.code`. Evidence (`NO_LOCAL_ENV=1 ENV=ci`): `make lint` passed; isolated
+frontend tests/lint/types/build passed (services transport 4/4 including the new copy test);
+`tests/test_console_services.py` 39 passed with the suspended-inbox case; `tests/test_staging_pipeline.py`
+27 passed with the restart-policy case; browser acceptance and contract snapshot 4 passed. CI on the
+pull request is the full-suite record.
+
 Service packages (2026-10-25, committed on `feat/service-packages`): capabilities
 are now grouped into service packages. Migration `0450_console_service_packages.sql`
 adds `console_service_packages` with tenant RLS (not forced) and `csa_app` grants,
