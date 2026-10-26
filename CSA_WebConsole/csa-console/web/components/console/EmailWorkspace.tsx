@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Me } from "@/lib/identity-contracts";
 import { emailClient, type Draft, type EmailContext, type Thread, type ThreadDetail } from "@/lib/email-api";
+import { usePublishContext } from "@/lib/page-context";
+import { createProposal, type ProposalOut } from "@/lib/workspace-api";
+import { ProposalCard } from "./ProposalCard";
 import { action, field, secondary, Heading, Notice, Panel } from "./ui";
 
 const categoryLabel: Record<string, string> = {
@@ -45,7 +48,8 @@ export function EmailWorkspace({ me, initialTenant = "", notice = "" }: {
 }
 
 function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: string }) {
-  const client = useMemo(() => emailClient(me.role === "platform_admin" ? tenant : ""), [tenant, me.role]);
+  const scope = me.role === "platform_admin" ? tenant : "";
+  const client = useMemo(() => emailClient(scope), [scope]);
   const [context, setContext] = useState<EmailContext | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [lastSync, setLastSync] = useState<string | null>(null);
@@ -57,6 +61,8 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   const [busy, setBusy] = useState(true);
   const inFlight = useRef(true);
   const writable = me.role !== "read_only";
+  const [exporting, setExporting] = useState<{ draftId: string; proposal: ProposalOut } | null>(null);
+  usePublishContext({ tab: "email", record: exporting ? { kind: "draft", id: exporting.draftId } : null });
 
   async function run<T>(work: () => Promise<T>, done?: (value: T) => void) {
     if (inFlight.current) return;
@@ -157,11 +163,14 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
       </div>}
 
       {tab === "drafts" && <Panel title="Drafts">
+        {exporting && <ProposalCard key={exporting.proposal.id} proposal={exporting.proposal} tenantId={scope}
+          onSettled={next => { if (next.status === "executed") void run(() => client.drafts(), page => setDrafts(page.items)); }} />}
         {drafts.length === 0 && <p className="text-sm">No drafts yet. Analyse a thread and ask for a reply draft.</p>}
         <div className="space-y-4">
           {drafts.map(draft => <DraftEditor key={`${draft.id}:${draft.updated_at}`} draft={draft} busy={busy} writable={writable}
             onSave={body => run(() => client.updateDraft(draft.id, body), async () => { setDrafts(await client.drafts().then(p => p.items)); setMessage("Draft saved."); })}
-            onExport={() => run(() => client.exportDraft(draft.id), async () => { setDrafts(await client.drafts().then(p => p.items)); setMessage("Saved to your Gmail drafts. Review and send it from Gmail."); })}
+            onExport={() => run(() => createProposal("email_export", { action: "email_export", draft_id: draft.id }, undefined, undefined, scope),
+              proposal => setExporting({ draftId: draft.id, proposal }))}
             onDelete={() => run(() => client.deleteDraft(draft.id), async () => { setDrafts(await client.drafts().then(p => p.items)); })} />)}
         </div>
       </Panel>}

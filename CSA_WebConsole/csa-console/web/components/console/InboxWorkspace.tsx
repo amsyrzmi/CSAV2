@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
+import { usePublishContext } from "@/lib/page-context";
+import { createProposal, type ProposalOut } from "@/lib/workspace-api";
+import { ProposalCard } from "./ProposalCard";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 type Conversation = {
@@ -80,12 +83,13 @@ export function InboxWorkspace({ me }: { me: Me }) {
         {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
       </select>
     </label>}
-    {tenant ? <Inbox key={tenant} query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""} />
+    {tenant ? <Inbox key={tenant} tenantId={platform ? tenant : null}
+      query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""} />
       : <Notice>Select a tenant to open its inbox.</Notice>}
   </>;
 }
 
-function Inbox({ query }: { query: string }) {
+function Inbox({ query, tenantId }: { query: string; tenantId: string | null }) {
   const [selected, setSelected] = useState("");
   const [pages, setPages] = useState(1);
   const [approvalPages, setApprovalPages] = useState(1);
@@ -95,6 +99,7 @@ function Inbox({ query }: { query: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [proposal, setProposal] = useState<ProposalOut | null>(null);
   const conversations = usePages<Conversation>(`/console/v1/inbox/conversations?${query}`, pages, revision);
   const approvals = usePages<Approval>(`/console/v1/inbox/approvals?${query}&include_handled=${includeHandled}`, approvalPages, revision);
 
@@ -119,10 +124,29 @@ function Inbox({ query }: { query: string }) {
       setRevision((value) => value + 1);
     } finally { setBusy(false); }
   }
+  /** Approve and reject are confirmed through a shared proposal bound to the conversation version. */
+  async function propose(approval: Approval, decision: "approve" | "reject") {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const current = await api<Conversation>(
+        `/console/v1/inbox/conversations/${approval.conversation_id}?${query}`,
+        { signal: AbortSignal.timeout(15_000) },
+      );
+      setProposal(await createProposal("inbox_decision", {
+        action: "inbox_decision", conversation_id: approval.conversation_id, approval_id: approval.id,
+        decision, expected_version: current.inbox_version,
+      }, undefined, AbortSignal.timeout(15_000), tenantId));
+    } catch (cause) {
+      setError((cause as Error).message);
+      setRevision((value) => value + 1);
+    } finally { setBusy(false); }
+  }
   const blocked = busy || pending !== null;
   return <div className="mt-6 space-y-5">
     {(error || conversations.error || approvals.error) && <Notice error>{error || conversations.error || approvals.error}</Notice>}
     {notice && <Notice>{notice}</Notice>}
+    {proposal && <ProposalCard key={proposal.id} proposal={proposal} tenantId={tenantId}
+      onSettled={() => setRevision((value) => value + 1)} />}
     {pending && !busy && <button className={action} onClick={() => void submit(pending)}>Retry the same action</button>}
     <div className="grid gap-5 lg:grid-cols-[18rem_1fr]">
       <Panel title="Conversations">
@@ -146,8 +170,9 @@ function Inbox({ query }: { query: string }) {
       {!approvals.items.length && <p className="text-sm">No customer reply approvals found.</p>}
       <div className="space-y-4">{approvals.items.map((approval) => <ApprovalCard key={approval.id} approval={approval}
         blocked={blocked} source={() => setSelected(approval.conversation_id)}
-        decide={(decision, text) => submit({ path: `/console/v1/inbox/approvals/${approval.id}/decide?${query}`,
-          payload: { request_key: crypto.randomUUID(), decision, ...(decision === "edit" ? { text } : {}) } })} />)}</div>
+        propose={(decision) => propose(approval, decision)}
+        edit={(text) => submit({ path: `/console/v1/inbox/approvals/${approval.id}/decide?${query}`,
+          payload: { request_key: crypto.randomUUID(), decision: "edit", text } })} />)}</div>
       {approvals.next_cursor && <button className={`${secondary} mt-4`} onClick={() => setApprovalPages((value) => value + 1)}>Older approvals</button>}
     </Panel>
   </div>;
@@ -160,6 +185,7 @@ function ConversationDetail({ id, query, revision, blocked, submit }: {
   const [error, setError] = useState("");
   const [text, setText] = useState("");
   const [pages, setPages] = useState(1);
+  usePublishContext({ tab: "inbox", record: { kind: "conversation", id, version: current?.inbox_version ?? null } });
   const base = `/console/v1/inbox/conversations/${id}`;
   const messages = usePages<Message>(`${base}/messages?${query}`, pages, revision);
   useEffect(() => {
@@ -217,9 +243,9 @@ function ConversationDetail({ id, query, revision, blocked, submit }: {
   </Panel>;
 }
 
-function ApprovalCard({ approval, blocked, source, decide }: {
+function ApprovalCard({ approval, blocked, source, propose, edit }: {
   approval: Approval; blocked: boolean; source: () => void;
-  decide: (decision: "approve" | "reject" | "edit", text?: string) => Promise<void>;
+  propose: (decision: "approve" | "reject") => Promise<void>; edit: (text: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
@@ -231,12 +257,12 @@ function ApprovalCard({ approval, blocked, source, decide }: {
     <div className="flex flex-wrap gap-2">
       <button className={secondary} disabled={blocked} onClick={source}>View conversation</button>
       {pending && <>
-        <button className={action} disabled={blocked} onClick={() => { if (window.confirm("Approve this draft for Telegram delivery?")) void decide("approve"); }}>Approve</button>
-        <button className={secondary} disabled={blocked} onClick={() => { if (window.confirm("Reject this draft? The normal follow-up reply is queued unless AI is paused.")) void decide("reject"); }}>Reject</button>
+        <button className={action} disabled={blocked} onClick={() => void propose("approve")}>Approve</button>
+        <button className={secondary} disabled={blocked} onClick={() => void propose("reject")}>Reject</button>
         <button className={secondary} disabled={blocked} onClick={() => { setEditing(!editing); setText(approval.draft); }}>Edit</button>
       </>}
     </div>
-    {editing && pending && <form className="mt-4 space-y-3" onSubmit={(event) => { event.preventDefault(); if (window.confirm("Queue this edited reply for Telegram delivery?")) void decide("edit", text); }}>
+    {editing && pending && <form className="mt-4 space-y-3" onSubmit={(event) => { event.preventDefault(); if (window.confirm("Queue this edited reply for Telegram delivery?")) void edit(text); }}>
       <label className="block text-sm">Replacement reply
         <textarea className={`${field} h-28 py-2`} value={text} maxLength={2000} disabled={blocked}
           onChange={(event) => setText(event.target.value)} required />

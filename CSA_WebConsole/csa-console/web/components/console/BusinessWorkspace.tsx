@@ -11,6 +11,7 @@ import {
   type DemoListing,
 } from "@/lib/business";
 import type { Client, Me } from "@/lib/identity-contracts";
+import { usePublishContext } from "@/lib/page-context";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 type Order = {
@@ -61,6 +62,7 @@ function useRecords<T>(path: string) {
 }
 
 export function BusinessWorkspace({ me }: { me: Me }) {
+  usePublishContext({ tab: "business" });
   const platform = me.role === "platform_admin";
   const permitted = platform || me.role === "tenant_admin" || me.role === "tenant_staff";
   const [clients, setClients] = useState<Client[]>([]);

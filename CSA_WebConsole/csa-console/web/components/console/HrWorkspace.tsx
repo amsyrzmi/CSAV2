@@ -4,8 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Me } from "@/lib/identity-contracts";
 import { hrClient, type AgentSwitch, type Confirmation, type Domain, type Employee,
   type HrContext, type Page, type Training, type Workflow } from "@/lib/hr-api";
+import { usePublishContext } from "@/lib/page-context";
+import { createProposal, type ProposalOut } from "@/lib/workspace-api";
 import { action, field, secondary, Heading, Notice, Panel } from "./ui";
 import { HrAutomation } from "./HrAutomation";
+import { ProposalCard } from "./ProposalCard";
 
 const labels: Record<string, string> = {
   hr_directory: "Employee directory", hr_training: "Training assistant",
@@ -56,7 +59,10 @@ function TenantHr({ me, tenant, initialSection }: { me: Me; tenant: string; init
   const [review, setReview] = useState<{ kind: "training" | "workflow"; id: string;
     title: string; version: number; action: string } | null>(null);
   const [domain, setDomain] = useState<Domain>("recruitment");
+  const [proposal, setProposal] = useState<ProposalOut | null>(null);
   const writable = me.role !== "read_only";
+  usePublishContext({ tab: "hr", section: tab,
+    record: review?.kind === "training" ? { kind: "training_request", id: review.id } : null });
   useEffect(() => {
     let active = true;
     async function load() {
@@ -102,7 +108,9 @@ function TenantHr({ me, tenant, initialSection }: { me: Me; tenant: string; init
     try { await refresh(); }
     catch (cause) { setError(`Saved successfully; refreshing records failed: ${cause instanceof Error ? cause.message : "unavailable"}`); }
   }
-  function choose(target: string) { setTab(target); setReview(null); setConfirmation(null); void run(() => refresh(target)); }
+  function choose(target: string) {
+    setTab(target); setReview(null); setConfirmation(null); setProposal(null); void run(() => refresh(target));
+  }
   async function trainingDraft(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = event.currentTarget; const data = new FormData(form);
     const content = { title: String(data.get("title")), learning_objective: String(data.get("objective")) };
@@ -134,6 +142,15 @@ function TenantHr({ me, tenant, initialSection }: { me: Me; tenant: string; init
   }
   async function decide(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!review) return;
+    if (review.kind === "training" && review.action === "submit") {
+      // Submitting is confirmed through the shared proposal card, bound to the draft's version.
+      await run(async () => {
+        setProposal(await createProposal("training_submit", { action: "training_submit", request_id: review.id },
+          undefined, undefined, tenant));
+        setReview(null);
+      });
+      return;
+    }
     const reason = String(new FormData(event.currentTarget).get("reason") ?? "").trim() || null;
     await run(async () => {
       if (review.kind === "training") {
@@ -168,6 +185,8 @@ function TenantHr({ me, tenant, initialSection }: { me: Me; tenant: string; init
       })}>Confirm decision</button>
       <button className={`${secondary} ml-2`} disabled={busy} onClick={() => setConfirmation(null)}>Dismiss</button>
     </Panel>}
+    {proposal && <ProposalCard key={proposal.id} proposal={proposal} tenantId={tenant}
+      onSettled={() => void run(() => refresh())} />}
     {review && <Panel title={`Review: ${review.title}`}><form onSubmit={decide} className="space-y-3">
       <p>Action: {review.action}. Current version: {review.version}.</p>
       <Input name="reason" label="Decision reason" maxLength={500} required={review.action === "reject"} />

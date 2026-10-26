@@ -201,7 +201,17 @@ export function resultSummary(proposal: ProposalOut): string {
         ? `Submitted “${title}”${status ? ` (now ${status.replaceAll("_", " ")})` : ""}.`
         : "Training request submitted.";
     }
-    case "inbox_decision":
-      return "Your decision on the held reply was recorded.";
+    case "inbox_decision": {
+      // csa/console/inbox.py InboxResult: an expired or already-handled approval is not an error.
+      const queued = field(result, "queued") === true;
+      switch (field(result, "outcome")) {
+        case "expired":
+          return `Approval expired.${queued ? " Follow-up reply queued." : " No reply queued."}`;
+        case "already_handled":
+          return "Already handled. Nothing was changed.";
+        default:
+          return `Your decision on the held reply was recorded.${queued ? " Reply queued for delivery." : ""}`;
+      }
+    }
   }
 }

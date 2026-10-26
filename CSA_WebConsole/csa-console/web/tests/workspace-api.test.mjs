@@ -34,6 +34,8 @@ test("proposal create posts kind, payload and thread with CSRF", async () => {
   assert.deepEqual(JSON.parse(last().body), { kind: "email_export", payload: { subject: "Hi" }, thread_id: "t1" });
   await client.createProposal("email_export", {});
   assert.deepEqual(JSON.parse(last().body), { kind: "email_export", payload: {} });
+  await client.createProposal("inbox_decision", {}, undefined, undefined, "tenant 1");
+  assert.equal(last().url, "/console/v1/workspace/proposals?client_id=tenant+1");
 });
 
 test("confirm and cancel hit the proposal paths with CSRF", async () => {

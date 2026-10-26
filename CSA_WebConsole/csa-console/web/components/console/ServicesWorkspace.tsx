@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, patch } from "@/lib/api";
 import type { Agent, Client, Me } from "@/lib/identity-contracts";
+import { usePublishContext } from "@/lib/page-context";
 import { servicesClient, type PackageStatus, type Service } from "@/lib/services-api";
 import { AgentCard } from "./RuntimeWorkspace";
 import { action, field, Heading, Notice, secondary } from "./ui";
@@ -24,6 +25,7 @@ function message(cause: unknown) {
 }
 
 export function ServicesWorkspace({ me, initialClientId = "" }: { me: Me; initialClientId?: string }) {
+  usePublishContext({ tab: "services" });
   const platform = me.role === "platform_admin";
   const [clients, setClients] = useState<Client[] | null>(null);
   const [selected, setSelected] = useState(initialClientId);

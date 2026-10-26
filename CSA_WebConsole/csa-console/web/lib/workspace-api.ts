@@ -265,9 +265,10 @@ export function createProposal(
   payload: Record<string, unknown>,
   threadId?: string,
   signal?: AbortSignal,
+  tenantId?: string | null,
 ): Promise<ProposalOut> {
   return request(
-    PROPOSALS,
+    `${PROPOSALS}${tenantQuery(tenantId)}`,
     "POST",
     { kind, payload, ...(threadId ? { thread_id: threadId } : {}) },
     signal,

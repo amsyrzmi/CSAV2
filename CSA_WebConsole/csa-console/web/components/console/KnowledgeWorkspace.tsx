@@ -4,9 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, del, post } from "@/lib/api";
 import type { Agent, Client, KbDocument, KbFile, KbGap, KbJob, Me } from "@/lib/identity-contracts";
+import { usePublishContext } from "@/lib/page-context";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 export function KnowledgeWorkspace({ me }: { me: Me }) {
+  usePublishContext({ tab: "knowledge_base" });
   const search = useSearchParams();
   const platform = me.role === "platform_admin";
   const [clients, setClients] = useState<Client[] | null>(null);

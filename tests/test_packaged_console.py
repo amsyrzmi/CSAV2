@@ -1586,6 +1586,8 @@ async def test_packaged_customer_inbox_browser_acceptance(
 
             staff = await new_page("staff")
             await staff.goto(f"{w.origin}/portal/inbox")
+            # The assistant dock button only; its turns are not driven (the planner is off).
+            await staff.get_by_test_id("assistant-open").wait_for()
             await staff.get_by_role(
                 "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
             ).click()
@@ -1656,6 +1658,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
                     await member.get_by_text(
                         "Staff inbox access requires an administrator or staff role.", exact=True
                     ).wait_for()
+                    assert await member.get_by_test_id("assistant-open").count() == 0
                     for suffix in ("", "/messages"):
                         assert (await fetch(member, f"{base}{suffix}"))["status"] == 403
                     assert (
@@ -1682,6 +1685,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
             platform = await new_page("platform")
             await platform.goto(f"{w.origin}/inbox")
             await platform.get_by_text("Select a tenant to open its inbox.", exact=True).wait_for()
+            assert await platform.get_by_test_id("assistant-open").count() == 0
             assert (await fetch(platform, "/console/v1/inbox/conversations"))["status"] == 400
             await platform.get_by_role("combobox").select_option(tenants[0])
             await platform.get_by_role(
@@ -1721,7 +1725,9 @@ async def test_packaged_customer_inbox_browser_acceptance(
                     assert row is not None
                     approval_ids[decision] = row[0]
             for decision, approval_id in approval_ids.items():
-                card = staff.locator("article").filter(
+                # Approve and reject are confirmed on the shared proposal card, which repeats
+                # the draft text; match the approval's own card only.
+                card = staff.locator("article:not([data-testid='proposal-card'])").filter(
                     has=staff.get_by_text(f"Synthetic {decision} draft", exact=True)
                 )
                 await card.get_by_role("button", name="View conversation", exact=True).wait_for()
@@ -1734,6 +1740,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
                             (approval_id,),
                         )
                     await card.get_by_role("button", name="Approve", exact=True).click()
+                    await staff.get_by_test_id("proposal-confirm").click()
                     await staff.get_by_text("Approval expired.", exact=False).wait_for()
                 elif decision == "edit":
                     await card.get_by_role("button", name="Edit", exact=True).click()
@@ -1743,6 +1750,12 @@ async def test_packaged_customer_inbox_browser_acceptance(
                     await card.get_by_role(
                         "button", name="Approve" if decision == "approve" else "Reject", exact=True
                     ).click()
+                    await staff.get_by_test_id("proposal-confirm").click()
+                    await (
+                        staff.get_by_test_id("proposal-outcome")
+                        .get_by_text("Your decision on the held reply was recorded.", exact=False)
+                        .wait_for()
+                    )
                 await card.wait_for(state="detached")
                 handled = await fetch(
                     staff,
@@ -1981,8 +1994,10 @@ async def test_packaged_hr_browser_acceptance(
                 "VALUES (%s,%s,%s,'assigned_manager',%s)",
                 (tenants[0], users["manager"], action, fields),
             )
+        # Shared training_submit proposals run under the tenant's hr_assistant switch.
         await owner.execute(
-            "UPDATE hr_agent_settings SET enabled=true WHERE client_id=%s AND name='hr_training'",
+            "UPDATE hr_agent_settings SET enabled=true WHERE client_id=%s "
+            "AND name IN ('hr_training','hr_assistant')",
             (tenants[0],),
         )
 
@@ -2056,47 +2071,24 @@ async def test_packaged_hr_browser_acceptance(
             assert (await hr_fetch(anonymous, "/console/v1/hr/context"))["status"] == 401
             assert (await hr_fetch(anonymous, "/console/v1/hr/guidance"))["status"] == 401
 
+            # The Staff workspace page is gone; the assistant dock (button only here, since
+            # the planner is off) is on every tab for staff and for admins naming a tenant.
             platform = await new_page("platform")
-            await platform.goto(f"{w.origin}/workspace")
-            await platform.get_by_role("heading", name="Staff workspace", exact=True).wait_for()
-            await platform.get_by_role("combobox").select_option(tenants[0])
-            await platform.get_by_role("button", name="Check my HR guidance", exact=True).click()
-            platform_link = platform.get_by_role("link", name="Open directory", exact=True)
-            await platform_link.wait_for()
-            assert await platform_link.get_attribute("href") == (
-                f"/hr?section=directory&client_id={tenants[0]}"
-            )
-            await platform_link.click()
+            await platform.goto(f"{w.origin}/hr")
+            await platform.get_by_text("Select a tenant to continue.", exact=True).wait_for()
+            assert await platform.get_by_test_id("assistant-open").count() == 0
+            await platform.goto(f"{w.origin}/hr?section=directory&client_id={tenants[0]}")
             await platform.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
             assert (
                 await platform.get_by_label("Tenant membership", exact=False).input_value()
                 == (tenants[0])
             )
+            await platform.get_by_test_id("assistant-open").wait_for()
 
             staff = await new_page("staff")
-            await staff.goto(f"{w.origin}/portal/workspace")
-            await staff.get_by_role("button", name="Check my HR guidance", exact=True).click()
-            directory_link = staff.get_by_role("link", name="Open directory", exact=True)
-            await directory_link.wait_for()
-            assert await directory_link.get_attribute("href") == "/portal/hr?section=directory"
-            assert await staff.get_by_text("private-staff@example.test", exact=True).count() == 0
-            await staff.route(
-                "**/console/v1/hr/guidance?*",
-                lambda route: route.fulfill(
-                    status=503,
-                    content_type="application/json",
-                    body='{"detail":"synthetic_guidance_unavailable"}',
-                ),
-            )
-            await staff.get_by_role("button", name="Check my HR guidance", exact=True).click()
-            await staff.get_by_text("synthetic_guidance_unavailable", exact=True).wait_for()
-            assert await directory_link.count() == 0
-            await staff.unroute("**/console/v1/hr/guidance?*")
-            await staff.get_by_role("button", name="Check my HR guidance", exact=True).click()
-            await directory_link.wait_for()
-            await directory_link.click()
-            await staff.wait_for_url(f"{w.origin}/portal/hr?section=directory")
+            await staff.goto(f"{w.origin}/portal/hr?section=directory")
             await staff.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
+            await staff.get_by_test_id("assistant-open").wait_for()
             projection = await hr_fetch(staff, f"/console/v1/hr/employees/{employees['staff']}")
             assert projection["status"] == 200 and projection["cache"] == "no-store"
             assert projection["body"]["values"] == {"display_name": "Synthetic HR staff"}
@@ -2138,14 +2130,16 @@ async def test_packaged_hr_browser_acceptance(
             assert await article.count() == 1
             await article.get_by_role("button", name="submit", exact=True).click()
             await staff.get_by_role("button", name="Continue with submit", exact=True).click()
+            # Submitting is confirmed on the shared proposal card; nothing changes before.
+            proposal = staff.get_by_test_id("proposal-card")
+            await proposal.get_by_text(f"Submit “{title}” for approval.", exact=True).wait_for()
+            await article.get_by_text("draft · version 0", exact=True).wait_for()
+            await staff.get_by_test_id("proposal-confirm").click()
+            await staff.get_by_test_id("proposal-outcome").wait_for()
             await article.get_by_text("submitted · version 1", exact=True).wait_for()
 
             manager = await new_page("manager")
-            await manager.goto(f"{w.origin}/portal/workspace")
-            await manager.get_by_role("button", name="Check my HR guidance", exact=True).click()
-            await manager.get_by_text("Review an eligible training request", exact=False).wait_for()
-            await manager.get_by_role("link", name="Open training", exact=True).first.click()
-            await manager.wait_for_url(f"{w.origin}/portal/hr?section=training")
+            await manager.goto(f"{w.origin}/portal/hr?section=training")
             manager_projection = await hr_fetch(
                 manager, f"/console/v1/hr/employees/{employees['staff']}"
             )
@@ -2181,15 +2175,6 @@ async def test_packaged_hr_browser_acceptance(
 
             for name in ("admin", "reader", "foreign"):
                 denied = await new_page(name)
-                if name == "admin":
-                    await denied.goto(f"{w.origin}/portal/workspace")
-                    await denied.get_by_role(
-                        "button", name="Check my HR guidance", exact=True
-                    ).click()
-                    await denied.get_by_text(
-                        "No directory or training grants are assigned", exact=False
-                    ).wait_for()
-                    assert await denied.get_by_role("link", name="Open directory").count() == 0
                 await denied.goto(f"{w.origin}/portal/hr")
                 response = await hr_fetch(denied, f"/console/v1/hr/employees/{employees['staff']}")
                 assert response["status"] == 404
@@ -2243,12 +2228,6 @@ async def test_packaged_hr_browser_acceptance(
             revoked = await hr_fetch(manager, f"/console/v1/hr/employees/{employees['staff']}")
             assert revoked["status"] == 404
             assert "private-staff" not in json.dumps(revoked["body"])
-            await manager.goto(f"{w.origin}/portal/workspace")
-            await manager.get_by_role("button", name="Check my HR guidance", exact=True).click()
-            await manager.get_by_text(
-                "No directory or training grants are assigned", exact=False
-            ).wait_for()
-            assert await manager.get_by_role("link", name="Open training", exact=True).count() == 0
             assert not egress
             assert not page_errors
         finally:
