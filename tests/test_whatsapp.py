@@ -308,3 +308,32 @@ def test_parse_rejects_malformed_status_field(bad_status: Any) -> None:
     status["recipient_id"] = "60123456789"
     with pytest.raises(WhatsAppParseError):
         WhatsAppAdapter.parse(_webhook(_value(statuses=[status])))
+
+
+def test_disabled_sentinel_leaves_whatsapp_unset() -> None:
+    off: Settings = configured(WHATSAPP_APP_SECRET="disabled", WHATSAPP_VERIFY_TOKEN="disabled")
+    assert off.WHATSAPP_APP_SECRET is None
+    assert off.WHATSAPP_VERIFY_TOKEN is None
+    assert off.whatsapp_enabled is False
+    # One real value with one placeholder is still the both-or-neither error.
+    with pytest.raises(ValueError, match="set together"):
+        configured(WHATSAPP_APP_SECRET="app", WHATSAPP_VERIFY_TOKEN="disabled")
+    real: Settings = configured(WHATSAPP_APP_SECRET="app", WHATSAPP_VERIFY_TOKEN="verify")
+    assert real.whatsapp_enabled is True
+
+
+def test_callback_address_uses_the_hooks_origin_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    from csa.console import channels
+
+    console_only = configured(WHATSAPP_APP_SECRET="app", WHATSAPP_VERIFY_TOKEN="verify")
+    monkeypatch.setattr(channels, "get_settings", lambda: console_only)
+    assert channels.present(None).callback_url == (
+        f"{str(console_only.PUBLIC_BASE_URL).rstrip('/')}/channels/whatsapp"
+    )
+    hooks = configured(
+        WHATSAPP_APP_SECRET="app",
+        WHATSAPP_VERIFY_TOKEN="verify",
+        WHATSAPP_CALLBACK_BASE_URL="https://hooks.example.test",
+    )
+    monkeypatch.setattr(channels, "get_settings", lambda: hooks)
+    assert channels.present(None).callback_url == "https://hooks.example.test/channels/whatsapp"

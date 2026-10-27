@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     WHATSAPP_APP_SECRET: SecretStr | None = None
     WHATSAPP_VERIFY_TOKEN: SecretStr | None = None
     WHATSAPP_GRAPH_BASE_URL: HttpUrl = HttpUrl("https://graph.facebook.com/v21.0")
+    # Public origin Meta calls for /channels/whatsapp when it differs from the console's.
+    WHATSAPP_CALLBACK_BASE_URL: HttpUrl | None = None
 
     PUBLIC_BASE_URL: HttpUrl
 
@@ -263,6 +265,13 @@ class Settings(BaseSettings):
         if self.ENV == "prod" and self.KB_INGEST_ENABLED and self.TEI_ENDPOINT is None:
             raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
         return self
+
+    @field_validator("WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN", mode="before")
+    @classmethod
+    def _whatsapp_disabled_is_unset(cls, value: object) -> object:
+        # Staging secret files hold the literal "disabled" until the owner fills them.
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        return None if isinstance(raw, str) and raw.strip() == "disabled" else value
 
     @property
     def whatsapp_enabled(self) -> bool:

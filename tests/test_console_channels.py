@@ -31,7 +31,11 @@ async def packages(sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch) -> N
     sessions.app.include_router(build_channels_router())
     monkeypatch.setattr(
         "csa.console.channels.get_settings",
-        lambda: SimpleNamespace(whatsapp_enabled=True, PUBLIC_BASE_URL="https://csa.example.test"),
+        lambda: SimpleNamespace(
+            whatsapp_enabled=True,
+            PUBLIC_BASE_URL="https://csa.example.test",
+            WHATSAPP_CALLBACK_BASE_URL=None,
+        ),
     )
     monkeypatch.setattr(crypto, "_key", lambda: b"\x07" * 32)
     for tenant in sessions.tenants:

@@ -33,6 +33,8 @@ def render(tmp_path: Path, *profiles: str, env_overrides: dict[str, str] | None 
     (secret_dir / "pipeline").mkdir(mode=0o700)
     (secret_dir / "pipeline/staging_model_key").write_text("SYNTHETIC-ONLY")
     (secret_dir / "pipeline/staging_telegram_bot_token").write_text("SYNTHETIC-ONLY")
+    for name in staging_secrets.WHATSAPP_FILES:
+        (secret_dir / name).write_text(staging_secrets.WHATSAPP_DISABLED)
     command = ["docker", "compose", "--env-file", "/dev/null"]
     for name in (
         "compose.staging-local-proposal.yml",
@@ -207,7 +209,7 @@ def test_token_prefers_mounted_secret(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 @pytest.mark.skipif(shutil.which("caddy") is None, reason="Caddy CLI is unavailable")
-def test_hooks_caddy_site_forwards_only_webhook_posts_from_connector() -> None:
+def test_hooks_caddy_site_forwards_only_webhook_and_whatsapp_routes_from_connector() -> None:
     result = subprocess.run(
         [
             "caddy",
@@ -232,14 +234,16 @@ def test_hooks_caddy_site_forwards_only_webhook_posts_from_connector() -> None:
     assert [route.get("match") for route in routes] == [
         [{"not": [{"remote_ip": {"ranges": ["127.0.0.1", "::1", "172.22.0.2"]}}]}],
         [{"method": ["POST"], "path": ["/hooks/*"]}],
+        [{"method": ["GET", "POST"], "path": ["/channels/whatsapp"]}],
         None,
     ]
     assert routes[0]["handle"] == [{"handler": "static_response", "status_code": 403}]
     assert routes[1]["handle"] == [
         {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:18031"}]}
     ]
-    assert routes[2]["handle"][0]["handler"] == "static_response"
-    assert routes[2]["handle"][0]["status_code"] == 404
+    assert routes[2]["handle"] == routes[1]["handle"]
+    assert routes[3]["handle"][0]["handler"] == "static_response"
+    assert routes[3]["handle"][0]["status_code"] == 404
 
 
 async def test_telegram_errors_do_not_expose_token() -> None:
@@ -369,3 +373,35 @@ def test_gateway_workspace_assistant_is_opt_in(tmp_path: Path) -> None:
     assert "provider-egress" in gateway["networks"]
     worker_sources = {s["target"]: s["source"] for s in enabled["worker"]["secrets"]}
     assert worker_sources["GROQ_API_KEY"] == "staging_model_key"
+
+
+def test_gateway_and_delivery_carry_both_whatsapp_secrets(tmp_path: Path) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    for name in ("gateway", "delivery"):
+        targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
+        assert targets["WHATSAPP_APP_SECRET"] == "staging_whatsapp_app_secret"
+        assert targets["WHATSAPP_VERIFY_TOKEN"] == "staging_whatsapp_verify_token"
+    worker = {s["target"] for s in services["worker"]["secrets"]}
+    assert not worker & {"WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN"}
+
+
+def test_whatsapp_defaults_are_disabled_private_and_pass_check(tmp_path: Path) -> None:
+    target = tmp_path / "secrets"
+    staging_secrets.create(target, os.getuid())
+    (target / "pipeline").mkdir(mode=0o700)
+    created = staging_secrets.provision_whatsapp_defaults(target, os.getuid())
+    assert created == sorted(staging_secrets.WHATSAPP_FILES)
+    for name in staging_secrets.WHATSAPP_FILES:
+        path = target / name
+        assert path.read_text() == "disabled"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o400
+    assert staging_secrets.check(target, os.getuid()) == []
+    # Existing (possibly real) values are never overwritten.
+    assert staging_secrets.provision_whatsapp_defaults(target, os.getuid()) == []
+    (target / staging_secrets.WHATSAPP_FILES[0]).chmod(0o644)
+    assert any("mode is not 0400" in f for f in staging_secrets.check(target, os.getuid()))
+
+
+def test_gateway_advertises_the_hooks_origin_as_the_whatsapp_callback(tmp_path: Path) -> None:
+    gateway = render(tmp_path, "staging-approved", "pipeline-approved")["services"]["gateway"]
+    assert gateway["environment"]["WHATSAPP_CALLBACK_BASE_URL"] == "https://hooks.invalid"

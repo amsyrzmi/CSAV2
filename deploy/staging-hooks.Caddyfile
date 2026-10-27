@@ -6,11 +6,17 @@ http://hooks.fourstacks.my {
 		method POST
 		path /hooks/*
 	}
+	@whatsapp_ingress {
+		method GET POST
+		path /channels/whatsapp
+	}
 	# route keeps the written order: deny unknown peers first, then forward only
-	# webhook POSTs to the staging gateway, then 404 everything else.
+	# Telegram POSTs and the WhatsApp GET/POST path to the staging gateway, then
+	# 404 everything else.
 	route {
 		respond @not_connector 403
 		reverse_proxy @telegram_ingress 127.0.0.1:18031
+		reverse_proxy @whatsapp_ingress 127.0.0.1:18031
 		respond "Not Found" 404
 	}
 }

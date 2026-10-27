@@ -64,7 +64,8 @@ def present(row: dict[str, Any] | None) -> WhatsAppNumberOut:
     callback = None
     settings = get_settings()
     if settings.whatsapp_enabled:
-        callback = f"{str(settings.PUBLIC_BASE_URL).rstrip('/')}/channels/whatsapp"
+        origin = settings.WHATSAPP_CALLBACK_BASE_URL or settings.PUBLIC_BASE_URL
+        callback = f"{str(origin).rstrip('/')}/channels/whatsapp"
     if row is None:
         return WhatsAppNumberOut(
             connected=False,

@@ -352,6 +352,53 @@ Post-review offline full validation passes **692 tests** plus lint; ASGI/TCP ack
 Neither offline nor guarded-dev evidence is a guarantee under all laptop loads or
 approval for public deployment.
 
+## WhatsApp channel
+
+Lane A1 (migration `0470`). One Meta app per deployment; each tenant connects its
+own WABA number. Setup steps are in
+[STAGING_PIPELINE.md section 9](../deploy/STAGING_PIPELINE.md#9-connect-whatsapp-owner-and-client).
+
+Console routes, under `/console/v1/channels` with the usual tenant selection.
+Human sessions only (the machine token is refused) and behind the
+`customer_support` package gate:
+
+| Method/path | Who | Result |
+|---|---|---|
+| `GET /whatsapp` | any tenant member, platform admin | `{connected, display_phone, phone_number_id_last4, waba_id, enabled, callback_url, connected_at}` |
+| `PUT /whatsapp` | `tenant_admin`, platform admin | Body `{phone_number_id, waba_id, display_phone, access_token}`; the token is sealed with `CREDENTIALS_KEY` and never returned; audited `channels.whatsapp.connected`. 409 `whatsapp_number_in_use` when another tenant holds the number |
+| `DELETE /whatsapp` | `tenant_admin`, platform admin | 204; disables the endpoint, erases the token and releases the number; audited `channels.whatsapp.disconnected` |
+
+`callback_url` is null while the deployment's WhatsApp secrets are unset; otherwise
+it is `WHATSAPP_CALLBACK_BASE_URL` (or `PUBLIC_BASE_URL`) plus `/channels/whatsapp`.
+The web card shows it to platform admins only.
+
+Webhook (not a console route; 404 while `WHATSAPP_APP_SECRET` and
+`WHATSAPP_VERIFY_TOKEN` are unset or `disabled`):
+
+- `GET /channels/whatsapp` answers Meta's handshake (`hub.mode=subscribe`, matching
+  verify token, echoes `hub.challenge`); otherwise 403.
+- `POST /channels/whatsapp` requires `application/json` (415) and a valid
+  `X-Hub-Signature-256` over the raw body (403, no side effects). Malformed payloads
+  are 422, oversized bodies 413, an endpoint over its rate limit 429. Otherwise 200
+  `{ok, accepted, duplicates}`. Messages for an unknown or disconnected number are
+  dropped with a warning; a retried message id is a duplicate, never a second turn.
+  Non-text messages are enqueued with an attachment stub for the coordinator.
+
+Delivery and statuses:
+
+- Replies are free-form text and are sent only within 24 hours of
+  `conversations.last_inbound_at`; later sends fail with `outside_service_window`.
+- Terminal codes (no retry, dead-lettered, staff notified): `outside_service_window`,
+  `recipient_not_on_whatsapp`, `token_invalid`, `provider_rejected`. `rate_limited`
+  retries after Meta's delay. `channel_not_configured` while the secrets are unset.
+- Inbox messages expose the code as `delivery_error`; the web inbox shows the
+  service-window copy from the [writing guide](WRITING_GUIDE.md#errors).
+- Meta's status callbacks set `outbound_deliveries.provider_status` to `sent`,
+  `delivered`, `read` or `failed`, matched by `provider_message_id`; `failed` is never
+  overwritten by a later status.
+- Inbox conversations carry `channel` (`telegram` or `whatsapp`) and the list accepts
+  `?channel=telegram|whatsapp`.
+
 ## Workspace assistant
 
 The floating assistant dock (on every console tab) and the tab actions share one
