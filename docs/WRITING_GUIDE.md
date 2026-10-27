@@ -1,0 +1,101 @@
+# Writing guide
+
+How we write the words that staff see in the console: labels, buttons, descriptions, errors and empty states. The appendix at the end is for developers only.
+
+## Who we write for
+
+- Write for tenant staff first. They run a small business in Malaysia, they are busy, and they are not technical.
+  - Good: "Your customers can message you on WhatsApp."
+  - Bad: "Inbound webhook routing is enabled."
+- Write for platform admins second. They see the same screens, so never write something only they would understand.
+  - Good: "This company has no active package."
+  - Bad: "tenant_id has no row in package_state."
+
+## Rules
+
+- Use sentence case everywhere: headings, buttons, menus and table headers.
+  - Good: "Team members"
+  - Bad: "Team Members"
+- Start every button with a verb.
+  - Good: "Pause subscription"
+  - Bad: "Pause"
+- Say what happens next.
+  - Good: "We will email the link to your colleague."
+  - Bad: "Invite sent."
+- Keep internal codes, table names, acronyms and UUIDs off the screen. Keep the raw code on `ApiError.code` so support can still find it.
+  - Good: "We could not reach the assistant. Try again in a minute."
+  - Bad: "planner_unavailable (HTTP 503)"
+- Put one idea in each sentence.
+  - Good: "Replies are free for 24 hours. After that, send a template message."
+  - Bad: "Replies are free for 24 hours, after which a template message is needed unless the customer writes first."
+- Use Malaysian English spelling.
+  - Good: "organisation", "colour", "cancelled"
+  - Bad: "organization", "color", "canceled"
+- Write dates as day, short month, year, then 24-hour time.
+  - Good: "27 Oct 2026, 09:15"
+  - Bad: "10/27/26 9:15 AM"
+- Write money with "RM", a space and two decimals.
+  - Good: "RM 59.90"
+  - Bad: "MYR59.9"
+- Use the same word for the same thing: people on your team are "members", the people you serve are "customers", and the AI is "the assistant".
+  - Good: "Ask the assistant to reply to this customer."
+  - Bad: "Ask the bot to reply to this user."
+
+## Errors
+
+- Lead with what the person can do, then say why if it helps.
+  - Good: "Ask your administrator to switch on customer support."
+  - Bad: "Request failed with status 403."
+- Name the thing, not the code.
+  - Good: "Customer support is not switched on for this company. Ask your administrator."
+  - Bad: "package_inactive"
+- Never blame the person. Say what is missing or what to try.
+  - Good: "That password is too short. Choose a longer one."
+  - Bad: "You entered an invalid password."
+
+Copy for the codes staff can meet:
+
+| Code (never shown) | What staff see |
+|---|---|
+| `package_inactive` | This part of the console is not switched on for your company. Ask your administrator to turn it on. |
+| `planner_unavailable` | We could not reach the assistant. Wait a minute and try again. |
+| `proposal_consumed` | A colleague has already confirmed or cancelled this card. Refresh the page to see what happened. |
+| `outside_service_window` | WhatsApp only allows free replies within 24 hours of the customer's last message. Send an approved template message instead. |
+| `recipient_unresolved` | We have no work email for this colleague. Add one to their profile, then try again. |
+| `hr_owner_required` | Only your company's HR owner can change HR access. Ask them to make this change. |
+| `password_change_required` | Change your password to continue. Choose a new one on the next screen. |
+
+## Empty states
+
+- Say what will appear here and how to make it appear.
+  - Good: "Conversations from your customers will appear here. Connect WhatsApp to get started."
+  - Bad: "No data."
+- Offer one clear action when there is one, as a button that starts with a verb.
+  - Good: "Connect WhatsApp"
+  - Bad: "Click here"
+- Do not apologise or joke. An empty page is normal on day one.
+  - Good: "No members yet. Invite your first colleague."
+  - Bad: "Oops! Nothing to see here."
+
+## Appendix for developers: working in two lanes
+
+Lane A builds the customer-facing WhatsApp work. Lane B builds the console and subscriptions. These rules keep the two lanes from colliding.
+
+- Take migrations only from your own number range. Ranges and the rules for adding one are in [db/migrations/README.md](../db/migrations/README.md).
+  - Good: lane B adds a file inside its range.
+  - Bad: lane B takes the next free number from the whole folder.
+- Register your router only inside the "lane registrations" block in `apps/gateway/main.py`. Add one line, keep the order alphabetical, and make no other edit there.
+  - Good: `app.include_router(build_subscriptions_router())` under the lane B comment.
+  - Bad: reordering imports or middleware in the same change.
+- Regenerate `docs/console_openapi.json` on `main` only, never on a lane branch. Two lanes regenerating it will conflict every time.
+  - Good: merge the lane, then regenerate on `main` in a small follow-up.
+  - Bad: commit a regenerated file from the lane branch.
+- Add exactly one entry per lane to `docs/PROGRESS.md`, at the top, and update that entry as you go.
+  - Good: one "Lane B: subscriptions" entry that grows.
+  - Bad: a new entry for every commit.
+- Leave `csa/console/packages.py` untouched in both lanes. Package definitions change only through the shared foundations work.
+  - Good: ask for the change in a foundations task.
+  - Bad: add your package inline while building your feature.
+- Run focused tests locally and leave the full suites to CI. The host is shared and short on memory.
+  - Good: `pytest tests/console/test_subscriptions.py`
+  - Bad: `make test` before every push.

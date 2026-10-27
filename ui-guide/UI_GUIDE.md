@@ -9,6 +9,7 @@ This is a design handoff, not a statement that every suggested dashboard screen 
 | File                                                              | Purpose                                                                    |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | [Design tokens](ui-guide/fourstacks-tokens.css)                   | Copy-ready colors, type families, spacing, radii, motion and avatar styles |
+| [Writing guide](../docs/WRITING_GUIDE.md)                         | Labels, descriptions and error copy                                        |
 | [Agent avatar guide](ui-guide/AGENT_AVATARS.md)                   | Agent identity mapping, palette, sizes and static/animated integration     |
 | [Avatar family](ui-guide/assets/agent-avatar-sheet.svg)           | Six existing agent designs as one vector reference                         |
 | [Dashboard reference](ui-guide/examples/dashboard-reference.html) | Local visual example with explicitly illustrative data                     |

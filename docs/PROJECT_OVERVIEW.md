@@ -9,6 +9,7 @@ services are running or deployed.
 | Need | Read |
 |---|---|
 | Rules and safe commands | [AGENTS.md](../AGENTS.md), then [README](../README.md) |
+| Words on screen | [Writing guide](./WRITING_GUIDE.md) |
 | Current implementation status and validation | [PROGRESS.md](./PROGRESS.md) |
 | Continue the current bounded task | [Active release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md) |
 | Full architecture, trust boundaries and limitations | [Architecture reference](./ARCHITECTURE.md) |
