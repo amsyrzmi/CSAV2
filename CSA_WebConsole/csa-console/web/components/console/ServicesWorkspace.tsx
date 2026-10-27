@@ -7,6 +7,7 @@ import { usePublishContext } from "@/lib/page-context";
 import { servicesClient, type PackageStatus, type Service } from "@/lib/services-api";
 import { AgentCard } from "./RuntimeWorkspace";
 import { action, field, Heading, Notice, secondary } from "./ui";
+import { WhatsAppPanel } from "./WhatsAppPanel";
 
 const GROUPS: { kind: Service["kind"]; title: string }[] = [
   { kind: "base", title: "Base" },
@@ -55,12 +56,15 @@ export function ServicesWorkspace({ me, initialClientId = "" }: { me: Me; initia
         </div>
       )}
       {!clientId ? <Notice>Select a tenant with an active membership to continue.</Notice> :
-        <ServiceList key={clientId} clientId={platform ? clientId : null} platform={platform} />}
+        <ServiceList key={clientId} clientId={platform ? clientId : null} platform={platform}
+          canManage={platform || me.role === "tenant_admin"} />}
     </>
   );
 }
 
-function ServiceList({ clientId, platform }: { clientId: string | null; platform: boolean }) {
+function ServiceList({ clientId, platform, canManage }: {
+  clientId: string | null; platform: boolean; canManage: boolean;
+}) {
   const [services, setServices] = useState<Service[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -88,6 +92,9 @@ function ServiceList({ clientId, platform }: { clientId: string | null; platform
           </section>
         );
       })}
+      {services.some((service) => service.key === "customer_support" && service.status === "active") && (
+        <WhatsAppPanel tenantId={clientId} canManage={canManage} platform={platform} />
+      )}
     </div>
   );
 }

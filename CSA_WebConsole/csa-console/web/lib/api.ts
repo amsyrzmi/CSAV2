@@ -21,6 +21,7 @@ const explained: Record<string, string> = {
     "This assistant is switched off for your organisation. An administrator can turn it on in its settings.",
   planner_unavailable: "The assistant is unavailable right now. Try again in a moment.",
   mailbox_not_connected: "Connect your Gmail in the Email tab first.",
+  whatsapp_number_in_use: "That WhatsApp number is already connected to another company.",
 };
 
 async function decode<T>(response: Response): Promise<T> {

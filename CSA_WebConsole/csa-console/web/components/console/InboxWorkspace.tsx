@@ -9,13 +9,15 @@ import { ProposalCard } from "./ProposalCard";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 type Conversation = {
-  id: string; channel: "telegram"; status: string; owned_by: string | null;
+  id: string; channel: "telegram" | "whatsapp"; status: string; owned_by: string | null;
   ai_muted_until: string | null; human_muted: boolean; inbox_version: number; opened_at: string;
 };
 type Message = {
   id: string; direction: string; author: string; body: string;
-  created_at: string; delivery_status: string | null;
+  created_at: string; delivery_status: string | null; delivery_error: string | null;
 };
+type ChannelFilter = "" | "whatsapp" | "telegram";
+const CHANNEL_NAME = { telegram: "Telegram", whatsapp: "WhatsApp" } as const;
 type Approval = {
   id: number; conversation_id: string; draft: string; reason: string | null;
   status: string; expires_at: string;
@@ -73,7 +75,7 @@ export function InboxWorkspace({ me }: { me: Me }) {
   if (!permitted) return <Notice error>Staff inbox access requires an administrator or staff role.</Notice>;
   const tenant = platform ? selected : me.active_client_id;
   return <>
-    <Heading title="Customer inbox" description="Telegram customer conversations and reply approvals for your team." />
+    <Heading title="Customer inbox" description="Customer conversations and reply approvals for your team." />
     <Notice>Take over before replying. AI stays paused until release. Takeover waits for a send already in progress;
       queued automatic replies are suppressed. Queued replies still need delivery. Common personal details are redacted.</Notice>
     {error && <Notice error>{error}</Notice>}
@@ -100,7 +102,9 @@ function Inbox({ query, tenantId }: { query: string; tenantId: string | null }) 
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [proposal, setProposal] = useState<ProposalOut | null>(null);
-  const conversations = usePages<Conversation>(`/console/v1/inbox/conversations?${query}`, pages, revision);
+  const [channel, setChannel] = useState<ChannelFilter>("");
+  const conversations = usePages<Conversation>(
+    `/console/v1/inbox/conversations?${query}${channel ? `&channel=${channel}` : ""}`, pages, revision);
   const approvals = usePages<Approval>(`/console/v1/inbox/approvals?${query}&include_handled=${includeHandled}`, approvalPages, revision);
 
   async function submit(request: Pending) {
@@ -150,11 +154,21 @@ function Inbox({ query, tenantId }: { query: string; tenantId: string | null }) 
     {pending && !busy && <button className={action} onClick={() => void submit(pending)}>Retry the same action</button>}
     <div className="grid gap-5 lg:grid-cols-[18rem_1fr]">
       <Panel title="Conversations">
+        <label className="mb-3 block text-sm">Channel
+          <select className={field} value={channel} data-testid="inbox-channel-filter"
+            onChange={(event) => { setChannel(event.target.value as ChannelFilter); setPages(1); setSelected(""); }}>
+            <option value="">All channels</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="telegram">Telegram</option>
+          </select>
+        </label>
         {!conversations.items.length && <p className="text-sm">No customer conversations found.</p>}
         {conversations.items.map((item) => <button key={item.id} disabled={blocked}
           className={`${secondary} mb-2 w-full flex-col items-start break-all text-left`}
           onClick={() => setSelected(item.id)} aria-pressed={selected === item.id}>
-          <span>{item.id.slice(0, 8)} · Telegram</span>
+          <span>{item.id.slice(0, 8)} <span data-testid="inbox-channel-badge"
+            className="ml-1 rounded-full border border-ink-300 bg-ink-50 px-2 py-0.5 text-xs text-ink-700">
+            {CHANNEL_NAME[item.channel]}</span></span>
           <span className="text-xs">{item.human_muted ? "Human support · AI paused" : "AI"} · {item.status}</span>
         </button>)}
         {conversations.next_cursor && <button className={secondary} onClick={() => setPages((value) => value + 1)}>Older conversations</button>}
@@ -231,6 +245,8 @@ function ConversationDetail({ id, query, revision, blocked, submit }: {
       <p className="text-xs text-ink-500">{message.direction === "inbound" ? "Customer" : message.author === "human_support" ? "Staff" : "Assistant"}
         {message.delivery_status ? ` · ${message.delivery_status === "pending" ? "queued" : message.delivery_status}` : ""}</p>
       <p className="whitespace-pre-wrap break-words text-sm">{message.body}</p>
+      {message.delivery_error === "outside_service_window" && <p className="mt-2 text-sm text-red-800">
+        WhatsApp only allows replies within 24 hours of the customer&apos;s last message. Wait for the customer to message again.</p>}
     </li>)}</ol>
     {messages.next_cursor && <button className={secondary} onClick={() => setPages((value) => value + 1)}>Older messages</button>}
     {current?.human_muted && <form className="mt-5 space-y-3" onSubmit={(event) => { event.preventDefault(); void act("reply"); }}>
@@ -262,7 +278,7 @@ function ApprovalCard({ approval, blocked, source, propose, edit }: {
         <button className={secondary} disabled={blocked} onClick={() => { setEditing(!editing); setText(approval.draft); }}>Edit</button>
       </>}
     </div>
-    {editing && pending && <form className="mt-4 space-y-3" onSubmit={(event) => { event.preventDefault(); if (window.confirm("Queue this edited reply for Telegram delivery?")) void edit(text); }}>
+    {editing && pending && <form className="mt-4 space-y-3" onSubmit={(event) => { event.preventDefault(); if (window.confirm("Queue this edited reply for delivery?")) void edit(text); }}>
       <label className="block text-sm">Replacement reply
         <textarea className={`${field} h-28 py-2`} value={text} maxLength={2000} disabled={blocked}
           onChange={(event) => setText(event.target.value)} required />
