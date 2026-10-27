@@ -1,23 +1,30 @@
-"""Subscriptions service: every function runs on a connection inside the caller's tenant tx."""
+"""Subscriptions service: tenant-tx reads and writes; decide_request opens its own tx."""
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from psycopg import AsyncConnection
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 
 from csa.console.contracts import ConsoleActor
 from csa.console.kb_uploads import audit
 from csa.core import db
+from csa.core.tenancy import tx
 from csa.subscriptions.contracts import (
+    ActionIn,
     CustomerRef,
+    DecideIn,
     PlanIn,
     PlanOut,
     PlanPatch,
+    RequestOut,
+    RequestPage,
     Status,
     SubscriptionCreateIn,
     SubscriptionDetail,
@@ -25,6 +32,7 @@ from csa.subscriptions.contracts import (
     SubscriptionOut,
     SubscriptionPage,
 )
+from csa.workspace.registry import ProposalRegistry
 
 Conn = AsyncConnection[Any]
 
@@ -226,3 +234,144 @@ async def create_subscription(
     )
     await audit(conn, actor, client_id, "subscriptions.created", str(subscription_id))
     return await get_subscription_out(conn, client_id, subscription_id)
+
+
+def request_out(row: dict[str, Any]) -> RequestOut:
+    return RequestOut.model_validate(
+        {
+            **row,
+            "customer": CustomerRef(
+                id=row["contact_id"],
+                full_name=row["full_name"],
+                phone=row["phone"],
+                email=row["email"],
+            ),
+        },
+        extra="ignore",
+    )
+
+
+async def list_requests(
+    conn: Conn,
+    client_id: UUID,
+    *,
+    status: Literal["open", "decided"],
+    before: UUID | None,
+    limit: int,
+) -> RequestPage:
+    rows = await db.q.fetch_all(
+        "subscriptions/requests_list.sql",
+        {"client_id": client_id, "status": status, "before": before, "limit": limit + 1},
+        conn=conn,
+    )
+    items = [request_out(row) for row in rows[:limit]]
+    return RequestPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
+
+
+async def get_request_row(conn: Conn, client_id: UUID, request_id: UUID) -> dict[str, Any]:
+    """The request with its decision; another tenant's id is invisible under RLS."""
+    row: dict[str, Any] | None = await db.q.fetch_one(
+        "subscriptions/request_get.sql",
+        {"client_id": client_id, "request_id": request_id},
+        conn=conn,
+    )
+    if row is None:
+        raise HTTPException(404, "request_not_found")
+    return row
+
+
+def approval_action(row: dict[str, Any], data: DecideIn) -> ActionIn:
+    """The subscription action an approval of this request proposes (422 when it names none)."""
+    kind = row["action"]
+    if data.resume_at is not None and kind != "request_pause":
+        raise HTTPException(422, "resume_at_applies_to_pause_only")
+    reason = (row["reason"] or "")[:500] or None
+    if kind == "request_pause":
+        return ActionIn(action="pause", resume_at=data.resume_at, reason=reason)
+    if kind == "request_cancel":
+        return ActionIn(action="cancel_at_period_end", reason=reason)
+    if not row["plan_code"]:
+        raise HTTPException(422, "request_has_no_plan")
+    return ActionIn(action="change_plan", plan_code=row["plan_code"], reason=reason)
+
+
+async def decide_request(
+    pool: AsyncConnectionPool,
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    request_id: UUID,
+    data: DecideIn,
+) -> RequestOut:
+    """Decline a staged request, or approve it by proposing and confirming its action.
+
+    The deciding transaction holds an advisory lock on the request until it commits, so two
+    concurrent decisions cannot both create a proposal: the second answers 409 at once. The
+    registry's create and confirm run on their own connections while the lock is held; a card
+    refusal raised there rolls this transaction back before any decision row is written.
+    """
+    async with tx(pool, str(client_id)) as conn:
+        await get_request_row(conn, client_id, request_id)
+        lock = await db.q.fetch_one(
+            "subscriptions/request_lock.sql", {"request_id": request_id}, conn=conn
+        )
+        if lock is None or not lock["locked"]:
+            raise HTTPException(409, "request_in_progress")
+        row = await get_request_row(conn, client_id, request_id)  # re-read under the lock
+        if row["decision"] is not None:
+            raise HTTPException(409, "request_decided")
+        proposal_id: UUID | None = None
+        if data.decision == "approve":
+            action = approval_action(row, data)
+            if row["subscription_id"] is None:
+                raise HTTPException(422, "request_has_no_subscription")
+            subscription = await db.q.fetch_one(
+                "subscriptions/subscription_get.sql",
+                {"client_id": client_id, "subscription_id": row["subscription_id"]},
+                conn=conn,
+            )
+            if subscription is None or subscription["contact_id"] != row["contact_id"]:
+                raise HTTPException(422, "request_subscription_mismatch")
+            registry = getattr(request.app.state, "proposal_registry", None)
+            if not isinstance(registry, ProposalRegistry):
+                raise HTTPException(503, "proposal_registry_unavailable")
+            proposal = await registry.create(
+                pool,
+                request,
+                actor,
+                client_id,
+                "subscription_action",
+                {
+                    "subscription_id": str(row["subscription_id"]),
+                    **action.model_dump(mode="json", exclude_none=True),
+                },
+                thread_id=None,
+                origin="tab",
+            )
+            done = await registry.confirm(pool, request, actor, client_id, proposal.id)
+            if done.status != "executed":
+                raise HTTPException(409, "proposal_not_executed")
+            proposal_id = done.id
+        try:
+            await db.q.fetch_one(
+                "subscriptions/decision_insert.sql",
+                {
+                    "client_id": client_id,
+                    "request_id": request_id,
+                    "decision": "approved" if data.decision == "approve" else "declined",
+                    "note": data.note,
+                    "decided_by": actor.user_id,
+                    "proposal_id": proposal_id,
+                },
+                conn=conn,
+            )
+        except UniqueViolation:
+            raise HTTPException(409, "request_decided") from None
+        await audit(
+            conn,
+            actor,
+            client_id,
+            f"subscriptions.request.{'approved' if data.decision == 'approve' else 'declined'}",
+            str(request_id),
+        )
+        return request_out(await get_request_row(conn, client_id, request_id))

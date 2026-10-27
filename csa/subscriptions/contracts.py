@@ -143,3 +143,39 @@ class ActionIn(Contract):
         if self.price_override is not None and not (self.reason and self.reason.strip()):
             raise ValueError("price_override requires a reason")
         return self
+
+
+RequestAction = Literal["request_pause", "request_cancel", "request_change"]
+
+
+class RequestOut(Contract):
+    id: UUID
+    # Absent only when the agent's payload named none; such a request can be declined, not approved.
+    subscription_id: UUID | None
+    customer: CustomerRef
+    action: RequestAction
+    plan_code: str | None
+    reason: str | None
+    requested_at: datetime
+    decision: Literal["approved", "declined"] | None
+    decided_at: datetime | None
+    decided_by: UUID | None
+    note: str | None
+    proposal_id: UUID | None
+
+
+class RequestPage(Contract):
+    items: list[RequestOut]
+    next_cursor: UUID | None
+
+
+class DecideIn(Contract):
+    decision: Literal["approve", "decline"]
+    note: str | None = Field(default=None, max_length=1000)
+    resume_at: date | None = None  # pause approvals may set a resume date
+
+    @model_validator(mode="after")
+    def _resume_only_when_approving(self) -> DecideIn:
+        if self.resume_at is not None and self.decision != "approve":
+            raise ValueError("resume_at applies to an approval")
+        return self

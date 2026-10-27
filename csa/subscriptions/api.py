@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -14,9 +14,12 @@ from csa.core.tenancy import tx
 from csa.subscriptions import service
 from csa.subscriptions.contracts import (
     ActionIn,
+    DecideIn,
     PlanIn,
     PlanOut,
     PlanPatch,
+    RequestOut,
+    RequestPage,
     Status,
     SubscriptionCreateIn,
     SubscriptionDetail,
@@ -92,6 +95,34 @@ def build_subscriptions_router() -> APIRouter:
         actor = writer(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             return await service.update_plan(conn, client_id, actor, code, payload)
+
+    # `/requests` routes are declared before `/{subscription_id}`, which is also typed UUID.
+    @router.get("/requests", response_model=RequestPage)
+    async def requests(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        status: Literal["open", "decided"] = "open",
+        before: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> RequestPage:
+        reader(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await service.list_requests(
+                conn, client_id, status=status, before=before, limit=limit
+            )
+
+    @router.post("/requests/{request_id}/decide", response_model=RequestOut)
+    async def decide(
+        request: Request,
+        request_id: UUID,
+        payload: DecideIn,
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> RequestOut:
+        """Decline a staged customer request, or approve it: propose and confirm its action."""
+        actor = writer(request, client_id)
+        return await service.decide_request(
+            request.app.state.pool, request, actor, client_id, request_id, payload
+        )
 
     @router.get("", response_model=SubscriptionPage)
     async def search(
