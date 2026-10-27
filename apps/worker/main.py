@@ -195,7 +195,7 @@ class IngressWorker:
     async def _complete_turn(self, item: ClaimedIngress, envelope: Envelope) -> None:
         if envelope.client_id != item.client_id or envelope.trace_id != item.trace_id:
             raise ValueError("ingress envelope tenant or trace does not match its queue row")
-        if envelope.channel not in {Channel.TELEGRAM, Channel.WEB}:
+        if envelope.channel not in {Channel.TELEGRAM, Channel.WEB, Channel.WHATSAPP}:
             raise ValueError(f"no worker turn handler for channel {envelope.channel.value}")
         if envelope.conversation.id is None:
             raise ValueError("ingress envelope has no conversation id")

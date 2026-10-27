@@ -54,6 +54,7 @@ def _seed_events(
     owner_dsn: str,
     *,
     count: int = 1,
+    channel: str = "telegram",
 ) -> tuple[str, str, list[uuid.UUID]]:
     client_id = uuid.uuid4()
     credential_id = uuid.uuid4()
@@ -74,9 +75,15 @@ def _seed_events(
         )
         conn.execute("SELECT public.seed_core_capabilities(%s)", (client_id,))
         conn.execute(
-            "INSERT INTO channel_credentials (id, client_id, channel, access_token) "
-            "VALUES (%s, %s, 'telegram', %s)",
-            (credential_id, client_id, token),
+            "INSERT INTO channel_credentials (id, client_id, channel, shop_id, access_token) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (
+                credential_id,
+                client_id,
+                channel,
+                f"pn-{uuid.uuid4().hex[:12]}" if channel == "whatsapp" else None,
+                token,
+            ),
         )
         conn.execute(
             "INSERT INTO webhook_endpoints (id, client_id, public_id, credential_id) "
@@ -95,8 +102,8 @@ def _seed_events(
         conn.execute(
             "INSERT INTO conversations "
             "(id, client_id, contact_id, channel, channel_thread) "
-            "VALUES (%s, %s, %s, 'telegram', '501')",
-            (conversation_id, client_id, contact_id),
+            "VALUES (%s, %s, %s, %s, '501')",
+            (conversation_id, client_id, contact_id, channel),
         )
 
         event_ids: list[uuid.UUID] = []
@@ -107,13 +114,13 @@ def _seed_events(
             envelope = Envelope(
                 trace_id=trace_id,
                 received_at=now + timedelta(microseconds=index),
-                channel=Channel.TELEGRAM,
+                channel=Channel(channel),
                 idempotency_key=idempotency_key,
                 client_id=client_id,
                 contact=Contact(
                     id=contact_id,
                     external_id="501",
-                    channel=Channel.TELEGRAM,
+                    channel=Channel(channel),
                     display_name="Synthetic Contact",
                 ),
                 conversation=ConversationRef(
@@ -147,7 +154,7 @@ def _seed_events(
                     Jsonb(
                         {
                             "envelope": envelope.model_dump(mode="json"),
-                            "source": {"channel": "telegram", "kind": "message"},
+                            "source": {"channel": channel, "kind": "message"},
                         }
                     ),
                     now + timedelta(microseconds=index),
@@ -236,6 +243,39 @@ async def test_ingress_worker_echoes_once_through_messages_and_outbox(
         assert delivery == ("pending", 0)
         assert event == ("completed",)
         assert conversation == (1,)
+    finally:
+        await _close_pools(owner_pool, app_pool)
+        _skip_pending_deliveries(owner_dsn, client_id)
+        settings.get_settings.cache_clear()
+
+
+@requires_docker
+async def test_ingress_worker_completes_whatsapp_turn_with_one_outbox_row(
+    pg_container: object,
+    app_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, event_ids = _seed_events(owner_dsn, channel="whatsapp")
+    owner_pool, app_pool, worker = await _open_worker(owner_dsn, app_dsn)
+    try:
+        assert await worker.process_once() is True
+        with psycopg.connect(owner_dsn) as conn:
+            event = conn.execute(
+                "SELECT status FROM ingress_events WHERE id = %s", (event_ids[0],)
+            ).fetchone()
+            deliveries = conn.execute(
+                "SELECT status, attempts FROM outbound_deliveries WHERE client_id = %s",
+                (client_id,),
+            ).fetchall()
+            replies = conn.execute(
+                "SELECT body FROM messages WHERE client_id = %s AND direction = 'outbound'",
+                (client_id,),
+            ).fetchall()
+        assert event == ("completed",)
+        assert deliveries == [("pending", 0)]
+        assert replies == [("Echo: message-1",)]
     finally:
         await _close_pools(owner_pool, app_pool)
         _skip_pending_deliveries(owner_dsn, client_id)
