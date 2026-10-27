@@ -1,3 +1,5 @@
+-- Callers must execute ingress/lock_whatsapp_contact.sql first, in the same tenant
+-- transaction; after the lock this statement always returns exactly one row.
 WITH known AS MATERIALIZED (
     SELECT c.id AS contact_id, c.full_name
     FROM public.contact_identities AS i

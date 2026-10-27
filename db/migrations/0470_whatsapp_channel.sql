@@ -51,7 +51,9 @@ AS $$
   FROM channel_credentials AS c
   JOIN webhook_endpoints AS e ON e.credential_id = c.id AND e.client_id = c.client_id
   JOIN clients AS tenant ON tenant.id = e.client_id
-  WHERE c.channel = 'whatsapp' AND c.shop_id = p_phone_number_id;
+  WHERE c.channel = 'whatsapp' AND c.shop_id = p_phone_number_id
+  ORDER BY e.is_enabled DESC, e.id
+  LIMIT 1;
 $$;
 
 ALTER FUNCTION public.resolve_whatsapp_route(text) OWNER TO csa;

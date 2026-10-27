@@ -123,3 +123,160 @@ async def test_resolve_whatsapp_contact_links_exact_digits_or_creates(
         ).fetchone() == ("+60199999999",)
         # a near-miss number must not link to the existing contact
         assert run("6012345678", "Short")[2] is True
+
+
+def _sql(name: str) -> LiteralString:
+    return cast(LiteralString, Path("db/sql", name).read_text())
+
+
+@requires_docker
+async def test_provider_status_never_regresses(app_dsn: str, pg_container: object) -> None:
+    """Failed outranks everything; delivered cannot overwrite read."""
+    stmt = _sql("delivery/record_provider_status.sql")
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        client_id, _, endpoint_id = _seed_tenant(conn, "409876543210")
+        contact = conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) "
+            "VALUES (%s, '+1', 'C') "
+            "RETURNING id",
+            (client_id,),
+        ).fetchone()
+        assert contact is not None
+        conversation = conn.execute(
+            "INSERT INTO conversations (client_id, contact_id, channel, channel_thread) "
+            "VALUES (%s, %s, 'whatsapp', '1') RETURNING id",
+            (client_id, contact[0]),
+        ).fetchone()
+        assert conversation is not None
+
+        def delivery(provider_message_id: str) -> None:
+            message = conn.execute(
+                "INSERT INTO messages (client_id, conversation_id, direction, author, body, "
+                "idempotency_key) VALUES (%s, %s, 'outbound', 'ai', 'hi', %s) RETURNING id",
+                (client_id, conversation[0], provider_message_id),
+            ).fetchone()
+            assert message is not None
+            conn.execute(
+                "INSERT INTO outbound_deliveries (client_id, endpoint_id, conversation_id, "
+                "message_id, provider_message_id) VALUES (%s, %s, %s, %s, %s)",
+                (client_id, endpoint_id, conversation[0], message[0], provider_message_id),
+            )
+
+        def record(provider_message_id: str, status: str) -> None:
+            conn.execute(
+                stmt,
+                {
+                    "client_id": client_id,
+                    "provider_message_id": provider_message_id,
+                    "status": status,
+                },
+            )
+
+        def current(provider_message_id: str) -> object:
+            row = conn.execute(
+                "SELECT provider_status FROM outbound_deliveries WHERE provider_message_id = %s",
+                (provider_message_id,),
+            ).fetchone()
+            assert row is not None
+            return row[0]
+
+        delivery("wamid.A")
+        record("wamid.A", "sent")
+        record("wamid.A", "failed")
+        record("wamid.A", "sent")
+        record("wamid.A", "delivered")
+        assert current("wamid.A") == "failed"
+
+        delivery("wamid.B")
+        record("wamid.B", "sent")
+        record("wamid.B", "read")
+        record("wamid.B", "delivered")
+        assert current("wamid.B") == "read"
+
+
+@requires_docker
+async def test_whatsapp_conversation_sql_and_last_inbound(
+    app_dsn: str, pg_container: object
+) -> None:
+    """Conversation SQL is channel-parameterised; touch_last_inbound stamps the row."""
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        client_id, _, _ = _seed_tenant(conn, "509876543210")
+        contact = conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) "
+            "VALUES (%s, '+2', 'C') "
+            "RETURNING id",
+            (client_id,),
+        ).fetchone()
+        assert contact is not None
+        created = conn.execute(
+            _sql("ingress/insert_conversation.sql"), (client_id, contact[0], "whatsapp", "6012")
+        ).fetchone()
+        assert created is not None
+        fetched = conn.execute(
+            _sql("ingress/get_conversation.sql"), (client_id, "whatsapp", "6012")
+        ).fetchone()
+        assert fetched == created
+        assert (
+            conn.execute(
+                _sql("ingress/get_conversation.sql"), (client_id, "telegram", "6012")
+            ).fetchone()
+            is None
+        )
+        before = conn.execute(
+            "SELECT last_inbound_at FROM conversations WHERE id = %s", (created[0],)
+        ).fetchone()
+        assert before == (None,)
+        touched = conn.execute(_sql("ingress/touch_last_inbound.sql"), (client_id, created[0]))
+        assert touched.rowcount == 1
+        after = conn.execute(
+            "SELECT last_inbound_at FROM conversations WHERE id = %s", (created[0],)
+        ).fetchone()
+        assert after is not None and after[0] is not None
+
+
+@requires_docker
+async def test_concurrent_first_whatsapp_messages_resolve_one_contact(
+    app_dsn: str, pg_container: object
+) -> None:
+    """The advisory lock serialises first-contact resolution per number."""
+    import threading
+
+    lock_stmt = _sql("ingress/lock_whatsapp_contact.sql")
+    resolve_stmt = _sql("ingress/resolve_whatsapp_contact.sql")
+    dsn = owner_dsn_for(pg_container)
+    with psycopg.connect(dsn, autocommit=True) as setup:
+        client_id, _, _ = _seed_tenant(setup, "609876543210")
+    params = {"client_id": client_id, "wa_id": "60188887777", "display_name": "Racer"}
+    barrier = threading.Barrier(2)
+    results: list[object] = []
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            with psycopg.connect(dsn) as conn:
+                barrier.wait(timeout=10)
+                conn.execute(lock_stmt, params)
+                rows = conn.execute(resolve_stmt, params).fetchall()
+                results.append(rows)
+                conn.commit()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not errors
+    assert len(results) == 2
+    assert all(isinstance(rows, list) and len(rows) == 1 for rows in results)
+    with psycopg.connect(dsn, autocommit=True) as check:
+        contacts = check.execute(
+            "SELECT count(*) FROM contacts WHERE client_id = %s", (client_id,)
+        ).fetchone()
+        identities = check.execute(
+            "SELECT count(*) FROM contact_identities WHERE client_id = %s AND channel = 'whatsapp'",
+            (client_id,),
+        ).fetchone()
+    assert contacts == (1,)
+    assert identities == (1,)
