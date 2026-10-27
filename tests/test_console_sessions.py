@@ -44,6 +44,7 @@ class SessionWorld:
         upload_root: Path,
     ) -> None:
         self.owner_dsn = owner_dsn
+        self.identity_dsn = ""
         self.service = service
         self.pool = pool
         self.app = app
@@ -131,6 +132,7 @@ async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIter
     app.include_router(build_identity_router())
     app.include_router(build_onboarding_router())
     world = SessionWorld(migrated_dsn, service, domain_pool, app, tmp_path)
+    world.identity_dsn = identity_dsn
     try:
         await service.check_ready()
         world.admin_id = str(
@@ -1050,16 +1052,24 @@ async def test_add_platform_admin_rechecks_the_approver_inside_the_transaction(
         )
         return await real_hash(password)
 
-    before = await _user_count(sessions.owner_dsn)
-    monkeypatch.setattr(identity_module, "hash_password", disable_then_hash)
-    with pytest.raises(PermissionError):
-        await sessions.service.add_platform_admin(
-            "synthetic-admin@example.test",
-            ADMIN_PASSWORD,
-            "ops@example.test",
-            "Ops",
-            ADMIN_PASSWORD,
-        )
+    # The operator script uses a one-connection pool: the refusal audit must not need a second.
+    pool = db.build_pool(sessions.identity_dsn, min_size=1, max_size=1, autocommit=True)
+    await pool.open(wait=True)
+    try:
+        service = IdentityService(pool, IdentityConfig(origins=(ORIGIN,)))
+        before = await _user_count(sessions.owner_dsn)
+        monkeypatch.setattr(identity_module, "hash_password", disable_then_hash)
+        with pytest.raises(PermissionError):
+            async with asyncio.timeout(15):
+                await service.add_platform_admin(
+                    "synthetic-admin@example.test",
+                    ADMIN_PASSWORD,
+                    "ops@example.test",
+                    "Ops",
+                    ADMIN_PASSWORD,
+                )
+    finally:
+        await pool.close()
     assert await _user_count(sessions.owner_dsn) == before
     refused = await _audit_actions(sessions.owner_dsn, "identity.platform_admin_add_refused")
     assert [str(row["target_id"]) for row in refused] == [digest("synthetic-admin@example.test")]

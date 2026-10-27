@@ -53,6 +53,10 @@ class IdentityConfig(BaseModel):
     workspace_assistant: bool = False
 
 
+class _ApproverRecheckFailed(Exception):
+    """The approver changed between the first check and the success transaction."""
+
+
 class IdentityService:
     def __init__(self, pool: AsyncConnectionPool, config: IdentityConfig):
         self.pool = pool
@@ -164,33 +168,38 @@ class IdentityService:
         ):
             await self._refuse_admin_add(approver_email)
         password_hash = await hash_password(password)
-        async with self.pool.connection() as conn, conn.transaction():
-            await self._exec(conn, "lock_admin")
-            current = await self._one(conn, "user_id", (approver["id"],))
-            if not (
-                current
-                and current["is_enabled"]
-                and current["is_platform_admin"]
-                and not current["must_change_password"]
-                and current["password_hash"] == approver["password_hash"]
-            ):
-                await self._refuse_admin_add(approver_email)
-            if await self._one(conn, "user_email", (email,)):
-                raise ValueError("a user with that email already exists")
-            user = await self._one(
-                conn, "create_user", (email, display_name, password_hash, True, True)
-            )
-            await self._audit(
-                conn,
-                approver["id"],
-                "identity.platform_admin_added",
-                user["id"],
-                approver_email=approver_email,
-            )
-            return user["id"]
+        try:
+            async with self.pool.connection() as conn, conn.transaction():
+                await self._exec(conn, "lock_admin")
+                current = await self._one(conn, "user_id", (approver["id"],))
+                if not (
+                    current
+                    and current["is_enabled"]
+                    and current["is_platform_admin"]
+                    and not current["must_change_password"]
+                    and current["password_hash"] == approver["password_hash"]
+                ):
+                    raise _ApproverRecheckFailed
+                if await self._one(conn, "user_email", (email,)):
+                    raise ValueError("a user with that email already exists")
+                user = await self._one(
+                    conn, "create_user", (email, display_name, password_hash, True, True)
+                )
+                await self._audit(
+                    conn,
+                    approver["id"],
+                    "identity.platform_admin_added",
+                    user["id"],
+                    approver_email=approver_email,
+                )
+                return user["id"]
+        except _ApproverRecheckFailed:
+            # The transaction has rolled back and released its connection (the operator
+            # script's pool holds one), so audit on a fresh one.
+            await self._refuse_admin_add(approver_email)
 
     async def _refuse_admin_add(self, approver_email: str) -> NoReturn:
-        # Audited on its own connection so the record survives the caller's rollback.
+        # Callers must hold no pooled connection: the one-connection operator pool would stall.
         async with self.pool.connection() as conn, conn.transaction():
             await self._audit(
                 conn, None, "identity.platform_admin_add_refused", digest(approver_email)
