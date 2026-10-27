@@ -43,6 +43,10 @@ services:
       PUBLIC_BASE_URL: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging HTTPS origin required}
       KB_UPLOAD_ROOT: /var/lib/csa/uploads
       KB_INGEST_ENABLED: "false"
+      # Opt-in: the workspace assistant planner runs inside the gateway and calls the model
+      # provider. Default off; the operator exports CSA_STAGING_WORKSPACE_ASSISTANT=true together
+      # with CSA_STAGING_GATEWAY_MODEL_SECRET=staging_model_key (declared by the pipeline file).
+      WORKSPACE_ASSISTANT_ENABLED: ${CSA_STAGING_WORKSPACE_ASSISTANT:-false}
     secrets:
       - source: staging_domain_dsn
         target: DATABASE_URL
@@ -52,7 +56,7 @@ services:
         target: IDENTITY_DATABASE_URL
       - source: staging_credentials_key
         target: CREDENTIALS_KEY
-      - source: staging_disabled_model_key
+      - source: ${CSA_STAGING_GATEWAY_MODEL_SECRET:-staging_disabled_model_key}
         target: GROQ_API_KEY
     volumes: ["staging-uploads:/var/lib/csa/uploads"]
     networks: ["data", "app"]
