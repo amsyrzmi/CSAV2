@@ -7,6 +7,7 @@ import hmac
 import json
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, LiteralString, cast
 
@@ -236,7 +237,9 @@ async def test_whatsapp_conversation_sql_and_last_inbound(
             "SELECT last_inbound_at FROM conversations WHERE id = %s", (created[0],)
         ).fetchone()
         assert before == (None,)
-        touched = conn.execute(_sql("ingress/touch_last_inbound.sql"), (client_id, created[0]))
+        touch = {"client_id": client_id, "conversation_id": created[0]}
+        late = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
+        touched = conn.execute(_sql("ingress/touch_last_inbound.sql"), {**touch, "at": late})
         assert touched.rowcount == 1
         after = conn.execute(
             "SELECT last_inbound_at FROM conversations WHERE id = %s", (created[0],)
@@ -582,10 +585,63 @@ async def test_unsupported_type_is_recorded_once(
     second = await ingress.receive(*body)
     assert first[0].duplicate is False and second[0].duplicate is True
     assert _count(pg_container, "ingress_events", client_id) == 1
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        claimed = conn.execute(_sql("worker/claim_ingress.sql")).fetchall()
+        row = conn.execute(
+            "SELECT status, attempts FROM ingress_events WHERE client_id = %s", (client_id,)
+        ).fetchone()
+    assert row == ("completed", 0)
+    assert all(str(r[1]) != client_id for r in claimed)
+
+
+def _last_inbound(pg_container: object, client_id: str) -> datetime:
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT last_inbound_at FROM conversations WHERE client_id = %s", (client_id,)
+        ).fetchone()
+    assert row is not None and row[0] is not None
+    return row[0]
 
 
 @requires_docker
-async def test_n8n_runtime_tenant_is_refused(
+async def test_replay_and_older_events_do_not_move_the_service_window(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    newer = {**_text("wamid.W2"), "timestamp": "1791676800"}
+    older = {**_text("wamid.W1"), "timestamp": "1791670000"}
+    await ingress.receive(*signed(_delivery(number, messages=[newer])))
+    stamped = _last_inbound(pg_container, client_id)
+    assert stamped == datetime.fromtimestamp(1791676800, UTC)
+    replay = await ingress.receive(*signed(_delivery(number, messages=[newer])))
+    assert replay[0].duplicate is True
+    assert _last_inbound(pg_container, client_id) == stamped
+    await ingress.receive(*signed(_delivery(number, messages=[older])))
+    assert _last_inbound(pg_container, client_id) == stamped
+
+
+@requires_docker
+async def test_over_limit_tenant_does_not_block_other_tenants_in_a_batch(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_a, number_a, _ = whatsapp_context
+    number_b = str(uuid.uuid4().int)[:15]
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        client_b, _, _ = _seed_tenant(conn, number_b)
+        conn.execute(
+            "UPDATE webhook_endpoints SET rate_limit_rpm = 1 WHERE client_id = %s", (client_a,)
+        )
+    body = _delivery(number_a, messages=[_text("wamid.R1"), _text("wamid.R2")])
+    body["entry"].append(_delivery(number_b, messages=[_text("wamid.R3")])["entry"][0])
+    with pytest.raises(IngressError) as excinfo:
+        await ingress.receive(*signed(body))
+    assert excinfo.value.status_code == 429
+    assert _count(pg_container, "ingress_events", client_a) == 1
+    assert _count(pg_container, "ingress_events", client_b) == 1
+
+
+@requires_docker
+async def test_n8n_runtime_tenant_is_skipped(
     whatsapp_context: WhatsAppContext, pg_container: object
 ) -> None:
     ingress, _, client_id, number, _ = whatsapp_context
@@ -594,10 +650,8 @@ async def test_n8n_runtime_tenant_is_refused(
             'UPDATE clients SET config = config || \'{"runtime": "n8n"}\'::jsonb WHERE id = %s',
             (client_id,),
         )
-    with pytest.raises(IngressError) as excinfo:
-        await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.N1")])))
-    assert excinfo.value.status_code == 503
-    assert excinfo.value.detail == "whatsapp_runtime_unsupported"
+    receipts = await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.N1")])))
+    assert receipts == []
     assert _count(pg_container, "ingress_events", client_id) == 0
 
 

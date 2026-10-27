@@ -26,6 +26,10 @@ from csa.core.tenancy import tx
 logger = structlog.get_logger(__name__)
 
 
+class _RateLimited(Exception):
+    """Internal control flow: the event's endpoint is over its rate limit."""
+
+
 class WhatsAppIngress:
     """Verify, normalize, tenant-bind, and persist WhatsApp webhook deliveries."""
 
@@ -60,10 +64,18 @@ class WhatsAppIngress:
             raise IngressError(422, str(exc)) from exc
 
         receipts: list[IngressReceipt] = []
+        limited = False
         for event in events:
-            receipt = await self._handle_event(event)
+            try:
+                receipt = await self._handle_event(event)
+            except _RateLimited:
+                limited = True
+                continue
             if receipt is not None:
                 receipts.append(receipt)
+        if limited:
+            # Earlier events are committed and dedupe when Meta retries the batch.
+            raise IngressError(429, "endpoint rate limit exceeded")
         return receipts
 
     async def _handle_event(self, event: WhatsAppEvent) -> IngressReceipt | None:
@@ -78,13 +90,19 @@ class WhatsAppIngress:
         client_id: UUID = route["client_id"]
         endpoint_id: UUID = route["endpoint_id"]
         if (route["runtime"] or "langgraph").strip().lower() == "n8n":
-            raise IngressError(503, "whatsapp_runtime_unsupported")
-        if not self._rate_limiter.allow(endpoint_id, limit_per_minute=int(route["rate_limit_rpm"])):
-            raise IngressError(429, "endpoint rate limit exceeded")
+            logger.warning("whatsapp_runtime_unsupported", client_id=str(client_id))
+            return None
 
         if event.kind == "status":
             await self._record_status(client_id, event)
             return None
+
+        # Replays are free: only first deliveries of a message are charged to the limiter.
+        if event.kind == "message" and not await self._is_known(client_id, event):
+            if not self._rate_limiter.allow(
+                endpoint_id, limit_per_minute=int(route["rate_limit_rpm"])
+            ):
+                raise _RateLimited
 
         trace_id = uuid4()
         payload_hash = _canonical_payload_hash(
@@ -116,10 +134,6 @@ class WhatsAppIngress:
                 )
             if conversation is None:
                 raise RuntimeError("whatsapp conversation conflict could not be resolved")
-            if event.kind == "message":
-                await db.q.execute(
-                    "ingress/touch_last_inbound.sql", (client_id, conversation["id"]), conn=conn
-                )
             message = event.message or Message(body_raw="", body_redacted="", language="und")
             envelope = Envelope(
                 trace_id=trace_id,
@@ -151,7 +165,9 @@ class WhatsAppIngress:
                 },
             }
             inserted = await db.q.fetch_one(
-                "ingress/insert_event.sql",
+                "ingress/insert_inert_event.sql"
+                if event.kind == "unsupported"
+                else "ingress/insert_event.sql",
                 (
                     client_id,
                     endpoint_id,
@@ -164,6 +180,16 @@ class WhatsAppIngress:
                 conn=conn,
             )
             duplicate = inserted is None
+            if event.kind == "message" and not duplicate:
+                await db.q.execute(
+                    "ingress/touch_last_inbound.sql",
+                    {
+                        "client_id": client_id,
+                        "conversation_id": conversation["id"],
+                        "at": event.received_at,
+                    },
+                    conn=conn,
+                )
             if duplicate:
                 previous = await db.q.fetch_one(
                     "ingress/get_event_hash.sql",
@@ -187,6 +213,13 @@ class WhatsAppIngress:
                 unsupported_type=event.unsupported_type,
             )
         return IngressReceipt(accepted=True, duplicate=duplicate, trace_id=trace_id)
+
+    async def _is_known(self, client_id: UUID, event: WhatsAppEvent) -> bool:
+        async with tx(self._pool, str(client_id)) as conn:
+            row = await db.q.fetch_one(
+                "ingress/get_event_hash.sql", (client_id, event.provider_message_id), conn=conn
+            )
+        return row is not None
 
     async def _record_status(self, client_id: UUID, event: WhatsAppEvent) -> None:
         if event.status is None:
