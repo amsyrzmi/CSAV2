@@ -124,6 +124,18 @@ is visible to every tenant staff member whose `hr` package is active through the
 `company_directory_me` view and the organisation chart is not exposed to colleagues. See
 [CONSOLE_API.md](./CONSOLE_API.md#workspace-assistant).
 
+The Subscriptions tab (`csa/subscriptions/`, migration `0480`) follows the same pattern: it is
+behind the `subscriptions` package gate, and its only console mutation path for existing subscriptions
+is the `subscription_action` proposal executor. A card is created by `POST
+/console/v1/subscriptions/{id}/actions` and confirmed through the workspace proposals route; the
+executor locks the row, checks the bound `version` and records one timeline event keyed by the
+proposal id so a replayed confirm cannot act twice. Approving a staged customer request makes
+the service create and confirm that card itself, and the decision row (one per request, insert-only)
+is written in the same transaction as the change. The `subscriptions_due` job (every 5 minutes,
+per tenant, actor `system:subscriptions_due`) applies period-end cancellations, scheduled plan
+changes, resumes and renewals in that order on the tenant's calendar; nothing is charged. See
+[CONSOLE_API.md](./CONSOLE_API.md#subscriptions).
+
 ## Evaluation and regression evidence
 
 - `csa/evals/decisions.py` compares live classifiers against 60 synthetic labelled messages;

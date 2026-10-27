@@ -113,7 +113,7 @@ See [console API](./CONSOLE_API.md#services-and-packages).
 |---|---|---|---|---|
 | `customer_support` | base | `kb_agent`, `ticket_agent`, `escalation_agent`, `order_approval` | Inbox, Knowledge base | yes |
 | `orders_products` | add-on | `order_agent`, `invoice_agent` | Business | yes |
-| `subscriptions` | add-on | `subscription_agent` | Subscriptions (specialised) | yes |
+| `subscriptions` | add-on | `subscription_agent` | Subscriptions (plans, customers' subscriptions, request queue) | yes |
 | `bookings` | add-on | `booking_agent` | Bookings (specialised) | yes |
 | `marketplaces` | add-on | `ecommerce_agent` | Business, E-commerce (specialised) | no |
 | `e_invoicing` | add-on | `lhdn_agent` | LHDN (specialised) | no |
