@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import LiteralString, cast
+from typing import Any, LiteralString, cast
 
+import httpx
 import psycopg
 import pytest
+from csa.channels.ingress import IngressError
+from csa.channels.whatsapp_ingress import WhatsAppIngress
+from csa.core.db import build_pool
+from psycopg_pool import AsyncConnectionPool
 
 from tests.conftest import owner_dsn_for, requires_docker
+from tests.test_console_identity_gateway import application
 
 PHONE_NUMBER_ID = "109876543210"
 
@@ -280,3 +290,339 @@ async def test_concurrent_first_whatsapp_messages_resolve_one_contact(
         ).fetchone()
     assert contacts == (1,)
     assert identities == (1,)
+
+
+# --- ingress pipeline -------------------------------------------------------
+
+
+APP_SECRET = "wa-app-secret"
+VERIFY_TOKEN = "wa-verify-token"
+WA_ID = "60123456789"
+
+
+def signed(body: dict[str, Any], secret: str = APP_SECRET) -> tuple[str, bytes]:
+    raw = json.dumps(body).encode()
+    return "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest(), raw
+
+
+def _delivery(
+    phone_number_id: str,
+    *,
+    messages: list[dict[str, Any]] | None = None,
+    statuses: list[dict[str, Any]] | None = None,
+    wa_id: str = WA_ID,
+) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "messaging_product": "whatsapp",
+        "metadata": {"display_phone_number": "15550001111", "phone_number_id": phone_number_id},
+        "contacts": [{"profile": {"name": "Aina"}, "wa_id": wa_id}],
+    }
+    if messages is not None:
+        value["messages"] = messages
+    if statuses is not None:
+        value["statuses"] = statuses
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [{"id": "1", "changes": [{"field": "messages", "value": value}]}],
+    }
+
+
+def _text(wamid: str, wa_id: str = WA_ID, body: str = "Hello") -> dict[str, Any]:
+    return {
+        "from": wa_id,
+        "id": wamid,
+        "timestamp": "1791676800",
+        "type": "text",
+        "text": {"body": body},
+    }
+
+
+WhatsAppContext = tuple[WhatsAppIngress, AsyncConnectionPool, str, str, str]
+
+
+@pytest.fixture()
+async def whatsapp_context(app_dsn: str, pg_container: object) -> AsyncIterator[WhatsAppContext]:
+    phone_number_id = str(uuid.uuid4().int)[:15]
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        client_id, _, _ = _seed_tenant(conn, phone_number_id)
+    pool = build_pool(app_dsn, max_size=4)
+    await pool.open(wait=True)
+    try:
+        ingress = WhatsAppIngress(pool, app_secret=APP_SECRET, verify_token=VERIFY_TOKEN)
+        yield ingress, pool, client_id, phone_number_id, APP_SECRET
+    finally:
+        await pool.close()
+
+
+def _count(pg_container: object, table: str, client_id: str) -> int:
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        row = conn.execute(
+            cast(LiteralString, f"SELECT count(*) FROM {table} WHERE client_id = %s"),
+            (client_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+@requires_docker
+async def test_text_message_creates_contact_conversation_event_and_last_inbound(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    signature, raw = signed(_delivery(number, messages=[_text("wamid.T1")]))
+    receipts = await ingress.receive(signature, raw)
+    assert len(receipts) == 1 and receipts[0].accepted and not receipts[0].duplicate
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        contacts = conn.execute(
+            "SELECT phone FROM contacts WHERE client_id = %s", (client_id,)
+        ).fetchall()
+        assert contacts == [("+60123456789",)]
+        identity = conn.execute(
+            "SELECT external_id FROM contact_identities "
+            "WHERE client_id = %s AND channel = 'whatsapp'",
+            (client_id,),
+        ).fetchall()
+        assert identity == [(WA_ID,)]
+        conversation = conn.execute(
+            "SELECT channel, channel_thread, last_inbound_at FROM conversations "
+            "WHERE client_id = %s",
+            (client_id,),
+        ).fetchall()
+        assert len(conversation) == 1
+        assert conversation[0][:2] == ("whatsapp", WA_ID) and conversation[0][2] is not None
+        events = conn.execute(
+            "SELECT idempotency_key, raw FROM ingress_events WHERE client_id = %s", (client_id,)
+        ).fetchall()
+        assert len(events) == 1 and events[0][0] == "wamid.T1"
+        assert events[0][1]["source"] == {
+            "channel": "whatsapp",
+            "kind": "message",
+            "phone_number_id": number,
+        }
+        assert events[0][1]["envelope"]["channel"] == "whatsapp"
+
+
+@requires_docker
+async def test_duplicate_webhook_is_acknowledged_without_second_event(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    signature, raw = signed(_delivery(number, messages=[_text("wamid.D1")]))
+    first = await ingress.receive(signature, raw)
+    second = await ingress.receive(signature, raw)
+    assert first[0].duplicate is False and second[0].duplicate is True
+    assert second[0].trace_id == first[0].trace_id
+    assert _count(pg_container, "ingress_events", client_id) == 1
+
+
+@requires_docker
+async def test_bad_signature_has_no_side_effects(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    _, raw = signed(_delivery(number, messages=[_text("wamid.B1")]))
+    bad, _ = signed({"x": 1}, secret="other")
+    for header in (bad, None):
+        with pytest.raises(IngressError) as excinfo:
+            await ingress.receive(header, raw)
+        assert excinfo.value.status_code == 403
+    for table in ("contacts", "conversations", "ingress_events"):
+        assert _count(pg_container, table, client_id) == 0
+    garbage_sig, garbage = signed({"entry": "nope"})
+    with pytest.raises(IngressError) as parse_error:
+        await ingress.receive(garbage_sig, garbage)
+    assert parse_error.value.status_code == 422
+
+
+@requires_docker
+async def test_sender_links_to_single_phone_match_only(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) "
+            "VALUES (%s, '+60 12-345 6789', 'Existing')",
+            (client_id,),
+        )
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.L1")])))
+    assert _count(pg_container, "contacts", client_id) == 1
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        first_contact = conn.execute(
+            "SELECT raw -> 'envelope' -> 'meta' ->> 'is_first_contact' "
+            "FROM ingress_events WHERE client_id = %s",
+            (client_id,),
+        ).fetchone()
+        assert first_contact == ("false",)
+        # Two contacts share one phone: ambiguity creates a new contact instead of guessing.
+        conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) VALUES (%s, '60 19 888 7777', 'A')",
+            (client_id,),
+        )
+        conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) VALUES (%s, '+6019-8887777', 'B')",
+            (client_id,),
+        )
+    other = "60198887777"
+    delivery = _delivery(number, messages=[_text("wamid.L2", other)], wa_id=other)
+    await ingress.receive(*signed(delivery))
+    assert _count(pg_container, "contacts", client_id) == 4
+
+
+@requires_docker
+async def test_two_tenants_two_numbers_stay_isolated(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_a, _, _ = whatsapp_context
+    number_b = str(uuid.uuid4().int)[:15]
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        client_b, _, _ = _seed_tenant(conn, number_b)
+    await ingress.receive(*signed(_delivery(number_b, messages=[_text("wamid.I1")])))
+    for table in ("contacts", "conversations", "ingress_events"):
+        assert _count(pg_container, table, client_b) == 1
+        assert _count(pg_container, table, client_a) == 0
+
+
+@requires_docker
+async def test_unknown_number_is_skipped_without_failing_the_batch(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    body = _delivery("999000111222", messages=[_text("wamid.U1")])
+    body["entry"].append(_delivery(number, messages=[_text("wamid.U2")])["entry"][0])
+    receipts = await ingress.receive(*signed(body))
+    assert len(receipts) == 1
+    assert _count(pg_container, "ingress_events", client_id) == 1
+
+
+@requires_docker
+async def test_status_updates_delivery_by_provider_message_id(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.S0")])))
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        endpoint = conn.execute(
+            "SELECT id FROM webhook_endpoints WHERE client_id = %s", (client_id,)
+        ).fetchone()
+        conversation = conn.execute(
+            "SELECT id FROM conversations WHERE client_id = %s", (client_id,)
+        ).fetchone()
+        assert endpoint is not None and conversation is not None
+        message = conn.execute(
+            "INSERT INTO messages (client_id, conversation_id, direction, author, body, "
+            "idempotency_key) VALUES (%s, %s, 'outbound', 'ai', 'hi', 'out-1') RETURNING id",
+            (client_id, conversation[0]),
+        ).fetchone()
+        assert message is not None
+        conn.execute(
+            "INSERT INTO outbound_deliveries (client_id, endpoint_id, conversation_id, "
+            "message_id, provider_message_id) VALUES (%s, %s, %s, %s, 'wamid.OUT')",
+            (client_id, endpoint[0], conversation[0], message[0]),
+        )
+
+    def status(wamid: str, value: str) -> dict[str, Any]:
+        return {"id": wamid, "status": value, "timestamp": "1791676900", "recipient_id": WA_ID}
+
+    def current() -> object:
+        with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT provider_status FROM outbound_deliveries "
+                "WHERE provider_message_id = 'wamid.OUT'"
+            ).fetchone()
+        assert row is not None
+        return row[0]
+
+    delivered = _delivery(number, statuses=[status("wamid.OUT", "delivered")])
+    assert await ingress.receive(*signed(delivered)) == []
+    assert current() == "delivered"
+    await ingress.receive(*signed(_delivery(number, statuses=[status("wamid.OUT", "read")])))
+    assert current() == "read"
+    unknown = _delivery(number, statuses=[status("wamid.NONE", "read")])
+    assert await ingress.receive(*signed(unknown)) == []
+
+
+@requires_docker
+async def test_image_message_is_enqueued_with_attachment_stub(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    image = {
+        "from": WA_ID,
+        "id": "wamid.IMG",
+        "timestamp": "1791676800",
+        "type": "image",
+        "image": {"id": "media-1", "mime_type": "image/jpeg"},
+    }
+    receipts = await ingress.receive(*signed(_delivery(number, messages=[image])))
+    assert len(receipts) == 1
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT raw -> 'envelope' FROM ingress_events WHERE client_id = %s", (client_id,)
+        ).fetchone()
+    assert row is not None
+    assert row[0]["message"]["attachments"][0]["kind"] == "image"
+    assert row[0]["message"]["body_raw"] == ""
+
+
+@requires_docker
+async def test_unsupported_type_is_recorded_once(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    reaction = {
+        "from": WA_ID,
+        "id": "wamid.REACT",
+        "timestamp": "1791676800",
+        "type": "reaction",
+        "reaction": {"message_id": "wamid.X", "emoji": "x"},
+    }
+    body = signed(_delivery(number, messages=[reaction]))
+    first = await ingress.receive(*body)
+    second = await ingress.receive(*body)
+    assert first[0].duplicate is False and second[0].duplicate is True
+    assert _count(pg_container, "ingress_events", client_id) == 1
+
+
+@requires_docker
+async def test_n8n_runtime_tenant_is_refused(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            'UPDATE clients SET config = config || \'{"runtime": "n8n"}\'::jsonb WHERE id = %s',
+            (client_id,),
+        )
+    with pytest.raises(IngressError) as excinfo:
+        await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.N1")])))
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "whatsapp_runtime_unsupported"
+    assert _count(pg_container, "ingress_events", client_id) == 0
+
+
+async def test_gateway_routes_hidden_when_unconfigured_and_verify_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hidden = application(monkeypatch)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=hidden), base_url="https://gateway.test"
+    ) as client:
+        assert (await client.get("/channels/whatsapp")).status_code == 404
+        assert (await client.post("/channels/whatsapp", json={})).status_code == 404
+
+    enabled = application(monkeypatch, whatsapp=(APP_SECRET, VERIFY_TOKEN))
+    # The lifespan needs a database; the routes only need the ingress object.
+    enabled.state.whatsapp_ingress = WhatsAppIngress(
+        cast(Any, None), app_secret=APP_SECRET, verify_token=VERIFY_TOKEN
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=enabled), base_url="https://gateway.test"
+    ) as client:
+        query = {"hub.mode": "subscribe", "hub.verify_token": VERIFY_TOKEN, "hub.challenge": "42"}
+        good = await client.get("/channels/whatsapp", params=query)
+        assert good.status_code == 200 and good.text == "42"
+        wrong = await client.get("/channels/whatsapp", params={**query, "hub.verify_token": "x"})
+        assert wrong.status_code == 403
+        unsigned = await client.post("/channels/whatsapp", json={"entry": []})
+        assert unsigned.status_code == 403
