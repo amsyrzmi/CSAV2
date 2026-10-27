@@ -44,6 +44,7 @@ from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
+from csa.subscriptions.api import build_subscriptions_router
 from csa.workspace.executors import build_proposal_registry
 from csa.workspace.planner import WorkspacePlanner
 from fastapi import FastAPI, Request
@@ -421,6 +422,7 @@ def create_app() -> FastAPI:
     # lane A (customer-facing): WhatsApp router registers here
     app.include_router(build_channels_router())
     # lane B (console): subscriptions router registers here
+    app.include_router(build_subscriptions_router())
     # --- end lane registrations ---
 
     instrument_fastapi(app)
