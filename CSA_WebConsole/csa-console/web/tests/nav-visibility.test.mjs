@@ -52,3 +52,8 @@ test("the Staff workspace tab is gone for every role; the assistant dock replace
     assert.ok(!links.some((l) => l.label === "Staff workspace" || l.key === "workspace"), role);
   }
 });
+
+test("the subscriptions key is reserved but renders no link until its page ships", () => {
+  const links = navigationFor(staff, active("subscriptions", "customer_support"));
+  assert.ok(!links.some((l) => l.key === "subscriptions" || l.label === "Subscriptions"));
+});

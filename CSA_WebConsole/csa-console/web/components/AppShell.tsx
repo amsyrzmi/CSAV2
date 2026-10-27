@@ -15,6 +15,7 @@ import {
   Activity,
   BookOpen,
   MessageSquare,
+  CreditCard,
   type LucideIcon,
 } from "lucide-react";
 import { identity } from "@/lib/identity-api";
@@ -40,6 +41,7 @@ const icons: Record<NavKey, LucideIcon> = {
   members: Users,
   team: Users,
   password: KeyRound,
+  subscriptions: CreditCard,
 };
 
 export function AppShell({
