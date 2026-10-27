@@ -132,6 +132,60 @@ class IdentityService:
             await self._audit(conn, user["id"], "identity.bootstrap", user["id"])
             return user["id"]
 
+    async def add_platform_admin(
+        self,
+        approver_email: str,
+        approver_password: str,
+        email: str,
+        display_name: str,
+        password: str,
+        *,
+        ip: str = "operator-cli",
+    ) -> UUID:
+        """Add a platform admin, approved by an existing one who re-proves their password."""
+        from csa.console.contracts import EmailInput
+
+        approver_email = EmailInput(email=approver_email).email
+        email = EmailInput(email=email).email
+        if not 1 <= len(display_name) <= 120:
+            raise ValueError("display name must contain between 1 and 120 characters")
+        await self._throttle(approver_email, ip, purpose="admin_add")
+        async with self.pool.connection() as conn:
+            approver = await self._one(conn, "user_email", (approver_email,))
+        valid = await verify_password(
+            approver_password, approver["password_hash"] if approver else None
+        )
+        if not (
+            approver
+            and valid
+            and approver["is_enabled"]
+            and approver["is_platform_admin"]
+            and not approver["must_change_password"]
+        ):
+            async with self.pool.connection() as conn, conn.transaction():
+                await self._audit(
+                    conn, None, "identity.platform_admin_add_refused", digest(approver_email)
+                )
+            raise PermissionError(
+                "approver must be an enabled platform administrator with a valid password"
+            )
+        password_hash = await hash_password(password)
+        async with self.pool.connection() as conn, conn.transaction():
+            await self._exec(conn, "lock_admin")
+            if await self._one(conn, "user_email", (email,)):
+                raise ValueError("a user with that email already exists")
+            user = await self._one(
+                conn, "create_user", (email, display_name, password_hash, True, True)
+            )
+            await self._audit(
+                conn,
+                approver["id"],
+                "identity.platform_admin_added",
+                user["id"],
+                approver_email=approver_email,
+            )
+            return user["id"]
+
     async def resolve(self, raw_token: str, *, allow_password_change: bool = False) -> ConsoleActor:
         if not raw_token or len(raw_token) > 256:
             raise HTTPException(401, "authentication required")
