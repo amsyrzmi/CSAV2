@@ -166,7 +166,7 @@ function Inbox({ query, tenantId }: { query: string; tenantId: string | null }) 
         {conversations.items.map((item) => <button key={item.id} disabled={blocked}
           className={`${secondary} mb-2 w-full flex-col items-start break-all text-left`}
           onClick={() => setSelected(item.id)} aria-pressed={selected === item.id}>
-          <span>{item.id.slice(0, 8)} <span data-testid="inbox-channel-badge"
+          <span>{item.id.slice(0, 8)} · <span data-testid="inbox-channel-badge"
             className="ml-1 rounded-full border border-ink-300 bg-ink-50 px-2 py-0.5 text-xs text-ink-700">
             {CHANNEL_NAME[item.channel]}</span></span>
           <span className="text-xs">{item.human_muted ? "Human support · AI paused" : "AI"} · {item.status}</span>
