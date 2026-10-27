@@ -88,3 +88,45 @@ async def test_bootstrap_cli_rejects_missing_or_owner_dsn_before_opening_pool(
                 "admin@example.test", "Synthetic", "synthetic-pass-123"
             )
     pool.assert_not_called()
+
+
+def test_add_admin_cli_requires_deliberate_flag_before_reading_passwords(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import add_platform_admin
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_platform_admin",
+            "--approver-email",
+            "a@example.test",
+            "--email",
+            "b@example.test",
+            "--display-name",
+            "B",
+        ],
+    )
+    prompt = Mock(side_effect=AssertionError("must not prompt before deliberate flag"))
+    monkeypatch.setattr(add_platform_admin.getpass, "getpass", prompt)
+    with pytest.raises(SystemExit) as error:
+        add_platform_admin.main()
+    assert error.value.code == 2
+    prompt.assert_not_called()
+
+
+async def test_add_admin_cli_rejects_missing_or_owner_dsn_before_opening_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import add_platform_admin
+
+    pool = Mock(side_effect=AssertionError("must not open an owner or missing identity connection"))
+    monkeypatch.setattr(add_platform_admin, "build_pool", pool)
+    for value in ("", "postgresql://csa:synthetic@localhost:1/disposable_fixture"):
+        monkeypatch.setenv("IDENTITY_DATABASE_URL", value)
+        with pytest.raises(ValueError, match="csa_identity"):
+            await add_platform_admin.run(
+                "a@example.test", "approver-pass-123", "b@example.test", "B", "synthetic-pass-123"
+            )
+    pool.assert_not_called()

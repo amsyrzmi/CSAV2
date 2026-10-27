@@ -127,6 +127,20 @@ The CLI reads only its explicit `IDENTITY_DATABASE_URL` environment value, promp
 No copied accounts, passwords or sessions are imported. Synthetic test identities are not
 installed into an existing dev database.
 
+Add a further platform administrator only through the operator command; invites
+create tenant members, never platform admins:
+
+```sh
+NO_LOCAL_ENV=1 uv run python -m scripts.add_platform_admin \
+  --approver-email existing-admin@example.test \
+  --email new-admin@example.test --display-name "New Admin" --add-platform-admin
+```
+
+The approver re-enters their own password (same throttle as login) and must be an
+enabled platform administrator who has changed their initial password. The new
+account must change its password at first login. Audit: `identity.platform_admin_added`
+(approver as actor) or `identity.platform_admin_add_refused`.
+
 Passwords support Unicode and use salted scrypt (N=131072, r=8, p=1), offloaded from the
 event loop with bounded concurrency. Session secrets are 256-bit random opaque values;
 only SHA-256 hashes persist.
