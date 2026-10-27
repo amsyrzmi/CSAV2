@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field, model_validator
 
 from csa.console.contracts import Contract
 
@@ -103,3 +103,43 @@ class SubscriptionCreateIn(Contract):
     plan_code: str
     started_at: datetime | None = None
     renews_at: datetime | None = None
+
+
+Action = Literal[
+    "pause", "resume", "change_plan", "cancel_at_period_end", "cancel_now", "extend_renewal"
+]
+
+# The optional fields each action accepts; any other one is refused so a card never shows
+# less than the payload carries.
+ACTION_FIELDS: dict[str, frozenset[str]] = {
+    "pause": frozenset({"resume_at"}),
+    "resume": frozenset(),
+    "change_plan": frozenset({"plan_code", "effective_at", "price_override"}),
+    "cancel_at_period_end": frozenset(),
+    "cancel_now": frozenset(),
+    "extend_renewal": frozenset({"renews_at"}),
+}
+
+
+class ActionIn(Contract):
+    action: Action
+    resume_at: date | None = None  # pause only (optional)
+    plan_code: str | None = Field(default=None, min_length=1, max_length=64)  # change_plan
+    effective_at: AwareDatetime | None = None  # change_plan: absent or past -> immediate
+    renews_at: AwareDatetime | None = None  # extend_renewal (required)
+    price_override: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _per_action(self) -> ActionIn:
+        allowed = ACTION_FIELDS[self.action]
+        for name in ("resume_at", "plan_code", "effective_at", "renews_at", "price_override"):
+            if getattr(self, name) is not None and name not in allowed:
+                raise ValueError(f"{name} does not apply to {self.action}")
+        if self.action == "change_plan" and self.plan_code is None:
+            raise ValueError("plan_code is required for change_plan")
+        if self.action == "extend_renewal" and self.renews_at is None:
+            raise ValueError("renews_at is required for extend_renewal")
+        if self.price_override is not None and not (self.reason and self.reason.strip()):
+            raise ValueError("price_override requires a reason")
+        return self

@@ -189,7 +189,7 @@ WorkspaceProposal = Annotated[
 ]
 WorkspaceActionProposal = WorkspaceProposal
 
-ProposalKind = Literal["email_export", "training_submit", "inbox_decision"]
+ProposalKind = Literal["email_export", "training_submit", "inbox_decision", "subscription_action"]
 
 
 class EmailExportProposal(_Contract):

@@ -33,6 +33,7 @@ from csa.hr.models import TrainingAction, TrainingCommandInput, TrainingDraftInp
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import HrSession
 from csa.hr.service import HrService
+from csa.subscriptions.executor import SubscriptionActionExecutor
 from csa.workspace.contracts import (
     CardField,
     EmailExportProposal,
@@ -325,5 +326,6 @@ def build_proposal_registry() -> ProposalRegistry:
             "training_submit": TrainingSubmitExecutor(),
             "email_export": EmailExportExecutor(),
             "inbox_decision": InboxDecisionExecutor(),
+            "subscription_action": SubscriptionActionExecutor(),
         }
     )

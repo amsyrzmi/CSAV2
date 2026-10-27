@@ -161,8 +161,9 @@ async def record_event(
     to_status: str | None,
     payload: dict[str, Any] | None = None,
     proposal_id: UUID | None = None,
-) -> None:
-    await db.q.execute(
+) -> int:
+    """Insert one timeline event and return its id."""
+    row = await db.q.fetch_one(
         "subscriptions/event_insert.sql",
         {
             "client_id": client_id,
@@ -176,6 +177,10 @@ async def record_event(
         },
         conn=conn,
     )
+    if row is None:
+        raise RuntimeError("subscription event insert returned no row")
+    event_id: int = row["id"]
+    return event_id
 
 
 async def create_subscription(

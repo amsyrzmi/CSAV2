@@ -1,11 +1,11 @@
-"""Console routes for plans and subscriptions (reads, plan changes, creation)."""
+"""Console routes for plans and subscriptions (reads, plan changes, creation, actions)."""
 
 from __future__ import annotations
 
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from csa.console.access import authenticate, tenant
 from csa.console.contracts import ConsoleActor, Role
@@ -13,6 +13,7 @@ from csa.console.services import package_gate
 from csa.core.tenancy import tx
 from csa.subscriptions import service
 from csa.subscriptions.contracts import (
+    ActionIn,
     PlanIn,
     PlanOut,
     PlanPatch,
@@ -22,6 +23,8 @@ from csa.subscriptions.contracts import (
     SubscriptionOut,
     SubscriptionPage,
 )
+from csa.workspace.contracts import ProposalOut
+from csa.workspace.registry import ProposalRegistry
 
 WRITE_ROLES = {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}
 
@@ -125,5 +128,36 @@ def build_subscriptions_router() -> APIRouter:
         reader(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             return await service.get_subscription(conn, client_id, subscription_id)
+
+    @router.post("/{subscription_id}/actions", response_model=ProposalOut, status_code=201)
+    async def act(
+        request: Request,
+        response: Response,
+        subscription_id: UUID,
+        payload: ActionIn,
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> ProposalOut:
+        """Propose a state change; nothing changes until the same login confirms the card."""
+        actor = writer(request, client_id)
+        registry = getattr(request.app.state, "proposal_registry", None)
+        if not isinstance(registry, ProposalRegistry):
+            raise HTTPException(503, "proposal_registry_unavailable")
+        # The executor gates the package and role again, loads the subscription and refuses
+        # an illegal transition before any proposal row is written.
+        result = await registry.create(
+            request.app.state.pool,
+            request,
+            actor,
+            client_id,
+            "subscription_action",
+            {
+                "subscription_id": str(subscription_id),
+                **payload.model_dump(mode="json", exclude_none=True),
+            },
+            thread_id=None,
+            origin="tab",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return result
 
     return router

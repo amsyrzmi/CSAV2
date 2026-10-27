@@ -40,6 +40,104 @@
         "title": "AccessSave",
         "type": "object"
       },
+      "ActionIn": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume",
+              "change_plan",
+              "cancel_at_period_end",
+              "cancel_now",
+              "extend_renewal"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "effective_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective At"
+          },
+          "plan_code": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Code"
+          },
+          "price_override": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Override"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "renews_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renews At"
+          },
+          "resume_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume At"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ActionIn",
+        "type": "object"
+      },
       "ActivateIn": {
         "additionalProperties": false,
         "properties": {
@@ -5897,7 +5995,8 @@
             "enum": [
               "email_export",
               "training_submit",
-              "inbox_decision"
+              "inbox_decision",
+              "subscription_action"
             ],
             "title": "Kind",
             "type": "string"
@@ -5953,7 +6052,8 @@
             "enum": [
               "email_export",
               "training_submit",
-              "inbox_decision"
+              "inbox_decision",
+              "subscription_action"
             ],
             "title": "Kind",
             "type": "string"
@@ -17838,6 +17938,94 @@
         ]
       }
     },
+    "/console/v1/subscriptions/{subscription_id}/actions": {
+      "post": {
+        "description": "Propose a state change; nothing changes until the same login confirms the card.",
+        "operationId": "act_console_v1_subscriptions__subscription_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Subscription Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Act",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
     "/console/v1/tabs/specialized": {
       "get": {
         "operationId": "get_specialized_tabs_console_v1_tabs_specialized_get",
@@ -18883,7 +19071,8 @@
                     "enum": [
                       "email_export",
                       "training_submit",
-                      "inbox_decision"
+                      "inbox_decision",
+                      "subscription_action"
                     ],
                     "title": "Kind",
                     "type": "string"
