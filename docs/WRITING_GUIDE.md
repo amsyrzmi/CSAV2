@@ -88,8 +88,8 @@ Lane A builds the customer-facing WhatsApp work. Lane B builds the console and s
   - Good: `app.include_router(build_subscriptions_router())` under the lane B comment.
   - Bad: reordering imports or middleware in the same change.
 - Regenerate `docs/console_openapi.json` on your lane branch as the last commit before merge, with `python -m scripts.export_console_openapi`. A new console router must also be registered in `scripts/export_console_openapi.py` (`contract()`), or the snapshot test fails. If the other lane merged first, merge `main` and regenerate; never hand-merge the JSON.
-  - Good: merge the lane, then regenerate on `main` in a small follow-up.
-  - Bad: commit a regenerated file from the lane branch.
+  - Good: regenerate on your lane branch as the last commit before merge, and register the new router in `scripts/export_console_openapi.py`.
+  - Bad: hand-edit or hand-merge `docs/console_openapi.json`.
 - Add exactly one entry per lane to `docs/PROGRESS.md`, at the top, and update that entry as you go.
   - Good: one "Lane B: subscriptions" entry that grows.
   - Bad: a new entry for every commit.
