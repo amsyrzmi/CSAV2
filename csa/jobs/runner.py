@@ -19,6 +19,7 @@ from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
+from csa.jobs.subscriptions import run_subscriptions_due
 
 logger = structlog.get_logger(__name__)
 
@@ -63,6 +64,14 @@ def build_default_registry() -> JobRegistry:
             name="mute_expiry",
             every=timedelta(minutes=5),
             fn=run_mute_expiry,
+            per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="subscriptions_due",
+            every=timedelta(minutes=5),
+            fn=run_subscriptions_due,
             per_client=True,
         )
     )
