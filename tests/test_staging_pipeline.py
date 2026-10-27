@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKEN = SecretStr("123456:synthetic-development-token")
 
 
-def render(tmp_path: Path, *profiles: str) -> dict:
+def render(tmp_path: Path, *profiles: str, env_overrides: dict[str, str] | None = None) -> dict:
     secret_dir = tmp_path / "secrets"
     secret_dir.mkdir(mode=0o700)
     _make_synthetic_secrets(secret_dir)
@@ -44,6 +44,7 @@ def render(tmp_path: Path, *profiles: str) -> dict:
         command += ["--profile", profile]
     command += ["config", "--format", "json"]
     env = _compose_env(secret_dir) | {"CSA_STAGING_HOOKS_ORIGIN": "https://hooks.invalid"}
+    env |= env_overrides or {}
     result = subprocess.run(command, env=env, capture_output=True, text=True, check=True)
     assert "SYNTHETIC-ONLY" not in result.stdout
     return json.loads(result.stdout)
@@ -340,3 +341,31 @@ def test_pipeline_long_running_services_restart_unless_stopped(tmp_path: Path) -
         "staging-bot-setup",
     ):
         assert "restart" not in one_shots[name], name
+
+
+def test_gateway_workspace_assistant_is_opt_in(tmp_path: Path) -> None:
+    """The planner runs in the gateway; it stays off and keyless unless the operator opts in."""
+    (tmp_path / "default").mkdir()
+    default = render(tmp_path / "default", "staging-approved", "pipeline-approved")["services"]
+    gateway = default["gateway"]
+    assert gateway["environment"]["WORKSPACE_ASSISTANT_ENABLED"] == "false"
+    sources = {s["target"]: s["source"] for s in gateway["secrets"]}
+    assert sources["GROQ_API_KEY"] == "staging_disabled_model_key"
+
+    (tmp_path / "enabled").mkdir()
+    enabled = render(
+        tmp_path / "enabled",
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={
+            "CSA_STAGING_WORKSPACE_ASSISTANT": "true",
+            "CSA_STAGING_GATEWAY_MODEL_SECRET": "staging_model_key",
+        },
+    )["services"]
+    gateway = enabled["gateway"]
+    assert gateway["environment"]["WORKSPACE_ASSISTANT_ENABLED"] == "true"
+    sources = {s["target"]: s["source"] for s in gateway["secrets"]}
+    assert sources["GROQ_API_KEY"] == "staging_model_key"
+    assert "provider-egress" in gateway["networks"]
+    worker_sources = {s["target"]: s["source"] for s in enabled["worker"]["secrets"]}
+    assert worker_sources["GROQ_API_KEY"] == "staging_model_key"

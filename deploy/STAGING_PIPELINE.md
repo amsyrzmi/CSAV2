@@ -160,6 +160,23 @@ Telegram. Record the trace id and the counts in PROGRESS. Also upload a PDF to
 the knowledge base and confirm the job completes and a question about it is
 answered in the sandbox.
 
+## 7. Enable the workspace assistant (opt-in; owner decision)
+
+The assistant planner runs inside the gateway and calls the model provider, so enabling
+it gives the public-facing gateway the real model key (the same `pipeline/staging_model_key`
+file the worker uses) and makes dock turns cost money. It is off by default. To enable it,
+export two more variables in the same shell as section 2 and recreate only the gateway:
+
+```bash
+export CSA_STAGING_WORKSPACE_ASSISTANT=true
+export CSA_STAGING_GATEWAY_MODEL_SECRET=staging_model_key
+csa_pipeline_compose config --quiet || exit 1
+csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway
+```
+
+`/auth/me` then reports `workspace_assistant: true` and the dock button appears on every
+tab for tenant staff. To disable, unset both variables and recreate the gateway the same way.
+
 ## Rollback
 
 Stop only `worker`, `delivery` and `staging-embeddings`; the gateway can stay
