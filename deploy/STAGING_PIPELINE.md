@@ -283,9 +283,11 @@ set together".
 
 ### 9.4 Connect the number in the console (client's company administrator)
 
-Services → WhatsApp number → enter the phone number id, WABA id, the number as
-customers see it, and the token, then press Connect. The token is encrypted at
-rest and never shown again. A platform admin opening the same card sees the
+Services → WhatsApp number → enter the phone number id, WABA id and the token,
+then press Connect. The gateway first reads the number from Meta's Graph API with
+that token: a token Meta refuses (or a wrong phone number id) is rejected, an
+unreachable Graph API asks the admin to try again, and the number customers see is
+taken from Meta. The token is encrypted at rest and never shown again. A platform admin opening the same card sees the
 callback address; it must read `https://hooks.fourstacks.my/channels/whatsapp`
 (the gateway takes it from `CSA_STAGING_HOOKS_ORIGIN`). A number already
 connected to another company is refused.
