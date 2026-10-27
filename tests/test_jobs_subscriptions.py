@@ -127,6 +127,7 @@ async def test_cancel_at_period_end_wins_over_renewal_at_the_same_instant(
         gone = await fetch_subscription(conn, leaving)
         assert gone["status"] == "cancelled"
         assert gone["cancelled_at"] == NOW
+        assert gone["cancel_at_period_end"] is False
         assert gone["renews_at"] == NOW  # not advanced
         assert gone["version"] == 5
         events = await fetch_events(conn, leaving)

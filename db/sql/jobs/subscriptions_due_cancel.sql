@@ -15,7 +15,8 @@ WITH due AS (
     LIMIT %(batch_size)s
 ), changed AS (
     UPDATE public.subscriptions s
-    SET status = 'cancelled', cancelled_at = s.renews_at, version = s.version + 1
+    SET status = 'cancelled', cancelled_at = s.renews_at, cancel_at_period_end = false,
+        version = s.version + 1
     FROM due
     WHERE s.client_id = %(client_id)s AND s.id = due.id
     RETURNING s.id, due.from_status, s.status AS to_status
