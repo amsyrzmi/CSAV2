@@ -7,7 +7,7 @@ onboarding belongs to the tenant-scoped app pool, not this module.
 from __future__ import annotations
 
 import hmac
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID
 
 import psycopg
@@ -51,6 +51,10 @@ class IdentityConfig(BaseModel):
     login_window_seconds: int = Field(default=900, ge=1, le=3600)
     # Mirrors WORKSPACE_ASSISTANT_ENABLED so /auth/me can tell the console to show the dock.
     workspace_assistant: bool = False
+
+
+class _ApproverRecheckFailed(Exception):
+    """The approver changed between the first check and the success transaction."""
 
 
 class IdentityService:
@@ -131,6 +135,78 @@ class IdentityService:
             )
             await self._audit(conn, user["id"], "identity.bootstrap", user["id"])
             return user["id"]
+
+    async def add_platform_admin(
+        self,
+        approver_email: str,
+        approver_password: str,
+        email: str,
+        display_name: str,
+        password: str,
+        *,
+        ip: str = "operator-cli",
+    ) -> UUID:
+        """Add a platform admin, approved by an existing one who re-proves their password."""
+        from csa.console.contracts import EmailInput
+
+        approver_email = EmailInput(email=approver_email).email
+        email = EmailInput(email=email).email
+        if not 1 <= len(display_name) <= 120:
+            raise ValueError("display name must contain between 1 and 120 characters")
+        await self._throttle(approver_email, ip, purpose="admin_add")
+        async with self.pool.connection() as conn:
+            approver = await self._one(conn, "user_email", (approver_email,))
+        valid = await verify_password(
+            approver_password, approver["password_hash"] if approver else None
+        )
+        if not (
+            approver
+            and valid
+            and approver["is_enabled"]
+            and approver["is_platform_admin"]
+            and not approver["must_change_password"]
+        ):
+            await self._refuse_admin_add(approver_email)
+        password_hash = await hash_password(password)
+        try:
+            async with self.pool.connection() as conn, conn.transaction():
+                await self._exec(conn, "lock_admin")
+                current = await self._one(conn, "user_id", (approver["id"],))
+                if not (
+                    current
+                    and current["is_enabled"]
+                    and current["is_platform_admin"]
+                    and not current["must_change_password"]
+                    and current["password_hash"] == approver["password_hash"]
+                ):
+                    raise _ApproverRecheckFailed
+                if await self._one(conn, "user_email", (email,)):
+                    raise ValueError("a user with that email already exists")
+                user = await self._one(
+                    conn, "create_user", (email, display_name, password_hash, True, True)
+                )
+                await self._audit(
+                    conn,
+                    approver["id"],
+                    "identity.platform_admin_added",
+                    user["id"],
+                    approver_email=approver_email,
+                )
+                return user["id"]
+        except _ApproverRecheckFailed:
+            # The transaction has rolled back and released its connection (the operator
+            # script's pool holds one), so audit on a fresh one.
+            await self._refuse_admin_add(approver_email)
+
+    async def _refuse_admin_add(self, approver_email: str) -> NoReturn:
+        # Callers must hold no pooled connection: the one-connection operator pool would stall.
+        async with self.pool.connection() as conn, conn.transaction():
+            await self._audit(
+                conn, None, "identity.platform_admin_add_refused", digest(approver_email)
+            )
+        raise PermissionError(
+            "approver must be an enabled platform administrator with a valid password"
+        )
 
     async def resolve(self, raw_token: str, *, allow_password_change: bool = False) -> ConsoleActor:
         if not raw_token or len(raw_token) > 256:

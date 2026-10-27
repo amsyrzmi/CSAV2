@@ -177,6 +177,28 @@ csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull neve
 `/auth/me` then reports `workspace_assistant: true` and the dock button appears on every
 tab for tenant staff. To disable, unset both variables and recreate the gateway the same way.
 
+## 8. Add a platform administrator (owner runs)
+
+Invites create tenant members only. A further platform administrator is added by
+an existing one, who re-enters their own password. Run it in the shell from
+section 2, where `csa_pipeline_compose` and its exports are active:
+
+Requires a Python image built from a `main` commit that includes the W0 foundations (PR after 2026-10-27); export that image digest as `CSA_STAGING_PYTHON_IMAGE` in the section-2 shell first. On the older pinned image the gate passes and the one-shot stops with "No module named scripts.add_platform_admin".
+
+```sh
+CSA_STAGING_ADMIN_ADD_APPROVAL=approved-isolated-staging \
+csa_pipeline_compose --profile admin-add-approved run --rm --no-deps admin-add \
+  --approver-email existing-admin@example.test \
+  --email new-admin@example.test --display-name "New Admin" --add-platform-admin
+```
+
+Prompts: approver password, then the new initial password twice. Nothing is
+printed except the new user id. The new account must change its password at
+first login. On another database host (for example RDS)
+`export` `CSA_IDENTITY_EXPECTED_HOST` and `CSA_IDENTITY_EXPECTED_DB` with the
+expected values in that shell before running (the compose file ignores any env
+file); the role must still be `csa_identity`.
+
 ## Rollback
 
 Stop only `worker`, `delivery` and `staging-embeddings`; the gateway can stay

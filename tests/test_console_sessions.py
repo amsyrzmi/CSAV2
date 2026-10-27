@@ -18,7 +18,7 @@ from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
 from csa.console.security import digest
 from csa.core import db
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
@@ -44,6 +44,7 @@ class SessionWorld:
         upload_root: Path,
     ) -> None:
         self.owner_dsn = owner_dsn
+        self.identity_dsn = ""
         self.service = service
         self.pool = pool
         self.app = app
@@ -131,6 +132,7 @@ async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIter
     app.include_router(build_identity_router())
     app.include_router(build_onboarding_router())
     world = SessionWorld(migrated_dsn, service, domain_pool, app, tmp_path)
+    world.identity_dsn = identity_dsn
     try:
         await service.check_ready()
         world.admin_id = str(
@@ -870,3 +872,204 @@ async def test_public_reset_response_is_generic_and_creates_no_retrievable_token
     assert existing.json() == missing.json()
     assert "token" not in existing.text
     assert await sessions.q("SELECT count(*) AS count FROM console_tokens") == before
+
+
+async def _audit_actions(owner_dsn: str, action: str) -> list[dict[str, Any]]:
+    async with await psycopg.AsyncConnection.connect(owner_dsn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT actor_id, target_id, details FROM console_audit WHERE action = %s",
+                (action,),
+            )
+            return await cur.fetchall()
+
+
+async def test_add_platform_admin_requires_a_verified_enabled_approver(
+    sessions: SessionWorld,
+) -> None:
+    service = sessions.service
+    with pytest.raises(PermissionError):
+        await service.add_platform_admin(
+            "synthetic-admin@example.test",
+            "wrong-password-000",
+            "ops@example.test",
+            "Ops",
+            ADMIN_PASSWORD,
+        )
+    with pytest.raises(PermissionError):
+        await service.add_platform_admin(
+            "nobody@example.test", ADMIN_PASSWORD, "ops@example.test", "Ops", ADMIN_PASSWORD
+        )
+    refused = await _audit_actions(sessions.owner_dsn, "identity.platform_admin_add_refused")
+    assert len(refused) == 2 and all(row["actor_id"] is None for row in refused)
+    assert all(row["details"] in ({}, None) for row in refused)
+    assert {str(row["target_id"]) for row in refused} == {
+        digest("synthetic-admin@example.test"),
+        digest("nobody@example.test"),
+    }
+    async with await psycopg.AsyncConnection.connect(sessions.owner_dsn) as conn:
+        count = await (await conn.execute("SELECT count(*) FROM console_users")).fetchone()
+    assert count is not None and count[0] == 1
+
+
+async def test_add_platform_admin_creates_a_forced_change_admin_once(
+    sessions: SessionWorld,
+) -> None:
+    service = sessions.service
+    new_id = await service.add_platform_admin(
+        "synthetic-admin@example.test",
+        ADMIN_PASSWORD,
+        "Ops@Example.test ",
+        "Ops Admin",
+        MEMBER_PASSWORD,
+    )
+    added = await _audit_actions(sessions.owner_dsn, "identity.platform_admin_added")
+    assert [str(row["target_id"]) for row in added] == [str(new_id)]
+    assert str(added[0]["actor_id"]) == sessions.admin_id
+    assert added[0]["details"] == {"approver_email": "synthetic-admin@example.test"}
+    browser = await sessions.browser()
+    login = await sessions.mutate(
+        browser,
+        "/console/v1/auth/login",
+        {"email": "ops@example.test", "password": MEMBER_PASSWORD},
+    )
+    assert login.status_code == 200, login.text
+    assert login.json()["role"] == "platform_admin"
+    assert login.json()["user"]["must_change_password"] is True
+    with pytest.raises(ValueError, match="already exists"):
+        await service.add_platform_admin(
+            "synthetic-admin@example.test",
+            ADMIN_PASSWORD,
+            "ops@example.test",
+            "Again",
+            MEMBER_PASSWORD,
+        )
+
+
+async def test_add_platform_admin_throttles_repeated_bad_approver_passwords(
+    sessions: SessionWorld,
+) -> None:
+    service = sessions.service
+    for _ in range(service.config.login_attempts):
+        with pytest.raises(PermissionError):
+            await service.add_platform_admin(
+                "synthetic-admin@example.test",
+                "wrong-password-000",
+                "ops@example.test",
+                "Ops",
+                ADMIN_PASSWORD,
+            )
+    with pytest.raises(HTTPException) as blocked:
+        await service.add_platform_admin(
+            "synthetic-admin@example.test",
+            ADMIN_PASSWORD,
+            "ops@example.test",
+            "Ops",
+            ADMIN_PASSWORD,
+        )
+    assert blocked.value.status_code == 429
+
+
+async def _user_count(owner_dsn: str) -> int:
+    async with await psycopg.AsyncConnection.connect(owner_dsn) as conn:
+        row = await (await conn.execute("SELECT count(*) FROM console_users")).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+async def test_add_platform_admin_refuses_a_disabled_approver(sessions: SessionWorld) -> None:
+    before = await _user_count(sessions.owner_dsn)
+    await sessions.q("UPDATE console_users SET is_enabled = false WHERE id = %s", sessions.admin_id)
+    with pytest.raises(PermissionError):
+        await sessions.service.add_platform_admin(
+            "synthetic-admin@example.test",
+            ADMIN_PASSWORD,
+            "ops@example.test",
+            "Ops",
+            ADMIN_PASSWORD,
+        )
+    assert await _user_count(sessions.owner_dsn) == before
+    refused = await _audit_actions(sessions.owner_dsn, "identity.platform_admin_add_refused")
+    assert [str(row["target_id"]) for row in refused] == [digest("synthetic-admin@example.test")]
+    assert all(row["details"] in ({}, None) for row in refused)
+
+
+async def test_add_platform_admin_refuses_a_tenant_member_approver(
+    sessions: SessionWorld,
+) -> None:
+    _, me = await sessions.member()
+    email = me["user"]["email"]
+    before = await _user_count(sessions.owner_dsn)
+    with pytest.raises(PermissionError):
+        await sessions.service.add_platform_admin(
+            email, MEMBER_PASSWORD, "ops@example.test", "Ops", ADMIN_PASSWORD
+        )
+    assert await _user_count(sessions.owner_dsn) == before
+    refused = await _audit_actions(sessions.owner_dsn, "identity.platform_admin_add_refused")
+    assert [str(row["target_id"]) for row in refused] == [digest(email)]
+
+
+async def test_add_platform_admin_refuses_an_approver_who_must_change_password(
+    sessions: SessionWorld,
+) -> None:
+    await sessions.service.add_platform_admin(
+        "synthetic-admin@example.test", ADMIN_PASSWORD, "ops@example.test", "Ops", MEMBER_PASSWORD
+    )
+    before = await _user_count(sessions.owner_dsn)
+    with pytest.raises(PermissionError):
+        await sessions.service.add_platform_admin(
+            "ops@example.test", MEMBER_PASSWORD, "second@example.test", "Second", ADMIN_PASSWORD
+        )
+    assert await _user_count(sessions.owner_dsn) == before
+
+
+async def test_add_platform_admin_refuses_an_existing_tenant_member_email(
+    sessions: SessionWorld,
+) -> None:
+    _, me = await sessions.member()
+    before = await _user_count(sessions.owner_dsn)
+    with pytest.raises(ValueError, match="already exists"):
+        await sessions.service.add_platform_admin(
+            "synthetic-admin@example.test",
+            ADMIN_PASSWORD,
+            me["user"]["email"],
+            "Clash",
+            ADMIN_PASSWORD,
+        )
+    assert await _user_count(sessions.owner_dsn) == before
+
+
+async def test_add_platform_admin_rechecks_the_approver_inside_the_transaction(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import csa.console.identity as identity_module
+
+    real_hash = identity_module.hash_password
+
+    async def disable_then_hash(password: str) -> str:
+        await sessions.q(
+            "UPDATE console_users SET is_enabled = false WHERE id = %s", sessions.admin_id
+        )
+        return await real_hash(password)
+
+    # The operator script uses a one-connection pool: the refusal audit must not need a second.
+    pool = db.build_pool(sessions.identity_dsn, min_size=1, max_size=1, autocommit=True)
+    await pool.open(wait=True)
+    try:
+        service = IdentityService(pool, IdentityConfig(origins=(ORIGIN,)))
+        before = await _user_count(sessions.owner_dsn)
+        monkeypatch.setattr(identity_module, "hash_password", disable_then_hash)
+        with pytest.raises(PermissionError):
+            async with asyncio.timeout(15):
+                await service.add_platform_admin(
+                    "synthetic-admin@example.test",
+                    ADMIN_PASSWORD,
+                    "ops@example.test",
+                    "Ops",
+                    ADMIN_PASSWORD,
+                )
+    finally:
+        await pool.close()
+    assert await _user_count(sessions.owner_dsn) == before
+    refused = await _audit_actions(sessions.owner_dsn, "identity.platform_admin_add_refused")
+    assert [str(row["target_id"]) for row in refused] == [digest("synthetic-admin@example.test")]

@@ -4,7 +4,7 @@ import type { PackageState } from "./services-api";
 export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base" | "chat"
   | "inbox" | "email" | "business" | "tenants" | "members"
-  | "team" | "password";
+  | "team" | "password" | "subscriptions";
 export interface NavLink { href: string; label: string; key: NavKey }
 
 // Tab -> packages that unlock it (any one of them is enough).
@@ -14,6 +14,7 @@ const gate: Partial<Record<NavKey, string[]>> = {
   business: ["orders_products", "marketplaces"],
   hr: ["hr"],
   email: ["staff_email"],
+  subscriptions: ["subscriptions"],
 };
 // Statuses that unlock a tab; mirrors the server gates. The Inbox stays reachable while
 // Customer Support is suspended so staff can resolve held replies and escalations.

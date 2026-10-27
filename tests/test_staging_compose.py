@@ -69,6 +69,8 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
             "migration-approved",
             "--profile",
             "admin-bootstrap-approved",
+            "--profile",
+            "admin-add-approved",
             "config",
             "--format",
             "json",
@@ -88,6 +90,7 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
         "migrate",
         "uploads-init",
         "admin-bootstrap",
+        "admin-add",
     }
     assert {
         service_name: set(service["profiles"])
@@ -100,6 +103,7 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
         "migrate": {"migration-approved"},
         "uploads-init": {"migration-approved"},
         "admin-bootstrap": {"admin-bootstrap-approved"},
+        "admin-add": {"admin-add-approved"},
     }
     assert all(service["profiles"] for service in rendered["services"].values())
     assert all("ports" not in service for service in rendered["services"].values())
@@ -110,6 +114,7 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
     assert set(connector["networks"]) == {"edge", "connector-egress"}
     assert set(rendered["services"]["migrate"]["networks"]) == {"data"}
     assert set(rendered["services"]["admin-bootstrap"]["networks"]) == {"data"}
+    assert set(rendered["services"]["admin-add"]["networks"]) == {"data"}
     uploads_init = rendered["services"]["uploads-init"]
     assert uploads_init["network_mode"] == "none"
     assert "networks" not in uploads_init
@@ -168,6 +173,7 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
         },
         "uploads-init": set(),
         "admin-bootstrap": {"staging_identity_dsn"},
+        "admin-add": {"staging_identity_dsn"},
     }
     assert all(
         "staging_tunnel_token" not in service_grants
@@ -545,6 +551,139 @@ def test_admin_bootstrap_gate_requires_approval_and_identity_target(
         assert result.returncode != 0
         assert not record.exists()
         expected = "approval required" if approval != "approved-isolated-staging" else "target"
+        assert expected in result.stderr
+
+
+def _render_admin_add_gate(tmp_path: Path) -> str:
+    secrets_dir = tmp_path / "synthetic-staging-secrets"
+    secrets_dir.mkdir(mode=0o700)
+    _make_synthetic_secrets(secrets_dir)
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--file",
+            str(COMPOSE_FILE),
+            "--profile",
+            "admin-add-approved",
+            "config",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_compose_env(secrets_dir),
+    )
+    entrypoint = json.loads(result.stdout)["services"]["admin-add"]["entrypoint"]
+    assert entrypoint[:2] == ["python", "-c"]
+    return entrypoint[2]
+
+
+_RDS_HOST = "csa.abc.ap-southeast-5.rds.amazonaws.com"
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
+@pytest.mark.parametrize(
+    ("approval", "dsn", "expected_host", "expected_db", "delegated"),
+    [
+        (
+            "approved-isolated-staging",
+            "postgresql://csa_identity@staging-db:5432/csa_staging",
+            None,
+            None,
+            True,
+        ),
+        (
+            "approved-isolated-staging",
+            f"postgresql://csa_identity@{_RDS_HOST}/csa",
+            _RDS_HOST,
+            "csa",
+            True,
+        ),
+        (
+            "approved-isolated-staging",
+            f"postgresql://csa_identity@{_RDS_HOST}/csa",
+            None,
+            None,
+            False,
+        ),
+        (None, "postgresql://csa_identity@staging-db/csa_staging", None, None, False),
+        ("approved-isolated-staging", "postgresql://csa@staging-db/csa_staging", None, None, False),
+        (
+            "approved-isolated-staging",
+            "postgresql://csa_identity@staging-db/csa_staging?host=postgres",
+            None,
+            None,
+            False,
+        ),
+    ],
+)
+def test_admin_add_gate_honours_configurable_identity_target(
+    tmp_path: Path,
+    approval: str | None,
+    dsn: str,
+    expected_host: str | None,
+    expected_db: str | None,
+    *,
+    delegated: bool,
+) -> None:
+    code = _render_admin_add_gate(tmp_path)
+    stub_root = tmp_path / "stub"
+    (stub_root / "scripts").mkdir(parents=True)
+    (stub_root / "scripts" / "__init__.py").write_text("")
+    record = tmp_path / "delegated.json"
+    (stub_root / "scripts" / "add_platform_admin.py").write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['STUB_RECORD']).write_text(json.dumps("
+        "[os.environ['IDENTITY_DATABASE_URL'], sys.argv[1:]]))\n"
+    )
+    dsn_file = tmp_path / "IDENTITY_DATABASE_URL"
+    dsn_file.write_text(dsn + "\n")
+    env = {
+        "PATH": os.defpath,
+        "CSA_IDENTITY_DSN_FILE": str(dsn_file if approval else tmp_path / "absent"),
+        "STUB_RECORD": str(record),
+    }
+    if approval is not None:
+        env["CSA_ADMIN_ADD_APPROVAL"] = approval
+    if expected_host is not None:
+        env["CSA_IDENTITY_EXPECTED_HOST"] = expected_host
+    if expected_db is not None:
+        env["CSA_IDENTITY_EXPECTED_DB"] = expected_db
+    args = [
+        "--approver-email",
+        "a@example.test",
+        "--email",
+        "b@example.test",
+        "--display-name",
+        "B",
+        "--add-platform-admin",
+    ]
+    result = subprocess.run(
+        [sys.executable, "-E", "-s", "-c", code, *args],
+        cwd=stub_root,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert "staging-db" not in output
+    assert _RDS_HOST not in output
+    if delegated:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(record.read_text()) == [dsn, args]
+    else:
+        assert result.returncode != 0
+        assert not record.exists()
+        expected = (
+            "Explicit isolated admin-add approval required"
+            if approval != "approved-isolated-staging"
+            else "target"
+        )
         assert expected in result.stderr
 
 

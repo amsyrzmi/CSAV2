@@ -172,6 +172,50 @@ services:
     healthcheck:
       disable: true
 
+  # One-shot, interactive (getpass): add a further platform admin via csa_identity
+  # only. The expected host and database default to the isolated staging database
+  # and are overridden to run the same one-shot against another host (e.g. RDS).
+  # The gate never prints the DSN or the expected host.
+  admin-add:
+    <<: *python
+    profiles: ["admin-add-approved"]
+    environment:
+      NO_LOCAL_ENV: "1"
+      CSA_ADMIN_ADD_APPROVAL: ${CSA_STAGING_ADMIN_ADD_APPROVAL:-disabled}
+      CSA_IDENTITY_EXPECTED_HOST: ${CSA_IDENTITY_EXPECTED_HOST:-staging-db}
+      CSA_IDENTITY_EXPECTED_DB: ${CSA_IDENTITY_EXPECTED_DB:-csa_staging}
+      CSA_IDENTITY_DSN_FILE: /run/secrets/IDENTITY_DATABASE_URL
+    secrets:
+      - source: staging_identity_dsn
+        target: IDENTITY_DATABASE_URL
+    entrypoint:
+      - python
+      - -c
+      - |
+        import os, runpy, sys
+        from pathlib import Path
+        from urllib.parse import urlsplit
+        if os.environ.get("CSA_ADMIN_ADD_APPROVAL") != "approved-isolated-staging":
+            sys.exit("Explicit isolated admin-add approval required")
+        dsn = Path(os.environ["CSA_IDENTITY_DSN_FILE"]).read_text().strip()
+        url = urlsplit(dsn)
+        expected_host = os.environ.get("CSA_IDENTITY_EXPECTED_HOST", "staging-db")
+        expected_db = os.environ.get("CSA_IDENTITY_EXPECTED_DB", "csa_staging")
+        if (
+            url.scheme not in {"postgres", "postgresql"}
+            or url.hostname != expected_host
+            or url.port not in {None, 5432}
+            or url.username != "csa_identity"
+            or url.path != "/" + expected_db
+            or url.query
+            or url.fragment
+        ):
+            sys.exit("Identity target does not match the expected csa_identity database target")
+        os.environ["IDENTITY_DATABASE_URL"] = dsn
+        runpy.run_module("scripts.add_platform_admin", run_name="__main__", alter_sys=True)
+    healthcheck:
+      disable: true
+
 networks:
   data:
     internal: true

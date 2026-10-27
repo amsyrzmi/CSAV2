@@ -8,6 +8,7 @@ import subprocess
 
 import psycopg
 import pytest
+from apps.gateway.main import EXPECTED_SCHEMA_VERSION
 from scripts import migrate
 
 from tests.conftest import (
@@ -16,7 +17,6 @@ from tests.conftest import (
     requires_docker,
 )
 
-EXPECTED_SCHEMA_VERSION = "0460"
 LG01_SQL_VERSIONS = {"0100", "0110", "0120"}
 
 
