@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: SecretStr | None = None
     TELEGRAM_WEBHOOK_SECRET: SecretStr | None = None
 
+    # WhatsApp Cloud API app-level settings; per-customer tokens live in
+    # channel_credentials. Both secrets must be set together.
+    WHATSAPP_APP_SECRET: SecretStr | None = None
+    WHATSAPP_VERIFY_TOKEN: SecretStr | None = None
+    WHATSAPP_GRAPH_BASE_URL: HttpUrl = HttpUrl("https://graph.facebook.com/v21.0")
+
     PUBLIC_BASE_URL: HttpUrl
 
     CREDENTIALS_KEY: SecretStr
@@ -256,6 +262,17 @@ class Settings(BaseSettings):
             raise ValueError("KB_INGEST_ENABLED requires KB_UPLOAD_ROOT")
         if self.ENV == "prod" and self.KB_INGEST_ENABLED and self.TEI_ENDPOINT is None:
             raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
+        return self
+
+    @property
+    def whatsapp_enabled(self) -> bool:
+        """True when the WhatsApp ingress secrets are configured."""
+        return self.WHATSAPP_APP_SECRET is not None and self.WHATSAPP_VERIFY_TOKEN is not None
+
+    @model_validator(mode="after")
+    def _validate_whatsapp(self) -> Settings:
+        if (self.WHATSAPP_APP_SECRET is None) != (self.WHATSAPP_VERIFY_TOKEN is None):
+            raise ValueError("WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN must be set together")
         return self
 
     @model_validator(mode="after")
