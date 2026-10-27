@@ -33,7 +33,7 @@ from csa.staff.ownership import lock_conversation
 
 class InboxConversation(Contract):
     id: UUID
-    channel: Literal["telegram"]
+    channel: Literal["telegram", "whatsapp"]
     status: str
     owned_by: str | None
     ai_muted_until: datetime | None
@@ -55,6 +55,7 @@ class InboxMessage(Contract):
     created_at: datetime
     trace_id: UUID | None
     delivery_status: str | None
+    delivery_error: str | None = None
 
 
 class InboxMessagePage(Contract):
@@ -251,10 +252,13 @@ def build_inbox_router() -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
         before: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=50)] = 20,
+        channel: Literal["telegram", "whatsapp"] | None = None,
     ) -> InboxConversationPage:
         async with tx(request.app.state.pool, str(client_id)) as conn:
             rows = await db.q.fetch_all(
-                "inbox/list_conversations.sql", (client_id, before, before, limit + 1), conn=conn
+                "inbox/list_conversations.sql",
+                (client_id, channel, channel, before, before, limit + 1),
+                conn=conn,
             )
         items = [InboxConversation.model_validate(row) for row in rows[:limit]]
         return InboxConversationPage(

@@ -2898,7 +2898,10 @@
             "title": "Ai Muted Until"
           },
           "channel": {
-            "const": "telegram",
+            "enum": [
+              "telegram",
+              "whatsapp"
+            ],
             "title": "Channel",
             "type": "string"
           },
@@ -2994,6 +2997,17 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "delivery_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Error"
           },
           "delivery_status": {
             "anyOf": [
@@ -7824,6 +7838,127 @@
         "title": "VoiceSession",
         "type": "object"
       },
+      "WhatsAppNumberIn": {
+        "additionalProperties": false,
+        "properties": {
+          "access_token": {
+            "format": "password",
+            "maxLength": 4096,
+            "minLength": 20,
+            "title": "Access Token",
+            "type": "string",
+            "writeOnly": true
+          },
+          "display_phone": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Display Phone",
+            "type": "string"
+          },
+          "phone_number_id": {
+            "maxLength": 32,
+            "minLength": 5,
+            "pattern": "^[0-9]+$",
+            "title": "Phone Number Id",
+            "type": "string"
+          },
+          "waba_id": {
+            "maxLength": 32,
+            "minLength": 5,
+            "pattern": "^[0-9]+$",
+            "title": "Waba Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone_number_id",
+          "waba_id",
+          "display_phone",
+          "access_token"
+        ],
+        "title": "WhatsAppNumberIn",
+        "type": "object"
+      },
+      "WhatsAppNumberOut": {
+        "additionalProperties": false,
+        "properties": {
+          "callback_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Callback Url"
+          },
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "connected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "display_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Phone"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "phone_number_id_last4": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone Number Id Last4"
+          },
+          "waba_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waba Id"
+          }
+        },
+        "required": [
+          "connected",
+          "display_phone",
+          "phone_number_id_last4",
+          "waba_id",
+          "enabled",
+          "callback_url",
+          "connected_at"
+        ],
+        "title": "WhatsAppNumberOut",
+        "type": "object"
+      },
       "WorkflowCommand": {
         "additionalProperties": false,
         "properties": {
@@ -10092,6 +10227,206 @@
           }
         },
         "summary": "Update Capability"
+      }
+    },
+    "/console/v1/channels/whatsapp": {
+      "delete": {
+        "operationId": "disconnect_number_console_v1_channels_whatsapp_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Number",
+        "tags": [
+          "Channels"
+        ]
+      },
+      "get": {
+        "operationId": "get_number_console_v1_channels_whatsapp_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppNumberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Number",
+        "tags": [
+          "Channels"
+        ]
+      },
+      "put": {
+        "operationId": "connect_number_console_v1_channels_whatsapp_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhatsAppNumberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatsAppNumberOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect Number",
+        "tags": [
+          "Channels"
+        ]
       }
     },
     "/console/v1/chat/conversations": {
@@ -14013,6 +14348,26 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "telegram",
+                    "whatsapp"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
             }
           },
           {

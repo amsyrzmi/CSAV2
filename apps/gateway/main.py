@@ -27,6 +27,7 @@ from csa.channels.ingress import IngressError, TelegramIngress
 from csa.channels.marketplace.router import build_marketplace_router
 from csa.channels.whatsapp_ingress import WhatsAppIngress
 from csa.console.auth import build_identity_router
+from csa.console.channels import build_channels_router
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.middleware import ConsoleResponseHeaders
 from csa.console.onboarding import build_onboarding_router
@@ -418,6 +419,7 @@ def create_app() -> FastAPI:
     app.include_router(build_hr_router())
     app.include_router(build_email_router())
     # lane A (customer-facing): WhatsApp router registers here
+    app.include_router(build_channels_router())
     # lane B (console): subscriptions router registers here
     # --- end lane registrations ---
 
