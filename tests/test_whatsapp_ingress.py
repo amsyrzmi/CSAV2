@@ -57,6 +57,15 @@ async def test_0470_columns_indexes_and_function_exist(app_dsn: str, pg_containe
         assert ("conversations", "last_inbound_at") in cols
         assert ("outbound_deliveries", "provider_message_id") in cols
         assert ("outbound_deliveries", "provider_status") in cols
+        assert ("outbound_deliveries", "provider_error") in cols
+        route_columns = {
+            r[0]
+            for r in conn.execute(
+                "SELECT unnest(proargnames) FROM pg_proc WHERE proname = 'resolve_whatsapp_route'"
+            )
+        }
+        # Ciphertext is never fetched before the tenant is known.
+        assert "access_token" not in route_columns and "endpoint_id" in route_columns
         indexes = {r[0] for r in conn.execute("SELECT indexname FROM pg_indexes")}
         assert "channel_credentials_whatsapp_number_key" in indexes
         assert "outbound_deliveries_provider_message_idx" in indexes
@@ -173,13 +182,14 @@ async def test_provider_status_never_regresses(app_dsn: str, pg_container: objec
                 (client_id, endpoint_id, conversation[0], message[0], provider_message_id),
             )
 
-        def record(provider_message_id: str, status: str) -> None:
+        def record(provider_message_id: str, status: str, error_code: str | None = None) -> None:
             conn.execute(
                 stmt,
                 {
                     "client_id": client_id,
                     "provider_message_id": provider_message_id,
                     "status": status,
+                    "error_code": error_code,
                 },
             )
 
@@ -191,12 +201,22 @@ async def test_provider_status_never_regresses(app_dsn: str, pg_container: objec
             assert row is not None
             return row[0]
 
+        def error(provider_message_id: str) -> object:
+            row = conn.execute(
+                "SELECT provider_error FROM outbound_deliveries WHERE provider_message_id = %s",
+                (provider_message_id,),
+            ).fetchone()
+            assert row is not None
+            return row[0]
+
         delivery("wamid.A")
-        record("wamid.A", "sent")
-        record("wamid.A", "failed")
+        record("wamid.A", "sent", "999")
+        assert error("wamid.A") is None
+        record("wamid.A", "failed", "131047")
         record("wamid.A", "sent")
         record("wamid.A", "delivered")
         assert current("wamid.A") == "failed"
+        assert error("wamid.A") == "131047"
 
         delivery("wamid.B")
         record("wamid.B", "sent")
@@ -435,6 +455,30 @@ async def test_bad_signature_has_no_side_effects(
     with pytest.raises(IngressError) as parse_error:
         await ingress.receive(garbage_sig, garbage)
     assert parse_error.value.status_code == 422
+    no_number = _delivery(number, messages=[_text("wamid.B2")])
+    del no_number["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"]
+    with pytest.raises(IngressError) as envelope_error:
+        await ingress.receive(*signed(no_number))
+    assert envelope_error.value.status_code == 422
+    assert _count(pg_container, "ingress_events", client_id) == 0
+
+
+@requires_docker
+async def test_signed_batch_skips_items_it_does_not_understand(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    """One odd item never poisons the batch: the rest is stored and Meta gets a 200."""
+    ingress, _, client_id, number, _ = whatsapp_context
+    odd_message = {**_text("wamid.ODD"), "timestamp": "not-a-time"}
+    odd_status = {"id": "wamid.X", "status": "deleted", "timestamp": "1", "recipient_id": WA_ID}
+    body = _delivery(number, messages=[odd_message, _text("wamid.GOOD")], statuses=[odd_status])
+    receipts = await ingress.receive(*signed(body))
+    assert len(receipts) == 1 and not receipts[0].duplicate
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        keys = conn.execute(
+            "SELECT idempotency_key FROM ingress_events WHERE client_id = %s", (client_id,)
+        ).fetchall()
+    assert keys == [("wamid.GOOD",)]
 
 
 @requires_docker
@@ -480,10 +524,36 @@ async def test_two_tenants_two_numbers_stay_isolated(
     number_b = str(uuid.uuid4().int)[:15]
     with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
         client_b, _, _ = _seed_tenant(conn, number_b)
+        # Tenant A already knows this person: same phone, same wa_id conversation.
+        contact_a = conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) "
+            "VALUES (%s, '+60 12-345 6789', 'Tenant A customer') RETURNING id",
+            (client_a,),
+        ).fetchone()
+        assert contact_a is not None
+        conn.execute(
+            "INSERT INTO conversations (client_id, contact_id, channel, channel_thread) "
+            "VALUES (%s, %s, 'whatsapp', %s)",
+            (client_a, contact_a[0], WA_ID),
+        )
     await ingress.receive(*signed(_delivery(number_b, messages=[_text("wamid.I1")])))
     for table in ("contacts", "conversations", "ingress_events"):
         assert _count(pg_container, table, client_b) == 1
-        assert _count(pg_container, table, client_a) == 0
+    assert _count(pg_container, "contacts", client_a) == 1
+    assert _count(pg_container, "conversations", client_a) == 1
+    assert _count(pg_container, "ingress_events", client_a) == 0
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        contact_b = conn.execute(
+            "SELECT id, client_id, phone FROM contacts WHERE client_id = %s", (client_b,)
+        ).fetchall()
+        envelope_contact = conn.execute(
+            "SELECT raw -> 'envelope' -> 'contact' ->> 'id' FROM ingress_events "
+            "WHERE client_id = %s",
+            (client_b,),
+        ).fetchone()
+    assert len(contact_b) == 1 and contact_b[0][0] != contact_a[0]
+    assert str(contact_b[0][1]) == client_b and contact_b[0][2] == "+60123456789"
+    assert envelope_contact == (str(contact_b[0][0]),)
 
 
 @requires_docker
@@ -543,6 +613,14 @@ async def test_status_updates_delivery_by_provider_message_id(
     assert current() == "read"
     unknown = _delivery(number, statuses=[status("wamid.NONE", "read")])
     assert await ingress.receive(*signed(unknown)) == []
+    failed = {**status("wamid.OUT", "failed"), "errors": [{"code": 131047, "title": "x"}]}
+    await ingress.receive(*signed(_delivery(number, statuses=[failed])))
+    assert current() == "failed"
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        stored = conn.execute(
+            "SELECT provider_error FROM outbound_deliveries WHERE provider_message_id = 'wamid.OUT'"
+        ).fetchone()
+    assert stored == ("131047",)
 
 
 @requires_docker
@@ -566,6 +644,45 @@ async def test_image_message_is_enqueued_with_attachment_stub(
     assert row is not None
     assert row[0]["message"]["attachments"][0]["kind"] == "image"
     assert row[0]["message"]["body_raw"] == ""
+
+
+@requires_docker
+async def test_location_message_is_enqueued_as_a_live_turn(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    location = {
+        "from": WA_ID,
+        "id": "wamid.LOC",
+        "timestamp": "1791676800",
+        "type": "location",
+        "location": {"latitude": 3.1, "longitude": 101.6},
+    }
+    receipts = await ingress.receive(*signed(_delivery(number, messages=[location])))
+    assert len(receipts) == 1 and not receipts[0].duplicate
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT status, raw -> 'envelope' -> 'message', raw -> 'source' ->> 'kind' "
+            "FROM ingress_events WHERE client_id = %s",
+            (client_id,),
+        ).fetchone()
+        stamped = conn.execute(
+            "SELECT last_inbound_at FROM conversations WHERE client_id = %s", (client_id,)
+        ).fetchone()
+    assert row is not None
+    status, message, kind = row
+    assert status == "received" and kind == "message"
+    assert message["body_raw"] == ""
+    assert message["attachments"] == [
+        {
+            "kind": "other",
+            "mime_type": "application/vnd.whatsapp.location",
+            "file_id": None,
+            "filename": None,
+            "size_bytes": None,
+        }
+    ]
+    assert stamped is not None and stamped[0] is not None
 
 
 @requires_docker

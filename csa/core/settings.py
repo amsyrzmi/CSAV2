@@ -270,8 +270,10 @@ class Settings(BaseSettings):
     @classmethod
     def _whatsapp_disabled_is_unset(cls, value: object) -> object:
         # Staging secret files hold the literal "disabled" until the owner fills them.
+        # An empty or blank value is unset too: an empty app secret would make every
+        # signature forgeable.
         raw = value.get_secret_value() if isinstance(value, SecretStr) else value
-        return None if isinstance(raw, str) and raw.strip() == "disabled" else value
+        return None if isinstance(raw, str) and raw.strip() in {"", "disabled"} else value
 
     @property
     def whatsapp_enabled(self) -> bool:

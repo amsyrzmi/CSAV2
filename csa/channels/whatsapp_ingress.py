@@ -59,6 +59,7 @@ class WhatsAppIngress:
         if not self._adapter.verify_signature(self._app_secret, body, signature_header):
             raise IngressError(403, "invalid signature")
         try:
+            # Only envelope breakage raises; odd single items are skipped and logged.
             events = self._adapter.parse(body)
         except WhatsAppParseError as exc:
             raise IngressError(422, str(exc)) from exc
@@ -80,7 +81,6 @@ class WhatsAppIngress:
 
     async def _handle_event(self, event: WhatsAppEvent) -> IngressReceipt | None:
         async with self._pool.connection() as conn:
-            # The row carries a ciphertext token: never log it.
             route = await db.q.fetch_one(
                 "ingress/resolve_whatsapp_route.sql", (event.phone_number_id,), conn=conn
             )
@@ -231,6 +231,7 @@ class WhatsAppIngress:
                     "client_id": client_id,
                     "provider_message_id": event.status.provider_message_id,
                     "status": event.status.status,
+                    "error_code": event.status.error_code,
                 },
                 conn=conn,
             )

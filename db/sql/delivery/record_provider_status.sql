@@ -1,5 +1,6 @@
 UPDATE public.outbound_deliveries
-SET provider_status = %(status)s
+SET provider_status = %(status)s,
+    provider_error = CASE WHEN %(status)s = 'failed' THEN %(error_code)s ELSE provider_error END
 WHERE client_id = %(client_id)s
   AND provider_message_id = %(provider_message_id)s
   AND (

@@ -1,17 +1,23 @@
 -- 0470_whatsapp_channel.sql — WhatsApp Cloud API channel: schema and pre-tenant route lookup.
 -- Preconditions: 0460 applied (0120 resolve_endpoint, 0310 channel_credentials.shop_id).
--- Rollback: DROP FUNCTION public.resolve_whatsapp_route(text);
+-- Rollback: first DELETE the WhatsApp rows: outbound_deliveries and messages of WhatsApp
+--   conversations, conversations WHERE channel='whatsapp', contact_identities WHERE
+--   channel='whatsapp', webhook_endpoints whose credential is a channel='whatsapp'
+--   credential, then channel_credentials WHERE channel='whatsapp'. Then:
+--   DROP FUNCTION public.resolve_whatsapp_route(text);
 --   DROP INDEX public.channel_credentials_whatsapp_number_key;
 --   DROP INDEX public.outbound_deliveries_provider_message_idx;
---   ALTER TABLE public.outbound_deliveries DROP COLUMN provider_status, DROP COLUMN provider_message_id;
+--   ALTER TABLE public.outbound_deliveries DROP COLUMN provider_error,
+--     DROP COLUMN provider_status, DROP COLUMN provider_message_id;
 --   ALTER TABLE public.conversations DROP COLUMN last_inbound_at;
---   (first DELETE any channel='whatsapp' credentials and conversations).
 -- No RLS changes: every touched table already carries tenant_isolation (0110).
 ALTER TABLE public.conversations ADD COLUMN last_inbound_at timestamptz;
 
 ALTER TABLE public.outbound_deliveries
     ADD COLUMN provider_message_id text,
-    ADD COLUMN provider_status text CHECK (provider_status IN ('sent','delivered','read','failed'));
+    ADD COLUMN provider_status text CHECK (provider_status IN ('sent','delivered','read','failed')),
+    -- Meta's error code from an asynchronous 'failed' status callback (e.g. 131047).
+    ADD COLUMN provider_error text;
 
 CREATE INDEX outbound_deliveries_provider_message_idx
     ON public.outbound_deliveries (client_id, provider_message_id)
@@ -23,8 +29,7 @@ CREATE UNIQUE INDEX channel_credentials_whatsapp_number_key
 
 -- Pre-tenant route lookup by phone number id. Like resolve_endpoint (0120) it is
 -- SECURITY DEFINER and owned by csa so the definer bypass works under non-FORCE RLS.
--- The access token is returned still encrypted; the caller decrypts it with the
--- credential AAD.
+-- It never returns the access token: ciphertext is not fetched before the tenant is known.
 CREATE OR REPLACE FUNCTION public.resolve_whatsapp_route(p_phone_number_id text)
 RETURNS TABLE(
   endpoint_id uuid,
@@ -33,7 +38,6 @@ RETURNS TABLE(
   rate_limit_rpm int,
   is_enabled boolean,
   disabled_reason text,
-  access_token text,
   meta jsonb,
   runtime text,
   n8n_webhook_url text,
@@ -43,8 +47,7 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
-  SELECT e.id, e.client_id, c.id, e.rate_limit_rpm, e.is_enabled, e.disabled_reason,
-         c.access_token, c.meta,
+  SELECT e.id, e.client_id, c.id, e.rate_limit_rpm, e.is_enabled, e.disabled_reason, c.meta,
          tenant.config ->> 'runtime',
          tenant.config ->> 'n8n_webhook_url',
          COALESCE(tenant.config -> 'policy' ->> 'deployment_mode', tenant.deployment_mode)
