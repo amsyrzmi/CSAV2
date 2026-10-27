@@ -7,11 +7,13 @@ from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from psycopg import errors
 from psycopg.types.json import Jsonb
 from pydantic import Field, SecretStr
 
+from csa.channels.whatsapp import WhatsAppAdapter, WhatsAppVerifyError
 from csa.console.access import authenticate, tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
 from csa.console.kb_uploads import audit
@@ -22,11 +24,13 @@ from csa.core.tenancy import tx
 
 DIGITS = r"^[0-9]+$"
 
+logger = structlog.get_logger(__name__)
+
 
 class WhatsAppNumberIn(Contract):
     phone_number_id: str = Field(min_length=5, max_length=32, pattern=DIGITS)
     waba_id: str = Field(min_length=5, max_length=32, pattern=DIGITS)
-    display_phone: str = Field(min_length=1, max_length=32)
+    # The display number is not accepted from the form: Graph supplies it at connect time.
     access_token: SecretStr = Field(min_length=20, max_length=4096)
 
 
@@ -111,6 +115,21 @@ def build_channels_router() -> APIRouter:
         request: Request, payload: WhatsAppNumberIn, client_id: Annotated[UUID, Depends(tenant)]
     ) -> WhatsAppNumberOut:
         actor = require_member(request, client_id, write=True)
+        # Prove the token can read this number before storing anything, so nobody can
+        # claim a number they do not control and a typo never shows as "Connected".
+        try:
+            profile = await WhatsAppAdapter.verify_number(
+                payload.phone_number_id,
+                payload.access_token.get_secret_value(),
+                http_client=getattr(request.app.state, "whatsapp_http", None),
+                base_url=str(get_settings().WHATSAPP_GRAPH_BASE_URL),
+            )
+        except WhatsAppVerifyError as exc:
+            logger.warning(
+                "whatsapp_connect_refused", client_id=str(client_id), code=exc.error_code
+            )
+            status = 422 if exc.error_code == "whatsapp_token_rejected" else 502
+            raise HTTPException(status, exc.error_code) from None
         try:
             async with tx(request.app.state.pool, str(client_id)) as conn:
                 existing = await db.q.fetch_one(
@@ -130,10 +149,10 @@ def build_channels_router() -> APIRouter:
                         client_id,
                         payload.phone_number_id,
                         sealed,
-                        Jsonb({"waba_id": payload.waba_id, "display_phone": payload.display_phone}),
+                        Jsonb({"waba_id": payload.waba_id, "display_phone": profile.display_phone}),
                         client_id,
                         secrets.token_urlsafe(24),
-                        f"WhatsApp {payload.display_phone}",
+                        f"WhatsApp {profile.display_phone}",
                     ),
                     conn=conn,
                 )

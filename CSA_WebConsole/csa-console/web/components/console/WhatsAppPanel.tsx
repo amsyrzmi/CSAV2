@@ -9,7 +9,7 @@ import {
 } from "@/lib/channels-api";
 import { action, field, Notice, Panel, secondary } from "./ui";
 
-const EMPTY = { phone_number_id: "", waba_id: "", display_phone: "", access_token: "" };
+const EMPTY = { phone_number_id: "", waba_id: "", access_token: "" };
 
 function message(cause: unknown) {
   return cause instanceof Error ? cause.message : "Something went wrong. Try again.";
@@ -69,7 +69,7 @@ export function WhatsAppPanel({ tenantId, canManage, platform }: {
             event.preventDefault();
             void run(() => connectWhatsAppNumber(tenantId, {
               phone_number_id: form.phone_number_id.trim(), waba_id: form.waba_id.trim(),
-              display_phone: form.display_phone.trim(), access_token: form.access_token.trim(),
+              access_token: form.access_token.trim(),
             }));
           }}>
             <label className="block text-sm">Phone number ID
@@ -80,14 +80,11 @@ export function WhatsAppPanel({ tenantId, canManage, platform }: {
               <input className={field} required inputMode="numeric" pattern="[0-9]{5,32}" autoComplete="off"
                 data-testid="whatsapp-waba-id" value={form.waba_id} onChange={update("waba_id")} />
             </label>
-            <label className="block text-sm">Display number
-              <input className={field} required maxLength={32} placeholder="+60 12-345 6789" autoComplete="off"
-                data-testid="whatsapp-display-phone" value={form.display_phone} onChange={update("display_phone")} />
-            </label>
             <label className="block text-sm">Access token
               <input className={field} required type="password" minLength={20} maxLength={4096} autoComplete="off"
                 data-testid="whatsapp-access-token" value={form.access_token} onChange={update("access_token")} />
             </label>
+            <p className="text-sm text-ink-600">We check the number with WhatsApp before connecting it.</p>
             <button className={action} disabled={busy} data-testid="whatsapp-connect">Connect number</button>
           </form>
         ) : (

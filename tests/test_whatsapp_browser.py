@@ -32,6 +32,15 @@ from tests.test_services_browser import (
 pytestmark = pytest.mark.asyncio
 
 ACCESS_TOKEN = "EAAG-synthetic-access-token-0123456789"
+GRAPH_DISPLAY = "+60 12-345 6789"
+WINDOW_NOTICE = (
+    "WhatsApp only allows replies within 24 hours of the customer's last message. "
+    "Wait for the customer to message again."
+)
+TOKEN_REJECTED = (
+    "WhatsApp did not accept that access token for this phone number ID. "
+    "Check both in your Meta app, then try again."
+)
 CALLBACK = "https://hooks.invalid/channels/whatsapp"
 WHATSAPP_ID = "aaaaaaaa-0000-4000-8000-000000000001"
 TELEGRAM_ID = "bbbbbbbb-0000-4000-8000-000000000002"
@@ -141,7 +150,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
     page.on("pageerror", lambda error: diagnostics.append(str(error)))
     page.on("console", lambda message: diagnostics.append(f"{message.type}: {message.text}"))
 
-    state: dict[str, Any] = {"number": dict(DISCONNECTED)}
+    state: dict[str, Any] = {"number": dict(DISCONNECTED), "reject_next_put": True}
     puts: list[dict[str, Any]] = []
     inbox_queries: list[str] = []
     unexpected: list[str] = []
@@ -160,16 +169,41 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         elif path == "channels/whatsapp" and request.method == "PUT":
             body = request.post_data_json
             puts.append({"csrf": request.headers.get("x-csrf-token"), "body": body})
-            state["number"] = {
-                **DISCONNECTED,
-                "connected": True,
-                "enabled": True,
-                "display_phone": body["display_phone"],
-                "phone_number_id_last4": body["phone_number_id"][-4:],
-                "waba_id": body["waba_id"],
-                "connected_at": "2026-10-27T00:00:00Z",
+            if state["reject_next_put"]:
+                # The gateway's Graph check refused the token: nothing is stored.
+                state["reject_next_put"] = False
+                status, data = 422, {"detail": "whatsapp_token_rejected"}
+            else:
+                state["number"] = {
+                    **DISCONNECTED,
+                    "connected": True,
+                    "enabled": True,
+                    "display_phone": GRAPH_DISPLAY,
+                    "phone_number_id_last4": body["phone_number_id"][-4:],
+                    "waba_id": body["waba_id"],
+                    "connected_at": "2026-10-27T00:00:00Z",
+                }
+                data = state["number"]
+        elif path == f"inbox/conversations/{WHATSAPP_ID}/messages":
+            data = {
+                "items": [
+                    {
+                        "id": "cccccccc-0000-4000-8000-000000000003",
+                        "direction": "outbound",
+                        "author": "human_support",
+                        "body": "Your parcel left today.",
+                        "created_at": "2026-10-27T00:00:00Z",
+                        "trace_id": None,
+                        "delivery_status": "delivered",
+                        "delivery_error": None,
+                        "provider_status": "failed",
+                        "provider_error": "131047",
+                    }
+                ],
+                "next_cursor": None,
             }
-            data = state["number"]
+        elif path == f"inbox/conversations/{WHATSAPP_ID}":
+            data = everything[0]
         elif path == "inbox/conversations":
             inbox_queries.append(query)
             wanted = [part[8:] for part in query.split("&") if part.startswith("channel=")]
@@ -192,23 +226,25 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(page.get_by_test_id("whatsapp-phone-number-id")).to_be_visible(timeout=WAIT)
         await page.get_by_test_id("whatsapp-phone-number-id").fill("109876543210987")
         await page.get_by_test_id("whatsapp-waba-id").fill("208765432109876")
-        await page.get_by_test_id("whatsapp-display-phone").fill("+60 12-345 6789")
+        assert await page.get_by_test_id("whatsapp-display-phone").count() == 0
         await page.get_by_test_id("whatsapp-access-token").fill(ACCESS_TOKEN)
+        await page.get_by_test_id("whatsapp-connect").click()
+        # A token WhatsApp refuses is explained in plain words, without the code.
+        await expect(page.get_by_text(TOKEN_REJECTED)).to_be_visible(timeout=WAIT)
+        assert "whatsapp_token_rejected" not in await page.inner_text("body")
         await page.get_by_test_id("whatsapp-connect").click()
         connected = page.get_by_test_id("whatsapp-connected")
         await expect(connected).to_contain_text("Connected", timeout=WAIT)
-        await expect(connected).to_contain_text("+60 12-345 6789")
-        assert puts == [
-            {
-                "csrf": "synthetic-csrf",
-                "body": {
-                    "phone_number_id": "109876543210987",
-                    "waba_id": "208765432109876",
-                    "display_phone": "+60 12-345 6789",
-                    "access_token": ACCESS_TOKEN,
-                },
-            }
-        ]
+        await expect(connected).to_contain_text(GRAPH_DISPLAY)
+        sent = {
+            "csrf": "synthetic-csrf",
+            "body": {
+                "phone_number_id": "109876543210987",
+                "waba_id": "208765432109876",
+                "access_token": ACCESS_TOKEN,
+            },
+        }
+        assert puts == [sent, sent]
         assert ACCESS_TOKEN not in await page.inner_text("body")
         assert ACCESS_TOKEN not in await page.content()
         assert await page.get_by_test_id("whatsapp-access-token").count() == 0
@@ -224,6 +260,13 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(badges.first).to_have_text("WhatsApp")
         assert any("channel=whatsapp" in query for query in inbox_queries)
         assert ACCESS_TOKEN not in await page.inner_text("body")
+
+        # A reply Meta later reported as failed reads "not delivered" with the 24-hour rule.
+        await badges.first.click()
+        notice = page.get_by_test_id("inbox-delivery-notice")
+        await expect(notice).to_have_text(WINDOW_NOTICE, timeout=WAIT)
+        await expect(page.get_by_text("Staff · not delivered")).to_be_visible()
+        assert "131047" not in await page.inner_text("body")
 
         assert not unexpected, unexpected
         assert not upstream.unexpected, upstream.unexpected

@@ -3029,6 +3029,34 @@
             "title": "Id",
             "type": "string"
           },
+          "provider_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Error"
+          },
+          "provider_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sent",
+                  "delivered",
+                  "read",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Status"
+          },
           "trace_id": {
             "anyOf": [
               {
@@ -7849,12 +7877,6 @@
             "type": "string",
             "writeOnly": true
           },
-          "display_phone": {
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Display Phone",
-            "type": "string"
-          },
           "phone_number_id": {
             "maxLength": 32,
             "minLength": 5,
@@ -7873,7 +7895,6 @@
         "required": [
           "phone_number_id",
           "waba_id",
-          "display_phone",
           "access_token"
         ],
         "title": "WhatsAppNumberIn",

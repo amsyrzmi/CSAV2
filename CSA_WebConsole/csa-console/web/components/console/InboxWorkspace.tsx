@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
+import { deliveryLabel, deliveryNotice, type DeliveryState } from "@/lib/channels-api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
 import { createProposal, type ProposalOut } from "@/lib/workspace-api";
@@ -12,9 +13,8 @@ type Conversation = {
   id: string; channel: "telegram" | "whatsapp"; status: string; owned_by: string | null;
   ai_muted_until: string | null; human_muted: boolean; inbox_version: number; opened_at: string;
 };
-type Message = {
-  id: string; direction: string; author: string; body: string;
-  created_at: string; delivery_status: string | null; delivery_error: string | null;
+type Message = DeliveryState & {
+  id: string; direction: string; author: string; body: string; created_at: string;
 };
 type ChannelFilter = "" | "whatsapp" | "telegram";
 const CHANNEL_NAME = { telegram: "Telegram", whatsapp: "WhatsApp" } as const;
@@ -241,13 +241,16 @@ function ConversationDetail({ id, query, revision, blocked, submit }: {
           void act(current.human_muted ? "release" : "takeover");
       }}>{current.human_muted ? "Release to AI" : "Take over"}</button>
     </>}
-    <ol className="my-5 space-y-3">{[...messages.items].reverse().map((message) => <li key={message.id} className="rounded-md border border-ink-200 p-3">
-      <p className="text-xs text-ink-500">{message.direction === "inbound" ? "Customer" : message.author === "human_support" ? "Staff" : "Assistant"}
-        {message.delivery_status ? ` · ${message.delivery_status === "pending" ? "queued" : message.delivery_status}` : ""}</p>
-      <p className="whitespace-pre-wrap break-words text-sm">{message.body}</p>
-      {message.delivery_error === "outside_service_window" && <p className="mt-2 text-sm text-red-800">
-        WhatsApp only allows replies within 24 hours of the customer&apos;s last message. Wait for the customer to message again.</p>}
-    </li>)}</ol>
+    <ol className="my-5 space-y-3">{[...messages.items].reverse().map((message) => {
+      const label = deliveryLabel(message);
+      const notice = deliveryNotice(message);
+      return <li key={message.id} className="rounded-md border border-ink-200 p-3">
+        <p className="text-xs text-ink-500">{message.direction === "inbound" ? "Customer" : message.author === "human_support" ? "Staff" : "Assistant"}
+          {label ? ` · ${label}` : ""}</p>
+        <p className="whitespace-pre-wrap break-words text-sm">{message.body}</p>
+        {notice && <p className="mt-2 text-sm text-red-800" data-testid="inbox-delivery-notice">{notice}</p>}
+      </li>;
+    })}</ol>
     {messages.next_cursor && <button className={secondary} onClick={() => setPages((value) => value + 1)}>Older messages</button>}
     {current?.human_muted && <form className="mt-5 space-y-3" onSubmit={(event) => { event.preventDefault(); void act("reply"); }}>
       <label className="block text-sm">Human reply

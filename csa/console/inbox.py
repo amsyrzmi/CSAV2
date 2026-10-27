@@ -56,6 +56,9 @@ class InboxMessage(Contract):
     trace_id: UUID | None
     delivery_status: str | None
     delivery_error: str | None = None
+    # WhatsApp status callbacks: 'failed' arrives after a send that returned 200.
+    provider_status: Literal["sent", "delivered", "read", "failed"] | None = None
+    provider_error: str | None = None
 
 
 class InboxMessagePage(Contract):
