@@ -28,6 +28,8 @@ from csa.subscriptions.contracts import (
 
 Conn = AsyncConnection[Any]
 
+PHONE_TERM = re.compile(r"[\d\s+().-]+")
+
 
 def subscription_out(row: dict[str, Any]) -> SubscriptionOut:
     return SubscriptionOut.model_validate(
@@ -99,6 +101,11 @@ async def search_subscriptions(
     limit: int,
 ) -> SubscriptionPage:
     term = q.strip() if q else ""
+    # Digits only count as a phone search when the whole term reads like a phone number, so an
+    # email or "unit 5" never pulls in customers whose phone happens to contain those digits.
+    digits = re.sub(r"\D", "", term)
+    if not PHONE_TERM.fullmatch(term) or len(digits) < 3:
+        digits = ""
     rows = await db.q.fetch_all(
         "subscriptions/subscriptions_search.sql",
         {
@@ -106,7 +113,7 @@ async def search_subscriptions(
             "status": status,
             "plan": plan,
             "like": like_pattern(term) if term else None,
-            "digits": re.sub(r"\D", "", term),
+            "digits": digits,
             "before": before,
             "limit": limit + 1,
         },
@@ -197,6 +204,10 @@ async def create_subscription(
         },
         conn=conn,
     )
+    if created is None:  # the plan was archived or removed after the check above
+        raise HTTPException(422, "plan_unavailable")
+    if not created["renews_at_ok"]:
+        raise HTTPException(422, "renews_at_before_start")
     subscription_id: UUID = created["id"]
     await record_event(
         conn,

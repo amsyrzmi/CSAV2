@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from csa.core import db
+from csa.core.tenancy import tx
 from csa.subscriptions.api import build_subscriptions_router
 
 from tests.conftest import requires_docker
@@ -304,3 +306,105 @@ async def test_package_gate_and_cross_tenant_query(sessions: SessionWorld) -> No
     # A platform admin names the tenant explicitly.
     viewed = await w.admin.get(f"{BASE}/plans?client_id={w.tenants[0]}")
     assert viewed.status_code == 200
+
+
+async def test_search_digits_only_match_phones_for_phone_like_terms(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0])
+    ali = await seed_customer(
+        w, w.tenants[0], name="Ali", phone="+60 11 222 3333", email="ali88@gmail.com"
+    )
+    budi = await seed_customer(
+        w, w.tenants[0], name="Budi", phone="+60 19 888 0000", email="budi@shop.test"
+    )
+    made: dict[str, str] = {}
+    for name, contact in (("ali", ali), ("budi", budi)):
+        response = await w.mutate(staff, BASE, {"contact_id": contact, "plan_code": "basic"})
+        assert response.status_code == 201, response.text
+        made[name] = response.json()["id"]
+
+    async def ids(query: str) -> set[str]:
+        response = await staff.get(f"{BASE}?q={query}")
+        assert response.status_code == 200, response.text
+        return {item["id"] for item in response.json()["items"]}
+
+    # The 88 in an email address must not match Budi's phone (+60 19 888 0000).
+    assert await ids("ali88@gmail.com") == {made["ali"]}
+    assert await ids("88") == {made["ali"]}  # too short for a phone search; the email has it
+    assert await ids("unit%205") == set()
+    assert await ids("888") == {made["budi"]}  # three or more digits, phone-shaped
+    assert await ids("%2B60%2019-888") == {made["budi"]}
+
+
+async def test_default_renewal_follows_the_tenant_calendar(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    assert (await w.q("SELECT timezone FROM clients WHERE id=%s", w.tenants[0]))[0][
+        "timezone"
+    ] == "Asia/Kuala_Lumpur"
+    await seed_plan(w, w.tenants[0], "basic")
+    contact = await seed_customer(w, w.tenants[0])
+
+    async def renews(started: str) -> datetime:
+        response = await w.mutate(
+            staff,
+            BASE,
+            {"contact_id": contact, "plan_code": "basic", "started_at": started},
+        )
+        assert response.status_code == 201, response.text
+        return when(response.json()["renews_at"])
+
+    # 2026-02-28T17:00Z is 1 Mar 01:00 in Kuala Lumpur, so the month ends on 1 Apr 01:00 there,
+    # not on 28 Mar in UTC.
+    assert await renews("2026-02-28T17:00:00Z") == datetime(2026, 3, 31, 17, 0, tzinfo=UTC)
+    # 31 Jan 12:00 local clamps to the end of February (28 Feb 12:00 local).
+    assert await renews("2026-01-31T04:00:00Z") == datetime(2026, 2, 28, 4, 0, tzinfo=UTC)
+
+
+async def test_create_refuses_renewal_not_after_start(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0])
+    contact = await seed_customer(w, w.tenants[0])
+    start = "2026-03-15T08:00:00Z"
+    for renews in (start, "2026-03-14T08:00:00Z"):
+        response = await w.mutate(
+            staff,
+            BASE,
+            {"contact_id": contact, "plan_code": "basic", "started_at": start, "renews_at": renews},
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"] == "renews_at_before_start"
+    assert await w.q("SELECT 1 FROM subscriptions WHERE client_id=%s", w.tenants[0]) == []
+    ok = await w.mutate(
+        staff,
+        BASE,
+        {
+            "contact_id": contact,
+            "plan_code": "basic",
+            "started_at": start,
+            "renews_at": "2026-03-16T08:00:00Z",
+        },
+    )
+    assert ok.status_code == 201, ok.text
+    assert when(ok.json()["renews_at"]) == datetime(2026, 3, 16, 8, 0, tzinfo=UTC)
+
+
+async def test_insert_requires_an_active_plan_at_write_time(sessions: SessionWorld) -> None:
+    w = sessions
+    await seed_plan(w, w.tenants[0], "old", is_active=False)
+    contact = await seed_customer(w, w.tenants[0])
+    async with tx(w.pool, w.tenants[0]) as conn:
+        row = await db.q.fetch_one(
+            "subscriptions/subscription_insert.sql",
+            {
+                "client_id": w.tenants[0],
+                "contact_id": contact,
+                "plan_code": "old",
+                "started_at": None,
+                "renews_at": None,
+            },
+            conn=conn,
+        )
+    assert row is None
