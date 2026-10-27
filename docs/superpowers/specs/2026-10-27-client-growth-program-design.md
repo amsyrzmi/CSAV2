@@ -157,7 +157,7 @@ sequencing point.
    `CSA_IDENTITY_EXPECTED_DB`, defaulting to the staging values) so the same
    one-shot runs against RDS on AWS; the role check stays `csa_identity`.
 5. **Hot-file rules** (documented in the writing guide's appendix for developers):
-   `docs/console_openapi.json` is regenerated only on `main` after each merge;
+   `docs/console_openapi.json` is regenerated on the lane branch as the last commit before merge (`python -m scripts.export_console_openapi`); a new console router must also be registered in `scripts/export_console_openapi.py` (`contract()`), and if the other lane merged first the lane merges `main` and regenerates, never hand-merging the JSON;
    `docs/PROGRESS.md` gets one entry per lane at the top (conflicts are trivial);
    W0 wraps the existing `include_router` calls in `apps/gateway/main.py` in a
    commented "lane registrations" block with one line reserved per lane;

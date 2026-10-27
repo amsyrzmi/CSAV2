@@ -183,6 +183,8 @@ Invites create tenant members only. A further platform administrator is added by
 an existing one, who re-enters their own password. Run it in the shell from
 section 2, where `csa_pipeline_compose` and its exports are active:
 
+Requires a Python image built from a `main` commit that includes the W0 foundations (PR after 2026-10-27); export that image digest as `CSA_STAGING_PYTHON_IMAGE` in the section-2 shell first. On the older pinned image the gate passes and the one-shot stops with "No module named scripts.add_platform_admin".
+
 ```sh
 CSA_STAGING_ADMIN_ADD_APPROVAL=approved-isolated-staging \
 csa_pipeline_compose --profile admin-add-approved run --rm --no-deps admin-add \

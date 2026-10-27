@@ -351,7 +351,7 @@ async def test_inbox_lists_whatsapp_conversations_with_channel_and_filter(...)  
 Run: `NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_console_channels.py -q`
 Expected: 404s / import errors.
 
-- [ ] **Step 3: Implement the router, SQL and inbox changes; register the router on the lane A line**
+- [ ] **Step 3: Implement the router, SQL and inbox changes; register the router on the lane A line and in `scripts/export_console_openapi.py::contract()`** (the snapshot test builds its own router list)
 
 - [ ] **Step 4: Regenerate the OpenAPI snapshot and run the backend tests**
 

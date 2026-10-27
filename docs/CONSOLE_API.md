@@ -136,7 +136,7 @@ NO_LOCAL_ENV=1 uv run python -m scripts.add_platform_admin \
   --email new-admin@example.test --display-name "New Admin" --add-platform-admin
 ```
 
-The approver re-enters their own password (same throttle as login) and must be an
+The approver re-enters their own password (same limits as login, on a separate counter) and must be an
 enabled platform administrator who has changed their initial password. The new
 account must change its password at first login. Audit: `identity.platform_admin_added`
 (approver as actor) or `identity.platform_admin_add_refused`.

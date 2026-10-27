@@ -211,7 +211,7 @@ async def test_package_gate_and_cross_tenant_query(sessions)  # tenant without p
 Run: `NO_LOCAL_ENV=1 ENV=ci uv run pytest tests/test_console_subscriptions.py -q`
 Expected: 404 on every route.
 
-- [ ] **Step 3: Implement contracts, SQL, service and routes; register on the lane B line**
+- [ ] **Step 3: Implement contracts, SQL, service and routes; register the router on the lane B line and in `scripts/export_console_openapi.py::contract()`** (the snapshot test builds its own router list)
 
 - [ ] **Step 4: Regenerate the OpenAPI snapshot and run**
 

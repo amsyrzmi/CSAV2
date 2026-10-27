@@ -281,7 +281,7 @@ services. Their configuration is verified only by synthetic render tests in
   against another host such as RDS. It never prints the DSN or the expected host,
   and delegates to the packaged `scripts.add_platform_admin`.
 
-The gate is inline because the approved image (`7cdc156`) predates it. The
+For `admin-bootstrap`, the gate is inline because the approved image (`7cdc156`) predates it. `admin-add` needs a post-W0 image that contains `scripts/add_platform_admin.py`. The
 tests run that exact rendered code against a stub module. Between `7cdc156` and
 this procedure's base `2a4a037`, nothing changed in `db/`, `scripts/migrate.py`,
 `scripts/staging_migrate.py`, `scripts/lg_setup.py`,

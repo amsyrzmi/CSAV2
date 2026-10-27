@@ -346,7 +346,8 @@ def create_app() -> FastAPI:
         )
     )
 
-    # --- lane registrations: one line per lane; keep alphabetical, no other edits here ---
+    # --- lane registrations: one line per lane; add your one line directly under your
+    # lane's comment; no other edits here ---
     app.include_router(build_marketplace_router())
     app.include_router(build_hr_router())
     app.include_router(build_email_router())
