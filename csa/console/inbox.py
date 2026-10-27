@@ -1,4 +1,4 @@
-"""Session-authorized Telegram customer inbox, separate from the owner-private sandbox."""
+"""Session-authorized customer inbox, separate from the owner-private sandbox."""
 
 from __future__ import annotations
 
@@ -369,7 +369,7 @@ def build_inbox_router() -> APIRouter:
                     "inbox/get_reply_route.sql", (client_id, conversation_id), conn=conn
                 )
                 if route is None:
-                    raise HTTPException(409, "no active customer Telegram route")
+                    raise HTTPException(409, "This conversation has no active channel to reply on.")
                 message = await db.q.fetch_one(
                     "inbox/insert_reply.sql",
                     (

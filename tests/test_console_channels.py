@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -9,11 +12,14 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from apps.worker.main import IngressWorker
+from csa.channels.whatsapp_ingress import WhatsAppIngress
 from csa.console.channels import build_channels_router
 from csa.core import crypto
+from csa.core.db import build_pool
 
 from tests.conftest import requires_docker
-from tests.test_console_inbox import seed
+from tests.test_console_inbox import path, seed
 from tests.test_console_services import activate
 from tests.test_console_sessions import SessionWorld
 
@@ -319,6 +325,105 @@ async def test_failed_status_callback_reaches_the_inbox(sessions: SessionWorld) 
     assert item["delivery_status"] == "delivered"
     assert item["provider_status"] == "failed"
     assert item["provider_error"] == "131047"
+
+
+async def test_staff_inbox_reply_on_whatsapp_is_queued_on_the_whatsapp_endpoint(
+    sessions: SessionWorld,
+) -> None:
+    """Ingress, worker, take over and reply: the staff reply uses the WhatsApp route."""
+    w = sessions
+    number = "309876543210987"
+    assert (await w.mutate(w.admin, url(w), body(number), method="PUT")).status_code == 200
+    endpoint = (
+        await w.q(
+            "SELECT e.id FROM webhook_endpoints e JOIN channel_credentials c "
+            "ON c.id=e.credential_id WHERE c.client_id=%s AND c.channel='whatsapp'",
+            w.tenants[0],
+        )
+    )[0]["id"]
+    secret = "synthetic-app-secret"
+    delivery = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "1",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {"display_phone_number": "1", "phone_number_id": number},
+                            "contacts": [{"profile": {"name": "Aina"}, "wa_id": "60123456789"}],
+                            "messages": [
+                                {
+                                    "from": "60123456789",
+                                    "id": f"wamid.{uuid4().hex}",
+                                    "timestamp": "1791676800",
+                                    "type": "text",
+                                    "text": {"body": "Is my parcel out?"},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    raw = json.dumps(delivery).encode()
+    signature = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    ingress = WhatsAppIngress(w.pool, app_secret=secret, verify_token="synthetic-verify")
+    (receipt,) = await ingress.receive(signature, raw)
+
+    owner_pool = build_pool(w.owner_dsn, max_size=2)
+    await owner_pool.open(wait=True)
+    try:
+        worker = IngressWorker(owner_pool, w.pool, lock_conninfo=w.owner_dsn)
+        # The queue is shared with other tests: work until this turn is complete.
+        for _ in range(50):
+            done = await w.q(
+                "SELECT 1 FROM ingress_events WHERE trace_id=%s AND status='completed'",
+                receipt.trace_id,
+            )
+            if done or not await worker.process_once():
+                break
+    finally:
+        await owner_pool.close()
+    conversation = (
+        await w.q(
+            "SELECT id FROM conversations WHERE client_id=%s AND channel='whatsapp'",
+            w.tenants[0],
+        )
+    )[0]["id"]
+
+    taken = await w.mutate(
+        w.admin,
+        path(w, f"/conversations/{conversation}/takeover"),
+        {"request_key": str(uuid4()), "expected_version": 0},
+    )
+    assert taken.status_code == 200, taken.text
+    version = taken.json()["conversation"]["inbox_version"]
+    reply = await w.mutate(
+        w.admin,
+        path(w, f"/conversations/{conversation}/reply"),
+        {"request_key": str(uuid4()), "expected_version": version, "body": "Yes, it left today."},
+    )
+    assert reply.status_code == 202, reply.text
+    message_id = reply.json()["message_id"]
+    queued = await w.q(
+        "SELECT endpoint_id, status FROM outbound_deliveries WHERE message_id=%s", message_id
+    )
+    assert queued == [{"endpoint_id": endpoint, "status": "pending"}]
+
+    # Once the number is disconnected there is no route; the refusal names no channel.
+    assert (await w.mutate(w.admin, url(w), method="DELETE")).status_code == 204
+    version = reply.json()["conversation"]["inbox_version"]
+    refused = await w.mutate(
+        w.admin,
+        path(w, f"/conversations/{conversation}/reply"),
+        {"request_key": str(uuid4()), "expected_version": version, "body": "Still there?"},
+    )
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "This conversation has no active channel to reply on."
 
 
 async def test_disconnect_releases_the_number_for_another_tenant(sessions: SessionWorld) -> None:
