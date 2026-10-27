@@ -35,6 +35,10 @@ const explained: Record<string, string> = {
     "A special price can only start straight away. Clear the start date or the special price.",
   renews_at_before_start: "The renewal date must be after the start date. Choose a later renewal date.",
   renews_at_not_after_current: "Choose a renewal date after the current one.",
+  resume_at_not_after_today: "Choose a resume date after today.",
+  plan_in_use:
+    "Add a new plan with the billing period you want. This plan's billing period cannot change while customers are on it.",
+  proposal_registry_unavailable: "We could not prepare the change. Wait a minute and try again.",
   request_has_no_subscription:
     "This request is not linked to a subscription. Decline it, then make the change from the customer's subscription.",
   request_subscription_mismatch:

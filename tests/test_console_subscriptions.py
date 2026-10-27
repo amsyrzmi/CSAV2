@@ -458,3 +458,51 @@ async def test_billing_interval_cannot_change_while_the_plan_is_in_use(
     missing = await patch("ghost", {"billing_interval": "year"})
     assert missing.status_code == 404 and missing.json()["detail"] == "plan_not_found"
 
+
+async def test_customer_lookup_for_adding_a_subscription(sessions: SessionWorld) -> None:
+    w = sessions
+    reader, _ = await w.member(role="read_only")
+    ali = await seed_customer(
+        w, w.tenants[0], name="Ali 100%", phone="+60 11 222 3333", email="ali88@gmail.com"
+    )
+    budi = await seed_customer(
+        w, w.tenants[0], name="Budi", phone="+60 19 888 0000", email="budi@shop.test"
+    )
+    await seed_customer(w, w.tenants[1], name="Ali Other", phone="+60 11 222 3333")
+    customers = f"{BASE}/customers"
+
+    async def ids(query: str) -> list[str]:
+        response = await reader.get(f"{customers}?{query}")
+        assert response.status_code == 200, response.text
+        return [item["id"] for item in response.json()]
+
+    found = await reader.get(f"{customers}?q=ali")
+    assert found.status_code == 200, found.text
+    assert found.json() == [
+        {"id": ali, "full_name": "Ali 100%", "phone": "+60 11 222 3333", "email": "ali88@gmail.com"}
+    ]
+    assert await ids("") == [ali, budi]  # by name
+    assert await ids("limit=1") == [ali]
+    assert await ids("q=SHOP.test") == [budi]
+    assert await ids("q=%2B60%2019-888") == [budi]  # phone-shaped: digits of the phone
+    assert await ids("q=ali88@gmail.com") == [ali]  # the 88 is not a phone search
+    assert await ids("q=100%25") == [ali]  # '%' is literal
+    assert await ids("q=nobody") == []
+    for query in ("limit=0", "limit=51", f"q={'x' * 101}"):
+        assert (await reader.get(f"{customers}?{query}")).status_code == 422
+
+    admin, _ = await w.member(role="tenant_admin")
+    crossing = await admin.get(f"{customers}?client_id={w.tenants[1]}")
+    assert crossing.status_code == 403
+    named = await w.admin.get(f"{customers}?client_id={w.tenants[1]}&q=ali")
+    assert named.status_code == 200 and [c["full_name"] for c in named.json()] == ["Ali Other"]
+
+    created = await w.mutate(
+        w.admin,
+        "/console/v1/admin/clients",
+        {"slug": f"synthetic-{uuid.uuid4()}", "name": "No Package Tenant"},
+    )
+    assert created.status_code == 201, created.text
+    bare, _ = await w.member(role="tenant_admin", tenant=created.json()["id"])
+    refused = await bare.get(customers)
+    assert refused.status_code == 403 and refused.json()["detail"] == "package_inactive"

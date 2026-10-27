@@ -185,6 +185,11 @@ export function getSubscription(tenantId: string | null, subscriptionId: string)
   return api(subscriptionsPath(tenantId, id(subscriptionId)));
 }
 
+/** The tenant's customers by name, email or phone, to put one on a plan (everyone, by name, without `q`). */
+export function searchCustomers(tenantId: string | null, q: string, limit?: number): Promise<CustomerRef[]> {
+  return api(subscriptionsPath(tenantId, "/customers", { q: q.trim(), limit: limit ? String(limit) : null }));
+}
+
 export function createSubscription(tenantId: string | null, body: SubscriptionCreateIn): Promise<SubscriptionOut> {
   return post(subscriptionsPath(tenantId), body);
 }
@@ -270,15 +275,25 @@ const ALLOWED_FROM: Record<SubscriptionAction, SubscriptionStatus[]> = {
   extend_renewal: ["active"],
 };
 
-/** The actions the subscription's current state allows, in button order. */
+/**
+ * The actions the subscription's current state allows, in button order. A period-end cancel
+ * needs a renewal date (the period never ends without one) and is offered once.
+ */
 export function availableActions(
-  subscription: Pick<SubscriptionOut, "status" | "cancel_at_period_end">,
+  subscription: Pick<SubscriptionOut, "status" | "cancel_at_period_end" | "renews_at">,
 ): SubscriptionAction[] {
   return (Object.keys(ALLOWED_FROM) as SubscriptionAction[]).filter(
     (action) =>
       ALLOWED_FROM[action].includes(subscription.status) &&
-      !(action === "cancel_at_period_end" && subscription.cancel_at_period_end),
+      !(action === "cancel_at_period_end" && (subscription.cancel_at_period_end || !subscription.renews_at)),
   );
+}
+
+/** Tomorrow's date as "YYYY-MM-DD" on this browser's calendar: the earliest resume date. */
+export function dayAfter(today: Date = new Date()): string {
+  const next = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`;
 }
 
 const SYSTEM_ACTOR = "system:subscriptions_due";

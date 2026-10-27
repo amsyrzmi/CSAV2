@@ -5,6 +5,8 @@ import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import {
   availableActions,
+  createSubscription,
+  dayAfter,
   decideRequest,
   eventSentence,
   formatDateTime,
@@ -15,6 +17,7 @@ import {
   money,
   proposeAction,
   requestSentence,
+  searchCustomers,
   searchSubscriptions,
   STATUS_LABELS,
   createPlan,
@@ -154,6 +157,8 @@ function Customers({ tenantId, writer, plans, planName }: {
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [notice, setNotice] = useState("");
   useEffect(() => {
     let live = true;
     searchSubscriptions(tenantId, filters)
@@ -174,6 +179,15 @@ function Customers({ tenantId, writer, plans, planName }: {
   const filtered = Boolean(filters.q || filters.status || filters.plan);
   return (
     <Panel title="Customers">
+      {notice && <div className="mb-4"><Notice>{notice}</Notice></div>}
+      {writer && !adding && (
+        <div className="mb-4"><button type="button" className={action} data-testid="subscription-add"
+          onClick={() => { setAdding(true); setNotice(""); }}>Add subscription</button></div>
+      )}
+      {writer && adding && (
+        <AddSubscription tenantId={tenantId} plans={plans} onCancel={() => setAdding(false)}
+          onAdded={(text) => { setAdding(false); setNotice(text); setRevision((value) => value + 1); }} />
+      )}
       <form className="mb-5 grid gap-3 md:grid-cols-[1fr_12rem_12rem_auto]" role="search"
         onSubmit={(event) => { event.preventDefault(); setFilters((current) => ({ ...current, q: draft.trim() })); }}>
         <label className="sr-only" htmlFor="subscriptions-search">Search customers</label>
@@ -199,7 +213,9 @@ function Customers({ tenantId, writer, plans, planName }: {
       {rows === null ? (!error && <Notice>Loading subscriptions…</Notice>) : rows.length === 0 ? (
         <Notice>{filtered
           ? "No subscriptions match. Try another name, phone or email, or clear the filters."
-          : "Subscriptions will appear here once a customer joins one of your plans."}</Notice>
+          : writer
+            ? "Subscriptions will appear here. Add a subscription to put a customer on one of your plans."
+            : "Subscriptions will appear here once your team adds a customer to a plan."}</Notice>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[40rem] text-sm" data-testid="subscriptions-table">
@@ -239,6 +255,105 @@ function Customers({ tenantId, writer, plans, planName }: {
       {openId && <Drawer key={openId} tenantId={tenantId} id={openId} writer={writer} plans={plans}
         planName={planName} onClose={() => setOpenId(null)} onChanged={() => setRevision((value) => value + 1)} />}
     </Panel>
+  );
+}
+
+function AddSubscription({ tenantId, plans, onAdded, onCancel }: {
+  tenantId: string | null; plans: PlanOut[]; onAdded: (text: string) => void; onCancel: () => void;
+}) {
+  const [term, setTerm] = useState("");
+  const [found, setFound] = useState<CustomerRef[] | null>(null);
+  const [chosen, setChosen] = useState<CustomerRef | null>(null);
+  const [planCode, setPlanCode] = useState("");
+  const [startsOn, setStartsOn] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const choices = plans.filter((plan) => plan.is_active);
+  async function find() {
+    setError("");
+    try {
+      setFound(await searchCustomers(tenantId, term));
+    } catch (cause) {
+      setError(message(cause));
+    }
+  }
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!chosen || !planCode) return;
+    setBusy(true);
+    setError("");
+    try {
+      await createSubscription(tenantId, {
+        contact_id: chosen.id, plan_code: planCode, ...(startsOn ? { started_at: dayToInstant(startsOn) } : {}),
+      });
+      const plan = choices.find((item) => item.code === planCode);
+      onAdded(`Added. ${customerName(chosen)} is on the ${plan?.name ?? planCode} plan.`);
+    } catch (cause) {
+      setError(message(cause));
+      setBusy(false);
+    }
+  }
+  const contact = (who: CustomerRef) => (who.full_name && (who.phone || who.email) ? ` · ${who.phone || who.email}` : "");
+  return (
+    <form className="mb-5 space-y-3 rounded-md border border-ink-200 p-4" data-testid="subscription-add-form"
+      onSubmit={(event) => void submit(event)}>
+      <h3 className="font-semibold">Add subscription</h3>
+      {chosen ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <p data-testid="add-customer-chosen">Customer: <span className="font-medium">{customerName(chosen)}</span>
+            <span className="text-ink-500">{contact(chosen)}</span></p>
+          <button type="button" className={secondary} disabled={busy}
+            onClick={() => setChosen(null)}>Choose another customer</button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <label className="block text-sm" htmlFor="add-customer-search">Customer</label>
+          <div className="flex flex-wrap gap-2">
+            <input id="add-customer-search" data-testid="add-customer-search" className={`${field} min-w-0 flex-1`}
+              type="search" maxLength={100} placeholder="Name, phone or email" value={term}
+              onChange={(event) => setTerm(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void find(); } }} />
+            <button type="button" className={secondary} data-testid="add-customer-find"
+              onClick={() => void find()}>Find customers</button>
+          </div>
+          {found && (found.length === 0
+            ? <p className="text-sm text-ink-600">No customers match. Try another name, phone or email.</p>
+            : (
+              <ul className="divide-y divide-ink-100 rounded-md border border-ink-200 text-sm">
+                {found.map((who) => (
+                  <li key={who.id}>
+                    <button type="button" data-testid="add-customer-option"
+                      className="w-full px-3 py-2 text-left hover:bg-ink-50" onClick={() => setChosen(who)}>
+                      <span className="font-medium">{customerName(who)}</span>
+                      <span className="text-ink-500">{contact(who)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ))}
+        </div>
+      )}
+      <label className="block text-sm">Plan
+        <select className={field} required data-testid="add-plan" value={planCode}
+          onChange={(event) => setPlanCode(event.target.value)}>
+          <option value="">Select a plan</option>
+          {choices.map((plan) => <option key={plan.code} value={plan.code}>
+            {plan.name} · {money(plan.price, plan.currency)} {INTERVALS[plan.billing_interval]}</option>)}
+        </select>
+      </label>
+      {choices.length === 0 && <p className="text-sm text-ink-600">Add a plan in the Plans tab first.</p>}
+      <label className="block text-sm">Start on (optional; leave empty to start today)
+        <input className={field} type="date" data-testid="add-start" value={startsOn}
+          onChange={(event) => setStartsOn(event.target.value)} />
+      </label>
+      <p className="text-xs text-ink-500">The first renewal is one billing period after the start date.</p>
+      {error && <Notice error>{error}</Notice>}
+      <div className="flex flex-wrap gap-2">
+        <button className={action} disabled={busy || !chosen || !planCode} data-testid="add-submit">
+          {busy ? "Adding…" : "Add subscription"}</button>
+        <button type="button" className={secondary} disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
@@ -380,7 +495,7 @@ function ActionForm({ kind, subscription, plans, onSubmit, onCancel }: {
       <h3 className="font-semibold">{ACTION_LABELS[kind]}</h3>
       {kind === "pause" && (
         <label className="block text-sm">Resume on (optional)
-          <input className={field} type="date" data-testid="action-resume-at" value={resumeOn}
+          <input className={field} type="date" min={dayAfter()} data-testid="action-resume-at" value={resumeOn}
             onChange={(event) => setResumeOn(event.target.value)} />
         </label>
       )}
@@ -707,7 +822,7 @@ function OpenRequest({ row, tenantId, writer, planName, onDecided }: {
           onSubmit={(event) => { event.preventDefault(); void decide(form); }}>
           {form === "approve" && (
             <label className="block">Resume on (optional)
-              <input className={field} type="date" data-testid="request-resume-at" value={resumeOn}
+              <input className={field} type="date" min={dayAfter()} data-testid="request-resume-at" value={resumeOn}
                 onChange={(event) => setResumeOn(event.target.value)} />
             </label>
           )}

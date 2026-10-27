@@ -14,9 +14,11 @@ import copy
 import os
 import shutil
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -38,6 +40,8 @@ pytestmark = pytest.mark.asyncio
 
 AISYAH = "33333333-3333-4333-8333-333333333333"
 BEN = "33333333-3333-4333-8333-444444444444"
+CHEN = "33333333-3333-4333-8333-555555555555"
+CHEN_CONTACT = "77777777-7777-4777-8777-999999999999"
 PROPOSAL = "55555555-5555-4555-8555-555555555555"
 REQUEST_PAUSE = "66666666-6666-4666-8666-666666666666"
 REQUEST_ORPHAN = "66666666-6666-4666-8666-777777777777"
@@ -65,6 +69,11 @@ PLANS = [
         "is_active": True,
     },
 ]
+
+
+def tomorrow_in_kuala_lumpur() -> str:
+    """The browser context runs in Asia/Kuala_Lumpur, so its calendar's tomorrow."""
+    return (datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date() + timedelta(days=1)).isoformat()
 
 
 def customer(contact: str, name: str, phone: str) -> dict[str, Any]:
@@ -116,6 +125,8 @@ class World:
         self.upstream = upstream
         aisyah = customer("77777777-7777-4777-8777-777777777777", "Aisyah Rahman", "+60123456789")
         ben = customer("77777777-7777-4777-8777-888888888888", "Ben Tan", "+60198765432")
+        # Chen has no subscription yet; staff add one from the Customers tab.
+        self.contacts = [aisyah, ben, customer(CHEN_CONTACT, "Chen Wei", "+60111222333")]
         self.subs = {
             AISYAH: subscription(AISYAH, aisyah, "basic", "59.90"),
             BEN: subscription(BEN, ben, "pro", "99.00"),
@@ -191,6 +202,17 @@ class World:
             )
             self.subs[BEN].update(status="paused", resume_at=body.get("resume_at"), version=2)
             return 200, row
+        if path == "subscriptions/customers" and method == "GET":
+            q = params.get("q", "").lower()
+            return 200, [c for c in self.contacts if q in c["full_name"].lower()]
+        if path == "subscriptions" and method == "POST" and writer:
+            who = next(c for c in self.contacts if c["id"] == body["contact_id"])
+            plan = next(p for p in self.plans if p["code"] == body["plan_code"])
+            row = subscription(CHEN, who, plan["code"], plan["price"])
+            row["started_at"] = body.get("started_at") or row["started_at"]
+            self.subs[CHEN] = row
+            self.events[CHEN] = []
+            return 201, row
         if path == "subscriptions" and method == "GET":
             q = params.get("q", "").lower()
             rows = [
@@ -373,6 +395,10 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         )
         await expect(drawer.get_by_test_id("subscription-action-resume")).to_have_count(0)
         await drawer.get_by_role("button", name="Pause subscription").click()
+        # The resume date cannot be today or earlier (the server refuses it as well).
+        await expect(drawer.get_by_test_id("action-resume-at")).to_have_attribute(
+            "min", tomorrow_in_kuala_lumpur()
+        )
         await drawer.get_by_test_id("action-submit").click()
         card = drawer.get_by_test_id("proposal-card")
         await expect(card).to_contain_text("Pause now until someone resumes it.")
@@ -444,11 +470,51 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             ("subscriptions/plans/basic", {"is_active": False})
         ]
 
-        # (f) Read-only members see everything with every action control hidden.
+        # (f) Staff put a customer on a plan from Customers; the archived plan is not offered.
+        await page.get_by_test_id("subscriptions-tab-customers").click()
+        await expect(rows).to_have_count(2, timeout=WAIT)
+        await page.get_by_test_id("subscription-add").click()
+        form = page.get_by_test_id("subscription-add-form")
+        await expect(form.get_by_test_id("add-submit")).to_be_disabled()
+        await form.get_by_test_id("add-customer-search").fill("chen")
+        await form.get_by_test_id("add-customer-find").click()
+        option = form.get_by_test_id("add-customer-option")
+        await expect(option).to_have_count(1, timeout=WAIT)
+        await option.click()
+        await expect(form.get_by_test_id("add-customer-chosen")).to_contain_text("Chen Wei")
+        await expect(form.get_by_test_id("add-plan").locator("option")).to_have_text(
+            ["Select a plan", "Pro · RM 99.00 a month"]
+        )
+        await form.get_by_test_id("add-plan").select_option("pro")
+        await form.get_by_test_id("add-start").fill("2026-11-01")
+        await form.get_by_test_id("add-submit").click()
+        await expect(page.get_by_text("Added. Chen Wei is on the Pro plan.")).to_be_visible()
+        await expect(rows).to_have_count(3)
+        await expect(page.get_by_test_id("subscription-add-form")).to_have_count(0)
+        lookups = [c for c in world.calls if c["path"] == "subscriptions/customers"]
+        assert [c["params"] for c in lookups] == [{"q": "chen"}], lookups
+        creates = [c for c in world.calls if c["path"] == "subscriptions" and c["method"] == "POST"]
+        assert creates == [
+            {
+                "method": "POST",
+                "path": "subscriptions",
+                "params": {},
+                "csrf": "synthetic-csrf",
+                # 1 Nov 2026 00:00 in Kuala Lumpur
+                "body": {
+                    "contact_id": CHEN_CONTACT,
+                    "plan_code": "pro",
+                    "started_at": "2026-10-31T16:00:00.000Z",
+                },
+            }
+        ], creates
+
+        # (g) Read-only members see everything with every action control hidden.
         upstream.me = make_me("read_only")
         before = len([c for c in world.calls if c["method"] != "GET"])
         await page.goto(f"{base}/portal/subscriptions")
-        await expect(rows).to_have_count(2, timeout=WAIT)
+        await expect(rows).to_have_count(3, timeout=WAIT)
+        await expect(page.get_by_test_id("subscription-add")).to_have_count(0)
         drawer = await open_customer(page, "Ben Tan")
         await expect(drawer.get_by_test_id("subscription-timeline")).to_be_visible()
         await expect(drawer.get_by_test_id("subscription-actions")).to_have_count(0)
@@ -464,12 +530,12 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(page.get_by_test_id("plan-edit-pro")).to_have_count(0)
         assert len([c for c in world.calls if c["method"] != "GET"]) == before
 
-        # (g) Without the package the link is absent.
+        # (h) Without the package the link is absent.
         upstream.me, upstream.packages = make_me("tenant_staff"), []
         await page.goto(f"{base}/portal")
         await expect_navigation(page, ("Services",), ("Subscriptions",))
 
-        # (h) A platform admin names the tenant with ?client_id= and every call carries it.
+        # (i) A platform admin names the tenant with ?client_id= and every call carries it.
         upstream.me = make_me("platform_admin")
         start = len(world.calls)
         await page.goto(f"{base}/subscriptions?client_id={TENANT}")
@@ -477,7 +543,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(page.get_by_test_id("subscriptions-tenant")).to_have_value(
             TENANT, timeout=WAIT
         )
-        await expect(rows).to_have_count(2, timeout=WAIT)
+        await expect(rows).to_have_count(3, timeout=WAIT)
         admin_calls = [c for c in world.calls[start:] if c["path"].startswith("subscriptions")]
         assert admin_calls and all(c["params"].get("client_id") == TENANT for c in admin_calls)
 

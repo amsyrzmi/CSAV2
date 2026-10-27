@@ -43,6 +43,8 @@ test("tenant members send no client_id; empty filters are left out", async () =>
     await subs.listRequests(null, "open");
     await subs.listRequests(null, "decided", REQ);
     await subs.decideRequest(null, REQ, { decision: "approve", resume_at: null });
+    await subs.searchCustomers(null, "  Ali Baba ");
+    await subs.searchCustomers(null, "", 5);
   });
   assert.deepEqual(shape(requests), [
     ["GET", "/console/v1/subscriptions/plans"],
@@ -57,6 +59,8 @@ test("tenant members send no client_id; empty filters are left out", async () =>
     ["GET", "/console/v1/subscriptions/requests?status=open"],
     ["GET", `/console/v1/subscriptions/requests?status=decided&before=${REQ}`],
     ["POST", `/console/v1/subscriptions/requests/${REQ}/decide`],
+    ["GET", "/console/v1/subscriptions/customers?q=Ali+Baba"],
+    ["GET", "/console/v1/subscriptions/customers?limit=5"],
   ]);
   assert.deepEqual(JSON.parse(requests[3][1].body), { is_active: false });
   assert.deepEqual(JSON.parse(requests[8][1].body), { action: "pause", resume_at: "2026-11-01" });
@@ -77,6 +81,8 @@ test("platform admins name the tenant first on every call", async () => {
     await subs.proposeAction(tenant, SUB, { action: "resume" });
     await subs.listRequests(tenant, "open");
     await subs.decideRequest(tenant, REQ, { decision: "decline", note: "No" });
+    await subs.searchCustomers(tenant, "ali");
+    await subs.createSubscription(tenant, { contact_id: SUB, plan_code: "pro", started_at: null });
   });
   const query = "client_id=a+b%2F1";
   assert.deepEqual(requests.map(([path]) => path), [
@@ -86,8 +92,12 @@ test("platform admins name the tenant first on every call", async () => {
     `/console/v1/subscriptions/${SUB}/actions?${query}`,
     `/console/v1/subscriptions/requests?${query}&status=open`,
     `/console/v1/subscriptions/requests/${REQ}/decide?${query}`,
+    `/console/v1/subscriptions/customers?${query}&q=ali`,
+    `/console/v1/subscriptions?${query}`,
   ]);
   assert.equal(requests[3][1].method, "POST");
+  assert.equal(requests[7][1].method, "POST");
+  assert.deepEqual(JSON.parse(requests[7][1].body), { contact_id: SUB, plan_code: "pro", started_at: null });
   assert.equal(requests[3][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
 });
 
@@ -102,6 +112,7 @@ test("subscription refusals are explained in plain words and keep their code", a
     "renews_at_not_after_current", "request_has_no_subscription", "request_subscription_mismatch",
     "request_has_no_plan", "request_action_mismatch", "resume_at_applies_to_pause_only",
     "request_in_progress", "proposal_stale", "plan_exists", "proposal_not_executed",
+    "resume_at_not_after_today", "plan_in_use", "proposal_registry_unavailable",
   ];
   const original = globalThis.fetch;
   try {
@@ -177,11 +188,21 @@ test("timeline events read as plain sentences from action and payload", () => {
 });
 
 test("action buttons follow the executor's allowed starting states", () => {
-  const sub = (status, cancel_at_period_end = false) => ({ status, cancel_at_period_end });
+  const sub = (status, cancel_at_period_end = false, renews_at = "2026-11-27T01:15:00Z") =>
+    ({ status, cancel_at_period_end, renews_at });
   assert.deepEqual(subs.availableActions(sub("active")),
     ["pause", "change_plan", "cancel_at_period_end", "cancel_now", "extend_renewal"]);
   assert.deepEqual(subs.availableActions(sub("active", true)),
     ["pause", "change_plan", "cancel_now", "extend_renewal"]);
   assert.deepEqual(subs.availableActions(sub("paused")), ["resume", "change_plan", "cancel_now"]);
   assert.deepEqual(subs.availableActions(sub("cancelled")), []);
+  // Without a renewal date the period never ends, so a period-end cancel is not offered.
+  assert.deepEqual(subs.availableActions(sub("active", false, null)),
+    ["pause", "change_plan", "cancel_now", "extend_renewal"]);
+});
+
+test("the earliest resume date is tomorrow on the browser's calendar", () => {
+  assert.equal(subs.dayAfter(new Date(2026, 9, 27, 23, 59)), "2026-10-28");
+  assert.equal(subs.dayAfter(new Date(2026, 11, 31, 0, 1)), "2027-01-01");
+  assert.equal(subs.dayAfter(new Date(2028, 1, 28, 12, 0)), "2028-02-29");
 });

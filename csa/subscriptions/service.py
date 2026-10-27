@@ -53,6 +53,15 @@ def subscription_out(row: dict[str, Any]) -> SubscriptionOut:
     )
 
 
+def phone_digits(term: str) -> str:
+    """The term's digits when the whole term reads like a phone number (3 or more), else "".
+
+    An email or "unit 5" then never pulls in customers whose phone happens to contain those digits.
+    """
+    digits = re.sub(r"\D", "", term)
+    return digits if PHONE_TERM.fullmatch(term) and len(digits) >= 3 else ""
+
+
 def like_pattern(q: str) -> str:
     """Contains-match pattern for ILIKE with the user's own wildcards made literal."""
     escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -123,11 +132,6 @@ async def search_subscriptions(
     limit: int,
 ) -> SubscriptionPage:
     term = q.strip() if q else ""
-    # Digits only count as a phone search when the whole term reads like a phone number, so an
-    # email or "unit 5" never pulls in customers whose phone happens to contain those digits.
-    digits = re.sub(r"\D", "", term)
-    if not PHONE_TERM.fullmatch(term) or len(digits) < 3:
-        digits = ""
     rows = await db.q.fetch_all(
         "subscriptions/subscriptions_search.sql",
         {
@@ -135,7 +139,7 @@ async def search_subscriptions(
             "status": status,
             "plan": plan,
             "like": like_pattern(term) if term else None,
-            "digits": digits,
+            "digits": phone_digits(term),
             "before": before,
             "limit": limit + 1,
         },
@@ -143,6 +147,24 @@ async def search_subscriptions(
     )
     items = [subscription_out(row) for row in rows[:limit]]
     return SubscriptionPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
+
+
+async def search_customers(
+    conn: Conn, client_id: UUID, *, q: str | None, limit: int
+) -> list[CustomerRef]:
+    """The tenant's customers by name, email or phone digits (everyone, by name, without a term)."""
+    term = q.strip() if q else ""
+    rows = await db.q.fetch_all(
+        "subscriptions/customers_search.sql",
+        {
+            "client_id": client_id,
+            "like": like_pattern(term) if term else None,
+            "digits": phone_digits(term),
+            "limit": limit,
+        },
+        conn=conn,
+    )
+    return [CustomerRef.model_validate(row) for row in rows]
 
 
 async def get_subscription_out(

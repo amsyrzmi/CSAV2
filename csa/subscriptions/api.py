@@ -14,6 +14,7 @@ from csa.core.tenancy import tx
 from csa.subscriptions import service
 from csa.subscriptions.contracts import (
     ActionIn,
+    CustomerRef,
     DecideIn,
     PlanIn,
     PlanOut,
@@ -123,6 +124,19 @@ def build_subscriptions_router() -> APIRouter:
         return await service.decide_request(
             request.app.state.pool, request, actor, client_id, request_id, payload
         )
+
+    # `/customers` is declared before `/{subscription_id}`, which is also typed UUID.
+    @router.get("/customers", response_model=list[CustomerRef])
+    async def customers(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        q: Annotated[str | None, Query(max_length=100)] = None,
+        limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    ) -> list[CustomerRef]:
+        """Customers to put on a plan, by name, email or the digits of a phone-like term."""
+        reader(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await service.search_customers(conn, client_id, q=q, limit=limit)
 
     @router.get("", response_model=SubscriptionPage)
     async def search(
