@@ -8,7 +8,7 @@ WHERE a.client_id = %s
   AND (%s::bigint IS NULL OR a.source_message_id = %s::bigint)
   AND a.expires_at > now()
   AND t.is_enabled
-  AND t.channel = 'telegram'
+  AND t.channel IN ('telegram','whatsapp')
   AND t.address = %s
 ORDER BY a.created_at DESC
 LIMIT 1;

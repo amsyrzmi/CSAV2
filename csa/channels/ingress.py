@@ -549,13 +549,13 @@ class TelegramIngress:
     ) -> dict[str, Any]:
         conversation = await db.q.fetch_one(
             "ingress/insert_conversation.sql",
-            (client_id, contact_id, channel_thread),
+            (client_id, contact_id, "telegram", channel_thread),
             conn=conn,
         )
         if conversation is None:
             conversation = await db.q.fetch_one(
                 "ingress/get_conversation.sql",
-                (client_id, channel_thread),
+                (client_id, "telegram", channel_thread),
                 conn=conn,
             )
         if conversation is None:
