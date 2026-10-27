@@ -11,6 +11,11 @@ from uuid import UUID
 import httpx
 import structlog
 from csa.channels.telegram import TelegramAdapter, TelegramDeliveryError
+from csa.channels.whatsapp import (
+    WhatsAppAdapter,
+    WhatsAppDeliveryError,
+    inside_service_window,
+)
 from csa.contracts.facts import Ui
 from csa.core import crypto, db
 from csa.core.liveness import DELIVERY_ALIVE_PATH, liveness_loop
@@ -29,6 +34,9 @@ MAX_DELIVERY_ATTEMPTS = 5
 DELIVERY_REAPER_INTERVAL_SECONDS = 60
 DELIVERY_STALE_SECONDS = 180
 REAPER_BATCH_SIZE = 100
+WHATSAPP_TERMINAL_CODES = frozenset(
+    {"outside_service_window", "recipient_not_on_whatsapp", "token_invalid", "provider_rejected"}
+)
 
 
 class ClaimedDelivery(BaseModel):
@@ -54,8 +62,10 @@ class DeliveryFailure(Exception):
         *,
         status_code: int | None = None,
         retry_after_seconds: int | None = None,
+        terminal: bool = False,
     ) -> None:
         super().__init__(error_code)
+        self.terminal = terminal
         self.error_code = error_code
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
@@ -90,7 +100,7 @@ class DeliveryWorker:
         return sent or notified or reaped > 0
 
     async def process_once(self) -> bool:
-        """Claim and send one due Telegram outbox row."""
+        """Claim and send one due Telegram or WhatsApp outbox row."""
         async with self._owner_pool.connection() as conn:
             row = await db.q.fetch_one("delivery/claim.sql", conn=conn)
         if row is None:
@@ -100,9 +110,7 @@ class DeliveryWorker:
         try:
             if await self._deliver_web(delivery, started_at):
                 return True
-            details, bot_token = await self._load_delivery(delivery)
-            if details["channel"] != "telegram":
-                raise DeliveryFailure("unsupported_delivery_channel")
+            details, bot_token, channel = await self._load_delivery(delivery)
             chat_id = str(details["channel_thread"])
             async with tx(self._app_pool, str(delivery.client_id)) as conn:
                 if delivery.conversation_id is None:
@@ -133,17 +141,34 @@ class DeliveryWorker:
                         conn=conn,
                     )
                     return True
-                await self._throttle(chat_id)
-                receipt = await TelegramAdapter.send_message(
-                    bot_token,
-                    chat_id=chat_id,
-                    text=str(details["body"]),
-                    http_client=self._http_client,
-                    buttons=_buttons(details.get("ui")),
-                )
+                provider_message_id: str | None = None
+                if channel == "whatsapp":
+                    if not inside_service_window(datetime.now(UTC), details["last_inbound_at"]):
+                        raise DeliveryFailure("outside_service_window", terminal=True)
+                    await self._throttle(chat_id)
+                    wa_receipt = await WhatsAppAdapter.send_text(
+                        str(details["phone_number_id"]),
+                        bot_token,
+                        to=chat_id,
+                        text=str(details["body"]),
+                        http_client=self._http_client,
+                        base_url=str(get_settings().WHATSAPP_GRAPH_BASE_URL),
+                    )
+                    status_code = wa_receipt.status_code
+                    provider_message_id = wa_receipt.provider_message_id
+                else:
+                    await self._throttle(chat_id)
+                    receipt = await TelegramAdapter.send_message(
+                        bot_token,
+                        chat_id=chat_id,
+                        text=str(details["body"]),
+                        http_client=self._http_client,
+                        buttons=_buttons(details.get("ui")),
+                    )
+                    status_code = receipt.status_code
                 updated = await db.q.fetch_one(
                     "delivery/mark_delivered.sql",
-                    (receipt.status_code, delivery.id, delivery.client_id),
+                    (status_code, provider_message_id, delivery.id, delivery.client_id),
                     conn=conn,
                 )
                 if updated is None:
@@ -153,12 +178,22 @@ class DeliveryWorker:
                     (
                         delivery.id,
                         delivery.attempts,
-                        receipt.status_code,
+                        status_code,
                         None,
                         self._duration_ms(started_at),
                     ),
                     conn=conn,
                 )
+        except WhatsAppDeliveryError as exc:
+            await self._record_failure(
+                delivery,
+                error_code=exc.error_code,
+                status_code=exc.status_code,
+                retry_after_seconds=exc.retry_after_seconds,
+                duration_ms=self._duration_ms(started_at),
+                terminal=exc.error_code in WHATSAPP_TERMINAL_CODES,
+            )
+            return True
         except TelegramDeliveryError as exc:
             await self._record_failure(
                 delivery,
@@ -175,6 +210,7 @@ class DeliveryWorker:
                 status_code=exc.status_code,
                 retry_after_seconds=exc.retry_after_seconds,
                 duration_ms=self._duration_ms(started_at),
+                terminal=exc.terminal,
             )
             return True
         except Exception as exc:
@@ -220,7 +256,9 @@ class DeliveryWorker:
             if participant is None:
                 raise DeliveryFailure("web_participant_unavailable")
             updated = await db.q.fetch_one(
-                "delivery/mark_delivered.sql", (200, delivery.id, delivery.client_id), conn=conn
+                "delivery/mark_delivered.sql",
+                (200, None, delivery.id, delivery.client_id),
+                conn=conn,
             )
             if updated is None:
                 raise RuntimeError("claimed web delivery is no longer delivering")
@@ -234,7 +272,7 @@ class DeliveryWorker:
     async def _load_delivery(
         self,
         delivery: ClaimedDelivery,
-    ) -> tuple[dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str, str]:
         async with tx(self._app_pool, str(delivery.client_id)) as conn:
             details = await db.q.fetch_one(
                 "delivery/get_message.sql",
@@ -243,8 +281,16 @@ class DeliveryWorker:
             )
             if details is None:
                 raise DeliveryFailure("delivery_message_unavailable")
-            if details["channel"] != "telegram":
+            channel = str(details["channel"])
+            token_missing = (
+                "telegram_bot_token_unavailable"
+                if channel == "telegram"
+                else "whatsapp_access_token_unavailable"
+            )
+            if channel not in {"telegram", "whatsapp"}:
                 raise DeliveryFailure("unsupported_delivery_channel")
+            if channel == "whatsapp" and not get_settings().whatsapp_enabled:
+                raise DeliveryFailure("channel_not_configured")
 
             binding = await db.q.fetch_one(
                 "delivery/check_route.sql",
@@ -258,11 +304,11 @@ class DeliveryWorker:
                 (delivery.endpoint_id, delivery.client_id),
                 conn=conn,
             )
-            if route is None or not route["is_enabled"] or route["channel"] != "telegram":
-                raise DeliveryFailure("telegram_endpoint_unavailable")
+            if route is None or not route["is_enabled"] or route["channel"] != channel:
+                raise DeliveryFailure(f"{channel}_endpoint_unavailable")
             encrypted_token = route["access_token"]
             if not isinstance(encrypted_token, str) or not encrypted_token:
-                raise DeliveryFailure("telegram_bot_token_unavailable")
+                raise DeliveryFailure(token_missing)
             credential_id = route["credential_id"]
             try:
                 bot_token = crypto.decrypt(
@@ -274,8 +320,10 @@ class DeliveryWorker:
                     ),
                 )
             except crypto.CryptoError as exc:
-                raise DeliveryFailure("telegram_bot_token_unavailable") from exc
-        return details, bot_token
+                raise DeliveryFailure(token_missing) from exc
+            if channel == "whatsapp":
+                details = {**details, "phone_number_id": route["shop_id"]}
+        return details, bot_token, channel
 
     async def _record_failure(
         self,
@@ -285,8 +333,9 @@ class DeliveryWorker:
         status_code: int | None,
         retry_after_seconds: int | None,
         duration_ms: int,
+        terminal: bool = False,
     ) -> None:
-        dead = delivery.attempts >= MAX_DELIVERY_ATTEMPTS
+        dead = terminal or delivery.attempts >= MAX_DELIVERY_ATTEMPTS
         retry_seconds = (
             min(3600, max(1, retry_after_seconds))
             if retry_after_seconds is not None
