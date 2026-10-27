@@ -346,9 +346,13 @@ def create_app() -> FastAPI:
         )
     )
 
+    # --- lane registrations: one line per lane; keep alphabetical, no other edits here ---
     app.include_router(build_marketplace_router())
     app.include_router(build_hr_router())
     app.include_router(build_email_router())
+    # lane A (customer-facing): WhatsApp router registers here
+    # lane B (console): subscriptions router registers here
+    # --- end lane registrations ---
 
     instrument_fastapi(app)
     return app

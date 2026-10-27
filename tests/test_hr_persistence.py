@@ -1414,9 +1414,9 @@ async def test_agent_contract_catalog_matches_current_switches_and_forbids_extra
 async def test_hr_migrations_reapply_and_gateway_readiness_use_shipped_schema(
     world: HrWorld,
 ) -> None:
-    from apps.gateway.main import EXPECTED_SCHEMA_VERSION, check_readiness
+    from apps.gateway.main import EXPECTED_SCHEMA_VERSION, check_readiness, shipped_versions
 
-    assert EXPECTED_SCHEMA_VERSION == "0460"
+    assert EXPECTED_SCHEMA_VERSION == max(shipped_versions())
     before = await world.q("SELECT version FROM schema_migrations ORDER BY version")
     result = await asyncio.to_thread(
         subprocess.run,
