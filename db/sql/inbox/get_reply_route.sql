@@ -5,6 +5,6 @@ JOIN public.conversations c ON c.id = m.conversation_id AND c.client_id = m.clie
 JOIN public.webhook_endpoints e ON e.id = i.endpoint_id AND e.client_id = i.client_id
 JOIN public.channel_credentials k ON k.id = e.credential_id AND k.client_id = e.client_id
 WHERE m.client_id = %s AND m.conversation_id = %s AND m.direction = 'inbound'
-  AND i.contact_id = c.contact_id AND c.channel = 'telegram'
-  AND k.channel = 'telegram' AND e.is_enabled
+  AND i.contact_id = c.contact_id AND c.channel IN ('telegram','whatsapp')
+  AND k.channel = c.channel AND e.is_enabled
 ORDER BY m.created_at DESC, m.id DESC LIMIT 1;

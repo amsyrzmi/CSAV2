@@ -25,7 +25,9 @@ import httpx
 import structlog
 from csa.channels.ingress import IngressError, TelegramIngress
 from csa.channels.marketplace.router import build_marketplace_router
+from csa.channels.whatsapp_ingress import WhatsAppIngress
 from csa.console.auth import build_identity_router
+from csa.console.channels import build_channels_router
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.middleware import ConsoleResponseHeaders
 from csa.console.onboarding import build_onboarding_router
@@ -47,7 +49,7 @@ from csa.workspace.planner import WorkspacePlanner
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
@@ -55,7 +57,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0460"
+EXPECTED_SCHEMA_VERSION = "0470"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -148,6 +150,15 @@ def create_app() -> FastAPI:
             app.state.voice_model = settings.VOICE_STT_MODEL
             app.state.voice_sessions_config = settings.voice_session_config()
             app.state.telegram_ingress = TelegramIngress(pool)
+            if settings.whatsapp_enabled:
+                app_secret = settings.WHATSAPP_APP_SECRET
+                verify_token = settings.WHATSAPP_VERIFY_TOKEN
+                if app_secret is not None and verify_token is not None:
+                    app.state.whatsapp_ingress = WhatsAppIngress(
+                        pool,
+                        app_secret=app_secret.get_secret_value(),
+                        verify_token=verify_token.get_secret_value(),
+                    )
             # Executors resolve hr_service/email_service from app.state at call time.
             app.state.proposal_registry = build_proposal_registry()
             if identity_pool is not None:
@@ -329,6 +340,62 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.get("/channels/whatsapp")
+    async def whatsapp_verify(request: Request) -> Response:
+        """Answer Meta's webhook subscription handshake."""
+        ingress = getattr(request.app.state, "whatsapp_ingress", None)
+        if not settings.whatsapp_enabled or ingress is None:
+            return JSONResponse(status_code=404, content={"detail": "not found"})
+        params = request.query_params
+        answer = ingress.challenge(
+            params.get("hub.mode"), params.get("hub.verify_token"), params.get("hub.challenge")
+        )
+        if answer is None:
+            return JSONResponse(status_code=403, content={"detail": "verification failed"})
+        return PlainTextResponse(answer)
+
+    @app.post("/channels/whatsapp")
+    async def whatsapp_webhook(request: Request) -> JSONResponse:
+        """Verify and durably enqueue one WhatsApp delivery, then acknowledge it."""
+        ingress = getattr(request.app.state, "whatsapp_ingress", None)
+        if not settings.whatsapp_enabled or ingress is None:
+            return JSONResponse(status_code=404, content={"detail": "not found"})
+        if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
+            return JSONResponse(status_code=415, content={"detail": "expected application/json"})
+
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > _MAX_INGRESS_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413, content={"detail": "request body is too large"}
+                )
+            chunks.append(chunk)
+
+        try:
+            receipts = await ingress.receive(
+                request.headers.get("X-Hub-Signature-256"), b"".join(chunks)
+            )
+        except IngressError as exc:
+            if exc.status_code >= 500:
+                logger.error(
+                    "whatsapp_ingress_rejected",
+                    status_code=exc.status_code,
+                    detail=exc.detail,
+                )
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+        duplicates = sum(1 for receipt in receipts if receipt.duplicate)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "accepted": len(receipts) - duplicates,
+                "duplicates": duplicates,
+            },
+        )
+
     # Human session routes exist independently of the optional machine token.
     app.include_router(build_identity_router())
     app.include_router(build_onboarding_router())
@@ -352,6 +419,7 @@ def create_app() -> FastAPI:
     app.include_router(build_hr_router())
     app.include_router(build_email_router())
     # lane A (customer-facing): WhatsApp router registers here
+    app.include_router(build_channels_router())
     # lane B (console): subscriptions router registers here
     # --- end lane registrations ---
 

@@ -10,6 +10,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from csa.contracts.envelope import Channel
 from csa.contracts.facts import Fact, Ui, UiConfirmation, UiOption
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import Context, TurnState
@@ -17,6 +18,7 @@ from csa.decide.completion import CompletionError
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient, GroqError
 from csa.decide.grounding import ungrounded
+from csa.decide.llm import WHATSAPP_PLANNER_NOTE
 from csa.graph.policy.plan_rules import validate_plan
 from csa.graph.policy.routing import route_turn
 from csa.turn.deps import CAPABILITIES, build_llm_provider
@@ -148,6 +150,30 @@ async def test_refund_request_without_tasks_keeps_clarification_bound() -> None:
         assert not errors
         assert validated.tasks == []
         assert validated.reply_strategy == strategy
+
+
+@pytest.mark.parametrize(("channel", "told"), [(Channel.WHATSAPP, True), (Channel.TELEGRAM, False)])
+async def test_planner_is_told_whatsapp_cannot_take_orders(channel: Channel, told: bool) -> None:
+    """Spec 6 A1: on WhatsApp the planner answers in words instead of ordering."""
+    prompts: list[str] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        prompts.append(json.loads(request.content)["messages"][1]["content"])
+        return _ok({"tasks": [], "reply_strategy": "ask_clarifying"})(request)
+
+    envelope = make_envelope("I want to order 2 of A1")
+    envelope = envelope.model_copy(
+        update={
+            "channel": channel,
+            "contact": envelope.contact.model_copy(update={"channel": channel}),
+        }
+    )
+    await _provider(reply).plan(envelope, Context(), make_signals(Intent.ORDER))
+    (user,) = prompts
+    assert (WHATSAPP_PLANNER_NOTE in user) is told
+    if told:
+        assert "cannot take orders" in user and "buttons" in user
+        assert user.index(WHATSAPP_PLANNER_NOTE) < user.index("<message>")
 
 
 @pytest.mark.parametrize(

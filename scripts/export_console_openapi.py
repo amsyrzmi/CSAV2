@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from csa.console.auth import build_identity_router
+from csa.console.channels import build_channels_router
 from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
 from csa.email.api import build_email_router
@@ -22,6 +23,7 @@ def contract() -> dict:
     app.include_router(build_router())
     app.include_router(build_hr_router())
     app.include_router(build_email_router())
+    app.include_router(build_channels_router())
     return app.openapi()
 
 

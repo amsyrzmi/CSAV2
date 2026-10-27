@@ -11,9 +11,15 @@ import pytest
 from apps.gateway import main as gateway
 from csa.console.identity import IdentityConfig
 from fastapi import FastAPI
+from pydantic import SecretStr
 
 
-def application(monkeypatch: pytest.MonkeyPatch, *, env: str = "ci") -> FastAPI:
+def application(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    env: str = "ci",
+    whatsapp: tuple[str, str] | None = None,
+) -> FastAPI:
     synthetic = SimpleNamespace(
         ENV=env,
         HR_ASSISTANT_ENABLED=False,
@@ -23,6 +29,9 @@ def application(monkeypatch: pytest.MonkeyPatch, *, env: str = "ci") -> FastAPI:
         voice_session_config=lambda: None,
         EMAIL_ASSISTANT_ENABLED=False,
         WORKSPACE_ASSISTANT_ENABLED=False,
+        whatsapp_enabled=whatsapp is not None,
+        WHATSAPP_APP_SECRET=SecretStr(whatsapp[0]) if whatsapp else None,
+        WHATSAPP_VERIFY_TOKEN=SecretStr(whatsapp[1]) if whatsapp else None,
         DATABASE_URL="postgresql://csa_app:test@localhost:1/disposable_fixture",
         IDENTITY_DATABASE_URL="postgresql://csa_identity:test@localhost:1/disposable_fixture",
         CONSOLE_ALLOWED_ORIGIN="https://console.example.test",

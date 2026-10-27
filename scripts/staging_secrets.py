@@ -39,6 +39,13 @@ FILES = (
     "runtime/staging_credentials_key",
     "runtime/staging_disabled_model_key",
 )
+# Optional pipeline secrets: the literal placeholder keeps WhatsApp inert (Settings
+# treats it as unset) until the owner writes the real Meta values.
+WHATSAPP_DISABLED = "disabled"
+WHATSAPP_FILES = (
+    "pipeline/staging_whatsapp_app_secret",
+    "pipeline/staging_whatsapp_verify_token",
+)
 DSN_ROLES = {
     "migration/staging_owner_dsn": ("csa", "database/staging_owner_password"),
     "runtime/staging_domain_dsn": ("csa_app", "migration/staging_app_password"),
@@ -112,6 +119,29 @@ def create(secret_dir: Path, runtime_uid: int) -> list[str]:
     return sorted(FILES)
 
 
+def provision_whatsapp_defaults(secret_dir: Path, runtime_uid: int) -> list[str]:
+    """Create any missing WhatsApp secret file holding ``disabled``; never overwrite."""
+    target = _validate_target(secret_dir)
+    if os.geteuid() != runtime_uid:
+        raise ProvisionError(f"run as the container runtime UID {runtime_uid}")
+    runtime = target / "pipeline"
+    if runtime.is_symlink() or not runtime.is_dir():
+        raise ProvisionError("pipeline secret directory must already exist")
+    created = []
+    for name in WHATSAPP_FILES:
+        path = target / name
+        if path.exists() or path.is_symlink():
+            continue
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+        try:
+            os.write(fd, WHATSAPP_DISABLED.encode())
+            os.fchmod(fd, 0o400)
+        finally:
+            os.close(fd)
+        created.append(name)
+    return sorted(created)
+
+
 def _read(path: Path, runtime_uid: int, failures: list[str], name: str) -> str | None:
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode):
@@ -175,6 +205,10 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
             failures.append(f"{name}: must be {role}@{HOST}:5432/{DATABASE}")
         elif password_file in values and unquote(url.password or "") != values[password_file]:
             failures.append(f"{name}: password does not match {password_file}")
+    for name in WHATSAPP_FILES:
+        path = target / name
+        if path.exists() or path.is_symlink():
+            _read(path, runtime_uid, failures, name)
     key = values.get("runtime/staging_credentials_key")
     if key is not None:
         try:
@@ -191,13 +225,16 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("create", "check"))
+    parser.add_argument("action", choices=("create", "check", "whatsapp-defaults"))
     parser.add_argument("--secret-dir", type=Path, required=True)
     parser.add_argument("--runtime-uid", type=int, default=1000)
     args = parser.parse_args(argv)
     try:
         if args.action == "create":
             for name in create(args.secret_dir, args.runtime_uid):
+                print(f"created {name} (0400)")
+        elif args.action == "whatsapp-defaults":
+            for name in provision_whatsapp_defaults(args.secret_dir, args.runtime_uid):
                 print(f"created {name} (0400)")
         failures = check(args.secret_dir, args.runtime_uid)
     except (OSError, ProvisionError) as exc:

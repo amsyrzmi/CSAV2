@@ -352,6 +352,74 @@ Post-review offline full validation passes **692 tests** plus lint; ASGI/TCP ack
 Neither offline nor guarded-dev evidence is a guarantee under all laptop loads or
 approval for public deployment.
 
+## WhatsApp channel
+
+Lane A1 (migration `0470`). One Meta app per deployment; each tenant connects its
+own WABA number. Setup steps are in
+[STAGING_PIPELINE.md section 9](../deploy/STAGING_PIPELINE.md#9-connect-whatsapp-owner-and-client).
+
+Console routes, under `/console/v1/channels` with the usual tenant selection.
+Human sessions only (the machine token is refused) and behind the
+`customer_support` package gate:
+
+| Method/path | Who | Result |
+|---|---|---|
+| `GET /whatsapp` | any tenant member, platform admin | `{connected, display_phone, phone_number_id_last4, waba_id, enabled, callback_url, connected_at}` |
+| `PUT /whatsapp` | `tenant_admin`, platform admin | Body `{phone_number_id, waba_id, access_token}`. Before storing, the gateway calls Graph `GET {WHATSAPP_GRAPH_BASE_URL}/{phone_number_id}?fields=display_phone_number,verified_name` with that token and stores Graph's `display_phone_number`: 422 `whatsapp_token_rejected` when Graph refuses (auth, permission or not found), 502 `whatsapp_unreachable` on a network error, 429 or 5xx. Nothing is stored or audited on either. The token is sealed with `CREDENTIALS_KEY`, never returned and never logged; audited `channels.whatsapp.connected`. 409 `whatsapp_number_in_use` when another tenant holds the number |
+| `DELETE /whatsapp` | `tenant_admin`, platform admin | 204; disables the endpoint, erases the token and releases the number; audited `channels.whatsapp.disconnected` |
+
+`callback_url` is null while the deployment's WhatsApp secrets are unset; otherwise
+it is `WHATSAPP_CALLBACK_BASE_URL` (or `PUBLIC_BASE_URL`) plus `/channels/whatsapp`.
+The web card shows it to platform admins only.
+
+Webhook (not a console route; 404 while `WHATSAPP_APP_SECRET` and
+`WHATSAPP_VERIFY_TOKEN` are unset or `disabled`):
+
+- `GET /channels/whatsapp` answers Meta's handshake (`hub.mode=subscribe`, matching
+  verify token, echoes `hub.challenge`); otherwise 403.
+- `POST /channels/whatsapp` requires `application/json` (415) and a valid
+  `X-Hub-Signature-256` over the raw body (403, no side effects). A broken envelope
+  (not a JSON object, no `entry` list, no `metadata.phone_number_id`) is 422,
+  oversized bodies 413, an endpoint over its rate limit 429. Inside a signed batch, a
+  single message or status the adapter does not understand (for example an unknown
+  status such as `deleted`) is skipped with a `whatsapp_item_skipped` warning (no body
+  or token) and the rest is stored. Otherwise 200 `{ok, accepted, duplicates}`.
+  Messages for an unknown or disconnected number are dropped with a warning; a retried
+  message id is a duplicate, never a second turn.
+- Every customer message type other than text reaches the coordinator as a live turn
+  with an empty body and an attachment stub: media keep their kind, mime type and
+  media id (none when Meta sends none); location, contacts, interactive, button and
+  other types carry `kind="other"` and `mime_type="application/vnd.whatsapp.<type>"`.
+  Reactions, `system`, `unsupported`, `unknown` and `request_welcome` events are
+  stored as completed, inert rows.
+- The planner is told that WhatsApp cannot take orders or show buttons, so it answers
+  in words.
+
+Delivery and statuses:
+
+- Replies are free-form text and are sent only within 24 hours of
+  `conversations.last_inbound_at`; later sends fail with `outside_service_window`.
+- Terminal codes (no retry, dead-lettered, staff notified): `outside_service_window`,
+  `recipient_not_on_whatsapp`, `token_invalid`, `provider_rejected`. `rate_limited`
+  retries after Meta's delay. `channel_not_configured` while the secrets are unset.
+- Inbox messages expose the code as `delivery_error`; the web inbox shows the
+  service-window copy from the [writing guide](WRITING_GUIDE.md#errors).
+- Meta's status callbacks set `outbound_deliveries.provider_status` to `sent`,
+  `delivered`, `read` or `failed`, matched by `provider_message_id`; `failed` is never
+  overwritten by a later status. A `failed` callback also stores Meta's error code in
+  `outbound_deliveries.provider_error` (for example `131047`, the closed 24-hour
+  window; `131026`, undeliverable). Most per-recipient failures arrive this way, after
+  the send returned 200.
+- Inbox messages carry `provider_status` and `provider_error`. The web inbox labels a
+  failed status "not delivered" and shows a plain line: the service-window sentence for
+  `131047`, otherwise "Not delivered." with the reason. Dead deliveries with
+  `recipient_not_on_whatsapp`, `token_invalid`, `whatsapp_endpoint_unavailable` and
+  `channel_not_configured` have their own plain-words lines; codes never reach the
+  screen.
+- HTTP 429 and Graph codes 130429, 131056, 80007 and 4 retry as `rate_limited`.
+- Inbox conversations carry `channel` (`telegram` or `whatsapp`) and the list accepts
+  `?channel=telegram|whatsapp`.
+
 ## Workspace assistant
 
 The floating assistant dock (on every console tab) and the tab actions share one

@@ -1,4 +1,4 @@
-"""Session-authorized Telegram customer inbox, separate from the owner-private sandbox."""
+"""Session-authorized customer inbox, separate from the owner-private sandbox."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from csa.staff.ownership import lock_conversation
 
 class InboxConversation(Contract):
     id: UUID
-    channel: Literal["telegram"]
+    channel: Literal["telegram", "whatsapp"]
     status: str
     owned_by: str | None
     ai_muted_until: datetime | None
@@ -55,6 +55,10 @@ class InboxMessage(Contract):
     created_at: datetime
     trace_id: UUID | None
     delivery_status: str | None
+    delivery_error: str | None = None
+    # WhatsApp status callbacks: 'failed' arrives after a send that returned 200.
+    provider_status: Literal["sent", "delivered", "read", "failed"] | None = None
+    provider_error: str | None = None
 
 
 class InboxMessagePage(Contract):
@@ -251,10 +255,13 @@ def build_inbox_router() -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
         before: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=50)] = 20,
+        channel: Literal["telegram", "whatsapp"] | None = None,
     ) -> InboxConversationPage:
         async with tx(request.app.state.pool, str(client_id)) as conn:
             rows = await db.q.fetch_all(
-                "inbox/list_conversations.sql", (client_id, before, before, limit + 1), conn=conn
+                "inbox/list_conversations.sql",
+                (client_id, channel, channel, before, before, limit + 1),
+                conn=conn,
             )
         items = [InboxConversation.model_validate(row) for row in rows[:limit]]
         return InboxConversationPage(
@@ -362,7 +369,7 @@ def build_inbox_router() -> APIRouter:
                     "inbox/get_reply_route.sql", (client_id, conversation_id), conn=conn
                 )
                 if route is None:
-                    raise HTTPException(409, "no active customer Telegram route")
+                    raise HTTPException(409, "This conversation has no active channel to reply on.")
                 message = await db.q.fetch_one(
                     "inbox/insert_reply.sql",
                     (

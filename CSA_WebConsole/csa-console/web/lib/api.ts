@@ -21,6 +21,10 @@ const explained: Record<string, string> = {
     "This assistant is switched off for your organisation. An administrator can turn it on in its settings.",
   planner_unavailable: "The assistant is unavailable right now. Try again in a moment.",
   mailbox_not_connected: "Connect your Gmail in the Email tab first.",
+  whatsapp_number_in_use: "That WhatsApp number is already connected to another company.",
+  whatsapp_token_rejected:
+    "WhatsApp did not accept that access token for this phone number ID. Check both in your Meta app, then try again.",
+  whatsapp_unreachable: "We could not reach WhatsApp to check the number. Wait a minute and try again.",
 };
 
 async function decode<T>(response: Response): Promise<T> {

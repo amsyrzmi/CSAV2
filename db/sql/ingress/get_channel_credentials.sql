@@ -1,5 +1,5 @@
 SELECT e.id AS endpoint_id, e.rate_limit_rpm, e.is_enabled, e.disabled_reason,
-       c.id AS credential_id, c.channel, c.access_token, c.meta,
+       c.id AS credential_id, c.channel, c.shop_id, c.access_token, c.meta,
        tenant.config ->> 'runtime' AS runtime,
        tenant.config ->> 'n8n_webhook_url' AS n8n_webhook_url,
        COALESCE(tenant.config -> 'policy' ->> 'deployment_mode',

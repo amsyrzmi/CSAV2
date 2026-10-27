@@ -17,7 +17,8 @@ path. It does not claim that the edge, hostname or any service is currently live
 
 ```
 Telegram ─► Cloudflare edge ─► cloudflared ─► Caddy ─► gateway /hooks/<public_id>
-                                      │  verify secret, parse, dedupe
+WhatsApp ─►        (same path)                      ─► gateway /channels/whatsapp
+                                      │  verify secret/signature, parse, dedupe
                                       ▼
                                ingress_events (Postgres)
                                       ▼
@@ -28,7 +29,18 @@ Telegram ─► Cloudflare edge ─► cloudflared ─► Caddy ─► gateway /
                     messages + outbound_deliveries (outbox)
                                       ▼
                   delivery worker ─► Telegram sendMessage (+ buttons)
+                                  └─► WhatsApp Cloud API /messages (text only)
 ```
+
+WhatsApp (Meta Cloud API, `csa/channels/whatsapp.py`, `whatsapp_ingress.py`): one
+Meta app per deployment signs every webhook with `WHATSAPP_APP_SECRET`
+(`X-Hub-Signature-256`). The payload's `phone_number_id` routes to the tenant
+through `resolve_whatsapp_route` (migration 0470); the tenant's System User token
+is encrypted in `channel_credentials` after the console proves it against Graph.
+Status callbacks update `outbound_deliveries.provider_status` (and `provider_error`
+for a failed reply). Free-form replies are delivered only within 24 hours of
+`conversations.last_inbound_at`; ordering stays on Telegram in phase 1, and the
+planner is told WhatsApp cannot take orders or show buttons.
 
 Staff path: an agent calls `notify()` → `staff_notifications` → `StaffNotificationSender`
 (runs inside the delivery process) → staff group with `s:<uuid>` buttons → tap hits the gateway →

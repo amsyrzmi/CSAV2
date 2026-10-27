@@ -99,8 +99,9 @@ Append `deploy/staging-hooks.Caddyfile` to `/etc/caddy/Caddyfile` as its own
 site block, following the same backup, diff, validate and reload sequence as
 [the shared Caddy runbook](STAGING_SHARED_CADDY.md#3-prepare-the-live-caddy-edit-separate-approval).
 The block answers 403 to anything that is not loopback or the connector
-container, forwards only `POST /hooks/*` to `127.0.0.1:18031`, and returns 404
-for every other path. It uses an ordered `route` so the deny is evaluated first.
+container, forwards only `POST /hooks/*` (Telegram) and `GET`/`POST
+/channels/whatsapp` (section 9) to `127.0.0.1:18031`, and returns 404 for every
+other path. It uses an ordered `route` so the deny is evaluated first.
 
 Local check after reload:
 
@@ -198,6 +199,116 @@ first login. On another database host (for example RDS)
 `export` `CSA_IDENTITY_EXPECTED_HOST` and `CSA_IDENTITY_EXPECTED_DB` with the
 expected values in that shell before running (the compose file ignores any env
 file); the role must still be `csa_identity`.
+
+## 9. Connect WhatsApp (owner and client)
+
+Fourstacks owns one Meta app for the deployment; each client keeps its own Meta
+Business and WhatsApp Business Account (WABA) and connects its number to that app.
+Meta sends every tenant's webhooks to one callback, signed with the app secret.
+The gateway and delivery read two secret files. While both hold the literal
+`disabled`, WhatsApp is inert: `/channels/whatsapp` answers 404 and delivery
+refuses WhatsApp rows with `channel_not_configured`.
+
+**Before rolling out an image that contains migration `0470`**, create the two
+placeholder files, because compose refuses to start a service whose secret file
+is missing. Run from the main checkout as UID 1000; existing files are never
+overwritten:
+
+```bash
+python3 -m scripts.staging_secrets whatsapp-defaults --secret-dir /srv/csa-staging/secrets
+```
+
+Expected: `created pipeline/staging_whatsapp_app_secret (0400)` and the same for
+`staging_whatsapp_verify_token`, then no check failures. Then apply `0470` with
+the `migrate` one-shot and recreate gateway, worker, delivery and frontend with
+`--no-deps --pull never`, as for any release.
+
+### 9.1 Meta app (owner, once per deployment)
+
+1. In Meta for Developers, create a Business-type app owned by the Fourstacks
+   Meta Business and add the WhatsApp product.
+2. Choose a verify token: any long random string (for example
+   `openssl rand -hex 32`). Keep it for step 9.2; it is never shown in the console.
+3. Under WhatsApp → Configuration, set the callback URL to
+   `https://hooks.fourstacks.my/channels/whatsapp` and the verify token from step 2.
+   Do not press Verify yet; the gateway still holds `disabled`.
+4. Copy the app secret from App settings → Basic.
+
+### 9.2 Write the two secret files (owner; nothing is printed)
+
+The files are mode 0400, so replace them rather than edit them. Paste each value
+at its prompt:
+
+```bash
+(
+  umask 077
+  d=/srv/csa-staging/secrets/pipeline
+  for file in staging_whatsapp_app_secret staging_whatsapp_verify_token; do
+    read -r -s -p "$file: " value; echo
+    [ -n "$value" ] || { echo "empty, unchanged: $file"; continue; }
+    rm -f "$d/$file"
+    printf '%s' "$value" > "$d/$file"
+    chmod 400 "$d/$file"
+    echo "$file: $(stat -c %s "$d/$file") bytes, mode $(stat -c %a "$d/$file")"
+  done
+  unset value
+)
+```
+
+Then, in the section-2 shell, recreate only the two services that read them:
+
+```bash
+csa_pipeline_compose config --quiet || exit 1
+csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway delivery
+```
+
+Back in the Meta app, press Verify and save, then subscribe the app to the
+`messages` webhook field. Meta's check calls `GET /channels/whatsapp`; a 403
+means the verify token does not match the file.
+
+Both files must hold real values, or both `disabled`. One of each stops the
+gateway at start-up with "WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN must be
+set together".
+
+### 9.3 Client's Meta setup (client, with the owner's help)
+
+1. Create a Meta Business account and complete business verification.
+2. Create a WABA and register the phone number on the Cloud API. A number used
+   in the WhatsApp Business app must be removed from that app first.
+3. Connect the WABA to the Fourstacks app.
+4. In Business settings, create a System User, assign it the WABA, and generate a
+   permanent token with `whatsapp_business_messaging` and
+   `whatsapp_business_management`.
+5. Note the phone number id and the WABA id from WhatsApp Manager.
+
+### 9.4 Connect the number in the console (client's company administrator)
+
+Services → WhatsApp number → enter the phone number id, WABA id and the token,
+then press Connect. The gateway first reads the number from Meta's Graph API with
+that token: a token Meta refuses (or a wrong phone number id) is rejected, an
+unreachable Graph API asks the admin to try again, and the number customers see is
+taken from Meta. The token is encrypted at rest and never shown again. A platform admin opening the same card sees the
+callback address; it must read `https://hooks.fourstacks.my/channels/whatsapp`
+(the gateway takes it from `CSA_STAGING_HOOKS_ORIGIN`). A number already
+connected to another company is refused.
+
+### 9.5 Acceptance
+
+Send "hello" from a phone to the connected number. Expect an `ingress_events`
+row for the tenant, the conversation in the Inbox with a WhatsApp badge, and the
+reply on the phone once it is approved or sent. Record the trace id in PROGRESS.
+
+Replies are free-form text only, and only within 24 hours of the customer's last
+message; later replies fail with `outside_service_window` and the Inbox says so.
+Template messages and ordering on WhatsApp are phase 2.
+
+**Pricing note for the client.** Meta charges per message by category. Replies
+inside the 24-hour service window have a free monthly allowance per number and
+are billed above it from October 2026. Quote from Meta's official rate card,
+not from a reseller's page.
+
+To switch WhatsApp off again, write `disabled` into both files the same way and
+recreate gateway and delivery.
 
 ## Rollback
 

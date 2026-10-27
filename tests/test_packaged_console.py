@@ -1690,12 +1690,12 @@ async def test_packaged_customer_inbox_browser_acceptance(
             await platform.get_by_text("Select a tenant to open its inbox.", exact=True).wait_for()
             assert await platform.get_by_test_id("assistant-open").count() == 0
             assert (await fetch(platform, "/console/v1/inbox/conversations"))["status"] == 400
-            await platform.get_by_role("combobox").select_option(tenants[0])
+            await platform.get_by_label("Tenant").select_option(tenants[0])
             await platform.get_by_role(
                 "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
             ).click()
             await platform.get_by_text(reply_text, exact=True).wait_for()
-            await platform.get_by_role("combobox").select_option(tenants[1])
+            await platform.get_by_label("Tenant").select_option(tenants[1])
             await platform.get_by_text("No customer conversations found.", exact=True).wait_for()
             assert await platform.get_by_text(reply_text, exact=True).count() == 0
 

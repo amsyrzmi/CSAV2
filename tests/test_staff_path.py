@@ -202,6 +202,39 @@ async def test_order_callback_reply_retains_verified_route_through_delivery(
     ) == [("delivered", None)]
 
 
+@pytest.mark.parametrize("decision", ["Approve", "Reject"])
+async def test_order_notice_stays_on_telegram_when_a_newer_whatsapp_conversation_exists(
+    world: World,  # noqa: F811
+    owner_pool: Any,
+    decision: str,
+) -> None:
+    """Orders are Telegram-only in phase 1: a newer WhatsApp thread must not take the notice."""
+    endpoint_id, _, buttons, _ = await _staff_flow(world, owner_pool)
+    whatsapp_conversation = uuid.uuid4()
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, client_id, contact_id, channel, channel_thread, "
+            "opened_at) VALUES (%s,%s,%s,'whatsapp','60123456789', now() + interval '1 hour')",
+            (whatsapp_conversation, world.client_id, world.contact_id),
+        )
+    answer = await handle_staff_action(
+        world.pool,
+        client_id=world.client_id,
+        endpoint_id=endpoint_id,
+        chat_id="999",
+        staff_action_id=uuid.UUID(buttons[decision][2:]),
+        trace_id=uuid.uuid4(),
+    )
+    assert answer == ("Approved." if decision == "Approve" else "Rejected.")
+    queued = world.q(
+        "SELECT m.conversation_id, d.conversation_id, d.endpoint_id FROM messages m "
+        "JOIN outbound_deliveries d ON d.message_id = m.id "
+        "WHERE m.client_id=%s AND m.idempotency_key LIKE 'staff:%%'",
+        world.client_id,
+    )
+    assert queued == [(world.conversation_id, world.conversation_id, endpoint_id)]
+
+
 async def test_staff_tap_from_wrong_chat_is_refused(world: World, owner_pool: Any) -> None:  # noqa: F811
     endpoint_id, order_id, buttons, _ = await _staff_flow(world, owner_pool)
     answer = await handle_staff_action(

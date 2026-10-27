@@ -302,6 +302,20 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             data = rows["customer_support"]
         elif path in {"inbox/conversations", "inbox/approvals"}:
             status, data = 403, {"detail": "package_inactive"}
+        elif path == "channels/whatsapp" and request.method == "GET":
+            # The Services WhatsApp card; the gateway gates it on Customer Support.
+            if {"key": "customer_support", "status": "active"} in upstream.packages:
+                data = {
+                    "connected": False,
+                    "display_phone": None,
+                    "phone_number_id_last4": None,
+                    "waba_id": None,
+                    "enabled": False,
+                    "callback_url": None,
+                    "connected_at": None,
+                }
+            else:
+                status, data = 403, {"detail": "package_inactive"}
         else:
             unexpected.append(f"{request.method} {path}?{query}")
             status, data = 500, {"detail": "unexpected synthetic call"}
