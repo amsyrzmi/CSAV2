@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
+from csa.subscriptions import executor as executor_module
 from csa.subscriptions import service
 from csa.subscriptions.api import build_subscriptions_router
 from csa.subscriptions.executor import SubscriptionActionExecutor
@@ -414,7 +415,7 @@ async def test_decline_between_create_and_confirm_stops_the_approval(
     assert await audit_actions(w) == ["subscriptions.request.declined"]
 
 
-async def test_decline_after_the_card_but_before_the_action_rolls_the_action_back(
+async def test_decline_committed_before_execute_runs_is_refused_by_its_request_check(
     sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     w = sessions
@@ -435,6 +436,106 @@ async def test_decline_after_the_card_but_before_the_action_rolls_the_action_bac
     assert (await sub_row(w, sub))["status"] == "active"
     assert await paused_events(w, sub) == 0 and await executed_proposals(w) == []
     assert [d["decision"] for d in await decisions(w)] == ["declined"]
+
+
+async def test_decline_after_execute_checked_the_request_hits_the_insert_conflict(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    other, _ = await w.member(role="tenant_admin")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub, contact = await subscribe(w, staff)
+    request = await seed_request(w, contact, "request_pause", subscription_id=sub)
+    real = executor_module._check_request
+    calls: list[str] = []
+
+    async def check_then_decline(*args: Any, **kwargs: Any) -> None:
+        await real(*args, **kwargs)
+        calls.append("check")
+        # card at create, card at confirm, then execute's own check: decline right after it.
+        if len(calls) == 3:
+            assert (await decide(w, other, request, {"decision": "decline"})).status_code == 200
+
+    monkeypatch.setattr(executor_module, "_check_request", check_then_decline)
+    lost = await decide(w, staff, request, {"decision": "approve"})
+    assert len(calls) == 3
+    assert lost.status_code == 409 and lost.json()["detail"] == "request_decided"
+    assert (await sub_row(w, sub))["status"] == "active"
+    assert await paused_events(w, sub) == 0 and await executed_proposals(w) == []
+    assert [d["decision"] for d in await decisions(w)] == ["declined"]
+    assert await audit_actions(w) == ["subscriptions.request.declined"]
+
+
+async def test_workspace_proposals_route_cannot_approve_a_request_with_another_action(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "pro", "59.90")
+    await seed_plan(w, w.tenants[0], "max", "99.90")
+    sub, contact = await subscribe(w, staff)
+    pause = await seed_request(w, contact, "request_pause", subscription_id=sub)
+    change = await seed_request(
+        w, contact, "request_change", subscription_id=sub, plan_code="pro", reason=None
+    )
+    other_sub, _ = await subscribe(w, staff, name="Bala Raj")
+    proposals = "/console/v1/workspace/proposals"
+    mismatches: list[tuple[str, dict[str, Any]]] = [
+        (pause, {"action": "cancel_now"}),
+        (pause, {"action": "cancel_at_period_end"}),
+        (change, {"action": "change_plan", "plan_code": "max"}),
+        (
+            change,
+            {
+                "action": "change_plan",
+                "plan_code": "pro",
+                "price_override": "1.00",
+                "reason": "discount",
+            },
+        ),
+        (
+            change,
+            {
+                "action": "change_plan",
+                "plan_code": "pro",
+                "effective_at": "2099-01-01T00:00:00+00:00",
+            },
+        ),
+    ]
+    for request, extra in mismatches:
+        payload = {"subscription_id": sub, "request_id": request, **extra}
+        refused = await w.mutate(
+            staff, proposals, {"kind": "subscription_action", "payload": payload}
+        )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"] == "request_action_mismatch"
+    # A request naming another subscription is refused too, and a decided one is final.
+    crossed = {"subscription_id": other_sub, "request_id": pause, "action": "pause"}
+    refused = await w.mutate(staff, proposals, {"kind": "subscription_action", "payload": crossed})
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == "request_subscription_mismatch"
+    assert await w.q("SELECT id FROM console_proposals WHERE kind='subscription_action'") == []
+    assert await decisions(w) == [] and (await sub_row(w, sub))["status"] == "active"
+
+    # The matching action works end to end through the same route.
+    payload = {
+        "subscription_id": sub,
+        "request_id": pause,
+        "action": "pause",
+        "decision_note": "via workspace",
+    }
+    created = await w.mutate(staff, proposals, {"kind": "subscription_action", "payload": payload})
+    assert created.status_code == 201, created.text
+    done = await w.mutate(staff, f"{proposals}/{created.json()['id']}/confirm")
+    assert done.status_code == 200, done.text
+    assert (await sub_row(w, sub))["status"] == "paused"
+    [decision] = await decisions(w)
+    assert str(decision["request_id"]) == pause and decision["decision"] == "approved"
+    assert str(decision["proposal_id"]) == created.json()["id"]
+    assert decision["note"] == "via workspace"
+    assert await audit_actions(w) == ["subscriptions.request.approved"]
 
 
 async def test_another_user_can_approve_after_the_first_attempt_failed(

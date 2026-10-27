@@ -62,10 +62,11 @@ SCHEDULED_PLAN_EVENT = "plan_change_scheduled"
 class ActionPayload(ActionIn):
     """The stored proposal payload: the route's ``ActionIn`` plus the subscription it targets.
 
-    ``request_id`` and ``decision_note`` are internal: only the request service sets them, when
-    it approves a staged customer request. The public actions body is ``ActionIn`` (extra
-    fields forbidden), so a caller can never supply them. With a ``request_id`` the approved
-    decision is written in the same transaction as the subscription change.
+    ``request_id`` and ``decision_note`` are set by the request service when it approves a staged
+    customer request. The actions route's body is ``ActionIn`` (extra fields forbidden), but the
+    workspace proposals route passes any payload through, so the executor validates them
+    itself: the request must be undecided and the action must be the one it asked for. With a
+    ``request_id`` the approved decision is written in the same transaction as the change.
     """
 
     subscription_id: UUID
@@ -113,14 +114,34 @@ def _check(
             raise HTTPException(422, "renews_at_not_after_current")
 
 
-async def _check_request(conn: Conn, client_id: UUID, action: ActionPayload) -> None:
-    """A request-driven action needs an undecided request that names this subscription."""
+# The one action an approval of each staged customer request may run.
+REQUEST_ACTIONS: dict[str, Action] = {
+    "request_pause": "pause",
+    "request_cancel": "cancel_at_period_end",
+    "request_change": "change_plan",
+}
+
+
+async def _check_request(conn: Conn, client_id: UUID, action: ActionPayload, now: datetime) -> None:
+    """A request-driven action needs an undecided request that it matches exactly.
+
+    The proposal may come from the request service or straight from the workspace proposals
+    route, so the executor itself checks that the action is the one the customer asked for.
+    """
     assert action.request_id is not None
     row = await get_request_row(conn, client_id, action.request_id)
     if row["decision"] is not None:
         raise HTTPException(409, "request_decided")
     if row["subscription_id"] != action.subscription_id:
         raise HTTPException(422, "request_subscription_mismatch")
+    if REQUEST_ACTIONS.get(row["action"]) != action.action:
+        raise HTTPException(422, "request_action_mismatch")
+    if action.action == "change_plan" and (
+        action.plan_code != row["plan_code"]
+        or action.price_override is not None
+        or not _immediate(action, now)
+    ):
+        raise HTTPException(422, "request_action_mismatch")
 
 
 async def _plan(conn: Conn, client_id: UUID, code: str | None) -> dict[str, Any] | None:
@@ -238,7 +259,7 @@ class SubscriptionActionExecutor:
         now = datetime.now(UTC)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             if action.request_id is not None:
-                await _check_request(conn, client_id, action)
+                await _check_request(conn, client_id, action, now)
             subscription = await get_subscription_out(conn, client_id, action.subscription_id)
             current = await _plan(conn, client_id, subscription.plan)
             target = await _plan(conn, client_id, action.plan_code)
@@ -324,7 +345,7 @@ class SubscriptionActionExecutor:
                 # Decisions are final and the request's primary key allows one: whichever of an
                 # approval, a decline or a twin approval commits first wins, and a loser's
                 # exception rolls this whole transaction back, so no action applies.
-                await _check_request(conn, client_id, action)
+                await _check_request(conn, client_id, action, now)
                 recorded = await db.q.fetch_one(
                     "subscriptions/decision_insert.sql",
                     {
