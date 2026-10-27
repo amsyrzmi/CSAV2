@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from csa.subscriptions.api import build_subscriptions_router
 from csa.subscriptions.executor import SubscriptionActionExecutor
 from csa.workspace.executors import build_proposal_registry
 from csa.workspace.registry import ProposalError
+from fastapi import HTTPException
 
 from tests.conftest import requires_docker
 from tests.test_console_services import activate
@@ -471,3 +473,146 @@ async def test_extend_renewal_must_move_forward(sessions: SessionWorld) -> None:
     assert event["action"] == "renewal_extended"
     assert when(event["payload"]["old_renews_at"]) == current
     assert when(event["payload"]["new_renews_at"]) == later
+
+
+async def test_change_plan_card_binds_the_plan_terms_it_shows(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, me = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "gold", "59.90")
+    sub = await subscribe(w, staff)
+
+    created = await propose(w, staff, sub, {"action": "change_plan", "plan_code": "gold"})
+    assert created.status_code == 201, created.text
+    assert created.json()["card"]["expected_version"] == "1:59.90:MYR:month"
+    # The plan is repriced while the card waits: the confirm must not apply the new price.
+    edited = await w.mutate(staff, f"{BASE}/plans/gold", {"price": "69.90"}, method="PATCH")
+    assert edited.status_code == 200, edited.text
+    stale = await confirm(w, staff, created.json()["id"])
+    assert stale.status_code == 409 and stale.json()["detail"] == "proposal_stale"
+    assert await events(w, created.json()["id"]) == []
+    current = await row(w, sub)
+    assert (current["plan"], str(current["price"]), current["version"]) == ("basic", "29.90", 1)
+
+    # An interval edit (allowed while nobody is on the plan) is caught the same way.
+    created = await propose(w, staff, sub, {"action": "change_plan", "plan_code": "gold"})
+    assert created.status_code == 201, created.text
+    assert created.json()["card"]["expected_version"] == "1:69.90:MYR:month"
+    edited = await w.mutate(
+        staff, f"{BASE}/plans/gold", {"billing_interval": "year"}, method="PATCH"
+    )
+    assert edited.status_code == 200, edited.text
+    stale = await confirm(w, staff, created.json()["id"])
+    assert stale.status_code == 409 and stale.json()["detail"] == "proposal_stale"
+    assert (await row(w, sub))["plan"] == "basic"
+
+    # Under the row lock too: terms that changed after the registry's re-check are refused.
+    payload = {"subscription_id": sub, "action": "change_plan", "plan_code": "gold"}
+    with pytest.raises(ProposalError) as refused:
+        await direct_execute(w, me, payload, str(uuid.uuid4()), "1:69.90:MYR:month")
+    assert refused.value.status_code == 409 and refused.value.detail == "proposal_stale"
+    assert (await row(w, sub))["version"] == 1
+
+    done = await direct_execute(w, me, payload, str(uuid.uuid4()), "1:69.90:MYR:year")
+    assert done["version"] == 2
+    current = await row(w, sub)
+    assert current["plan"] == "gold" and str(current["price"]) == "69.90"
+
+
+async def test_scheduled_change_plan_card_promises_no_price(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "gold", "59.90")
+    sub = await subscribe(w, staff)
+    effective = (datetime.now(UTC) + timedelta(days=10)).replace(microsecond=0)
+
+    body = {"action": "change_plan", "plan_code": "gold", "effective_at": effective.isoformat()}
+    created = await propose(w, staff, sub, body)
+    assert created.status_code == 201, created.text
+    card = created.json()["card"]
+    # The due job applies the plan's price on the day, so only the subscription version binds.
+    assert card["expected_version"] == "1"
+    change = {f["label"]: f["value"] for f in card["fields"]}["Change"]
+    assert change.startswith("Move from Basic (RM 29.90 a month) to Gold from "), change
+    assert "The price will be the plan's price on that day (today RM 59.90 a month)." in change
+    edited = await w.mutate(staff, f"{BASE}/plans/gold", {"price": "69.90"}, method="PATCH")
+    assert edited.status_code == 200, edited.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    assert (await row(w, sub))["pending_plan"] == "gold"
+
+
+async def test_missing_renewal_date_resumes_with_a_period_and_blocks_period_end_cancel(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, me = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    paused = await subscribe(w, staff, status="paused")
+    await w.q("UPDATE subscriptions SET renews_at = NULL WHERE id=%s", paused)
+
+    resumed = await propose(w, staff, paused, {"action": "resume"})
+    assert resumed.status_code == 201, resumed.text
+    change = {f["label"]: f["value"] for f in resumed.json()["card"]["fields"]}["Change"]
+    assert change == (
+        "Resume now. There is no renewal date, so the next renewal is one billing period "
+        "from today."
+    )
+    assert (await confirm(w, staff, resumed.json()["id"])).status_code == 200
+    check = await w.q(
+        "SELECT s.renews_at = ((e.created_at AT TIME ZONE c.timezone) + interval '1 month')"
+        " AT TIME ZONE c.timezone AS ok, s.status FROM subscriptions s"
+        " JOIN subscription_events e ON e.subscription_id = s.id AND e.proposal_id = %s"
+        " JOIN clients c ON c.id = s.client_id WHERE s.id = %s",
+        resumed.json()["id"],
+        paused,
+    )
+    assert check == [{"ok": True, "status": "active"}]
+    [event] = await events(w, resumed.json()["id"])
+    assert event["payload"]["old_renews_at"] is None
+    assert event["payload"]["new_renews_at"] is not None
+
+    # Without a renewal date the period never ends, so a period-end cancel is refused.
+    active = await subscribe(w, staff)
+    await w.q("UPDATE subscriptions SET renews_at = NULL WHERE id=%s", active)
+    refused = await propose(w, staff, active, {"action": "cancel_at_period_end"})
+    assert refused.status_code == 422 and refused.json()["detail"] == "action_not_allowed"
+    assert (await row(w, active))["cancel_at_period_end"] is False
+
+    # And again under the row lock, when the date is cleared after the card was made.
+    later = await subscribe(w, staff)
+    card = await propose(w, staff, later, {"action": "cancel_at_period_end"})
+    assert card.status_code == 201, card.text
+    await w.q("UPDATE subscriptions SET renews_at = NULL WHERE id=%s", later)
+    stopped = await confirm(w, staff, card.json()["id"])
+    assert stopped.status_code == 422 and stopped.json()["detail"] == "action_not_allowed"
+    payload = {"subscription_id": later, "action": "cancel_at_period_end"}
+    with pytest.raises(HTTPException) as blocked:
+        await direct_execute(w, me, payload, card.json()["id"], "1")
+    assert blocked.value.status_code == 422 and blocked.value.detail == "action_not_allowed"
+    assert (await row(w, later))["cancel_at_period_end"] is False
+    assert await events(w, card.json()["id"]) == []
+
+
+async def test_pause_resume_date_must_be_after_the_tenant_today(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, me = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub = await subscribe(w, staff)
+    today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date()
+
+    for day in (today, today - timedelta(days=1)):
+        refused = await propose(w, staff, sub, {"action": "pause", "resume_at": day.isoformat()})
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"] == "resume_at_not_after_today"
+    assert await proposal_rows(w) == []
+    tomorrow = (today + timedelta(days=1)).isoformat()
+    accepted = await propose(w, staff, sub, {"action": "pause", "resume_at": tomorrow})
+    assert accepted.status_code == 201, accepted.text
+
+    payload = {"subscription_id": sub, "action": "pause", "resume_at": today.isoformat()}
+    with pytest.raises(HTTPException) as blocked:
+        await direct_execute(w, me, payload, str(uuid.uuid4()), "1")
+    assert blocked.value.status_code == 422
+    assert blocked.value.detail == "resume_at_not_after_today"
+    assert (await row(w, sub))["status"] == "active"

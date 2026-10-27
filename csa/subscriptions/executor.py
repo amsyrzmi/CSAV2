@@ -3,7 +3,9 @@
 ``card`` runs at create and again at confirm (the registry compares the version it returns
 with the bound one); ``execute`` locks the row, checks that version once more, applies the
 change and records one ``subscription_events`` row keyed by the proposal id, so a confirm run
-again after the commit replays that event's receipt instead of acting twice.
+again after the commit replays that event's receipt instead of acting twice. For an immediate
+plan change the bound version also carries the target plan's price, currency and interval
+(``bound_version``), because a plan edit does not bump the subscription's version.
 """
 
 from __future__ import annotations
@@ -94,12 +96,19 @@ def _check(
     cancel_at_period_end: bool,
     target: dict[str, Any] | None,
     now: datetime,
+    today: date,
 ) -> None:
-    """Refuse an action the subscription's current state does not allow (422 with a code)."""
+    """Refuse an action the subscription's current state does not allow (422 with a code).
+
+    ``today`` is the date on the tenant's calendar (``clients.timezone``).
+    """
     if status not in ALLOWED_FROM[action.action]:
         raise HTTPException(422, "action_not_allowed")
-    if action.action == "cancel_at_period_end" and cancel_at_period_end:
+    if action.action == "cancel_at_period_end" and (cancel_at_period_end or renews_at is None):
+        # Without a renewal date the period never ends, so the cancellation would never happen.
         raise HTTPException(422, "action_not_allowed")
+    if action.action == "pause" and action.resume_at is not None and action.resume_at <= today:
+        raise HTTPException(422, "resume_at_not_after_today")
     if action.action == "change_plan":
         if target is None or not target["is_active"]:
             raise HTTPException(422, "plan_unavailable")
@@ -126,13 +135,21 @@ async def _check_request(conn: Conn, client_id: UUID, action: ActionPayload, now
     """A request-driven action needs an undecided request that it matches exactly.
 
     The proposal may come from the request service or straight from the workspace proposals
-    route, so the executor itself checks that the action is the one the customer asked for.
+    route, so the executor itself checks that the action is the one the customer asked for, on
+    the subscription the request names, and that the subscription is the requesting customer's.
     """
     assert action.request_id is not None
     row = await get_request_row(conn, client_id, action.request_id)
     if row["decision"] is not None:
         raise HTTPException(409, "request_decided")
     if row["subscription_id"] != action.subscription_id:
+        raise HTTPException(422, "request_subscription_mismatch")
+    subscription = await db.q.fetch_one(
+        "subscriptions/subscription_get.sql",
+        {"client_id": client_id, "subscription_id": action.subscription_id},
+        conn=conn,
+    )
+    if subscription is None or subscription["contact_id"] != row["contact_id"]:
         raise HTTPException(422, "request_subscription_mismatch")
     if REQUEST_ACTIONS.get(row["action"]) != action.action:
         raise HTTPException(422, "request_action_mismatch")
@@ -151,6 +168,20 @@ async def _plan(conn: Conn, client_id: UUID, code: str | None) -> dict[str, Any]
         "subscriptions/plan_get.sql", {"client_id": client_id, "code": code}, conn=conn
     )
     return row
+
+
+def bound_version(
+    version: int, action: ActionIn, target: dict[str, Any] | None, now: datetime
+) -> str:
+    """The version a card binds: the subscription's, plus the plan terms an immediate change quotes.
+
+    A plan edit does not bump the subscription's version, so without the terms a card showing
+    one price could confirm at another. A scheduled change binds the version only: the due job
+    applies the plan's price on the day, and the card says so.
+    """
+    if action.action == "change_plan" and target is not None and _immediate(action, now):
+        return f"{version}:{target['price']}:{target['currency']}:{target['billing_interval']}"
+    return str(version)
 
 
 def money(price: Decimal, currency: str) -> str:
@@ -188,7 +219,12 @@ def _change(
                 return "Pause now until someone resumes it."
             return f"Pause now and resume on {_day(action.resume_at, zone)}."
         case "resume":
-            if renews_at is not None and renews_at < now:
+            if renews_at is None:
+                return (
+                    "Resume now. There is no renewal date, so the next renewal is one billing "
+                    "period from today."
+                )
+            if renews_at < now:
                 return (
                     "Resume now. The renewal date has passed, so the next renewal is one "
                     "billing period from today."
@@ -196,22 +232,24 @@ def _change(
             return "Resume now."
         case "change_plan":
             assert target is not None
+            old = f"{plan_label} ({money(price, currency)}{_per(current)})"
+            listed = money(target["price"], target["currency"])
+            if not _immediate(action, now):
+                # The due job applies the plan's price on the day, so no figure is promised.
+                assert action.effective_at is not None
+                day = _day(action.effective_at, zone)
+                return (
+                    f"Move from {old} to {target['name']} from {day}. The price will be the "
+                    f"plan's price on that day (today {listed}{_per(target)})."
+                )
             if action.price_override is not None:
                 override = money(action.price_override, target["currency"])
                 new = f"{target['name']} at {override}{_per(target)} (price override)"
             else:
-                listed = money(target["price"], target["currency"])
                 new = f"{target['name']} ({listed}{_per(target)})"
-            when = (
-                "now"
-                if action.effective_at is None or _immediate(action, now)
-                else f"from {_day(action.effective_at, zone)}"
-            )
-            old = f"{plan_label} ({money(price, currency)}{_per(current)})"
-            return f"Move from {old} to {new}, {when}."
+            return f"Move from {old} to {new}, now."
         case "cancel_at_period_end":
-            if renews_at is None:
-                return "Cancel at the end of the current period."
+            assert renews_at is not None  # _check refuses a period-end cancel without one
             return f"Cancel when the current period ends on {_day(renews_at, zone)}."
         case "cancel_now":
             return "Cancel now. The subscription stops immediately."
@@ -266,6 +304,9 @@ class SubscriptionActionExecutor:
             tenant = await db.q.fetch_one(
                 "subscriptions/tenant_timezone.sql", {"client_id": client_id}, conn=conn
             )
+        if tenant is None:
+            raise RuntimeError(f"tenant {client_id} has no clients row")
+        zone = ZoneInfo(tenant["timezone"])
         _check(
             action,
             status=subscription.status,
@@ -274,10 +315,8 @@ class SubscriptionActionExecutor:
             cancel_at_period_end=subscription.cancel_at_period_end,
             target=target,
             now=now,
+            today=now.astimezone(zone).date(),
         )
-        if tenant is None:
-            raise RuntimeError(f"tenant {client_id} has no clients row")
-        zone = ZoneInfo(tenant["timezone"])
         customer = subscription.customer
         name = customer.full_name or customer.phone or customer.email or "Unnamed customer"
         plan_label = subscription.plan_name or subscription.plan
@@ -304,7 +343,7 @@ class SubscriptionActionExecutor:
                     CardField(label="Reason", value=action.reason or "—"),
                 ],
             ),
-            str(subscription.version),
+            bound_version(subscription.version, action, target, now),
         )
 
     async def execute(
@@ -360,9 +399,14 @@ class SubscriptionActionExecutor:
                 )
                 if recorded is None:
                     raise HTTPException(409, "request_decided")
-            if locked["version"] != int(expected_version):
+            if locked["version"] != int(expected_version.split(":", 1)[0]):
                 raise ProposalError("proposal_stale")
             target = await _plan(conn, client_id, action.plan_code)
+            tenant = await db.q.fetch_one(
+                "subscriptions/tenant_timezone.sql", {"client_id": client_id}, conn=conn
+            )
+            if tenant is None:
+                raise RuntimeError(f"tenant {client_id} has no clients row")
             _check(
                 action,
                 status=locked["status"],
@@ -371,7 +415,12 @@ class SubscriptionActionExecutor:
                 cancel_at_period_end=locked["cancel_at_period_end"],
                 target=target,
                 now=now,
+                today=now.astimezone(ZoneInfo(tenant["timezone"])).date(),
             )
+            # The plan terms the card quoted, read again under the lock: a plan edit that landed
+            # after the registry's re-check must not apply at a price nobody confirmed.
+            if bound_version(locked["version"], action, target, now) != expected_version:
+                raise ProposalError("proposal_stale")
             is_plan = action.action == "change_plan"
             immediate_plan = is_plan and _immediate(action, now)
             new_price: Decimal | None = None

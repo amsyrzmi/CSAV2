@@ -37,6 +37,12 @@ async def seed_tenants(conn: psycopg.AsyncConnection[Any]) -> tuple[uuid.UUID, u
             "VALUES (%s,%s,'Synthetic subscriptions','active','b1-test')",
             (client, f"subs-due-{client}"),
         )
+        # The job only runs for a tenant whose subscriptions package is active.
+        await conn.execute(
+            "INSERT INTO console_service_packages(client_id,package,status,activated_at,reference)"
+            " VALUES (%s,'subscriptions','active',now(),'b1-test')",
+            (client,),
+        )
         for code, price, interval, active in [
             ("basic", 50, "month", True),
             ("pro", 80, "month", True),
@@ -359,3 +365,100 @@ async def test_registry_contains_subscriptions_due_every_five_minutes() -> None:
     assert job.every == timedelta(minutes=5)
     assert job.per_client is True
     assert job.fn is run_subscriptions_due
+
+
+async def test_period_end_cancel_clears_a_pending_plan_change(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        later = NOW + timedelta(days=3)
+        leaving = await add_subscription(
+            conn,
+            tenant,
+            cancel_at_period_end=True,
+            renews_at=NOW - timedelta(minutes=1),
+            pending_plan="pro",
+            pending_effective_at=later,
+        )
+        plain = await add_subscription(
+            conn, tenant, cancel_at_period_end=True, renews_at=NOW - timedelta(minutes=1)
+        )
+
+        assert await run(app_dsn, tenant) == ZERO | {"cancelled": 2}
+
+        gone = await fetch_subscription(conn, leaving)
+        assert gone["status"] == "cancelled" and gone["plan"] == "basic"
+        assert gone["pending_plan"] is None and gone["pending_effective_at"] is None
+        (event,) = await fetch_events(conn, leaving)
+        assert event["action"] == "cancelled_at_period_end"
+        assert event["payload"] == {"cleared_pending_plan": "pro"}
+        (event,) = await fetch_events(conn, plain)
+        assert event["payload"] == {"cleared_pending_plan": None}
+        # The cleared change is not picked up later as a skipped one.
+        assert await run(app_dsn, tenant, later + timedelta(hours=1)) == ZERO
+        assert len(await fetch_events(conn, leaving)) == 1
+
+
+async def test_resume_with_no_renewal_date_starts_a_period(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        sub = await add_subscription(
+            conn,
+            tenant,
+            status="paused",
+            paused_at=NOW - timedelta(days=5),
+            resume_at=date(2026, 3, 10),
+            renews_at=None,
+        )
+
+        assert await run(app_dsn, tenant) == ZERO | {"resumed": 1}
+
+        row = await fetch_subscription(conn, sub)
+        assert row["status"] == "active" and row["version"] == 2
+        # 12:00 UTC on 10 Mar is 20:00 in Kuala Lumpur; one month later on that calendar
+        assert row["renews_at"] == at("2026-04-10 20:00")
+        (event,) = await fetch_events(conn, sub)
+        assert event["action"] == "resumed"
+        assert datetime.fromisoformat(event["payload"]["renews_at"]) == at("2026-04-10 20:00")
+
+
+@pytest.mark.parametrize("package", [None, "requested", "suspended"])
+async def test_tenant_without_an_active_package_is_left_alone(
+    pg_container: object, app_dsn: str, package: str | None
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, other = await seed_tenants(conn)
+        if package is None:
+            await conn.execute("DELETE FROM console_service_packages WHERE client_id=%s", (tenant,))
+        else:
+            await conn.execute(
+                "UPDATE console_service_packages SET status=%s WHERE client_id=%s",
+                (package, tenant),
+            )
+        due = NOW - timedelta(hours=1)
+        subs = [
+            await add_subscription(conn, tenant, cancel_at_period_end=True, renews_at=due),
+            await add_subscription(conn, tenant, pending_plan="pro", pending_effective_at=due),
+            await add_subscription(
+                conn, tenant, status="paused", resume_at=date(2026, 3, 1), renews_at=due
+            ),
+            await add_subscription(conn, tenant, renews_at=due),
+        ]
+        active_tenant = await add_subscription(conn, other, renews_at=due)
+
+        assert await run(app_dsn, tenant) == ZERO
+
+        for sub in subs:
+            assert (await fetch_subscription(conn, sub))["version"] == 1
+            assert await fetch_events(conn, sub) == []
+        assert await run(app_dsn, other) == ZERO | {"renewed": 1}
+        assert (await fetch_subscription(conn, active_tenant))["version"] == 2

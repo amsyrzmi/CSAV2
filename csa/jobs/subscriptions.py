@@ -10,6 +10,13 @@ import psycopg
 from csa.core import db
 from csa.jobs.clock import Clock
 
+# Automatic changes run only while the tenant's subscriptions package is active, the status the
+# console's subscriptions routes accept (csa.console.services.ACTIVE_ONLY): a requested or
+# suspended package changes nothing.
+PACKAGE_KEYS = ["subscriptions"]
+PACKAGE_STATUSES = ["active"]
+NOTHING_DUE = {"cancelled": 0, "plan_changed": 0, "resumed": 0, "renewed": 0, "pending_skipped": 0}
+
 
 async def run_subscriptions_due(
     conn: psycopg.AsyncConnection[Any],
@@ -24,7 +31,15 @@ async def run_subscriptions_due(
     ``FOR UPDATE SKIP LOCKED``: period-end cancellations first (so a cancelling subscription is
     never renewed in the same pass), then scheduled plan changes, resume dates and renewals.
     The rules run once per call, so a row advances by at most one renewal interval per run.
+    A tenant without an active ``subscriptions`` package gets zero counts and no changes.
     """
+    package = await db.q.fetch_one(
+        "console/service_package_any_in_status.sql",
+        (client_id, PACKAGE_KEYS, PACKAGE_STATUSES),
+        conn=conn,
+    )
+    if package is None:
+        return dict(NOTHING_DUE)
     params = {"client_id": client_id, "now": clock.now(), "batch_size": batch_size}
     cancelled = await _one("jobs/subscriptions_due_cancel.sql", params, conn)
     plan = await _one("jobs/subscriptions_due_plan.sql", params, conn)

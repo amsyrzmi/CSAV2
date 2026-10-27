@@ -408,3 +408,53 @@ async def test_insert_requires_an_active_plan_at_write_time(sessions: SessionWor
             conn=conn,
         )
     assert row is None
+
+
+async def test_billing_interval_cannot_change_while_the_plan_is_in_use(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    for code, price in (("basic", "29.90"), ("pro", "59.90"), ("spare", "9.90")):
+        await seed_plan(w, w.tenants[0], code, price)
+    contact = await seed_customer(w, w.tenants[0])
+    created = await w.mutate(staff, BASE, {"contact_id": contact, "plan_code": "basic"})
+    assert created.status_code == 201, created.text
+    sub = created.json()["id"]
+    await w.q(
+        "UPDATE subscriptions SET pending_plan='pro',"
+        " pending_effective_at=now() + interval '5 days' WHERE id=%s",
+        sub,
+    )
+
+    async def patch(code: str, body: dict[str, Any]) -> Any:
+        return await w.mutate(staff, f"{BASE}/plans/{code}", body, method="PATCH")
+
+    # The plan a subscription is on, and the plan it is scheduled to move to, keep their interval.
+    for code in ("basic", "pro"):
+        for body in ({"billing_interval": "year"}, {"billing_interval": "year", "price": "1.00"}):
+            refused = await patch(code, body)
+            assert refused.status_code == 409, refused.text
+            assert refused.json()["detail"] == "plan_in_use"
+    plans = await w.q(
+        "SELECT code, billing_interval, price::text FROM plans WHERE client_id=%s ORDER BY code",
+        w.tenants[0],
+    )
+    assert plans == [
+        {"code": "basic", "billing_interval": "month", "price": "29.90"},
+        {"code": "pro", "billing_interval": "month", "price": "59.90"},
+        {"code": "spare", "billing_interval": "month", "price": "9.90"},
+    ]
+    # Price edits and an unchanged interval are still allowed; an unused plan changes freely.
+    same = await patch("basic", {"price": "39.90", "billing_interval": "month"})
+    assert same.status_code == 200 and same.json()["price"] == "39.90"
+    assert (await patch("spare", {"billing_interval": "year"})).json()["billing_interval"] == "year"
+    # A paused subscription still holds the plan; a cancelled one does not.
+    await w.q("UPDATE subscriptions SET status='paused', paused_at=now() WHERE id=%s", sub)
+    assert (await patch("basic", {"billing_interval": "year"})).status_code == 409
+    await w.q("UPDATE subscriptions SET status='cancelled', cancelled_at=now() WHERE id=%s", sub)
+    freed = await patch("basic", {"billing_interval": "year"})
+    assert freed.status_code == 200 and freed.json()["billing_interval"] == "year"
+    missing = await patch("ghost", {"billing_interval": "year"})
+    assert missing.status_code == 404 and missing.json()["detail"] == "plan_not_found"
+

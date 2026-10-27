@@ -610,3 +610,45 @@ async def test_requests_are_tenant_scoped(sessions: SessionWorld) -> None:
     assert (await decide(w, admin_b, request_b, {"decision": "decline"})).status_code == 200
     rows = await decisions(w)
     assert [str(r["client_id"]) for r in rows] == [w.tenants[1]]
+
+
+async def test_approving_a_cancel_without_a_renewal_date_is_refused_without_decision(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub, contact = await subscribe(w, staff)
+    await w.q("UPDATE subscriptions SET renews_at = NULL WHERE id=%s", sub)
+    request = await seed_request(w, contact, "request_cancel", subscription_id=sub)
+
+    refused = await decide(w, staff, request, {"decision": "approve"})
+    assert refused.status_code == 422 and refused.json()["detail"] == "action_not_allowed"
+    assert await decisions(w) == []
+    assert (await sub_row(w, sub))["cancel_at_period_end"] is False
+    assert await audit_actions(w) == []
+    still_open = (await staff.get(f"{BASE}/requests")).json()
+    assert [item["id"] for item in still_open["items"]] == [request]
+
+
+async def test_workspace_route_refuses_a_request_from_another_customer(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub, _ = await subscribe(w, staff)
+    other = await seed_customer(w, w.tenants[0], name="Other", email="other@example.test")
+    # Another customer's request that names this customer's subscription.
+    foreign = await seed_request(w, other, "request_pause", subscription_id=sub)
+
+    payload = {"subscription_id": sub, "request_id": foreign, "action": "pause"}
+    refused = await w.mutate(
+        staff,
+        "/console/v1/workspace/proposals",
+        {"kind": "subscription_action", "payload": payload},
+    )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == "request_subscription_mismatch"
+    assert await w.q("SELECT id FROM console_proposals WHERE kind='subscription_action'") == []
+    assert await decisions(w) == [] and (await sub_row(w, sub))["status"] == "active"

@@ -1,9 +1,10 @@
 -- Applies one subscription_action to a row the caller locked (subscription_lock.sql) at
 -- %(version)s; "now" is the transaction's now(). immediate_plan / scheduled_plan say whether a
 -- change_plan takes effect now (plan, price and currency replaced, pending cleared) or later
--- (pending_plan and pending_effective_at set). A resume whose renewal has lapsed renews one
--- billing interval of the current plan after now on the tenant's calendar (clients.timezone),
--- the arithmetic subscription_insert.sql uses for a default renewal.
+-- (pending_plan and pending_effective_at set). A resume whose renewal has lapsed, or that has
+-- no renewal date at all, renews one billing interval of the current plan after now on the
+-- tenant's calendar (clients.timezone), the arithmetic subscription_insert.sql uses for a default
+-- renewal.
 WITH tenant AS (
     SELECT timezone FROM public.clients WHERE id = %(client_id)s
 )
@@ -24,7 +25,7 @@ SET status = CASE %(action)s
         ELSE s.resume_at END,
     renews_at = CASE
         WHEN %(action)s = 'extend_renewal' THEN %(renews_at)s::timestamptz
-        WHEN %(action)s = 'resume' AND s.renews_at < now() THEN
+        WHEN %(action)s = 'resume' AND (s.renews_at IS NULL OR s.renews_at < now()) THEN
             ((now() AT TIME ZONE tenant.timezone)
              + CASE (SELECT p.billing_interval FROM public.plans p
                      WHERE p.client_id = s.client_id AND p.code = s.plan)

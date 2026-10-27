@@ -83,6 +83,21 @@ async def create_plan(conn: Conn, client_id: UUID, actor: ConsoleActor, data: Pl
 async def update_plan(
     conn: Conn, client_id: UUID, actor: ConsoleActor, code: str, data: PlanPatch
 ) -> PlanOut:
+    current = await db.q.fetch_one(
+        "subscriptions/plan_lock.sql", {"client_id": client_id, "code": code}, conn=conn
+    )
+    if current is None:
+        raise HTTPException(404, "plan_not_found")
+    if data.billing_interval is not None and data.billing_interval != current["billing_interval"]:
+        # Subscriptions keep their price but read the plan's interval at every renewal, so a new
+        # interval would change what existing customers pay for.
+        used = await db.q.fetch_one(
+            "subscriptions/plan_in_use.sql", {"client_id": client_id, "code": code}, conn=conn
+        )
+        if used is None:
+            raise RuntimeError("plan_in_use.sql returned no row")
+        if used["in_use"]:
+            raise HTTPException(409, "plan_in_use")
     changes = data.model_dump()
     if changes["features"] is not None:
         changes["features"] = Jsonb(changes["features"])
