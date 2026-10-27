@@ -24,7 +24,12 @@ _MEDIA_KINDS: dict[str, Literal["image", "audio", "video", "document"]] = {
     "document": "document",
     "sticker": "image",
 }
-_STATUS_VALUES = {"sent", "delivered", "read", "failed"}
+_STATUS_VALUES: dict[str, Literal["sent", "delivered", "read", "failed"]] = {
+    "sent": "sent",
+    "delivered": "delivered",
+    "read": "read",
+    "failed": "failed",
+}
 
 
 class WhatsAppParseError(ValueError):
@@ -309,7 +314,7 @@ def _parse_status(
 ) -> WhatsAppEvent:
     message_id = _required_string(item, "id")
     status_value = item.get("status")
-    if status_value not in _STATUS_VALUES:
+    if not isinstance(status_value, str) or status_value not in _STATUS_VALUES:
         raise WhatsAppParseError("status value is not supported")
     recipient = _required_string(item, "recipient_id")
     occurred_at = _timestamp(item.get("timestamp"))
@@ -321,7 +326,7 @@ def _parse_status(
             error_code = str(code)
     status = WhatsAppStatus(
         provider_message_id=message_id,
-        status=status_value,
+        status=_STATUS_VALUES[status_value],
         recipient_wa_id=recipient,
         occurred_at=occurred_at,
         error_code=error_code,

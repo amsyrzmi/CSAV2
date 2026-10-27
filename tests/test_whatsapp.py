@@ -299,3 +299,12 @@ def test_settings_require_both_whatsapp_secrets_together() -> None:
     assert both.whatsapp_enabled is True
     assert configured().whatsapp_enabled is False
     assert str(configured().WHATSAPP_GRAPH_BASE_URL).startswith("https://graph.facebook.com/")
+
+
+@pytest.mark.parametrize("bad_status", [[], {}, 7, None, "unknown"])
+def test_parse_rejects_malformed_status_field(bad_status: Any) -> None:
+    """A non-string or unknown status value is a parse error, never a TypeError."""
+    status = {"id": "wamid.OUT", "status": bad_status, "timestamp": "1761523300"}
+    status["recipient_id"] = "60123456789"
+    with pytest.raises(WhatsAppParseError):
+        WhatsAppAdapter.parse(_webhook(_value(statuses=[status])))
