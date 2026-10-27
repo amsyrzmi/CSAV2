@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import re
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from fastapi import HTTPException, Request
 from psycopg import AsyncConnection
-from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -32,7 +31,8 @@ from csa.subscriptions.contracts import (
     SubscriptionOut,
     SubscriptionPage,
 )
-from csa.workspace.registry import ProposalRegistry
+from csa.workspace.contracts import ProposalOut
+from csa.workspace.registry import ProposalError, ProposalRegistry
 
 Conn = AsyncConnection[Any]
 
@@ -295,6 +295,153 @@ def approval_action(row: dict[str, Any], data: DecideIn) -> ActionIn:
     return ActionIn(action="change_plan", plan_code=row["plan_code"], reason=reason)
 
 
+# Namespace of the approval proposal ids: one request always maps to the same proposal.
+REQUEST_PROPOSAL_NS = UUID("6f1d2c4e-8a3b-4f57-9c1e-5b7a2d9e4c10")
+# A proposal that expired or was cancelled unexecuted is skipped for the next deterministic id.
+MAX_PROPOSAL_ATTEMPTS = 5
+
+
+def request_proposal_id(request_id: UUID, attempt: int = 0) -> UUID:
+    suffix = f":{attempt}" if attempt else ""
+    return uuid5(REQUEST_PROPOSAL_NS, f"subscription-request:{request_id}{suffix}")
+
+
+async def _lookup_proposal(
+    pool: AsyncConnectionPool,
+    registry: ProposalRegistry,
+    actor: ConsoleActor,
+    client_id: UUID,
+    proposal_id: UUID,
+) -> ProposalOut | None:
+    """The caller's own proposal with this id, or None (absent, or someone else's)."""
+    async with tx(pool, str(client_id)) as conn:
+        try:
+            return await registry.get(conn, actor, client_id, proposal_id)
+        except ProposalError:
+            return None
+
+
+async def _proposal_for(
+    pool: AsyncConnectionPool,
+    request: Request,
+    registry: ProposalRegistry,
+    actor: ConsoleActor,
+    client_id: UUID,
+    request_id: UUID,
+    payload: dict[str, Any],
+) -> ProposalOut:
+    """Create the request's deterministic proposal, or reuse the one a retry/twin already made."""
+    for attempt in range(MAX_PROPOSAL_ATTEMPTS):
+        proposal_id = request_proposal_id(request_id, attempt)
+        # Look first: the card of an already executed proposal would refuse a second run.
+        found = await _lookup_proposal(pool, registry, actor, client_id, proposal_id)
+        if found is None:
+            try:
+                found = await registry.create(
+                    pool,
+                    request,
+                    actor,
+                    client_id,
+                    "subscription_action",
+                    payload,
+                    thread_id=None,
+                    origin="tab",
+                    proposal_id=proposal_id,
+                )
+            except ProposalError:
+                # The id is taken by a proposal this login cannot see: another decider is on it.
+                raise HTTPException(409, "request_in_progress") from None
+            except HTTPException:
+                # A twin may have executed between the lookup and the card check.
+                found = await _lookup_proposal(pool, registry, actor, client_id, proposal_id)
+                if found is None:
+                    raise
+        if found.status not in ("expired", "cancelled"):
+            return found
+    raise HTTPException(409, "request_proposal_unavailable")
+
+
+async def _drop_unexecuted(
+    pool: AsyncConnectionPool,
+    registry: ProposalRegistry,
+    actor: ConsoleActor,
+    client_id: UUID,
+    proposal_id: UUID,
+) -> None:
+    """Cancel a proposal whose confirm failed, so a retry starts from a fresh card."""
+    try:
+        async with tx(pool, str(client_id)) as conn:
+            await registry.cancel(conn, actor, client_id, proposal_id)
+    except ProposalError:
+        pass  # already claimed or executed by someone else, or not ours: leave it
+
+
+async def _executed_proposal(
+    pool: AsyncConnectionPool,
+    request: Request,
+    registry: ProposalRegistry,
+    actor: ConsoleActor,
+    client_id: UUID,
+    proposal: ProposalOut,
+) -> ProposalOut:
+    """Confirm the proposal (the claim lease allows one execution) or reuse its receipt."""
+    if proposal.status == "executed":
+        return proposal
+    try:
+        done = await registry.confirm(pool, request, actor, client_id, proposal.id)
+    except ProposalError as error:
+        if error.detail == "proposal_consumed":
+            # Executed meanwhile by a twin: go on to the decision. Otherwise it is in flight.
+            current = await _lookup_proposal(pool, registry, actor, client_id, proposal.id)
+            if current is not None and current.status == "executed":
+                return current
+            raise HTTPException(409, "request_in_progress") from None
+        if error.detail in ("proposal_session_mismatch", "proposal_not_found"):
+            raise HTTPException(409, "request_in_progress") from None
+        await _drop_unexecuted(pool, registry, actor, client_id, proposal.id)
+        raise
+    except Exception:
+        await _drop_unexecuted(pool, registry, actor, client_id, proposal.id)
+        raise
+    if done.status != "executed":
+        raise HTTPException(409, "proposal_not_executed")
+    return done
+
+
+async def _record_decision(
+    conn: Conn,
+    actor: ConsoleActor,
+    client_id: UUID,
+    request_id: UUID,
+    data: DecideIn,
+    proposal_id: UUID | None,
+) -> RequestOut:
+    """Insert the final decision once; a repeat of the same approval returns the stored row."""
+    verdict = "approved" if data.decision == "approve" else "declined"
+    inserted = await db.q.fetch_one(
+        "subscriptions/decision_insert.sql",
+        {
+            "client_id": client_id,
+            "request_id": request_id,
+            "decision": verdict,
+            "note": data.note,
+            "decided_by": actor.user_id,
+            "proposal_id": proposal_id,
+        },
+        conn=conn,
+    )
+    stored = await get_request_row(conn, client_id, request_id)
+    if inserted is None and not (
+        verdict == "approved"
+        and stored["decision"] == "approved"
+        and stored["proposal_id"] == proposal_id
+    ):
+        raise HTTPException(409, "request_decided")
+    if inserted is not None:
+        await audit(conn, actor, client_id, f"subscriptions.request.{verdict}", str(request_id))
+    return request_out(stored)
+
+
 async def decide_request(
     pool: AsyncConnectionPool,
     request: Request,
@@ -305,73 +452,35 @@ async def decide_request(
 ) -> RequestOut:
     """Decline a staged request, or approve it by proposing and confirming its action.
 
-    The deciding transaction holds an advisory lock on the request until it commits, so two
-    concurrent decisions cannot both create a proposal: the second answers 409 at once. The
-    registry's create and confirm run on their own connections while the lock is held; a card
-    refusal raised there rolls this transaction back before any decision row is written.
+    No transaction spans the registry calls. The approval's proposal id derives from the
+    request id, so a retry or concurrent twin reuses one proposal (its claim lease allows one
+    execution) and the decision insert is idempotent: re-approving after a crash completes it.
+    A card refusal propagates before any decision row is written.
     """
     async with tx(pool, str(client_id)) as conn:
-        await get_request_row(conn, client_id, request_id)
-        lock = await db.q.fetch_one(
-            "subscriptions/request_lock.sql", {"request_id": request_id}, conn=conn
-        )
-        if lock is None or not lock["locked"]:
-            raise HTTPException(409, "request_in_progress")
-        row = await get_request_row(conn, client_id, request_id)  # re-read under the lock
+        row = await get_request_row(conn, client_id, request_id)
         if row["decision"] is not None:
             raise HTTPException(409, "request_decided")
-        proposal_id: UUID | None = None
-        if data.decision == "approve":
-            action = approval_action(row, data)
-            if row["subscription_id"] is None:
-                raise HTTPException(422, "request_has_no_subscription")
-            subscription = await db.q.fetch_one(
-                "subscriptions/subscription_get.sql",
-                {"client_id": client_id, "subscription_id": row["subscription_id"]},
-                conn=conn,
-            )
-            if subscription is None or subscription["contact_id"] != row["contact_id"]:
-                raise HTTPException(422, "request_subscription_mismatch")
-            registry = getattr(request.app.state, "proposal_registry", None)
-            if not isinstance(registry, ProposalRegistry):
-                raise HTTPException(503, "proposal_registry_unavailable")
-            proposal = await registry.create(
-                pool,
-                request,
-                actor,
-                client_id,
-                "subscription_action",
-                {
-                    "subscription_id": str(row["subscription_id"]),
-                    **action.model_dump(mode="json", exclude_none=True),
-                },
-                thread_id=None,
-                origin="tab",
-            )
-            done = await registry.confirm(pool, request, actor, client_id, proposal.id)
-            if done.status != "executed":
-                raise HTTPException(409, "proposal_not_executed")
-            proposal_id = done.id
-        try:
-            await db.q.fetch_one(
-                "subscriptions/decision_insert.sql",
-                {
-                    "client_id": client_id,
-                    "request_id": request_id,
-                    "decision": "approved" if data.decision == "approve" else "declined",
-                    "note": data.note,
-                    "decided_by": actor.user_id,
-                    "proposal_id": proposal_id,
-                },
-                conn=conn,
-            )
-        except UniqueViolation:
-            raise HTTPException(409, "request_decided") from None
-        await audit(
-            conn,
-            actor,
-            client_id,
-            f"subscriptions.request.{'approved' if data.decision == 'approve' else 'declined'}",
-            str(request_id),
+        if data.decision == "decline":
+            return await _record_decision(conn, actor, client_id, request_id, data, None)
+        action = approval_action(row, data)
+        if row["subscription_id"] is None:
+            raise HTTPException(422, "request_has_no_subscription")
+        subscription = await db.q.fetch_one(
+            "subscriptions/subscription_get.sql",
+            {"client_id": client_id, "subscription_id": row["subscription_id"]},
+            conn=conn,
         )
-        return request_out(await get_request_row(conn, client_id, request_id))
+        if subscription is None or subscription["contact_id"] != row["contact_id"]:
+            raise HTTPException(422, "request_subscription_mismatch")
+    registry = getattr(request.app.state, "proposal_registry", None)
+    if not isinstance(registry, ProposalRegistry):
+        raise HTTPException(503, "proposal_registry_unavailable")
+    payload = {
+        "subscription_id": str(row["subscription_id"]),
+        **action.model_dump(mode="json", exclude_none=True),
+    }
+    proposal = await _proposal_for(pool, request, registry, actor, client_id, request_id, payload)
+    done = await _executed_proposal(pool, request, registry, actor, client_id, proposal)
+    async with tx(pool, str(client_id)) as conn:
+        return await _record_decision(conn, actor, client_id, request_id, data, done.id)
