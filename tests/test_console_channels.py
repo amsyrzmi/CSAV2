@@ -201,3 +201,16 @@ async def test_dead_delivery_exposes_its_failure_code(sessions: SessionWorld) ->
     items = (await w.admin.get(path)).json()["items"]
     assert items[0]["delivery_status"] == "dead"
     assert items[0]["delivery_error"] == "outside_service_window"
+
+
+async def test_disconnect_releases_the_number_for_another_tenant(sessions: SessionWorld) -> None:
+    w = sessions
+    number = body()["phone_number_id"]
+    assert (await w.mutate(w.admin, url(w, 0), body(), method="PUT")).status_code == 200
+    assert (await w.mutate(w.admin, url(w, 0), method="DELETE")).status_code == 204
+    taken = await w.mutate(w.admin, url(w, 1), body(), method="PUT")
+    assert taken.status_code == 200, taken.text
+    first = (await w.admin.get(url(w, 0))).json()
+    assert first["connected"] is False and first["connected_at"] is None
+    route = await w.q("SELECT client_id FROM resolve_whatsapp_route(%s)", number)
+    assert [str(row["client_id"]) for row in route] == [w.tenants[1]]

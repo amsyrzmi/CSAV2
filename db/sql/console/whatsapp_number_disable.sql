@@ -1,6 +1,6 @@
 WITH erased AS (
     UPDATE public.channel_credentials
-    SET access_token = NULL, updated_at = now()
+    SET access_token = NULL, shop_id = NULL, updated_at = now()
     WHERE client_id = %s AND channel = 'whatsapp'
     RETURNING id
 )

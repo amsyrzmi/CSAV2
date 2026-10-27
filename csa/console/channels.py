@@ -77,14 +77,15 @@ def present(row: dict[str, Any] | None) -> WhatsAppNumberOut:
         )
     meta = row["meta"] or {}
     enabled = bool(row["is_enabled"])
+    connected = enabled and bool(row["has_token"])
     return WhatsAppNumberOut(
-        connected=enabled and bool(row["has_token"]),
+        connected=connected,
         display_phone=meta.get("display_phone"),
         phone_number_id_last4=(row["shop_id"] or "")[-4:] or None,
         waba_id=meta.get("waba_id"),
         enabled=enabled,
         callback_url=callback,
-        connected_at=row["updated_at"],
+        connected_at=row["updated_at"] if connected else None,
     )
 
 
