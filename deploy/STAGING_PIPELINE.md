@@ -177,6 +177,24 @@ csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull neve
 `/auth/me` then reports `workspace_assistant: true` and the dock button appears on every
 tab for tenant staff. To disable, unset both variables and recreate the gateway the same way.
 
+## 8. Add a platform administrator (owner runs)
+
+Invites create tenant members only. A further platform administrator is added by
+an existing one, who re-enters their own password:
+
+```sh
+CSA_STAGING_ADMIN_ADD_APPROVAL=approved-isolated-staging \
+csa --profile admin-add-approved run --rm --no-deps admin-add \
+  --approver-email existing-admin@example.test \
+  --email new-admin@example.test --display-name "New Admin" --add-platform-admin
+```
+
+Prompts: approver password, then the new initial password twice. Nothing is
+printed except the new user id. The new account must change its password at
+first login. On another database host (for example RDS) set
+`CSA_IDENTITY_EXPECTED_HOST` and `CSA_IDENTITY_EXPECTED_DB` to the expected
+values before running; the role must still be `csa_identity`.
+
 ## Rollback
 
 Stop only `worker`, `delivery` and `staging-embeddings`; the gateway can stay
