@@ -15,15 +15,16 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, Request
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from csa.console.contracts import ConsoleActor
+from csa.console.kb_uploads import audit
 from csa.console.services import ACTIVE_ONLY, require_package
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.subscriptions.api import require_subscriptions_write
 from csa.subscriptions.contracts import Action, ActionIn
-from csa.subscriptions.service import Conn, get_subscription_out, record_event
+from csa.subscriptions.service import Conn, get_request_row, get_subscription_out, record_event
 from csa.workspace.contracts import CardField, ProposalKind
 from csa.workspace.registry import CardContent, ProposalError, ProposalOrigin
 
@@ -59,9 +60,17 @@ SCHEDULED_PLAN_EVENT = "plan_change_scheduled"
 
 
 class ActionPayload(ActionIn):
-    """The stored proposal payload: the route's ``ActionIn`` plus the subscription it targets."""
+    """The stored proposal payload: the route's ``ActionIn`` plus the subscription it targets.
+
+    ``request_id`` and ``decision_note`` are internal: only the request service sets them, when
+    it approves a staged customer request. The public actions body is ``ActionIn`` (extra
+    fields forbidden), so a caller can never supply them. With a ``request_id`` the approved
+    decision is written in the same transaction as the subscription change.
+    """
 
     subscription_id: UUID
+    request_id: UUID | None = None
+    decision_note: str | None = Field(default=None, max_length=1000)
 
 
 def _parse(payload: dict[str, Any]) -> ActionPayload:
@@ -102,6 +111,16 @@ def _check(
         assert action.renews_at is not None
         if action.renews_at <= (renews_at or now):
             raise HTTPException(422, "renews_at_not_after_current")
+
+
+async def _check_request(conn: Conn, client_id: UUID, action: ActionPayload) -> None:
+    """A request-driven action needs an undecided request that names this subscription."""
+    assert action.request_id is not None
+    row = await get_request_row(conn, client_id, action.request_id)
+    if row["decision"] is not None:
+        raise HTTPException(409, "request_decided")
+    if row["subscription_id"] != action.subscription_id:
+        raise HTTPException(422, "request_subscription_mismatch")
 
 
 async def _plan(conn: Conn, client_id: UUID, code: str | None) -> dict[str, Any] | None:
@@ -218,6 +237,8 @@ class SubscriptionActionExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         now = datetime.now(UTC)
         async with tx(request.app.state.pool, str(client_id)) as conn:
+            if action.request_id is not None:
+                await _check_request(conn, client_id, action)
             subscription = await get_subscription_out(conn, client_id, action.subscription_id)
             current = await _plan(conn, client_id, subscription.plan)
             target = await _plan(conn, client_id, action.plan_code)
@@ -299,6 +320,25 @@ class SubscriptionActionExecutor:
                     "version": done["payload"]["version"],
                     "event_id": done["id"],
                 }
+            if action.request_id is not None:
+                # Decisions are final and the request's primary key allows one: whichever of an
+                # approval, a decline or a twin approval commits first wins, and a loser's
+                # exception rolls this whole transaction back, so no action applies.
+                await _check_request(conn, client_id, action)
+                recorded = await db.q.fetch_one(
+                    "subscriptions/decision_insert.sql",
+                    {
+                        "client_id": client_id,
+                        "request_id": action.request_id,
+                        "decision": "approved",
+                        "note": action.decision_note,
+                        "decided_by": actor.user_id,
+                        "proposal_id": proposal_id,
+                    },
+                    conn=conn,
+                )
+                if recorded is None:
+                    raise HTTPException(409, "request_decided")
             if locked["version"] != int(expected_version):
                 raise ProposalError("proposal_stale")
             target = await _plan(conn, client_id, action.plan_code)
@@ -388,6 +428,10 @@ class SubscriptionActionExecutor:
                 },
                 proposal_id=proposal_id,
             )
+            if action.request_id is not None:
+                await audit(
+                    conn, actor, client_id, "subscriptions.request.approved", str(action.request_id)
+                )
         return {
             "subscription_id": str(action.subscription_id),
             "status": applied["status"],

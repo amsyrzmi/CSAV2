@@ -11,6 +11,7 @@ import httpx
 import pytest
 from csa.subscriptions import service
 from csa.subscriptions.api import build_subscriptions_router
+from csa.subscriptions.executor import SubscriptionActionExecutor
 from csa.workspace.executors import build_proposal_registry
 from fastapi import HTTPException
 
@@ -301,38 +302,50 @@ async def test_decide_twice_is_409_and_reader_is_403(sessions: SessionWorld) -> 
     assert len(await decisions(w)) == 1
 
 
-async def test_concurrent_approvals_decide_and_execute_once(sessions: SessionWorld) -> None:
+async def paused_events(w: SessionWorld, sub: str) -> int:
+    rows = await w.q(
+        "SELECT id FROM subscription_events WHERE subscription_id=%s AND action='paused'", sub
+    )
+    return len(rows)
+
+
+async def executed_proposals(w: SessionWorld) -> list[dict[str, Any]]:
+    return await w.q(
+        "SELECT id, user_id FROM console_proposals WHERE kind='subscription_action' "
+        "AND status='executed' AND client_id=%s",
+        w.tenants[0],
+    )
+
+
+async def test_concurrent_approvals_by_two_users_decide_and_execute_once(
+    sessions: SessionWorld,
+) -> None:
     w = sessions
-    staff, _ = await w.member(role="tenant_staff")
+    first, _ = await w.member(role="tenant_staff")
+    second, _ = await w.member(role="tenant_admin")
     await seed_plan(w, w.tenants[0], "basic", "29.90")
-    sub, contact = await subscribe(w, staff)
+    sub, contact = await subscribe(w, first)
     request = await seed_request(w, contact, "request_pause", subscription_id=sub)
 
     results = await asyncio.gather(
-        *(decide(w, staff, request, {"decision": "approve"}) for _ in range(3))
+        decide(w, first, request, {"decision": "approve"}),
+        decide(w, second, request, {"decision": "approve"}),
+        decide(w, first, request, {"decision": "approve"}),
+        decide(w, second, request, {"decision": "approve"}),
     )
     codes = sorted(r.status_code for r in results)
-    assert codes[0] == 200 and set(codes) <= {200, 409}, [r.text for r in results]
-    assert {r.json()["detail"] for r in results if r.status_code == 409} <= {
-        "request_decided",
-        "request_in_progress",
-    }
-    assert len({r.json()["proposal_id"] for r in results if r.status_code == 200}) == 1
-    assert len(await decisions(w)) == 1
-    proposals = await w.q(
-        "SELECT id, status FROM console_proposals "
-        "WHERE kind='subscription_action' AND client_id=%s",
-        w.tenants[0],
-    )
-    assert [p["status"] for p in proposals] == ["executed"]
-    events = await w.q(
-        "SELECT id FROM subscription_events WHERE subscription_id=%s AND action='paused'", sub
-    )
-    assert len(events) == 1
+    assert codes == [200, 409, 409, 409], [r.text for r in results]
+    assert {r.json()["detail"] for r in results if r.status_code == 409} == {"request_decided"}
+    winner = next(r for r in results if r.status_code == 200).json()
+    rows = await decisions(w)
+    assert len(rows) == 1 and str(rows[0]["proposal_id"]) == winner["proposal_id"]
+    assert [str(p["id"]) for p in await executed_proposals(w)] == [winner["proposal_id"]]
+    assert await paused_events(w, sub) == 1
     assert (await sub_row(w, sub))["version"] == 2
+    assert await audit_actions(w) == ["subscriptions.request.approved"]
 
 
-async def test_approve_after_a_crash_before_the_decision_completes_it(
+async def test_approve_after_a_crash_following_confirm_is_409_and_shows_approved(
     sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     w = sessions
@@ -341,35 +354,23 @@ async def test_approve_after_a_crash_before_the_decision_completes_it(
     sub, contact = await subscribe(w, staff)
     request = await seed_request(w, contact, "request_pause", subscription_id=sub)
 
-    real = service._record_decision
-
-    async def crash(*args: Any, **kwargs: Any) -> Any:
+    def crash(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("simulated crash after confirm")
 
-    monkeypatch.setattr(service, "_record_decision", crash)
+    monkeypatch.setattr(service, "request_out", crash)
     with pytest.raises(RuntimeError, match="simulated crash"):
         await decide(w, staff, request, {"decision": "approve"})
-    # The action ran, the proposal is executed, the request is still open.
-    assert await decisions(w) == []
-    assert (await sub_row(w, sub))["status"] == "paused"
-    executed = await w.q(
-        "SELECT id FROM console_proposals WHERE kind='subscription_action' "
-        "AND status='executed' AND client_id=%s",
-        w.tenants[0],
-    )
-    assert len(executed) == 1
-    assert [i["id"] for i in (await staff.get(f"{BASE}/requests")).json()["items"]] == [request]
+    monkeypatch.undo()
 
-    monkeypatch.setattr(service, "_record_decision", real)
+    # The action and the decision committed together, so there is no half-finished state.
+    assert (await sub_row(w, sub))["status"] == "paused"
+    assert len(await decisions(w)) == 1 and len(await executed_proposals(w)) == 1
     again = await decide(w, staff, request, {"decision": "approve"})
-    assert again.status_code == 200, again.text
-    assert again.json()["decision"] == "approved"
-    assert again.json()["proposal_id"] == str(executed[0]["id"])
-    assert len(await decisions(w)) == 1
-    events = await w.q(
-        "SELECT id FROM subscription_events WHERE subscription_id=%s AND action='paused'", sub
-    )
-    assert len(events) == 1 and (await sub_row(w, sub))["version"] == 2
+    assert again.status_code == 409 and again.json()["detail"] == "request_decided"
+    done = (await staff.get(f"{BASE}/requests?status=decided")).json()["items"]
+    assert [(i["id"], i["decision"]) for i in done] == [(request, "approved")]
+    assert done[0]["proposal_id"] == str((await executed_proposals(w))[0]["id"])
+    assert await paused_events(w, sub) == 1
     assert await audit_actions(w) == ["subscriptions.request.approved"]
 
 
@@ -388,33 +389,96 @@ async def test_approve_after_decline_is_409_and_executes_nothing(sessions: Sessi
     assert [d["decision"] for d in await decisions(w)] == ["declined"]
 
 
-async def test_a_failed_confirm_is_cancelled_so_a_retry_gets_a_fresh_proposal(
+async def test_decline_between_create_and_confirm_stops_the_approval(
     sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     w = sessions
     staff, _ = await w.member(role="tenant_staff")
+    other, _ = await w.member(role="tenant_admin")
     await seed_plan(w, w.tenants[0], "basic", "29.90")
     sub, contact = await subscribe(w, staff)
     request = await seed_request(w, contact, "request_pause", subscription_id=sub)
     registry = w.app.state.proposal_registry
+    real = registry.confirm
 
+    async def decline_first(*args: Any, **kwargs: Any) -> Any:
+        assert (await decide(w, other, request, {"decision": "decline"})).status_code == 200
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "confirm", decline_first)
+    lost = await decide(w, staff, request, {"decision": "approve"})
+    assert lost.status_code == 409 and lost.json()["detail"] == "request_decided"
+    assert (await sub_row(w, sub))["status"] == "active"
+    assert await paused_events(w, sub) == 0 and await executed_proposals(w) == []
+    assert [d["decision"] for d in await decisions(w)] == ["declined"]
+    assert await audit_actions(w) == ["subscriptions.request.declined"]
+
+
+async def test_decline_after_the_card_but_before_the_action_rolls_the_action_back(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    other, _ = await w.member(role="tenant_admin")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub, contact = await subscribe(w, staff)
+    request = await seed_request(w, contact, "request_pause", subscription_id=sub)
+    real = SubscriptionActionExecutor.execute
+
+    async def decline_first(self: Any, *args: Any, **kwargs: Any) -> Any:
+        assert (await decide(w, other, request, {"decision": "decline"})).status_code == 200
+        return await real(self, *args, **kwargs)
+
+    monkeypatch.setattr(SubscriptionActionExecutor, "execute", decline_first)
+    lost = await decide(w, staff, request, {"decision": "approve"})
+    assert lost.status_code == 409 and lost.json()["detail"] == "request_decided"
+    assert (await sub_row(w, sub))["status"] == "active"
+    assert await paused_events(w, sub) == 0 and await executed_proposals(w) == []
+    assert [d["decision"] for d in await decisions(w)] == ["declined"]
+
+
+async def test_another_user_can_approve_after_the_first_attempt_failed(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    first, _ = await w.member(role="tenant_staff")
+    second, me2 = await w.member(role="tenant_admin")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub, contact = await subscribe(w, first)
+    request = await seed_request(w, contact, "request_pause", subscription_id=sub)
+    registry = w.app.state.proposal_registry
     real = registry.confirm
 
     async def refuse(*args: Any, **kwargs: Any) -> Any:
         raise HTTPException(422, "action_not_allowed")
 
     monkeypatch.setattr(registry, "confirm", refuse)
-    refused = await decide(w, staff, request, {"decision": "approve"})
-    assert refused.status_code == 422 and await decisions(w) == []
-    first = service.request_proposal_id(uuid.UUID(request))
-    stored = await w.q("SELECT status FROM console_proposals WHERE id=%s", first)
-    assert stored == [{"status": "cancelled"}]
+    assert (await decide(w, first, request, {"decision": "approve"})).status_code == 422
+    left = await w.q("SELECT id, status FROM console_proposals WHERE kind='subscription_action'")
+    assert [p["status"] for p in left] == ["requested"]
+    await w.q("UPDATE console_proposals SET status='expired' WHERE id=%s", left[0]["id"])
 
     monkeypatch.setattr(registry, "confirm", real)
-    retried = await decide(w, staff, request, {"decision": "approve", "resume_at": "2026-12-01"})
-    assert retried.status_code == 200, retried.text
-    assert retried.json()["proposal_id"] == str(service.request_proposal_id(uuid.UUID(request), 1))
-    assert str((await sub_row(w, sub))["resume_at"]) == "2026-12-01"
+    approved = await decide(w, second, request, {"decision": "approve", "note": "second try"})
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["decided_by"] == me2["user"]["id"]
+    assert approved.json()["note"] == "second try"
+    assert (await sub_row(w, sub))["status"] == "paused"
+    assert len(await decisions(w)) == 1 and await paused_events(w, sub) == 1
+
+
+async def test_public_actions_route_rejects_internal_request_keys(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub, contact = await subscribe(w, staff)
+    request = await seed_request(w, contact, "request_pause", subscription_id=sub)
+    for extra in ({"request_id": request}, {"decision_note": "x"}):
+        body = {"action": "pause", **extra}
+        refused = await w.mutate(staff, f"{BASE}/{sub}/actions", body)
+        assert refused.status_code == 422, refused.text
+    assert await w.q("SELECT id FROM console_proposals WHERE kind='subscription_action'") == []
+    assert await decisions(w) == []
 
 
 async def test_requests_are_tenant_scoped(sessions: SessionWorld) -> None:
