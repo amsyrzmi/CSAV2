@@ -189,12 +189,12 @@ async def test_pause_until_a_date_and_resume_rolls_a_lapsed_renewal(sessions: Se
     await seed_plan(w, w.tenants[0], "basic", "29.90")
     sub = await subscribe(w, staff)
 
-    paused = await propose(w, staff, sub, {"action": "pause", "resume_at": "2026-12-01"})
+    paused = await propose(w, staff, sub, {"action": "pause", "resume_at": "2099-12-01"})
     assert paused.status_code == 201, paused.text
     change = {f["label"]: f["value"] for f in paused.json()["card"]["fields"]}["Change"]
-    assert "1 Dec 2026" in change
+    assert "1 Dec 2099" in change
     assert (await confirm(w, staff, paused.json()["id"])).status_code == 200
-    assert str((await row(w, sub))["resume_at"]) == "2026-12-01"
+    assert str((await row(w, sub))["resume_at"]) == "2099-12-01"
 
     await w.q("UPDATE subscriptions SET renews_at = now() - interval '3 days' WHERE id=%s", sub)
     resumed = await propose(w, staff, sub, {"action": "resume"})

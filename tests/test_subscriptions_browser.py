@@ -439,7 +439,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(orphan).to_contain_text("can only be declined")
         pause = open_list.get_by_test_id("request-open").filter(has_text="Ben Tan")
         await pause.get_by_test_id("request-approve").click()
-        await pause.get_by_test_id("request-resume-at").fill("2026-11-15")
+        await pause.get_by_test_id("request-resume-at").fill("2099-11-15")
         await pause.get_by_role("button", name="Approve request").click()
         await expect(
             page.get_by_text("Approved. Ben Tan's subscription has been updated.")
@@ -455,7 +455,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 "path": f"subscriptions/requests/{REQUEST_PAUSE}/decide",
                 "params": {},
                 "csrf": "synthetic-csrf",
-                "body": {"decision": "approve", "note": None, "resume_at": "2026-11-15"},
+                "body": {"decision": "approve", "note": None, "resume_at": "2099-11-15"},
             }
         ], decides
 

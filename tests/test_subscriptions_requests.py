@@ -170,7 +170,7 @@ async def test_approve_pause_creates_and_confirms_proposal_and_records_decision(
     request = await seed_request(w, contact, "request_pause", subscription_id=sub)
 
     approved = await decide(
-        w, staff, request, {"decision": "approve", "note": "ok", "resume_at": "2026-12-01"}
+        w, staff, request, {"decision": "approve", "note": "ok", "resume_at": "2099-12-01"}
     )
     assert approved.status_code == 200, approved.text
     out = approved.json()
@@ -178,7 +178,7 @@ async def test_approve_pause_creates_and_confirms_proposal_and_records_decision(
     assert out["decided_by"] == me["user"]["id"] and out["decided_at"] is not None
 
     current = await sub_row(w, sub)
-    assert current["status"] == "paused" and str(current["resume_at"]) == "2026-12-01"
+    assert current["status"] == "paused" and str(current["resume_at"]) == "2099-12-01"
     rows = await decisions(w)
     assert len(rows) == 1 and str(rows[0]["request_id"]) == request
     assert rows[0]["decision"] == "approved" and str(rows[0]["proposal_id"]) == out["proposal_id"]
