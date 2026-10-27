@@ -67,6 +67,14 @@ async def graph(sessions: SessionWorld) -> AsyncIterator[GraphStub]:
 async def packages(
     sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch, graph: GraphStub
 ) -> None:
+    # The staff-reply test leaves a turn and its deliveries on a WhatsApp endpoint.
+    for statement in (
+        "DELETE FROM outbound_deliveries WHERE endpoint_id IN (SELECT e.id FROM webhook_endpoints "
+        "e JOIN channel_credentials c ON c.id=e.credential_id WHERE c.channel='whatsapp')",
+        "DELETE FROM ingress_events WHERE endpoint_id IN (SELECT e.id FROM webhook_endpoints "
+        "e JOIN channel_credentials c ON c.id=e.credential_id WHERE c.channel='whatsapp')",
+    ):
+        await sessions.q(statement)
     await sessions.q(
         "DELETE FROM webhook_endpoints WHERE credential_id IN "
         "(SELECT id FROM channel_credentials WHERE channel='whatsapp')"
