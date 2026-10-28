@@ -93,7 +93,7 @@ export function render(id, p, { size = 160 } = {}) {
     `<g transform="translate(${e.x} ${e.y})"><circle r="${(e.radius * 1.992).toFixed(2)}" fill="#15203A"/>` +
     `<circle r="${(e.radius * 1.38).toFixed(2)}" fill="${p.accent}" opacity=".45"/>` +
     `<circle r="${e.radius}" fill="#FFFFFF"/></g>`).join('')
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 176 176" width="${size}" height="${size}" role="img" aria-labelledby="${id}-t"><title id="${id}-t">${p.title} avatar (draft)</title>` +
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 176 176" width="${size}" height="${size}" role="img" aria-labelledby="${id}-t"><title id="${id}-t">${p.title} avatar</title>` +
     `<defs><linearGradient id="${id}-g" x1="12%" y1="0%" x2="87%" y2="100%">` +
     p.spectrum.map((c, i) => `<stop offset="${i * 50}%" stop-color="${c}"/>`).join('') +
     `</linearGradient><clipPath id="${id}-c"><path d="${p.path}"/></clipPath></defs>` +
