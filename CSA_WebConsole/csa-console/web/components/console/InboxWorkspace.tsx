@@ -24,6 +24,7 @@ export function InboxWorkspace({ me }: { me: Me }) {
   return <>
     <Heading title="Customer inbox" description="Conversations your customers start, with replies waiting for your review." />
     <Notice>Take over a conversation before you reply. The assistant stays paused until you release it.
+      If the assistant is already sending a reply, takeover waits for it. Replies the assistant had queued are not sent.
       Queued replies still have to be delivered. Each reply shows its delivery status.
       We hide common personal details in messages.</Notice>
     {error && <Notice error>{error}</Notice>}
