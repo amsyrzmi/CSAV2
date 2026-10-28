@@ -2,7 +2,7 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
   --color-ink-950: #0a1222;
@@ -56,6 +56,10 @@
 
 :root {
   color-scheme: light;
+  /* next/font variables (set on <html> in layout.tsx) in front of the token fallbacks. */
+  --fs-font-body: var(--font-inter), 'Inter', system-ui, sans-serif;
+  --fs-font-heading: var(--font-space-grotesk), 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --fs-font-brand: var(--font-manrope), 'Manrope', 'Inter', system-ui, sans-serif;
   --app-bg: var(--fs-bg);
   --surface: var(--fs-surface);
   --hairline: var(--fs-border);
@@ -159,7 +163,8 @@
   }
   .page-title {
     color: var(--color-ink-900);
-    font-size: 1.625rem;
+    font-family: var(--fs-font-heading);
+    font-size: var(--fs-text-page);
     font-weight: 600;
     letter-spacing: -0.028em;
     line-height: 1.2;
@@ -427,5 +432,5 @@
 }
 
 /* FourStacks supplied UI guide: explicit light canvas and typography fallbacks. */
-h1, h2, h3, .page-title { font-family: "Space Grotesk", "Inter", system-ui, sans-serif; }
-.brand-wordmark { font-family: "Manrope", "Inter", system-ui, sans-serif; }
+h1, h2, h3, h4, .page-title { font-family: var(--fs-font-heading); }
+.brand-wordmark { font-family: var(--fs-font-brand); }
