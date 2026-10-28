@@ -2,62 +2,23 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import { deliveryLabel, deliveryNotice, type DeliveryState } from "@/lib/channels-api";
+import { deliveryLabel, deliveryNotice } from "@/lib/channels-api";
 import type { Client, Me } from "@/lib/identity-contracts";
+import {
+  inboxListQuery, type Approval, type ChannelFilter, type Conversation, type Message,
+} from "@/lib/inbox-api";
 import { usePublishContext } from "@/lib/page-context";
 import { createProposal, type ProposalOut } from "@/lib/workspace-api";
+import { usePages } from "./inbox/usePages";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
-type Conversation = {
-  id: string; channel: "telegram" | "whatsapp"; status: string; owned_by: string | null;
-  ai_muted_until: string | null; human_muted: boolean; inbox_version: number; opened_at: string;
-};
-type Message = DeliveryState & {
-  id: string; direction: string; author: string; body: string; created_at: string;
-};
-type ChannelFilter = "" | "whatsapp" | "telegram";
 const CHANNEL_NAME = { telegram: "Telegram", whatsapp: "WhatsApp" } as const;
-type Approval = {
-  id: number; conversation_id: string; draft: string; reason: string | null;
-  status: string; expires_at: string;
-};
-type Page<T> = { items: T[]; next_cursor: string | number | null };
 type Result = {
   outcome: "applied" | "already_handled" | "expired" | "not_found";
   queued: boolean; warnings: string[]; status: string | null;
 };
 type Pending = { path: string; payload: Record<string, unknown>; onSuccess?: () => void };
-
-function usePages<T>(path: string, pages: number, revision: number) {
-  const [data, setData] = useState<Page<T>>({ items: [], next_cursor: null });
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    async function refresh() {
-      try {
-        const items: T[] = [];
-        let cursor: string | number | null = null;
-        for (let index = 0; index < pages; index++) {
-          const page: Page<T> = await api(`${path}${cursor ? `&before=${cursor}` : ""}`, {
-            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
-          });
-          items.push(...page.items); cursor = page.next_cursor;
-          if (cursor === null) break;
-        }
-        if (!controller.signal.aborted) { setData({ items, next_cursor: cursor }); setError(""); }
-      } catch (cause) {
-        if (!controller.signal.aborted) setError((cause as Error).message);
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(refresh, 3000);
-      }
-    }
-    void refresh();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [path, pages, revision]);
-  return { ...data, error };
-}
 
 export function InboxWorkspace({ me }: { me: Me }) {
   const [selected, setSelected] = useState("");
@@ -104,7 +65,7 @@ function Inbox({ query, tenantId }: { query: string; tenantId: string | null }) 
   const [proposal, setProposal] = useState<ProposalOut | null>(null);
   const [channel, setChannel] = useState<ChannelFilter>("");
   const conversations = usePages<Conversation>(
-    `/console/v1/inbox/conversations?${query}${channel ? `&channel=${channel}` : ""}`, pages, revision);
+    inboxListQuery({ tenantQuery: query, channel, needsReview: false, sender: "", q: "" }), pages, revision);
   const approvals = usePages<Approval>(`/console/v1/inbox/approvals?${query}&include_handled=${includeHandled}`, approvalPages, revision);
 
   async function submit(request: Pending) {

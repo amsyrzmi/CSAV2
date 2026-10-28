@@ -62,6 +62,7 @@ try {
     "lib/customer-identity.ts",
     "lib/motion.ts",
     "lib/inbox-shortcuts.ts",
+    "lib/inbox-api.ts",
     "lib/workspace-paths.mjs",
     "lib/workspace-paths.d.mts",
     "components/AppShell.tsx",
@@ -98,6 +99,7 @@ try {
     "tests/customer-identity.test.mjs",
     "tests/motion.test.mjs",
     "tests/inbox-shortcuts.test.mjs",
+    "tests/inbox-api.test.mjs",
     "tests/release-runtime.test.mjs",
     "scripts/release-runtime.mjs",
   ];
@@ -178,6 +180,7 @@ try {
       ["customer identity tests", "../tests/customer-identity.test.mjs"],
       ["motion tests", "../tests/motion.test.mjs"],
       ["inbox shortcut tests", "../tests/inbox-shortcuts.test.mjs"],
+      ["inbox API tests", "../tests/inbox-api.test.mjs"],
       ["release origin tests", "../tests/release-runtime.test.mjs"],
       ["lint", "eslint/bin/eslint.js", "."],
       ["typegen", "next/dist/bin/next", "typegen"],
