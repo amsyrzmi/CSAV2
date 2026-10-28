@@ -83,7 +83,7 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
         const changed = on !== saved.has(id);
         return <label key={id} className={`flex gap-3 rounded-md border p-3 text-sm ${changed ? "border-brand-300 bg-brand-50" : "border-ink-200"}`}>
           <input type="checkbox" className="mt-1 h-4 w-4 shrink-0" data-testid={`hr-access-switch-${id}`} checked={on}
-            disabled={inside !== null} onChange={(event) => onChange(setSwitch(desired, id, event.target.checked))} />
+            disabled={inside !== null} onChange={(event) => onChange(setSwitch(desired, id, event.target.checked, person.on))} />
           <span>
             <span className="font-medium">{SWITCH_COPY[id].label}</span>
             {changed && <span className="ml-2 text-xs font-medium text-brand-700">{on ? "Turning on" : "Turning off"}</span>}

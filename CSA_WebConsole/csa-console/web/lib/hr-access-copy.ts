@@ -121,6 +121,9 @@ export function warningText(w: AccessWarningOut): string {
 const REASONS: Record<string, string> = {
   not_a_member: "This person is no longer a member. Discard their change.",
   too_many_rows: "This person has too much custom access to save here. Change their access in Advanced.",
+  changed_since_load: "Their access changed since you opened this page. Reload to see the latest.",
+  partly_saved: "Only part of this change was saved. Check their switches, then save again.",
+  access_changed: "Their access changed since this save started. Reload to see the latest.",
 };
 
 /** Why one person's change was not saved; the raw code stays off the screen. */

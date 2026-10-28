@@ -3,9 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { hrClient } from "@/lib/hr-api";
 import {
-  accessPeople, applyPreset, changeCount, isAccessChanged, PAGE_SIZE, saveAccessChanges, setSwitch, SWITCH_IDS,
-  type AccessChange, type AccessChangeResult, type AccessPeoplePage, type AccessPerson, type AccessPersonResult,
-  type AccessWarningOut, type PresetId, type SwitchId,
+  accessPeople, applyPreset, changeCount, isAccessChanged, PAGE_SIZE, rebasePending, saveAccessChanges, setSwitch,
+  SWITCH_IDS, type AccessChange, type AccessChangeResult, type AccessPeoplePage, type AccessPerson,
+  type AccessPersonResult, type AccessWarningOut, type Pending, type PresetId, type SwitchId,
 } from "@/lib/hr-access-api";
 import {
   changesSummary, PAGE_COPY, PRESET_COPY, refusalText, SWITCH_COPY, warningText,
@@ -14,7 +14,6 @@ import { HrAccessFeatures, HrAccessRecent } from "./HrAccessMore";
 import { HrAccessPanel, initials, plain, warningsFor } from "./HrAccessPanel";
 import { action, field, Notice, secondary } from "./ui";
 
-type Pending = Record<string, { base: SwitchId[]; desired: SwitchId[]; person: AccessPerson }>;
 type Filters = { q: string; team: string; has: SwitchId | ""; reports_to: string };
 type Employee = { employee_id: string; display_name: string; manager_id: string | null; department: string | null; active: boolean };
 const NO_FILTERS: Filters = { q: "", team: "", has: "", reports_to: "" };
@@ -50,37 +49,41 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
   const [bulkSwitch, setBulkSwitch] = useState<SwitchId>("directory");
   const [recentRefresh, setRecentRefresh] = useState(0);
   const sequence = useRef(0);
+  const seen = useRef("");
 
   /** Any change to the pending set gets a new batch id; a retry of the same set reuses it. */
   const setPending = useCallback((next: Pending) => {
     pendingRef.current = next; setPendingState(next); batch.current = crypto.randomUUID();
   }, []);
 
-  /** A rebase (Reload, or after a save) takes the latest version and refreshes pending bases. */
-  const load = useCallback(async (where: { filters: Filters; cursor?: string }, rebase: boolean) => {
+  /**
+   * A rebase (Reload, or after a save) takes the latest version and moves the pending changes of
+   * everyone on this page onto their latest switches. Resolves true when the list loaded.
+   */
+  const load = useCallback(async (where: { filters: Filters; cursor?: string }, rebase: boolean): Promise<boolean> => {
     const mine = ++sequence.current;
     try {
       const found = await accessPeople(tenant, { ...where.filters, cursor: where.cursor });
-      if (mine !== sequence.current) return;
+      if (mine !== sequence.current) return false;
       setPage(found); setProblem("");
       const held = pendingRef.current;
       if (rebase || Object.keys(held).length === 0) setVersion(found.version);
-      if (rebase) {
-        const next: Pending = { ...held };
-        for (const person of found.items) {
-          const entry = next[person.user_id];
-          if (!entry) continue;
-          if (changeCount(person.on, entry.desired) === 0) delete next[person.user_id];
-          else next[person.user_id] = { ...entry, base: person.on, person };
-        }
-        if (Object.keys(next).length !== Object.keys(held).length) setPending(next);
-        else { pendingRef.current = next; setPendingState(next); }
-      }
-      setSelected((old) => found.items.find((p) => p.user_id === old?.user_id) ?? old ?? found.items[0] ?? null);
+      if (rebase && Object.keys(held).length > 0) setPending(rebasePending(held, found.items));
+      // Once access has moved on, the panel never keeps editing a member from an older load.
+      const advanced = seen.current !== "" && seen.current !== found.version;
+      seen.current = found.version;
+      setSelected((old) => {
+        const fresh = found.items.find((p) => p.user_id === old?.user_id);
+        if (fresh) return fresh;
+        if (old && advanced) return null;
+        return old ?? found.items[0] ?? null;
+      });
+      return true;
     } catch (cause) {
-      if (mine !== sequence.current) return;
-      if (cause instanceof ApiError && cause.code === "invalid_cursor") { setCursors([]); return; }
+      if (mine !== sequence.current) return false;
+      if (cause instanceof ApiError && cause.code === "invalid_cursor") { setCursors([]); return false; }
       setProblem(plain(cause, "We could not load your members' access. Refresh the page to try again."));
+      return false;
     }
   }, [tenant, setPending]);
 
@@ -110,6 +113,7 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
   const items = page?.items ?? [];
   const warnings = page?.warnings ?? [];
   const desiredOf = (person: AccessPerson) => pending[person.user_id]?.desired ?? person.on;
+  const baseOf = (person: AccessPerson) => pending[person.user_id]?.base ?? person.on;
   const people = Object.keys(pending).length;
   const changes = Object.values(pending).reduce((sum, entry) => sum + changeCount(entry.base, entry.desired), 0);
   const locked = readonly || busy || review !== null;
@@ -138,7 +142,8 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
   const ticked = items.filter((person) => ticks.includes(person.user_id));
 
   async function dryRun() {
-    const changeList = Object.entries(pendingRef.current).map(([user_id, entry]) => ({ user_id, on: entry.desired }));
+    const changeList: AccessChange[] = Object.entries(pendingRef.current)
+      .map(([user_id, entry]) => ({ user_id, on: entry.desired, base: entry.base }));
     if (!changeList.length || !version) return;
     setBusy(true); setProblem(""); setConflict(false);
     try {
@@ -176,7 +181,7 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
 
   async function reload() {
     setBusy(true); setProblem("");
-    try { await load({ filters, cursor }, true); setConflict(false); } finally { setBusy(false); }
+    try { if (await load({ filters, cursor }, true)) setConflict(false); } finally { setBusy(false); }
   }
 
   const fresh = review ? review.result.warnings.filter((w) => !warnings.some((old) => warningKey(old) === warningKey(w))) : [];
@@ -241,9 +246,9 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
               </select>
             </label>
             <button type="button" className={secondary} disabled={locked}
-              onClick={() => edit(ticked.map((person) => ({ person, desired: setSwitch(desiredOf(person), bulkSwitch, true) })))}>Turn on</button>
+              onClick={() => edit(ticked.map((person) => ({ person, desired: setSwitch(desiredOf(person), bulkSwitch, true, baseOf(person)) })))}>Turn on</button>
             <button type="button" className={secondary} disabled={locked}
-              onClick={() => edit(ticked.map((person) => ({ person, desired: setSwitch(desiredOf(person), bulkSwitch, false) })))}>Turn off</button>
+              onClick={() => edit(ticked.map((person) => ({ person, desired: setSwitch(desiredOf(person), bulkSwitch, false, baseOf(person)) })))}>Turn off</button>
           </div>
           <button type="button" className="text-brand-700 underline" onClick={() => setTicks([])}>Clear ticks</button>
         </div>}

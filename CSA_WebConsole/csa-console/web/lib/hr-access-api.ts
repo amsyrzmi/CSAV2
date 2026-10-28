@@ -52,7 +52,8 @@ export interface AccessPeoplePage {
   counts: Partial<Record<SwitchId, number>>;
   warnings: AccessWarningOut[];
 }
-export interface AccessChange { user_id: string; on: SwitchId[] }
+/** `on` is the desired set; `base` is the person's `on` when the page loaded them. */
+export interface AccessChange { user_id: string; on: SwitchId[]; base: SwitchId[] }
 export interface AccessChanges {
   batch_id: string;
   version: string;
@@ -151,9 +152,40 @@ export function applyPreset(on: readonly SwitchId[], preset: PresetId): SwitchId
   return withIncluded([...on, ...PRESETS[preset]]);
 }
 
-export function setSwitch(on: readonly SwitchId[], id: SwitchId, value: boolean): SwitchId[] {
+/**
+ * Turns one switch on or off. `base` is the person's saved set: turning an outer switch off puts
+ * the switches it included back to their saved value, so nothing is left pending by accident.
+ */
+export function setSwitch(on: readonly SwitchId[], id: SwitchId, value: boolean, base: readonly SwitchId[]): SwitchId[] {
   if (!value && includedWith(on, id)) return withIncluded(on);
-  return withIncluded(value ? [...on, id] : on.filter((item) => item !== id));
+  if (value) return withIncluded([...on, id]);
+  const inner = (Object.entries(INCLUDED_BY) as [SwitchId, SwitchId][])
+    .filter(([item, outer]) => outer === id && !base.includes(item)).map(([item]) => item);
+  return withIncluded(on.filter((item) => item !== id && !inner.includes(item)));
+}
+
+/** Pending changes per member: the set the page loaded them with, and the set the owner wants. */
+export interface PendingEntry { base: SwitchId[]; desired: SwitchId[]; person: AccessPerson }
+export type Pending = Record<string, PendingEntry>;
+
+/**
+ * Moves pending changes onto freshly loaded people. Each refreshed member keeps only the owner's
+ * own edits (what they turned on or off against the old base), applied over the fresh switches; a
+ * member left with nothing to change leaves the bar. Members not refreshed keep their old base, and
+ * the server refuses their save if their switches moved since.
+ */
+export function rebasePending(pending: Pending, fresh: readonly AccessPerson[]): Pending {
+  const next: Pending = { ...pending };
+  for (const person of fresh) {
+    const entry = pending[person.user_id];
+    if (!entry) continue;
+    const added = entry.desired.filter((id) => !entry.base.includes(id));
+    const removed = entry.base.filter((id) => !entry.desired.includes(id));
+    const desired = withIncluded([...person.on, ...added].filter((id) => !removed.includes(id)));
+    if (changeCount(person.on, desired) === 0) delete next[person.user_id];
+    else next[person.user_id] = { base: [...person.on], desired, person };
+  }
+  return next;
 }
 
 /** How many switches differ between the saved set and the desired set. */

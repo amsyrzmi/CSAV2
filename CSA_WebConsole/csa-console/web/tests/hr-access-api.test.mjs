@@ -134,3 +134,64 @@ test("desired sets keep included switches and presets only add", () => {
   assert.equal(access.changeCount(["directory"], ["directory", "own_requests", "approves_team"]), 2);
   assert.equal(access.changeCount(["directory", "hr_team"], ["hr_team", "directory"]), 0);
 });
+
+const member = (user_id, on) => ({
+  user_id, display_name: "Synthetic Member", employee_id: null, department: null, manager_id: null,
+  team_size: 0, is_owner: false, on, included: {}, custom: [],
+});
+const OTHER = "44444444-4444-4444-8444-444444444444";
+const AWAY = "55555555-5555-4555-8555-555555555555";
+
+test("a rebase keeps the owner's own change on top of the latest switches", () => {
+  const held = {
+    [USER]: { base: ["own_requests"], desired: ["own_requests", "payroll_prepare"], person: member(USER, ["own_requests"]) },
+    [MANAGER]: { base: ["directory", "own_requests"], desired: ["own_requests"], person: member(MANAGER, ["directory", "own_requests"]) },
+    [OTHER]: { base: [], desired: ["directory"], person: member(OTHER, []) },
+    [AWAY]: { base: [], desired: ["approves_team"], person: member(AWAY, []) },
+  };
+  const fresh = [
+    member(USER, ["directory", "own_requests"]),
+    member(MANAGER, ["directory", "own_requests", "approves_team"]),
+    member(OTHER, ["directory"]),
+  ];
+  const next = access.rebasePending(held, fresh);
+  // Another tab turned directory on: it stays on, and only payroll_prepare is still pending.
+  assert.deepEqual(next[USER].base, ["directory", "own_requests"]);
+  assert.deepEqual(next[USER].desired, ["directory", "own_requests", "payroll_prepare"]);
+  assert.equal(next[USER].person, fresh[0]);
+  // A switch the owner was turning off stays off; one someone else turned on stays on.
+  assert.deepEqual(next[MANAGER].desired, ["own_requests", "approves_team"]);
+  assert.deepEqual(next[MANAGER].base, ["directory", "own_requests", "approves_team"]);
+  // Someone else already made the same change: nothing is left to save.
+  assert.equal(OTHER in next, false);
+  // A member not on the refreshed page keeps the base the page loaded.
+  assert.equal(next[AWAY], held[AWAY]);
+  assert.deepEqual(held[USER].desired, ["own_requests", "payroll_prepare"], "the input is not changed");
+});
+
+test("a rebase keeps included switches with the switch that includes them", () => {
+  const held = { [USER]: { base: ["directory"], desired: [], person: member(USER, ["directory"]) } };
+  assert.deepEqual(access.rebasePending(held, [member(USER, ["directory", "hr_team"])]), {});
+  const kept = access.rebasePending(
+    { [USER]: { base: [], desired: ["payroll_review"], person: member(USER, []) } },
+    [member(USER, ["directory", "hr_team"])],
+  );
+  assert.deepEqual(kept[USER].desired, ["directory", "hr_team", "payroll_review"]);
+});
+
+test("turning an outer switch off puts the included switch back to its saved value", () => {
+  const on = access.setSwitch(["own_requests"], "hr_team", true, ["own_requests"]);
+  assert.deepEqual(on, ["directory", "own_requests", "hr_team"]);
+  assert.deepEqual(access.setSwitch(on, "hr_team", false, ["own_requests"]), ["own_requests"]);
+  assert.deepEqual(access.setSwitch(["directory", "hr_team"], "hr_team", false, ["directory"]), ["directory"]);
+  assert.deepEqual(access.setSwitch(["directory", "hr_team"], "hr_team", false, ["directory", "hr_team"]), ["directory"]);
+  assert.deepEqual(access.setSwitch(["directory", "hr_team"], "directory", false, []), ["directory", "hr_team"]);
+});
+
+test("the new refusal reasons read as plain sentences", () => {
+  assert.equal(copy.refusalText("changed_since_load"),
+    "Their access changed since you opened this page. Reload to see the latest.");
+  const partly = copy.refusalText("partly_saved");
+  assert.notEqual(partly, copy.refusalText(null));
+  assert.doesNotMatch(partly, /_/);
+});

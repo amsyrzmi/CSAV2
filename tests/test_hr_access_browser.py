@@ -116,6 +116,11 @@ class World:
                 results.append({"user_id": user, "outcome": "refused", "reason": "not_a_member"})
                 continue
             before = set(self.people[user]["on"])
+            if set(change["base"]) != before:
+                results.append(
+                    {"user_id": user, "outcome": "refused", "reason": "changed_since_load"}
+                )
+                continue
             if wanted == before:
                 results.append({"user_id": user, "outcome": "unchanged", "reason": None})
                 continue
@@ -453,6 +458,28 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(stale.get_by_text("1 change for 1 person", exact=True)).to_be_visible()
         assert "payroll_prepare" not in world.people[STAFF]["on"]
         assert world.version == 2
+
+        # (i) Reloading keeps the other tab's switch on; only this tab's own change stays pending.
+        await stale.get_by_role("button", name="Reload access").click()
+        await expect(stale.get_by_test_id("hr-access-conflict")).to_have_count(0, timeout=WAIT)
+        stale_panel = stale.get_by_test_id("hr-access-panel")
+        await expect(stale_panel.get_by_test_id("hr-access-switch-directory")).to_be_checked()
+        await expect(stale_panel.get_by_test_id("hr-access-switch-payroll_prepare")).to_be_checked()
+        await expect(stale.get_by_text("1 change for 1 person", exact=True)).to_be_visible()
+        await stale.get_by_test_id("hr-access-save").click()
+        await stale.get_by_role("dialog").get_by_test_id("hr-access-confirm").click()
+        await expect(stale.get_by_test_id(f"hr-access-result-{STAFF}")).to_have_text(
+            "Saved", timeout=WAIT
+        )
+        assert world.people[STAFF]["on"] == ["directory", "own_requests", "payroll_prepare"]
+        last = [c["body"] for c in world.calls if c["path"] == "hr/access/changes"][-1]
+        assert last["changes"] == [
+            {
+                "user_id": STAFF,
+                "on": ["directory", "own_requests", "payroll_prepare"],
+                "base": ["directory", "own_requests"],
+            }
+        ], last
 
         assert not world.unexpected, world.unexpected
         assert not upstream.unexpected, upstream.unexpected
