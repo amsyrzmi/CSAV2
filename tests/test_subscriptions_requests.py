@@ -467,6 +467,34 @@ async def test_decline_after_execute_checked_the_request_hits_the_insert_conflic
     assert await audit_actions(w) == ["subscriptions.request.declined"]
 
 
+async def test_twin_approval_committed_during_the_card_is_409_not_a_status_refusal(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    other, _ = await w.member(role="tenant_admin")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub, contact = await subscribe(w, staff)
+    request = await seed_request(w, contact, "request_pause", subscription_id=sub)
+    real = executor_module._check_request
+    raced: list[int] = []
+
+    async def check_then_twin_approves(*args: Any, **kwargs: Any) -> None:
+        await real(*args, **kwargs)
+        if not raced:
+            # The loser's card has read an undecided request; the twin then pauses the
+            # subscription and records the approval before the loser's card reads anything else.
+            raced.append(1)
+            won = await decide(w, other, request, {"decision": "approve"})
+            assert won.status_code == 200
+
+    monkeypatch.setattr(executor_module, "_check_request", check_then_twin_approves)
+    lost = await decide(w, staff, request, {"decision": "approve"})
+    assert lost.status_code == 409 and lost.json()["detail"] == "request_decided"
+    assert await paused_events(w, sub) == 1 and len(await executed_proposals(w)) == 1
+    assert [d["decision"] for d in await decisions(w)] == ["approved"]
+
+
 async def test_workspace_proposals_route_cannot_approve_a_request_with_another_action(
     sessions: SessionWorld,
 ) -> None:
