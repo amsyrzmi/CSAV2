@@ -82,7 +82,7 @@ async def add_subscription(
 async def fetch_subscription(conn: psycopg.AsyncConnection[Any], sub: uuid.UUID) -> dict[str, Any]:
     cursor = await conn.execute(
         "SELECT plan,status,price,currency,renews_at,paused_at,resume_at,cancelled_at,"
-        "pending_plan,pending_effective_at,cancel_at_period_end,version "
+        "pending_plan,pending_effective_at,cancel_at_period_end,version,renewal_anchor "
         "FROM subscriptions WHERE id=%s",
         (sub,),
     )
@@ -90,7 +90,7 @@ async def fetch_subscription(conn: psycopg.AsyncConnection[Any], sub: uuid.UUID)
     assert row is not None
     keys = (
         "plan status price currency renews_at paused_at resume_at cancelled_at pending_plan "
-        "pending_effective_at cancel_at_period_end version"
+        "pending_effective_at cancel_at_period_end version renewal_anchor"
     ).split()
     return dict(zip(keys, row, strict=True))
 
@@ -311,12 +311,102 @@ async def test_renewal_catch_up_advances_one_interval_per_run(
         sub = await add_subscription(conn, tenant, renews_at=at("2025-10-31 10:00"))
 
         assert await run(app_dsn, tenant) == ZERO | {"renewed": 1}
-        assert (await fetch_subscription(conn, sub))["renews_at"] == at("2025-11-30 10:00")
+        first = await fetch_subscription(conn, sub)
+        assert first["renews_at"] == at("2025-11-30 10:00")
+        assert first["renewal_anchor"] == at("2025-10-31 10:00")
         assert len(await fetch_events(conn, sub)) == 1
 
         assert await run(app_dsn, tenant) == ZERO | {"renewed": 1}
-        assert (await fetch_subscription(conn, sub))["renews_at"] == at("2025-12-30 10:00")
-        assert (await fetch_subscription(conn, sub))["version"] == 3
+        second = await fetch_subscription(conn, sub)
+        # the second step stays on the cycle: 31 Dec, not 30 Dec
+        assert second["renews_at"] == at("2025-12-31 10:00")
+        assert second["renewal_anchor"] == at("2025-10-31 10:00")
+        assert second["version"] == 3
+
+
+async def test_null_anchor_renews_from_renews_at_then_keeps_the_day(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        sub = await add_subscription(conn, tenant, renews_at=at("2026-01-31 10:00"))
+
+        assert await run(app_dsn, tenant) == ZERO | {"renewed": 1}
+        first = await fetch_subscription(conn, sub)
+        assert first["renews_at"] == at("2026-02-28 10:00")
+        assert first["renewal_anchor"] == at("2026-01-31 10:00")
+
+        assert await run(app_dsn, tenant) == ZERO | {"renewed": 1}
+        second = await fetch_subscription(conn, sub)
+        assert second["renews_at"] == at("2026-03-31 10:00")
+        assert second["renewal_anchor"] == at("2026-01-31 10:00")
+
+
+async def _assert_anchored_renewal(
+    pg_container: object, app_dsn: str, anchor: str, renews_at: str, expected: str
+) -> None:
+    now = at(renews_at) + timedelta(hours=1)
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        sub = await add_subscription(
+            conn, tenant, renews_at=at(renews_at), renewal_anchor=at(anchor)
+        )
+
+        assert await run(app_dsn, tenant, now) == ZERO | {"renewed": 1}
+
+        row = await fetch_subscription(conn, sub)
+        assert row["renews_at"] == at(expected)
+        assert row["renewal_anchor"] == at(anchor)
+        (event,) = await fetch_events(conn, sub)
+        assert datetime.fromisoformat(event["payload"]["renews_at"]) == at(expected)
+        assert datetime.fromisoformat(event["payload"]["previous_renews_at"]) == at(renews_at)
+
+
+async def test_anchored_renewal_returns_to_the_day(pg_container: object, app_dsn: str) -> None:
+    # a short month got the renewal to the 30th; the cycle's day is the 31st
+    await _assert_anchored_renewal(
+        pg_container, app_dsn, "2026-10-31 10:00", "2026-11-30 10:00", "2026-12-31 10:00"
+    )
+
+
+async def test_extended_anchor_is_followed(pg_container: object, app_dsn: str) -> None:
+    # an extension moved the cycle to the chosen date
+    await _assert_anchored_renewal(
+        pg_container, app_dsn, "2026-12-15 10:00", "2026-12-15 10:00", "2027-01-15 10:00"
+    )
+
+
+async def test_job_lapsed_resume_restarts_the_cycle(pg_container: object, app_dsn: str) -> None:
+    # 04:00 UTC on 31 Jan is 12:00 on the 31st in Kuala Lumpur
+    now = datetime(2026, 1, 31, 4, 0, tzinfo=UTC)
+    paused = {
+        "status": "paused",
+        "paused_at": now - timedelta(days=30),
+        "resume_at": date(2026, 1, 31),
+        "renewal_anchor": at("2025-12-15 09:00"),
+    }
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        lapsed = await add_subscription(conn, tenant, **paused, renews_at=at("2026-01-01 09:00"))
+        no_renewal = await add_subscription(conn, tenant, **paused, renews_at=None)
+        current = await add_subscription(conn, tenant, **paused, renews_at=at("2026-02-15 09:00"))
+
+        assert await run(app_dsn, tenant, now) == ZERO | {"resumed": 3}
+
+        for sub in (lapsed, no_renewal):
+            row = await fetch_subscription(conn, sub)
+            assert row["renewal_anchor"] == now
+            # one month after the resume on the tenant calendar, clamped: 31 Jan -> 28 Feb
+            assert row["renews_at"] == at("2026-02-28 12:00")
+        kept = await fetch_subscription(conn, current)
+        assert kept["renews_at"] == at("2026-02-15 09:00")
+        assert kept["renewal_anchor"] == at("2025-12-15 09:00")
 
 
 async def test_batch_size_isolation_and_idempotency(pg_container: object, app_dsn: str) -> None:
@@ -462,3 +552,40 @@ async def test_tenant_without_an_active_package_is_left_alone(
             assert await fetch_events(conn, sub) == []
         assert await run(app_dsn, other) == ZERO | {"renewed": 1}
         assert (await fetch_subscription(conn, active_tenant))["version"] == 2
+
+
+async def test_scheduled_interval_change_resets_the_anchor(
+    pg_container: object, app_dsn: str
+) -> None:
+    due = NOW - timedelta(hours=1)
+    old_anchor = at("2026-01-15 10:00")
+    renews_at = at("2026-03-20 10:00")
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        fields = {"pending_effective_at": due, "renews_at": renews_at, "renewal_anchor": old_anchor}
+        to_yearly = await add_subscription(conn, tenant, pending_plan="annual", **fields)
+        to_monthly = await add_subscription(
+            conn, tenant, plan="annual", price=500, pending_plan="basic", **fields
+        )
+        same_interval = await add_subscription(conn, tenant, pending_plan="pro", **fields)
+        skipped = await add_subscription(conn, tenant, pending_plan="ghost", **fields)
+        no_renewal = await add_subscription(
+            conn, tenant, pending_plan="annual", **(fields | {"renews_at": None})
+        )
+
+        assert await run(app_dsn, tenant) == ZERO | {"plan_changed": 4, "pending_skipped": 1}
+
+        for sub in (to_yearly, to_monthly):
+            row = await fetch_subscription(conn, sub)
+            assert row["renewal_anchor"] == renews_at
+            assert row["renews_at"] == renews_at
+        for sub, plan in [(same_interval, "pro"), (skipped, "basic")]:
+            row = await fetch_subscription(conn, sub)
+            assert row["plan"] == plan
+            assert row["renewal_anchor"] == old_anchor
+            assert row["renews_at"] == renews_at
+        row = await fetch_subscription(conn, no_renewal)
+        assert row["plan"] == "annual"
+        assert row["renewal_anchor"] is None and row["renews_at"] is None

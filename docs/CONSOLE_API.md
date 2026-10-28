@@ -726,14 +726,20 @@ to the job's batch size (100) of rows with `FOR UPDATE SKIP LOCKED`:
    subscription, only clears them (`pending_change_skipped`).
 3. Resume: a paused subscription whose `resume_at` is today or earlier resumes, with a lapsed
    or missing `renews_at` set as in a manual resume.
-4. Renew: an active, unflagged subscription whose `renews_at` has passed advances by one
-   billing interval of its plan (`renewed`).
+4. Renew: an active, unflagged subscription whose `renews_at` has passed advances to the
+   next step of its renewal cycle (`renewed`).
 
 A row moves at most one step per rule per run, so a long-lapsed renewal catches up one
 interval per run. Nothing is charged. Renewal and resume arithmetic and the resume date
-use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`). Known
-behaviour: a renewal anchored on the 29th to 31st falls back to the shorter month's last
-day and stays there (owner question open).
+use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`).
+
+Renewals keep the cycle's day of the month. Each subscription counts its renewals from a
+stored anchor (`subscriptions.renewal_anchor`, not exposed by the API) in whole billing
+intervals of its plan, so a renewal clamps to the last day only in a shorter month and
+returns to the day afterwards (31 Jan, 28 Feb, 31 Mar). An extension moves the cycle to
+the chosen date. A resume with a lapsed or missing `renews_at` (manual or by the job)
+restarts the cycle from the resume time. A plan change between monthly and yearly, applied
+now or by the job, counts the new interval from the end of the current period.
 
 Audit actions: `subscriptions.plan.created`, `subscriptions.plan.updated`,
 `subscriptions.created`, `subscriptions.request.approved`, `subscriptions.request.declined`,

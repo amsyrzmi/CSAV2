@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import psycopg
 import pytest
@@ -150,8 +150,8 @@ def test_backfill_anchors_on_cycle_rows_only(owner: psycopg.Connection[Any]) -> 
         )
 
     # The file is idempotent and never writes schema_migrations, so re-running it is safe.
-    owner.execute(MIGRATION.read_text())
-    owner.execute(MIGRATION.read_text())
+    owner.execute(cast(LiteralString, MIGRATION.read_text()))
+    owner.execute(cast(LiteralString, MIGRATION.read_text()))
 
     anchors = {
         name: owner.execute(
