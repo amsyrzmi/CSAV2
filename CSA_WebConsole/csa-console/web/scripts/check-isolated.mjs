@@ -59,6 +59,7 @@ try {
     "lib/page-context-state.ts",
     "lib/assistant-view.ts",
     "lib/agent-avatars.ts",
+    "lib/customer-identity.ts",
     "lib/workspace-paths.mjs",
     "lib/workspace-paths.d.mts",
     "components/AppShell.tsx",
@@ -92,6 +93,7 @@ try {
     "tests/page-context.test.mjs",
     "tests/assistant-view.test.mjs",
     "tests/agent-avatars.test.mjs",
+    "tests/customer-identity.test.mjs",
     "tests/release-runtime.test.mjs",
     "scripts/release-runtime.mjs",
   ];
@@ -169,6 +171,7 @@ try {
       ["page context tests", "../tests/page-context.test.mjs"],
       ["assistant view tests", "../tests/assistant-view.test.mjs"],
       ["agent avatar tests", "../tests/agent-avatars.test.mjs"],
+      ["customer identity tests", "../tests/customer-identity.test.mjs"],
       ["release origin tests", "../tests/release-runtime.test.mjs"],
       ["lint", "eslint/bin/eslint.js", "."],
       ["typegen", "next/dist/bin/next", "typegen"],
