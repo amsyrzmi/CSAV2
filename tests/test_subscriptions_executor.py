@@ -616,3 +616,115 @@ async def test_pause_resume_date_must_be_after_the_tenant_today(sessions: Sessio
     assert blocked.value.status_code == 422
     assert blocked.value.detail == "resume_at_not_after_today"
     assert (await row(w, sub))["status"] == "active"
+
+
+async def anchored(w: SessionWorld, sub: str) -> dict[str, Any]:
+    return (await w.q("SELECT renewal_anchor, renews_at FROM subscriptions WHERE id=%s", sub))[0]
+
+
+async def test_extend_renewal_moves_the_anchor(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub = await subscribe(w, staff)
+    await w.q(
+        "UPDATE subscriptions SET renewal_anchor = '2026-10-31 10:00+08',"
+        " renews_at = '2026-11-30 10:00+08' WHERE id=%s",
+        sub,
+    )
+
+    later = datetime(2026, 12, 15, 10, 0, tzinfo=ZoneInfo("Asia/Kuala_Lumpur"))
+    created = await propose(
+        w, staff, sub, {"action": "extend_renewal", "renews_at": later.isoformat()}
+    )
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    current = await anchored(w, sub)
+    assert current["renewal_anchor"] == later and current["renews_at"] == later
+
+
+async def test_lapsed_resume_restarts_the_cycle_from_now(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+
+    lapsed = await subscribe(w, staff, status="paused")
+    await w.q(
+        "UPDATE subscriptions SET renewal_anchor = '2026-01-31 10:00+08',"
+        " renews_at = now() - interval '3 days' WHERE id=%s",
+        lapsed,
+    )
+    resumed = await propose(w, staff, lapsed, {"action": "resume"})
+    assert resumed.status_code == 201, resumed.text
+    assert (await confirm(w, staff, resumed.json()["id"])).status_code == 200
+    check = await w.q(
+        "SELECT abs(extract(epoch FROM now() - s.renewal_anchor)) < 5 AS anchored_now,"
+        " s.renews_at = subscription_next_renewal("
+        "     s.renewal_anchor, s.renewal_anchor, 'month', c.timezone) AS on_cycle,"
+        " s.renews_at > s.renewal_anchor AS after_anchor"
+        " FROM subscriptions s JOIN clients c ON c.id = s.client_id WHERE s.id=%s",
+        lapsed,
+    )
+    assert check == [{"anchored_now": True, "on_cycle": True, "after_anchor": True}]
+
+    # A resume that is not lapsed keeps the renewal and its anchor.
+    future = await subscribe(w, staff, status="paused")
+    await w.q(
+        "UPDATE subscriptions SET renewal_anchor = '2026-10-31 10:00+08',"
+        " renews_at = '2099-11-30 10:00+08' WHERE id=%s",
+        future,
+    )
+    resumed = await propose(w, staff, future, {"action": "resume"})
+    assert resumed.status_code == 201, resumed.text
+    assert (await confirm(w, staff, resumed.json()["id"])).status_code == 200
+    kept = await anchored(w, future)
+    assert kept["renewal_anchor"] == datetime(2026, 10, 31, 2, 0, tzinfo=UTC)
+    assert kept["renews_at"] == datetime(2099, 11, 30, 2, 0, tzinfo=UTC)
+
+
+async def test_interval_change_resets_the_anchor_to_the_period_end(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "plus", "39.90")
+    await seed_plan(w, w.tenants[0], "annual", "299.00", billing_interval="year")
+    cycle = (
+        "UPDATE subscriptions SET renewal_anchor = '2026-10-31 10:00+08',"
+        " renews_at = '2099-11-30 10:00+08' WHERE id=%s"
+    )
+
+    # Monthly -> yearly: the cycle restarts at the old period end, which stays the renewal.
+    sub = await subscribe(w, staff)
+    await w.q(cycle, sub)
+    created = await propose(w, staff, sub, {"action": "change_plan", "plan_code": "annual"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    changed = await anchored(w, sub)
+    assert changed["renewal_anchor"] == datetime(2099, 11, 30, 2, 0, tzinfo=UTC)
+    assert changed["renews_at"] == datetime(2099, 11, 30, 2, 0, tzinfo=UTC)
+
+    # Monthly -> monthly: the interval is the same, so the anchor stays.
+    same = await subscribe(w, staff)
+    await w.q(cycle, same)
+    created = await propose(w, staff, same, {"action": "change_plan", "plan_code": "plus"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    kept = await anchored(w, same)
+    assert kept["renewal_anchor"] == datetime(2026, 10, 31, 2, 0, tzinfo=UTC)
+    assert kept["renews_at"] == datetime(2099, 11, 30, 2, 0, tzinfo=UTC)
+
+
+async def test_interval_change_without_renewal_date_keeps_both_null(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "annual", "299.00", billing_interval="year")
+    sub = await subscribe(w, staff)
+    await w.q("UPDATE subscriptions SET renews_at = NULL, renewal_anchor = NULL WHERE id=%s", sub)
+
+    created = await propose(w, staff, sub, {"action": "change_plan", "plan_code": "annual"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    assert await anchored(w, sub) == {"renewal_anchor": None, "renews_at": None}

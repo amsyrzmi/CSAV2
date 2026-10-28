@@ -612,7 +612,7 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 | `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
 | `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
 | `GET /{id}` | any tenant member | `{subscription, events}`, events being the timeline. 404 `subscription_not_found` |
-| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
+| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
 | `POST /{id}/actions` | writers | Body `{action, reason?, ...}`; 201 `ProposalOut` (the card), `Cache-Control: no-store`. Nothing changes until the same login session confirms the card at `POST /console/v1/workspace/proposals/{id}/confirm` |
 | `GET /requests?status=open\|decided` | any tenant member | `{items, next_cursor}` of `RequestOut`, the customer requests staged by the subscription agent, with the decision once one exists |
 | `POST /requests/{id}/decide` | writers | Body `{decision: approve\|decline, note?, resume_at?}`; returns the decided `RequestOut` |
@@ -726,14 +726,20 @@ to the job's batch size (100) of rows with `FOR UPDATE SKIP LOCKED`:
    subscription, only clears them (`pending_change_skipped`).
 3. Resume: a paused subscription whose `resume_at` is today or earlier resumes, with a lapsed
    or missing `renews_at` set as in a manual resume.
-4. Renew: an active, unflagged subscription whose `renews_at` has passed advances by one
-   billing interval of its plan (`renewed`).
+4. Renew: an active, unflagged subscription whose `renews_at` has passed advances to the
+   next step of its renewal cycle (`renewed`).
 
 A row moves at most one step per rule per run, so a long-lapsed renewal catches up one
 interval per run. Nothing is charged. Renewal and resume arithmetic and the resume date
-use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`). Known
-behaviour: a renewal anchored on the 29th to 31st falls back to the shorter month's last
-day and stays there (owner question open).
+use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`).
+
+Renewals keep the cycle's day of the month. Each subscription counts its renewals from a
+stored anchor (`subscriptions.renewal_anchor`, not exposed by the API) in whole billing
+intervals of its plan, so a renewal clamps to the last day only in a shorter month and
+returns to the day afterwards (31 Jan, 28 Feb, 31 Mar). A subscription created with an explicit `renews_at` takes that date's day as the cycle's day; a defaulted one keeps `started_at`'s day. An extension moves the cycle to
+the chosen date. A resume with a lapsed or missing `renews_at` (manual or by the job)
+restarts the cycle from the resume time. A plan change between monthly and yearly, applied
+now or by the job, counts the new interval from the end of the current period.
 
 Audit actions: `subscriptions.plan.created`, `subscriptions.plan.updated`,
 `subscriptions.created`, `subscriptions.request.approved`, `subscriptions.request.declined`,

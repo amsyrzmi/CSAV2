@@ -444,6 +444,9 @@ class SubscriptionActionExecutor:
                     "plan_code": action.plan_code,
                     "price": new_price,
                     "currency": target["currency"] if immediate_plan and target else None,
+                    "target_interval": target["billing_interval"]
+                    if immediate_plan and target
+                    else None,
                     "effective_at": action.effective_at,
                 },
                 conn=conn,
