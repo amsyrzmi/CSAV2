@@ -24,6 +24,14 @@ from csa.console.security import digest
 from csa.console.services import require_package
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError
+from csa.hr.access_contracts import (
+    AccessChangeResult,
+    AccessChanges,
+    AccessEventPage,
+    AccessPeoplePage,
+)
+from csa.hr.access_page import HrAccessPage
+from csa.hr.access_switches import SwitchId
 from csa.hr.agents import HrAgentDescription, describe_agent
 from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan, TrainingSubmitIntent
 from csa.hr.automation_models import HrOperation, OperationReceipt
@@ -55,6 +63,16 @@ from csa.workspace.registry import ProposalError, ProposalRegistry
 
 _PROPOSAL_NS = UUID("5f0b8a3e-3c1d-4b57-9a52-7d2f1c6e8b40")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
+# Request body caps in bytes; every other HR path keeps 8192.
+_BODY_LIMITS = {"/console/v1/hr/operations": 262144, "/console/v1/hr/access/changes": 65536}
+# Extra query keys per GET path; every HR path also takes client_id.
+_QUERY_KEYS = {
+    "/console/v1/hr/employees": {"limit", "after"},
+    "/console/v1/hr/training-requests": {"limit", "after"},
+    "/console/v1/hr/workflows": {"limit", "after"},
+    "/console/v1/hr/access/people": {"cursor", "q", "team", "has", "reports_to"},
+    "/console/v1/hr/access/recent": {"cursor"},
+}
 
 
 def hr_http_error(exc: HrPolicyError) -> HTTPException:
@@ -97,9 +115,9 @@ class HrRoute(APIRoute):
         async def guarded(request: Request) -> Response:
             try:
                 data = bytearray()
+                maximum = _BODY_LIMITS.get(request.url.path, 8192)
                 async for chunk in request.stream():
                     data.extend(chunk)
-                    maximum = 262144 if request.url.path == "/console/v1/hr/operations" else 8192
                     if len(data) > maximum:
                         raise HTTPException(413, "hr_request_too_large")
                 # Starlette caches body bytes on Request; parsing uses the bounded copy.
@@ -146,12 +164,8 @@ async def _session(
 ) -> HrSession:
     keys = [key for key, _ in request.query_params.multi_items()]
     allowed = {"client_id"}
-    if request.method == "GET" and request.url.path in {
-        "/console/v1/hr/employees",
-        "/console/v1/hr/training-requests",
-        "/console/v1/hr/workflows",
-    }:
-        allowed |= {"limit", "after"}
+    if request.method == "GET":
+        allowed |= _QUERY_KEYS.get(request.url.path, set())
     if any(key not in allowed for key in keys) or len(keys) != len(set(keys)):
         raise HTTPException(400, "invalid_hr_query")
     if request.headers.get("authorization"):
@@ -265,6 +279,34 @@ def build_hr_router() -> APIRouter:
         body: HrOperation, session: Session, service: Service, request_key: RequestKey
     ) -> OperationReceipt:
         return await HrOperations(service).apply(session, body, request_key)
+
+    @router.get("/access/people", response_model=AccessPeoplePage)
+    async def access_people(
+        session: Session,
+        service: Service,
+        cursor: Annotated[str | None, Query(max_length=16)] = None,
+        q: Annotated[str | None, Query(max_length=120)] = None,
+        team: Annotated[str | None, Query(max_length=120)] = None,
+        has: SwitchId | None = None,
+        reports_to: UUID | None = None,
+    ) -> AccessPeoplePage:
+        return await HrAccessPage(service).people(
+            session, cursor=cursor, q=q, team=team, has=has, reports_to=reports_to
+        )
+
+    @router.post("/access/changes", response_model=AccessChangeResult)
+    async def access_changes(
+        body: AccessChanges, session: Session, service: Service
+    ) -> AccessChangeResult:
+        return await HrAccessPage(service).changes(session, body)
+
+    @router.get("/access/recent", response_model=AccessEventPage)
+    async def access_recent(
+        session: Session,
+        service: Service,
+        cursor: Annotated[str | None, Query(max_length=200)] = None,
+    ) -> AccessEventPage:
+        return await HrAccessPage(service).recent(session, cursor=cursor)
 
     @router.get("/records/{area}", response_model=Records)
     async def records(

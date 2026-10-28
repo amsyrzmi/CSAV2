@@ -69,6 +69,59 @@ All HR responses are no-store; validation errors do not echo submitted HR data.
 External calendar/email delivery, hiring/ranking, payments, filings and automatic
 PCB calculation are not implemented by these local receipts.
 
+### HR access page
+
+The "Who can do what" page (People & HR) reads and changes each member's HR access as
+eight switches. The server works out the switches, the "Custom access" rows, the
+warnings and the version; the page shows what it returns. Switch ids:
+`directory`, `own_requests`, `approves_team`, `hr_team`, `recruitment`,
+`attendance`, `payroll_prepare`, `payroll_review`.
+
+- **Owner only.** All three routes need the HR client owner. Anyone else, including
+  another tenant's owner, gets 404 `resource_unavailable`, as for
+  `/records/members`.
+- `GET /access/people?cursor=&q=&team=&has=&reports_to=` returns
+  `AccessPeoplePage`: up to 50 people (`items`), an opaque `next_cursor`, the
+  `version` stamp, `counts` per switch and the current `warnings`. `q` matches part
+  of the name (any case), `team` the department, `has` a switch that is on or
+  included, and `reports_to` the manager's employee id. `counts`, `warnings` and
+  `version` always cover the whole client, whatever the filters.
+- Each person carries `on` (every switch whose rows are all present),
+  `included` (a switch whose rows sit inside another switch that is on, which
+  cannot be turned off on its own), `custom` (the rows no switch describes, in
+  plain words), `team_size` and `is_owner`. Every save keeps the `custom` rows,
+  so the owner's own decision rows on `client_owner` are never dropped here.
+- `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
+  page showed, `dry_run` and 1–50 `changes`, each a member's full desired switch
+  set (`{user_id, on}`, unique ids). The body cap is 65536 bytes.
+  - A `version` that no longer matches gives 409 `access_changed` and writes
+    nothing (a dry run too). The page reloads and keeps its pending changes.
+  - Each person is saved through `/operations`' own path (`access.save`, then
+    `private_access.save` per changed area), with idempotency keys derived from
+    `batch_id` and `user_id`, so each gets the usual receipt and authority event.
+    The version is checked once per batch and each person saves in their own
+    transaction; a batch is not atomic.
+  - **Replay:** if any person of the batch already has a receipt for that
+    `batch_id`, the batch is a retry. The stamp is not checked; those people
+    report `saved` without writing again, and the rest are worked out as usual.
+  - `dry_run: true` writes nothing and returns the outcomes and the `warnings`
+    for the proposed state.
+  - `AccessChangeResult.results` has one entry per person: `saved`, `unchanged`
+    (nothing to write) or `refused` with a `reason` (`not_a_member`,
+    `too_many_rows`, or an HR policy code). Other people in the batch still save.
+    It also returns the new `version` and the `warnings`.
+- Warnings (`AccessWarningOut`, names resolved by the server): `no_approver`,
+  `no_manager`, `no_payroll_reviewer`, `manager_without_team` and
+  `prepares_and_reviews`. They warn; they never block a save.
+- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`
+  and `private_access.save` events, newest first, with an opaque cursor. Each
+  `access.save` lists `turned_on` and `turned_off` against that person's previous
+  `access.save`; a private-area event gives `area` and `area_enabled`. A member who
+  is no longer enabled has `actor_name` or `target_name` `null` ("Former member").
+- The company features ("What the HR assistant can help with") stay on
+  `PUT /agents`. They control only the HR assistant and agents; they never limit
+  what staff can do in the console, and no switch or warning depends on them.
+
 ## Authentication, tenancy and settings
 
 Development reset safety: `make db-reset` is destructive. Its default target is loopback
