@@ -150,6 +150,8 @@ class Inbox:
     )
     needs_review_count: int = 2
     fail_lists: bool = False
+    # A 403 `detail` code for the list (for example "package_inactive"), or None.
+    refuse_lists: str | None = None
     list_queries: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
     messages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -187,7 +189,9 @@ class Inbox:
                 items = [item for item in items if item["pending_approvals"] > 0]
             if "channel" in params:
                 items = [item for item in items if item["channel"] in params["channel"]]
-            if self.fail_lists:
+            if self.refuse_lists is not None:
+                status, data = 403, {"detail": self.refuse_lists}
+            elif self.fail_lists:
                 status, data = 500, {"detail": "synthetic outage"}
             else:
                 data = {
@@ -454,6 +458,31 @@ async def test_failed_refresh_keeps_rows(shell: Shell) -> None:
         await expect(page.locator("[data-conversation-id]")).to_have_count(4)
         await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
         await expect(row(page, NAMED)).to_contain_text("Aisyah Rahman")
+
+
+async def test_inactive_package_shows_the_servers_plain_words_and_role_403_shows_access_copy(
+    shell: Shell,
+) -> None:
+    # The API answers 403 for two reasons; only the role refusal gets the fixed copy.
+    package = "not part of your organisation's active service packages"
+    no_access = (
+        "You do not have access to the customer inbox. "
+        "Ask your administrator to give you staff access."
+    )
+    async with inbox_page(shell, Inbox(refuse_lists="package_inactive")) as page:
+        refused = page.get_by_test_id("inbox-list-state-forbidden")
+        await expect(refused).to_be_visible(timeout=WAIT)
+        await expect(refused.get_by_text(package)).to_be_visible()
+        await expect(page.get_by_text(no_access, exact=True)).to_have_count(0)
+        await expect(page.get_by_role("button", name="Try again")).to_have_count(0)
+        await expect(page.locator("[data-conversation-id]")).to_have_count(0)
+    async with inbox_page(shell, Inbox(refuse_lists="forbidden")) as page:
+        refused = page.get_by_test_id("inbox-list-state-forbidden")
+        await expect(refused).to_be_visible(timeout=WAIT)
+        await expect(refused.get_by_text(no_access, exact=True)).to_be_visible()
+        await expect(page.get_by_text(package)).to_have_count(0)
+        await expect(page.get_by_role("button", name="Try again")).to_have_count(0)
+        await expect(page.locator("[data-conversation-id]")).to_have_count(0)
 
 
 async def test_unnamed_whatsapp_sender_shows_masked_number_in_list_and_full_in_card(
