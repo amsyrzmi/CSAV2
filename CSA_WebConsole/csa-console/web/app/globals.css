@@ -331,6 +331,42 @@
   to { opacity: 1; transform: none; }
 }
 
+/* ---------- FourStacks motion (UI guide section 9) ----------
+   Feedback 120-180 ms, panels 180-240 ms, all on --fs-ease-out. Each class does nothing
+   under prefers-reduced-motion, or inside an ancestor with data-motion="off" (set from
+   useMotionAllowed so a pause setting, hidden tab or offscreen element can switch it off). */
+@keyframes fs-message-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fs-nudge {
+  0% { transform: none; }
+  40% { transform: translateX(-3px); }
+  70% { transform: translateX(2px); }
+  100% { transform: none; }
+}
+@keyframes fs-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fs-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fs-message-in { animation: fs-message-in 180ms var(--fs-ease-out) both; }
+.fs-nudge { animation: fs-nudge 160ms var(--fs-ease-out) both; }
+.fs-slide-up { animation: fs-slide-up 220ms var(--fs-ease-out) both; }
+.fs-fade { animation: fs-fade 140ms var(--fs-ease-out) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-message-in, .fs-nudge, .fs-slide-up, .fs-fade { animation: none !important; }
+}
+[data-motion="off"] .fs-message-in,
+[data-motion="off"] .fs-nudge,
+[data-motion="off"] .fs-slide-up,
+[data-motion="off"] .fs-fade { animation: none !important; }
+
 /* ---------- app shell ---------- */
 .shell-sidebar {
   background: #ffffff;
