@@ -170,6 +170,7 @@ def test_backfill_anchors_on_cycle_rows_only(owner: psycopg.Connection[Any]) -> 
 
 
 def test_0481_is_recorded_and_expected(owner: psycopg.Connection[Any]) -> None:
-    assert EXPECTED_SCHEMA_VERSION == "0481"
+    recorded = owner.execute("SELECT 1 FROM schema_migrations WHERE version = '0481'").fetchone()
+    assert recorded is not None
     row = owner.execute("SELECT max(version) FROM schema_migrations").fetchone()
     assert row is not None and row[0] == EXPECTED_SCHEMA_VERSION

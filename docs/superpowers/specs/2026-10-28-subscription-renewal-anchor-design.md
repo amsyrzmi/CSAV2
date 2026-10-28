@@ -52,9 +52,13 @@ again in leap years.
     `started_at`'s cycle, which restores the original day for a renewal that already clamped.
   - A row off that cycle (moved by an extension or a lapsed resume) keeps `NULL`, so its current
     renewal date is its anchor.
-  - (Builder-check ruling, 2026-10-28: this replaces reading event history; it gives the same
-    result except for a lapsed resume on the 29th–31st that already clamped, which keeps the
-    clamped day.)
+  - (Builder-check ruling, 2026-10-28: this replaces reading event history, and it does not
+    always give the same result. Two cases keep the clamped day: a lapsed resume on the 29th–31st
+    that already clamped, and a row the old job renewed two or more times after a short month
+    (started 31 Aug, the old job set 30 Sep and then 30 Oct; 30 Oct is off the `started_at`
+    cycle, so the anchor stays `NULL` and the row keeps the 30th). Exposure is staging only, as
+    B1's job has run nowhere else, and it is checked before rollout by the drift check under
+    Constraints.)
 - **Next renewal after a previous date `prev`:** `anchor + n × interval`, where *n* is the smallest
   whole number that puts the result after `prev`.
   - Monthly: *n* = (months from the anchor's local month to `prev`'s local month) + 1.
@@ -80,8 +84,20 @@ again in leap years.
 - Migration in lane B's range. SQL lives in `db/sql/`. Staged RLS is unchanged (never FORCE).
   `EXPECTED_SCHEMA_VERSION` stays an exact match.
 - Synthetic fixtures and disposable test databases only.
-- **Staging:** apply `0481` with the `migrate` one-shot, then recreate gateway and worker. There is
-  no frontend change, but recreate the frontend too if the image changes.
+- **Staging:** apply `0481` with the `migrate` one-shot, then recreate gateway and worker
+  immediately, at a quiet time: an old image running against `0481` ignores the anchor, so an
+  extend or a lapsed resume in that window can leave a backfilled anchor in place. There is no
+  frontend change, but recreate the frontend too if the image changes.
+- **Pre-rollout drift check (read-only):** run it after the `migrate` one-shot, when the column
+  exists and the backfill has run. It lists subscriptions that may have drifted under the old
+  job: `NULL` anchor, a local start day of 29 or later, a local `renews_at` day earlier than the
+  local start day, `renews_at` set and status not cancelled. Local means `clients.timezone`.
+  Report any rows to the owner, who fixes them by hand. A row staff deliberately extended to an
+  earlier day can also match, so this is a review list, not an automatic fix.
+
+  ```sql
+  SELECT s.id, s.client_id, s.status, s.started_at, s.renews_at, c.timezone FROM public.subscriptions s JOIN public.clients c ON c.id = s.client_id WHERE s.renewal_anchor IS NULL AND s.renews_at IS NOT NULL AND s.status <> 'cancelled' AND extract(day FROM (s.started_at AT TIME ZONE c.timezone)) >= 29 AND extract(day FROM (s.renews_at AT TIME ZONE c.timezone)) < extract(day FROM (s.started_at AT TIME ZONE c.timezone)) ORDER BY s.client_id, s.id;
+  ```
 
 ## Left to the builder
 
