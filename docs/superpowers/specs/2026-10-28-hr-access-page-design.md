@@ -149,10 +149,13 @@ Each switch maps to one fixed set of rows. The sets reuse today's profiles from
   every active employee's manager link. Any access or reporting-line change since the page loaded
   changes it. Company features are not in it (they do not affect staff access). Returned by the read;
   required on save.
-- **Not atomic across a batch (my call, accepted):** the stamp is checked once, then each person is
-  saved in their own transaction through `HrOperations.apply`, which takes the tenant lock itself.
-  Two owners saving within the same moment can both pass the check; each person's save is still
-  atomic and audited. Documented rather than adding a new locked code path.
+- **Not atomic across a batch (my call, accepted):** the stamp is checked once, then each operation
+  (a person's `access.save`, then each private-area change) runs in its own transaction through
+  `HrOperations.apply`, which takes the tenant lock itself. Two owners saving within the same moment
+  can both pass the check; each operation is still atomic and audited, but one person's save can
+  stop part-way (reported `partly_saved`). Each change also carries the `base` switches the page
+  loaded, and a person whose switches moved since is refused `changed_since_load`. Documented
+  rather than adding a new locked code path.
 - **Routes** (in the existing `/console/v1/hr` router in `csa/hr/api.py`, with the same session,
   tenant and owner checks as the owner-only `records/{area}` reads such as `members`):
   - `GET /console/v1/hr/access/people?cursor=&q=&team=&has=`: a page of people with switches, tags, uncovered
@@ -160,9 +163,11 @@ Each switch maps to one fixed set of rows. The sets reuse today's profiles from
     whole client.
   - `POST /console/v1/hr/access/changes`: `{batch_id, version, dry_run, changes: [{user_id,
     switches}]}`, at most 50 people per call. Each person's idempotency key is derived from
-    `batch_id` and `user_id` (UUIDv5). **Replays first (my call):** if every person's key already has
-    a receipt, the stored results are returned without the stamp check, so a retry after a lost
-    response is safe. People whose computed rows equal their current rows are skipped as `unchanged`
+    `batch_id` and `user_id` (UUIDv5). **Replays first (my call):** if any person's key already has
+    a receipt, the batch is a retry and the stamp is not checked, so a retry after a lost response is
+    safe. Each person with an `access.save` receipt is compared with its fingerprint (the same rows
+    finish any missing area changes; different rows are refused `access_changed`), and everyone else
+    is still checked against their `base`. People whose computed rows equal their current rows are skipped as `unchanged`
     and write nothing. For the rest, the server reloads the summary, recomputes the stamp, and
     refuses the whole batch with 409 `access_changed` if it differs. Otherwise it applies each person through the existing
     `HrOperations` path (`access.save`, then `private_access.save` per changed area), each with its

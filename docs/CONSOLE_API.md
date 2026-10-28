@@ -92,24 +92,44 @@ warnings and the version; the page shows what it returns. Switch ids:
   plain words), `team_size` and `is_owner`. Every save keeps the `custom` rows,
   so the owner's own decision rows on `client_owner` are never dropped here.
 - `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
-  page showed, `dry_run` and 1–50 `changes`, each a member's full desired switch
-  set (`{user_id, on}`, unique ids). The body cap is 65536 bytes.
+  page showed, `dry_run` and 1–50 `changes`, each `{user_id, on, base}`: the
+  member's full desired switch set (`on`) and the `on` set the page loaded them
+  with (`base`), both at most 8 unique switch ids; user ids are unique. The body
+  cap is 65536 bytes.
   - A `version` that no longer matches gives 409 `access_changed` and writes
-    nothing (a dry run too). The page reloads and keeps its pending changes.
+    nothing (a dry run too). The page reloads, keeps its own edits over each
+    member's latest switches, and lets the owner save again.
+  - A person whose current switches differ from their `base` is `refused` with
+    `changed_since_load` and nothing is written for them (a dry run too). This
+    covers a member who was not on the reloaded page.
   - Each person is saved through `/operations`' own path (`access.save`, then
     `private_access.save` per changed area), with idempotency keys derived from
     `batch_id` and `user_id`, so each gets the usual receipt and authority event.
-    The version is checked once per batch and each person saves in their own
-    transaction; a batch is not atomic.
+    The version is checked once per batch and each **operation** is its own
+    transaction: a batch is not atomic, and neither is one person's save. A save
+    that stops after one of the person's operations landed is `refused` with
+    `partly_saved`.
+  - **Batch ids:** every new submit needs a new `batch_id`. Reuse one only to
+    retry the same body after a lost response (the page's dry run and its
+    confirm share one).
   - **Replay:** if any person of the batch already has a receipt for that
-    `batch_id`, the batch is a retry. The stamp is not checked; those people
-    report `saved` without writing again, and the rest are worked out as usual.
+    `batch_id`, the batch is a retry and the version stamp is not checked. The
+    per-person guards still apply: a person with an `access.save` receipt is
+    compared with it (the same rows finish any missing area changes and report
+    `saved`; different rows are `refused` with `access_changed` and write
+    nothing); a person with only area receipts finishes the missing area
+    changes; and a person with no receipt is checked against `base` and saved as
+    usual.
   - `dry_run: true` writes nothing and returns the outcomes and the `warnings`
     for the proposed state.
   - `AccessChangeResult.results` has one entry per person: `saved`, `unchanged`
     (nothing to write) or `refused` with a `reason` (`not_a_member`,
-    `too_many_rows`, or an HR policy code). Other people in the batch still save.
-    It also returns the new `version` and the `warnings`.
+    `too_many_rows`, `changed_since_load`, `partly_saved`, `access_changed` on a
+    replay, or an HR policy code). Other people in the batch still save. It also
+    returns the new `version` and the `warnings`.
+  - A `cursor` that is not one this API returned gives 409 `invalid_cursor` (404
+    `resource_unavailable` for a non-owner), on `/access/people` and
+    `/access/recent`.
 - Warnings (`AccessWarningOut`, names resolved by the server): `no_approver`,
   `no_manager`, `no_payroll_reviewer`, `manager_without_team` and
   `prepares_and_reviews`. They warn; they never block a save.
