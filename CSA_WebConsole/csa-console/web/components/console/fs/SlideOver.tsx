@@ -26,6 +26,7 @@ export default function SlideOver({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  const downOnBackdropRef = useRef(false);
   const openRef = useRef(open);
   const returnRef = useRef(returnFocusTo);
   const titleId = useId();
@@ -67,9 +68,17 @@ export default function SlideOver({
         // The browser closed it by itself (for example a second Escape) while still "open".
         if (openRef.current) onClose();
       }}
+      onPointerDown={(event) => {
+        // Remember whether this press began on the backdrop (the dialog itself).
+        downOnBackdropRef.current = event.target === event.currentTarget;
+      }}
       onClick={(event) => {
-        // The panel fills the dialog, so a click that lands on the dialog itself is the backdrop.
-        if (event.target === event.currentTarget) onClose();
+        // The panel fills the dialog, so a target of the dialog itself is the backdrop. Close
+        // only if the press also began there: a drag that starts in the panel (selecting text)
+        // and ends on the backdrop is dispatched as a click on the dialog, and must not close.
+        const closeIt = downOnBackdropRef.current && event.target === event.currentTarget;
+        downOnBackdropRef.current = false;
+        if (closeIt) onClose();
       }}
       className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-sm border-0 bg-white p-0 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-dialog)] backdrop:bg-[#1c2b40]/40"
     >
