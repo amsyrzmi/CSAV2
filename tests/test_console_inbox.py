@@ -662,11 +662,18 @@ async def test_list_returns_contact_last_message_and_pending_count(
     assert single.json()["contact"]["phone"] == "+60125550148"
     assert single.json()["contact"]["phone_masked"] == "••••0148"
     assert single.json()["pending_approvals"] == 1
-    # Mutation results use the same conversation shape but never carry the full number.
+    # Mutation results carry no contact data, preview or count, and neither does the receipt.
     taken = await takeover(w, conversation)
     assert taken.status_code == 200
-    contact = taken.json()["conversation"]["contact"]
-    assert contact["phone"] is None and contact["phone_masked"] == "••••0148"
+    result = taken.json()["conversation"]
+    assert result["contact"] is None and result["last_message"] is None
+    assert result["pending_approvals"] == 0
+    [receipt] = await w.q(
+        "SELECT result::text AS result FROM console_inbox_actions WHERE client_id=%s",
+        w.tenants[0],
+    )
+    for personal in ("Nur Aisyah", "0148", "60125550148", "EMAIL", "synthetic@example.test"):
+        assert personal not in receipt["result"]
 
 
 async def test_known_versus_new_sender(sessions: SessionWorld) -> None:

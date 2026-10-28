@@ -21,7 +21,8 @@ class InboxContact(Contract):
     display_name: str | None
     telegram_username: str | None
     phone_masked: str | None
-    # Set only by the single-conversation read; list rows and mutation results carry the mask.
+    # Set only by the single-conversation read; list rows carry the mask. Mutation results
+    # carry no contact at all.
     phone: str | None = None
     kind: str
     known: bool

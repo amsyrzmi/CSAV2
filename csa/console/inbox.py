@@ -187,24 +187,35 @@ def conversation_from_row(row: dict[str, Any], *, full_phone: bool = False) -> I
 
 
 async def conversation(
-    conn: AsyncConnection[Any],
-    client_id: UUID,
-    conversation_id: UUID,
-    *,
-    lock: bool = False,
-    full_phone: bool = False,
+    conn: AsyncConnection[Any], client_id: UUID, conversation_id: UUID, *, lock: bool = False
 ) -> InboxConversation:
+    """Conversation metadata only: no contact, preview or counts.
+
+    Mutation routes persist this in their action receipts, so it must carry no personal data.
+    """
     row = await db.q.fetch_one(
-        "inbox/get_conversation.sql",
-        {"client_id": client_id, "conversation_id": conversation_id},
-        conn=conn,
+        "inbox/get_conversation.sql", (client_id, conversation_id), conn=conn
     )
     if row is None:
         raise HTTPException(404, "customer conversation not found")
     if lock:
         await lock_conversation(conn, client_id, conversation_id)
-        return await conversation(conn, client_id, conversation_id, full_phone=full_phone)
-    return conversation_from_row(row, full_phone=full_phone)
+        return await conversation(conn, client_id, conversation_id)
+    return InboxConversation.model_validate(row)
+
+
+async def conversation_detail(
+    conn: AsyncConnection[Any], client_id: UUID, conversation_id: UUID
+) -> InboxConversation:
+    """The single-conversation read: contact with the full phone, last message and count."""
+    row = await db.q.fetch_one(
+        "inbox/get_conversation_detail.sql",
+        {"client_id": client_id, "conversation_id": conversation_id},
+        conn=conn,
+    )
+    if row is None:
+        raise HTTPException(404, "customer conversation not found")
+    return conversation_from_row(row, full_phone=True)
 
 
 async def replay(
@@ -351,7 +362,7 @@ def build_inbox_router() -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> InboxConversation:
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            return await conversation(conn, client_id, conversation_id, full_phone=True)
+            return await conversation_detail(conn, client_id, conversation_id)
 
     @router.get("/conversations/{conversation_id}/messages", response_model=InboxMessagePage)
     async def messages(

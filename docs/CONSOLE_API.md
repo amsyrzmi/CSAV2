@@ -502,8 +502,9 @@ clients):
   contact's own number, as WhatsApp stores when the customer has no profile name),
   `telegram_username` (`null` until the Telegram username column ships), `phone_masked`
   (last four digits, for example `••••0148`; `null` when no number is stored), `phone`,
-  `kind` (`customer`) and `known`. `phone` is `null` in list rows and in the results of
-  takeover, release and reply; only `GET /conversations/{id}` returns the full number.
+  `kind` (`customer`) and `known`. `phone` is `null` in list rows; only `GET /conversations/{id}` returns the full number.
+  Takeover, release and reply results carry no contact data, preview or approval count
+  (`contact` and `last_message` are `null`), and neither do their stored receipts.
 - `known` is true when the contact has at least one order, at least one subscription,
   or a non-blank email or address. Otherwise the sender is new.
 - `last_message`: `preview` (first 120 characters of the redacted body, whitespace
