@@ -61,6 +61,7 @@ try {
     "lib/agent-avatars.ts",
     "lib/customer-identity.ts",
     "lib/motion.ts",
+    "lib/inbox-shortcuts.ts",
     "lib/workspace-paths.mjs",
     "lib/workspace-paths.d.mts",
     "components/AppShell.tsx",
@@ -96,6 +97,7 @@ try {
     "tests/agent-avatars.test.mjs",
     "tests/customer-identity.test.mjs",
     "tests/motion.test.mjs",
+    "tests/inbox-shortcuts.test.mjs",
     "tests/release-runtime.test.mjs",
     "scripts/release-runtime.mjs",
   ];
@@ -175,6 +177,7 @@ try {
       ["agent avatar tests", "../tests/agent-avatars.test.mjs"],
       ["customer identity tests", "../tests/customer-identity.test.mjs"],
       ["motion tests", "../tests/motion.test.mjs"],
+      ["inbox shortcut tests", "../tests/inbox-shortcuts.test.mjs"],
       ["release origin tests", "../tests/release-runtime.test.mjs"],
       ["lint", "eslint/bin/eslint.js", "."],
       ["typegen", "next/dist/bin/next", "typegen"],

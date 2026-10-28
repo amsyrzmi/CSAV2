@@ -354,17 +354,25 @@
   to { opacity: 1; }
 }
 
+@keyframes fs-slide-in-right {
+  from { opacity: 0.4; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+
 .fs-message-in { animation: fs-message-in 180ms var(--fs-ease-out) both; }
+.fs-slide-in-right { animation: fs-slide-in-right 220ms var(--fs-ease-out) both; }
 .fs-nudge { animation: fs-nudge 160ms var(--fs-ease-out) both; }
 .fs-slide-up { animation: fs-slide-up 220ms var(--fs-ease-out) both; }
 .fs-fade { animation: fs-fade 140ms var(--fs-ease-out) both; }
 
 @media (prefers-reduced-motion: reduce) {
-  .fs-message-in, .fs-nudge, .fs-slide-up, .fs-fade { animation: none !important; }
+  .fs-message-in, .fs-nudge, .fs-slide-up, .fs-slide-in-right, .fs-fade, .skeleton { animation: none !important; }
 }
 [data-motion="off"] .fs-message-in,
 [data-motion="off"] .fs-nudge,
 [data-motion="off"] .fs-slide-up,
+[data-motion="off"] .fs-slide-in-right,
+[data-motion="off"] .skeleton,
 [data-motion="off"] .fs-fade { animation: none !important; }
 
 /* ---------- app shell ---------- */
