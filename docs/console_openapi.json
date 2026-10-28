@@ -3,8 +3,26 @@
     "schemas": {
       "AccessChange": {
         "additionalProperties": false,
-        "description": "The person's full desired switch set.",
+        "description": "The person's full desired switch set, and the `on` set the page loaded it from.",
         "properties": {
+          "base": {
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Base",
+            "type": "array"
+          },
           "on": {
             "items": {
               "enum": [
@@ -31,7 +49,8 @@
         },
         "required": [
           "user_id",
-          "on"
+          "on",
+          "base"
         ],
         "title": "AccessChange",
         "type": "object"

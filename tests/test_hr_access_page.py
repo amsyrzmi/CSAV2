@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib.parse import urlencode
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 import pytest
@@ -16,7 +16,13 @@ from csa.hr.access_switches import (
     GrantRow,
     SwitchId,
     WorkflowRow,
+    operations,
+    rows,
+    state,
 )
+from csa.hr.automation_models import AccessSave, PrivateAccessSave
+from csa.hr.operations import HrOperations
+from csa.hr.policy import HrPolicyError
 from psycopg.types.json import Jsonb
 
 from tests.conftest import requires_docker
@@ -55,17 +61,26 @@ async def person(world: HrWorld, name: str) -> dict[str, Any]:
 
 async def post(
     world: HrWorld,
-    changes: list[tuple[UUID, list[str]]],
+    changes: list[tuple[UUID, list[str]]] | list[tuple[UUID, list[str], list[str]]],
     *,
     version: str | None = None,
     batch_id: UUID | None = None,
     dry_run: bool = False,
 ) -> httpx.Response:
+    """Each change is (user, on, base); base defaults to the person's current switches."""
+    current = {user: item["on"] for user, item in (await everyone(world)).items()}
     body = {
         "batch_id": str(batch_id or uuid4()),
         "version": version or (await people(world))["version"],
         "dry_run": dry_run,
-        "changes": [{"user_id": str(user), "on": on} for user, on in changes],
+        "changes": [
+            {
+                "user_id": str(change[0]),
+                "on": change[1],
+                "base": change[2] if len(change) == 3 else current.get(change[0], []),
+            }
+            for change in changes
+        ],
     }
     return await world.call("owner", "POST", CHANGES, body)
 
@@ -162,7 +177,7 @@ async def test_people_page_is_owner_only(world: HrWorld) -> None:
         {
             "batch_id": str(uuid4()),
             "version": page["version"],
-            "changes": [{"user_id": str(world.users["staff"]), "on": ["directory"]}],
+            "changes": [{"user_id": str(world.users["staff"]), "on": ["directory"], "base": []}],
         },
     )
     assert response.status_code == 404 and response.json()["detail"] == "resource_unavailable"
@@ -177,13 +192,17 @@ async def test_fifty_person_batch_fits_the_body_limit(world: HrWorld) -> None:
         "batch_id": str(uuid4()),
         "version": version,
         "dry_run": True,
-        "changes": [{"user_id": str(uuid4()), "on": list(SWITCH_IDS)} for _ in range(50)],
+        "changes": [
+            {"user_id": str(uuid4()), "on": list(SWITCH_IDS), "base": list(SWITCH_IDS)}
+            for _ in range(50)
+        ],
     }
     assert len(json.dumps(body, separators=(",", ":"))) > 8192
     response = await world.call("owner", "POST", CHANGES, body)
     assert response.status_code == 200, response.text
     assert len(response.json()["results"]) == 50
-    too_many = {**body, "changes": body["changes"] + [{"user_id": str(uuid4()), "on": []}]}
+    extra = {"user_id": str(uuid4()), "on": [], "base": []}
+    too_many = {**body, "changes": [*body["changes"], extra]}
     assert (await world.call("owner", "POST", CHANGES, too_many)).status_code == 422
     twice = {**body, "changes": body["changes"][:1] * 2}
     assert (await world.call("owner", "POST", CHANGES, twice)).status_code == 422
@@ -318,6 +337,120 @@ async def test_batch_reports_a_refusal_per_person_and_saves_the_rest(world: HrWo
         result(world, "operator", "saved"),
     ]
     assert "approves_team" in (await person(world, "operator"))["on"]
+
+
+async def test_change_from_a_stale_base_is_refused_and_the_rest_save(world: HrWorld) -> None:
+    await clear_operator(world)
+    loaded = (await person(world, "operator"))["on"]
+    # Another tab turns a switch on for the operator; this page still shows the old switches.
+    await turn(world, "operator", ["approves_team"])
+    staff = await person(world, "staff")
+    assert "payroll_review" not in staff["on"]
+    before, count = await stored(world, "operator"), await receipts(world)
+    changes = [
+        (world.users["operator"], ["payroll_prepare"], loaded),
+        (world.users["staff"], [*staff["on"], "payroll_review"], staff["on"]),
+    ]
+    want = [
+        result(world, "operator", "refused", "changed_since_load"),
+        result(world, "staff", "saved"),
+    ]
+    dry = await post(world, changes, dry_run=True)
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["results"] == want
+    assert await receipts(world) == count
+    response = await post(world, changes)
+    assert response.status_code == 200, response.text
+    assert response.json()["results"] == want
+    assert await stored(world, "operator") == before
+    assert "payroll_review" in (await person(world, "staff"))["on"]
+
+
+async def record_access_save(world: HrWorld, name: str, batch: UUID, on: list[SwitchId]) -> None:
+    """Lands only the access.save of a batch's change, as if the area changes after it were lost."""
+    user, current = world.users[name], await stored(world, name)
+    ops = operations(user, current, rows(frozenset(on), state(current).uncovered))
+    assert any(isinstance(op, PrivateAccessSave) for op in ops)
+    body = next(op for op in ops if isinstance(op, AccessSave)).model_dump(mode="json")
+    key = uuid5(batch, f"{user}:access")
+    response = await world.call("owner", "POST", OPERATIONS, body, key=key)
+    assert response.status_code == 200, response.text
+
+
+async def test_retry_finishes_a_person_whose_area_change_did_not_land(world: HrWorld) -> None:
+    await clear_operator(world)
+    batch, version = uuid4(), (await people(world))["version"]
+    loaded = (await person(world, "operator"))["on"]
+    staff = (await person(world, "staff"))["on"]
+    await record_access_save(world, "operator", batch, ["payroll_prepare"])
+    assert "payroll" not in (await stored(world, "operator")).areas
+    changes = [
+        (world.users["operator"], ["payroll_prepare"], loaded),
+        # Someone with no receipt in this batch is still checked against what the page loaded.
+        (world.users["staff"], [*staff, "payroll_review"], [*staff, "attendance"]),
+    ]
+    want = [
+        result(world, "operator", "saved"),
+        result(world, "staff", "refused", "changed_since_load"),
+    ]
+    retry = await post(world, changes, version=version, batch_id=batch)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["results"] == want
+    assert SWITCHES["payroll_prepare"].issubset(await stored(world, "operator"))
+    assert "payroll_review" not in (await person(world, "staff"))["on"]
+    count, saved = await receipts(world), await stored(world, "operator")
+    again = await post(world, changes, version=version, batch_id=batch)
+    assert again.status_code == 200, again.text
+    assert again.json()["results"] == want
+    assert await receipts(world) == count and await stored(world, "operator") == saved
+
+
+async def test_retry_with_a_different_change_is_refused(world: HrWorld) -> None:
+    await clear_operator(world)
+    batch, version = uuid4(), (await people(world))["version"]
+    loaded = (await person(world, "operator"))["on"]
+    await record_access_save(world, "operator", batch, ["payroll_prepare"])
+    before, count = await stored(world, "operator"), await receipts(world)
+    response = await post(
+        world,
+        [(world.users["operator"], ["approves_team"], loaded)],
+        version=version,
+        batch_id=batch,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["results"] == [result(world, "operator", "refused", "access_changed")]
+    assert await stored(world, "operator") == before and await receipts(world) == count
+
+
+async def test_a_save_that_stops_halfway_is_reported_partly_saved(
+    world: HrWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await clear_operator(world)
+    real = HrOperations.apply
+
+    async def refuse_areas(self: HrOperations, session: Any, body: Any, key: UUID) -> Any:
+        if isinstance(body, PrivateAccessSave):
+            raise HrPolicyError("synthetic_refusal")
+        return await real(self, session, body, key)
+
+    monkeypatch.setattr(HrOperations, "apply", refuse_areas)
+    staff = (await person(world, "staff"))["on"]
+    assert "approves_team" not in staff
+    response = await post(
+        world,
+        [
+            (world.users["operator"], ["payroll_prepare"]),
+            (world.users["staff"], [*staff, "approves_team"]),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["results"] == [
+        result(world, "operator", "refused", "partly_saved"),
+        result(world, "staff", "saved"),
+    ]
+    operator = await stored(world, "operator")
+    assert SWITCHES["payroll_prepare"].workflows <= operator.workflows
+    assert "payroll" not in operator.areas
 
 
 async def test_dry_run_returns_warnings_and_writes_nothing(world: HrWorld) -> None:

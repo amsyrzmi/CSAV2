@@ -216,29 +216,32 @@ class AccessLimitError(ValueError):
     """The saved rows would exceed what one access.save can carry."""
 
 
+def access_save(user_id: UUID, after: AccessRows) -> AccessSave:
+    """The access.save that leaves the person with exactly these grant and workflow rows."""
+    if len(after.grants) > MAX_GRANTS or len(after.workflows) > MAX_WORKFLOWS:
+        raise AccessLimitError("access_limit")
+    return AccessSave.model_validate(
+        {
+            "operation": "access.save",
+            "user_id": user_id,
+            "grants": [
+                {"action": g.action, "scope": g.scope, "fields": list(g.fields)}
+                for g in sorted(after.grants)
+            ],
+            "workflows": [
+                {"domain": w.domain, "action": w.action, "scope": w.scope}
+                for w in sorted(after.workflows)
+            ],
+        }
+    )
+
+
 def operations(
     user_id: UUID, before: AccessRows, after: AccessRows
 ) -> list[AccessSave | PrivateAccessSave]:
     result: list[AccessSave | PrivateAccessSave] = []
     if before.grants != after.grants or before.workflows != after.workflows:
-        if len(after.grants) > MAX_GRANTS or len(after.workflows) > MAX_WORKFLOWS:
-            raise AccessLimitError("access_limit")
-        result.append(
-            AccessSave.model_validate(
-                {
-                    "operation": "access.save",
-                    "user_id": user_id,
-                    "grants": [
-                        {"action": g.action, "scope": g.scope, "fields": list(g.fields)}
-                        for g in sorted(after.grants)
-                    ],
-                    "workflows": [
-                        {"domain": w.domain, "action": w.action, "scope": w.scope}
-                        for w in sorted(after.workflows)
-                    ],
-                }
-            )
-        )
+        result.append(access_save(user_id, after))
     for enabled, areas in ((True, after.areas - before.areas), (False, before.areas - after.areas)):
         for area in sorted(areas):
             result.append(

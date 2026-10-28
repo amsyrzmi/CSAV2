@@ -181,3 +181,18 @@ def test_invalid_snapshot_state_rejected() -> None:
                 "updated_at": "2026-10-21T08:00:00Z",
             }
         )
+
+
+def test_access_change_needs_a_unique_base() -> None:
+    from csa.hr.access_contracts import AccessChange
+
+    user = str(UUID(int=40))
+    change = AccessChange.model_validate({"user_id": user, "on": ["directory"], "base": []})
+    assert change.base == []
+    for bad in (
+        {"user_id": user, "on": ["directory"]},
+        {"user_id": user, "on": [], "base": ["directory", "directory"]},
+        {"user_id": user, "on": [], "base": ["unknown"]},
+    ):
+        with pytest.raises(ValidationError):
+            AccessChange.model_validate(bad)

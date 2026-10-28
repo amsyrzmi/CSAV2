@@ -51,12 +51,13 @@ class AccessPeoplePage(HrModel):
 
 
 class AccessChange(HrModel):
-    """The person's full desired switch set."""
+    """The person's full desired switch set, and the `on` set the page loaded it from."""
 
     user_id: UUID
     on: list[SwitchId] = Field(max_length=8)
+    base: list[SwitchId] = Field(max_length=8)
 
-    @field_validator("on")
+    @field_validator("on", "base")
     @classmethod
     def unique_switches(cls, value: list[SwitchId]) -> list[SwitchId]:
         if len(set(value)) != len(value):

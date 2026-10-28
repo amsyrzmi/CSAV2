@@ -1,16 +1,17 @@
 """The HR access page service: owner-only reads and batch saves over the switch rules.
 
-Every write goes through `HrOperations.apply`, one person's operation at a time, so authorization,
-receipts and authority events stay exactly as for the old access forms. The version stamp is checked
-once per batch; each person's save is its own transaction (accepted in the design, not atomic across
-the batch).
+Every write goes through `HrOperations.apply`, one operation at a time, so authorization, receipts
+and authority events stay exactly as for the old access forms. The version stamp is checked once per
+batch, and each person's switches are checked against the `base` the page loaded them from. Each
+operation (a person's access.save, then each private-area change) is its own transaction: a batch is
+not atomic, and neither is one person's save (accepted in the design).
 """
 
 from __future__ import annotations
 
 import base64
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid5
@@ -39,6 +40,7 @@ from csa.hr.access_switches import (
     ReportingLine,
     SwitchId,
     SwitchState,
+    access_save,
     grant_switches,
     operations,
     rows,
@@ -53,6 +55,7 @@ from csa.hr.records import HrSession
 from csa.hr.service import HrService
 
 AREAS = ("recruitment", "attendance", "payroll")
+_NO_RECEIPT = object()  # a person this batch has not written for yet
 
 _WHOSE = {
     "self": "their own",
@@ -141,16 +144,14 @@ def _event_position(cursor: str | None) -> tuple[datetime, UUID] | None:
         raise HrPolicyError("invalid_cursor") from exc
 
 
-def _keys(batch_id: UUID, user_id: UUID) -> Iterator[UUID]:
-    yield uuid5(batch_id, f"{user_id}:access")
-    for area in AREAS:
-        yield uuid5(batch_id, f"{user_id}:area:{area}")
-
-
 def _key(batch_id: UUID, user_id: UUID, op: AccessSave | PrivateAccessSave) -> UUID:
     if isinstance(op, PrivateAccessSave):
         return uuid5(batch_id, f"{user_id}:area:{op.area}")
     return uuid5(batch_id, f"{user_id}:access")
+
+
+def _refused(user_id: UUID, reason: str) -> AccessPersonResult:
+    return AccessPersonResult(user_id=user_id, outcome="refused", reason=reason)
 
 
 def _switches_of(details: Mapping[str, Any]) -> frozenset[SwitchId]:
@@ -271,10 +272,11 @@ class HrAccessPage:
     async def changes(self, session: HrSession, body: AccessChanges) -> AccessChangeResult:
         async with tx(self.core.pool, str(session.tenant_id)) as conn:
             people, lines = await self._load(conn, session)
-            replayed = set() if body.dry_run else await self._receipts(conn, session, body)
+            replayed = {} if body.dry_run else await self._receipts(conn, session, body)
             await self.core._session(conn, session)
         # A batch with any receipt is a retry of one that landed: its saved people now compute to
-        # no change, so it is answered from the receipts and the stamp is not checked again.
+        # different switches, so the stamp is not checked again. Each person with a receipt is
+        # checked against it instead, and everyone else against the switches the page loaded.
         if not replayed and stamp(people, lines) != body.version:
             raise HrPolicyError("access_changed")
         by_user = {p.user_id: p for p in people}
@@ -283,35 +285,48 @@ class HrAccessPage:
         results: list[AccessPersonResult] = []
         for change in body.changes:
             user = change.user_id
-            if user in replayed:
-                results.append(AccessPersonResult(user_id=user, outcome="saved"))
-                continue
             current = by_user.get(user)
             if current is None:
-                results.append(
-                    AccessPersonResult(user_id=user, outcome="refused", reason="not_a_member")
-                )
+                results.append(_refused(user, "not_a_member"))
                 continue
-            after = rows(frozenset(change.on), state(current.rows).uncovered)
+            now = state(current.rows)
+            after = rows(frozenset(change.on), now.uncovered)
+            receipt = replayed.get(user, _NO_RECEIPT)
+            if receipt is _NO_RECEIPT and now.on != frozenset(change.base):
+                results.append(_refused(user, "changed_since_load"))
+                continue
             try:
                 ops = operations(user, current.rows, after)
-            except AccessLimitError:
-                results.append(
-                    AccessPersonResult(user_id=user, outcome="refused", reason="too_many_rows")
+                landed = receipt is not _NO_RECEIPT and receipt == HrOperations.fingerprint(
+                    access_save(user, after)
                 )
+            except AccessLimitError:
+                results.append(_refused(user, "too_many_rows"))
                 continue
-            if not ops:
+            if receipt is not _NO_RECEIPT:
+                if receipt is not None and not landed:
+                    # This batch saved other access for the person, which no longer matches.
+                    results.append(_refused(user, "access_changed"))
+                    continue
+                # The access.save landed (or the change was area-only): finish the area changes
+                # under their own keys. With no access receipt the person's grant rows are not
+                # compared, so an area-only retry after someone else changed their grants still
+                # finishes its areas. That window is narrow and the areas were asked for.
+                ops = [op for op in ops if isinstance(op, PrivateAccessSave)]
+            elif not ops:
                 results.append(AccessPersonResult(user_id=user, outcome="unchanged"))
                 continue
             if body.dry_run:
                 proposed[user] = current._replace(rows=after)
                 results.append(AccessPersonResult(user_id=user, outcome="saved"))
                 continue
+            saved = receipt is not _NO_RECEIPT
             try:
                 for op in ops:
                     await apply.apply(session, op, _key(body.batch_id, user, op))
+                    saved = True
             except HrPolicyError as exc:
-                results.append(AccessPersonResult(user_id=user, outcome="refused", reason=exc.code))
+                results.append(_refused(user, "partly_saved" if saved else exc.code))
                 continue
             results.append(AccessPersonResult(user_id=user, outcome="saved"))
         if body.dry_run:
@@ -327,16 +342,20 @@ class HrAccessPage:
 
     async def _receipts(
         self, conn: AsyncConnection, session: HrSession, body: AccessChanges
-    ) -> set[UUID]:
-        """People of this batch with at least one stored receipt for the owner."""
-        found: set[UUID] = set()
+    ) -> dict[UUID, str | None]:
+        """People of this batch with a stored receipt for the owner, mapped to the fingerprint of
+        their access.save receipt, or None when only area changes have receipts."""
+        found: dict[UUID, str | None] = {}
         for change in body.changes:
-            for key in _keys(body.batch_id, change.user_id):
+            user = change.user_id
+            keys = [uuid5(body.batch_id, f"{user}:access")]
+            keys += [uuid5(body.batch_id, f"{user}:area:{area}") for area in AREAS]
+            for index, key in enumerate(keys):
                 row = await sql.fetch_one(
                     "hr/op_get.sql", (session.tenant_id, session.subject_id, key), conn=conn
                 )
                 if row is not None:
-                    found.add(change.user_id)
+                    found[user] = row["fingerprint"] if index == 0 else None
                     break
         return found
 
