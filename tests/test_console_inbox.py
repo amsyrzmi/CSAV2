@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -611,6 +612,23 @@ async def test_delivery_lock_waits_before_takeover_and_preserves_human_reply(
         await owner.close()
 
 
+PERSONAL_KEYS = {"phone", "phone_masked", "display_name", "telegram_username", "preview", "contact"}
+
+
+def personal_values(node: Any) -> list[str]:
+    """Names of every personal-data key holding a non-null value anywhere in parsed JSON."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in PERSONAL_KEYS and value is not None:
+                found.append(key)
+            found.extend(personal_values(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(personal_values(item))
+    return found
+
+
 async def contact_of(w: SessionWorld, conversation: str) -> UUID:
     [row] = await w.q("SELECT contact_id FROM conversations WHERE id=%s", conversation)
     return row["contact_id"]
@@ -669,11 +687,17 @@ async def test_list_returns_contact_last_message_and_pending_count(
     assert result["contact"] is None and result["last_message"] is None
     assert result["pending_approvals"] == 0
     [receipt] = await w.q(
-        "SELECT result::text AS result FROM console_inbox_actions WHERE client_id=%s",
-        w.tenants[0],
+        "SELECT result FROM console_inbox_actions WHERE client_id=%s", w.tenants[0]
     )
-    for personal in ("Nur Aisyah", "0148", "60125550148", "EMAIL", "synthetic@example.test"):
-        assert personal not in receipt["result"]
+    stored = receipt["result"]
+    assert stored["conversation"]["contact"] is None
+    assert stored["conversation"]["last_message"] is None
+    assert stored["conversation"]["pending_approvals"] == 0
+    assert personal_values(stored) == []
+    # Distinctive literals only: ids and timestamps in the JSON can contain any digit string.
+    text = json.dumps(stored)
+    for personal in ("Nur Aisyah", "EMAIL", "synthetic@example.test"):
+        assert personal not in text
 
 
 async def test_known_versus_new_sender(sessions: SessionWorld) -> None:
