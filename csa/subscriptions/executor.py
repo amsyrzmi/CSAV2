@@ -296,9 +296,11 @@ class SubscriptionActionExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         now = datetime.now(UTC)
         async with tx(request.app.state.pool, str(client_id)) as conn:
+            subscription = await get_subscription_out(conn, client_id, action.subscription_id)
+            # The request is read after the subscription: an approval commits its decision with
+            # the change, so a change seen above is a decision seen here (409, not a 422).
             if action.request_id is not None:
                 await _check_request(conn, client_id, action, now)
-            subscription = await get_subscription_out(conn, client_id, action.subscription_id)
             current = await _plan(conn, client_id, subscription.plan)
             target = await _plan(conn, client_id, action.plan_code)
             tenant = await db.q.fetch_one(
