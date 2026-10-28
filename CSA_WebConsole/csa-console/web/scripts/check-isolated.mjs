@@ -102,6 +102,7 @@ try {
     "tests/inbox-shortcuts.test.mjs",
     "tests/inbox-api.test.mjs",
     "tests/inbox-thread.test.mjs",
+    "tests/public-assets.test.mjs",
     "tests/release-runtime.test.mjs",
     "scripts/release-runtime.mjs",
   ];
@@ -184,6 +185,7 @@ try {
       ["inbox shortcut tests", "../tests/inbox-shortcuts.test.mjs"],
       ["inbox API tests", "../tests/inbox-api.test.mjs"],
       ["inbox thread tests", "../tests/inbox-thread.test.mjs"],
+      ["public asset tests", "../tests/public-assets.test.mjs"],
       ["release origin tests", "../tests/release-runtime.test.mjs"],
       ["lint", "eslint/bin/eslint.js", "."],
       ["typegen", "next/dist/bin/next", "typegen"],
