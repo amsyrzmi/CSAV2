@@ -807,6 +807,41 @@ async def test_search_matches_name_phone_formats_and_escapes(sessions: SessionWo
     assert {i["id"] for i in combined.json()["items"]} == {aisyah}
 
 
+async def test_username_is_returned_and_searchable(sessions: SessionWorld) -> None:
+    w = sessions
+    _, handle = await seed(w, name="Nur Aisyah")
+    _, other = await seed(w, name="Someone Else")
+    await w.q(
+        "UPDATE contacts SET telegram_username='aisyah_r' WHERE id="
+        "(SELECT contact_id FROM conversations WHERE id=%s)",
+        handle,
+    )
+    items = {i["id"]: i for i in (await listing(w))["items"]}
+    assert items[handle]["contact"]["telegram_username"] == "aisyah_r"
+    assert items[other]["contact"]["telegram_username"] is None
+    single = await w.admin.get(path(w, f"/conversations/{handle}"))
+    assert single.json()["contact"]["telegram_username"] == "aisyah_r"
+
+    async def found(q: str) -> set[str]:
+        return {i["id"] for i in (await listing(w, "&" + urlencode({"q": q})))["items"]}
+
+    for q in ("aisyah_r", "@AISYAH_R", "isyah", " @isyah_ "):
+        assert await found(q) == {handle}, q
+    # The underscore is literal: it does not match an arbitrary character.
+    assert await found("aisyahxr") == set()
+    assert await found("h_r") == {handle}
+    assert await found("hxr") == set()
+    # Mutation results and the lean read never carry the username.
+    taken = await takeover(w, handle)
+    assert taken.status_code == 200
+    assert "aisyah_r" not in taken.text
+    [receipt] = await w.q(
+        "SELECT result::text AS result FROM console_inbox_actions WHERE client_id=%s",
+        w.tenants[0],
+    )
+    assert "aisyah_r" not in receipt["result"]
+
+
 async def test_search_never_leaks_other_tenants(sessions: SessionWorld) -> None:
     w = sessions
     _, mine = await seed(w, name="Aisyah Mine", phone="+60125550148")

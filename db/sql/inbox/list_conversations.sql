@@ -5,7 +5,7 @@ SELECT c.id, c.channel, c.status, c.owned_by, c.ai_muted_until, c.inbox_version,
        c.opened_at,
        (c.owned_by = 'human_support' AND
         (c.ai_muted_until IS NULL OR c.ai_muted_until > now())) IS TRUE AS human_muted,
-       k.full_name, k.phone, k.contact_kind AS kind, kn.known,
+       k.full_name, k.phone, k.telegram_username, k.contact_kind AS kind, kn.known,
        lm.body AS last_body, lm.created_at AS last_at, pa.n AS pending_approvals
 FROM public.conversations c
 JOIN public.contacts k ON k.client_id = c.client_id AND k.id = c.contact_id
@@ -37,6 +37,7 @@ WHERE c.client_id = %(client_id)s AND c.channel IN ('telegram','whatsapp')
   AND (%(sender)s::text IS NULL OR kn.known = (%(sender)s::text = 'known'))
   AND (%(like)s::text IS NULL
        OR coalesce(k.full_name, '') ILIKE %(like)s::text ESCAPE '\'
+       OR coalesce(k.telegram_username, '') ILIKE %(like)s::text ESCAPE '\'
        OR (%(digits)s::text IS NOT NULL
            AND regexp_replace(coalesce(k.phone, ''), '[^0-9]', '', 'g')
                LIKE '%%' || %(digits)s::text || '%%'))

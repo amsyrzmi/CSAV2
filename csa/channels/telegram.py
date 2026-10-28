@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -86,12 +87,27 @@ class TelegramPollingError(Exception):
         self.error_code = error_code
 
 
+_USERNAME = re.compile(r"[A-Za-z0-9_]{4,32}")
+
+
+def telegram_username(value: object) -> str | None:
+    """The sender's @username when it is a valid one, else None.
+
+    Capturing the username must never block a message, so anything that is not a string
+    matching the contacts.telegram_username check becomes None instead of an error.
+    """
+    if isinstance(value, str) and _USERNAME.fullmatch(value):
+        return value
+    return None
+
+
 class TelegramEvent(ContractModel):
     update_id: int = Field(ge=0)
     kind: Literal["message", "edited_message", "callback_query"]
     sender_id: str = Field(min_length=1, max_length=200)
     chat_id: str = Field(min_length=1, max_length=200)
     display_name: str | None = None
+    username: str | None = None
     received_at: datetime
     idempotency_key: str = Field(min_length=1, max_length=512)
     message: Message
@@ -341,6 +357,7 @@ class TelegramAdapter:
                 sender_id=sender_id,
                 chat_id=chat_id,
                 display_name=display_name or None,
+                username=telegram_username(sender.get("username")),
                 received_at=received_at,
                 idempotency_key=f"telegram:{public_id}:{update_id}",
                 message=message,

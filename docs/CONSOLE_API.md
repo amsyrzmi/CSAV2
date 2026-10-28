@@ -500,7 +500,7 @@ clients):
 
 - `contact`: `display_name` (the stored name, or `null` when it is blank or only the
   contact's own number, as WhatsApp stores when the customer has no profile name),
-  `telegram_username` (`null` until the Telegram username column ships), `phone_masked`
+  `telegram_username` (the customer's Telegram @username without the `@`, from migration `0500`; `null` when they have none, for WhatsApp and for any value that is not 4 to 32 letters, digits or underscores), `phone_masked`
   (last four digits, for example `••••0148`; `null` when no number is stored), `phone`,
   `kind` (`customer`) and `known`. `phone` is `null` in list rows; only `GET /conversations/{id}` returns the full number.
   Takeover, release and reply results carry no contact data, preview or approval count
@@ -520,8 +520,8 @@ List filters, all applied on the server across every page and combined with `cha
 
 - `needs_review=true`: only conversations with a pending approval that has not expired.
 - `sender=known` or `sender=new`: split by `known` above. Any other value is 422.
-- `q`: search over the contact's name and phone (Telegram @username once the column
-  exists). The text is trimmed, one leading `@` is ignored, and fewer than two characters
+- `q`: search over the contact's name, phone and Telegram @username (so `isyah`,
+  `aisyah_r` and `@AISYAH_R` all find `aisyah_r`). The text is trimmed, one leading `@` is ignored, and fewer than two characters
   is 422 `search needs at least two characters`; more than 64 characters is 422. Matching
   is case-insensitive and substring; `%`, `_` and `\` match only themselves. Phone numbers
   match on digits only when the text holds two or more digits, so `012 555`,
