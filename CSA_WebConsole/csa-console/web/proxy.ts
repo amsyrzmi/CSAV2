@@ -24,6 +24,8 @@ const adoptedPages = new Set([
   "/portal/hr",
   "/business",
   "/portal/business",
+  "/subscriptions",
+  "/portal/subscriptions",
   "/workspace",
   "/portal/workspace",
   "/email",

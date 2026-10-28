@@ -55,6 +55,16 @@ test("A1 staff workspace pages are adopted but require a session cookie", () => 
   }
 });
 
+test("Subscriptions pages are adopted but require a session cookie", () => {
+  for (const route of ["/subscriptions", "/portal/subscriptions"]) {
+    const url = `https://console.example.test${route}`;
+    assert.equal(proxyExports.proxy(new NextRequest(url)).status, 307, route);
+    assert.equal(proxyExports.proxy(new NextRequest(url, {
+      headers: { Cookie: "csa_session=synthetic" },
+    })).status, 200, route);
+  }
+});
+
 test("browser mutation obtains CSRF before sending same-origin cookie request and handles logout 204", async () => {
   const original = globalThis.fetch;
   const calls = [];

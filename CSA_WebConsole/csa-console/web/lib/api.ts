@@ -25,6 +25,36 @@ const explained: Record<string, string> = {
   whatsapp_token_rejected:
     "WhatsApp did not accept that access token for this phone number ID. Check both in your Meta app, then try again.",
   whatsapp_unreachable: "We could not reach WhatsApp to check the number. Wait a minute and try again.",
+  // Subscriptions (csa/subscriptions): plans, actions and the request queue.
+  plan_unavailable: "That plan is not available for this company.",
+  action_not_allowed: "This change is not possible from the subscription's current state.",
+  request_decided: "Someone has already decided this request.",
+  plan_unchanged:
+    "The subscription is already on that plan. Choose a different plan or set a special price.",
+  price_override_requires_immediate_change:
+    "A special price can only start straight away. Clear the start date or the special price.",
+  renews_at_before_start: "The renewal date must be after the start date. Choose a later renewal date.",
+  renews_at_not_after_current: "Choose a renewal date after the current one.",
+  resume_at_not_after_today: "Choose a resume date after today.",
+  plan_in_use:
+    "Add a new plan with the billing period you want. This plan's billing period cannot change while customers are on it.",
+  proposal_registry_unavailable: "We could not prepare the change. Wait a minute and try again.",
+  request_has_no_subscription:
+    "This request is not linked to a subscription. Decline it, then make the change from the customer's subscription.",
+  request_subscription_mismatch:
+    "This request does not match the customer's subscription. Decline it, then check the subscription.",
+  request_has_no_plan:
+    "This request does not say which plan the customer wants. Decline it, then ask the customer.",
+  request_action_mismatch:
+    "This change is not the one the customer asked for. Approve the request from the Requests tab instead.",
+  resume_at_applies_to_pause_only: "A resume date only applies to a pause. Clear the resume date and try again.",
+  request_in_progress: "A colleague is deciding this request right now. Wait a moment, then refresh the page.",
+  proposal_not_executed: "The change did not complete. Refresh the page to see where it stands.",
+  plan_exists: "A plan with that code already exists. Choose a different code.",
+  plan_not_found: "That plan no longer exists. Refresh the page.",
+  subscription_not_found: "That subscription no longer exists. Refresh the page.",
+  request_not_found: "That request no longer exists. Refresh the page.",
+  contact_not_found: "That customer no longer exists. Refresh the page.",
 };
 
 async function decode<T>(response: Response): Promise<T> {

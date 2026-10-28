@@ -505,7 +505,9 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
 
 Every mutation is a proposal the user confirms on a card. Kinds: `email_export`
 (freeze a draft and save it to the user's own Gmail drafts), `training_submit` (submit a
-training request) and `inbox_decision` (approve or reject a held customer reply).
+training request), `inbox_decision` (approve or reject a held customer reply) and
+`subscription_action` (a [subscription state change](#subscriptions), requested from the
+Subscriptions tab).
 `ProposalOut` is `{id, kind, status, card, result, created_at, expires_at}`; the card
 holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
 
@@ -590,6 +592,152 @@ returns 409 `agent_disabled`: training proposals created by the assistant also r
 tenant's `hr_assistant` switch (rechecked at confirm); tab-originated proposals
 (`POST /console/v1/workspace/proposals`) do not, because the human confirming the card is
 the safety boundary. Each stored proposal records its `origin` (`tab` or `assistant`).
+
+## Subscriptions
+
+Lane B1 (migration `0480`). The Subscriptions tab manages a tenant's plans and its
+customers' subscriptions. Every state change is a confirm card (the workspace proposal
+kind `subscription_action`); the tab never changes a subscription directly. Nothing is
+charged: the module records state and dates only.
+
+Routes, under `/console/v1/subscriptions` with the usual tenant selection (the collection
+has no trailing slash). Human sessions only (the machine token is refused) and behind the
+`subscriptions` package gate (active status only):
+
+| Method/path | Who | Result |
+|---|---|---|
+| `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active}` |
+| `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`. 409 `plan_exists`; audited `subscriptions.plan.created` |
+| `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives). 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active or paused subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
+| `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
+| `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
+| `GET /{id}` | any tenant member | `{subscription, events}`, events being the timeline. 404 `subscription_not_found` |
+| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
+| `POST /{id}/actions` | writers | Body `{action, reason?, ...}`; 201 `ProposalOut` (the card), `Cache-Control: no-store`. Nothing changes until the same login session confirms the card at `POST /console/v1/workspace/proposals/{id}/confirm` |
+| `GET /requests?status=open\|decided` | any tenant member | `{items, next_cursor}` of `RequestOut`, the customer requests staged by the subscription agent, with the decision once one exists |
+| `POST /requests/{id}/decide` | writers | Body `{decision: approve\|decline, note?, resume_at?}`; returns the decided `RequestOut` |
+
+"Writers" are `tenant_admin` and `tenant_staff` in their own tenant, and platform admins
+who select a tenant with `?client_id=`. Every member of the tenant may read, including
+`read_only`; a `read_only` writer attempt and any other tenant's id are 403. The static
+paths (`/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
+"Add subscription" form uses `GET /customers` to find the customer, then `POST` (the
+collection) with an active plan and an optional start date.
+
+### Statuses and flags
+
+`status` is `active`, `paused` or `cancelled` (a database check since `0480`; legacy values
+become `cancelled` in the migration). `version` increases on every change and binds a card.
+Flags: `cancel_at_period_end` (cancel when `renews_at` passes), `pending_plan` with
+`pending_effective_at` (a scheduled plan change) and `resume_at` (a date on which a paused
+subscription resumes).
+
+### Actions
+
+`ActionIn` is `{action, reason?, resume_at?, plan_code?, effective_at?, renews_at?, price_override?}`.
+A field outside the action's own set is refused (422), so a card never shows less than the
+payload carries.
+
+| Action | From | Fields | Effect |
+|---|---|---|---|
+| `pause` | active | optional `resume_at` (date, after today on the tenant's calendar) | paused; `resume_at` set when given |
+| `resume` | paused | none | active; `resume_at` cleared; a lapsed or missing (`NULL`) `renews_at` becomes one billing interval from now |
+| `change_plan` | active, paused | `plan_code` (required), `effective_at`, `price_override` | absent or past `effective_at` changes now at the new plan's current price; a future one sets `pending_plan` and `pending_effective_at` |
+| `cancel_at_period_end` | active, not already flagged, with a `renews_at` | none | sets `cancel_at_period_end` |
+| `cancel_now` | active, paused | none | cancelled immediately; `cancelled_at` set; pending plan, resume date and period-end flag cleared |
+| `extend_renewal` | active | `renews_at` (required) | moves `renews_at`; must be after the current one |
+
+Each executed action records one timeline event keyed by the proposal id (`paused`,
+`resumed`, `plan_changed`, `plan_change_scheduled`, `cancel_scheduled`, `cancelled`,
+`renewal_extended`), so a confirm replayed after commit returns the same receipt rather
+than acting twice. The card runs the same checks at create and again at confirm; a
+subscription that changed in between fails the confirm with 409 `proposal_stale`. An
+immediate `change_plan` card also binds the target plan's price, currency and billing
+interval (`expected_version` reads `<version>:<price>:<currency>:<interval>`, for example
+`1:59.90:MYR:month`); the executor reads them again under the row lock, so a plan edit
+between the card and its execution is 409 `proposal_stale` and nothing is applied. A
+scheduled change binds the version only, and its card says the price will be the plan's
+price on that day (with today's price for reference).
+
+Refusals (422 unless noted), raised before any proposal row is written and again at confirm:
+
+| Code | Meaning |
+|---|---|
+| `action_not_allowed` | The current status does not allow the action, the period-end flag is already set, or a period-end cancel has no `renews_at` (the period would never end; extend the renewal or cancel now instead). An approval of `request_cancel` for such a subscription is refused the same way and records no decision |
+| `plan_unavailable` | The target plan is missing or archived |
+| `plan_unchanged` | `change_plan` to the plan already held, with no override |
+| `price_override_requires_immediate_change` | An override on a change scheduled for later |
+| `renews_at_not_after_current` | `extend_renewal` to a date that is not later |
+| `renews_at_before_start` | A new subscription whose `renews_at` precedes `started_at` |
+| `request_has_no_subscription` | A request whose agent payload named no subscription (it can be declined, not approved) |
+| `request_subscription_mismatch` | The request's subscription is missing or belongs to another customer |
+| `request_has_no_plan` | A change request that names no plan |
+| `request_action_mismatch` | The proposal is not the action the request asked for |
+| `resume_at_applies_to_pause_only` | `resume_at` on the approval of anything but a pause request |
+| `resume_at_not_after_today` | A pause (or a pause approval) whose `resume_at` is today or earlier on the tenant's calendar |
+| `request_decided` (409) | The request already has a decision |
+| `proposal_stale` (409) | The subscription changed after the card was made, or (immediate `change_plan`) the target plan's price, currency or interval did |
+
+### Price rule
+
+`change_plan` takes the new plan's current price. Editing a plan's price never changes an
+existing subscription; the price a subscription pays moves only through a plan change. A
+`price_override` needs a non-empty `reason` and applies only to an immediate change; the
+timeline records `price_override: true` with the old and new price. A scheduled change is
+applied by the due job at the plan's price on the day, not the price quoted when it was
+scheduled.
+
+### Request queue
+
+The subscription agent stages customer requests (`request_pause`, `request_cancel`,
+`request_change`) without acting on them. `GET /requests?status=open` lists the undecided
+ones, `decided` the rest (newest first, keyset `before`, `limit` 1-100).
+
+- Decline writes a decision row (`declined`, optional note) and audits
+  `subscriptions.request.declined`.
+- Approve makes the server create and confirm the card itself, as the approving user:
+  `request_pause` runs `pause` (the approval may add `resume_at`), `request_cancel` runs
+  `cancel_at_period_end` and `request_change` runs an immediate `change_plan` to the
+  requested plan at its current price. The executor checks that the proposal is exactly
+  that action, on the subscription the request names, and that the subscription belongs to
+  the requesting customer, so a card made through the workspace proposals route cannot
+  approve a request with a different action or for another customer's subscription.
+- The approved decision row is written in the same transaction as the subscription
+  change (and audited `subscriptions.request.approved` there). A request has one
+  decision, so approve, decline and a second approve are mutually exclusive: the first to
+  commit wins and the others change nothing and answer 409 `request_decided`. A failed
+  approval leaves the request open for any staff member to retry.
+
+### Due job
+
+`subscriptions_due` runs every 5 minutes for each active tenant, with actor
+`system:subscriptions_due` as the timeline actor. It changes nothing (zero counts) for a
+tenant whose `subscriptions` package is not `active`: a requested or suspended package, or
+none, gets no automatic changes, using the same package check as the route gate. Four rules run in this order, each claiming up
+to the job's batch size (100) of rows with `FOR UPDATE SKIP LOCKED`:
+
+1. Cancel at period end: an active, flagged subscription whose `renews_at` has passed
+   becomes `cancelled` (`cancelled_at` is that date). A scheduled plan change is dropped
+   with it, as `cancel_now` does; the event payload is `{cleared_pending_plan}` (`null` when
+   there was none). It runs first so a cancelling subscription is never renewed in the same
+   pass.
+2. Pending plan: a due pending change applies at the plan's current price and clears the
+   pending fields (`plan_changed`). An archived or missing pending plan, or a cancelled
+   subscription, only clears them (`pending_change_skipped`).
+3. Resume: a paused subscription whose `resume_at` is today or earlier resumes, with a lapsed
+   or missing `renews_at` set as in a manual resume.
+4. Renew: an active, unflagged subscription whose `renews_at` has passed advances by one
+   billing interval of its plan (`renewed`).
+
+A row moves at most one step per rule per run, so a long-lapsed renewal catches up one
+interval per run. Nothing is charged. Renewal and resume arithmetic and the resume date
+use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`). Known
+behaviour: a renewal anchored on the 29th to 31st falls back to the shorter month's last
+day and stays there (owner question open).
+
+Audit actions: `subscriptions.plan.created`, `subscriptions.plan.updated`,
+`subscriptions.created`, `subscriptions.request.approved`, `subscriptions.request.declined`,
+plus the `workspace.proposal.*` rows the registry writes for every card.
 
 ## Business management (M6A/B; offline local reads and store records)
 

@@ -40,6 +40,8 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "inbox", label: "Customer inbox", href: to("inbox"), show: writer },
     { key: "email", label: "Email assistant", href: to("email"), show: writer },
     { key: "business", label: "Business management", href: to("business"), show: writer },
+    // Read-only members see the tab too; the page hides its action controls for them.
+    { key: "subscriptions", label: "Subscriptions", href: to("subscriptions") },
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
     { key: "members", label: "Members", href: "/settings/team", show: admin },
     { key: "team", label: "Team", href: "/portal/team", show: me.role === "tenant_admin" },

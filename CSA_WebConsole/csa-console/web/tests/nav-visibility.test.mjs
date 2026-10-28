@@ -53,7 +53,18 @@ test("the Staff workspace tab is gone for every role; the assistant dock replace
   }
 });
 
-test("the subscriptions key is reserved but renders no link until its page ships", () => {
-  const links = navigationFor(staff, active("subscriptions", "customer_support"));
-  assert.ok(!links.some((l) => l.key === "subscriptions" || l.label === "Subscriptions"));
+test("Subscriptions follows its package for members and is always there for platform admins", () => {
+  const member = navigationFor(staff, active("subscriptions", "customer_support"));
+  const link = member.find((l) => l.label === "Subscriptions");
+  assert.equal(link?.href, "/portal/subscriptions");
+  assert.equal(link?.key, "subscriptions");
+  const withBusiness = labels(staff, active("subscriptions", "orders_products"));
+  assert.equal(withBusiness.indexOf("Subscriptions"), withBusiness.indexOf("Business management") + 1);
+  assert.ok(labels({ ...staff, role: "read_only" }, active("subscriptions")).includes("Subscriptions"));
+  for (const packages of [[], active("customer_support"), [{ key: "subscriptions", status: "suspended" }],
+    [{ key: "subscriptions", status: "requested" }]]) {
+    assert.ok(!labels(staff, packages).includes("Subscriptions"), JSON.stringify(packages));
+  }
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  assert.equal(admin.find((l) => l.label === "Subscriptions")?.href, "/subscriptions");
 });

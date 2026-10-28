@@ -232,5 +232,10 @@ export function resultSummary(proposal: ProposalOut): string {
           return `Your decision on the held reply was recorded.${queued ? " Reply queued for delivery." : ""}`;
       }
     }
+    case "subscription_action": {
+      // csa/subscriptions/executor.py receipt: subscription_id, status, version, event_id.
+      const status = text(field(result, "status"));
+      return status ? `Subscription updated. It is now ${status}.` : "Subscription updated.";
+    }
   }
 }

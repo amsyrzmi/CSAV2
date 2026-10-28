@@ -41,7 +41,11 @@ export interface PageContext {
   record?: RecordRef | null;
 }
 
-export type ProposalKind = "email_export" | "training_submit" | "inbox_decision";
+export type ProposalKind =
+  | "email_export"
+  | "training_submit"
+  | "inbox_decision"
+  | "subscription_action";
 
 export interface ProposalCard {
   proposal_id: string;

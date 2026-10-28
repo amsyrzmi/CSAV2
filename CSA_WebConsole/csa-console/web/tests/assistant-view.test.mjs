@@ -121,6 +121,8 @@ test("settled proposals summarise their receipts", () => {
   assert.equal(view.resultSummary(proposal("p", { kind: "inbox_decision", status: "executed", result: { outcome: "applied", queued: true } })), "Your decision on the held reply was recorded. Reply queued for delivery.");
   assert.equal(view.resultSummary(proposal("p", { kind: "inbox_decision", status: "executed", result: { outcome: "expired", queued: false } })), "Approval expired. No reply queued.");
   assert.equal(view.resultSummary(proposal("p", { kind: "inbox_decision", status: "executed", result: { outcome: "already_handled", queued: false } })), "Already handled. Nothing was changed.");
+  assert.equal(view.resultSummary(proposal("p", { kind: "subscription_action", status: "executed", result: { status: "paused", version: 2 } })), "Subscription updated. It is now paused.");
+  assert.equal(view.resultSummary(proposal("p", { kind: "subscription_action", status: "executed", result: null })), "Subscription updated.");
   assert.match(view.resultSummary(proposal("p", { status: "cancelled" })), /Nothing was changed/);
   assert.match(view.resultSummary(proposal("p", { status: "expired" })), /expired/);
 });
