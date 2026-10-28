@@ -198,7 +198,14 @@ def _cover(on: frozenset[SwitchId]) -> AccessRows:
 
 
 def rows(on: frozenset[SwitchId], uncovered: AccessRows) -> AccessRows:
-    return _cover(on).union(uncovered)
+    cover = _cover(on)
+    # hr_grants is keyed by (action, scope): a switch row replaces a partial hand-made grant for the
+    # same pair. The switch row has all five basic fields, so no access is lost.
+    taken = {(g.action, g.scope) for g in cover.grants}
+    kept = uncovered._replace(
+        grants=frozenset(g for g in uncovered.grants if (g.action, g.scope) not in taken)
+    )
+    return cover.union(kept)
 
 
 def apply_preset(on: frozenset[SwitchId], preset: PresetId) -> frozenset[SwitchId]:

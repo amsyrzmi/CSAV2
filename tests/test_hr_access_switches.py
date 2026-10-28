@@ -30,6 +30,8 @@ from csa.hr.access_switches import (
 )
 from csa.hr.automation_models import AccessSave, PrivateAccessSave
 
+BASIC = ("assigned_manager", "department", "display_name", "job_title", "work_email")
+
 OWNER_ROWS = AccessRows(
     frozenset({GrantRow("training.decide", "client_owner", ())}),
     frozenset(
@@ -251,3 +253,22 @@ def test_from_summary_accepts_the_database_row_shape() -> None:
     }
     assert parsed.rows.workflows == {WorkflowRow("leave", "read", "self")}
     assert parsed.rows.areas == {"payroll"}
+
+
+def test_switch_grant_supersedes_partial_uncovered_grant() -> None:
+    cases: list[tuple[SwitchId, str]] = [("own_requests", "self"), ("directory", "hr_operator")]
+    for switch, scope in cases:
+        partial = AccessRows(
+            frozenset({GrantRow("directory.read", scope, ("display_name",))}),
+            frozenset(),
+            frozenset(),
+        )
+        assert state(partial).uncovered == partial
+        saved = rows(switch_set(switch), partial)
+        matching = [g for g in saved.grants if (g.action, g.scope) == ("directory.read", scope)]
+        assert matching == [GrantRow("directory.read", scope, BASIC)]
+        built = operations(uuid4(), partial, saved)
+        saves = [op for op in built if isinstance(op, AccessSave)]
+        assert len(saves) == 1
+        pairs = [(g.action.value, g.scope.value) for g in saves[0].grants]
+        assert len(pairs) == len(set(pairs))
