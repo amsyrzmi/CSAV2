@@ -605,9 +605,20 @@ async def test_agent_avatar_loads_and_the_proxy_still_denies_by_default(shell: S
         artwork = await http.get("/fourstacks/agents/support.svg")
         assert artwork.status_code == 200
         assert "svg" in artwork.headers["content-type"]
-        # Everything else is unchanged: unlisted paths are 404, adopted pages need a session.
-        assert (await http.get("/definitely-not-a-page")).status_code == 404
-        assert (await http.get("/fourstacks-but-not-artwork")).status_code == 404
+        # Everything else is unchanged. The proxy refuses with a plain-text "Not found";
+        # Next's own not-found page is HTML, so the body proves the proxy answered.
+        for path in ("/definitely-not-a-page", "/fourstacks-but-not-artwork"):
+            # `fourstacks/` needs its slash: a sibling name still goes through the proxy.
+            refused = await http.get(path)
+            assert (refused.status_code, refused.text) == (404, "Not found"), path
         gated = await http.get("/portal/inbox")
         assert gated.status_code in {302, 303, 307, 308}, gated.status_code
         assert gated.headers["location"].endswith("/login")
+    session = {"csa_session": "synthetic-session"}
+    async with httpx.AsyncClient(
+        base_url=shell.base, trust_env=False, timeout=60, cookies=session
+    ) as signed_in:
+        # Real pages that are not adopted: with a session, only the deny branch refuses them.
+        for path in ("/system", "/settings/audit"):
+            refused = await signed_in.get(path)
+            assert (refused.status_code, refused.text) == (404, "Not found"), path
