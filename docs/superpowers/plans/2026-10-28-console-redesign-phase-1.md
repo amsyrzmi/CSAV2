@@ -52,7 +52,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 
 ---
 
-## Task B1: Inbox read fields, filters, search and ordering
+## Task 1 (B1): Inbox read fields, filters, search and ordering
 
 **Files:** the backend files above except the 0500, telegram and ingress ones; tests `tests/test_inbox_contact.py`, `tests/test_console_inbox.py`.
 
@@ -78,7 +78,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 10: Docs and snapshot.** Update the inbox table and prose in `docs/CONSOLE_API.md` (new fields, three filters, ordering, `needs_review` definition, phone masking, the search rules from spec 7.5). Run `bash <ci.sh> uv run python -m scripts.export_console_openapi`; the snapshot test now passes. Run `bash <ci.sh> make lint`.
 - [ ] **Step 11: Commit** (local): `feat(inbox): contact, last message, filters, search and last-activity order`.
 
-## Task B2: Migration 0500 and Telegram username capture
+## Task 2 (B2): Migration 0500 and Telegram username capture
 
 **Files:** `db/migrations/0500_contact_telegram_username.sql`, `apps/gateway/main.py`, `db/migrations/README.md`, `csa/channels/telegram.py`, `csa/channels/ingress.py`, the four ingress SQL files, `db/sql/inbox/*.sql` (search and read the username), `csa/console/inbox_contact.py`, docs; tests `tests/test_telegram.py`, `tests/test_ingress.py`, `tests/test_contact_username_schema.py`, `tests/test_console_inbox.py`.
 
@@ -94,7 +94,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 5: Docs and snapshot.** Add the username to the `docs/CONSOLE_API.md` field list; regenerate `docs/console_openapi.json`; `make lint`.
 - [ ] **Step 6: Commit** (local): `feat(inbox): capture the Telegram username on the contact (migration 0500)`.
 
-## Task F1: Fonts, theme base and restyled shared classes
+## Task 3 (F1): Fonts, theme base and restyled shared classes
 
 **Files:** `web/app/layout.tsx`, `web/app/globals.css`, `web/components/console/ui.tsx`.
 
@@ -106,7 +106,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 4: Verify** `bash <ci.sh> npm --prefix CSA_WebConsole/csa-console/web run lint`, `... run typecheck`, `... test`. Expected: all pass.
 - [ ] **Step 5: Commit** (local): `feat(console): load the FourStacks fonts and restyle the shared classes`.
 
-## Task F2: Avatar set and `AgentAvatar`
+## Task 4 (F2): Avatar set and `AgentAvatar`
 
 **Files:** the 11 SVGs in `web/public/fourstacks/agents/`; the five new SVGs and manifest entries in `ui-guide/assets/agents/`; `web/lib/agent-avatars.ts`; `web/components/console/fs/AgentAvatar.tsx`; `web/scripts/check-isolated.mjs`; test `web/tests/agent-avatars.test.mjs`.
 
@@ -120,7 +120,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 5: Run** `npm test`, `lint`, `typecheck`. Expected: PASS.
 - [ ] **Step 6: Commit** (local): `feat(console): the eleven agent avatars and AgentAvatar`.
 
-## Task F3: Customer identity helpers and `CustomerAvatar`
+## Task 5 (F3): Customer identity helpers and `CustomerAvatar`
 
 **Files:** `web/lib/customer-identity.ts`, `web/components/console/fs/CustomerAvatar.tsx`, `web/tests/customer-identity.test.mjs`, `check-isolated.mjs`.
 
@@ -130,7 +130,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 2: Run** `npm test`. Expected: FAIL. **Step 3: Implement.** **Step 4: Run.** Expected: PASS. Check the four tint pairs for 4.5:1 contrast and adjust within the blue family if any fails. Register the files in `check-isolated.mjs`.
 - [ ] **Step 5: Commit** (local): `feat(console): customer identity helpers and CustomerAvatar`.
 
-## Task F4: Motion rules
+## Task 6 (F4): Motion rules
 
 **Files:** `web/lib/motion.ts`, `web/components/console/fs/useMotionAllowed.ts`, `web/app/globals.css` (keyframes), `web/tests/motion.test.mjs`, `check-isolated.mjs`.
 
@@ -138,7 +138,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 
 - [ ] **Steps 1 to 4:** test `motionAllowed` over all 16 input combinations and `parsePause` for `"1"`, `"0"`, `null`, `"true"` (only `"1"` pauses); run and see it fail; implement; run and see it pass; `lint` and `typecheck`; register files; commit (local): `feat(console): shared motion rules and pause preference`.
 
-## Task F5: Primitives: status label, skeleton, slide-over, list states, shortcuts
+## Task 7 (F5): Primitives: status label, skeleton, slide-over, list states, shortcuts
 
 **Files:** `web/components/console/fs/{StatusLabel,Skeleton,SlideOver,ListStates}.tsx`, `web/lib/inbox-shortcuts.ts`, `web/tests/inbox-shortcuts.test.mjs`, `check-isolated.mjs`.
 
@@ -153,7 +153,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 2: Run** `npm test`; FAIL. **Step 3: Implement** `shortcutFor` and the five components. **Step 4: Run** `npm test`, `lint`, `typecheck`; PASS. Register the files.
 - [ ] **Step 5: Commit** (local): `feat(console): status labels, skeletons, slide-over, list states and shortcuts`.
 
-## Task F6: Inbox API types, query builder and data hook
+## Task 8 (F6): Inbox API types, query builder and data hook
 
 **Files:** `web/lib/inbox-api.ts`, `web/components/console/inbox/usePages.ts`, `web/tests/inbox-api.test.mjs`, `check-isolated.mjs`.
 
@@ -163,7 +163,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 2: Run, implement, run.** Move the types out of `InboxWorkspace.tsx`. `lint`, `typecheck`, `npm test` PASS. Register the files.
 - [ ] **Step 3: Commit** (local): `feat(console): inbox API types, query builder and data hook`.
 
-## Task F7: The inbox UI
+## Task 9 (F7): The inbox UI
 
 **Files:** `web/components/console/InboxWorkspace.tsx` and `web/components/console/inbox/{Inbox,ConversationList,Thread,ReviewCard,CustomerCard}.tsx`.
 
@@ -178,7 +178,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 7: Verify:** `npm test`, `lint`, `typecheck`. Then run the web app against synthetic data using the harness in `tests/test_whatsapp_browser.py` (Task F8) and look at 320, 390, 768, 1024 and 1440 px.
 - [ ] **Step 8: Commit** (local): `feat(console): the three-pane customer inbox`.
 
-## Task F8: Browser tests
+## Task 10 (F8): Browser tests
 
 **Files:** `tests/test_inbox_redesign_browser.py` (new), `tests/test_whatsapp_browser.py`, `tests/test_packaged_console.py`.
 
@@ -187,7 +187,7 @@ Front end (under `CSA_WebConsole/csa-console/web/`, called `web/` below):
 - [ ] **Step 3: Run** `bash <ci.sh> uv run pytest tests/test_inbox_redesign_browser.py -v` and `tests/test_whatsapp_browser.py -v` if Chromium runs on this host; otherwise leave both to CI and say so.
 - [ ] **Step 4: Commit** (local): `test(console): browser checks for the redesigned inbox`.
 
-## Task F9: Close-out
+## Task 11 (F9): Close-out
 
 - [ ] **Step 1:** Add one entry to the top of `docs/PROGRESS.md` for this phase (what shipped, the migration, the test commands run with their results, what is left for CI).
 - [ ] **Step 2:** Final regeneration of `docs/console_openapi.json` if backend code changed since Task B2, then `make lint`, `npm --prefix CSA_WebConsole/csa-console/web run check:isolated` (runs the build; this host may be slow, so run it once), and the focused tests of every file changed (one per run).
