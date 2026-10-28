@@ -57,9 +57,10 @@ export type ThreadItem<M extends ThreadMessage> =
  * each message marked as the first and/or last of its group.
  */
 export function threadItems<M extends ThreadMessage>(messages: M[]): ThreadItem<M>[] {
+  type Previous = { sender: Sender; time: Date | null; day: string };
   const items: ThreadItem<M>[] = [];
-  let previous: { sender: Sender; time: Date | null; day: string } | null = null;
-  let lastMessage: Extract<ThreadItem<M>, { kind: "message" }> | null = null;
+  let previous = null as Previous | null;
+  let lastMessage = null as Extract<ThreadItem<M>, { kind: "message" }> | null;
   for (const message of messages) {
     const sender = senderOf(message);
     const time = parse(message.created_at);
