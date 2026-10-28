@@ -1,6 +1,498 @@
 {
   "components": {
     "schemas": {
+      "AccessChange": {
+        "additionalProperties": false,
+        "description": "The person's full desired switch set, and the `on` set the page loaded it from.",
+        "properties": {
+          "base": {
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Base",
+            "type": "array"
+          },
+          "on": {
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "On",
+            "type": "array"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "on",
+          "base"
+        ],
+        "title": "AccessChange",
+        "type": "object"
+      },
+      "AccessChangeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/AccessPersonResult"
+            },
+            "maxItems": 50,
+            "title": "Results",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/AccessWarningOut"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results",
+          "version",
+          "warnings"
+        ],
+        "title": "AccessChangeResult",
+        "type": "object"
+      },
+      "AccessChanges": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "format": "uuid",
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/AccessChange"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Changes",
+            "type": "array"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batch_id",
+          "version",
+          "changes"
+        ],
+        "title": "AccessChanges",
+        "type": "object"
+      },
+      "AccessEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Name"
+          },
+          "actor_user_id": {
+            "format": "uuid",
+            "title": "Actor User Id",
+            "type": "string"
+          },
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area"
+          },
+          "area_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area Enabled"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "target_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Name"
+          },
+          "target_user_id": {
+            "format": "uuid",
+            "title": "Target User Id",
+            "type": "string"
+          },
+          "turned_off": {
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "title": "Turned Off",
+            "type": "array"
+          },
+          "turned_on": {
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "title": "Turned On",
+            "type": "array"
+          }
+        },
+        "required": [
+          "occurred_at",
+          "actor_user_id",
+          "actor_name",
+          "target_user_id",
+          "target_name",
+          "turned_on",
+          "turned_off",
+          "area",
+          "area_enabled"
+        ],
+        "title": "AccessEvent",
+        "type": "object"
+      },
+      "AccessEventPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AccessEvent"
+            },
+            "maxItems": 50,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AccessEventPage",
+        "type": "object"
+      },
+      "AccessPeoplePage": {
+        "additionalProperties": false,
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ]
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AccessPerson"
+            },
+            "maxItems": 50,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/AccessWarningOut"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "version",
+          "counts",
+          "warnings"
+        ],
+        "title": "AccessPeoplePage",
+        "type": "object"
+      },
+      "AccessPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "custom": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom",
+            "type": "array"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "included": {
+            "additionalProperties": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "propertyNames": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ]
+            },
+            "title": "Included",
+            "type": "object"
+          },
+          "is_owner": {
+            "title": "Is Owner",
+            "type": "boolean"
+          },
+          "manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Id"
+          },
+          "on": {
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "title": "On",
+            "type": "array"
+          },
+          "team_size": {
+            "minimum": 0.0,
+            "title": "Team Size",
+            "type": "integer"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "display_name",
+          "employee_id",
+          "department",
+          "manager_id",
+          "team_size",
+          "is_owner",
+          "on",
+          "included",
+          "custom"
+        ],
+        "title": "AccessPerson",
+        "type": "object"
+      },
+      "AccessPersonResult": {
+        "additionalProperties": false,
+        "properties": {
+          "outcome": {
+            "enum": [
+              "saved",
+              "unchanged",
+              "refused"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "outcome"
+        ],
+        "title": "AccessPersonResult",
+        "type": "object"
+      },
       "AccessSave": {
         "additionalProperties": false,
         "properties": {
@@ -38,6 +530,90 @@
           "workflows"
         ],
         "title": "AccessSave",
+        "type": "object"
+      },
+      "AccessWarningOut": {
+        "additionalProperties": false,
+        "description": "Names are resolved by the server; the page writes the sentence.",
+        "properties": {
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "employee_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Name"
+          },
+          "kind": {
+            "enum": [
+              "no_approver",
+              "no_manager",
+              "no_payroll_reviewer",
+              "manager_without_team",
+              "prepares_and_reviews"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "manager_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Name"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "user_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Name"
+          }
+        },
+        "required": [
+          "kind",
+          "user_id",
+          "employee_id",
+          "user_name",
+          "employee_name",
+          "manager_name"
+        ],
+        "title": "AccessWarningOut",
         "type": "object"
       },
       "ActionIn": {
@@ -13403,6 +13979,277 @@
           }
         },
         "summary": "Events"
+      }
+    },
+    "/console/v1/hr/access/changes": {
+      "post": {
+        "operationId": "access_changes_console_v1_hr_access_changes_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessChanges"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessChangeResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Access Changes",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/access/people": {
+      "get": {
+        "operationId": "access_people_console_v1_hr_access_people_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "team",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Team"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "directory",
+                    "own_requests",
+                    "approves_team",
+                    "hr_team",
+                    "recruitment",
+                    "attendance",
+                    "payroll_prepare",
+                    "payroll_review"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reports_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reports To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessPeoplePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Access People",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/access/recent": {
+      "get": {
+        "operationId": "access_recent_console_v1_hr_access_recent_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessEventPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Access Recent",
+        "tags": [
+          "HR"
+        ]
       }
     },
     "/console/v1/hr/agents": {

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { hrClient, type HrContext } from "@/lib/hr-api";
+import { HrAccessPage } from "./HrAccessPage";
 import { HrAssistant } from "./HrAssistant";
 import { action, field, secondary, Notice, Panel } from "./ui";
 
@@ -62,6 +63,8 @@ export function HrAutomation({ tenant, context, readonly }: { tenant: string; co
   const newEmployee = useRef(crypto.randomUUID());
   const ruleId = useRef(crypto.randomUUID());
   const [liveContext, setLiveContext] = useState<HrContext | null>(null);
+  const [advanced, setAdvanced] = useState(false);
+  const advancedRef = useRef<HTMLDetailsElement>(null);
   const effective = liveContext ?? context;
   const owner = effective?.client_owner ?? false;
   async function run(task: () => Promise<void>) {
@@ -115,6 +118,12 @@ export function HrAutomation({ tenant, context, readonly }: { tenant: string; co
   </nav>{message && <Notice>{message}</Notice>}{error && <Notice error>{error}. Check saved records before retrying an uncertain write.</Notice>}
     {section === "assistant" && <HrAssistant tenant={tenant} readonly={readonly} />}
     {section === "setup" && owner && <>
+      <HrAccessPage tenant={tenant} readonly={readonly} onAdvanced={() => {
+        setAdvanced(true); window.requestAnimationFrame(() => advancedRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+      }} />
+      <details ref={advancedRef} className="space-y-5" open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}>
+      <summary className="cursor-pointer text-base font-semibold">Advanced</summary>
+      <div className="mt-5 space-y-5">
       <label className="block text-sm">Employee to edit<select className={`${field} mt-1`} value={editing} onChange={event => setEditing(event.target.value)}>
         <option value="">Create employee</option>{employeeOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
       <Form key={editing || "new"} title="Employee" disabled={busy || readonly} fields={[
@@ -170,6 +179,8 @@ export function HrAutomation({ tenant, context, readonly }: { tenant: string; co
         { name: "area", label: "Private capability", options: [["recruitment", "CV intake, notes and interviews"], ["attendance", "Attendance import and shifts"], ["payroll", "Private payroll records"]] },
         { name: "enabled", label: "Access decision", options: [["true", "Grant explicitly"], ["false", "Revoke"]] }]}
         save={data => save({ operation: "private_access.save", user_id: value(data, "user"), area: value(data, "area"), enabled: value(data, "enabled") === "true" })} />
+      </div>
+      </details>
     </>}
     {section === "recruitment" && <>
       <Form title="Consented CV intake" disabled={busy || readonly} fields={[ref("name", "Candidate display name"), ref("evidence", "Recorded consent evidence reference"),
