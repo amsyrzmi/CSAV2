@@ -1,6 +1,6 @@
 # TikTok Shop connect, orders and products (Project 1) design
 
-Date: 27 Oct 2026. Lane A. Branch `feat/tiktok-shop-connect`.
+Date: 27 Oct 2026. Approved by the owner 28 Oct 2026. Its own track, separate from lane A's A2. Branch `feat/tiktok-shop-connect`, based on main `225bfd2`.
 Follow-on: Project 2, the TikTok chat channel. It is designed separately and reuses everything here.
 
 ## 1. Intent
@@ -88,8 +88,8 @@ These would make this a failure even if it technically worked:
 - Every outbound TikTok call in tests uses `httpx.MockTransport`.
 
 **Program rules** ([client growth program](2026-10-27-client-growth-program-design.md) §5, §9):
-- Lane A migration numbers are `0471`–`0479`. `0470` is used by WhatsApp.
-- `EXPECTED_SCHEMA_VERSION` is set at merge to the highest merged version. Lane B is on `0480`.
+- TikTok has its own migration range, `0490`–`0499`, so it never collides with lane A (`0470`–`0479`, A2 support refinements) or lane B (`0480`–`0489`). The first migration also adds this range to `db/migrations/README.md`.
+- `EXPECTED_SCHEMA_VERSION` is set at merge to the highest merged version. Main is on `0480` as of `225bfd2`.
 - A new console router is registered in `scripts/export_console_openapi.py`, and `docs/console_openapi.json` is regenerated as the last commit.
 - Do not touch `csa/console/packages.py`. The one owner-sanctioned exception is setting `marketplaces` to `sellable=True`, along with the test in `tests/test_console_services.py` that asserts it is refused.
 - UI text follows `docs/WRITING_GUIDE.md`.
@@ -247,7 +247,7 @@ Connecting hands over the shop's data, so it is an admin act.
   - Rows that do have a verified grant are kept. None are expected, since the M6B flow was never wired.
   - A store that is needed again is connected fresh through the new flow.
 
-### 6.3 Data model (migrations 0471+)
+### 6.3 Data model (migrations 0490+)
 
 **Orders.** These go into the existing `public.orders` and `public.order_items` tables.
 - `channel='tiktok_shop'`.
@@ -448,7 +448,7 @@ Reconnecting the same shop within 30 days resumes, with a catch-up from the curs
 
 ## 8. Rollout
 
-1. Merge with migrations `0471+`. Set the expected schema version to the highest merged version.
+1. Merge with migrations `0490+`. Set the expected schema version to the highest merged version.
 2. On staging:
    1. Run `tiktok-defaults`.
    2. Run `migrate`.
