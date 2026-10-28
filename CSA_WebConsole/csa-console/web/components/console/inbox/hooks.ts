@@ -36,6 +36,6 @@ export function useMediaQuery(query: string): boolean {
 }
 
 /** Three panes from here (spec 7.2); below it the customer card is a slide-over. */
-export const WIDE_QUERY = "(min-width: 1100px)";
+export const WIDE_QUERY = "(min-width: 68.75rem)"; // 1100 px, matching the CSS `min-[68.75rem]`
 /** Below `md`: the list and the thread are separate full-width views. */
 export const PHONE_QUERY = "(max-width: 767.98px)";

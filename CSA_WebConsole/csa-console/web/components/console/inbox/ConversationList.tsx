@@ -69,7 +69,7 @@ export function ConversationList({
   const hintId = useId();
   const short = [...search.trim()].length === 1;
   const showRows = !status.forbidden && items.length > 0;
-  return <section aria-labelledby={`${searchId}-title`} className="flex min-h-0 min-w-0 flex-col">
+  return <section aria-labelledby={`${searchId}-title`} className="flex min-h-0 min-w-0 flex-1 flex-col">
     <div className="space-y-3 border-b border-[#E8EEF8] p-3">
       <h2 id={`${searchId}-title`} className="text-base font-semibold">Conversations</h2>
       <div>
@@ -77,7 +77,7 @@ export function ConversationList({
         <div className="relative">
           <Search aria-hidden size={16} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-500" />
           <input id={searchId} type="search" data-testid="inbox-search" className={`${field} pl-9`}
-            value={search} maxLength={64} autoComplete="off" placeholder="Name, @username or phone"
+            value={search} maxLength={64} autoComplete="off" placeholder="Name or phone"
             aria-describedby={short ? hintId : undefined} onChange={(event) => onSearch(event.target.value)} />
         </div>
         {short && <p id={hintId} className="mt-1 text-xs text-ink-600">Type at least two characters to search.</p>}
@@ -87,18 +87,19 @@ export function ConversationList({
           const pressed = view === chip.view;
           return <button key={chip.view} type="button" data-testid={chip.testId} aria-pressed={pressed}
             onClick={() => onView(chip.view)}
-            className={`inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 text-xs pointer-coarse:min-h-11 ${pressed
-              ? "border-[var(--fs-primary)] bg-[var(--fs-primary)] font-semibold text-white"
+            className={`inline-flex min-h-8 items-center gap-1 rounded-full border px-2.5 pointer-coarse:min-h-11 ${pressed
+              ? "border-[var(--fs-primary)] bg-[var(--fs-primary)] text-white"
               : "border-[#D8E1F0] bg-white text-ink-700 hover:border-[var(--fs-primary)]"}`}>
-            {chip.label}
+            {/* Sized on a span: the tokens' unlayered `font: inherit` on buttons beats utilities. */}
+            <span className={`text-xs ${pressed ? "font-semibold" : "font-medium"}`}>{chip.label}</span>
             {chip.view === "review" && <span key={nudge} data-testid="inbox-needs-review-count"
               aria-label={reviewCount === null ? "count loading" : undefined}
-              className={`inline-block rounded-full bg-[#FFF1CC] px-1.5 font-semibold text-[#854D0E] ${nudge > 0 ? "fs-nudge" : ""}`}>
+              className={`inline-block rounded-full bg-[#FFF1CC] px-1.5 text-xs font-semibold text-[#854D0E] ${nudge > 0 ? "fs-nudge" : ""}`}>
               {reviewCount ?? "–"}</span>}
           </button>;
         })}
       </div>
-      <label className="block text-xs font-medium text-ink-700">Channel
+      <label className="block"><span className="text-xs font-medium text-ink-700">Channel</span>
         <select className={`${field} mt-1`} value={channel} data-testid="inbox-channel-filter"
           onChange={(event) => onChannel(event.target.value as ChannelFilter)}>
           <option value="">All channels</option>

@@ -72,10 +72,10 @@ function History({ id, query, revision, now, actions, onView }: {
   const history = usePages<Approval>(
     approvalsPath({ tenantQuery: query, conversationId: id, includeHandled: true }), pages, revision);
   const handled = history.items.filter((approval) => approval.status !== "pending");
-  return <div className="mt-3 space-y-3" aria-live="polite">
-    {history.error && <p className="text-xs text-[var(--fs-danger)]">We could not load the reply history. We will keep trying.</p>}
-    {!history.loaded && !history.error && <p className="text-xs text-ink-700">Loading reply history…</p>}
-    {history.loaded && handled.length === 0 && <p className="text-xs text-ink-700">No handled replies yet.</p>}
+  return <div className="mt-3 space-y-3">
+    <p aria-live="polite" className={`text-xs ${history.error ? "text-[var(--fs-danger)]" : "text-ink-700"}`}>
+      {history.error ? "We could not load the reply history. We will keep trying."
+        : !history.loaded ? "Loading reply history…" : handled.length === 0 ? "No handled replies yet." : ""}</p>
     {handled.map((approval) => <ReviewCard key={approval.id} approval={approval} now={now} blocked={actions.blocked}
       onPropose={(decision) => actions.propose(approval, decision)} onEdit={(text) => actions.edit(approval, text)}
       onView={onView} />)}

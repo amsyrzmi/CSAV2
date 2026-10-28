@@ -47,7 +47,7 @@ export function ReviewCard({ approval, now, blocked, onPropose, onEdit, onView }
       event.preventDefault();
       if (window.confirm("Queue this edited reply for delivery?")) void onEdit(text);
     }}>
-      <label className="block text-sm font-medium">Replacement reply
+      <label className="block"><span className="text-sm font-medium">Replacement reply</span>
         <textarea className={`${field} mt-1 h-28 py-2`} value={text} maxLength={2000} disabled={blocked}
           onChange={(event) => setText(event.target.value)} required />
       </label>

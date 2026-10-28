@@ -24,7 +24,8 @@ export function InboxWorkspace({ me }: { me: Me }) {
   return <>
     <Heading title="Customer inbox" description="Conversations your customers start, with replies waiting for your review." />
     <Notice>Take over a conversation before you reply. The assistant stays paused until you release it.
-      A reply you queue is sent when delivery succeeds. We hide common personal details in messages.</Notice>
+      Queued replies still have to be delivered. Each reply shows its delivery status.
+      We hide common personal details in messages.</Notice>
     {error && <Notice error>{error}</Notice>}
     {platform && <label className="my-5 block">Tenant
       <select className={field} value={selected} onChange={(event) => setSelected(event.target.value)}>

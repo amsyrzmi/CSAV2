@@ -87,20 +87,23 @@ export function Thread({
     <header className={`flex flex-col gap-2 border-b border-[#D8E1F0] px-3 py-2.5 ${motion
       ? "transition-[background-color,box-shadow] duration-200 ease-(--fs-ease-out)" : ""} ${muted
       ? "bg-[#EEF1F8] shadow-[inset_0_4px_0_#15203A]" : "bg-white"}`} data-room={muted ? "staff" : "assistant"}>
-      <div className="flex min-w-0 items-center gap-2">
+      {/* Phone: Back and View details on one row, the customer on the next. */}
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         <button type="button" className={`${secondary} shrink-0 px-2.5 md:hidden`} onClick={onBack}
           aria-label="Back to conversations" disabled={actions.pending !== null}>
           <ArrowLeft aria-hidden size={16} />Back</button>
-        <CustomerAvatar id={id} name={contact.display_name} size={40} />
-        <div className="min-w-0 flex-1">
-          <h2 id={`thread-${id}-title`} className="truncate text-base font-semibold">{title}</h2>
-          <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-700">
-            {shown && <ChannelBadge channel={shown.channel} testId="inbox-thread-channel" />}
-            <span>{muted === null ? "Checking who is replying" : muted ? "Staff has taken over" : "The assistant is handling this"}</span>
-          </p>
-        </div>
         <button ref={detailsRef} type="button" data-testid="inbox-details-button" aria-haspopup="dialog"
-          className={`${secondary} shrink-0 min-[1100px]:hidden`} onClick={onDetails}>View details</button>
+          className={`${secondary} ml-auto shrink-0 md:order-last min-[68.75rem]:hidden`} onClick={onDetails}>View details</button>
+        <div className="flex min-w-0 basis-full items-center gap-2 md:flex-1 md:basis-0">
+          <CustomerAvatar id={id} name={contact.display_name} size={40} />
+          <div className="min-w-0 flex-1">
+            <h2 id={`thread-${id}-title`} className="truncate text-base font-semibold">{title}</h2>
+            <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-700">
+              {shown && <ChannelBadge channel={shown.channel} testId="inbox-thread-channel" />}
+              <span>{muted === null ? "Checking who is replying" : muted ? "Staff has taken over" : "The assistant is handling this"}</span>
+            </p>
+          </div>
+        </div>
       </div>
       {current && <div className="flex flex-wrap items-center gap-2">
         {current.human_muted && current.ai_muted_until && <>
@@ -142,14 +145,14 @@ export function Thread({
       <div aria-live="polite" className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
         {unseen > 0 && <button type="button" data-testid="inbox-new-messages-pill" onClick={() => toBottom(motion)}
           className={`pointer-events-auto inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--fs-primary)] px-3.5 text-xs font-semibold text-white shadow-[var(--fs-shadow-popover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] ${motion ? "fs-fade" : ""}`}>
-          <ArrowDown aria-hidden size={14} />{newMessagesText(unseen)}</button>}
+          <ArrowDown aria-hidden size={14} /><span className="text-xs font-semibold">{newMessagesText(unseen)}</span></button>}
       </div>
     </div>
     {feedback}
     {current?.human_muted
       ? <form key="reply" className={`border-t border-[#D8E1F0] bg-white p-3 ${roomMotion}`}
         onSubmit={(event) => { event.preventDefault(); void act("reply"); }}>
-        <label className="block text-sm font-medium">Human reply
+        <label className="block"><span className="text-sm font-medium">Human reply</span>
           <textarea className={`${field} mt-1 h-24 py-2`} value={text} maxLength={2000} disabled={blocked}
             onChange={(event) => setText(event.target.value)} required />
         </label>

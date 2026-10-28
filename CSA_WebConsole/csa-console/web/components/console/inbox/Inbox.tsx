@@ -137,7 +137,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const row = items.find((item) => item.id === selected);
   return <div ref={rootRef} data-motion={motion ? "on" : "off"} className="mt-6 min-w-0 space-y-4">
     {!selected && <Feedback actions={actions} framed={false} />}
-    <div className="grid min-w-0 gap-3 md:h-[min(46rem,calc(100dvh-5rem))] md:grid-cols-[minmax(13rem,230px)_minmax(0,1fr)] min-[1100px]:grid-cols-[230px_minmax(0,1fr)_190px]">
+    {/* Breakpoints in rem like `md`: Tailwind cannot order a px variant against a rem one. */}
+    <div className="grid min-w-0 gap-3 md:h-[min(46rem,calc(100dvh-5rem))] md:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[14.5rem_minmax(0,1fr)_12rem]">
       <div className={`${PANE} ${selected && threadOpen ? "hidden md:flex" : "flex"}`}>
         <ConversationList items={items} selected={selected} blocked={actions.blocked} now={now}
           status={{
@@ -155,13 +156,13 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
       {selected ? <OpenConversation key={selected} id={selected} row={row} query={query} revision={actions.revision}
         actions={actions} now={now} motion={motion} wide={wide} cardHost={cardHost}
         threadClass={`${PANE} ${threadOpen ? "flex h-[calc(100dvh-1.5rem)] md:h-auto" : "hidden md:flex"}`}
-        cardClass="card hidden min-h-0 min-w-0 overflow-y-auto min-[1100px]:block"
+        cardClass="card hidden min-h-0 min-w-0 overflow-y-auto min-[68.75rem]:block"
         feedback={<Feedback actions={actions} framed />} onBack={back}
         onDetails={() => setDetailsOpen(true)} onCloseDetails={() => setDetailsOpen(false)} detailsRef={detailsRef} />
         : <>
           <div className={`${PANE} hidden items-center justify-center p-6 text-center text-sm text-ink-700 md:flex`}>
             Select a conversation to read it.</div>
-          <div className="card hidden p-4 text-center text-sm text-ink-700 min-[1100px]:block">
+          <div className="card hidden p-4 text-center text-sm text-ink-700 min-[68.75rem]:block">
             Customer details appear here.</div>
         </>}
     </div>
