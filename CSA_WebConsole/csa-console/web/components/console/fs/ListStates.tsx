@@ -35,6 +35,7 @@ export function ListState({
   onRetry,
   onLoadOlder,
   connectHref,
+  message: override,
 }: {
   kind: ListStateKind;
   variant?: "block" | "banner";
@@ -42,8 +43,14 @@ export function ListState({
   onLoadOlder?: () => void;
   /** Where "Connect WhatsApp" goes. Null or missing for roles that cannot connect a number. */
   connectHref?: string | null;
+  /**
+   * Forbidden only: the server's own plain-words refusal (for example an inactive service
+   * package) in place of the default no-access copy. Still no retry.
+   */
+  message?: string;
 }) {
   const testId = `inbox-list-state-${kind}`;
+  const text = (k: Exclude<ListStateKind, "loading">) => (k === "forbidden" && override ? override : message(k));
 
   if (kind === "loading") {
     return (
@@ -71,7 +78,7 @@ export function ListState({
           color: failed ? "var(--fs-danger)" : "var(--fs-text)",
         }}
       >
-        <p>{message(kind)}</p>
+        <p>{text(kind)}</p>
         {actionFor(kind, secondary, onRetry, onLoadOlder)}
       </div>
     );
@@ -95,7 +102,7 @@ export function ListState({
         className="max-w-xs text-sm"
         style={{ color: kind === "forbidden" ? "var(--fs-text)" : "var(--fs-text-secondary)" }}
       >
-        {message(kind)}
+        {text(kind)}
       </p>
       {kind === "empty" ? (
         typeof connectHref === "string" ? (

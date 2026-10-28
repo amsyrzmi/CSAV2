@@ -50,6 +50,8 @@ const CHIPS: { view: View; label: string; testId: string }[] = [
 
 export type ListStatus = {
   loaded: boolean; error: string; forbidden: boolean; partial: boolean; nextCursor: boolean;
+  /** The server's plain-words refusal to show instead of the default no-access copy. */
+  refusal: string | null;
 };
 
 export function ConversationList({
@@ -110,7 +112,7 @@ export function ConversationList({
     </div>
     <div className="min-h-0 flex-1 md:overflow-y-auto" data-inbox-list-scroll>
       <div aria-live="polite">
-        {status.forbidden ? <ListState kind="forbidden" />
+        {status.forbidden ? <ListState kind="forbidden" message={status.refusal ?? undefined} />
           : !status.loaded && !status.error ? <ListState kind="loading" />
           : !status.loaded ? <ListState kind="unavailable" onRetry={onRetry} />
           : status.error ? <div className="p-3"><ListState kind={status.partial ? "partial" : "unavailable"} variant="banner"

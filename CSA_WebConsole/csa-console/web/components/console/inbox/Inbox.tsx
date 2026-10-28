@@ -62,7 +62,9 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const conversations = usePages<Conversation, ConversationPage>(inboxListQuery({
     tenantQuery: query, channel, needsReview: view === "review", sender: SENDER[view], q,
   }), pages, actions.revision);
-  const items = conversations.forbidden ? [] : conversations.items;
+  // A 403 never leaves stale rows: a role refusal and an inactive package both clear them.
+  const refused = conversations.forbidden || conversations.packageInactive;
+  const items = refused ? [] : conversations.items;
   const searching = [...q.trim()].length >= 2;
   const filtered = channel !== "" || view !== "all";
 
@@ -142,7 +144,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
       <div className={`${PANE} ${selected && threadOpen ? "hidden md:flex" : "flex"}`}>
         <ConversationList items={items} selected={selected} blocked={actions.blocked} now={now}
           status={{
-            loaded: conversations.loaded, error: conversations.error, forbidden: conversations.forbidden,
+            loaded: conversations.loaded, error: conversations.error, forbidden: refused,
+            refusal: conversations.packageInactive ? conversations.error : null,
             partial: !!conversations.error && pages > 1 && items.length > 0 && conversations.next_cursor !== null,
             nextCursor: conversations.next_cursor !== null,
           }}

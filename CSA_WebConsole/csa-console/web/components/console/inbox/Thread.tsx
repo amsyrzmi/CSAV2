@@ -20,7 +20,9 @@ export function Thread({
   feedback, onBack, onDetails, detailsRef, logRef,
 }: {
   id: string; row: Conversation | undefined; current: Conversation | null; detailError: string;
-  messages: { items: Message[]; loaded: boolean; error: string; next_cursor: string | number | null };
+  messages: {
+    items: Message[]; loaded: boolean; error: string; status: number | null; next_cursor: string | number | null;
+  };
   onOlder: () => void; pending: Approval[]; now: number; motion: boolean; query: string;
   actions: InboxActions; feedback: ReactNode; onBack: () => void; onDetails: () => void;
   detailsRef: RefObject<HTMLButtonElement | null>; logRef: RefObject<HTMLDivElement | null>;
@@ -120,7 +122,9 @@ export function Thread({
       </div>}
     </header>
     {(detailError || messages.error) && <div className="border-b border-[#D8E1F0] p-3">
-      <Notice error>We could not refresh this conversation. We will keep trying every few seconds.</Notice></div>}
+      {/* A refusal (403) carries the server's plain words; retrying will not change it. */}
+      <Notice error>{messages.status === 403 && messages.error ? messages.error
+        : "We could not refresh this conversation. We will keep trying every few seconds."}</Notice></div>}
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={logRef} role="log" aria-label={`Messages with ${title}`} tabIndex={0} onScroll={readPosition}
         className="min-h-0 flex-1 overflow-y-auto bg-linear-to-b from-[#EEF3FC] to-[#E6EEFB] px-3 py-3 focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)]">
