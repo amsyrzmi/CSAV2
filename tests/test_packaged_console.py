@@ -1539,6 +1539,21 @@ async def test_packaged_customer_inbox_browser_acceptance(
             {"path": path, "body": body, "csrf": csrf},
         )
 
+    async def expect_empty_inbox(page: Page, *, connect: bool) -> None:
+        empty = page.get_by_test_id("inbox-list-state-empty")
+        await empty.get_by_text("No conversations yet", exact=True).wait_for()
+        await empty.get_by_text(
+            "Conversations from your customers will appear here. Connect WhatsApp to get started.",
+            exact=True,
+        ).wait_for()
+        if connect:
+            await page.get_by_test_id("inbox-connect-whatsapp").wait_for()
+        else:
+            await empty.get_by_text(
+                "Ask your administrator to connect WhatsApp.", exact=True
+            ).wait_for()
+            assert await page.get_by_test_id("inbox-connect-whatsapp").count() == 0
+
     base = f"/console/v1/inbox/conversations/{conversation}"
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -1591,10 +1606,12 @@ async def test_packaged_customer_inbox_browser_acceptance(
             await staff.goto(f"{w.origin}/portal/inbox")
             # The assistant dock button only; its turns are not driven (the planner is off).
             await staff.get_by_test_id("assistant-open").wait_for()
-            await staff.get_by_role(
-                "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
-            ).click()
-            await staff.get_by_text("Question from [EMAIL_0]", exact=True).wait_for()
+            # Rows show the customer, not the id; the row button carries the conversation id.
+            inbox_row = f'[data-conversation-id="{conversation}"]'
+            await staff.locator(inbox_row).click()
+            # The row repeats the last message as its preview, so read the thread itself.
+            thread = staff.get_by_test_id("inbox-thread")
+            await thread.get_by_text("Question from [EMAIL_0]", exact=True).wait_for()
             assert await staff.get_by_text("synthetic@example.test", exact=False).count() == 0
             assert (
                 await fetch(
@@ -1611,30 +1628,26 @@ async def test_packaged_customer_inbox_browser_acceptance(
                 "status"
             ] == 403
             await staff.get_by_role("button", name="Take over", exact=True).click()
-            await staff.get_by_text(
-                "Human support owns this conversation. AI paused.", exact=True
-            ).wait_for()
+            await thread.get_by_text("Staff has taken over", exact=True).wait_for()
             await staff.get_by_label("Human reply", exact=True).fill(reply_text)
             await staff.get_by_role("button", name="Queue reply", exact=True).click()
             await staff.get_by_text("Outcome uncertain.", exact=False).wait_for()
-            await staff.get_by_role("list").get_by_text(reply_text, exact=True).wait_for()
+            await thread.get_by_role("list").get_by_text(reply_text, exact=True).wait_for()
             await staff.get_by_role("button", name="Retry the same action", exact=True).click()
             await staff.get_by_text(
                 "Reply queued. Delivery status appears in the conversation.", exact=True
             ).wait_for()
             assert lost_ack and len(replies) == 2 and replies[0] == replies[1]
             assert replies[0] is not None and json.loads(replies[0])["request_key"]
-            assert await staff.get_by_role("list").get_by_text(reply_text, exact=True).count() == 1
+            assert await thread.get_by_role("list").get_by_text(reply_text, exact=True).count() == 1
             await staff.get_by_text("Staff · queued", exact=True).wait_for()
             await staff.get_by_role("button", name="Release to AI", exact=True).click()
-            await staff.get_by_text("AI owns this conversation.", exact=True).wait_for()
+            await thread.get_by_text("The assistant is handling this", exact=True).wait_for()
             assert await staff.get_by_label("Human reply", exact=True).count() == 0
             await staff.reload()
-            await staff.get_by_role(
-                "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
-            ).click()
-            await staff.get_by_text(reply_text, exact=True).wait_for()
-            await staff.get_by_text("AI owns this conversation.", exact=True).wait_for()
+            await staff.locator(inbox_row).click()
+            await thread.get_by_text(reply_text, exact=True).wait_for()
+            await thread.get_by_text("The assistant is handling this", exact=True).wait_for()
 
             sandbox = await fetch(
                 staff, "/console/v1/chat/conversations", {"request_key": str(uuid4())}
@@ -1675,15 +1688,15 @@ async def test_packaged_customer_inbox_browser_acceptance(
                         )
                     )["status"] == 403
                 elif name == "foreign":
-                    await member.get_by_text(
-                        "No customer conversations found.", exact=True
-                    ).wait_for()
+                    await expect_empty_inbox(member, connect=False)
                     assert (await fetch(member, f"{base}/messages"))["status"] == 404
                 else:
-                    await member.get_by_role(
-                        "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
-                    ).click()
-                    await member.get_by_text(reply_text, exact=True).wait_for()
+                    await member.locator(inbox_row).click()
+                    await (
+                        member.get_by_test_id("inbox-thread")
+                        .get_by_text(reply_text, exact=True)
+                        .wait_for()
+                    )
 
             platform = await new_page("platform")
             await platform.goto(f"{w.origin}/inbox")
@@ -1691,12 +1704,14 @@ async def test_packaged_customer_inbox_browser_acceptance(
             assert await platform.get_by_test_id("assistant-open").count() == 0
             assert (await fetch(platform, "/console/v1/inbox/conversations"))["status"] == 400
             await platform.get_by_label("Tenant").select_option(tenants[0])
-            await platform.get_by_role(
-                "button", name=f"{str(conversation)[:8]} · Telegram", exact=False
-            ).click()
-            await platform.get_by_text(reply_text, exact=True).wait_for()
+            await platform.locator(inbox_row).click()
+            await (
+                platform.get_by_test_id("inbox-thread")
+                .get_by_text(reply_text, exact=True)
+                .wait_for()
+            )
             await platform.get_by_label("Tenant").select_option(tenants[1])
-            await platform.get_by_text("No customer conversations found.", exact=True).wait_for()
+            await expect_empty_inbox(platform, connect=True)
             assert await platform.get_by_text(reply_text, exact=True).count() == 0
 
             approval_ids: dict[str, int] = {}
@@ -1728,12 +1743,13 @@ async def test_packaged_customer_inbox_browser_acceptance(
                     assert row is not None
                     approval_ids[decision] = row[0]
             for decision, approval_id in approval_ids.items():
-                # Approve and reject are confirmed on the shared proposal card, which repeats
-                # the draft text; match the approval's own card only.
-                card = staff.locator("article:not([data-testid='proposal-card'])").filter(
+                # Pending held replies are review cards inside the open thread. Approve and
+                # reject are confirmed on the shared proposal card, which repeats the draft
+                # text; match the approval's own card only.
+                card = thread.locator("article:not([data-testid='proposal-card'])").filter(
                     has=staff.get_by_text(f"Synthetic {decision} draft", exact=True)
                 )
-                await card.get_by_role("button", name="View conversation", exact=True).wait_for()
+                await card.wait_for()
                 if decision == "expire":
                     async with await psycopg.AsyncConnection.connect(
                         migrated_dsn, autocommit=True
@@ -1742,9 +1758,17 @@ async def test_packaged_customer_inbox_browser_acceptance(
                             "UPDATE approvals SET expires_at=now()-interval '1 second' WHERE id=%s",
                             (approval_id,),
                         )
-                    await card.get_by_role("button", name="Approve", exact=True).click()
-                    await staff.get_by_test_id("proposal-confirm").click()
-                    await staff.get_by_text("Approval expired.", exact=False).wait_for()
+                    await card.get_by_text(
+                        "Nobody decided in time, so this reply will not be sent.", exact=True
+                    ).wait_for(timeout=60_000)
+                    assert await card.get_by_role("button", name="Approve", exact=True).count() == 0
+                    expired = await fetch(
+                        staff,
+                        f"/console/v1/inbox/approvals/{approval_id}/decide",
+                        {"request_key": str(uuid4()), "decision": "approve"},
+                    )
+                    assert expired["status"] == 200
+                    assert expired["body"]["outcome"] == "expired"
                 elif decision == "edit":
                     await card.get_by_role("button", name="Edit", exact=True).click()
                     await card.get_by_role("textbox").fill("Synthetic edited answer")
