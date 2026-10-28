@@ -1,12 +1,24 @@
 -- Applies one subscription_action to a row the caller locked (subscription_lock.sql) at
 -- %(version)s; "now" is the transaction's now(). immediate_plan / scheduled_plan say whether a
 -- change_plan takes effect now (plan, price and currency replaced, pending cleared) or later
--- (pending_plan and pending_effective_at set). A resume whose renewal has lapsed, or that has
--- no renewal date at all, renews one billing interval of the current plan after now on the
--- tenant's calendar (clients.timezone), the arithmetic subscription_insert.sql uses for a default
--- renewal.
+-- (pending_plan and pending_effective_at set).
+-- renewal_anchor is the instant renewals are counted from (subscription_next_renewal), so they keep
+-- the cycle's day of the month:
+--   extend_renewal         anchor = the new renews_at;
+--   resume, lapsed or no   anchor = now(), and renews_at is one billing interval of the current plan
+--     renewal date           after it on the tenant's calendar (clients.timezone); a resume that is
+--                            not lapsed changes neither;
+--   immediate change_plan  anchor = the current renews_at (NULL when there is none; renews_at is
+--     to another interval    unchanged) when the target plan's billing interval differs from the
+--                            current plan's, a missing plan row counting as monthly; the same
+--                            interval, and every other action, leave the anchor alone.
 WITH tenant AS (
     SELECT timezone FROM public.clients WHERE id = %(client_id)s
+), current_plan AS (
+    SELECT coalesce((SELECT p.billing_interval FROM public.plans p
+                      WHERE p.client_id = %(client_id)s AND p.code = s.plan), 'month') AS billing_interval
+    FROM public.subscriptions s
+    WHERE s.client_id = %(client_id)s AND s.id = %(subscription_id)s
 )
 UPDATE public.subscriptions s
 SET status = CASE %(action)s
@@ -26,13 +38,15 @@ SET status = CASE %(action)s
     renews_at = CASE
         WHEN %(action)s = 'extend_renewal' THEN %(renews_at)s::timestamptz
         WHEN %(action)s = 'resume' AND (s.renews_at IS NULL OR s.renews_at < now()) THEN
-            ((now() AT TIME ZONE tenant.timezone)
-             + CASE (SELECT p.billing_interval FROM public.plans p
-                     WHERE p.client_id = s.client_id AND p.code = s.plan)
-                   WHEN 'year' THEN interval '1 year'
-                   ELSE interval '1 month' END)
-            AT TIME ZONE tenant.timezone
+            public.subscription_next_renewal(
+                now(), now(), current_plan.billing_interval, tenant.timezone)
         ELSE s.renews_at END,
+    renewal_anchor = CASE
+        WHEN %(action)s = 'extend_renewal' THEN %(renews_at)s::timestamptz
+        WHEN %(action)s = 'resume' AND (s.renews_at IS NULL OR s.renews_at < now()) THEN now()
+        WHEN %(immediate_plan)s
+             AND coalesce(%(target_interval)s, 'month') <> current_plan.billing_interval THEN s.renews_at
+        ELSE s.renewal_anchor END,
     plan = CASE WHEN %(immediate_plan)s THEN %(plan_code)s ELSE s.plan END,
     price = CASE WHEN %(immediate_plan)s THEN %(price)s::numeric ELSE s.price END,
     currency = CASE WHEN %(immediate_plan)s THEN %(currency)s ELSE s.currency END,
@@ -50,6 +64,6 @@ SET status = CASE %(action)s
         WHEN 'cancel_now' THEN false
         ELSE s.cancel_at_period_end END,
     version = s.version + 1
-FROM tenant
+FROM tenant, current_plan
 WHERE s.client_id = %(client_id)s AND s.id = %(subscription_id)s AND s.version = %(version)s
 RETURNING s.status, s.version, s.renews_at;
