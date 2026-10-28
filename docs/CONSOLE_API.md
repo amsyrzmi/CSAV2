@@ -368,8 +368,8 @@ All paths use `/console/v1/inbox` with the existing tenant-selection query.
 
 | Method/path | Request | Result |
 |---|---|---|
-| `GET /conversations` | `before=UUID`, `limit=1..50` (20 default) | `{items,next_cursor}` |
-| `GET /conversations/{id}` | — | Ownership, mute and version metadata |
+| `GET /conversations` | `before=UUID`, `limit=1..50` (20 default), `channel`, `needs_review=true`, `sender=known\|new`, `q` (2..64 characters) | `{items,next_cursor,needs_review_count}` |
+| `GET /conversations/{id}` | — | Ownership, mute and version metadata, plus `contact` with the full `phone` |
 | `GET /conversations/{id}/messages` | `before=UUID`, `limit=1..100` (50 default) | Bounded redacted text, direction, author and actual delivery status |
 | `GET /approvals` | `before=bigint`, `conversation_id=UUID`, `include_handled=false`, `limit=1..50` | Pending reply approvals; optionally settled history |
 | `POST /conversations/{id}/takeover` | `{request_key: UUID, expected_version: int}` | Audited indefinite human ownership |
@@ -492,6 +492,46 @@ Delivery and statuses:
 - HTTP 429 and Graph codes 130429, 131056, 80007 and 4 retry as `rate_limited`.
 - Inbox conversations carry `channel` (`telegram` or `whatsapp`) and the list accepts
   `?channel=telegram|whatsapp`.
+
+### Inbox read fields, filters, search and order
+
+Each conversation also carries these additive fields (no behaviour change for existing
+clients):
+
+- `contact`: `display_name` (the stored name, or `null` when it is blank or only the
+  contact's own number, as WhatsApp stores when the customer has no profile name),
+  `telegram_username` (`null` until the Telegram username column ships), `phone_masked`
+  (last four digits, for example `••••0148`; `null` when no number is stored), `phone`,
+  `kind` (`customer`) and `known`. `phone` is `null` in list rows and in the results of
+  takeover, release and reply; only `GET /conversations/{id}` returns the full number.
+- `known` is true when the contact has at least one order, at least one subscription,
+  or a non-blank email or address. Otherwise the sender is new.
+- `last_message`: `preview` (first 120 characters of the redacted body, whitespace
+  collapsed; the same text the thread shows) and `at`; `null` when there are no messages.
+- `pending_approvals`: count of the conversation's approvals that are `pending` and not
+  past `expires_at`.
+
+The page also returns `needs_review_count`: the number of conversations in the whole
+tenant with at least one such approval. It ignores `channel`, `needs_review`, `sender`
+and `q`, so a filtered list shows the same chip count.
+
+List filters, all applied on the server across every page and combined with `channel`:
+
+- `needs_review=true`: only conversations with a pending approval that has not expired.
+- `sender=known` or `sender=new`: split by `known` above. Any other value is 422.
+- `q`: search over the contact's name and phone (Telegram @username once the column
+  exists). The text is trimmed, one leading `@` is ignored, and fewer than two characters
+  is 422 `search needs at least two characters`; more than 64 characters is 422. Matching
+  is case-insensitive and substring; `%`, `_` and `\` match only themselves. Phone numbers
+  match on digits only when the text holds two or more digits, so `012 555`,
+  `0125550148` and `+60125550148` agree. Message bodies are never searched. The text is
+  personal data: it is not written to the audit log, and the gateway's access log drops
+  query strings on `/console/` paths.
+
+Order is last activity, newest first: the time of the latest message, or `opened_at`
+when there are no messages, then `id` descending. `before` stays the id of the last
+conversation on the previous page; the server derives its position from that
+conversation's current activity time.
 
 ## Workspace assistant
 

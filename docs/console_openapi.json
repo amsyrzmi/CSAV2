@@ -3649,6 +3649,72 @@
         "title": "InboxApprovalPage",
         "type": "object"
       },
+      "InboxContact": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "known": {
+            "title": "Known",
+            "type": "boolean"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "phone_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone Masked"
+          },
+          "telegram_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Username"
+          }
+        },
+        "required": [
+          "display_name",
+          "telegram_username",
+          "phone_masked",
+          "kind",
+          "known"
+        ],
+        "title": "InboxContact",
+        "type": "object"
+      },
       "InboxConversation": {
         "additionalProperties": false,
         "properties": {
@@ -3672,6 +3738,16 @@
             "title": "Channel",
             "type": "string"
           },
+          "contact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxContact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "human_muted": {
             "title": "Human Muted",
             "type": "boolean"
@@ -3684,6 +3760,16 @@
           "inbox_version": {
             "title": "Inbox Version",
             "type": "integer"
+          },
+          "last_message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxLastMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "opened_at": {
             "format": "date-time",
@@ -3700,6 +3786,11 @@
               }
             ],
             "title": "Owned By"
+          },
+          "pending_approvals": {
+            "default": 0,
+            "title": "Pending Approvals",
+            "type": "integer"
           },
           "status": {
             "title": "Status",
@@ -3729,6 +3820,11 @@
             "title": "Items",
             "type": "array"
           },
+          "needs_review_count": {
+            "default": 0,
+            "title": "Needs Review Count",
+            "type": "integer"
+          },
           "next_cursor": {
             "anyOf": [
               {
@@ -3747,6 +3843,26 @@
           "next_cursor"
         ],
         "title": "InboxConversationPage",
+        "type": "object"
+      },
+      "InboxLastMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview",
+          "at"
+        ],
+        "title": "InboxLastMessage",
         "type": "object"
       },
       "InboxMessage": {
@@ -16107,6 +16223,53 @@
                 }
               ],
               "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "needs_review",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Needs Review",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sender",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "known",
+                    "new"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sender"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
             }
           },
           {

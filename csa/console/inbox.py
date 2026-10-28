@@ -23,12 +23,24 @@ from csa.approval.service import (
 )
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
+from csa.console.inbox_contact import (
+    InboxContact,
+    display_name_or_none,
+    mask_phone,
+    parse_search,
+    preview_text,
+)
 from csa.console.kb_uploads import audit
 from csa.console.services import package_gate
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.staff.ownership import lock_conversation
+
+
+class InboxLastMessage(Contract):
+    preview: str
+    at: datetime
 
 
 class InboxConversation(Contract):
@@ -40,11 +52,15 @@ class InboxConversation(Contract):
     human_muted: bool
     inbox_version: int
     opened_at: datetime
+    contact: InboxContact | None = None
+    last_message: InboxLastMessage | None = None
+    pending_approvals: int = 0
 
 
 class InboxConversationPage(Contract):
     items: list[InboxConversation]
     next_cursor: UUID | None
+    needs_review_count: int = 0
 
 
 class InboxMessage(Contract):
@@ -139,18 +155,56 @@ def inbox_actor(request: Request) -> ConsoleActor:
     return actor
 
 
+def conversation_from_row(row: dict[str, Any], *, full_phone: bool = False) -> InboxConversation:
+    """Build the API shape from an inbox row; the full phone only when `full_phone` is set."""
+    phone = row["phone"]
+    contact = InboxContact(
+        display_name=display_name_or_none(row["full_name"], phone),
+        telegram_username=None,
+        phone_masked=mask_phone(phone),
+        phone=phone if full_phone else None,
+        kind=row["kind"],
+        known=row["known"],
+    )
+    last = (
+        InboxLastMessage(preview=preview_text(row["last_body"]), at=row["last_at"])
+        if row["last_at"] is not None
+        else None
+    )
+    return InboxConversation(
+        id=row["id"],
+        channel=row["channel"],
+        status=row["status"],
+        owned_by=row["owned_by"],
+        ai_muted_until=row["ai_muted_until"],
+        human_muted=row["human_muted"],
+        inbox_version=row["inbox_version"],
+        opened_at=row["opened_at"],
+        contact=contact,
+        last_message=last,
+        pending_approvals=row["pending_approvals"],
+    )
+
+
 async def conversation(
-    conn: AsyncConnection[Any], client_id: UUID, conversation_id: UUID, *, lock: bool = False
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    conversation_id: UUID,
+    *,
+    lock: bool = False,
+    full_phone: bool = False,
 ) -> InboxConversation:
     row = await db.q.fetch_one(
-        "inbox/get_conversation.sql", (client_id, conversation_id), conn=conn
+        "inbox/get_conversation.sql",
+        {"client_id": client_id, "conversation_id": conversation_id},
+        conn=conn,
     )
     if row is None:
         raise HTTPException(404, "customer conversation not found")
     if lock:
         await lock_conversation(conn, client_id, conversation_id)
-        return await conversation(conn, client_id, conversation_id)
-    return InboxConversation.model_validate(row)
+        return await conversation(conn, client_id, conversation_id, full_phone=full_phone)
+    return conversation_from_row(row, full_phone=full_phone)
 
 
 async def replay(
@@ -256,16 +310,38 @@ def build_inbox_router() -> APIRouter:
         before: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=50)] = 20,
         channel: Literal["telegram", "whatsapp"] | None = None,
+        needs_review: bool = False,
+        sender: Literal["known", "new"] | None = None,
+        q: Annotated[str | None, Query(max_length=64)] = None,
     ) -> InboxConversationPage:
+        # The search text is personal data: it is parsed here and never logged or audited.
+        try:
+            search = parse_search(q)
+        except ValueError:
+            raise HTTPException(422, "search needs at least two characters") from None
         async with tx(request.app.state.pool, str(client_id)) as conn:
             rows = await db.q.fetch_all(
                 "inbox/list_conversations.sql",
-                (client_id, channel, channel, before, before, limit + 1),
+                {
+                    "client_id": client_id,
+                    "channel": channel,
+                    "needs_review": needs_review,
+                    "sender": sender,
+                    "like": search.like if search else None,
+                    "digits": search.digits if search else None,
+                    "before": before,
+                    "limit": limit + 1,
+                },
                 conn=conn,
             )
-        items = [InboxConversation.model_validate(row) for row in rows[:limit]]
+            counted = await db.q.fetch_one(
+                "inbox/count_needs_review.sql", {"client_id": client_id}, conn=conn
+            )
+        items = [conversation_from_row(row) for row in rows[:limit]]
         return InboxConversationPage(
-            items=items, next_cursor=items[-1].id if len(rows) > limit else None
+            items=items,
+            next_cursor=items[-1].id if len(rows) > limit else None,
+            needs_review_count=counted["n"] if counted else 0,
         )
 
     @router.get("/conversations/{conversation_id}", response_model=InboxConversation)
@@ -275,7 +351,7 @@ def build_inbox_router() -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> InboxConversation:
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            return await conversation(conn, client_id, conversation_id)
+            return await conversation(conn, client_id, conversation_id, full_phone=True)
 
     @router.get("/conversations/{conversation_id}/messages", response_model=InboxMessagePage)
     async def messages(

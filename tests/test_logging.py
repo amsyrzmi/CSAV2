@@ -178,3 +178,23 @@ def test_telegram_api_and_download_urls_redact_bot_tokens() -> None:
     assert "123:synthetic" not in str(event)
     assert "/getFile" in event["event"]
     assert "/voice/a.oga" in event["exception"]
+
+
+def test_access_log_drops_console_query_strings() -> None:
+    clog.configure_logging(env="ci")
+    access = logging.getLogger("uvicorn.access")
+    stream = StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    access.addHandler(handler)
+    try:
+        fmt = '%s - "%s %s HTTP/%s" %d'
+        console = "/console/v1/inbox/conversations?client_id=c&q=Aisyah"
+        access.info(fmt, "10.0.0.1:5", "GET", console, "1.1", 200)
+        access.info(fmt, "10.0.0.1:5", "GET", "/healthz?probe=1", "1.1", 200)
+    finally:
+        access.removeHandler(handler)
+    text = stream.getvalue()
+    assert "Aisyah" not in text and "client_id" not in text
+    assert '"GET /console/v1/inbox/conversations HTTP/1.1" 200' in text
+    assert "/healthz?probe=1" in text

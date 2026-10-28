@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import httpx
@@ -220,23 +221,45 @@ def path(w: SessionWorld, suffix: str = "") -> str:
     return f"/console/v1/inbox{suffix}?client_id={w.tenants[0]}"
 
 
-async def seed(w: SessionWorld) -> tuple[Envelope, str]:
+async def seed(
+    w: SessionWorld,
+    *,
+    tenant: int = 0,
+    name: str | None = None,
+    phone: str | None = None,
+    email: str | None = None,
+    address: str | None = None,
+    body: str = "Synthetic question",
+    opened_at: datetime | None = None,
+    message_at: datetime | None = None,
+    messages: bool = True,
+) -> tuple[Envelope, str]:
     client, contact, conversation, credential, endpoint, trace = (
-        UUID(w.tenants[0]),
+        UUID(w.tenants[tenant]),
         uuid4(),
         uuid4(),
         uuid4(),
         uuid4(),
         uuid4(),
     )
-    await w.q("INSERT INTO contacts(id,client_id) VALUES (%s,%s)", contact, client)
     await w.q(
-        "INSERT INTO conversations(id,client_id,contact_id,channel,channel_thread) "
-        "VALUES (%s,%s,%s,'telegram',%s)",
+        "INSERT INTO contacts(id,client_id,full_name,phone,email,address) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        contact,
+        client,
+        name,
+        phone,
+        email,
+        address,
+    )
+    await w.q(
+        "INSERT INTO conversations(id,client_id,contact_id,channel,channel_thread,opened_at) "
+        "VALUES (%s,%s,%s,'telegram',%s,COALESCE(%s::timestamptz, now()))",
         conversation,
         client,
         contact,
         str(contact.int),
+        opened_at,
     )
     await w.q(
         "INSERT INTO channel_credentials(id,client_id,channel,access_token) "
@@ -287,21 +310,26 @@ async def seed(w: SessionWorld) -> tuple[Envelope, str]:
             ),
             conn=conn,
         )
-        await db.q.fetch_one(
-            "worker/insert_message.sql",
-            (
-                client,
-                conversation,
-                "inbound",
-                "customer",
-                "Synthetic question",
-                "Synthetic question",
-                Jsonb([]),
-                False,
-                f"{trace}:in",
-                trace,
-            ),
-            conn=conn,
+        if messages:
+            await db.q.fetch_one(
+                "worker/insert_message.sql",
+                (
+                    client,
+                    conversation,
+                    "inbound",
+                    "customer",
+                    body,
+                    body,
+                    Jsonb([]),
+                    False,
+                    f"{trace}:in",
+                    trace,
+                ),
+                conn=conn,
+            )
+    if message_at is not None:
+        await w.q(
+            "UPDATE messages SET created_at=%s WHERE conversation_id=%s", message_at, conversation
         )
     return envelope, str(conversation)
 
@@ -581,3 +609,235 @@ async def test_delivery_lock_waits_before_takeover_and_preserves_human_reply(
             assert (await taking).status_code == 200
     finally:
         await owner.close()
+
+
+async def contact_of(w: SessionWorld, conversation: str) -> UUID:
+    [row] = await w.q("SELECT contact_id FROM conversations WHERE id=%s", conversation)
+    return row["contact_id"]
+
+
+async def listing(w: SessionWorld, query: str = "", *, tenant: int = 0) -> dict[str, Any]:
+    url = f"/console/v1/inbox/conversations?client_id={w.tenants[tenant]}{query}"
+    response = await w.admin.get(url)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def listing_all(w: SessionWorld, query: str = "", *, limit: int = 2) -> list[dict[str, Any]]:
+    """Walk every page of the list with the given filters and return all items in order."""
+    items: list[dict[str, Any]] = []
+    cursor = ""
+    for _ in range(50):
+        page = await listing(w, f"&limit={limit}{query}{cursor}")
+        items.extend(page["items"])
+        if page["next_cursor"] is None:
+            return items
+        cursor = f"&before={page['next_cursor']}"
+    raise AssertionError("pagination did not end")
+
+
+async def test_list_returns_contact_last_message_and_pending_count(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    env, conversation = await seed(w, name="Nur Aisyah", phone="+60125550148")
+    await w.q(
+        "UPDATE messages SET body='Mail synthetic@example.test please',redacted_body=NULL "
+        "WHERE conversation_id=%s",
+        conversation,
+    )
+    await held(w, env)
+    [item] = (await listing(w))["items"]
+    assert item["contact"]["display_name"] == "Nur Aisyah"
+    assert item["contact"]["phone_masked"] == "••••0148"
+    assert item["contact"]["phone"] is None
+    assert item["contact"]["telegram_username"] is None
+    assert item["contact"]["kind"] == "customer" and item["contact"]["known"] is False
+    assert "synthetic@example.test" not in str(item["last_message"])
+    assert item["last_message"]["preview"] == "Mail [EMAIL_0] please"
+    assert item["last_message"]["at"]
+    assert item["pending_approvals"] == 1
+    single = await w.admin.get(path(w, f"/conversations/{conversation}"))
+    assert single.status_code == 200
+    assert single.json()["contact"]["phone"] == "+60125550148"
+    assert single.json()["contact"]["phone_masked"] == "••••0148"
+    assert single.json()["pending_approvals"] == 1
+    # Mutation results use the same conversation shape but never carry the full number.
+    taken = await takeover(w, conversation)
+    assert taken.status_code == 200
+    contact = taken.json()["conversation"]["contact"]
+    assert contact["phone"] is None and contact["phone_masked"] == "••••0148"
+
+
+async def test_known_versus_new_sender(sessions: SessionWorld) -> None:
+    w = sessions
+    base = datetime.now(UTC)
+    _, with_order = await seed(w, opened_at=base)
+    _, with_subscription = await seed(w, opened_at=base)
+    _, with_email = await seed(w, email="buyer@example.test", opened_at=base)
+    _, with_address = await seed(w, address="1 Synthetic Road", opened_at=base)
+    _, name_and_phone = await seed(w, name="Nur Aisyah", phone="+60125550148", opened_at=base)
+    _, blank_fields = await seed(w, email="  ", address="", opened_at=base)
+    client = UUID(w.tenants[0])
+    await w.q(
+        "INSERT INTO orders(id,client_id,contact_id,status,total) VALUES (%s,%s,%s,'confirmed',10)",
+        f"ORD-{uuid4().hex[:8]}",
+        client,
+        await contact_of(w, with_order),
+    )
+    await w.q(
+        "INSERT INTO subscriptions(client_id,contact_id,plan,price,started_at) "
+        "VALUES (%s,%s,'basic',10,now())",
+        client,
+        await contact_of(w, with_subscription),
+    )
+    known = {with_order, with_subscription, with_email, with_address}
+    new = {name_and_phone, blank_fields}
+    everything = await listing_all(w)
+    assert {i["id"]: i["contact"]["known"] for i in everything} == {
+        **dict.fromkeys(known, True),
+        **dict.fromkeys(new, False),
+    }
+    assert {i["id"] for i in await listing_all(w, "&sender=known")} == known
+    assert {i["id"] for i in await listing_all(w, "&sender=new")} == new
+    assert len(await listing_all(w, "&sender=known")) == len(known)
+    response = await w.admin.get(path(w, "/conversations") + "&sender=other")
+    assert response.status_code == 422
+
+
+async def test_needs_review_filter_and_count_ignore_expired(sessions: SessionWorld) -> None:
+    w = sessions
+    live_env, live = await seed(w, name="Live Review")
+    expired_env, expired = await seed(w, name="Expired Review")
+    handled_env, handled = await seed(w, name="Handled Review")
+    _, quiet = await seed(w, name="No Review")
+    await held(w, live_env)
+    expired_approval = await held(w, expired_env)
+    handled_approval = await held(w, handled_env)
+    await w.q(
+        "UPDATE approvals SET expires_at=now()-interval '1 second' WHERE id=%s", expired_approval
+    )
+    await w.q("UPDATE approvals SET status='rejected' WHERE id=%s", handled_approval)
+    page = await listing(w)
+    assert page["needs_review_count"] == 1
+    by_id = {i["id"]: i for i in page["items"]}
+    assert by_id[live]["pending_approvals"] == 1
+    assert by_id[expired]["pending_approvals"] == 0
+    assert by_id[handled]["pending_approvals"] == 0
+    assert by_id[quiet]["pending_approvals"] == 0
+    flagged = await listing_all(w, "&needs_review=true")
+    assert [i["id"] for i in flagged] == [live]
+    assert (await listing(w, "&needs_review=true&limit=1"))["next_cursor"] is None
+    # The count is tenant-wide: no filter changes it, even one that hides every row.
+    for query in ("&channel=whatsapp", "&q=zzzz", "&sender=known", "&needs_review=true&q=Live"):
+        filtered = await listing(w, query)
+        assert filtered["needs_review_count"] == 1, query
+    assert (await listing(w, "&channel=whatsapp"))["items"] == []
+    assert (await listing(w, "&needs_review=true&q=Expired"))["items"] == []
+
+
+async def test_list_orders_by_last_message_with_stable_cursor(sessions: SessionWorld) -> None:
+    w = sessions
+    now = datetime.now(UTC)
+    day = timedelta(days=1)
+    _, oldest = await seed(w, opened_at=now - 3 * day, message_at=now - 3 * day)
+    _, middle = await seed(w, opened_at=now - 2 * day, message_at=now - 2 * day)
+    _, tie_a = await seed(w, opened_at=now - day, message_at=now - day)
+    _, tie_b = await seed(w, opened_at=now - day, message_at=now - day)
+    _, silent = await seed(w, opened_at=now - timedelta(hours=12), messages=False)
+    ties = sorted([tie_a, tie_b], key=UUID, reverse=True)
+    assert [i["id"] for i in await listing_all(w, limit=50)] == [silent, *ties, middle, oldest]
+    by_id = {i["id"]: i for i in (await listing(w))["items"]}
+    assert by_id[silent]["last_message"] is None
+    assert by_id[oldest]["last_message"]["preview"] == "Synthetic question"
+    # A new message on the oldest conversation moves it first.
+    await w.q(
+        "UPDATE messages SET created_at=%s WHERE conversation_id=%s",
+        now - timedelta(minutes=1),
+        oldest,
+    )
+    expected = [oldest, silent, *ties, middle]
+    assert [i["id"] for i in await listing_all(w, limit=50)] == expected
+    # One at a time, the cursor visits every conversation exactly once, in the same order.
+    assert [i["id"] for i in await listing_all(w, limit=1)] == expected
+    assert [i["id"] for i in await listing_all(w, limit=2)] == expected
+
+
+async def test_search_matches_name_phone_formats_and_escapes(sessions: SessionWorld) -> None:
+    w = sessions
+    _, aisyah = await seed(w, name="Nur Aisyah", phone="+60125550148")
+    _, short = await seed(w, name="Li")
+    _, percent = await seed(w, name="Fifty%Percent")
+    _, underscore = await seed(w, name="Under_score")
+    _, quoted = await seed(w, name="Dan O'Neil")
+    _, plain = await seed(w, name="Plain Name", phone="+60179990000")
+
+    async def found(q: str) -> set[str]:
+        response = await w.admin.get(path(w, "/conversations") + "&" + urlencode({"q": q}))
+        assert response.status_code == 200, (q, response.text)
+        return {i["id"] for i in response.json()["items"]}
+
+    for q in ("aisyah", "AISYAH", "  @Aisyah ", "0125550148", "012 555", "+60125550148"):
+        assert await found(q) == {aisyah}, q
+    assert await found("li") == {short}
+    assert await found("y%P") == {percent}
+    assert await found("r_s") == {underscore}
+    assert await found("r%s") == set()
+    assert await found("%%") == set()
+    assert await found("a\\b") == set()
+    assert await found("o'neil") == {quoted}
+    assert await found("zzzz") == set()
+    assert await found("Name") == {plain}
+    for bad in ("a", " @ ", "x" * 65):
+        response = await w.admin.get(path(w, "/conversations") + "&" + urlencode({"q": bad}))
+        assert response.status_code == 422, bad
+    short_response = await w.admin.get(path(w, "/conversations") + "&q=a")
+    assert short_response.json()["detail"] == "search needs at least two characters"
+    # Search combines with the other filters and with paging.
+    combined = await w.admin.get(
+        path(w, "/conversations") + "&q=aisyah&sender=new&channel=telegram"
+    )
+    assert {i["id"] for i in combined.json()["items"]} == {aisyah}
+
+
+async def test_search_never_leaks_other_tenants(sessions: SessionWorld) -> None:
+    w = sessions
+    _, mine = await seed(w, name="Aisyah Mine", phone="+60125550148")
+    _, theirs = await seed(w, tenant=1, name="Aisyah Theirs", phone="+60125550149")
+    own = await listing(w, "&q=aisyah")
+    assert [i["id"] for i in own["items"]] == [mine]
+    foreign = await listing(w, "&q=0125550149", tenant=1)
+    assert [i["id"] for i in foreign["items"]] == [theirs]
+    assert (await listing(w, "&q=0125550149"))["items"] == []
+    assert (await listing(w, "&q=Aisyah", tenant=1))["items"][0]["id"] == theirs
+
+
+async def test_new_params_keep_role_rules(sessions: SessionWorld) -> None:
+    w = sessions
+    _, conversation = await seed(w, name="Nur Aisyah", phone="+60125550148")
+    reader, _ = await w.member(role="read_only")
+    foreign, _ = await w.member(tenant=w.tenants[1])
+    staff, _ = await w.member()
+    for query in ("needs_review=true", "sender=known", "q=aisyah"):
+        assert (await reader.get(f"/console/v1/inbox/conversations?{query}")).status_code == 403
+        listed = await staff.get(f"/console/v1/inbox/conversations?{query}")
+        assert listed.status_code == 200, listed.text
+        wrong_tenant = f"/console/v1/inbox/conversations?client_id={w.tenants[0]}&{query}"
+        assert (await foreign.get(wrong_tenant)).status_code == 403
+    assert (await reader.get(f"/console/v1/inbox/conversations/{conversation}")).status_code == 403
+    assert (await foreign.get(f"/console/v1/inbox/conversations/{conversation}")).status_code == 404
+    staff_read = await staff.get(f"/console/v1/inbox/conversations/{conversation}")
+    assert staff_read.status_code == 200
+    assert staff_read.json()["contact"]["phone"] == "+60125550148"
+
+
+async def test_unnamed_whatsapp_sender_shows_masked_number(sessions: SessionWorld) -> None:
+    w = sessions
+    _, conversation = await seed(w, name="+60125550148", phone="+60125550148")
+    [item] = (await listing(w))["items"]
+    assert item["contact"]["display_name"] is None
+    assert item["contact"]["phone_masked"] == "••••0148"
+    assert item["contact"]["phone"] is None
+    single = (await w.admin.get(path(w, f"/conversations/{conversation}"))).json()
+    assert single["contact"]["display_name"] is None
+    assert single["contact"]["phone"] == "+60125550148"
