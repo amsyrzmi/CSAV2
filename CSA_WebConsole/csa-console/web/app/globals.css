@@ -163,8 +163,7 @@
   }
   .page-title {
     color: var(--color-ink-900);
-    font-family: var(--fs-font-heading);
-    font-size: var(--fs-text-page);
+    font-size: 1.625rem;
     font-weight: 600;
     letter-spacing: -0.028em;
     line-height: 1.2;
@@ -432,5 +431,5 @@
 }
 
 /* FourStacks supplied UI guide: explicit light canvas and typography fallbacks. */
-h1, h2, h3, h4, .page-title { font-family: var(--fs-font-heading); }
+h1, h2, h3, .page-title { font-family: var(--fs-font-heading); }
 .brand-wordmark { font-family: var(--fs-font-brand); }

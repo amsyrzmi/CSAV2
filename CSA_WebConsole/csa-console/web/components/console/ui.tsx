@@ -35,7 +35,7 @@ export function Heading({
 }) {
   return (
     <div className="mb-7">
-      <h1 className="page-title">{title}</h1>
+      <h1 className="page-title font-(family-name:--fs-font-heading) text-(length:--fs-text-page) font-semibold">{title}</h1>
       <p className="page-description mt-2">{description}</p>
     </div>
   );
