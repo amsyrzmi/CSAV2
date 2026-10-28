@@ -44,13 +44,17 @@ again in leap years.
 
 ## Design (approach A)
 
-- **Migration `0481`** (lane B range) adds `subscriptions.renewal_anchor timestamptz`, then backfills it.
-  - `EXPECTED_SCHEMA_VERSION` becomes `0481`.
-  - The anchor for a row is the instant its current `renews_at` was counted from:
-    - the `renews_at` set by its latest `extend_renewal` event, if it has one;
-    - otherwise its latest lapsed-resume instant;
-    - otherwise `started_at`.
-  - Rows with no `renews_at` still get the anchor, so a later resume can use it.
+- **Migration `0481`** (lane B range) adds a nullable `subscriptions.renewal_anchor timestamptz`
+  and the shared function described below. `EXPECTED_SCHEMA_VERSION` becomes `0481`.
+  - A `NULL` anchor means "counted from the current `renews_at`". Rows written by other
+    inserts (seed data, older paths) therefore behave as before until they first renew.
+  - The backfill sets the anchor to `started_at` for every row whose `renews_at` lies on
+    `started_at`'s cycle, which restores the original day for a renewal that already clamped.
+  - A row off that cycle (moved by an extension or a lapsed resume) keeps `NULL`, so its current
+    renewal date is its anchor.
+  - (Builder-check ruling, 2026-10-28: this replaces reading event history; it gives the same
+    result except for a lapsed resume on the 29th–31st that already clamped, which keeps the
+    clamped day.)
 - **Next renewal after a previous date `prev`:** `anchor + n × interval`, where *n* is the smallest
   whole number that puts the result after `prev`.
   - Monthly: *n* = (months from the anchor's local month to `prev`'s local month) + 1.
@@ -66,7 +70,8 @@ again in leap years.
   - **Plan change that changes the billing interval** (immediate in the executor, or scheduled and
     applied by the job): the anchor becomes the current `renews_at`, so the new interval counts
     from the end of the period already running. A change that keeps the interval leaves the anchor alone.
-- **The due job's renewal rule** uses the formula above instead of `renews_at + interval`.
+- **The due job's renewal rule** uses the formula above, with anchor `coalesce(renewal_anchor, renews_at)`,
+  instead of `renews_at + interval`, and stores that anchor, so later renewals keep the day.
 - **Event payloads:** `renewed` keeps `{previous_renews_at, renews_at}`. `extend_renewal` and
   resume events need no new field.
 
@@ -80,7 +85,6 @@ again in leap years.
 
 ## Left to the builder
 
-- Whether the column is `NOT NULL` after the backfill.
 - How *n* is expressed in SQL, for example a shared SQL function or a repeated expression.
 - Exact test names.
 - **Tests** cover:
