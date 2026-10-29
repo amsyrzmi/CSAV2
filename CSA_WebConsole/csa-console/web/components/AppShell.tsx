@@ -1,7 +1,5 @@
 "use client";
 
-import Image from "next/image";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useState } from "react";
 import { identity } from "@/lib/identity-api";
@@ -11,8 +9,8 @@ import { navigationFor } from "@/lib/navigation";
 import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
-import { MobileMenu } from "@/components/console/shell/MobileMenu";
 import { Rail } from "@/components/console/shell/Rail";
+import { TopBar } from "@/components/console/shell/TopBar";
 import { Notice } from "@/components/console/ui";
 import { PageContextProvider } from "@/lib/page-context";
 
@@ -52,7 +50,6 @@ export function AppShell({
       setBusy(false);
     }
   }
-  // Task 9 moves the name, role and Sign out into a top-bar user menu.
   const account = {
     name: me.user.display_name || me.user.email,
     role: me.role ? roleLabels[me.role] : "No active membership",
@@ -68,36 +65,22 @@ export function AppShell({
           home={home}
           state={rail}
           onToggle={toggleRail}
-          account={account}
         />
         <div className="min-w-0 flex-1">
-          <header className="flex items-center gap-3 border-b border-[color:var(--fs-border)] px-5 py-4 sm:px-8 sm:py-5">
-            <MobileMenu links={links} path={path} account={account} />
-            <Link
-              href={home}
-              aria-label="fourstacks home"
-              className="flex items-center lg:hidden"
-            >
-              <Image
-                src="/brand/fourstacks-mark.svg"
-                alt=""
-                width={32}
-                height={32}
-              />
-            </Link>
-            <div className="min-w-0">
-              <p className="eyebrow">CSA Console</p>
-              <p className="mt-1 text-sm text-[color:var(--fs-text-secondary)]">
-                {admin ? "Platform administration" : "Tenant workspace"}
-              </p>
+          <TopBar
+            links={links}
+            path={path}
+            home={home}
+            fallbackTitle={admin ? "Platform administration" : "Workspace"}
+            account={account}
+          />
+          {/* Outside <main> and every dialog, so a failed sign-out is never hidden behind one. */}
+          {error && (
+            <div className="px-4 pt-4 sm:px-8">
+              <Notice error>{error}</Notice>
             </div>
-          </header>
+          )}
           <main className="mx-auto max-w-6xl p-5 sm:p-8">
-            {error && (
-              <div className="mb-5">
-                <Notice error>{error}</Notice>
-              </div>
-            )}
             <PageContextProvider>
               {children}
               {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}

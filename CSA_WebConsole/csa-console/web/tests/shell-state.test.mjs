@@ -11,7 +11,7 @@ function moduleUrl(source) {
 }
 const read = (file) => readFile(new URL(file, import.meta.url), "utf8");
 const { navigationFor } = await import(moduleUrl(await read("../lib/navigation.ts")));
-const { RAIL_COOKIE, parseRail, railCookie, NAV_ICONS } = await import(
+const { RAIL_COOKIE, parseRail, railCookie, NAV_ICONS, activeNav, menuIndex } = await import(
   moduleUrl(await read("../lib/shell-state.ts"))
 );
 
@@ -49,4 +49,39 @@ test("NAV_ICONS covers every key navigationFor can output, each with its own ico
   for (const key of keys) assert.ok(NAV_ICONS[key], `no icon for ${key}`);
   const names = Object.values(NAV_ICONS);
   assert.equal(new Set(names).size, names.length, "two keys share an icon");
+});
+
+const LINKS = [
+  { href: "/portal", label: "Overview", key: "overview" },
+  { href: "/portal/services", label: "Services", key: "services" },
+  { href: "/portal/inbox", label: "Customer inbox", key: "inbox" },
+  { href: "/change-password", label: "Password", key: "password" },
+];
+
+test("activeNav finds the exact entry, then the longest parent entry", () => {
+  assert.equal(activeNav(LINKS, "/portal")?.label, "Overview");
+  assert.equal(activeNav(LINKS, "/portal/services")?.label, "Services");
+  assert.equal(activeNav(LINKS, "/portal/inbox/some-id")?.label, "Customer inbox");
+  assert.equal(activeNav(LINKS, "/change-password")?.label, "Password");
+});
+
+test("activeNav never lets the home entry claim every page, and tolerates odd input", () => {
+  assert.equal(activeNav(LINKS, "/portal/unknown"), null);
+  assert.equal(activeNav(LINKS, "/portal/servicesx"), null);
+  assert.equal(activeNav(LINKS, ""), null);
+  assert.equal(activeNav([], "/portal"), null);
+  const admin = [{ href: "/", label: "Overview", key: "overview" }, { href: "/services", label: "Services", key: "services" }];
+  assert.equal(activeNav(admin, "/"). label, "Overview");
+  assert.equal(activeNav(admin, "/elsewhere"), null);
+});
+
+test("menuIndex moves with arrows, wraps, and jumps with Home and End", () => {
+  assert.equal(menuIndex("ArrowDown", 0, 3), 1);
+  assert.equal(menuIndex("ArrowDown", 2, 3), 0);
+  assert.equal(menuIndex("ArrowUp", 0, 3), 2);
+  assert.equal(menuIndex("ArrowUp", 2, 3), 1);
+  assert.equal(menuIndex("Home", 2, 3), 0);
+  assert.equal(menuIndex("End", 0, 3), 2);
+  assert.equal(menuIndex("a", 1, 3), null);
+  assert.equal(menuIndex("ArrowDown", 0, 0), null);
 });

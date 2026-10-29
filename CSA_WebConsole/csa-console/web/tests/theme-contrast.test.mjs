@@ -109,6 +109,13 @@ const PAIRS = [
   ["--fs-warning", "--fs-warning-bg", 4.5, "needs-review count chip"],
   ["--color-white", "--fs-primary", 4.5, "text-white utility on bg-brand-600"],
   ["--color-white", "--fs-text", 4.5, "text-white utility on bg-ink-900"],
+  ["--fs-focus", "--fs-rail", 3, "focus ring on the rail"],
+  ["--fs-focus", "--fs-tile", 3, "focus ring on a tile"],
+  ["--fs-surface", "--fs-text", 4.5, "rail tooltip text"],
+  ["--fs-primary", "--fs-rail", 3, "brand mark accent stack on the rail"],
+  ["--fs-text", "--fs-rail", 3, "brand mark body stacks on the rail"],
+  ["--fs-text", "--fs-surface", 3, "brand mark body stacks on the top bar"],
+  ["--fs-primary", "--fs-surface", 3, "brand mark accent stack on the top bar"],
 ];
 
 for (const theme of THEMES) {

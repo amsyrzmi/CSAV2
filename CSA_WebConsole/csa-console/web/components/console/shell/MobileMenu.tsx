@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { LogOut, Menu } from "lucide-react";
+import { Menu } from "lucide-react";
 import SlideOver from "@/components/console/fs/SlideOver";
 import type { NavLink } from "@/lib/navigation";
 import { navIcon } from "./icons";
-import type { ShellAccount } from "./Rail";
 
 /**
  * Below 1024 px the rail is hidden and this button opens the full labelled list on a native
@@ -16,11 +15,9 @@ import type { ShellAccount } from "./Rail";
 export function MobileMenu({
   links,
   path,
-  account,
 }: {
   links: NavLink[];
   path: string;
-  account: ShellAccount;
 }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -71,19 +68,6 @@ export function MobileMenu({
             );
           })}
         </nav>
-        <div className="mt-4 border-t border-[color:var(--fs-border)] pt-4">
-          <p className="break-words text-sm font-semibold">{account.name}</p>
-          <p className="mt-1 text-xs text-[color:var(--fs-text-secondary)]">{account.role}</p>
-          <button
-            type="button"
-            disabled={account.busy}
-            onClick={account.onSignOut}
-            className="mt-3 flex min-h-11 items-center gap-2 text-sm text-[color:var(--fs-text-secondary)] hover:text-[color:var(--fs-primary)]"
-          >
-            <LogOut size={16} aria-hidden="true" />
-            {account.busy ? "Signing out…" : "Sign out"}
-          </button>
-        </div>
       </SlideOver>
     </>
   );

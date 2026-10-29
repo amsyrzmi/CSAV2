@@ -1,19 +1,12 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
-import { LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { NavLink } from "@/lib/navigation";
 import type { RailState } from "@/lib/shell-state";
+import { BrandMark } from "./BrandMark";
 import { navIcon } from "./icons";
-
-export interface ShellAccount {
-  name: string;
-  role: string;
-  busy: boolean;
-  onSignOut: () => void;
-}
 
 interface Tip {
   label: string;
@@ -36,14 +29,12 @@ export function Rail({
   home,
   state,
   onToggle,
-  account,
 }: {
   links: NavLink[];
   path: string;
   home: string;
   state: RailState;
   onToggle: () => void;
-  account: ShellAccount;
 }) {
   const expanded = state === "expanded";
   const [tip, setTip] = useState<Tip | null>(null);
@@ -73,13 +64,16 @@ export function Rail({
       data-rail={state}
       className={`hidden shrink-0 bg-[var(--fs-rail)] sm:rounded-l-2xl lg:block ${expanded ? "w-60" : "w-14"}`}
     >
-      <div className="flex flex-col gap-1 p-2 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto">
+      <div
+        onScroll={() => setTip(null)}
+        className="flex flex-col gap-1 p-2 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto"
+      >
         <Link
           href={home}
           aria-label="fourstacks home"
           className={`${ITEM} h-12 ${expanded ? "w-full gap-3 px-1" : "w-10 justify-center"}`}
         >
-          <Image src="/brand/fourstacks-mark.svg" alt="" width={32} height={32} />
+          <BrandMark size={32} />
           {expanded && (
             <span className="brand-wordmark truncate text-lg font-semibold">fourstacks.</span>
           )}
@@ -102,12 +96,6 @@ export function Rail({
           })}
         </nav>
         <div className="mt-3 flex flex-col gap-1 border-t border-[color:var(--fs-border)] pt-3">
-          {expanded && (
-            <div className="px-3 pb-1">
-              <p className="break-words text-sm font-semibold">{account.name}</p>
-              <p className="mt-0.5 text-xs text-[color:var(--fs-text-secondary)]">{account.role}</p>
-            </div>
-          )}
           <button
             type="button"
             data-testid="shell-rail-toggle"
@@ -123,16 +111,6 @@ export function Rail({
             <span className={expanded ? "truncate" : "sr-only"}>
               {expanded ? "Collapse navigation" : "Expand navigation"}
             </span>
-          </button>
-          <button
-            type="button"
-            disabled={account.busy}
-            onClick={account.onSignOut}
-            className={`${ITEM} ${itemSize} disabled:opacity-60`}
-            {...tipFor("Sign out")}
-          >
-            <LogOut size={18} aria-hidden="true" />
-            {text(account.busy ? "Signing out…" : "Sign out")}
           </button>
         </div>
       </div>
