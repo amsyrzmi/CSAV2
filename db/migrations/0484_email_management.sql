@@ -3,7 +3,9 @@
 -- Changes:
 --   public.email_drafts: to_addresses (backfilled from recipient), cc, bcc, a 1-20 total address
 --     check, status also allows 'sending' and 'sent', sent_at, gmail_message_id,
---     reply_to_message_id (the Gmail API id of the message answered), needs_staff_input.
+--     reply_to_message_id (the Gmail API id of the message answered), needs_staff_input,
+--     send_claim_id (the idempotency key of the send attempt holding the 'sending' claim; the
+--     outcome of an older, released attempt can never change the row).
 --     recipient stays as the first address for older readers. to_addresses stays nullable: rows
 --     written by code that predates this migration have none until they are saved again.
 --   public.email_threads: latest_rfc_message_id, latest_references, latest_reply_to and
@@ -51,7 +53,8 @@ ALTER TABLE public.email_drafts
     ADD COLUMN IF NOT EXISTS sent_at timestamptz,
     ADD COLUMN IF NOT EXISTS gmail_message_id text,
     ADD COLUMN IF NOT EXISTS reply_to_message_id text,
-    ADD COLUMN IF NOT EXISTS needs_staff_input boolean NOT NULL DEFAULT false;
+    ADD COLUMN IF NOT EXISTS needs_staff_input boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS send_claim_id uuid;
 
 UPDATE public.email_drafts SET to_addresses = ARRAY[recipient] WHERE to_addresses IS NULL;
 

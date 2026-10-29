@@ -24,6 +24,8 @@ from csa.console.auth import build_identity_router
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.security import digest
 from csa.core import crypto, db
+from csa.email import gmail as gmail_module
+from csa.email import service as email_service
 from csa.email.api import build_email_router
 from csa.email.gmail import GmailClient
 from csa.email.models import DraftOut, DraftProposal, ThreadAnalysis, draft_version
@@ -62,6 +64,8 @@ class FakeGmail:
         self.send_mode = "ok"
         self.send_delay = 0.0
         self.send_counter = 0
+        # Per-call script: each send pops (gate, mode), waits for the gate, then answers as mode.
+        self.send_script: list[tuple[asyncio.Event, str]] = []
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.method, request.url.path, request.content))
@@ -87,13 +91,17 @@ class FakeGmail:
             self.sends.append(payload)
             if self.send_delay:
                 await asyncio.sleep(self.send_delay)
-            if self.send_mode == "timeout":
+            mode = self.send_mode
+            if self.send_script:
+                gate, mode = self.send_script.pop(0)
+                await gate.wait()
+            if mode == "timeout":
                 raise httpx.ReadTimeout("slow", request=request)
-            if self.send_mode == "refuse":
+            if mode == "refuse":
                 return httpx.Response(400, json={"error": "invalid"})
-            if self.send_mode == "unauthorized":
+            if mode == "unauthorized":
                 return httpx.Response(401, json={"error": "expired"})
-            if self.send_mode == "empty":
+            if mode == "empty":
                 return httpx.Response(200, json={})
             self.send_counter += 1
             return httpx.Response(200, json={"id": f"gmail-msg-{self.send_counter}"})
@@ -1225,3 +1233,79 @@ async def test_release_lets_the_owner_retry_an_unknown_send(
     )
     recorded = await world.call("staff", "POST", f"{DRAFTS}/{other_draft['id']}/release")
     assert recorded.status_code == 409 and recorded.json()["detail"] == "draft_not_releasable"
+
+
+async def _wait_for_sends(world: World, count: int) -> None:
+    async with asyncio.timeout(10):
+        while len(world.gmail.sends) < count:
+            await asyncio.sleep(0.02)
+
+
+async def _age_claim(world: World, draft_id: str) -> None:
+    await world.q(
+        "UPDATE email_drafts SET updated_at=clock_timestamp()-interval '121 seconds' WHERE id=%s",
+        (draft_id,),
+    )
+
+
+async def test_late_outcome_of_a_released_attempt_never_changes_the_row(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    release = f"{DRAFTS}/{draft['id']}/release"
+
+    # A late success: the old attempt hangs, the owner releases and re-sends, then it answers.
+    old_gate, new_gate = asyncio.Event(), asyncio.Event()
+    world.gmail.send_script = [(old_gate, "ok"), (new_gate, "ok")]
+    old = asyncio.create_task(_send(world, draft, key=uuid4()))
+    await _wait_for_sends(world, 1)
+    await _age_claim(world, draft["id"])
+    assert (await world.call("staff", "POST", release)).status_code == 200
+    new = asyncio.create_task(_send(world, draft, key=uuid4()))
+    await _wait_for_sends(world, 2)
+    old_gate.set()
+    late = await old
+    # The old caller gets its own result; the row still belongs to the new claim.
+    assert late.status_code == 200, late.text
+    assert late.json()["outcome"] == "sent" and late.json()["gmail_message_id"] == "gmail-msg-1"
+    assert await _status(world, draft["id"]) == "sending"
+    new_gate.set()
+    fresh = await new
+    assert fresh.status_code == 200 and fresh.json()["gmail_message_id"] == "gmail-msg-2"
+    rows = await world.q(
+        "SELECT status, gmail_message_id FROM email_drafts WHERE id=%s", (draft["id"],)
+    )
+    assert rows == [{"status": "sent", "gmail_message_id": "gmail-msg-2"}]
+
+    # A late refusal must not put a newer in-flight claim back to draft.
+    second = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    release = f"{DRAFTS}/{second['id']}/release"
+    old_gate, new_gate = asyncio.Event(), asyncio.Event()
+    world.gmail.send_script = [(old_gate, "refuse"), (new_gate, "ok")]
+    old = asyncio.create_task(_send(world, second, key=uuid4()))
+    await _wait_for_sends(world, 3)
+    await _age_claim(world, second["id"])
+    assert (await world.call("staff", "POST", release)).status_code == 200
+    new = asyncio.create_task(_send(world, second, key=uuid4()))
+    await _wait_for_sends(world, 4)
+    old_gate.set()
+    late = await old
+    assert late.status_code == 409 and late.json()["detail"] == "send_refused"
+    assert await _status(world, second["id"]) == "sending"
+    blocked = await _send(world, second, key=uuid4())
+    assert blocked.status_code == 409 and blocked.json()["detail"] == "draft_already_sending"
+    new_gate.set()
+    assert (await new).status_code == 200
+    assert await _status(world, second["id"]) == "sent" and len(world.gmail.sends) == 4
+
+
+async def test_send_call_has_a_hard_deadline(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    monkeypatch.setattr(email_service, "SEND_DEADLINE_SECONDS", 0.3)
+    assert email_service.RELEASE_AFTER_SECONDS > gmail_module.TIMEOUT_SECONDS + 5
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    world.gmail.send_script = [(asyncio.Event(), "ok")]  # never answers
+    hung = await _send(world, draft)
+    assert hung.status_code == 502 and hung.json()["detail"] == "send_outcome_unknown"
+    assert await _status(world, draft["id"]) == "sending"

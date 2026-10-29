@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import secrets
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,7 @@ from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
 from csa.email.gmail import (
+    TIMEOUT_SECONDS,
     FetchedThread,
     GmailClient,
     GmailError,
@@ -73,8 +75,11 @@ TOKEN_REFRESH_MARGIN = timedelta(seconds=90)
 MODEL_TIMEOUT_SECONDS = 20.0
 SYNC_QUERY = "newer_than:14d -in:chats"
 SEND_LIMIT_PER_HOUR = 20
-# A claim this old cannot have a Gmail call still running (the client times out at 20 seconds).
+# A hard deadline on the whole Gmail send call: httpx's timeout applies per phase only.
+SEND_DEADLINE_SECONDS = TIMEOUT_SECONDS + 5
+# A claim this old cannot have a Gmail call still running (well past SEND_DEADLINE_SECONDS).
 RELEASE_AFTER_SECONDS = 120
+logger = logging.getLogger(__name__)
 # Clear refusals: Gmail sent nothing, so the draft goes back to `draft`. Any other provider
 # error after the claim leaves the outcome unknown and the draft stays `sending`.
 SAFE_SEND_REFUSALS = frozenset(
@@ -1342,9 +1347,10 @@ class EmailService:
             recent = await self._recent_sends(conn, session, mailbox)
             if recent["sends"] >= SEND_LIMIT_PER_HOUR:
                 raise SendLimitReached(max(1, int(recent["retry_after"])))
+            # The request key binds the claim: only this attempt may record the outcome.
             claimed = await q.fetch_one(
                 "email/draft_send_claim.sql",
-                (session.tenant_id, mailbox["id"], draft_id),
+                (key, session.tenant_id, mailbox["id"], draft_id),
                 conn=conn,
             )
             if claimed is None:
@@ -1371,9 +1377,22 @@ class EmailService:
             await self._session(conn, session)
 
         try:
-            message_id = await self.gmail.send_message(
-                access, thread_id=plan.row["thread_id"], mime=mime
+            async with asyncio.timeout(SEND_DEADLINE_SECONDS):
+                message_id = await self.gmail.send_message(
+                    access, thread_id=plan.row["thread_id"], mime=mime
+                )
+        except TimeoutError:
+            await self._send_outcome(
+                session,
+                mailbox,
+                draft_id,
+                key,
+                fingerprint,
+                counts,
+                "unknown",
+                "send_outcome_unknown",
             )
+            raise EmailPolicyError("send_outcome_unknown") from None
         except GmailError as exc:
             if exc.code in SAFE_SEND_REFUSALS:
                 code = (
@@ -1401,12 +1420,19 @@ class EmailService:
             await self._session(conn, session)
             done = await q.fetch_one(
                 "email/draft_send_done.sql",
-                (message_id, session.tenant_id, mailbox["id"], draft_id),
+                (message_id, session.tenant_id, mailbox["id"], draft_id, key),
                 conn=conn,
             )
+            sent_at: datetime
             if done is None:
-                raise RuntimeError("email send outcome could not be recorded")
-            sent_at: datetime = done["sent_at"]
+                # The owner released this claim and the draft moved on; the row is not ours.
+                # This caller still gets its own result, and the receipt keeps it.
+                logger.warning(
+                    "email send outcome for a released claim", extra={"draft_id": str(draft_id)}
+                )
+                sent_at = self.now()
+            else:
+                sent_at = done["sent_at"]
             await self._record(
                 conn,
                 session,
@@ -1570,11 +1596,16 @@ class EmailService:
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
             if status == "refused":
-                await q.execute(
+                released = await q.fetch_one(
                     "email/draft_send_release.sql",
-                    (session.tenant_id, mailbox["id"], draft_id),
+                    (session.tenant_id, mailbox["id"], draft_id, key),
                     conn=conn,
                 )
+                if released is None:
+                    # A released claim: a newer attempt may hold the draft, so leave it alone.
+                    logger.warning(
+                        "email send refusal for a released claim", extra={"draft_id": str(draft_id)}
+                    )
             await self._record(
                 conn,
                 session,
