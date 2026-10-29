@@ -3,7 +3,8 @@
 csa_app cannot read console_audit or console_users, so rows come from the 0502 definer function
 ``console_last_change``, which filters by tenant itself. Only platform admins see who made the
 change; everyone else gets a role label (a platform administrator, or a member of their own team),
-never a name, user id or email.
+never a name, user id or email. A row with no actor (system or legacy rows) reads as "an
+administrator" to tenant viewers.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ Action = Literal[
 ]
 ROLE_LABEL = "a platform administrator"
 TEAM_LABEL = "a member of your team"
+NO_ACTOR_LABEL = "an administrator"
 SERVICE_ACTIONS: tuple[str, ...] = ("service.requested", "service.activated", "service.suspended")
 CAPABILITY_ACTIONS: tuple[str, ...] = ("capability.updated",)
 _SERVICE: dict[str, Action] = {
@@ -83,8 +85,11 @@ def last_change_from_row(
     name = row["actor_name"]
     if platform_admin:
         actor = name or ROLE_LABEL
+    elif row["actor_is_platform_admin"]:
+        actor = ROLE_LABEL
     else:
-        actor = ROLE_LABEL if row["actor_is_platform_admin"] else TEAM_LABEL
+        # display_name is NOT NULL, so no name means the row has no actor at all.
+        actor = TEAM_LABEL if name else NO_ACTOR_LABEL
     return LastChange(action=mapped, at=row["at"], actor=actor)
 
 

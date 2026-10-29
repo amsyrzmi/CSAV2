@@ -264,10 +264,13 @@ def test_last_change_labels_a_tenant_actor_as_a_team_member_for_tenant_viewers()
     assert "Synthetic Member" not in team.model_dump_json()
     named = last_change_from_row(row, platform_admin=True)
     assert named is not None and named.actor == "Synthetic Member"
-    # The actor's account is gone: the function reports false and no name.
+    # No actor (system or legacy rows): the function reports no name and false. Tenant viewers
+    # get neutral wording, not "a member of your team"; platform viewers keep the role label.
     gone = {**row, "actor_name": None, "actor_is_platform_admin": False}
-    assert last_change_from_row(gone, platform_admin=False).actor == "a member of your team"  # type: ignore[union-attr]
-    assert last_change_from_row(gone, platform_admin=True).actor == "a platform administrator"  # type: ignore[union-attr]
+    tenant_view = last_change_from_row(gone, platform_admin=False)
+    assert tenant_view is not None and tenant_view.actor == "an administrator"
+    platform_view = last_change_from_row(gone, platform_admin=True)
+    assert platform_view is not None and platform_view.actor == "a platform administrator"
 
 
 def test_last_change_model_is_closed_and_capability_field_is_optional() -> None:

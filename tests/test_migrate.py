@@ -176,10 +176,11 @@ def test_console_last_change_is_a_pinned_definer_function(migrated_dsn: str) -> 
     assert row is not None
     definer, volatility, config, owner, result = row
     assert definer is True and volatility == "s" and owner == "csa"
-    assert config == ["search_path=pg_catalog, public"]
+    assert config == ["search_path=pg_catalog, public, pg_temp"]
+    # No actor id: Python never reads it, so the definer function does not hand it out.
     assert result == (
-        "TABLE(action text, at timestamp with time zone, actor_id uuid, actor_name text,"
-        " details jsonb, actor_is_platform_admin boolean)"
+        "TABLE(action text, at timestamp with time zone, actor_name text, details jsonb,"
+        " actor_is_platform_admin boolean)"
     )
     with psycopg.connect(migrated_dsn, autocommit=True) as conn:
         index = conn.execute(

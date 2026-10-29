@@ -604,8 +604,64 @@ async def test_capability_toggles_map_to_last_change_actions(sessions: SessionWo
     # Both switches in one row: the subscription wins.
     change = await toggle(admin, is_enabled=True, client_enabled=True)
     assert change is not None and change.action == "subscribed"
-    # A toggle that changes nothing is not a recognisable change.
-    assert await toggle(admin, is_enabled=True) is None
+    real = await toggle(tenant_admin, client_enabled=False)
+    assert real is not None and real.action == "tenant_switch_off"
+    # A toggle that changes nothing never becomes the last change: the older real one stays.
+    assert await toggle(admin, client_enabled=False) == real
+    assert await toggle(admin, is_enabled=True) == real
+
+
+async def test_activation_no_op_member_rows_do_not_hide_an_older_change(
+    sessions: SessionWorld,
+) -> None:
+    admin, tenant_admin = await actors(sessions)
+    tenant, pool = UUID(sessions.tenants[0]), sessions.pool
+    for actor, switches in (
+        (admin, CapabilityToggleIn(is_enabled=True)),
+        (tenant_admin, CapabilityToggleIn(client_enabled=True)),
+    ):
+        out = await toggle_capability(pool, tenant, "kb_agent", switches, actor_id=actor.user_id)
+        assert out is not None
+    before = _agent_change(
+        (await _services(sessions, tenant, admin))["customer_support"], "kb_agent"
+    )
+    assert before is not None and before.action == "tenant_switch_on"
+    # Activation writes a capability.updated row for kb_agent where nothing changed.
+    await activate_package(
+        pool, tenant, "customer_support", ActivateIn(reference="Q-NOOP"), actor=admin
+    )
+    rows = await sessions.q(
+        "SELECT details FROM console_audit WHERE client_id=%s AND target_id='kb_agent'"
+        " AND action='capability.updated' ORDER BY created_at DESC LIMIT 1",
+        tenant,
+    )
+    assert rows[0]["details"]["before"] == rows[0]["details"]["after"]
+    seen = await _services(sessions, tenant, admin)
+    assert seen["customer_support"].last_change.action == "activated"  # type: ignore[union-attr]
+    assert _agent_change(seen["customer_support"], "kb_agent") == before
+
+
+async def test_last_change_breaks_time_ties_by_id(sessions: SessionWorld) -> None:
+    tenant = sessions.tenants[0]
+    low, high = "00000000-0000-4000-8000-000000000000", "ffffffff-ffff-4fff-bfff-ffffffffffff"
+    # Same time; the higher id is inserted last, so insertion order alone would pick the other.
+    for row_id, action in ((low, "service.requested"), (high, "service.activated")):
+        await sessions.q(
+            "INSERT INTO console_audit (id, client_id, action, target_id, details, created_at)"
+            " VALUES (%s, %s, %s, 'customer_support', '{}', '2026-10-20T09:00:00Z')",
+            row_id,
+            tenant,
+            action,
+        )
+    async with tx(sessions.pool, tenant) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT action FROM public.console_last_change(%s, 'customer_support',"
+                " ARRAY['service.requested', 'service.activated'])",
+                (tenant,),
+            )
+        ).fetchall()
+    assert [r["action"] for r in rows] == ["service.activated"]
 
 
 async def test_last_change_never_crosses_tenants(sessions: SessionWorld) -> None:
@@ -631,14 +687,7 @@ async def test_last_change_never_crosses_tenants(sessions: SessionWorld) -> None
     async with tx(sessions.pool, str(other)) as conn:
         rows = await (await conn.execute(call, (other,))).fetchall()
     assert len(rows) == 1 and rows[0]["action"] == "service.activated"
-    assert set(rows[0]) == {
-        "action",
-        "at",
-        "actor_id",
-        "actor_name",
-        "actor_is_platform_admin",
-        "details",
-    }
+    assert set(rows[0]) == {"action", "at", "actor_name", "actor_is_platform_admin", "details"}
     assert rows[0]["actor_is_platform_admin"] is True
     # Without a tenant in the transaction the function returns nothing.
     async with sessions.pool.connection() as conn:
