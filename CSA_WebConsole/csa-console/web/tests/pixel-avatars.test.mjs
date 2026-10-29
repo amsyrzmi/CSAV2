@@ -114,35 +114,122 @@ test("whole-number scaling: every size is a multiple of its grid", () => {
   for (const size of AVATAR_SIZES) assert.equal(size % gridForSize(size), 0, String(size));
 });
 
-test("avatarPlan: only idle-like states animate, and only when motion is allowed", () => {
-  const plan = (state, allowed) => avatarPlan(state, allowed);
-  for (const state of ["idle", "working", "wake"]) {
-    assert.deepEqual(plan(state, true), { animate: true, dimmed: false, frameSet: "idle" }, state);
-    assert.deepEqual(plan(state, false), { animate: false, dimmed: false, frameSet: "idle" }, state);
+// Every state x motion x grid combination. Not animating always means idle frame 0 alone (the
+// rest pose), whatever the state: reduced motion, the pause preference and offscreen included.
+const STILL_FRAME = { animate: false, motion: "none", frameSet: "idle", frameCount: 1 };
+const IDLE_LOOP = { animate: true, motion: "idle", frameSet: "idle", frameCount: 4 };
+
+test("avatarPlan: idle loops the four idle frames on both grids, only when motion is allowed", () => {
+  for (const grid of [32, 48]) {
+    assert.deepEqual(avatarPlan("idle", true, grid), { ...IDLE_LOOP, dimmed: false }, `${grid}`);
+    assert.deepEqual(avatarPlan("idle", false, grid), { ...STILL_FRAME, dimmed: false }, `${grid}`);
   }
+});
+
+test("avatarPlan: working loops the eight working frames on the 48 grid", () => {
+  assert.deepEqual(avatarPlan("working", true, 48), {
+    animate: true, motion: "working", frameSet: "working", frameCount: 8, dimmed: false,
+  });
+  assert.deepEqual(avatarPlan("working", false, 48), { ...STILL_FRAME, dimmed: false });
+});
+
+test("avatarPlan: wake plays the eight working frames once on the 48 grid", () => {
+  assert.deepEqual(avatarPlan("wake", true, 48), {
+    animate: true, motion: "wake", frameSet: "working", frameCount: 8, dimmed: false,
+  });
+  assert.deepEqual(avatarPlan("wake", false, 48), { ...STILL_FRAME, dimmed: false });
+});
+
+test("avatarPlan: on the 32 grid working and wake fall back to the idle loop", () => {
+  for (const state of ["working", "wake"]) {
+    assert.deepEqual(avatarPlan(state, true, 32), { ...IDLE_LOOP, dimmed: false }, state);
+    assert.deepEqual(avatarPlan(state, false, 32), { ...STILL_FRAME, dimmed: false }, state);
+  }
+});
+
+test("avatarPlan: still and pending are dimmed idle frame 0 and never animate", () => {
   for (const state of ["still", "pending"]) {
     for (const allowed of [true, false]) {
-      assert.deepEqual(plan(state, allowed), { animate: false, dimmed: true, frameSet: "idle" }, state);
+      for (const grid of [32, 48]) {
+        assert.deepEqual(avatarPlan(state, allowed, grid), { ...STILL_FRAME, dimmed: true }, state);
+      }
     }
   }
-  assert.throws(() => avatarPlan("sleeping", true), /state/i);
 });
 
-test("avatarPlan: rest is frame 0, undimmed, and never animates (all motion combinations)", () => {
+test("avatarPlan: rest is idle frame 0, undimmed, and never animates (all combinations)", () => {
   for (const allowed of [true, false]) {
-    assert.deepEqual(avatarPlan("rest", allowed), { animate: false, dimmed: false, frameSet: "idle" });
+    for (const grid of [32, 48]) {
+      assert.deepEqual(avatarPlan("rest", allowed, grid), { ...STILL_FRAME, dimmed: false });
+    }
   }
-  assert.equal(frameSetFor("rest"), "idle");
 });
 
-test("working and wake fall back to the idle frames until working frames exist", () => {
-  // Task 12 replaces these two expectations when it adds the working frame set.
-  assert.equal(frameSetFor("idle"), "idle");
-  assert.equal(frameSetFor("working"), "idle");
-  assert.equal(frameSetFor("wake"), "idle");
-  assert.equal(frameSetFor("still"), "idle");
-  assert.equal(frameSetFor("pending"), "idle");
-  for (const id of AGENT_IDS) assert.ok(PIXEL_DATA[id].idle, id);
+test("avatarPlan refuses unknown states and grids", () => {
+  assert.throws(() => avatarPlan("sleeping", true, 48), /state/i);
+  assert.throws(() => avatarPlan("idle", true, 40), /grid/i);
+});
+
+test("frameSetFor: the working set exists only on the 48 grid", () => {
+  for (const grid of [32, 48]) {
+    for (const state of ["idle", "still", "pending", "rest"]) assert.equal(frameSetFor(state, grid), "idle");
+  }
+  assert.equal(frameSetFor("working", 48), "working");
+  assert.equal(frameSetFor("wake", 48), "working");
+  assert.equal(frameSetFor("working", 32), "idle");
+  assert.equal(frameSetFor("wake", 32), "idle");
+  assert.throws(() => frameSetFor("sleeping", 48), /state/i);
+});
+
+test("every planned frame exists in the data: all agents, states, motion and grids", () => {
+  const states = ["idle", "still", "pending", "rest", "working", "wake"];
+  for (const id of AGENT_IDS) {
+    for (const state of states) {
+      for (const allowed of [true, false]) {
+        for (const grid of [32, 48]) {
+          const plan = avatarPlan(state, allowed, grid);
+          const frames = PIXEL_DATA[id][plan.frameSet][String(grid)];
+          assert.ok(frames, `${id} ${state} ${grid}: no ${plan.frameSet} set`);
+          assert.ok(frames.length >= plan.frameCount, `${id} ${state} ${grid}`);
+          for (let i = 0; i < plan.frameCount; i += 1) {
+            assert.ok(frameRects(decodeFrame(frames[i], grid), PIXEL_DATA[id].palette).length > 0);
+          }
+        }
+      }
+    }
+  }
+});
+
+test("the CSS has the eight-frame loop and the one-shot wake, both stopped by the motion guards", () => {
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  const flat = css.replace(/\s+/g, " ");
+  // assert.ok rather than assert.match: a failure names the rule, not the whole stylesheet.
+  const has = (pattern, what) => assert.ok(pattern.test(flat), `globals.css lacks ${what}`);
+  // Working: 1.2 s loop, each of eight frames visible for 12.5%, delays i x 0.15 s.
+  has(/@keyframes fs-px-show8 \{ 0% \{ opacity: 1; \} 12\.5% \{ opacity: 0; \} 100% \{ opacity: 0; \} \}/,
+    "the fs-px-show8 keyframes");
+  has(/\.fs-px-anim\.fs-px-work \.fs-px-frame \{[^}]*animation: fs-px-show8 1\.2s steps\(1\) infinite/,
+    "the 1.2 s working loop");
+  // Wake: once over 1.5 s, delays i x 0.1875 s, and the last frame holds (fill forwards).
+  has(/\.fs-px-anim\.fs-px-wake \.fs-px-frame \{[^}]*animation: fs-px-show8 1\.5s steps\(1\) 1 forwards/,
+    "the 1.5 s one-shot wake");
+  has(/\.fs-px-anim\.fs-px-wake \.fs-px-f7 \{[^}]*animation-name: fs-px-hold/, "the held last wake frame");
+  for (let i = 0; i < 8; i += 1) {
+    has(new RegExp(`\\.fs-px-work \\.fs-px-f${i} \\{ animation-delay: ${+(i * 0.15).toFixed(2)}s; \\}`),
+      `working delay f${i}`);
+    has(new RegExp(`\\.fs-px-wake \\.fs-px-f${i} \\{[^}]*animation-delay: ${+(i * 0.1875).toFixed(4)}s;`),
+      `wake delay f${i}`);
+  }
+  // The guards name the new classes too (belt and braces; the component already renders frame 0).
+  const reduced = [...flat.matchAll(/@media \(prefers-reduced-motion: reduce\) \{(.*?)\} \}/g)]
+    .map((m) => m[1]).join(" ");
+  for (const cls of ["fs-px-anim", "fs-px-work", "fs-px-wake"]) {
+    assert.ok(reduced.includes(`.${cls} .fs-px-frame`), `reduced motion stops ${cls}`);
+    assert.ok(flat.includes(`[data-motion="off"] .${cls} .fs-px-frame`), `pause stops ${cls}`);
+  }
+  // Frame 0 must win over the more specific working and wake frame rules if the class lags.
+  assert.ok(reduced.includes(".fs-px-anim .fs-px-f0 { opacity: 1 !important;"), "reduced motion shows f0");
+  assert.ok(flat.includes('[data-motion="off"] .fs-px-anim .fs-px-f0 { opacity: 1 !important; }'), "pause shows f0");
 });
 
 // ---- Sprite contrast on the tile (spec section 6: each sprite reaches 3:1 in every theme) ----

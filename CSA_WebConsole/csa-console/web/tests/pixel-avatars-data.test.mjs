@@ -97,9 +97,9 @@ test("palettes are short, upper-case, keep the outline and white eyes, and diffe
 
 test("every palette entry is used by some frame", () => {
   for (const id of AGENT_IDS) {
-    const { palette, idle } = PIXEL_DATA[id];
+    const { palette, idle, working } = PIXEL_DATA[id];
     const used = new Set();
-    for (const frames of Object.values(idle))
+    for (const frames of [...Object.values(idle), ...Object.values(working)])
       for (const frame of frames) for (const row of decodeFrame(frame)) for (const c of row) used.add(c);
     for (let i = 0; i < palette.length; i += 1) assert.ok(used.has(i), `${id} entry ${i} unused`);
   }
@@ -110,6 +110,9 @@ test("the four idle frames of every agent animate", () => {
     for (const size of ["32", "48"]) {
       const frames = PIXEL_DATA[id].idle[size];
       assert.ok(new Set(frames).size >= 2, `${id} ${size} frames are all identical`);
+      // Frame 0 is the rest pose; the loop leaves it and comes back through frames 1 and 3.
+      assert.notEqual(frames[1], frames[0], `${id} ${size} frame 1 equals the rest pose`);
+      assert.notEqual(frames[3], frames[0], `${id} ${size} frame 3 equals the rest pose`);
     }
   }
 });
@@ -142,4 +145,54 @@ test("the data module stays small and data-only", () => {
   assert.ok(Buffer.byteLength(dataSource) < 150 * 1024, `${Buffer.byteLength(dataSource)} bytes`);
   assert.match(dataSource, /^\/\*\*[\s\S]*?\*\//, "starts with the format header");
   assert.equal(/\bfunction\b|=>/.test(dataSource), false, "no logic in the data module");
+});
+
+// ---- Working loop: eight frames on the 48 grid, the creature at work with one small prop ----
+const filled = (frame) => decodeFrame(frame).flat().filter((c) => c >= 0).length;
+
+test("every agent has eight 48 x 48 working frames, and only on the 48 grid", () => {
+  for (const id of AGENT_IDS) {
+    const { palette, working } = PIXEL_DATA[id];
+    assert.ok(working, `${id} has working frames`);
+    assert.deepEqual(Object.keys(working), ["48"], `${id} working frames exist only for the 48 grid`);
+    assert.equal(working["48"].length, 8, `${id} has eight working frames`);
+    for (const frame of working["48"]) {
+      const rows = decodeFrame(frame);
+      assert.equal(rows.length, 48, `${id} working rows`);
+      for (const row of rows) {
+        assert.equal(row.length, 48, `${id} working row width`);
+        for (const cell of row) assert.ok(cell >= -1 && cell < palette.length, `${id} cell ${cell}`);
+      }
+    }
+  }
+});
+
+test("the working frames move: neighbours differ, and at least six frames are distinct", () => {
+  for (const id of AGENT_IDS) {
+    const frames = PIXEL_DATA[id].working["48"];
+    for (let i = 0; i < frames.length; i += 1) {
+      const next = (i + 1) % frames.length;
+      assert.notEqual(frames[i], frames[next], `${id} working frames ${i} and ${next} are equal`);
+    }
+    assert.ok(new Set(frames).size >= 6, `${id} has only ${new Set(frames).size} distinct frames`);
+    assert.ok(!frames.includes(PIXEL_DATA[id].idle["48"][0]), `${id} a working frame is the idle rest`);
+  }
+});
+
+test("the working frames carry a prop: at least 15 more cells than the rest pose in 6 of 8", () => {
+  for (const id of AGENT_IDS) {
+    const rest = filled(PIXEL_DATA[id].idle["48"][0]);
+    const counts = PIXEL_DATA[id].working["48"].map(filled);
+    const withProp = counts.filter((count) => count - rest >= 15).length;
+    assert.ok(withProp >= 6, `${id}: rest ${rest}, working ${counts}`);
+  }
+});
+
+test("the creature is never cropped while it works (each frame keeps 90% of the rest cells)", () => {
+  for (const id of AGENT_IDS) {
+    const rest = filled(PIXEL_DATA[id].idle["48"][0]);
+    for (const count of PIXEL_DATA[id].working["48"].map(filled)) {
+      assert.ok(count >= rest * 0.9, `${id}: ${count} cells vs rest ${rest}`);
+    }
+  }
 });

@@ -80,36 +80,49 @@ export function frameRects(frame: number[][], palette: string[]): SpriteRect[] {
  */
 export type AvatarState = "idle" | "still" | "pending" | "rest" | "working" | "wake";
 
-/** Which generated frame set a state plays. */
-export type FrameSet = "idle";
+/** Which generated frame set a state draws from: "working" exists only on the 48 grid. */
+export type FrameSet = "idle" | "working";
 
 /**
- * Fallback, on purpose: `working` and `wake` have no frames of their own yet, so they play the
- * idle loop. Task 12 adds a "working" frame set to the data and changes only this function.
+ * How the frames move: `none` is frame 0 alone; `idle` loops four idle frames over one second;
+ * `working` loops eight working frames over 1.2 s; `wake` plays the eight working frames once
+ * over 1.5 s and holds the last (the parent switches back to `idle` afterwards).
  */
-export function frameSetFor(state: AvatarState): FrameSet {
-  switch (state) {
-    case "idle":
-    case "still":
-    case "pending":
-    case "rest":
-    case "working":
-    case "wake":
-      return "idle";
-    default:
-      throw new Error(`Unknown avatar state: ${String(state)}`);
-  }
+export type AvatarMotion = "none" | "idle" | "working" | "wake";
+
+const STATES: readonly AvatarState[] = ["idle", "still", "pending", "rest", "working", "wake"];
+
+/**
+ * The frame set a state plays when it animates. `working` and `wake` use the working frames,
+ * which exist only on the 48 grid; on the 32 grid they fall back to the idle loop. Every other
+ * state uses the idle frames.
+ */
+export function frameSetFor(state: AvatarState, grid: SpriteGrid): FrameSet {
+  if (!STATES.includes(state)) throw new Error(`Unknown avatar state: ${String(state)}`);
+  if (grid !== 32 && grid !== 48) throw new Error(`Unsupported sprite grid: ${String(grid)}`);
+  return (state === "working" || state === "wake") && grid === 48 ? "working" : "idle";
 }
 
-export type AvatarPlan = { animate: boolean; dimmed: boolean; frameSet: FrameSet };
+export type AvatarPlan = {
+  animate: boolean;
+  dimmed: boolean;
+  motion: AvatarMotion;
+  frameSet: FrameSet;
+  /** How many frames to render, from frame 0: 1 when still, 4 for idle, 8 for working/wake. */
+  frameCount: 1 | 4 | 8;
+};
 
 /**
  * What to draw. `still` and `pending` are dimmed and never animate; `rest` never animates and is
  * not dimmed; the other states animate only while decorative motion is allowed (see
- * `useMotionAllowed`). When `animate` is false the sprite is frame 0 alone.
+ * `useMotionAllowed`). When nothing animates the sprite is idle frame 0 alone, the rest pose,
+ * whatever the state (reduced motion, the pause preference and offscreen included).
  */
-export function avatarPlan(state: AvatarState, motionAllowed: boolean): AvatarPlan {
-  const frameSet = frameSetFor(state);
+export function avatarPlan(state: AvatarState, motionAllowed: boolean, grid: SpriteGrid): AvatarPlan {
+  const frameSet = frameSetFor(state, grid);
   const dimmed = state === "still" || state === "pending";
-  return { animate: state !== "rest" && !dimmed && motionAllowed, dimmed, frameSet };
+  const animate = state !== "rest" && !dimmed && motionAllowed;
+  if (!animate) return { animate, dimmed, motion: "none", frameSet: "idle", frameCount: 1 };
+  if (frameSet === "idle") return { animate, dimmed, motion: "idle", frameSet, frameCount: 4 };
+  return { animate, dimmed, motion: state === "wake" ? "wake" : "working", frameSet, frameCount: 8 };
 }
