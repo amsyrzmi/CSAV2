@@ -2,7 +2,7 @@
 // radius, 40 px controls that grow to a 44 px touch target on coarse pointers,
 // the --fs-focus ring, and 150 ms hover/press feedback on --fs-ease-out.
 const motion =
-  "transition-[background-color,border-color,box-shadow,color,transform] duration-150 ease-(--fs-ease-out)";
+  "transition-[background-color,border-color,box-shadow,color,scale,transform] duration-150 ease-(--fs-ease-out)";
 const ring =
   "focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
 const button = `inline-flex min-h-10 items-center justify-center gap-2 rounded-[6px] px-4 py-2 text-sm font-medium pointer-coarse:min-h-11 ${motion} ${ring} active:scale-[0.98] disabled:cursor-not-allowed disabled:border-[var(--fs-border)] disabled:bg-[var(--fs-disabled-bg)] disabled:text-[var(--fs-disabled-text)] disabled:active:scale-100`;

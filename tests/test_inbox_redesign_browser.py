@@ -548,6 +548,17 @@ async def test_slide_over_opens_closes_with_escape_and_returns_focus(shell: Shel
         await expect(page.get_by_test_id("inbox-thread")).to_be_visible()
 
 
+async def test_back_on_phone_returns_focus_to_the_open_conversation_row(shell: Shell) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state, width=390) as page:
+        await rows_loaded(page)
+        await open_thread(page, UNNAMED)
+        await expect(row(page, UNNAMED)).to_be_hidden()
+        await page.get_by_role("button", name="Back to conversations").click()
+        await expect(row(page, UNNAMED)).to_be_visible()
+        await expect(row(page, UNNAMED)).to_be_focused()
+
+
 async def test_empty_state_connect_button_only_for_admins(shell: Shell) -> None:
     ask = "Ask your administrator to connect WhatsApp."
     async with inbox_page(shell, Inbox(items=[], needs_review_count=0)) as page:

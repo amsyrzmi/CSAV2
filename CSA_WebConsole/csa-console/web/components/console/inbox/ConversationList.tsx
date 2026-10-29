@@ -73,7 +73,8 @@ export function ConversationList({
   const showRows = !status.forbidden && items.length > 0;
   return <section aria-labelledby={`${searchId}-title`} className="flex min-h-0 min-w-0 flex-1 flex-col">
     <div className="space-y-3 border-b border-[#E8EEF8] p-3">
-      <h2 id={`${searchId}-title`} className="text-base font-semibold">Conversations</h2>
+      <h2 id={`${searchId}-title`} tabIndex={-1} data-conversation-list-heading
+        className="text-base font-semibold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">Conversations</h2>
       <div>
         <label htmlFor={searchId} className="mb-1 block text-xs font-medium text-ink-700">Search customers</label>
         <div className="relative">

@@ -52,6 +52,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const [cardHost, setCardHost] = useState<HTMLElement | null>(null);
   const detailsRef = useRef<HTMLButtonElement>(null);
   const listScroll = useRef(0);
+  const focusAfterBack = useRef(false);
 
   // Typing settles for 300 ms before the server is asked; inboxListQuery drops one character.
   useEffect(() => {
@@ -93,10 +94,22 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     }
   }
   const back = useCallback(() => {
+    focusAfterBack.current = true;
     setThreadOpen(false);
     setDetailsOpen(false);
     requestAnimationFrame(() => window.scrollTo({ top: listScroll.current }));
   }, []);
+  // Back hides the thread and shows the list in one commit. The Back button vanishes with the
+  // thread, so focus goes to the row that was open, or to the list heading when that row is gone
+  // (filtered out, or disabled while an action is pending).
+  useEffect(() => {
+    if (threadOpen || !focusAfterBack.current) return;
+    focusAfterBack.current = false;
+    const target = [...document.querySelectorAll<HTMLElement>("[data-conversation-id]")]
+      .find((el) => el.dataset.conversationId === selected && !(el instanceof HTMLButtonElement && el.disabled))
+      ?? document.querySelector<HTMLElement>("[data-conversation-list-heading]");
+    target?.focus({ preventScroll: true });
+  }, [threadOpen, selected]);
   function changeFilters(next: { channel?: ChannelFilter; view?: View }) {
     if (next.channel !== undefined) setChannel(next.channel);
     if (next.view !== undefined) setView(next.view);
