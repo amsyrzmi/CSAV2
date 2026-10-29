@@ -10,17 +10,25 @@ const button = `inline-flex min-h-10 items-center justify-center gap-2 rounded-[
 export const field = `h-10 w-full rounded-[var(--fs-radius-control)] border border-ink-300 bg-[var(--fs-surface)] px-3 text-sm text-ink-900 pointer-coarse:h-11 placeholder:text-ink-500 hover:border-ink-500 focus:border-brand-600 disabled:cursor-not-allowed disabled:bg-[var(--fs-disabled-bg)] disabled:text-[var(--fs-disabled-text)] ${motion} ${ring}`;
 export const action = `${button} bg-brand-600 text-[color:var(--fs-on-primary)] hover:bg-brand-700`;
 export const secondary = `${button} border border-ink-300 bg-[var(--fs-surface)] text-ink-900 hover:border-brand-600 hover:bg-brand-50`;
+/** `error` for a failure; `warning` for something the reader must act on that is not a failure. */
 export function Notice({
   children,
   error = false,
+  warning = false,
 }: {
   children: React.ReactNode;
   error?: boolean;
+  warning?: boolean;
 }) {
+  const tone = error
+    ? "border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] text-[var(--fs-danger)]"
+    : warning
+      ? "border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[var(--fs-warning)]"
+      : "border-brand-200 bg-brand-50 text-ink-900";
   return (
     <p
-      role={error ? "alert" : "status"}
-      className={`rounded-[var(--fs-radius-control)] border p-3 text-sm ${error ? "border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] text-[var(--fs-danger)]" : "border-brand-200 bg-brand-50 text-ink-900"}`}
+      role={error || warning ? "alert" : "status"}
+      className={`rounded-[var(--fs-radius-control)] border p-3 text-sm ${tone}`}
     >
       {children}
     </p>

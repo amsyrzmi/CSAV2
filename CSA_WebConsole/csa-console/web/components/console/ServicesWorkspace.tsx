@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Bot, CirclePause, Hourglass, Layers, Receipt, type LucideIcon } from "lucide-react";
+import { Bot, CirclePause, Hourglass, Layers, Receipt, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { avatarForPackage } from "@/lib/agent-avatars";
 import { api, ApiError, patch } from "@/lib/api";
@@ -8,7 +8,8 @@ import type { Agent, Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
 import { servicesClient, type Service } from "@/lib/services-api";
 import {
-  agentCountLabel, lastChangeText, rowAvatarState, serviceStats, shortDate, statusLabel, type ServiceStats, type StatusTone,
+  agentCountLabel, lastChangeText, rowAvatarState, SAVED_NOT_REFRESHED, serviceStats, statusLabel, statusLine,
+  type ServiceStats, type StatusTone,
 } from "@/lib/services-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
@@ -28,7 +29,7 @@ const TONE_CLASS: Record<StatusTone, string> = {
   off: "text-[color:var(--fs-danger)]",
   neutral: "text-ink-600",
 };
-const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-text-secondary)" };
+const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-sprite-ink)" };
 const CARD = "rounded-[14px] border border-[var(--fs-border)] bg-[var(--fs-surface)] shadow-[var(--fs-shadow-card)]";
 
 /** Plain words about what each count covers; the footer is not a link. */
@@ -124,10 +125,8 @@ function ServiceList({ clientId, platform, canManage }: {
               </div>
               <p className="font-(family-name:--fs-font-heading) text-3xl font-semibold tabular-nums">{figure(stats)}</p>
             </div>
-            <p className="flex items-center justify-between gap-2 border-t border-[var(--fs-border)] bg-[var(--fs-surface-blue)] px-4 py-2 text-xs text-ink-600">
-              <span className="min-w-0">{footer}</span>
-              <ArrowRight aria-hidden="true" className="size-3.5 flex-none" />
-            </p>
+            <p className="border-t border-[var(--fs-border)] bg-[var(--fs-surface-blue)] px-4 py-2 text-xs text-ink-600">
+              {footer}</p>
           </div>
         ))}
       </div>
@@ -157,7 +156,9 @@ type Outcome = "requested" | "active" | "suspended";
  * One service row. The avatar follows the server, never the click: a row action starts a
  * pending look (still, dimmed, "Working..."), and only when the call has resolved AND the
  * reloaded list shows the new status does an activation wake the avatar or a suspension settle
- * it. A failure restores the old look and shows the server's reason. A status that changes
+ * it. A failure restores the old look and shows the server's reason. A call that succeeded but
+ * whose reload failed is not a failure: the row says it was saved, the avatar stays still (no
+ * confirmed status to wake or settle for), and the reader reloads. A status that changes
  * without an action here (a reload after another row's action) just shows its resting look.
  */
 function ServiceRow({ service, clientId, platform, onChanged }: {
@@ -166,6 +167,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState("");
+  const [stale, setStale] = useState(false);
   const [form, setForm] = useState<"" | "activate" | "suspend">("");
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
@@ -173,6 +175,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
   // The agent switch being saved and the server's reason for each failed one, shown on its card.
   const [switching, setSwitching] = useState<{ name: string; switchName: "is_enabled" | "client_enabled" } | null>(null);
   const [agentErrors, setAgentErrors] = useState<Record<string, string>>({});
+  const [agentStale, setAgentStale] = useState("");
   // The ref closes the gap before a re-render disables the buttons: one request per click burst.
   const working = useRef(false);
   const transition = useAvatarTransition(rowAvatarState(service.status));
@@ -182,6 +185,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
   const status = statusLabel(service);
   const avatar = avatarForPackage(service.key);
   const lastChange = lastChangeText(service.last_change);
+  const line = statusLine(service);
   const resting = transition.phase === "idle" || transition.phase === "still";
   const avatarState = acting ? "pending" : resting ? rowAvatarState(service.status) : transition.state;
 
@@ -191,20 +195,33 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
     setBusy(true);
     setActing(true);
     setError("");
+    setStale(false);
+    setAgentStale("");
     start();
     try {
-      await call();
-      const rows = await onChanged();
-      const now = rows.find((row) => row.key === service.key)?.status;
+      try {
+        await call();
+      } catch (cause) {
+        fail();
+        setError(message(cause));
+        return;
+      }
+      // Saved: the form is done with whatever the reload does.
       setForm("");
       setReference("");
       setNote("");
+      let rows: Service[];
+      try {
+        rows = await onChanged();
+      } catch {
+        fail(); // saved, but no reloaded status confirms it: no wake or settle
+        setStale(true);
+        return;
+      }
+      const now = rows.find((row) => row.key === service.key)?.status;
       if (outcome === "active" && now === "active") confirmTo("active");
       else if (outcome === "suspended" && now === "suspended") confirmTo("inactive");
       else fail(); // a request only moves the row to "requested": nothing to wake or settle
-    } catch (cause) {
-      fail();
-      setError(message(cause));
     } finally {
       working.current = false;
       setBusy(false);
@@ -218,13 +235,19 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
     setBusy(true);
     setError("");
     setAgentErrors({});
+    setStale(false);
+    setAgentStale("");
     setSwitching({ name: agent.name, switchName });
     try {
-      await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
-        { [switchName]: !capability[switchName] });
-      await onChanged();
-    } catch (cause) {
-      setAgentErrors({ [agent.name]: message(cause) });
+      try {
+        await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
+          { [switchName]: !capability[switchName] });
+      } catch (cause) {
+        setAgentErrors({ [agent.name]: message(cause) });
+        return;
+      }
+      // Saved even if the reload fails; the card then says so instead of reporting a failure.
+      await onChanged().catch(() => setAgentStale(agent.name));
     } finally {
       working.current = false;
       setBusy(false);
@@ -243,11 +266,9 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
           <div className="min-w-0">
             <h3 className="font-(family-name:--fs-font-heading) text-base font-semibold">{service.title}</h3>
             <p className="mt-0.5 text-sm text-ink-600 [overflow-wrap:anywhere]">{service.summary}</p>
-            {service.status === "requested" && <p className="mt-1 text-sm">
-              Requested{shortDate(service.requested_at) ? ` ${shortDate(service.requested_at)}` : ""}; awaiting activation.</p>}
-            {service.status === "active" && <p className="mt-1 text-sm [overflow-wrap:anywhere]" data-testid={`services-activation-${service.key}`}>
-              Activated{shortDate(service.activated_at) ? ` ${shortDate(service.activated_at)}` : ""} by a platform administrator
-              {service.reference ? `. Reference: ${service.reference}` : ""}.</p>}
+            {/* Only what the last-change line below does not already say (see statusLine). */}
+            {line && <p className="mt-1 text-sm [overflow-wrap:anywhere]"
+              data-testid={`services-${service.status === "active" ? "activation" : "requested"}-${service.key}`}>{line}</p>}
             {lastChange && <p className="mt-1 text-sm text-ink-600 [overflow-wrap:anywhere]"
               data-testid={`services-last-change-${service.key}`}>{lastChange}</p>}
             {service.key === "staff_email" && service.inner_switch !== null && <p className="mt-1 text-sm text-ink-600">
@@ -258,8 +279,6 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
         </div>
         <div className="flex items-start gap-x-5 text-sm">
           <span className="whitespace-nowrap text-ink-600 sm:w-20">{agentCountLabel(service.agents.length)}</span>
-          {service.key === "e_invoicing" && <span data-testid="services-planned-e_invoicing"
-            className="font-medium text-ink-700">Planned</span>}
           <span className="flex flex-col sm:w-24">
             <span data-testid={`services-status-${service.key}`}
               className={`font-medium ${TONE_CLASS[status.tone]}`}>{status.text}</span>
@@ -287,6 +306,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
       {platform && !service.consistent && <div className="mt-3"><Notice error>
         Inconsistent state: {service.inconsistencies.join(", ")}.</Notice></div>}
       {error && <div className="mt-3"><Notice error>{error}</Notice></div>}
+      {stale && <div className="mt-3"><Notice warning>{SAVED_NOT_REFRESHED}</Notice></div>}
       {form === "activate" && service.can_activate && (
         <form className="mt-4 max-w-xl space-y-3" onSubmit={(event) => {
           event.preventDefault();
@@ -329,7 +349,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
         data-testid={`services-agents-${service.key}`}>
         {service.agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle}
           pending={switching?.name === agent.name ? switching.switchName : null}
-          failed={agentErrors[agent.name] ?? null} />)}
+          failed={agentErrors[agent.name] ?? null} saved={agentStale === agent.name} />)}
       </div>}
     </li>
   );

@@ -8,7 +8,7 @@ import { api, patch } from "@/lib/api";
 import type {
   Agent, AgentRun, Client, Me, RunPage, RuntimeEvent, RuntimeOverview,
 } from "@/lib/identity-contracts";
-import { lastChangeText } from "@/lib/services-view";
+import { lastChangeText, SAVED_NOT_REFRESHED } from "@/lib/services-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
 import { field, Heading, Notice, Panel, secondary } from "./ui";
@@ -68,6 +68,7 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
   const [busy, setBusy] = useState(false);
   const [switching, setSwitching] = useState<{ name: string; switchName: SwitchName } | null>(null);
   const [failures, setFailures] = useState<Record<string, string>>({});
+  const [stale, setStale] = useState(false);
   const inFlight = useRef(false);
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState("");
@@ -88,18 +89,29 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
     inFlight.current = true;
     setBusy(true);
     setError("");
+    setStale(false);
     setFailures({});
     setSwitching({ name: agent.name, switchName });
     try {
-      await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
-        { [switchName]: !capability[switchName] });
-      setAgents(await api<Agent[]>(path));
-    } catch (cause) {
-      const reason = (cause as Error).message;
-      setError(reason);
-      setFailures({ [agent.name]: reason });
-      // Controls must not use stale switch values after a failed refresh.
-      setAgents(null);
+      try {
+        await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
+          { [switchName]: !capability[switchName] });
+      } catch (cause) {
+        const reason = (cause as Error).message;
+        setError(reason);
+        setFailures({ [agent.name]: reason });
+        // Controls must not use stale switch values after a failed change.
+        setAgents(null);
+        return;
+      }
+      try {
+        setAgents(await api<Agent[]>(path));
+      } catch {
+        // Saved, but the list could not refresh: say so instead of reporting a failure, and
+        // drop the stale list so no control acts on old switch values.
+        setStale(true);
+        setAgents(null);
+      }
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -110,6 +122,7 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
   return (
     <div className="space-y-5">
       {error && <Notice error>{error}</Notice>}
+      {stale && <Notice warning>{SAVED_NOT_REFRESHED}</Notice>}
       <button className={secondary} disabled={busy} onClick={() => setRevision((value) => value + 1)}>Refresh agents</button>
       <Notice>Subscription, tenant switch, implementation, setup and circuit are independent.
         Both switches on does not mean a provider is connected or healthy. Changes affect the next execution attempt; already-started work is not cancelled.</Notice>
@@ -129,7 +142,7 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
         {detail.name === "kb_agent" ? <Link className={`${secondary} mt-3`} href={`${platform ? "/knowledge-base" : "/portal/faq"}?${query}`}>Open knowledge base</Link> :
           <p className="mt-3 text-sm text-ink-500">Feature-specific actions are adopted in later migration phases.</p>}
       </Panel>}
-      {!agents ? <Notice>{error ? "Agent state unavailable. Refresh to retry." : "Loading agents..."}</Notice> :
+      {!agents ? <Notice>{error || stale ? "Agent state unavailable. Refresh to retry." : "Loading agents..."}</Notice> :
         <div className="grid gap-5 xl:grid-cols-2">
           {agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle}
             pending={switching?.name === agent.name ? switching.switchName : null}
@@ -140,7 +153,12 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
 }
 
 /** The sprite chip colour, shared by the avatar tile and the icon shown for an agent without one. */
-const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-text-secondary)" };
+const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-sprite-ink)" };
+/**
+ * Agents that are planned but not built yet. Listed by name rather than inferred from "has no
+ * avatar", so a future agent that simply lacks art is not mislabelled as planned.
+ */
+const PLANNED_AGENTS: ReadonlySet<string> = new Set(["lhdn_agent"]);
 
 /**
  * One agent: avatar chip, title, status words, the details, and the two switches.
@@ -148,16 +166,19 @@ const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-text-second
  * The avatar follows the server, never the click. `pending` (the switch being saved) shows a
  * still, dimmed avatar and a "Saving..." label; when it clears, `failed` restores the old look
  * and shows the reason, a newly active capability plays the short wake, a newly inactive one
- * settles, and an unchanged one just restores. A change nobody made here (a reload or a poll)
+ * settles, and an unchanged one just restores. `saved` means the change was saved but the
+ * list reload after it failed: the card says so (not a failure) and nothing animates, because
+ * no reloaded state confirms it. A change nobody made here (a reload or a poll)
  * is shown at once without a wake, because the resting look is derived from `capability.active`
  * and only the transition phases come from the hook. Parents must keep `key` stable (the agent
  * name) so a reload while pending does not remount the card and lose the pending request.
  */
-export function AgentCard({ agent, busy, onToggle, pending = null, failed = null }: {
+export function AgentCard({ agent, busy, onToggle, pending = null, failed = null, saved = false }: {
   agent: Agent; busy: boolean;
   onToggle: (agent: Agent, switchName: SwitchName) => void;
   pending?: SwitchName | null;
   failed?: string | null;
+  saved?: boolean;
 }) {
   const active = Boolean(agent.capability?.active);
   const avatar = avatarForAgent(agent.name);
@@ -183,6 +204,7 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
   const subscribed = agent.capability?.is_enabled;
   const switchOn = agent.capability?.client_enabled;
   const name = agent.name;
+  const planned = PLANNED_AGENTS.has(name);
   const lastChange = lastChangeText(agent.capability?.last_change);
   return (
     <article data-testid={`agent-card-${name}`}
@@ -194,9 +216,10 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
             <Receipt className="size-6" />
           </span>}
         <div className="min-w-0 flex-1">
-          <h3 className="font-(family-name:--fs-font-heading) text-base font-semibold">{agent.title}</h3>
+          {/* h4: the card sits under a service row whose title is the h3. */}
+          <h4 className="font-(family-name:--fs-font-heading) text-base font-semibold">{agent.title}</h4>
           <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-            {!avatar && <span data-testid={`agent-planned-${name}`} className="font-medium">Planned</span>}
+            {planned && <span data-testid={`agent-planned-${name}`} className="font-medium">Planned</span>}
             {agent.capability && <span data-testid={`agent-status-${name}`}
               className="font-medium text-ink-700">{active ? "Active" : "Not active"}</span>}
           </p>
@@ -222,6 +245,7 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
       </p>}
       {agent.required_system && <p className="mb-3 text-sm">Required safety capability; disabling is prohibited.</p>}
       {failed && <div className="mb-3"><Notice error>{failed}</Notice></div>}
+      {saved && !failed && <div className="mb-3"><Notice warning>{SAVED_NOT_REFRESHED}</Notice></div>}
       <div className="flex flex-wrap gap-2">
         {agent.can_subscribe && <button className={secondary} disabled={busy}
           data-testid={`agent-subscribe-${name}`}

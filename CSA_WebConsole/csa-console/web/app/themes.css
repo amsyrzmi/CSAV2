@@ -23,6 +23,8 @@
   --fs-surface-blue: #e7efff;
   --fs-tile: #f3f7ff;
   --fs-sprite-tile: #eaf0ff;
+  /* Icon ink on the sprite chip: the avatars' shared navy outline, dark on the light chip. */
+  --fs-sprite-ink: #15203a;
   --fs-text: #0b1b3f;
   --fs-text-secondary: #53648b;
   --fs-primary: #0047ab;
@@ -106,6 +108,8 @@
   --fs-surface-blue: #172a52;
   --fs-tile: #18233b;
   --fs-sprite-tile: #dbe6fb;
+  /* The chip stays light in night, so its ink stays dark (not --fs-text). */
+  --fs-sprite-ink: #15203a;
   --fs-text: #e8eefc;
   --fs-text-secondary: #93a0bf;
   --fs-primary: #6ea2ff;
@@ -186,6 +190,7 @@
   --fs-surface-blue: #e8eefc;
   --fs-tile: #f8f3e8;
   --fs-sprite-tile: #efe7d6;
+  --fs-sprite-ink: #15203a;
   --fs-text: #14213d;
   --fs-text-secondary: #5c6272;
   --fs-primary: #1f4fd8;

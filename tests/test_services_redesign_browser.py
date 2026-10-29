@@ -39,6 +39,7 @@ pytestmark = pytest.mark.asyncio
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "CSA_WebConsole/csa-console/web"
 REASON = "Activation is locked while billing is reviewed."
+SAVED = "Saved, but the list could not refresh. Reload to see the change."
 THEMES = ("cobalt", "night", "bureau")
 WIDTHS = (320, 390, 768, 1024, 1440)
 NO_WHATSAPP = {
@@ -239,6 +240,7 @@ class Stub:
     posts: list[dict[str, Any]] = field(default_factory=list)
     patches: list[dict[str, Any]] = field(default_factory=list)
     list_gets: int = 0
+    list_fails: bool = False
     switch_change: dict[str, str] = field(default_factory=lambda: change("tenant_switch_off", 28))
     unexpected: list[str] = field(default_factory=list)
 
@@ -275,7 +277,10 @@ class Stub:
         elif path == "services" and request.method == "GET":
             self.list_gets += 1
             await self.list_gate.wait()
-            data = list(self.services.values())
+            if self.list_fails:
+                status, data = 503, {"detail": "synthetic list outage"}
+            else:
+                data = list(self.services.values())
         elif path == "channels/whatsapp" and request.method == "GET":
             data = NO_WHATSAPP
         elif path.startswith("services/") and request.method == "POST":
@@ -551,6 +556,8 @@ async def test_stat_cards_show_real_counts(site: Site) -> None:
             assert text.startswith(f"{label} {figure} "), text
             assert len(text) > len(f"{label} {figure} "), "the footer line is missing"
             assert await stat.locator("a, button").count() == 0, "a stat footer is not a link"
+            # Only the icon chip draws; the footer carries no arrow that would suggest a link.
+            assert await stat.locator("svg").count() == 1, kind
 
         # Activate one service: waiting drops, active rises, suspended and agents stay.
         row = row_of(page, "subscriptions")
@@ -577,14 +584,15 @@ async def test_stat_cards_show_real_counts(site: Site) -> None:
     assert not stub.unexpected, stub.unexpected
 
 
-async def test_einvoicing_row_shows_planned_without_avatar(site: Site) -> None:
+async def test_einvoicing_row_shows_one_status_word_without_avatar(site: Site) -> None:
     stub = Stub()
 
     async def body(browser: Any) -> None:
         context, page, diagnostics = await open_services(browser, site, stub)
         row = row_of(page, "e_invoicing")
-        await expect(row.get_by_text("Planned", exact=True)).to_be_visible()
+        # One status word: "Coming soon" (asserted across the Services tests); no extra "Planned".
         await expect(row.get_by_test_id("services-status-e_invoicing")).to_have_text("Coming soon")
+        await expect(row.get_by_text("Planned", exact=True)).to_have_count(0)
         await expect(row.locator("[data-agent]")).to_have_count(0)
         await expect(row.locator("svg").first).to_be_visible()  # the plain icon on the chip
         await expect(row.get_by_role("button")).to_have_count(0)
@@ -621,6 +629,13 @@ async def test_headings_keep_the_page_outline_valid(site: Site) -> None:
         for kind, count in (("base", 1), ("addon", 5), ("standalone", 2)):
             group = page.get_by_test_id(f"services-group-{kind}")
             await expect(group.get_by_role("heading", level=3)).to_have_count(count)
+        # Agent cards open under their service row: their titles are h4, never another h3.
+        row = row_of(page, "customer_support")
+        await row.get_by_test_id("services-agents-toggle-customer_support").click()
+        agents = page.get_by_test_id("services-agents-customer_support")
+        await expect(agents.get_by_role("heading", level=4)).to_have_count(4)
+        await expect(agents.get_by_role("heading", level=3)).to_have_count(0)
+        await expect(row.get_by_role("heading", level=3)).to_have_text(["Customer support"])
         assert not diagnostics, diagnostics
         await context.close()
 
@@ -807,12 +822,23 @@ async def test_platform_admin_sees_who_made_each_change(site: Site) -> None:
         await expect(line_of(page, "staff_email")).to_have_text(
             "Suspended 27 Oct 2026 by Preview Admin"
         )
-        # The activation line that exists today is untouched and sits above the new line.
+        # The kept line above it only adds what the last-change line does not say.
         activation = row_of(page, "customer_support").get_by_test_id(
             "services-activation-customer_support"
         )
-        await expect(activation).to_contain_text("by a platform administrator")
-        await expect(activation).to_contain_text("Reference: Q-1")
+        await expect(activation).to_have_text("Reference: Q-1.")
+        await expect(
+            row_of(page, "subscriptions").get_by_test_id("services-requested-subscriptions")
+        ).to_have_text("Awaiting activation.")
+        # No last change (older backend or no audit row): the full sentence stays.
+        await expect(row_of(page, "hr").get_by_test_id("services-activation-hr")).to_have_text(
+            "Activated by a platform administrator."
+        )
+        await expect(line_of(page, "hr")).to_have_count(0)
+        for key in ("customer_support", "subscriptions"):
+            text = await row_of(page, key).inner_text()
+            assert text.count("Activated") + text.count("Requested") <= 2, (key, text)
+            assert "by a platform administrator" not in text, (key, text)
         order = await row_of(page, "customer_support").evaluate(
             """row => {
                 const find = id => row.querySelector(`[data-testid="${id}-customer_support"]`);
@@ -940,6 +966,78 @@ async def test_agent_switch_reloads_the_list_and_updates_the_line(site: Site) ->
         card = page.get_by_test_id("agent-card-kb_agent")
         await expect(card.get_by_text("Subscribed", exact=True)).to_have_count(1)
         await expect(card.get_by_text("Off", exact=True)).to_have_count(1)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_saved_action_with_a_failed_reload_is_not_reported_as_a_failure(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub)
+        row = row_of(page, "subscriptions")
+        avatar = avatar_of(row)
+        await expect(avatar).to_have_attribute("data-state", "still")
+        await watch_states(row)
+        await row.get_by_test_id("services-activate-subscriptions").click()
+        await row.get_by_test_id("services-activate-reference").fill("Q-9")
+        stub.list_fails = True
+        await row.get_by_test_id("services-activate-confirm").click()
+
+        # The POST succeeded; only the reload failed. The row says so, without a failure reason.
+        await expect(row.get_by_role("alert")).to_have_text(SAVED)
+        await expect(row.get_by_text("synthetic list outage")).to_have_count(0)
+        await expect(row.get_by_test_id("services-pending-subscriptions")).to_be_empty()
+        # The form is closed (the change is saved), so nothing invites a second activation.
+        await expect(row.get_by_test_id("services-activate-confirm")).to_have_count(0)
+        # No reloaded status confirms the change, so the avatar never wakes.
+        await page.wait_for_timeout(1_800)
+        assert await frames(row) == (1, "none")
+        assert await seen_states(row) == ["still", "pending", "still"]
+        assert [(p["key"], p["verb"]) for p in stub.posts] == [("subscriptions", "activate")]
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_saved_agent_switch_with_a_failed_reload_is_not_reported_as_a_failure(
+    site: Site,
+) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub)
+        row = row_of(page, "customer_support")
+        await row.get_by_test_id("services-agents-toggle-customer_support").click()
+        card = page.get_by_test_id("agent-card-kb_agent")
+        avatar = card.locator("[data-agent]")
+        await expect(avatar).to_have_attribute("data-state", "idle")
+        await avatar.evaluate(
+            """el => {
+                const list = (window.__kb = [el.dataset.state]);
+                new MutationObserver(() => {
+                    if (el.dataset.state !== list[list.length - 1]) list.push(el.dataset.state);
+                }).observe(el, { attributes: true, attributeFilter: ["data-state"] });
+            }"""
+        )
+        stub.list_fails = True
+        await page.get_by_test_id("agent-switch-kb_agent").click()
+
+        await expect(card.get_by_role("alert")).to_have_text(SAVED)
+        await expect(page.get_by_text("synthetic list outage")).to_have_count(0)
+        await expect(page.get_by_test_id("agent-pending-kb_agent")).to_be_empty()
+        await page.wait_for_timeout(1_000)
+        assert await page.evaluate("window.__kb") == ["idle", "pending", "idle"]
+        assert stub.patches == [{"name": "kb_agent", "body": {"client_enabled": False}}]
+        # The next action clears the notice.
+        stub.list_fails = False
+        await page.get_by_test_id("agent-subscribe-kb_agent").click()
+        await expect(card.get_by_role("alert")).to_have_count(0)
         assert not diagnostics, diagnostics
         await context.close()
 

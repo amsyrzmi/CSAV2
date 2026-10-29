@@ -460,7 +460,11 @@ async def test_double_click_sends_one_request(site: Site) -> None:
 
 async def test_unlinked_agents_page_still_renders(site: Site) -> None:
     """`/portal/agents` redirects to Services; the cards it shows are the shared AgentCard."""
-    stub = Stub(default_agents())
+    # An agent with no avatar that is not on the planned list (a future one without art yet).
+    unplanned = make_agent(
+        "mystery_agent", "Synthetic unplanned agent", is_enabled=False, client_enabled=False
+    )
+    stub = Stub({**default_agents(), "mystery_agent": unplanned})
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
@@ -500,6 +504,15 @@ async def test_unlinked_agents_page_still_renders(site: Site) -> None:
             await expect(planned.get_by_text("Planned", exact=True)).to_be_visible()
             await expect(planned.locator("[data-agent]")).to_have_count(0)
             await expect(planned.get_by_role("button")).to_have_count(0)
+            # "Planned" comes from an explicit list, not from the missing avatar.
+            other = card_of(page, "mystery_agent")
+            await expect(other.locator("[data-agent]")).to_have_count(0)
+            await expect(other.get_by_text("Planned", exact=True)).to_have_count(0)
+            await expect(other.get_by_test_id("agent-status-mystery_agent")).to_have_text(
+                "Not active"
+            )
+            # Each card title is an h4 under the service row's h3.
+            await expect(kb.get_by_role("heading", level=4)).to_have_text("Knowledge base agent")
             await context.close()
         finally:
             await browser.close()

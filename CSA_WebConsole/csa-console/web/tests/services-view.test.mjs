@@ -16,7 +16,10 @@ function moduleUrl(source) {
 const view = await import(moduleUrl(
   await readFile(new URL("../lib/services-view.ts", import.meta.url), "utf8"),
 ));
-const { serviceStats, rowAvatarState, statusLabel, agentCountLabel, lastChangeText, shortDate } = view;
+const {
+  serviceStats, rowAvatarState, statusLabel, agentCountLabel, lastChangeText, shortDate, statusLine,
+  SAVED_NOT_REFRESHED,
+} = view;
 
 const agent = (name, active) => ({ name, capability: { name, active } });
 const service = (key, status, agents = [], sellable = true) => ({
@@ -174,4 +177,56 @@ test("lastChangeText returns an actor with markup characters unchanged (React es
 test("shortDate gives the same short date as the last-changed line, or null", () => {
   assert.equal(shortDate("2026-10-20T08:30:00Z"), "20 Oct 2026");
   for (const bad of [null, undefined, "", "not a date", 0, {}]) assert.equal(shortDate(bad), null, String(bad));
+});
+
+// The line under an active or requested row's summary. When the last-change line already says
+// when and by whom, the row must not say it a second time; only the extra facts remain.
+const row = (status, extra = {}) => ({
+  key: "subscriptions", status, sellable: true, agents: [], reference: null,
+  requested_at: "2026-10-25T00:00:00Z", activated_at: "2026-10-26T00:00:00Z", last_change: null, ...extra,
+});
+
+test("statusLine keeps the full sentence when there is no last change", () => {
+  assert.equal(statusLine(row("requested")), "Requested 25 Oct 2026; awaiting activation.");
+  assert.equal(
+    statusLine(row("active", { reference: "Q-9" })),
+    "Activated 26 Oct 2026 by a platform administrator. Reference: Q-9.",
+  );
+  assert.equal(
+    statusLine(row("active", { activated_at: null })), "Activated by a platform administrator.",
+  );
+  assert.equal(statusLine(row("requested", { requested_at: null })), "Requested; awaiting activation.");
+});
+
+test("statusLine drops what the last-change line already says", () => {
+  assert.equal(
+    statusLine(row("active", { reference: "Q-9", last_change: change("activated") })), "Reference: Q-9.",
+  );
+  assert.equal(statusLine(row("active", { last_change: change("activated") })), null);
+  assert.equal(statusLine(row("requested", { last_change: change("requested") })), "Awaiting activation.");
+});
+
+test("statusLine keeps the full sentence when the last change is about something else", () => {
+  // The newest change is the request, but the row is active: the activation is not told yet.
+  assert.equal(
+    statusLine(row("active", { reference: "Q-9", last_change: change("requested") })),
+    "Activated 26 Oct 2026 by a platform administrator. Reference: Q-9.",
+  );
+  assert.equal(
+    statusLine(row("requested", { last_change: change("suspended") })),
+    "Requested 25 Oct 2026; awaiting activation.",
+  );
+  // A change that cannot be shown (bad date) does not count as told either.
+  assert.equal(
+    statusLine(row("requested", { last_change: change("requested", "x", "not a date") })),
+    "Requested 25 Oct 2026; awaiting activation.",
+  );
+});
+
+test("statusLine is null for available and suspended rows", () => {
+  for (const status of ["available", "suspended"]) assert.equal(statusLine(row(status)), null, status);
+});
+
+test("the saved-but-stale message does not claim a failure", () => {
+  assert.equal(SAVED_NOT_REFRESHED, "Saved, but the list could not refresh. Reload to see the change.");
 });

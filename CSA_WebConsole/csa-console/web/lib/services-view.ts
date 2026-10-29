@@ -84,3 +84,29 @@ export function lastChangeText(change: LastChange | null | undefined): string | 
   if (!words || !date) return null;
   return `${words} ${date} by ${change.actor}`;
 }
+
+/** Shown when a change was saved but the list reload after it failed: not a failure. */
+export const SAVED_NOT_REFRESHED = "Saved, but the list could not refresh. Reload to see the change.";
+
+/**
+ * The line under an active or requested row's summary, or null. When the last-change line is
+ * shown and already tells this status (activated for active, requested for requested), only the
+ * facts it does not carry remain: the reference, or that activation is still awaited. Without
+ * it (an older backend, no audit row, or a newer change about something else) the full sentence
+ * stays.
+ */
+export function statusLine(service: Service): string | null {
+  const told = lastChangeText(service.last_change) !== null ? service.last_change?.action : null;
+  if (service.status === "requested") {
+    if (told === "requested") return "Awaiting activation.";
+    const date = shortDate(service.requested_at);
+    return `Requested${date ? ` ${date}` : ""}; awaiting activation.`;
+  }
+  if (service.status === "active") {
+    const reference = service.reference ? `Reference: ${service.reference}.` : null;
+    if (told === "activated") return reference;
+    const date = shortDate(service.activated_at);
+    return `Activated${date ? ` ${date}` : ""} by a platform administrator${reference ? `. ${reference}` : "."}`;
+  }
+  return null;
+}

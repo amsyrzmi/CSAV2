@@ -37,7 +37,7 @@ const COLOUR_TOKENS = [
   "--fs-text-secondary", "--fs-primary", "--fs-primary-hover", "--fs-border", "--fs-border-control",
   "--fs-focus", "--fs-disabled-bg", "--fs-disabled-text", "--fs-success", "--fs-success-bg",
   "--fs-warning", "--fs-warning-bg", "--fs-danger", "--fs-danger-bg", "--fs-info", "--fs-info-bg",
-  "--fs-on-primary", "--fs-shell", "--fs-rail", "--fs-tile", "--fs-sprite-tile", "--fs-human", "--color-white",
+  "--fs-on-primary", "--fs-shell", "--fs-rail", "--fs-tile", "--fs-sprite-tile", "--fs-sprite-ink", "--fs-human", "--color-white",
   "--fs-ink-950", "--fs-ink-800", "--fs-ink-700", "--fs-ink-400", "--fs-ink-200", "--fs-ink-100",
   "--fs-ink-50", "--fs-brand-100", "--fs-brand-200", "--fs-brand-900",
   "--fs-border-strong", "--fs-neutral-bg", "--fs-neutral-text", "--fs-customer-bg", "--fs-customer-text",
@@ -118,6 +118,8 @@ const PAIRS = [
   ["--fs-text", "--fs-rail", 3, "brand mark body stacks on the rail"],
   ["--fs-text", "--fs-surface", 3, "brand mark body stacks on the top bar"],
   ["--fs-primary", "--fs-surface", 3, "brand mark accent stack on the top bar"],
+  // The sprite chip stays light in every theme (night too), so its icon ink cannot be --fs-text.
+  ["--fs-sprite-ink", "--fs-sprite-tile", 4.5, "icon on the sprite chip (agent or service without an avatar)"],
 ];
 
 for (const theme of THEMES) {
