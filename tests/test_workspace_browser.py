@@ -25,6 +25,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from csa.email.models import DraftOut, RecipientOut
 from csa.workspace.contracts import (
     CardField,
     DirectoryResult,
@@ -62,6 +63,7 @@ TRAINING_PROPOSAL = UUID("55555555-5555-4555-8555-555555555552")
 ABANDONED_PROPOSAL = UUID("55555555-5555-4555-8555-555555555553")
 SIDEBAR_PROPOSAL = UUID("55555555-5555-4555-8555-555555555554")
 RESET_PROPOSAL = UUID("55555555-5555-4555-8555-555555555555")
+EMAIL_DRAFT = UUID("66666666-6666-4666-8666-666666666661")
 PACKAGES = [
     {"key": "customer_support", "status": "active"},
     {"key": "hr", "status": "active"},
@@ -173,13 +175,38 @@ def proposal(
 
 
 def email_proposal(proposal_id: UUID, **extra: Any) -> ProposalOut:
+    # Counts-only card (csa/workspace/executors.py): the content is read from the draft on open.
     return proposal(
         proposal_id,
         "email_export",
-        "Email draft",
-        [("To", "Ali Bakar <ali.bakar@example.test>"), ("Subject", "Roster update")],
+        "Save email to Gmail drafts for 1 person",
+        [("Subject", "(shown on open)"), ("Draft", str(EMAIL_DRAFT))],
         **extra,
     )
+
+
+def email_draft() -> dict[str, Any]:
+    """`GET email/drafts/{id}`: the owner's own draft, as `EmailService.draft_by_id` returns it."""
+    now = datetime.now(UTC)
+    return DraftOut(
+        id=EMAIL_DRAFT,
+        thread_id=None,
+        recipient="ali.bakar@example.test",
+        to=["ali.bakar@example.test"],
+        cc=[],
+        bcc=[],
+        recipients=[RecipientOut(address="ali.bakar@example.test", outside=False)],
+        subject="Roster update",
+        body="Hi Ali,\n\nThe new roster starts on Monday.",
+        status="draft",
+        source="model",
+        gmail_draft_id=None,
+        sent_at=None,
+        needs_staff_input=False,
+        reply_to_message_id=None,
+        created_at=now,
+        updated_at=now,
+    ).model_dump(mode="json")
 
 
 def training_proposal(**extra: Any) -> ProposalOut:
@@ -238,7 +265,7 @@ def settled(proposal_id: str, action: str) -> ProposalOut | None:
         return email_proposal(
             EMAIL_PROPOSAL,
             status="executed",
-            result={"recipient": "ali.bakar@example.test", "subject": "Roster update"},
+            result={"draft_id": str(EMAIL_DRAFT), "status": "exported", "gmail_draft_id": "g-1"},
         )
     if action == "confirm" and proposal_id == str(TRAINING_PROPOSAL):
         return training_proposal(
@@ -375,6 +402,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             }
         elif path == "hr/training-requests":
             data = EMPTY_PAGE
+        elif path == f"email/drafts/{EMAIL_DRAFT}" and request.method == "GET":
+            data = email_draft()
         elif path == "workspace/conversations" and request.method == "GET":
             data = EMPTY_PAGE
         elif path == "workspace/conversations" and request.method == "POST":
@@ -432,8 +461,20 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await candidates.filter(has_text="Ali Bakar").click()
         card = page.get_by_test_id("proposal-card")
         await expect(card).to_have_count(1, timeout=WAIT)
-        await expect(card).to_contain_text("Ali Bakar <ali.bakar@example.test>")
+        # The card stores counts only; the recipients and body come from the draft read.
+        await expect(card.get_by_test_id("proposal-email-recipients")).to_contain_text(
+            "ali.bakar@example.test", timeout=WAIT
+        )
+        await expect(card.get_by_test_id("proposal-email-recipients")).not_to_contain_text(
+            "Outside your company"
+        )
         await expect(card).to_contain_text("Roster update")
+        await expect(card.get_by_test_id("proposal-email-body")).to_contain_text(
+            "The new roster starts on Monday."
+        )
+        await expect(card).not_to_contain_text("(shown on open)")
+        read = [c for c in calls if c["path"] == f"email/drafts/{EMAIL_DRAFT}"]
+        assert [(c["method"], c["query"]) for c in read][:1] == [("GET", f"client_id={TENANT}")]
         assert [c["path"] for c in posts("workspace/conversations")] == ["workspace/conversations"]
         first, follow_up = posts(turns_path)
         assert first["csrf"] == CSRF and first["query"] == f"client_id={TENANT}"
@@ -445,9 +486,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (c) Confirm posts the decision with CSRF and the executor's receipt is shown.
         await page.get_by_test_id("proposal-confirm").click()
+        # The export receipt holds no subject or address, so the outcome line is generic.
         await expect(page.get_by_test_id("proposal-outcome")).to_have_text(
-            "Saved “Roster update” to your Gmail drafts, addressed to "
-            "ali.bakar@example.test. Nothing was sent."
+            "Saved to your Gmail drafts. Nothing was sent."
         )
         assert [(c["path"], c["query"], c["csrf"]) for c in posts("/confirm")] == [
             (f"workspace/proposals/{EMAIL_PROPOSAL}/confirm", f"client_id={TENANT}", CSRF)
