@@ -133,11 +133,18 @@ def payload(found: AccessRows) -> dict[str, Any]:
 
 
 async def direct_apply(
-    world: HrWorld, token_id: UUID, body: dict[str, Any], *, override: bool = False
+    world: HrWorld,
+    token_id: UUID,
+    body: dict[str, Any],
+    *,
+    override: bool | None = False,
+    hr_user: UUID | None = None,
 ) -> None:
     async with tx(world.service.pool, str(world.tenant)) as conn:
+        if hr_user is not None:
+            await conn.execute("SELECT set_config('app.hr_user_id', %s, true)", (str(hr_user),))
         await conn.execute(
-            "SELECT public.hr_apply_invitation_access(%s,%s,%s,%s::text[],%s::text[],%s)",
+            "SELECT public.hr_apply_invitation_access(%s,%s,%s,%s::text[],%s::text[],%s::boolean)",
             (world.tenant, token_id, Jsonb(body), [], [], override),
         )
 
@@ -276,6 +283,38 @@ async def test_non_owner_rows_outside_staff_are_refused(world: HrWorld) -> None:
         await direct_apply(world, token_id, payload(team))
     with pytest.raises(psycopg.Error, match="hr_invitation_rows_refused"):
         await direct_apply(world, token_id, payload(staff._replace(areas=frozenset({"payroll"}))))
+    assert await held(world, member) == EMPTY
+    assert await count(world) == before
+
+
+async def test_null_override_is_refused(world: HrWorld) -> None:
+    issued = await invite(world, "admin", "staff")
+    member, token_id = await accept_only(world, issued["token"])
+    staff = rows(PRESETS["staff"], EMPTY)
+    payroll = WorkflowRow("payroll", "read", "payroll_operator")
+    wider = staff._replace(workflows=staff.workflows | {payroll})
+    before = await count(world)
+    with pytest.raises(psycopg.Error, match="hr_invitation_arguments_invalid"):
+        await direct_apply(world, token_id, payload(wider), override=None)
+    assert await held(world, member) == EMPTY
+    assert await count(world) == before
+
+
+@pytest.mark.parametrize("hr_user", [None, "admin"])
+async def test_override_without_an_owner_session_is_refused(
+    world: HrWorld, hr_user: str | None
+) -> None:
+    issued = await invite(world, "admin", "staff")
+    member, token_id = await accept_only(world, issued["token"])
+    before = await count(world)
+    with pytest.raises(psycopg.Error, match="hr_owner_required"):
+        await direct_apply(
+            world,
+            token_id,
+            payload(rows(PRESETS["manager"], EMPTY)),
+            override=True,
+            hr_user=world.users[hr_user] if hr_user else None,
+        )
     assert await held(world, member) == EMPTY
     assert await count(world) == before
 

@@ -64,7 +64,8 @@ CREATE OR REPLACE FUNCTION public.hr_invitation_preset(p_client uuid, p_token uu
     grants jsonb, workflows jsonb, areas jsonb)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 BEGIN
- IF p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN RETURN; END IF;
+ IF p_client IS NULL OR p_token IS NULL
+  OR p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN RETURN; END IF;
  RETURN QUERY
  SELECT t.user_id, t.hr_preset, t.hr_preset_chosen_by,
   -- A platform admin never carries a tenant HR owner's right to grant presets.
@@ -101,16 +102,18 @@ DECLARE
  actor uuid := nullif(current_setting('app.hr_user_id',true),'')::uuid;
  tok record; owner_chooser boolean; approver uuid; item jsonb; result jsonb;
 BEGIN
- IF p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN
+ -- Every guard is written so a NULL argument can never skip it (three-valued logic).
+ IF p_client IS NULL OR p_token IS NULL
+  OR p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN
   RAISE EXCEPTION 'hr_invitation_unavailable' USING ERRCODE='23514'; END IF;
- IF p_owner_override AND NOT public.hr_is_owner(p_client) THEN
-  RAISE EXCEPTION 'hr_owner_required' USING ERRCODE='42501'; END IF;
- IF jsonb_typeof(p_rows) IS DISTINCT FROM 'object'
+ IF p_owner_override IS NULL OR jsonb_typeof(p_rows) IS DISTINCT FROM 'object'
   OR jsonb_typeof(p_rows->'grants') IS DISTINCT FROM 'array'
   OR jsonb_typeof(p_rows->'workflows') IS DISTINCT FROM 'array'
   OR jsonb_typeof(p_rows->'areas') IS DISTINCT FROM 'array'
   OR p_on IS NULL OR p_added IS NULL OR cardinality(p_on)>8 OR cardinality(p_added)>8 THEN
-  RAISE EXCEPTION 'hr_invitation_rows_invalid' USING ERRCODE='23514'; END IF;
+  RAISE EXCEPTION 'hr_invitation_arguments_invalid' USING ERRCODE='23514'; END IF;
+ IF p_owner_override IS TRUE AND public.hr_is_owner(p_client) IS NOT TRUE THEN
+  RAISE EXCEPTION 'hr_owner_required' USING ERRCODE='42501'; END IF;
  -- The token row lock serialises apply and dismiss for one invitation.
  SELECT t.user_id, t.hr_preset, t.hr_preset_chosen_by INTO tok FROM public.console_tokens t
   WHERE t.id=p_token AND t.kind='invite' AND t.client_id=p_client
@@ -124,8 +127,8 @@ BEGIN
   RAISE EXCEPTION 'hr_invitation_applied' USING ERRCODE='23514'; END IF;
  owner_chooser := EXISTS(SELECT 1 FROM public.hr_client_owners o JOIN public.console_users c ON c.id=o.user_id
   WHERE o.client_id=p_client AND o.user_id=tok.hr_preset_chosen_by AND NOT c.is_platform_admin FOR SHARE OF o);
- IF NOT owner_chooser AND NOT p_owner_override THEN
-  IF tok.hr_preset<>'staff' THEN
+ IF owner_chooser IS NOT TRUE AND p_owner_override IS NOT TRUE THEN
+  IF tok.hr_preset IS DISTINCT FROM 'staff' THEN
    RAISE EXCEPTION 'hr_invitation_owner_required' USING ERRCODE='42501'; END IF;
   IF EXISTS(SELECT 1 FROM jsonb_array_elements(p_rows->'grants') g
             WHERE NOT staff->'grants' @> jsonb_build_array(jsonb_build_array(g->>'action',g->>'scope')))
@@ -171,7 +174,8 @@ CREATE OR REPLACE FUNCTION public.hr_dismiss_invitation_access(p_client uuid, p_
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE actor uuid := nullif(current_setting('app.hr_user_id',true),'')::uuid; tok record;
 BEGIN
- IF NOT public.hr_is_owner(p_client) THEN RAISE EXCEPTION 'hr_owner_required' USING ERRCODE='42501'; END IF;
+ IF public.hr_is_owner(p_client) IS NOT TRUE THEN
+  RAISE EXCEPTION 'hr_owner_required' USING ERRCODE='42501'; END IF;
  SELECT t.user_id, t.hr_preset, t.hr_preset_chosen_by INTO tok FROM public.console_tokens t
   WHERE t.id=p_token AND t.kind='invite' AND t.client_id=p_client
   AND t.consumed_at IS NOT NULL AND t.revoked_at IS NULL AND t.hr_preset IS NOT NULL FOR UPDATE;
@@ -194,7 +198,7 @@ CREATE OR REPLACE FUNCTION public.hr_owner_pending_invitation_access(p_client uu
     accepted_at timestamptz)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 BEGIN
- IF NOT public.hr_is_owner(p_client) THEN RETURN; END IF;
+ IF public.hr_is_owner(p_client) IS NOT TRUE THEN RETURN; END IF;
  RETURN QUERY
  SELECT t.id, t.user_id, u.display_name, t.hr_preset, t.hr_preset_chosen_by,
   CASE WHEN c.is_platform_admin THEN 'FourStacks admin'
@@ -218,7 +222,7 @@ CREATE OR REPLACE FUNCTION public.hr_owner_actor_names(p_client uuid, p_ids uuid
     user_id uuid, display_name text, is_platform_admin boolean, is_enabled_member boolean)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 BEGIN
- IF NOT public.hr_is_owner(p_client) THEN RETURN; END IF;
+ IF public.hr_is_owner(p_client) IS NOT TRUE THEN RETURN; END IF;
  RETURN QUERY
  SELECT u.id, u.display_name, u.is_platform_admin, COALESCE(m.is_enabled AND u.is_enabled, false)
  FROM public.console_users u

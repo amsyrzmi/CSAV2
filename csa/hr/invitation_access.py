@@ -40,7 +40,7 @@ _REFUSALS = {
     "hr_invitation_applied": "invitation_already_handled",
     "hr_invitation_owner_required": "invitation_owner_required",
     "hr_invitation_rows_refused": "invitation_rows_refused",
-    "hr_invitation_rows_invalid": "invitation_rows_invalid",
+    "hr_invitation_arguments_invalid": "invitation_arguments_invalid",
     "hr_owner_required": "permission_denied",
 }
 
