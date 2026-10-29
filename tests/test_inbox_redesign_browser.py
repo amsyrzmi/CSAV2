@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -155,6 +156,10 @@ class Inbox:
     list_queries: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
     messages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Held replies the approvals read returns for a conversation, and what decide answered.
+    approvals: list[dict[str, Any]] = field(default_factory=list)
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+    decide_result: dict[str, Any] = field(default_factory=dict)
 
     def thread(self, identifier: str) -> list[dict[str, Any]]:
         """Newest first, as the API pages them."""
@@ -206,7 +211,12 @@ class Inbox:
             if data is None:
                 status, data = 404, {"detail": "conversation not found"}
         elif path == "inbox/approvals":
-            data = {"items": [], "next_cursor": None}
+            wanted = parse_qs(query).get("conversation_id", [])
+            items = [item for item in self.approvals if item["conversation_id"] in wanted]
+            data = {"items": items, "next_cursor": None}
+        elif path.startswith("inbox/approvals/") and path.endswith("/decide"):
+            self.decisions.append({"id": path.split("/")[2], **(request.post_data_json or {})})
+            data = self.decide_result
         else:
             self.unexpected.append(f"{request.method} {path}?{query}")
             status, data = 500, {"detail": "unexpected synthetic call"}
@@ -498,6 +508,52 @@ async def test_unnamed_whatsapp_sender_shows_masked_number_in_list_and_full_in_c
         card = page.get_by_test_id("inbox-customer-card")
         await expect(card).to_contain_text(FULL_PHONE, timeout=WAIT)
         assert "0125550148" not in await listing.inner_text()
+        # `inner_text` skips hidden and attribute text; the markup would show a leak there.
+        markup = await listing.evaluate("el => el.outerHTML")
+        assert MASKED_PHONE in markup
+        assert "0125550148" not in markup
+        # The full number belongs to the customer card; the thread itself never prints it.
+        assert "0125550148" not in await page.get_by_test_id("inbox-thread").inner_text()
+
+
+async def test_expired_approval_shows_approval_expired(shell: Shell) -> None:
+    held = {
+        "id": 7,
+        "conversation_id": NAMED,
+        "draft": "Your order ships tomorrow.",
+        "reason": "Mentions a delivery date.",
+        "status": "pending",
+        "expires_at": ago(-30),
+    }
+    # The server found the approval past its expiry when staff decided: 200, nothing queued.
+    state = Inbox(
+        approvals=[held],
+        decide_result={
+            "outcome": "expired",
+            "status": "expired",
+            "queued": False,
+            "warnings": [],
+        },
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        await open_thread(page, NAMED)
+        review = page.get_by_role("article", name="Held reply, needs review")
+        await expect(review).to_be_visible(timeout=WAIT)
+        await review.get_by_role("button", name="Edit", exact=True).click()
+        await review.get_by_label("Replacement reply").fill("Your order ships on Friday.")
+        page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        await review.get_by_role("button", name="Queue edited reply").click()
+        await expect(page.get_by_text("Approval expired. No reply queued.")).to_be_visible(
+            timeout=WAIT
+        )
+        assert [(call["id"], call["decision"]) for call in state.decisions] == [("7", "edit")]
+        # Not reported as a send or as handled by someone else.
+        await expect(
+            page.get_by_text(re.compile(r"^(Reply queued|Already handled)"))
+        ).to_have_count(0)
+        # The stub keeps listing the reply, so the page must not drop the card by itself.
+        await expect(review).to_be_visible()
 
 
 async def test_j_k_move_selection_but_not_inside_inputs(shell: Shell) -> None:
@@ -541,6 +597,10 @@ async def test_slide_over_opens_closes_with_escape_and_returns_focus(shell: Shel
         await expect(dialog.get_by_test_id("inbox-customer-card")).to_contain_text(
             FULL_PHONE, timeout=WAIT
         )
+        # While the panel is open, focus has moved into it and left the opener behind.
+        await expect(details).not_to_be_focused()
+        inside = await dialog.evaluate("el => el.contains(document.activeElement)")
+        assert inside, "focus stayed outside the open dialog"
         await page.keyboard.press("Escape")
         await expect(dialog).to_be_hidden()
         await expect(details).to_be_focused()
