@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 
@@ -53,4 +53,35 @@ test("there are eleven distinct ids and each has a title", () => {
     assert.notEqual(AGENT_TITLES[id], "");
   }
   assert.deepEqual(Object.keys(AGENT_TITLES).sort(), [...AGENT_IDS].sort());
+});
+
+test("every AgentAvatar caller uses a size the pixel grids can scale to a whole number", async () => {
+  const { AVATAR_SIZES, gridForSize } = await import(moduleUrl(
+    await readFile(new URL("../lib/pixel-avatars.ts", import.meta.url), "utf8"),
+  ));
+  const root = new URL("../", import.meta.url).pathname;
+  const files = [];
+  async function walk(directory) {
+    for (const entry of await readdir(`${root}${directory}`, { withFileTypes: true })) {
+      const relative = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) await walk(relative);
+      else if (relative.endsWith(".tsx")) files.push(relative);
+    }
+  }
+  await walk("components");
+  await walk("app");
+  let seen = 0;
+  for (const file of files) {
+    const source = await readFile(`${root}${file}`, "utf8");
+    for (const [, props] of source.matchAll(/<AgentAvatar\b([^>]*)\/?>/g)) {
+      seen += 1;
+      const size = /size=\{(\d+)\}/.exec(props);
+      if (!size) continue; // the default size
+      assert.ok(AVATAR_SIZES.includes(Number(size[1])), `${file}: size ${size[1]}`);
+      assert.equal(Number(size[1]) % gridForSize(Number(size[1])), 0);
+    }
+  }
+  assert.ok(seen >= 2, "found the known callers");
+  const component = await readFile(`${root}components/console/fs/AgentAvatar.tsx`, "utf8");
+  assert.match(component, /size = 48/, "the default size is 48");
 });

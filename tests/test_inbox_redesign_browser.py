@@ -666,12 +666,17 @@ async def test_agent_avatar_loads_and_the_proxy_still_denies_by_default(shell: S
     async with inbox_page(shell, state) as page:
         await rows_loaded(page)
         await open_thread(page, NAMED)
-        avatar = "[data-testid='inbox-thread'] img[src*='/fourstacks/agents/support.svg']"
-        await page.wait_for_function(
-            f'() => {{ const img = document.querySelector("{avatar}");'
-            " return !!img && img.complete && img.naturalWidth > 0; }",
-            timeout=WAIT,
-        )
+        # The avatar is an inline sprite now, not an <img>: no request for the artwork is needed.
+        avatar = page.get_by_test_id("inbox-thread").locator("[data-agent='support']").first
+        sprite = avatar.locator("svg")
+        await expect(sprite.locator("rect").first).to_be_attached(timeout=WAIT)
+        assert await sprite.get_attribute("shape-rendering") == "crispEdges"
+        # The thread prints no name beside it, but the sender is named in text, so it is decoration.
+        assert await sprite.get_attribute("aria-hidden") == "true"
+        assert await avatar.locator("img").count() == 0
+        box = await sprite.bounding_box()
+        assert box is not None
+        assert (box["width"], box["height"]) == (32, 32)  # size 32 = the 32 grid at 1x
     async with httpx.AsyncClient(base_url=shell.base, trust_env=False, timeout=60) as http:
         artwork = await http.get("/fourstacks/agents/support.svg")
         assert artwork.status_code == 200
@@ -693,3 +698,38 @@ async def test_agent_avatar_loads_and_the_proxy_still_denies_by_default(shell: S
         for path in ("/system", "/settings/audit"):
             refused = await signed_in.get(path)
             assert (refused.status_code, refused.text) == (404, "Not found"), path
+
+
+async def avatar_frames(page: Page) -> list[str]:
+    """Computed animation names of every frame of the open thread's support sprite."""
+    sprite = page.get_by_test_id("inbox-thread").locator("[data-agent='support'] svg").first
+    await expect(sprite.locator(".fs-px-f0 rect").first).to_be_attached(timeout=WAIT)
+    return await sprite.locator(".fs-px-frame").evaluate_all(
+        "els => els.map(el => getComputedStyle(el).animationName)"
+    )
+
+
+async def test_agent_avatar_is_still_under_reduced_motion(shell: Shell) -> None:
+    # Control: with motion allowed the sprite loops four frames, so "none" below means something.
+    state = Inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        await open_thread(page, NAMED)
+        frames = page.get_by_test_id("inbox-thread").locator("[data-agent='support'] .fs-px-frame")
+        await expect(frames).to_have_count(4, timeout=WAIT)
+        names = await frames.evaluate_all(
+            "els => els.map(el => getComputedStyle(el).animationName)"
+        )
+        assert names == ["fs-px-show"] * 4
+    state = Inbox()
+    async with inbox_page(shell, state, reduced_motion=True) as page:
+        assert await page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        await rows_loaded(page)
+        await open_thread(page, NAMED)
+        assert await avatar_frames(page) == ["none"]  # frame 0 only, and it does not animate
+        await page.wait_for_timeout(600)  # long enough for the motion hook to have run
+        assert await avatar_frames(page) == ["none"]
+        frame = (
+            page.get_by_test_id("inbox-thread").locator("[data-agent='support'] .fs-px-f0").first
+        )
+        assert await frame.evaluate("el => getComputedStyle(el).opacity") == "1"

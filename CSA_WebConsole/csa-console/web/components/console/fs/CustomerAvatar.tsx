@@ -1,5 +1,7 @@
 import { initialsFor, tintIndex } from "@/lib/customer-identity";
-import type { AvatarSize } from "./AgentAvatar";
+
+/** Initials are not pixel art, so a customer keeps its own, wider set of sizes. */
+export type CustomerAvatarSize = 24 | 32 | 40 | 48 | 64 | 96;
 
 /**
  * A customer is a circle of initials in one of four tints (theme tokens, blue in Cobalt), or a dashed circle with "?"
@@ -14,7 +16,7 @@ export default function CustomerAvatar({
 }: {
   id: string;
   name: string | null;
-  size?: AvatarSize;
+  size?: CustomerAvatarSize;
   /** Only when no name is printed beside the avatar. */
   label?: string;
 }) {

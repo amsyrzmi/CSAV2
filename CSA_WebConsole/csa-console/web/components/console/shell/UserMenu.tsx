@@ -98,7 +98,7 @@ export function UserMenu({ account }: { account: ShellAccount }) {
                 Calm motion
               </span>
               <span id={noteId} className="mt-0.5 block text-xs text-[color:var(--fs-text-secondary)]">
-                Pauses animated decoration in the inbox and side panels. Nothing on the server pauses.
+                Pauses animated decoration in the inbox, side panels and agent avatars. Nothing on the server pauses.
               </span>
             </div>
             <button

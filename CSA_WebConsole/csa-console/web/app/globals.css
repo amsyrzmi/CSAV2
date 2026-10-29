@@ -376,6 +376,31 @@
 [data-motion="off"] .skeleton,
 [data-motion="off"] .fs-fade { animation: none !important; }
 
+/* ---------- pixel avatars (AgentAvatar) ----------
+   The component renders frame 0 alone unless motion is allowed (then it adds the class
+   fs-px-anim and frames f1..f3). Frames switch with a stepped opacity animation: each frame is
+   visible for the first quarter of the one-second loop, offset by a quarter second.
+   Reduced motion and data-motion="off" stop it and show frame 0, in case the class lags. */
+.fs-px { display: block; }
+.fs-px-dim { filter: saturate(0.45) opacity(0.75); }
+@keyframes fs-px-show {
+  0% { opacity: 1; }
+  25% { opacity: 0; }
+  100% { opacity: 0; }
+}
+.fs-px-anim .fs-px-frame { opacity: 0; animation: fs-px-show 1s steps(1) infinite; }
+.fs-px-anim .fs-px-f0 { animation-delay: 0s; }
+.fs-px-anim .fs-px-f1 { animation-delay: 0.25s; }
+.fs-px-anim .fs-px-f2 { animation-delay: 0.5s; }
+.fs-px-anim .fs-px-f3 { animation-delay: 0.75s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-px-anim .fs-px-frame { animation: none !important; opacity: 0; }
+  .fs-px-anim .fs-px-f0 { opacity: 1; }
+}
+[data-motion="off"] .fs-px-anim .fs-px-frame { animation: none !important; opacity: 0; }
+[data-motion="off"] .fs-px-anim .fs-px-f0 { opacity: 1; }
+
 /* ---------- app shell ---------- */
 .subnav-link {
   position: relative;

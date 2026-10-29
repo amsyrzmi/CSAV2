@@ -599,7 +599,7 @@ async def test_user_menu_trigger_name_contains_its_visible_name(console: Console
         await expect(trigger).to_have_accessible_name(re.compile("Account menu"))
         await trigger.click()
         await expect(page.get_by_test_id("shell-user-menu-panel")).to_contain_text(
-            "Pauses animated decoration in the inbox and side panels."
+            "Pauses animated decoration in the inbox, side panels and agent avatars."
         )
     finally:
         await close_page(playwright, browser)
