@@ -67,6 +67,8 @@ export interface Draft {
   reply_to_message_id: string | null;
   created_at: string;
   updated_at: string;
+  /** The server's `draft_version`: send exactly this; any edit changes it. */
+  version: string;
 }
 export interface DraftPage { items: Draft[] }
 export interface DraftEdit { to: string[]; cc: string[]; bcc: string[]; subject: string; body: string }
@@ -141,7 +143,7 @@ export function emailClient(tenant: string) {
     updateDraft: (id: string, body: DraftEdit) =>
       write<Draft>(`/drafts/${encodeURIComponent(id)}`, body, "PUT"),
     deleteDraft: (id: string) => write<Receipt>(`/drafts/${encodeURIComponent(id)}/delete`, undefined),
-    /** `version` is `draftVersion` of exactly the draft the person confirmed. */
+    /** `version` is the `version` of exactly the draft the person confirmed, as the server gave it. */
     send: (id: string, version: string) =>
       write<SendResult>(`/drafts/${encodeURIComponent(id)}/send`, { version }, "POST", sendSettled),
     /** The owner checked Gmail Sent and the email is not there: make the draft editable again. */

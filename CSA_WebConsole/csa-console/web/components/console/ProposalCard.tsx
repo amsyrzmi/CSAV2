@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { resultSummary } from "@/lib/assistant-view";
 import { emailClient, type Draft } from "@/lib/email-api";
-import { cardFieldsShown, draftIdFromCard, emailErrorSentence } from "@/lib/email-recipients";
+import { cardFieldsShown, draftIdFromCard, emailErrorSentence, sendCardStale } from "@/lib/email-recipients";
 import {
   cancelProposal,
   confirmProposal,
@@ -62,7 +62,10 @@ export function ProposalCard({
     return () => { live = false; };
   }, [draftId, tenantId]);
 
-  const staleCode = proposal.kind === "email_send" && draft ? NOT_A_DRAFT[draft.status] : undefined;
+  // Already sent or sending says so; an edit since the card was made says it changed.
+  const staleCode = proposal.kind === "email_send" && draft
+    ? NOT_A_DRAFT[draft.status] ?? (sendCardStale(proposal.card, draft) ? "draft_changed" : undefined)
+    : undefined;
   const waitingForDraft = draftId !== null && draft === null;
 
   async function decide(kind: "confirm" | "cancel") {

@@ -1226,6 +1226,37 @@ async def test_draft_read_by_id_is_owner_only(
     assert len(world.gmail.requests) == requests  # no Gmail call
 
 
+async def test_draft_read_carries_the_server_version_and_an_edit_changes_it(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console sends `version` as the server gave it; it never hashes the draft itself."""
+    await _enable_and_connect(world, monkeypatch)
+    draft_id = await _insert_draft(world, to=["boss@example.test"])
+    read = await world.call("staff", "GET", f"{DRAFTS}/{draft_id}")
+    assert read.status_code == 200, read.text
+    before = read.json()
+    expected = draft_version(
+        DraftOut.model_validate({k: v for k, v in before.items() if k != "version"})
+    )
+    assert before["version"] == expected
+    assert (await _draft(world, draft_id))["version"] == expected  # the list agrees
+    edit = {
+        "to": ["boss@example.test"],
+        "cc": ["copy@example.test"],
+        "subject": "New",
+        "body": "Edited",
+    }
+    edited = await world.call("staff", "PUT", f"{DRAFTS}/{draft_id}", edit)
+    assert edited.status_code == 200, edited.text
+    after = (await world.call("staff", "GET", f"{DRAFTS}/{draft_id}")).json()
+    assert after["version"] == edited.json()["version"] != before["version"]
+    # The version read before the edit is refused; the one the server gives now sends.
+    refused = await _send(world, after, version=before["version"])
+    assert refused.status_code == 409 and refused.json()["detail"] == "draft_changed"
+    sent = await _send(world, after, version=after["version"])
+    assert sent.status_code == 200, sent.text
+
+
 async def test_release_lets_the_owner_retry_an_unknown_send(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

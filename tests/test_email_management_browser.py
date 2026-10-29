@@ -103,6 +103,7 @@ class MailWorld:
         self.more_pages = 2
         self.threads = [thread(1)]
         self.release_attempts = 0
+        self.saved: list[dict[str, Any]] = []  # PUT answers, as the console received them
         self.turns: list[dict[str, Any]] = []
         self.drafts: dict[UUID, dict[str, Any]] = {
             REPLY_DRAFT: self.draft(
@@ -189,16 +190,18 @@ class MailWorld:
             "detail": detail,
         }
 
-    @staticmethod
-    def send_card(**extra: Any) -> ProposalOut:
-        """The counts-only `email_send` card: no address, subject or body is stored on it."""
-        return proposal(
+    def send_card(self, **extra: Any) -> ProposalOut:
+        """The counts-only `email_send` card, bound to the draft's server version."""
+        built = proposal(
             SEND_PROPOSAL,
             "email_send",
             "Send email to 2 people (1 outside your company)",
             [("Subject", "(shown on open)"), ("Draft", str(CARD_DRAFT))],
             **extra,
         )
+        version = DraftOut.model_validate(self.drafts[CARD_DRAFT]).version
+        card = built.card.model_copy(update={"expected_version": version})
+        return built.model_copy(update={"card": card})
 
     async def answer(self, method: str, path: str, body: Any) -> tuple[int, Any]:
         draft_path = re.fullmatch(r"email/drafts/([0-9a-f-]+)(/send|/release)?", path)
@@ -252,6 +255,7 @@ class MailWorld:
                     subject=body["subject"],
                     body=body["body"],
                 )
+                self.saved.append(self.drafts[draft_id])
                 return 200, self.drafts[draft_id]
             if action == "/send" and method == "POST":
                 if body["version"] != draft_version(DraftOut.model_validate(current)):
@@ -435,6 +439,11 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(more).to_have_text("No older email in the last 90 days")
         loads = called("POST", "email/sync/more")
         assert len(loads) == 2 and loads[0]["key"] != loads[1]["key"]
+        # Attention loads once on open (after the sync) and never after load more.
+        assert len(called("GET", "email/attention")) == 1
+        assert world.calls.index(called("GET", "email/attention")[0]) > world.calls.index(
+            called("POST", "email/sync")[0]
+        )
 
         # (c) Add a CC, review exactly what goes out, send, and the draft locks with its time.
         await page.get_by_role("button", name=re.compile(r"^Drafts")).click()
@@ -454,8 +463,11 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             "Sent at 29 Oct 2026, 10:00", timeout=WAIT
         )
         (send,) = called("POST", f"email/drafts/{REPLY_DRAFT}/send")
+        # The tab sends the version the server gave with the saved draft; it hashes nothing.
+        (put_reply,) = [c for c in world.saved if c["id"] == str(REPLY_DRAFT)]
         expected = draft_version(DraftOut.model_validate(world.drafts[REPLY_DRAFT]))
-        assert send["body"] == {"version": expected} and send["key"]
+        assert send["body"] == {"version": put_reply["version"]} and send["key"]
+        assert put_reply["version"] == expected
         await expect(forms.nth(0).get_by_test_id("email-to")).to_be_disabled()
         await expect(forms.nth(0).get_by_test_id("email-send")).to_have_count(0)
 
@@ -471,6 +483,13 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(forms.nth(1).get_by_test_id("email-to")).to_be_enabled()
         releases = called("POST", f"email/drafts/{STUCK_DRAFT}/release")
         assert len(releases) == 2 and releases[0]["key"] == releases[1]["key"]
+
+        # (d2) The manual Sync button loads the attention panel exactly once more.
+        async with page.expect_request(re.compile(r"/console/v1/email/attention")):
+            await page.get_by_role("button", name="Sync inbox").click()
+        await expect(page.get_by_role("button", name="Sync inbox")).to_be_enabled(timeout=WAIT)
+        assert len(called("POST", "email/sync")) == 2
+        assert len(called("GET", "email/attention")) == 2
 
         # (e) The assistant's send card reads the draft: recipients with the outside flag, body.
         await page.get_by_test_id("assistant-open").click(timeout=WAIT)

@@ -7,7 +7,7 @@ import {
   emailClient, type AttentionPage, type Draft, type DraftEdit, type EmailContext, type Thread, type ThreadDetail,
 } from "@/lib/email-api";
 import {
-  addressesLookValid, attentionNote, attentionProblem, draftVersion, emailErrorSentence, formatAddresses,
+  addressesLookValid, attentionNote, attentionProblem, emailErrorSentence, formatAddresses,
   formatWhen, isReply, needsSync, parseAddresses,
 } from "@/lib/email-recipients";
 import { usePublishContext } from "@/lib/page-context";
@@ -158,7 +158,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   }
   function confirmSend(draft: Draft) {
     void run(async () => {
-      try { return await client.send(draft.id, await draftVersion(draft)); }
+      try { return await client.send(draft.id, draft.version); }
       catch (reason) {
         // An unknown outcome leaves the draft `sending`: show its release button.
         setConfirming(null); await reloadDrafts().catch(() => undefined);
@@ -289,7 +289,7 @@ function AttentionPanel({ attention, busy, onOpen }: {
   </div>;
 }
 
-/** Shows exactly the stored draft that will go out; sending uses its version. */
+/** Shows exactly the stored draft that will go out; sending uses the version the server gave it. */
 function SendDialog({ draft, busy, from, onConfirm, onClose }: {
   draft: Draft; busy: boolean; from: string | null; onConfirm: () => void; onClose: () => void;
 }) {

@@ -2983,6 +2983,12 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "version": {
+            "description": "`draft_version` of this draft: what `/send` and a send card are bound to.",
+            "readOnly": true,
+            "title": "Version",
+            "type": "string"
           }
         },
         "required": [
@@ -3002,7 +3008,8 @@
           "needs_staff_input",
           "reply_to_message_id",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "version"
         ],
         "title": "DraftOut",
         "type": "object"

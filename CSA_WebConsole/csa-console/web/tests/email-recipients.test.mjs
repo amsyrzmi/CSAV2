@@ -51,14 +51,15 @@ test("address fields split on commas, semicolons and spaces", () => {
   assert.equal(email.addressesLookValid(Array.from({ length: 21 }, (_, i) => `p${i}@x.test`)), false, "at most 20");
 });
 
-test("the draft version is the server's draft_version hash", async () => {
-  // Expected values from csa.email.models.draft_version (json.dumps ensure_ascii, SHA-256).
-  assert.equal(await email.draftVersion({ thread_id: null, to: ["a@x.test"], cc: [], bcc: [], subject: "Hi", body: "Body" }),
-    "001e65b8e2299e0e9e639ac963ecc71b1af2f274348a88c5fe35a24e2ffced60");
-  assert.equal(await email.draftVersion({
-    thread_id: "thr-1", to: ["Siti <siti@x.test>", "b@y.test"], cc: ["c@x.test"], bcc: ["d@z.test"],
-    subject: "Jadual \"baru\" — café", body: "Salam,\n\tTerima kasih 😊\u007f\\ end",
-  }), "5c255f769e9a7303873bde134569a38f6c31f806ac010957add81c903e0706cc");
+test("a send card whose draft was edited since is stale; the browser never hashes the draft", () => {
+  const card = { kind: "email_send", expected_version: "a".repeat(64) };
+  assert.equal(email.sendCardStale(card, { version: "a".repeat(64) }), false);
+  assert.equal(email.sendCardStale(card, { version: "b".repeat(64) }), true);
+  assert.equal(email.sendCardStale({ ...card, expected_version: null }, { version: "b".repeat(64) }), false);
+  // Export cards bind a different hash; only send cards compare against the draft's version.
+  assert.equal(email.sendCardStale({ ...card, kind: "email_export" }, { version: "b".repeat(64) }), false);
+  assert.equal(email.draftVersion, undefined);
+  assert.doesNotMatch(source, /crypto\.subtle|sha-?256/i);
 });
 
 test("send errors are plain sentences; unknown codes are left to the caller", () => {

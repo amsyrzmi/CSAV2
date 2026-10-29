@@ -1,5 +1,5 @@
 /**
- * Display helpers for email drafts: recipients, the send version, times, and the one map of
+ * Display helpers for email drafts: recipients, card staleness, times, and the one map of
  * email error codes to sentences. No imports, so the node tests load it directly.
  */
 
@@ -90,21 +90,15 @@ export function cardFieldsShown(card: { fields: { label: string; value: string }
   return card.fields.filter(field => field.label !== "Subject" && field.label !== "Draft");
 }
 
-/** Python's json.dumps(..., ensure_ascii=True) for strings, null and lists of strings. */
-type PyJson = string | null | PyJson[];
-function pythonJson(value: PyJson): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.map(pythonJson).join(", ")}]`;
-  return JSON.stringify(value).replace(/[^\x20-\x7e]/g,
-    char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-
-/** csa.email.models.draft_version: the version `/send` and the send card are bound to. */
-export async function draftVersion(draft: DraftContent): Promise<string> {
-  if (!globalThis.crypto?.subtle) throw new Error("This browser cannot check the email before sending.");
-  const content = pythonJson([draft.thread_id, draft.to, draft.cc, draft.bcc, draft.subject, draft.body]);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
-  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+/**
+ * A send card is bound to the draft's version when it was made. If the draft read now has a
+ * different version it was edited since: say so and do not send (the server re-checks anyway).
+ */
+export function sendCardStale(
+  card: { kind: string; expected_version: string | null },
+  draft: { version: string },
+): boolean {
+  return card.kind === "email_send" && card.expected_version !== null && card.expected_version !== draft.version;
 }
 
 const sentences: Record<string, string> = {

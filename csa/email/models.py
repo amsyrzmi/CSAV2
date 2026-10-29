@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    computed_field,
     field_validator,
     model_validator,
 )
@@ -288,6 +289,20 @@ class DraftOut(EmailModel):
     reply_to_message_id: str | None
     created_at: AwareDatetime
     updated_at: AwareDatetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def derived_version(cls, data: Any) -> Any:
+        """`version` is derived: a dumped draft validates, and an incoming version is ignored."""
+        if isinstance(data, dict) and "version" in data:
+            return {key: value for key, value in data.items() if key != "version"}
+        return data
+
+    @computed_field
+    @property
+    def version(self) -> str:
+        """`draft_version` of this draft: what `/send` and a send card are bound to."""
+        return draft_version(self)
 
 
 class DraftUpdate(EmailModel):
