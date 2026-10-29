@@ -47,6 +47,10 @@ development gateway is not running as a service today, so nothing is lost now.
 
 ## 2. Render and start the pipeline
 
+**First rollout that includes B4 (invitation mail):** before applying the migration or
+recreating the gateway, run `sudo python3 -m scripts.staging_secrets smtp-install --secret-dir /srv/csa-staging/secrets`
+once (section 10); compose will not recreate the gateway while the SMTP secret files are missing.
+
 Run from an approved checkout of `main` that contains this file. The gateway is
 recreated because it gains the embedding settings, the hooks network and the
 loopback port; the console is unavailable for a few seconds while that happens.
@@ -219,7 +223,10 @@ python3 -m scripts.staging_secrets whatsapp-defaults --secret-dir /srv/csa-stagi
 ```
 
 Expected: `created pipeline/staging_whatsapp_app_secret (0400)` and the same for
-`staging_whatsapp_verify_token`, then no check failures. Then apply `0470` with
+`staging_whatsapp_verify_token`, then no check failures. On the first rollout that
+includes B4, also run `sudo python3 -m scripts.staging_secrets smtp-install --secret-dir /srv/csa-staging/secrets`
+once (section 10) before recreating the gateway, which will not be recreated while the
+SMTP secret files are missing. Then apply `0470` with
 the `migrate` one-shot and recreate gateway, worker, delivery and frontend with
 `--no-deps --pull never`, as for any release.
 
@@ -323,7 +330,7 @@ as before.
 The owner leaves `smtp_username` and `smtp_password` (root-only) at the top of
 `/srv/csa-staging/secrets/`. Compose refuses to recreate the gateway while either
 secret file is missing, so do this first. `smtp-install` moves them into `runtime/` as
-`1000:1000`, mode 0400, never reads or prints them, refuses a symlink, and does nothing
+`1000:1000`, mode 0400, never prints them, refuses a symlink, and does nothing
 if they are already installed. It needs root only because the files are root-owned. Run
 from the main checkout, which has the action:
 

@@ -144,18 +144,21 @@ warnings and the version; the page shows what it returns. Switch ids:
   "FourStacks admin"), and `turned_on` is only what the preset added to what the person
   already had.
 - **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
-  below) is applied when the invitation is accepted. If it cannot be (a preset other than
-  Staff whose chooser is no longer the HR owner), it waits for the HR owner. HR owner only,
-  tenant query as for the other `/access` routes:
+  below) is applied when the invitation is accepted. If it is not, it waits for the HR
+  owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an
+  enabled user with an enabled membership in the tenant), or any preset, Staff included,
+  whose apply failed (for example the tenant's HR lock was held for more than 5 s). HR owner
+  only, tenant query as for the other `/access` routes:
   - `GET /access/invitations` returns `PendingInvitationPage`: `items` of
     `{token_id, user_id, display_name, preset, chosen_by, chooser_name, accepted_at}`.
     `chooser_name` is "FourStacks admin" for a platform admin and `null` once the chooser
     is no longer an enabled member.
   - `POST /access/invitations/{token_id}/apply` applies the chosen preset now, on top of
     what the person already has (it never turns a switch off), and returns an
-    `AccessPersonResult` (`saved`, `unchanged`, or `refused` with a `reason`). It checks
-    again that the caller is the HR owner. 409 `invitation_already_handled` when it was
-    already applied or dismissed; `resource_unavailable` for an unknown token.
+    `AccessPersonResult` with `outcome` `saved`. It checks again that the caller is the HR
+    owner. Refusals are errors, never a `refused` outcome: 409
+    `invitation_already_handled` when it was already applied or dismissed; 404
+    `resource_unavailable` for an unknown token.
   - `POST /access/invitations/{token_id}/dismiss` leaves the person's access as it is; 204.
     The same 409 applies.
 - The company features ("What the HR assistant can help with") stay on
@@ -1028,8 +1031,13 @@ the link is emailed after the token commits: `delivery` is `email`, `delivery_no
 `send_failed` (the relay refused, timed out or failed; the user and token still exist
 once, with no retry). Failures are logged by category only (`smtp_disabled`,
 `smtp_auth_failed`, `smtp_refused`, `smtp_timeout`, `smtp_error`), never with the address,
-link or body. Reset links expire in `Asia/Kuala_Lumpur` time; invitation links in the
-tenant's `clients.timezone`.
+link or body; a message that fails to build is `smtp_error` too. The gateway names itself
+in EHLO as `SMTP_EHLO_HOSTNAME` (default `fourstacks.my`). With `INVITE_MAIL_ENABLED` on but
+a relay secret missing or empty, startup logs one warning, `console_mail_inactive` with
+category `secrets_missing`, and mail stays off. Reset links expire in `Asia/Kuala_Lumpur`
+time; invitation links in the tenant's `clients.timezone`, which is checked before the
+invitation is written only while mail is on (with mail off an invalid zone does not block
+inviting). Renewing an invitation that has no tenant is 404 `pending invitation not found`.
 
 **HR access on an invitation.** `InviteIn.hr_preset` is one of `staff`, `manager`,
 `hr_team`, `payroll_preparer`, `payroll_reviewer`, or omitted for no HR access. Any

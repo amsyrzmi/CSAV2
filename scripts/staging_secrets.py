@@ -148,7 +148,7 @@ def provision_whatsapp_defaults(secret_dir: Path, runtime_uid: int) -> list[str]
 
 
 def install_smtp(secret_dir: Path, runtime_uid: int) -> list[str]:
-    """Move the owner's top-level SMTP files into ``runtime/``; never read, print or overwrite.
+    """Move the owner's top-level SMTP files into ``runtime/``; never print or overwrite them.
 
     Ownership goes to the runtime UID (and the ``runtime/`` group) with mode 0400, which needs
     root when the files are root-owned. Everything is validated before the first move, so a
