@@ -44,11 +44,20 @@ class SmtpTransport:
     """One connection per message: STARTTLS with certificate checks, then SMTP auth."""
 
     def __init__(
-        self, host: str, port: int, username: str, password: str, timeout: float = 10
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        timeout: float = 10,
+        *,
+        local_hostname: str = "fourstacks.my",
     ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
+        # The EHLO name; without it smtplib sends the container's own hostname.
+        self.local_hostname = local_hostname
         self._username = username
         self._password = password
 
@@ -64,7 +73,9 @@ class SmtpTransport:
         message["Message-ID"] = make_msgid(domain="fourstacks.my")
         message.set_content(mail.text)
         message.add_alternative(mail.html, subtype="html")
-        with smtplib.SMTP(self.host, self.port, timeout=self.timeout) as smtp:
+        with smtplib.SMTP(
+            self.host, self.port, local_hostname=self.local_hostname, timeout=self.timeout
+        ) as smtp:
             # starttls raises SMTPNotSupportedError when the relay does not offer it.
             smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._username, self._password)
@@ -84,21 +95,28 @@ class Mailer:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Mailer:
-        """Active only when the flag is on and both relay secrets are present and non-empty."""
+        """Active only when the flag is on and both relay secrets are present and non-empty.
+
+        Called once at startup. A flag that is on without both secrets is logged as a warning,
+        by category only, so a missing secret file does not look like mail switched off.
+        """
+        if not settings.INVITE_MAIL_ENABLED:
+            return cls(None, settings.INVITE_MAIL_FROM)
         username, password = settings.SMTP_USERNAME, settings.SMTP_PASSWORD
         if (
-            not settings.INVITE_MAIL_ENABLED
-            or username is None
+            username is None
             or password is None
             or not username.get_secret_value()
             or not password.get_secret_value()
         ):
+            logger.warning("console_mail_inactive", category="secrets_missing")
             return cls(None, settings.INVITE_MAIL_FROM)
         transport = SmtpTransport(
             settings.SMTP_HOST,
             settings.SMTP_PORT,
             username.get_secret_value(),
             password.get_secret_value(),
+            local_hostname=settings.SMTP_EHLO_HOSTNAME,
         )
         return cls(transport, settings.INVITE_MAIL_FROM)
 

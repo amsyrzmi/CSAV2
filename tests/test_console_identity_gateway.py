@@ -68,6 +68,7 @@ def application(
         SMTP_PORT=587,
         SMTP_USERNAME=None,
         SMTP_PASSWORD=None,
+        SMTP_EHLO_HOSTNAME="fourstacks.my",
     )
     monkeypatch.setattr(gateway, "get_settings", lambda: synthetic)
     monkeypatch.setattr(gateway, "configure_logging", lambda **_: None)

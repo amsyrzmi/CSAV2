@@ -230,6 +230,7 @@ def test_settings_defaults_keep_mail_off() -> None:
     assert settings.INVITE_MAIL_FROM == SENDER
     assert (settings.SMTP_HOST, settings.SMTP_PORT) == ("smtp-relay.gmail.com", 587)
     assert settings.SMTP_USERNAME is None and settings.SMTP_PASSWORD is None
+    assert settings.SMTP_EHLO_HOSTNAME == "fourstacks.my"
 
 
 @pytest.mark.parametrize(
@@ -268,15 +269,65 @@ def test_from_settings_requires_flag_and_both_secrets(
             587,
             10,
         )
+        assert transport.local_hostname == "fourstacks.my"
         assert "synthetic-pw" not in repr(transport)
+
+
+def test_from_settings_threads_the_ehlo_hostname() -> None:
+    mailer = Mailer.from_settings(
+        configured(
+            INVITE_MAIL_ENABLED=True,
+            SMTP_USERNAME="relay@example.test",
+            SMTP_PASSWORD="synthetic-pw",
+            SMTP_EHLO_HOSTNAME="mail.example.test",
+        )
+    )
+    assert isinstance(mailer.transport, SmtpTransport)
+    assert mailer.transport.local_hostname == "mail.example.test"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "warned"),
+    [
+        ({"INVITE_MAIL_ENABLED": True}, True),
+        ({"INVITE_MAIL_ENABLED": True, "SMTP_USERNAME": "relay@example.test"}, True),
+        ({"INVITE_MAIL_ENABLED": True, "SMTP_PASSWORD": "synthetic-pw"}, True),
+        (
+            {"INVITE_MAIL_ENABLED": True, "SMTP_USERNAME": "", "SMTP_PASSWORD": "synthetic-pw"},
+            True,
+        ),
+        ({"SMTP_USERNAME": "relay@example.test", "SMTP_PASSWORD": "synthetic-pw"}, False),
+        ({}, False),
+        (
+            {
+                "INVITE_MAIL_ENABLED": True,
+                "SMTP_USERNAME": "relay@example.test",
+                "SMTP_PASSWORD": "synthetic-pw",
+            },
+            False,
+        ),
+    ],
+)
+def test_flag_on_without_both_secrets_warns_once_without_values(
+    overrides: dict[str, Any], warned: bool
+) -> None:
+    with capture_logs() as logs:
+        Mailer.from_settings(configured(**overrides))
+    expected = (
+        [{"event": "console_mail_inactive", "category": "secrets_missing", "log_level": "warning"}]
+        if warned
+        else []
+    )
+    assert logs == expected
+    assert "relay@example.test" not in repr(logs) and "synthetic-pw" not in repr(logs)
 
 
 def test_smtp_transport_requires_starttls_before_login(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[Any] = []
 
     class FakeSmtp:
-        def __init__(self, host: str, port: int, *, timeout: float) -> None:
-            calls.append(("connect", host, port, timeout))
+        def __init__(self, host: str, port: int, *, local_hostname: str, timeout: float) -> None:
+            calls.append(("connect", host, port, local_hostname, timeout))
 
         def __enter__(self) -> FakeSmtp:
             return self
@@ -295,13 +346,17 @@ def test_smtp_transport_requires_starttls_before_login(monkeypatch: pytest.Monke
             calls.append(("parts", [part.get_content_type() for part in message.iter_parts()]))
 
     monkeypatch.setattr("csa.console.mailer.smtplib.SMTP", FakeSmtp)
-    SmtpTransport("relay.example.test", 587, "relay@example.test", "synthetic-pw").send(
-        MAIL, SENDER
-    )
+    SmtpTransport(
+        "relay.example.test",
+        587,
+        "relay@example.test",
+        "synthetic-pw",
+        local_hostname="mail.example.test",
+    ).send(MAIL, SENDER)
     import ssl
 
     assert calls == [
-        ("connect", "relay.example.test", 587, 10),
+        ("connect", "relay.example.test", 587, "mail.example.test", 10),
         ("starttls", ssl.CERT_REQUIRED),
         ("login", "relay@example.test", "synthetic-pw"),
         ("send", SENDER, "aminah@example.test", "Synthetic subject"),

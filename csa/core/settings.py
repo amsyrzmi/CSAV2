@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_USERNAME: SecretStr | None = None
     SMTP_PASSWORD: SecretStr | None = None
+    # The name the gateway gives in EHLO; the container's own hostname is not a real FQDN.
+    SMTP_EHLO_HOSTNAME: str = "fourstacks.my"
     TYPESAFE_API_KEY: SecretStr | None = None
     TEI_ENDPOINT: HttpUrl | None = None
     KB_EMBED_MODEL_LABEL: str = Field(default="tei-384", min_length=1, max_length=64)
