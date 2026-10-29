@@ -327,14 +327,17 @@ async def test_rail_toggle_persists_across_reload(console: Console) -> None:
         assert response is not None
         assert 'data-rail="collapsed"' in await response.text()
 
-        # A tampered cookie value falls back to collapsed.
+        # A tampered cookie value falls back to collapsed and never reaches the HTML.
+        tampered = '"><script>railTamper()</script>'
         await page.context.add_cookies(
-            [{"name": "fs-rail", "value": "<script>", "url": console.base}]
+            [{"name": "fs-rail", "value": tampered, "url": console.base}]
         )
         response = await page.reload()
         assert response is not None
         html = await response.text()
-        assert 'data-rail="collapsed"' in html and "<script>" not in html.split("fs-rail")[-1][:40]
+        assert 'data-rail="collapsed"' in html
+        assert "railTamper" not in html
+        await expect(rail).to_have_attribute("data-rail", "collapsed")
     finally:
         await close_page(playwright, browser)
 

@@ -60,7 +60,8 @@ def test_idle_frames_are_the_motions_applied_to_frame_0(agent: str, size: str) -
     entry = DATA[agent]
     rest = decode(entry["idle"][size][0])
     rebuilt = pa.idle_frames(agent, rest, entry["palette"])
-    assert rebuilt[0] == rest, "frame 0 is the untransformed rest pose"
+    # Frames 1-3 are the generator's motions applied to the stored frame 0; frame 0 being the
+    # rest pose of the source art is what `python -m scripts.pixelate_avatars --check` proves.
     assert [pa.encode_frame(f) for f in rebuilt] == entry["idle"][size]
 
 
