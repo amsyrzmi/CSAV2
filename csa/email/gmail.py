@@ -38,8 +38,13 @@ MAX_JSON_BYTES = 1_048_576
 MAX_BODY_CHARS = 20_000
 TIMEOUT_SECONDS = 20.0
 MAX_RECIPIENTS = 20
+MAX_ADDRESS_CHARS = 254
 MAX_SUBJECT_CHARS = 200
 MAX_BODY_INPUT_CHARS = 20_000
+MAX_MESSAGE_ID_CHARS = 500
+MAX_REFERENCES_CHARS = 2000
+# Statuses after which the message may still have been delivered: never a clear refusal.
+AMBIGUOUS_SEND_STATUSES = frozenset({408, 409, 499})
 
 
 class GmailError(Exception):
@@ -137,7 +142,26 @@ def _header(headers: list[dict[str, Any]], name: str) -> str:
 
 
 def _checked_addresses(values: Sequence[str]) -> list[str]:
-    return [validate_mailbox_address(value) for value in values]
+    checked: list[str] = []
+    for value in values:
+        if len(value) > MAX_ADDRESS_CHARS:
+            raise ValueError("address too long")
+        checked.append(validate_mailbox_address(value))
+    return checked
+
+
+def trim_references(value: str | None, limit: int = MAX_REFERENCES_CHARS) -> str | None:
+    """Keep the newest whole Message-IDs of a References chain within `limit` characters."""
+    ids = (value or "").split()
+    while ids and len(" ".join(ids)) > limit:
+        ids.pop(0)
+    return " ".join(ids) or None
+
+
+def _bounded(value: str, limit: int) -> str | None:
+    """A header kept whole or not at all: a cut Message-ID would point at nothing."""
+    value = value.strip()
+    return value if value and len(value) <= limit else None
 
 
 def build_message_mime(
@@ -152,7 +176,8 @@ def build_message_mime(
 ) -> bytes:
     """Plain-text message. Every address and header value uses the draft contract's rules.
 
-    Gmail delivers to the Bcc header and drops it from the sent copy.
+    Bcc is written as a header because that is the only way `users.messages.send` takes it;
+    Gmail delivers to it and does not show it to other recipients.
     """
     try:
         to_list, cc_list, bcc_list = (
@@ -165,15 +190,19 @@ def build_message_mime(
         if (
             not subject
             or len(subject) > MAX_SUBJECT_CHARS
+            or not body.strip()
             or len(body) > MAX_BODY_INPUT_CHARS
             or "\x00" in body
         ):
             raise ValueError("subject or body out of bounds")
         reject_header_control_chars(subject)
         threading = {"In-Reply-To": in_reply_to, "References": references}
-        for value in threading.values():
+        limits = {"In-Reply-To": MAX_MESSAGE_ID_CHARS, "References": MAX_REFERENCES_CHARS}
+        for name, value in threading.items():
             if value is not None:
                 reject_header_control_chars(value)
+                if len(value) > limits[name]:
+                    raise ValueError("threading header too long")
     except ValueError as exc:
         raise GmailError("invalid_message") from exc
     message = EmailMessage()
@@ -377,8 +406,8 @@ class GmailClient:
             received_at=received,
             labels=labels,
             unread="UNREAD" in labels,
-            latest_rfc_message_id=_header(headers, "Message-ID")[:500] or None,
-            latest_references=_header(headers, "References")[:2000] or None,
+            latest_rfc_message_id=_bounded(_header(headers, "Message-ID"), MAX_MESSAGE_ID_CHARS),
+            latest_references=trim_references(_header(headers, "References")),
             latest_reply_to=_header(headers, "Reply-To")[:500] or None,
             latest_from=_header(headers, "From")[:500] or None,
             latest_non_owner_from=(
@@ -411,8 +440,10 @@ class GmailClient:
     async def send_message(self, access: SecretStr, *, thread_id: str | None, mime: bytes) -> str:
         """Send through `users.messages.send` once; the caller owns at-most-once.
 
-        A 4xx is a clear refusal (`send_refused`: nothing was sent). A timeout, a connection
-        failure or a 5xx leaves the outcome unknown (`provider_unreachable`).
+        Clear refusals, where nothing was sent: 401/403 `provider_unauthorized`, 429
+        `provider_rate_limited`, any other 4xx `send_refused`. A timeout, a connection failure,
+        408/409/499 or a 5xx leaves the outcome unknown (`provider_unreachable`), and so does a
+        200 without a message id (`provider_invalid_response`).
         """
         message: dict[str, Any] = {"raw": base64.urlsafe_b64encode(mime).decode("ascii")}
         if thread_id:
@@ -425,9 +456,16 @@ class GmailClient:
             response = await self._http.send(request, follow_redirects=False)
         except httpx.HTTPError as exc:
             raise GmailError("provider_unreachable") from exc
-        if 400 <= response.status_code < 500:
+        status = response.status_code
+        if status in AMBIGUOUS_SEND_STATUSES:
+            raise GmailError("provider_unreachable")
+        if status in {401, 403}:
+            raise GmailError("provider_unauthorized")
+        if status == 429:
+            raise GmailError("provider_rate_limited")
+        if 400 <= status < 500:
             raise GmailError("send_refused")
-        if response.status_code != 200:
+        if status != 200:
             raise GmailError("provider_unreachable")
         try:
             data = response.json()

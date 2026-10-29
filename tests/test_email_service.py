@@ -6,9 +6,13 @@ records every request; the model is scripted. Nothing external is contacted.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 from collections.abc import AsyncIterator
+from email import message_from_bytes
+from email.message import Message
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
@@ -22,7 +26,7 @@ from csa.console.security import digest
 from csa.core import crypto, db
 from csa.email.api import build_email_router
 from csa.email.gmail import GmailClient
-from csa.email.models import DraftProposal, ThreadAnalysis
+from csa.email.models import DraftOut, DraftProposal, ThreadAnalysis, draft_version
 from csa.email.service import EmailService
 from fastapi import FastAPI
 from psycopg import sql
@@ -45,15 +49,21 @@ def _b64(text: str) -> str:
 
 
 class FakeGmail:
-    """Records Gmail/OAuth requests; never exposes a send endpoint."""
+    """Records Gmail/OAuth requests; `messages/send` behaves as `send_mode` says."""
 
     def __init__(self) -> None:
         self.requests: list[tuple[str, str, bytes]] = []
         self.access_counter = 0
         self.expected_thread_id: str | None = "t1"
         self.expected_to = "aina@example.test"
+        self.listed = ["t1", "t2"]
+        self.extra_threads: dict[str, dict[str, Any]] = {}
+        self.sends: list[dict[str, Any]] = []
+        self.send_mode = "ok"
+        self.send_delay = 0.0
+        self.send_counter = 0
 
-    def handler(self, request: httpx.Request) -> httpx.Response:
+    async def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.method, request.url.path, request.content))
         path = request.url.path
         if request.url.host == "oauth2.googleapis.com":
@@ -72,8 +82,26 @@ class FakeGmail:
         assert auth.startswith("Bearer at-"), "every Gmail call must carry the access token"
         if path.endswith("/profile"):
             return httpx.Response(200, json={"emailAddress": "Staff@Example.test"})
+        if path.endswith("/messages/send") and request.method == "POST":
+            payload = json.loads(request.content)
+            self.sends.append(payload)
+            if self.send_delay:
+                await asyncio.sleep(self.send_delay)
+            if self.send_mode == "timeout":
+                raise httpx.ReadTimeout("slow", request=request)
+            if self.send_mode == "refuse":
+                return httpx.Response(400, json={"error": "invalid"})
+            if self.send_mode == "unauthorized":
+                return httpx.Response(401, json={"error": "expired"})
+            if self.send_mode == "empty":
+                return httpx.Response(200, json={})
+            self.send_counter += 1
+            return httpx.Response(200, json={"id": f"gmail-msg-{self.send_counter}"})
         if path.endswith("/threads"):
-            return httpx.Response(200, json={"threads": [{"id": "t1"}, {"id": "t2"}]})
+            return httpx.Response(200, json={"threads": [{"id": tid} for tid in self.listed]})
+        for tid, thread in self.extra_threads.items():
+            if path.endswith(f"/threads/{tid}"):
+                return httpx.Response(200, json=thread)
         if path.endswith("/threads/t1"):
             return httpx.Response(
                 200,
@@ -91,6 +119,7 @@ class FakeGmail:
                                     {"name": "From", "value": "Demo Aina <aina@example.test>"},
                                     {"name": "Subject", "value": "Order MGL-TEST-005"},
                                     {"name": "Date", "value": "Thu, 23 Oct 2026 10:00:00 +0800"},
+                                    {"name": "Message-ID", "value": "<m1@mail.example.test>"},
                                 ],
                                 "parts": [
                                     {
@@ -550,11 +579,13 @@ async def _enable_and_connect(world: World, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(crypto, "_key", lambda: b"\x07" * 32)
     enabled = await world.call("admin", "PUT", "/console/v1/email/settings", {"enabled": True})
     assert enabled.status_code == 200, enabled.text
-    started = await world.call("staff", "POST", "/console/v1/email/mailbox/connect")
+    await _connect(world, "staff")
+
+
+async def _connect(world: World, name: str) -> None:
+    started = await world.call(name, "POST", "/console/v1/email/mailbox/connect")
     state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
-    done = await world.call(
-        "staff", "GET", f"/console/v1/email/oauth/callback?code=abc&state={state}"
-    )
+    done = await world.call(name, "GET", f"/console/v1/email/oauth/callback?code=abc&state={state}")
     assert done.status_code == 303 and "connected=1" in done.headers["location"]
 
 
@@ -679,3 +710,466 @@ async def test_compose_needs_mailbox_and_enabled_switch(world: World) -> None:
     assert nobox.status_code == 409 and nobox.json()["detail"] == "mailbox_not_connected"
     reader = await world.call("reader", "POST", COMPOSE, body)
     assert reader.status_code == 403
+
+
+# --- sending ----------------------------------------------------------------
+
+SEND = "/console/v1/email/drafts/{}/send"
+DRAFTS = "/console/v1/email/drafts"
+UNKNOWN_COPY = "Check your Gmail Sent folder before trying again."
+
+
+def _raw(payload: dict[str, Any]) -> Message:
+    return message_from_bytes(base64.urlsafe_b64decode(payload["raw"] + "=="))
+
+
+def _version(draft: dict[str, Any]) -> str:
+    return draft_version(DraftOut.model_validate(draft))
+
+
+async def _draft(world: World, draft_id: UUID | str, name: str = "staff") -> dict[str, Any]:
+    listed = await world.call(name, "GET", DRAFTS)
+    assert listed.status_code == 200, listed.text
+    found = [item for item in listed.json()["items"] if item["id"] == str(draft_id)]
+    assert len(found) == 1
+    return found[0]
+
+
+async def _insert_draft(
+    world: World,
+    *,
+    to: list[str],
+    cc: list[str] | None = None,
+    body: str = "Stock arrives Monday.\nStaff",
+    user: str = "staff",
+) -> UUID:
+    mailbox = await world.q(
+        "SELECT id FROM email_mailboxes WHERE client_id=%s AND user_id=%s",
+        (world.tenant, world.users[user]),
+    )
+    draft_id = uuid4()
+    await world.q(
+        "INSERT INTO email_drafts(client_id,mailbox_id,id,thread_id,recipient,to_addresses,cc,"
+        "subject,body,status,source) "
+        "VALUES (%s,%s,%s,NULL,%s,%s,%s,'Stock update',%s,'draft','human')",
+        (world.tenant, mailbox[0]["id"], draft_id, to[0], to, cc or [], body),
+    )
+    return draft_id
+
+
+async def _send(
+    world: World,
+    draft: dict[str, Any],
+    *,
+    key: UUID | None = None,
+    version: str | None = None,
+    name: str = "staff",
+    path_suffix: str = "",
+) -> httpx.Response:
+    return await world.call(
+        name,
+        "POST",
+        SEND.format(draft["id"]) + path_suffix,
+        {"version": version or _version(draft)},
+        key=key,
+    )
+
+
+async def _status(world: World, draft_id: UUID | str) -> str:
+    rows = await world.q("SELECT status FROM email_drafts WHERE id=%s", (draft_id,))
+    return rows[0]["status"]
+
+
+async def test_send_happy_path_new_and_reply(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    await _enable_and_connect(world, monkeypatch)
+    composed = await world.call(
+        "staff",
+        "POST",
+        COMPOSE,
+        {
+            "recipient_address": "boss@example.test",
+            "cc": ["partner@vendor.test"],
+            "subject": "Stock update",
+            "instructions": "Tell them stock arrives Monday",
+        },
+    )
+    assert composed.status_code == 201, composed.text
+    draft = composed.json()
+    assert draft["to"] == ["boss@example.test"] and draft["cc"] == ["partner@vendor.test"]
+    assert draft["bcc"] == [] and draft["status"] == "draft" and draft["sent_at"] is None
+    assert draft["needs_staff_input"] is True and draft["reply_to_message_id"] is None
+    assert draft["recipients"] == [
+        {"address": "boss@example.test", "outside": False},
+        {"address": "partner@vendor.test", "outside": True},
+    ]
+    # Duplicates across To, CC and BCC are dropped case-insensitively; the first one stays.
+    edited = await world.call(
+        "staff",
+        "PUT",
+        f"{DRAFTS}/{draft['id']}",
+        {
+            "to": ["boss@example.test"],
+            "cc": ["Boss@Example.test", "partner@vendor.test"],
+            "bcc": ["PARTNER@vendor.test", "audit@example.test"],
+            "subject": "Stock update",
+            "body": "Stock arrives Monday.\nStaff",
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    draft = edited.json()
+    assert draft["cc"] == ["partner@vendor.test"] and draft["bcc"] == ["audit@example.test"]
+    assert draft["needs_staff_input"] is False
+    key = uuid4()
+    sent = await _send(world, draft, key=key)
+    assert sent.status_code == 200, sent.text
+    result = sent.json()
+    assert result["outcome"] == "sent" and result["gmail_message_id"] == "gmail-msg-1"
+    assert result["remaining_this_hour"] == 19 and result["sent_at"]
+    assert len(world.gmail.sends) == 1 and "threadId" not in world.gmail.sends[0]
+    message = _raw(world.gmail.sends[0])
+    assert message["To"] == "boss@example.test" and message["Cc"] == "partner@vendor.test"
+    assert message["Bcc"] == "audit@example.test" and message["In-Reply-To"] is None
+    stored = await _draft(world, draft["id"])
+    assert stored["status"] == "sent" and stored["sent_at"]
+    # A sent draft can no longer be edited.
+    locked = await world.call(
+        "staff",
+        "PUT",
+        f"{DRAFTS}/{draft['id']}",
+        {"to": ["boss@example.test"], "subject": "Again", "body": "Again"},
+    )
+    assert locked.status_code == 409 and locked.json()["detail"] == "draft_already_sent"
+    # Receipts and the audit row hold counts and ids only, never addresses or content.
+    receipts = await world.q(
+        "SELECT operation, receipt FROM email_receipts WHERE subject_id=%s "
+        "AND operation LIKE 'draft.send%%'",
+        (world.users["staff"],),
+    )
+    assert {row["operation"] for row in receipts} == {"draft.send", "draft.send.result"}
+    for row in receipts:
+        text = json.dumps(row["receipt"])
+        assert "@" not in text and "Stock" not in text
+        assert row["receipt"]["detail"]["recipients"] == 3
+        assert row["receipt"]["detail"]["outside"] == 1
+        assert row["receipt"]["detail"]["draft_id"] == draft["id"]
+    final = next(r for r in receipts if r["operation"] == "draft.send.result")
+    assert final["receipt"]["detail"]["gmail_message_id"] == "gmail-msg-1"
+    audit = await world.q(
+        "SELECT action, target_id, details FROM console_audit WHERE client_id=%s "
+        "AND action='email.sent'",
+        (world.tenant,),
+    )
+    assert audit == [
+        {
+            "action": "email.sent",
+            "target_id": draft["id"],
+            "details": {"recipients": 3, "outside": 1},
+        }
+    ]
+
+    # A reply goes into the Gmail thread with In-Reply-To and References.
+    assert (await world.call("staff", "POST", "/console/v1/email/sync")).status_code == 200
+    replied = await world.call(
+        "staff", "POST", "/console/v1/email/threads/t1/reply", {"instructions": "Ships tomorrow"}
+    )
+    assert replied.status_code == 201, replied.text
+    reply = replied.json()
+    assert reply["to"] == ["aina@example.test"] and reply["thread_id"] == "t1"
+    assert reply["reply_to_message_id"] == "m1" and reply["cc"] == [] and reply["bcc"] == []
+    reply = (
+        await world.call(
+            "staff",
+            "PUT",
+            f"{DRAFTS}/{reply['id']}",
+            {"to": ["aina@example.test"], "subject": "Re: Order MGL-TEST-005", "body": "Ships."},
+        )
+    ).json()
+    sent = await _send(world, reply)
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["remaining_this_hour"] == 18
+    payload = world.gmail.sends[-1]
+    assert payload["threadId"] == "t1"
+    message = _raw(payload)
+    assert message["To"] == "aina@example.test"
+    assert message["In-Reply-To"] == "<m1@mail.example.test>"
+    assert message["References"] == "<m1@mail.example.test>"
+    for address in ("boss@example.test", "partner@vendor.test", "audit@example.test", "aina@"):
+        assert address not in caplog.text.lower()
+
+
+async def test_send_is_at_most_once_under_retry_and_concurrency(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    # The same key twice: one Gmail call, the stored result comes back.
+    first = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    key = uuid4()
+    sent = await _send(world, first, key=key)
+    assert sent.status_code == 200, sent.text
+    again = await _send(world, first, key=key)
+    assert again.status_code == 200 and again.json()["gmail_message_id"] == "gmail-msg-1"
+    assert again.json()["outcome"] == "sent"
+    assert len(world.gmail.sends) == 1
+    other = await _send(world, first, key=uuid4())
+    assert other.status_code == 409 and other.json()["detail"] == "draft_already_sent"
+    assert len(world.gmail.sends) == 1
+
+    # Two concurrent sends with different keys: one Gmail call.
+    world.gmail.send_delay = 0.3
+    second = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    a, b = await asyncio.gather(
+        _send(world, second, key=uuid4()), _send(world, second, key=uuid4())
+    )
+    assert sorted([a.status_code, b.status_code]) == [200, 409], (a.text, b.text)
+    loser = a if a.status_code == 409 else b
+    assert loser.json()["detail"] in {"draft_already_sending", "draft_already_sent"}
+    assert len(world.gmail.sends) == 2
+
+    # Two concurrent sends with the same key (a double click): one Gmail call.
+    third = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    same = uuid4()
+    a, b = await asyncio.gather(_send(world, third, key=same), _send(world, third, key=same))
+    assert 200 in {a.status_code, b.status_code}, (a.text, b.text)
+    for response in (a, b):
+        assert response.status_code == 200 or response.json()["detail"] == "draft_already_sending"
+    assert len(world.gmail.sends) == 3
+    world.gmail.send_delay = 0.0
+
+    # A timeout leaves the draft sending; no retry ever calls Gmail again.
+    fourth = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    world.gmail.send_mode = "timeout"
+    key = uuid4()
+    unknown = await _send(world, fourth, key=key)
+    assert unknown.status_code == 502, unknown.text
+    assert unknown.json() == {"detail": "send_outcome_unknown", "message": UNKNOWN_COPY}
+    assert len(world.gmail.sends) == 4 and await _status(world, fourth["id"]) == "sending"
+    world.gmail.send_mode = "ok"
+    retry = await _send(world, fourth, key=key)
+    assert retry.status_code == 502 and retry.json()["detail"] == "send_outcome_unknown"
+    fresh = await _send(world, fourth, key=uuid4())
+    assert fresh.status_code == 409 and fresh.json()["detail"] == "draft_already_sending"
+    assert len(world.gmail.sends) == 4 and await _status(world, fourth["id"]) == "sending"
+
+    # A 200 without a message id is just as ambiguous.
+    fifth = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    world.gmail.send_mode = "empty"
+    unknown = await _send(world, fifth)
+    assert unknown.status_code == 502 and unknown.json()["detail"] == "send_outcome_unknown"
+    assert await _status(world, fifth["id"]) == "sending"
+    assert len(world.gmail.sends) == 5
+
+
+async def test_send_refusal_returns_draft_and_replays(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    world.gmail.send_mode = "refuse"
+    key = uuid4()
+    refused = await _send(world, draft, key=key)
+    assert refused.status_code == 409 and refused.json()["detail"] == "send_refused"
+    assert await _status(world, draft["id"]) == "draft" and len(world.gmail.sends) == 1
+    world.gmail.send_mode = "ok"
+    replayed = await _send(world, draft, key=key)
+    assert replayed.status_code == 409 and replayed.json()["detail"] == "send_refused"
+    assert len(world.gmail.sends) == 1
+    world.gmail.send_mode = "unauthorized"
+    expired = await _send(world, draft, key=uuid4())
+    assert expired.status_code == 409
+    assert expired.json()["detail"] == "mailbox_reauthorization_required"
+    assert await _status(world, draft["id"]) == "draft" and len(world.gmail.sends) == 2
+    world.gmail.send_mode = "ok"
+    assert (await _send(world, draft, key=uuid4())).status_code == 200
+    assert len(world.gmail.sends) == 3
+
+
+async def test_send_limit_twenty_per_hour(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    ids = [await _insert_draft(world, to=[f"p{i}@example.test"]) for i in range(21)]
+    listed = {
+        item["id"]: item for item in (await world.call("staff", "GET", DRAFTS)).json()["items"]
+    }
+    for count, draft_id in enumerate(ids[:20], start=1):
+        sent = await _send(world, listed[str(draft_id)])
+        assert sent.status_code == 200, sent.text
+        assert sent.json()["remaining_this_hour"] == 20 - count
+    limited = await _send(world, listed[str(ids[20])])
+    assert limited.status_code == 429, limited.text
+    assert limited.json()["detail"] == "send_limit_reached"
+    assert 0 < limited.json()["retry_after"] <= 3600
+    assert int(limited.headers["retry-after"]) == limited.json()["retry_after"]
+    assert len(world.gmail.sends) == 20 and await _status(world, ids[20]) == "draft"
+
+
+async def test_placeholder_blocks_send(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    composed = await world.call(
+        "staff",
+        "POST",
+        COMPOSE,
+        {"recipient_address": "boss@example.test", "subject": "Hello", "instructions": "Greet"},
+    )
+    draft = composed.json()
+    assert "[STAFF:" in draft["body"] and draft["needs_staff_input"] is True
+    refused = await _send(world, draft)
+    assert refused.status_code == 409 and refused.json()["detail"] == "draft_needs_staff_input"
+    assert world.gmail.sends == [] and await _status(world, draft["id"]) == "draft"
+
+
+async def test_stale_version_is_409(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    stale = _version(draft)
+    edited = await world.call(
+        "staff",
+        "PUT",
+        f"{DRAFTS}/{draft['id']}",
+        {"to": ["boss@example.test"], "cc": ["ops@example.test"], "subject": "Stock", "body": "x"},
+    )
+    assert edited.status_code == 200, edited.text
+    refused = await _send(world, draft, version=stale)
+    assert refused.status_code == 409 and refused.json()["detail"] == "draft_changed"
+    assert world.gmail.sends == []
+    assert (await _send(world, edited.json())).status_code == 200
+
+
+async def test_recipient_lists_are_capped_at_twenty_after_dedupe(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    to = [f"p{i}@example.test" for i in range(15)]
+    cc = [address.upper() for address in to[:5]] + [f"c{i}@example.test" for i in range(5)]
+    path = f"{DRAFTS}/{draft['id']}"
+    ok = await world.call("staff", "PUT", path, {"to": to, "cc": cc, "subject": "s", "body": "b"})
+    assert ok.status_code == 200, ok.text
+    assert len(ok.json()["to"]) + len(ok.json()["cc"]) == 20
+    over = await world.call(
+        "staff",
+        "PUT",
+        path,
+        {"to": to, "cc": cc, "bcc": ["x@example.test"], "subject": "s", "body": "b"},
+    )
+    assert over.status_code == 422 and over.json()["detail"] == "recipients_invalid"
+    named = await world.call(
+        "staff", "PUT", path, {"to": ["Boss <boss@example.test>"], "subject": "s", "body": "b"}
+    )
+    assert named.status_code == 422
+
+
+def _thread(thread_id: str, *messages: dict[str, Any]) -> dict[str, Any]:
+    return {"id": thread_id, "messages": list(messages)}
+
+
+def _msg(
+    msg_id: str, sender: str, *, reply_to: str | None = None, refs: str | None = None
+) -> dict[str, Any]:
+    headers = [
+        {"name": "From", "value": sender},
+        {"name": "Subject", "value": "Order help"},
+        {"name": "Date", "value": "Mon, 26 Oct 2026 09:00:00 +0800"},
+        {"name": "Message-ID", "value": f"<{msg_id}@mail.example.test>"},
+    ]
+    if reply_to:
+        headers.append({"name": "Reply-To", "value": reply_to})
+    if refs:
+        headers.append({"name": "References", "value": refs})
+    return {
+        "id": msg_id,
+        "labelIds": ["INBOX"],
+        "snippet": "hi",
+        "payload": {"mimeType": "text/plain", "headers": headers, "body": {"data": _b64("Hello")}},
+    }
+
+
+async def test_reply_targets_latest_non_owner_sender_and_reply_to(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.extra_threads = {
+        # The owner answered last: the reply still goes to the customer's Reply-To.
+        "t3": _thread(
+            "t3",
+            _msg("a1", "Aina <aina@customer.test>", reply_to="Support <support@customer.test>"),
+            _msg("a2", "Staff <Staff@Example.test>", refs="<a1@mail.example.test>"),
+        ),
+        "t4": _thread("t4", _msg("b1", "Ben <ben@customer.test>")),
+        "t5": _thread("t5", _msg("c1", "staff@example.test")),
+        "t6": _thread("t6", _msg("d1", "Cara <cara@customer.test>", reply_to="staff@example.test")),
+    }
+    world.gmail.listed = ["t3", "t4", "t5", "t6"]
+    assert (await world.call("staff", "POST", "/console/v1/email/sync")).status_code == 200
+    reply_path = "/console/v1/email/threads/{}/reply"
+    t3 = await world.call(
+        "staff", "POST", reply_path.format("t3"), {"instructions": "x", "cc": ["boss@example.test"]}
+    )
+    assert t3.status_code == 201, t3.text
+    draft = t3.json()
+    assert draft["to"] == ["support@customer.test"] and draft["cc"] == ["boss@example.test"]
+    assert "staff@example.test" not in [a.lower() for a in draft["to"] + draft["cc"] + draft["bcc"]]
+    assert draft["reply_to_message_id"] == "a2"
+    t4 = await world.call("staff", "POST", reply_path.format("t4"), {"instructions": "x"})
+    assert t4.status_code == 201 and t4.json()["to"] == ["ben@customer.test"]
+    for thread in ("t5", "t6"):
+        refused = await world.call(
+            "staff", "POST", reply_path.format(thread), {"instructions": "x"}
+        )
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"] == "reply_target_unavailable"
+
+    # The reply is threaded after the owner's own latest message.
+    draft = (
+        await world.call(
+            "staff",
+            "PUT",
+            f"{DRAFTS}/{draft['id']}",
+            {"to": draft["to"], "cc": draft["cc"], "subject": "Re: Order help", "body": "Done."},
+        )
+    ).json()
+    assert (await _send(world, draft)).status_code == 200
+    payload = world.gmail.sends[-1]
+    message = _raw(payload)
+    assert payload["threadId"] == "t3" and message["To"] == "support@customer.test"
+    assert message["In-Reply-To"] == "<a2@mail.example.test>"
+    assert message["References"] == "<a1@mail.example.test> <a2@mail.example.test>"
+
+    # A row synced before 0484 has no headers: they are read from Gmail once and kept.
+    await world.q(
+        "UPDATE email_threads SET latest_rfc_message_id=NULL, latest_references=NULL, "
+        "latest_reply_to=NULL, latest_from_owner=NULL WHERE thread_id='t4'"
+    )
+    fetches = lambda: sum(1 for _, path, _ in world.gmail.requests if path.endswith("/threads/t4"))  # noqa: E731
+    before = fetches()
+    again = await world.call("staff", "POST", reply_path.format("t4"), {"instructions": "y"})
+    assert again.status_code == 201 and again.json()["to"] == ["ben@customer.test"]
+    assert fetches() == before + 1
+    stored = await world.q(
+        "SELECT latest_rfc_message_id, latest_from_owner FROM email_threads WHERE thread_id='t4'"
+    )
+    assert stored == [
+        {"latest_rfc_message_id": "<b1@mail.example.test>", "latest_from_owner": False}
+    ]
+    assert (
+        await world.call("staff", "POST", reply_path.format("t4"), {"instructions": "z"})
+    ).status_code == 201
+    assert fetches() == before + 1
+
+
+async def test_send_isolated_per_owner(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    await _connect(world, "admin")
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    other = await _send(world, draft, name="admin")
+    assert other.status_code == 404 and other.json()["detail"] == "resource_unavailable"
+    admin_drafts = (await world.call("admin", "GET", DRAFTS)).json()["items"]
+    assert all(item["id"] != draft["id"] for item in admin_drafts)
+    reader = await _send(world, draft, name="reader")
+    assert reader.status_code == 403
+    cross = await _send(world, draft, name="outsider", path_suffix=f"?client_id={world.tenant}")
+    assert cross.status_code == 403 and cross.json()["detail"] == "tenant_not_authorized"
+    own_tenant = await _send(world, draft, name="outsider")
+    assert own_tenant.status_code == 409 and own_tenant.json()["detail"] == "assistant_disabled"
+    assert world.gmail.sends == [] and await _status(world, draft["id"]) == "draft"

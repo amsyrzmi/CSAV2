@@ -1,9 +1,12 @@
-"""Staff email assistant service: tenant switch, mailbox connection, sync, triage, drafts.
+"""Staff email assistant service: tenant switch, mailbox connection, sync, triage, drafts, sends.
 
 Every method revalidates the console session inside a tenant transaction via the
 same SECURITY DEFINER check the HR module uses, which also binds the row-level
 security user. Provider and model calls happen outside database transactions;
 their results are persisted together with an immutable idempotency receipt.
+
+Sending is at most once: the draft is claimed (`sending`) and its receipt written under a
+per-mailbox advisory lock before Gmail is called once; the outcome is recorded afterwards.
 """
 
 from __future__ import annotations
@@ -12,10 +15,11 @@ import asyncio
 import hashlib
 import json
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import UUID, uuid4
+from email.utils import parseaddr
+from typing import Any, NamedTuple
+from uuid import UUID, uuid4, uuid5
 
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
@@ -27,8 +31,16 @@ from csa.core import crypto
 from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
-from csa.email.gmail import FetchedThread, GmailClient, GmailError, build_reply_mime, pkce_pair
+from csa.email.gmail import (
+    FetchedThread,
+    GmailClient,
+    GmailError,
+    build_message_mime,
+    pkce_pair,
+    trim_references,
+)
 from csa.email.models import (
+    MAX_ADDRESSES,
     ComposeRequest,
     ConnectOut,
     DraftOut,
@@ -41,21 +53,94 @@ from csa.email.models import (
     EmailSession,
     MailboxOut,
     Receipt,
+    RecipientOut,
+    ReplyRequest,
+    SendLimitReached,
+    SendResult,
     ThreadAnalysis,
     ThreadDetail,
     ThreadOut,
     ThreadPage,
+    check_address,
+    draft_version,
+    is_employee_ref,
     validated_draft,
 )
+from csa.email.recipients import classify, dedupe, has_staff_placeholder
 
 STATE_TTL_SECONDS = 600
 TOKEN_REFRESH_MARGIN = timedelta(seconds=90)
 MODEL_TIMEOUT_SECONDS = 20.0
 SYNC_QUERY = "newer_than:14d -in:chats"
+SEND_LIMIT_PER_HOUR = 20
+# Clear refusals: Gmail sent nothing, so the draft goes back to `draft`. Any other provider
+# error after the claim leaves the outcome unknown and the draft stays `sending`.
+SAFE_SEND_REFUSALS = frozenset(
+    {"send_refused", "provider_unauthorized", "provider_rate_limited", "invalid_message"}
+)
+_LOCKED = {
+    "exported": "draft_already_exported",
+    "sending": "draft_already_sending",
+    "sent": "draft_already_sent",
+}
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _result_key(key: UUID) -> UUID:
+    """Receipts are immutable, so a send's outcome is a second receipt under a derived key."""
+    return uuid5(key, "draft.send.result")
+
+
+def _sent_by(header: str | None, owner: str) -> bool:
+    owner = owner.strip().lower()
+    return bool(owner) and parseaddr(header or "")[1].strip().lower() == owner
+
+
+class _Threading(NamedTuple):
+    message_id: str | None
+    rfc_message_id: str | None
+    references: str | None
+    target_reply_to: str | None
+    target_from: str | None
+
+
+class _SendPlan(NamedTuple):
+    row: dict[str, Any]
+    draft: DraftOut
+    to: list[str]
+    cc: list[str]
+    bcc: list[str]
+    thread: dict[str, Any] | None
+    outside: int
+
+
+def _reply_target(threading: _Threading, owner: str) -> str:
+    """The latest non-owner message's Reply-To, else its From; never the owner.
+
+    Only the connected address counts as the owner: Gmail send-as aliases are not known here.
+    """
+    header = threading.target_reply_to
+    if not (header or "").strip():
+        header = threading.target_from
+    try:
+        address = check_address(parseaddr(header or "")[1].strip()).lower()
+    except ValueError:
+        raise EmailPolicyError("reply_target_unavailable") from None
+    if address == owner.strip().lower():
+        raise EmailPolicyError("reply_target_unavailable")
+    return address
+
+
+def _threading_headers(thread: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    """In-Reply-To and References for a reply after the thread's latest message."""
+    if thread is None or not thread["latest_rfc_message_id"]:
+        return None, None
+    message_id: str = thread["latest_rfc_message_id"]
+    chain = " ".join(part for part in (thread["latest_references"], message_id) if part)
+    return message_id, trim_references(chain)
 
 
 def _fingerprint(operation: str, payload: dict[str, Any]) -> str:
@@ -180,6 +265,152 @@ class EmailService:
             conn=conn,
         )
         return receipt
+
+    # ------------------------------------------------------------------ drafts
+
+    async def _draft_outs(
+        self,
+        conn: AsyncConnection,
+        session: EmailSession,
+        mailbox: dict[str, Any],
+        rows: Sequence[dict[str, Any]],
+    ) -> list[DraftOut]:
+        """Draft rows with each address marked inside or outside the company."""
+        addresses = sorted(
+            {
+                address.strip().lower()
+                for row in rows
+                for address in (*row["to_addresses"], *row["cc"], *row["bcc"])
+            }
+        )
+        directory: frozenset[str] = frozenset()
+        if addresses:
+            found = await q.fetch_all(
+                "email/directory_match.sql", (session.tenant_id, addresses), conn=conn
+            )
+            directory = frozenset(item["email"] for item in found)
+        owner = mailbox["address"] or ""
+        drafts: list[DraftOut] = []
+        for row in rows:
+            to, cc, bcc = list(row["to_addresses"]), list(row["cc"]), list(row["bcc"])
+            marked = classify([*to, *cc, *bcc], directory_emails=directory, owner_address=owner)
+            drafts.append(
+                DraftOut(
+                    id=row["id"],
+                    thread_id=row["thread_id"],
+                    recipient=row["recipient"],
+                    to=to,
+                    cc=cc,
+                    bcc=bcc,
+                    recipients=[RecipientOut(address=r.address, outside=r.outside) for r in marked],
+                    subject=row["subject"],
+                    body=row["body"],
+                    status=row["status"],
+                    source=row["source"],
+                    gmail_draft_id=row["gmail_draft_id"],
+                    sent_at=row["sent_at"],
+                    needs_staff_input=row["needs_staff_input"],
+                    reply_to_message_id=row["reply_to_message_id"],
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+            )
+        return drafts
+
+    async def _draft_out(
+        self,
+        conn: AsyncConnection,
+        session: EmailSession,
+        mailbox: dict[str, Any],
+        row: dict[str, Any],
+    ) -> DraftOut:
+        return (await self._draft_outs(conn, session, mailbox, [row]))[0]
+
+    async def _existing_draft(
+        self, conn: AsyncConnection, session: EmailSession, mailbox: dict[str, Any], draft_id: UUID
+    ) -> DraftOut:
+        """The draft a replayed receipt points at."""
+        row = await q.fetch_one(
+            "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
+        )
+        await self._session(conn, session)
+        if row is None:
+            raise EmailPolicyError("resource_unavailable")
+        return await self._draft_out(conn, session, mailbox, row)
+
+    async def _resolve_refs(
+        self, conn: AsyncConnection, session: EmailSession, refs: Sequence[str]
+    ) -> list[str]:
+        """Directory employee ids become their work email; plain addresses stay."""
+        addresses: list[str] = []
+        for ref in refs:
+            if not is_employee_ref(ref):
+                addresses.append(ref)
+                continue
+            person = await q.fetch_one(
+                "email/recipient_get.sql", (session.tenant_id, UUID(ref)), conn=conn
+            )
+            if person is None or not person["work_email"]:
+                raise EmailPolicyError("recipient_unresolved")
+            addresses.append(person["work_email"])
+        return addresses
+
+    @staticmethod
+    def _recipient_lists(
+        to: Sequence[str], cc: Sequence[str], bcc: Sequence[str]
+    ) -> tuple[list[str], list[str], list[str]]:
+        """De-duplicated To, CC and BCC: 1-20 addresses together, each a plain address."""
+        to_list, cc_list, bcc_list = dedupe(to, cc, bcc)
+        everyone = [*to_list, *cc_list, *bcc_list]
+        try:
+            for address in everyone:
+                check_address(address)
+        except ValueError:
+            raise EmailPolicyError("recipients_invalid") from None
+        if not 1 <= len(everyone) <= MAX_ADDRESSES:
+            raise EmailPolicyError("recipients_invalid")
+        return to_list, cc_list, bcc_list
+
+    @staticmethod
+    def _locked(status: str) -> EmailPolicyError:
+        return EmailPolicyError(_LOCKED.get(status, "draft_already_exported"))
+
+    async def _insert_draft(
+        self,
+        conn: AsyncConnection,
+        session: EmailSession,
+        mailbox: dict[str, Any],
+        *,
+        thread_id: str | None,
+        to: list[str],
+        cc: list[str],
+        bcc: list[str],
+        subject: str,
+        body: str,
+        reply_to_message_id: str | None,
+    ) -> dict[str, Any]:
+        row = await q.fetch_one(
+            "email/draft_insert.sql",
+            (
+                session.tenant_id,
+                mailbox["id"],
+                uuid4(),
+                thread_id,
+                (to or cc or bcc)[0],
+                to,
+                cc,
+                bcc,
+                subject,
+                body,
+                "model",
+                reply_to_message_id,
+                has_staff_placeholder(f"{subject}\n{body}"),
+            ),
+            conn=conn,
+        )
+        if row is None:
+            raise RuntimeError("email draft insert returned no row")
+        return row
 
     # ------------------------------------------------------------------ tokens
 
@@ -318,8 +549,9 @@ class EmailService:
             rows = await q.fetch_all(
                 "email/drafts_list.sql", (session.tenant_id, mailbox["id"]), conn=conn
             )
+            items = await self._draft_outs(conn, session, mailbox, rows)
             await self._session(conn, session)
-        return DraftPage(items=[DraftOut.model_validate(row) for row in rows])
+        return DraftPage(items=items)
 
     async def draft_by_id(self, session: EmailSession, draft_id: UUID) -> DraftOut:
         """One of the caller's own drafts; read only, for confirmation cards."""
@@ -327,13 +559,7 @@ class EmailService:
             await self._session(conn, session)
             await self._require_enabled(conn, session)
             mailbox = await self._mailbox(conn, session, connected=False)
-            row = await q.fetch_one(
-                "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
-            )
-            await self._session(conn, session)
-        if row is None:
-            raise EmailPolicyError("resource_unavailable")
-        return DraftOut.model_validate(row)
+            return await self._existing_draft(conn, session, mailbox, draft_id)
 
     # ------------------------------------------------------------------ writes
 
@@ -514,6 +740,10 @@ class EmailService:
                         item.received_at,
                         list(item.labels),
                         item.unread,
+                        item.latest_rfc_message_id,
+                        item.latest_references,
+                        item.latest_reply_to,
+                        _sent_by(item.latest_from or item.sender, mailbox["address"] or ""),
                     ),
                     conn=conn,
                 )
@@ -608,82 +838,154 @@ class EmailService:
     async def draft(
         self, session: EmailSession, thread_id: str, request: DraftRequest, key: UUID
     ) -> DraftOut:
+        """A reply draft with no CC or BCC; same targeting and threading as `reply`."""
+        return await self._reply_draft(
+            session,
+            thread_id,
+            DraftRequest(instructions=request.instructions, language=request.language),
+            cc=[],
+            bcc=[],
+            key=key,
+            operation="draft.propose",
+            payload={"thread_id": thread_id, **request.model_dump(mode="json")},
+        )
+
+    async def reply(
+        self, session: EmailSession, thread_id: str, request: ReplyRequest, key: UUID
+    ) -> DraftOut:
+        """Draft a reply in a synced thread, to the latest non-owner sender. Never sends."""
+        return await self._reply_draft(
+            session,
+            thread_id,
+            DraftRequest(instructions=request.instructions, language=request.language),
+            cc=request.cc,
+            bcc=request.bcc,
+            key=key,
+            operation="draft.reply",
+            payload={"thread_id": thread_id, **request.model_dump(mode="json")},
+        )
+
+    async def _reply_draft(
+        self,
+        session: EmailSession,
+        thread_id: str,
+        request: DraftRequest,
+        *,
+        cc: Sequence[str],
+        bcc: Sequence[str],
+        key: UUID,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> DraftOut:
         self._require_write(session)
         if self.model is None:
             raise EmailPolicyError("model_not_configured")
-        payload = {"thread_id": thread_id, **request.model_dump(mode="json")}
-        fingerprint = _fingerprint("draft.propose", payload)
+        fingerprint = _fingerprint(operation, payload)
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
             await self._require_enabled(conn, session)
-            replay = await self._replay(conn, session, key, "draft.propose", fingerprint)
+            replay = await self._replay(conn, session, key, operation, fingerprint)
             mailbox = await self._mailbox(conn, session, connected=False)
             if replay is not None:
-                existing = await q.fetch_one(
-                    "email/draft_get.sql",
-                    (session.tenant_id, mailbox["id"], UUID(replay.resource_id)),
-                    conn=conn,
-                )
-                await self._session(conn, session)
-                if existing is None:
-                    raise EmailPolicyError("resource_unavailable")
-                return DraftOut.model_validate(existing)
+                return await self._existing_draft(conn, session, mailbox, UUID(replay.resource_id))
             row = await self._thread_row(conn, session, mailbox["id"], thread_id)
+            cc_addresses = await self._resolve_refs(conn, session, cc)
+            bcc_addresses = await self._resolve_refs(conn, session, bcc)
             brand = await q.fetch_one("turn/get_client_brand.sql", (session.tenant_id,), conn=conn)
             await self._session(conn, session)
         if row["latest_body"] is None:
             raise EmailPolicyError("thread_body_unavailable")
+        threading = await self._threading(session, mailbox, row)
+        target = _reply_target(threading, mailbox["address"] or "")
+        to, cc_list, bcc_list = self._recipient_lists([target], cc_addresses, bcc_addresses)
         proposal = await self._draft_with_model(row, request, brand or {})
-        recipient = self._reply_address(row["sender"])
         try:
             checked = validated_draft(
-                mailbox["id"], thread_id, recipient, proposal.subject, proposal.body
+                mailbox["id"], thread_id, to[0], proposal.subject, proposal.body
             )
         except ValidationError as exc:
             raise EmailPolicyError("draft_rejected") from exc
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
-            replay = await self._replay(conn, session, key, "draft.propose", fingerprint)
+            replay = await self._replay(conn, session, key, operation, fingerprint)
             if replay is not None:
-                existing = await q.fetch_one(
-                    "email/draft_get.sql",
-                    (session.tenant_id, mailbox["id"], UUID(replay.resource_id)),
-                    conn=conn,
-                )
-                await self._session(conn, session)
-                if existing is None:
-                    raise EmailPolicyError("resource_unavailable")
-                return DraftOut.model_validate(existing)
-            draft_id = uuid4()
-            saved = await q.fetch_one(
-                "email/draft_insert.sql",
-                (
-                    session.tenant_id,
-                    mailbox["id"],
-                    draft_id,
-                    thread_id,
-                    checked.recipient,
-                    checked.subject,
-                    checked.body,
-                    "model",
-                ),
-                conn=conn,
+                return await self._existing_draft(conn, session, mailbox, UUID(replay.resource_id))
+            saved = await self._insert_draft(
+                conn,
+                session,
+                mailbox,
+                thread_id=thread_id,
+                to=to,
+                cc=cc_list,
+                bcc=bcc_list,
+                subject=checked.subject,
+                body=checked.body,
+                reply_to_message_id=threading.message_id,
             )
             await self._record(
                 conn,
                 session,
                 key,
-                "draft.propose",
+                operation,
                 fingerprint,
                 Receipt(
-                    operation="draft.propose",
-                    resource_id=str(draft_id),
+                    operation=operation,
+                    resource_id=str(saved["id"]),
                     status="drafted",
                     detail={"needs_facts_from_staff": proposal.needs_facts_from_staff},
                 ),
             )
+            out = await self._draft_out(conn, session, mailbox, saved)
             await self._session(conn, session)
-        return DraftOut.model_validate(saved)
+        return out
+
+    async def _threading(
+        self, session: EmailSession, mailbox: dict[str, Any], row: dict[str, Any]
+    ) -> _Threading:
+        """Reply target and threading headers for a thread row.
+
+        Rows synced since 0484 carry them, unless the owner sent the latest message. Then, and
+        for rows synced before 0484, the thread is read from Gmail; older rows keep the headers.
+        """
+        if row["latest_from_owner"] is False:
+            return _Threading(
+                row["latest_message_id"],
+                row["latest_rfc_message_id"],
+                row["latest_references"],
+                row["latest_reply_to"],
+                row["sender"],
+            )
+        if mailbox["status"] != "connected":
+            raise EmailPolicyError("mailbox_not_connected")
+        access = await self._access_token(session, mailbox)
+        assert self.gmail is not None
+        owner = mailbox["address"] or ""
+        fetched = await self.gmail.fetch_thread(access, row["thread_id"], owner_address=owner)
+        if row["latest_from_owner"] is None:
+            async with tx(self.pool, str(session.tenant_id)) as conn:
+                await self._session(conn, session)
+                await q.execute(
+                    "email/thread_headers_save.sql",
+                    (
+                        fetched.latest_rfc_message_id,
+                        fetched.latest_references,
+                        fetched.latest_reply_to,
+                        _sent_by(fetched.latest_from, owner),
+                        session.tenant_id,
+                        mailbox["id"],
+                        row["thread_id"],
+                        fetched.latest_message_id,
+                    ),
+                    conn=conn,
+                )
+                await self._session(conn, session)
+        return _Threading(
+            fetched.latest_message_id,
+            fetched.latest_rfc_message_id,
+            fetched.latest_references,
+            fetched.latest_non_owner_reply_to,
+            fetched.latest_non_owner_from,
+        )
 
     async def compose(self, session: EmailSession, request: ComposeRequest, key: UUID) -> DraftOut:
         """Write a new internal email to a resolved recipient; saved as a draft, never sent."""
@@ -697,15 +999,7 @@ class EmailService:
             replay = await self._replay(conn, session, key, "draft.compose", fingerprint)
             mailbox = await self._mailbox(conn, session, connected=False)
             if replay is not None:
-                existing = await q.fetch_one(
-                    "email/draft_get.sql",
-                    (session.tenant_id, mailbox["id"], UUID(replay.resource_id)),
-                    conn=conn,
-                )
-                await self._session(conn, session)
-                if existing is None:
-                    raise EmailPolicyError("resource_unavailable")
-                return DraftOut.model_validate(existing)
+                return await self._existing_draft(conn, session, mailbox, UUID(replay.resource_id))
             recipient_name: str | None = None
             address = request.recipient_address
             if request.recipient_employee_id is not None:
@@ -717,13 +1011,16 @@ class EmailService:
                 if person is None or not person["work_email"]:
                     raise EmailPolicyError("recipient_unresolved")
                 recipient_name, address = person["display_name"], person["work_email"]
+            cc_addresses = await self._resolve_refs(conn, session, request.cc)
+            bcc_addresses = await self._resolve_refs(conn, session, request.bcc)
             brand = await q.fetch_one("turn/get_client_brand.sql", (session.tenant_id,), conn=conn)
             await self._session(conn, session)
         assert address is not None
+        to, cc, bcc = self._recipient_lists([address], cc_addresses, bcc_addresses)
         proposal = await self._compose_with_model(request, recipient_name, brand or {})
         try:
             checked = validated_draft(
-                mailbox["id"], "compose", address, proposal.subject, proposal.body
+                mailbox["id"], "compose", to[0], proposal.subject, proposal.body
             )
         except ValidationError as exc:
             raise EmailPolicyError("draft_rejected") from exc
@@ -731,29 +1028,18 @@ class EmailService:
             await self._session(conn, session)
             replay = await self._replay(conn, session, key, "draft.compose", fingerprint)
             if replay is not None:
-                existing = await q.fetch_one(
-                    "email/draft_get.sql",
-                    (session.tenant_id, mailbox["id"], UUID(replay.resource_id)),
-                    conn=conn,
-                )
-                await self._session(conn, session)
-                if existing is None:
-                    raise EmailPolicyError("resource_unavailable")
-                return DraftOut.model_validate(existing)
-            draft_id = uuid4()
-            saved = await q.fetch_one(
-                "email/draft_insert.sql",
-                (
-                    session.tenant_id,
-                    mailbox["id"],
-                    draft_id,
-                    None,
-                    checked.recipient,
-                    checked.subject,
-                    checked.body,
-                    "model",
-                ),
-                conn=conn,
+                return await self._existing_draft(conn, session, mailbox, UUID(replay.resource_id))
+            saved = await self._insert_draft(
+                conn,
+                session,
+                mailbox,
+                thread_id=None,
+                to=to,
+                cc=cc,
+                bcc=bcc,
+                subject=checked.subject,
+                body=checked.body,
+                reply_to_message_id=None,
             )
             await self._record(
                 conn,
@@ -763,13 +1049,14 @@ class EmailService:
                 fingerprint,
                 Receipt(
                     operation="draft.compose",
-                    resource_id=str(draft_id),
+                    resource_id=str(saved["id"]),
                     status="drafted",
                     detail={"needs_facts_from_staff": proposal.needs_facts_from_staff},
                 ),
             )
+            out = await self._draft_out(conn, session, mailbox, saved)
             await self._session(conn, session)
-        return DraftOut.model_validate(saved)
+        return out
 
     async def _compose_with_model(
         self, request: ComposeRequest, recipient_name: str | None, brand: dict[str, Any]
@@ -799,14 +1086,6 @@ class EmailService:
                 timeout=MODEL_TIMEOUT_SECONDS,
                 max_tokens=1500,
             )
-
-    @staticmethod
-    def _reply_address(sender: str) -> str:
-        """Extract the bare address from a From header; the contract rejects display names."""
-        candidate = sender.strip()
-        if "<" in candidate and ">" in candidate:
-            candidate = candidate[candidate.rfind("<") + 1 : candidate.rfind(">")]
-        return candidate.strip().lower()
 
     async def _draft_with_model(
         self, row: dict[str, Any], request: DraftRequest, brand: dict[str, Any]
@@ -864,15 +1143,17 @@ class EmailService:
             if current is None:
                 raise EmailPolicyError("resource_unavailable")
             if replay is not None:
+                out = await self._draft_out(conn, session, mailbox, current)
                 await self._session(conn, session)
-                return DraftOut.model_validate(current)
+                return out
             if current["status"] != "draft":
-                raise EmailPolicyError("draft_already_exported")
+                raise self._locked(current["status"])
+            to, cc, bcc = self._recipient_lists(body.to or [], body.cc, body.bcc)
             try:
                 checked = validated_draft(
                     mailbox["id"],
                     current["thread_id"] or "manual",
-                    body.recipient,
+                    (to or cc or bcc)[0],
                     body.subject,
                     body.body,
                 )
@@ -882,8 +1163,12 @@ class EmailService:
                 "email/draft_update.sql",
                 (
                     checked.recipient,
+                    to,
+                    cc,
+                    bcc,
                     checked.subject,
                     checked.body,
+                    has_staff_placeholder(f"{checked.subject}\n{checked.body}"),
                     session.tenant_id,
                     mailbox["id"],
                     draft_id,
@@ -891,7 +1176,7 @@ class EmailService:
                 conn=conn,
             )
             if saved is None:
-                raise EmailPolicyError("draft_already_exported")
+                raise self._locked(current["status"])
             await self._record(
                 conn,
                 session,
@@ -900,8 +1185,9 @@ class EmailService:
                 fingerprint,
                 Receipt(operation="draft.update", resource_id=str(draft_id), status="updated"),
             )
+            out = await self._draft_out(conn, session, mailbox, saved)
             await self._session(conn, session)
-        return DraftOut.model_validate(saved)
+        return out
 
     async def delete_draft(self, session: EmailSession, draft_id: UUID, key: UUID) -> Receipt:
         self._require_write(session)
@@ -940,15 +1226,23 @@ class EmailService:
             current = await q.fetch_one(
                 "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
             )
+            if current is None:
+                raise EmailPolicyError("resource_unavailable")
+            if replay is not None or current["status"] == "exported":
+                out = await self._draft_out(conn, session, mailbox, current)
+                await self._session(conn, session)
+                return out
             await self._session(conn, session)
-        if current is None:
-            raise EmailPolicyError("resource_unavailable")
-        if replay is not None or current["status"] == "exported":
-            return DraftOut.model_validate(current)
+        if current["status"] != "draft":
+            raise self._locked(current["status"])
         access = await self._access_token(session, mailbox)
         assert self.gmail is not None
-        mime = build_reply_mime(
-            to=current["recipient"], subject=current["subject"], body=current["body"]
+        mime = build_message_mime(
+            to=current["to_addresses"],
+            cc=current["cc"],
+            bcc=current["bcc"],
+            subject=current["subject"],
+            body=current["body"],
         )
         gmail_draft_id = await self.gmail.create_draft(
             access, thread_id=current["thread_id"], mime=mime
@@ -981,5 +1275,269 @@ class EmailService:
                 saved = await q.fetch_one(
                     "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
                 )
+                if saved is None:
+                    raise EmailPolicyError("resource_unavailable")
+            out = await self._draft_out(conn, session, mailbox, saved)
             await self._session(conn, session)
-        return DraftOut.model_validate(saved)
+        return out
+
+    # ------------------------------------------------------------------ sending
+
+    async def send_draft(
+        self, session: EmailSession, draft_id: UUID, version: str, key: UUID
+    ) -> SendResult:
+        """Send one confirmed draft from the owner's own Gmail, at most once.
+
+        `version` must be `draft_version` of the draft the person confirmed. The draft is
+        claimed and its receipt written under the mailbox's advisory lock, then Gmail is called
+        once with no retry. A clear refusal returns the draft to `draft`; an ambiguous failure
+        leaves it `sending` (`send_outcome_unknown`), and no later request calls Gmail for it.
+        """
+        self._require_write(session)
+        if self.gmail is None:
+            raise EmailPolicyError("provider_not_configured")
+        fingerprint = _fingerprint("draft.send", {"id": str(draft_id), "version": version})
+        # Check first, so a refusal costs no provider call and no claim.
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            # The key lock comes before the mailbox row lock, as in every other operation.
+            replay = await self._replay(conn, session, key, "draft.send", fingerprint)
+            mailbox = await self._mailbox(conn, session, connected=replay is None)
+            if replay is not None:
+                return await self._send_replayed(conn, session, mailbox, key)
+            plan = await self._send_plan(conn, session, mailbox, draft_id, version)
+            await self._session(conn, session)
+        if plan.thread is not None and plan.thread["latest_from_owner"] is None:
+            await self._threading(session, mailbox, plan.thread)
+        access = await self._access_token(session, mailbox)
+        assert self.gmail is not None
+
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            # The key lock comes before the mailbox row lock, as in every other operation.
+            replay = await self._replay(conn, session, key, "draft.send", fingerprint)
+            mailbox = await self._mailbox(conn, session, connected=replay is None)
+            if replay is not None:
+                return await self._send_replayed(conn, session, mailbox, key)
+            await q.execute(
+                "email/key_lock.sql",
+                (f"email-send:{session.tenant_id}:{mailbox['id']}",),
+                conn=conn,
+            )
+            plan = await self._send_plan(conn, session, mailbox, draft_id, version)
+            in_reply_to, references = _threading_headers(plan.thread)
+            mime = build_message_mime(
+                to=plan.to,
+                cc=plan.cc,
+                bcc=plan.bcc,
+                subject=plan.draft.subject,
+                body=plan.draft.body,
+                in_reply_to=in_reply_to,
+                references=references,
+            )
+            recent = await self._recent_sends(conn, session, mailbox)
+            if recent["sends"] >= SEND_LIMIT_PER_HOUR:
+                raise SendLimitReached(max(1, int(recent["retry_after"])))
+            claimed = await q.fetch_one(
+                "email/draft_send_claim.sql",
+                (session.tenant_id, mailbox["id"], draft_id),
+                conn=conn,
+            )
+            if claimed is None:
+                raise EmailPolicyError("draft_already_sending")
+            counts: dict[str, Any] = {
+                "draft_id": str(draft_id),
+                "recipients": len(plan.to) + len(plan.cc) + len(plan.bcc),
+                "outside": plan.outside,
+            }
+            await self._record(
+                conn,
+                session,
+                key,
+                "draft.send",
+                fingerprint,
+                Receipt(
+                    operation="draft.send",
+                    resource_id=str(draft_id),
+                    status="sending",
+                    detail={**counts, "gmail_message_id": None},
+                ),
+            )
+            remaining = max(0, SEND_LIMIT_PER_HOUR - recent["sends"] - 1)
+            await self._session(conn, session)
+
+        try:
+            message_id = await self.gmail.send_message(
+                access, thread_id=plan.row["thread_id"], mime=mime
+            )
+        except GmailError as exc:
+            if exc.code in SAFE_SEND_REFUSALS:
+                code = (
+                    "mailbox_reauthorization_required"
+                    if exc.code == "provider_unauthorized"
+                    else exc.code
+                )
+                await self._send_outcome(
+                    session, mailbox, draft_id, key, fingerprint, counts, "refused", code
+                )
+                raise EmailPolicyError(code) from None
+            await self._send_outcome(
+                session,
+                mailbox,
+                draft_id,
+                key,
+                fingerprint,
+                counts,
+                "unknown",
+                "send_outcome_unknown",
+            )
+            raise EmailPolicyError("send_outcome_unknown") from None
+
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            done = await q.fetch_one(
+                "email/draft_send_done.sql",
+                (message_id, session.tenant_id, mailbox["id"], draft_id),
+                conn=conn,
+            )
+            if done is None:
+                raise RuntimeError("email send outcome could not be recorded")
+            sent_at: datetime = done["sent_at"]
+            await self._record(
+                conn,
+                session,
+                _result_key(key),
+                "draft.send.result",
+                fingerprint,
+                Receipt(
+                    operation="draft.send.result",
+                    resource_id=str(draft_id),
+                    status="sent",
+                    detail={
+                        **counts,
+                        "gmail_message_id": message_id,
+                        "sent_at": sent_at.isoformat(),
+                    },
+                ),
+            )
+            await q.execute(
+                "console/audit.sql",
+                (
+                    session.subject_id,
+                    session.tenant_id,
+                    "email.sent",
+                    str(draft_id),
+                    Jsonb({"recipients": counts["recipients"], "outside": counts["outside"]}),
+                ),
+                conn=conn,
+            )
+            await self._session(conn, session)
+        return SendResult(
+            outcome="sent",
+            sent_at=sent_at,
+            gmail_message_id=message_id,
+            remaining_this_hour=remaining,
+        )
+
+    async def _send_plan(
+        self,
+        conn: AsyncConnection,
+        session: EmailSession,
+        mailbox: dict[str, Any],
+        draft_id: UUID,
+        version: str,
+    ) -> _SendPlan:
+        """Every refusal that needs no provider call: state, binding, placeholders, recipients."""
+        row = await q.fetch_one(
+            "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
+        )
+        if row is None:
+            raise EmailPolicyError("resource_unavailable")
+        if row["status"] != "draft":
+            raise self._locked(row["status"])
+        draft = await self._draft_out(conn, session, mailbox, row)
+        if draft_version(draft) != version:
+            raise EmailPolicyError("draft_changed")
+        if has_staff_placeholder(f"{draft.subject}\n{draft.body}"):
+            raise EmailPolicyError("draft_needs_staff_input")
+        to, cc, bcc = self._recipient_lists(draft.to, draft.cc, draft.bcc)
+        thread = None
+        if row["thread_id"] is not None:
+            thread = await q.fetch_one(
+                "email/thread_get.sql",
+                (session.tenant_id, mailbox["id"], row["thread_id"]),
+                conn=conn,
+            )
+        outside = len({r.address.lower() for r in draft.recipients if r.outside})
+        return _SendPlan(row, draft, to, cc, bcc, thread, outside)
+
+    async def _recent_sends(
+        self, conn: AsyncConnection, session: EmailSession, mailbox: dict[str, Any]
+    ) -> dict[str, Any]:
+        row = await q.fetch_one(
+            "email/send_count_recent.sql", (session.tenant_id, mailbox["id"]), conn=conn
+        )
+        if row is None:
+            raise RuntimeError("email send count returned no row")
+        return row
+
+    async def _send_replayed(
+        self, conn: AsyncConnection, session: EmailSession, mailbox: dict[str, Any], key: UUID
+    ) -> SendResult:
+        """The stored outcome for a key that already claimed a send. Never calls Gmail."""
+        row = await q.fetch_one(
+            "email/receipt_get.sql",
+            (session.tenant_id, session.subject_id, _result_key(key)),
+            conn=conn,
+        )
+        if row is None:
+            # Claimed, and the outcome is not recorded yet: the first request is still sending.
+            raise EmailPolicyError("draft_already_sending")
+        result = Receipt.model_validate(row["receipt"])
+        if result.status != "sent":
+            raise EmailPolicyError(str(result.detail.get("code") or "send_outcome_unknown"))
+        recent = await self._recent_sends(conn, session, mailbox)
+        await self._session(conn, session)
+        return SendResult(
+            outcome="sent",
+            sent_at=datetime.fromisoformat(result.detail["sent_at"]),
+            gmail_message_id=result.detail["gmail_message_id"],
+            remaining_this_hour=max(0, SEND_LIMIT_PER_HOUR - recent["sends"]),
+        )
+
+    async def _send_outcome(
+        self,
+        session: EmailSession,
+        mailbox: dict[str, Any],
+        draft_id: UUID,
+        key: UUID,
+        fingerprint: str,
+        counts: dict[str, Any],
+        status: str,
+        code: str,
+    ) -> None:
+        """Record a refused or unknown send; only a clear refusal releases the draft."""
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            if status == "refused":
+                await q.execute(
+                    "email/draft_send_release.sql",
+                    (session.tenant_id, mailbox["id"], draft_id),
+                    conn=conn,
+                )
+            await self._record(
+                conn,
+                session,
+                _result_key(key),
+                "draft.send.result",
+                fingerprint,
+                Receipt(
+                    operation="draft.send.result",
+                    resource_id=str(draft_id),
+                    status=status,
+                    detail={**counts, "gmail_message_id": None, "code": code},
+                ),
+            )
+            await self._session(conn, session)

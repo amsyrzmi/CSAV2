@@ -56,6 +56,23 @@ def classify(
     return result
 
 
+def dedupe(
+    to: Sequence[str], cc: Sequence[str], bcc: Sequence[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Drop repeated addresses case-insensitively, keeping the first in To, then CC, then BCC."""
+    seen: set[str] = set()
+    lists: list[list[str]] = []
+    for group in (to, cc, bcc):
+        kept: list[str] = []
+        for address in group:
+            folded = address.strip().lower()
+            if folded not in seen:
+                seen.add(folded)
+                kept.append(address.strip())
+        lists.append(kept)
+    return lists[0], lists[1], lists[2]
+
+
 def has_staff_placeholder(body: str) -> bool:
     """True when the draft still holds a `[STAFF: ...]` gap that a person must fill."""
     return STAFF_PLACEHOLDER in body.lower()

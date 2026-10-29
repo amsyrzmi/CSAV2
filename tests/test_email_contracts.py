@@ -12,7 +12,16 @@ from uuid import uuid4
 import httpx
 import pytest
 from csa.email import gmail, recipients
-from csa.email.models import DraftProposal, ThreadAnalysis, validated_draft
+from csa.email.models import (
+    ComposeRequest,
+    DraftOut,
+    DraftProposal,
+    DraftUpdate,
+    ReplyRequest,
+    ThreadAnalysis,
+    draft_version,
+    validated_draft,
+)
 from pydantic import ValidationError
 
 
@@ -170,6 +179,11 @@ def test_message_mime_without_cc_bcc_has_no_such_headers() -> None:
         {"to": ["a@example.test"], "in_reply_to": "<a@b.test>\r\nBcc: y@example.test"},
         {"to": ["a@example.test"], "references": "<a@b.test>\nX: y"},
         {"to": []},
+        {"to": ["a" * 250 + "@example.test"]},
+        {"to": ["a@example.test"], "body": ""},
+        {"to": ["a@example.test"], "body": "   \n "},
+        {"to": ["a@example.test"], "in_reply_to": "<" + "x" * 600 + "@mail.example.test>"},
+        {"to": ["a@example.test"], "references": " ".join(["<x@mail.example.test>"] * 200)},
     ],
 )
 def test_message_mime_rejects_injection_and_bad_addresses(kwargs: dict[str, Any]) -> None:
@@ -261,13 +275,33 @@ async def test_send_message_connection_error_is_provider_unreachable() -> None:
     assert err.value.code == "provider_unreachable"
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 429])
-async def test_send_message_4xx_is_send_refused(status: int) -> None:
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (400, "send_refused"),
+        (404, "send_refused"),
+        (422, "send_refused"),
+        (401, "provider_unauthorized"),
+        (403, "provider_unauthorized"),
+        (429, "provider_rate_limited"),
+    ],
+)
+async def test_send_message_4xx_is_a_clear_refusal(status: int, code: str) -> None:
     with pytest.raises(gmail.GmailError) as err:
         await _client(lambda r: httpx.Response(status, json={"error": "no"})).send_message(
             ACCESS, thread_id=None, mime=b"x"
         )
-    assert err.value.code == "send_refused"
+    assert err.value.code == code
+
+
+@pytest.mark.parametrize("status", [408, 409, 499])
+async def test_send_message_ambiguous_4xx_is_provider_unreachable(status: int) -> None:
+    # Timeout, conflict and client-closed may follow a delivered message: not a refusal.
+    with pytest.raises(gmail.GmailError) as err:
+        await _client(lambda r: httpx.Response(status)).send_message(
+            ACCESS, thread_id=None, mime=b"x"
+        )
+    assert err.value.code == "provider_unreachable"
 
 
 async def test_send_message_5xx_is_ambiguous_not_refused() -> None:
@@ -433,3 +467,111 @@ def test_has_staff_placeholder() -> None:
     assert recipients.has_staff_placeholder("Dear Aina, price is [STAFF: confirm price].")
     assert recipients.has_staff_placeholder("[staff: fill in]")
     assert not recipients.has_staff_placeholder("Dear Aina, the price is RM10. [Staff] is fine")
+
+
+def test_trim_references_drops_whole_ids_from_the_front() -> None:
+    ids = [f"<id{i:03d}-{'x' * 30}@mail.example.test>" for i in range(100)]
+    trimmed = gmail.trim_references(" ".join(ids))
+    assert trimmed is not None and len(trimmed) <= gmail.MAX_REFERENCES_CHARS
+    kept = trimmed.split(" ")
+    assert kept == ids[-len(kept) :]
+    assert gmail.trim_references("  ") is None and gmail.trim_references(None) is None
+    assert gmail.trim_references("<a@b.test>\r\n <c@d.test>") == "<a@b.test> <c@d.test>"
+
+
+async def test_fetch_thread_trims_long_references_by_whole_ids() -> None:
+    ids = " ".join(f"<id{i:03d}-{'y' * 30}@mail.example.test>" for i in range(100))
+    thread = {
+        "id": "t1",
+        "messages": [
+            _message(
+                "m1",
+                "a@customer.test",
+                date="Mon, 26 Oct 2026 09:00:00 +0000",
+                extra={"References": ids},
+            )
+        ],
+    }
+    fetched = await _client(lambda r: httpx.Response(200, json=thread)).fetch_thread(
+        ACCESS, "t1", owner_address="owner@example.test"
+    )
+    assert fetched.latest_references is not None
+    assert fetched.latest_references.startswith("<id") and fetched.latest_references.endswith(">")
+    assert ids.endswith(fetched.latest_references)
+
+
+def _draft_out(**overrides: Any) -> DraftOut:
+    fields: dict[str, Any] = {
+        "id": uuid4(),
+        "thread_id": "t1",
+        "recipient": "a@example.test",
+        "to": ["a@example.test"],
+        "cc": [],
+        "bcc": [],
+        "recipients": [{"address": "a@example.test", "outside": False}],
+        "subject": "Re: x",
+        "body": "Hello",
+        "status": "draft",
+        "source": "human",
+        "gmail_draft_id": None,
+        "sent_at": None,
+        "needs_staff_input": False,
+        "reply_to_message_id": None,
+        "created_at": "2026-10-29T01:00:00+00:00",
+        "updated_at": "2026-10-29T01:00:00+00:00",
+    }
+    return DraftOut.model_validate({**fields, **overrides})
+
+
+def test_draft_version_binds_thread_lists_subject_and_body() -> None:
+    base = _draft_out()
+    assert draft_version(base) == draft_version(_draft_out(status="sending", source="model"))
+    assert len(draft_version(base)) == 64
+    for change in (
+        {"thread_id": None},
+        {"to": ["b@example.test"]},
+        {"cc": ["c@example.test"]},
+        {"bcc": ["c@example.test"]},
+        {"subject": "Re: y"},
+        {"body": "Hello!"},
+    ):
+        assert draft_version(_draft_out(**change)) != draft_version(base), change
+
+
+def test_recipient_refs_accept_employee_ids_or_plain_addresses() -> None:
+    employee = uuid4()
+    request = ComposeRequest(
+        recipient_address="boss@example.test",
+        cc=[str(employee), "ops@example.test"],
+        bcc=["audit@example.test"],
+        subject="s",
+        instructions="i",
+    )
+    assert request.cc == [str(employee), "ops@example.test"]
+    assert ReplyRequest(instructions="x").cc == [] and ReplyRequest().bcc == []
+    for bad in (["Ops <ops@example.test>"], ["a@b"], ["x" * 250 + "@example.test"]):
+        with pytest.raises(ValidationError):
+            ReplyRequest(instructions="x", cc=bad)
+    with pytest.raises(ValidationError):
+        ReplyRequest(instructions="x", bcc=[f"p{i}@example.test" for i in range(21)])
+
+
+def test_draft_update_takes_lists_and_keeps_single_recipient_form() -> None:
+    legacy = DraftUpdate(recipient="a@example.test", subject="s", body="b")
+    assert legacy.to == ["a@example.test"] and legacy.cc == [] and legacy.bcc == []
+    lists = DraftUpdate(to=["a@example.test"], cc=["b@example.test"], subject="s", body="b")
+    assert lists.cc == ["b@example.test"]
+    with pytest.raises(ValidationError):
+        DraftUpdate(subject="s", body="b")
+    with pytest.raises(ValidationError):
+        DraftUpdate(to=["a@example.test\r\nBcc: x@y.test"], subject="s", body="b")
+
+
+def test_dedupe_keeps_first_occurrence_in_to_then_cc_then_bcc() -> None:
+    to, cc, bcc = recipients.dedupe(
+        ["A@example.test", "b@example.test"],
+        ["a@example.test", "c@example.test", "B@EXAMPLE.test"],
+        ["c@example.test", "d@example.test", "D@example.test"],
+    )
+    assert to == ["A@example.test", "b@example.test"]
+    assert cc == ["c@example.test"] and bcc == ["d@example.test"]
