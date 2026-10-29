@@ -43,6 +43,8 @@ from csa.email.gmail import (
 )
 from csa.email.models import (
     MAX_ADDRESSES,
+    AttentionItem,
+    AttentionPage,
     ComposeRequest,
     ConnectOut,
     DraftOut,
@@ -73,7 +75,14 @@ from csa.email.recipients import classify, dedupe, has_staff_placeholder
 STATE_TTL_SECONDS = 600
 TOKEN_REFRESH_MARGIN = timedelta(seconds=90)
 MODEL_TIMEOUT_SECONDS = 20.0
-SYNC_QUERY = "newer_than:14d -in:chats"
+SYNC_QUERY = "newer_than:90d -in:chats"
+SYNC_WINDOW = timedelta(days=90)
+MAX_CACHED_THREADS = 200
+ATTENTION_ITEMS = 10
+ATTENTION_ANALYSES = 5
+# Analysis categories that never need attention (the model's names for newsletters, promotions and
+# spam; it has no separate notification category).
+ATTENTION_EXCLUDED = ["newsletter_or_promotion", "spam_or_phishing"]
 SEND_LIMIT_PER_HOUR = 20
 # A hard deadline on the whole Gmail send call: httpx's timeout applies per phase only.
 SEND_DEADLINE_SECONDS = TIMEOUT_SECONDS + 5
@@ -494,6 +503,8 @@ class EmailService:
             provider_configured=self.gmail is not None,
             model_configured=self.model is not None,
             mailbox=self._mailbox_out(row),
+            last_synced_at=row["last_sync_at"] if row else None,
+            more_available=bool(row and row["sync_page_token"]),
         )
 
     async def threads(self, session: EmailSession) -> ThreadPage:
@@ -710,10 +721,88 @@ class EmailService:
                 return replay
             mailbox = await self._mailbox(conn, session, connected=True)
             await self._session(conn, session)
+        fetched, next_page = await self._fetch_page(session, mailbox, None)
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            replay = await self._replay(conn, session, key, "mailbox.sync", fingerprint)
+            if replay is not None:
+                return replay
+            await self._store_threads(conn, session, mailbox, fetched)
+            await q.execute(
+                "email/mailbox_synced.sql", (session.tenant_id, mailbox["id"]), conn=conn
+            )
+            # A sync starts again from the newest page, so it replaces whatever token was stored.
+            await q.execute(
+                "email/sync_page_save.sql",
+                (next_page, session.tenant_id, mailbox["id"], False, None),
+                conn=conn,
+            )
+            await self._cleanup(conn, session, mailbox["id"])
+            receipt = Receipt(
+                operation="mailbox.sync",
+                resource_id=str(mailbox["id"]),
+                status="synced",
+                detail={"threads": len(fetched)},
+            )
+            await self._session(conn, session)
+            return await self._record(conn, session, key, "mailbox.sync", fingerprint, receipt)
+
+    async def sync_more(self, session: EmailSession, key: UUID) -> Receipt:
+        """Fetch the next older page of the 90-day window; no model call, no new sync time."""
+        self._require_write(session)
+        fingerprint = _fingerprint("mailbox.sync_more", {})
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            replay = await self._replay(conn, session, key, "mailbox.sync_more", fingerprint)
+            if replay is not None:
+                return replay
+            mailbox = await self._mailbox(conn, session, connected=True)
+            token = mailbox["sync_page_token"]
+            if token is None:
+                receipt = Receipt(
+                    operation="mailbox.sync_more",
+                    resource_id=str(mailbox["id"]),
+                    status="synced",
+                    detail={"threads": 0, "done": True},
+                )
+                await self._session(conn, session)
+                return await self._record(
+                    conn, session, key, "mailbox.sync_more", fingerprint, receipt
+                )
+            await self._session(conn, session)
+        fetched, next_page = await self._fetch_page(session, mailbox, token)
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            replay = await self._replay(conn, session, key, "mailbox.sync_more", fingerprint)
+            if replay is not None:
+                return replay
+            await self._store_threads(conn, session, mailbox, fetched)
+            # Only advance while the stored token is still ours: a sync that ran meanwhile has
+            # restarted from the newest page, and its token must win.
+            await q.execute(
+                "email/sync_page_save.sql",
+                (next_page, session.tenant_id, mailbox["id"], True, token),
+                conn=conn,
+            )
+            await self._cleanup(conn, session, mailbox["id"])
+            receipt = Receipt(
+                operation="mailbox.sync_more",
+                resource_id=str(mailbox["id"]),
+                status="synced",
+                detail={"threads": len(fetched), "done": next_page is None},
+            )
+            await self._session(conn, session)
+            return await self._record(conn, session, key, "mailbox.sync_more", fingerprint, receipt)
+
+    async def _fetch_page(
+        self, session: EmailSession, mailbox: dict[str, Any], page_token: str | None
+    ) -> tuple[list[FetchedThread], str | None]:
+        """One page of threads from Gmail, outside any transaction, and the next page token."""
         access = await self._access_token(session, mailbox)
         assert self.gmail is not None
-        thread_ids, _next_page = await self.gmail.list_thread_ids(
-            access, query=SYNC_QUERY, limit=self.sync_limit
+        thread_ids, next_page = await self.gmail.list_thread_ids(
+            access, query=SYNC_QUERY, limit=self.sync_limit, page_token=page_token
         )
         fetched: list[FetchedThread] = []
         for thread_id in thread_ids:
@@ -727,44 +816,130 @@ class EmailService:
                 if exc.code == "thread_empty":
                     continue
                 raise
+        return fetched, next_page
+
+    async def _store_threads(
+        self,
+        conn: AsyncConnection,
+        session: EmailSession,
+        mailbox: dict[str, Any],
+        fetched: Sequence[FetchedThread],
+    ) -> None:
+        # Threads are matched by Gmail thread id, so a page shifted by new mail adds no duplicates.
+        for item in fetched:
+            await q.execute(
+                "email/thread_upsert.sql",
+                (
+                    session.tenant_id,
+                    mailbox["id"],
+                    item.thread_id,
+                    item.subject,
+                    item.sender,
+                    item.snippet,
+                    item.latest_message_id,
+                    item.body,
+                    item.received_at,
+                    list(item.labels),
+                    item.unread,
+                    item.latest_rfc_message_id,
+                    item.latest_references,
+                    item.latest_reply_to,
+                    _sent_by(item.latest_from or item.sender, mailbox["address"] or ""),
+                ),
+                conn=conn,
+            )
+
+    async def _cleanup(
+        self, conn: AsyncConnection, session: EmailSession, mailbox_id: UUID
+    ) -> None:
+        """Keep at most 200 threads, none older than 90 days by latest message; keep every draft."""
+        tenant = session.tenant_id
+        await q.execute(
+            "email/threads_cleanup.sql",
+            (
+                tenant,
+                mailbox_id,
+                MAX_CACHED_THREADS,
+                self.now() - SYNC_WINDOW,
+                tenant,
+                mailbox_id,
+                tenant,
+                mailbox_id,
+            ),
+            conn=conn,
+        )
+
+    def _require_assistant_member(self, session: EmailSession) -> None:
+        """The same refusal as a write, without CSRF: for reads that also run the model."""
+        if session.role not in {"tenant_admin", "tenant_staff"}:
+            raise EmailPolicyError("permission_denied")
+
+    async def attention(self, session: EmailSession) -> AttentionPage:
+        """Up to ten threads worth answering, from stored mail; Gmail is not called.
+
+        At most five candidates without an analysis are analysed first, newest first.
+        """
+        self._require_assistant_member(session)
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
-            replay = await self._replay(conn, session, key, "mailbox.sync", fingerprint)
-            if replay is not None:
-                return replay
-            for item in fetched:
-                await q.execute(
-                    "email/thread_upsert.sql",
-                    (
-                        session.tenant_id,
-                        mailbox["id"],
-                        item.thread_id,
-                        item.subject,
-                        item.sender,
-                        item.snippet,
-                        item.latest_message_id,
-                        item.body,
-                        item.received_at,
-                        list(item.labels),
-                        item.unread,
-                        item.latest_rfc_message_id,
-                        item.latest_references,
-                        item.latest_reply_to,
-                        _sent_by(item.latest_from or item.sender, mailbox["address"] or ""),
-                    ),
-                    conn=conn,
-                )
-            await q.execute(
-                "email/mailbox_synced.sql", (session.tenant_id, mailbox["id"]), conn=conn
-            )
-            receipt = Receipt(
-                operation="mailbox.sync",
-                resource_id=str(mailbox["id"]),
-                status="synced",
-                detail={"threads": len(fetched)},
+            await self._require_enabled(conn, session)
+            mailbox = await self._mailbox(conn, session, connected=False)
+            pending = await q.fetch_all(
+                "email/attention_unanalysed.sql",
+                (session.tenant_id, mailbox["id"], ATTENTION_ANALYSES),
+                conn=conn,
             )
             await self._session(conn, session)
-            return await self._record(conn, session, key, "mailbox.sync", fingerprint, receipt)
+        if pending:
+            if self.model is None:
+                raise EmailPolicyError("model_not_configured")
+            results = await asyncio.gather(
+                *(self._analyse_with_model(row) for row in pending), return_exceptions=True
+            )
+            async with tx(self.pool, str(session.tenant_id)) as conn:
+                await self._session(conn, session)
+                for row, result in zip(pending, results, strict=True):
+                    if isinstance(result, ThreadAnalysis):
+                        await q.execute(
+                            "email/thread_analysis_save.sql",
+                            (
+                                result.category,
+                                result.priority,
+                                result.summary,
+                                Jsonb(result.action_items),
+                                session.tenant_id,
+                                mailbox["id"],
+                                row["thread_id"],
+                            ),
+                            conn=conn,
+                        )
+                await self._session(conn, session)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            mailbox = await self._mailbox(conn, session, connected=False)
+            rows = await q.fetch_all(
+                "email/attention_items.sql",
+                (session.tenant_id, mailbox["id"], ATTENTION_EXCLUDED, ATTENTION_ITEMS),
+                conn=conn,
+            )
+            await self._session(conn, session)
+        return AttentionPage(
+            items=[
+                AttentionItem(
+                    thread_id=row["thread_id"],
+                    sender=row["sender"],
+                    subject=row["subject"],
+                    priority=row["priority"],
+                    summary=row["summary"] or "",
+                    next_steps=list(row["action_items"] or []),
+                )
+                for row in rows
+            ],
+            as_of=mailbox["last_sync_at"],
+        )
 
     async def analyse(self, session: EmailSession, thread_id: str, key: UUID) -> ThreadDetail:
         self._require_write(session)

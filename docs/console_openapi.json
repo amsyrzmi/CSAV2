@@ -1203,6 +1203,84 @@
         "title": "AttendanceInput",
         "type": "object"
       },
+      "AttentionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "next_steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Next Steps",
+            "type": "array"
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "sender",
+          "subject",
+          "priority",
+          "summary",
+          "next_steps"
+        ],
+        "title": "AttentionItem",
+        "type": "object"
+      },
+      "AttentionPage": {
+        "additionalProperties": false,
+        "description": "Up to ten threads that need the member's attention, from the last sync's stored mail.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AttentionItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "as_of"
+        ],
+        "title": "AttentionPage",
+        "type": "object"
+      },
       "AuditOut": {
         "additionalProperties": false,
         "properties": {
@@ -3052,6 +3130,18 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
           "mailbox": {
             "anyOf": [
               {
@@ -3064,6 +3154,11 @@
           },
           "model_configured": {
             "title": "Model Configured",
+            "type": "boolean"
+          },
+          "more_available": {
+            "default": false,
+            "title": "More Available",
             "type": "boolean"
           },
           "provider_configured": {
@@ -13431,6 +13526,56 @@
         "summary": "Receipt"
       }
     },
+    "/console/v1/email/attention": {
+      "get": {
+        "operationId": "attention_console_v1_email_attention_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttentionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attention",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
     "/console/v1/email/compose": {
       "post": {
         "operationId": "compose_console_v1_email_compose_post",
@@ -14322,6 +14467,66 @@
           }
         },
         "summary": "Sync",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/sync/more": {
+      "post": {
+        "operationId": "sync_more_console_v1_email_sync_more_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync More",
         "tags": [
           "Email"
         ]

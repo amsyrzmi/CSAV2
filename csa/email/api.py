@@ -26,6 +26,7 @@ from csa.decide.completion import CompletionError
 from csa.email.gmail import GmailError
 from csa.email.models import (
     SEND_OUTCOME_UNKNOWN_MESSAGE,
+    AttentionPage,
     ComposeRequest,
     ConnectOut,
     DraftOut,
@@ -283,6 +284,14 @@ def build_email_router() -> APIRouter:
     @router.post("/sync", response_model=Receipt)
     async def sync(session: Session, service: Service, request_key: RequestKey) -> Receipt:
         return await service.sync(session, request_key)
+
+    @router.post("/sync/more", response_model=Receipt)
+    async def sync_more(session: Session, service: Service, request_key: RequestKey) -> Receipt:
+        return await service.sync_more(session, request_key)
+
+    @router.get("/attention", response_model=AttentionPage)
+    async def attention(session: Session, service: Service) -> AttentionPage:
+        return await service.attention(session)
 
     @router.get("/threads", response_model=ThreadPage)
     async def threads(session: Session, service: Service) -> ThreadPage:

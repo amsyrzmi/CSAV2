@@ -110,6 +110,10 @@ class EmailContext(EmailModel):
     provider_configured: bool
     model_configured: bool
     mailbox: MailboxOut | None
+    # Sourced from the mailbox's last_sync_at; more_available is true while a Gmail page token is
+    # stored, that is, while an older page can still be loaded.
+    last_synced_at: AwareDatetime | None = None
+    more_available: bool = False
     disclosure: str = MODEL_DISCLOSURE
 
 
@@ -152,6 +156,22 @@ class ThreadDetail(ThreadOut):
 class ThreadPage(EmailModel):
     items: list[ThreadOut]
     last_sync_at: AwareDatetime | None
+
+
+class AttentionItem(EmailModel):
+    thread_id: str
+    sender: str
+    subject: str
+    priority: Priority
+    summary: str
+    next_steps: list[str]
+
+
+class AttentionPage(EmailModel):
+    """Up to ten threads that need the member's attention, from the last sync's stored mail."""
+
+    items: list[AttentionItem]
+    as_of: AwareDatetime | None
 
 
 class ThreadAnalysis(EmailModel):

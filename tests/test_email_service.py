@@ -11,8 +11,10 @@ import base64
 import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from email import message_from_bytes
 from email.message import Message
+from email.utils import format_datetime
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
@@ -50,6 +52,11 @@ def _b64(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
 
 
+def _days_ago(days: float) -> str:
+    """An RFC 2822 Date header; sync keeps only the last 90 days, so fixtures stay relative."""
+    return format_datetime(datetime.now(UTC) - timedelta(days=days))
+
+
 class FakeGmail:
     """Records Gmail/OAuth requests; `messages/send` behaves as `send_mode` says."""
 
@@ -59,6 +66,9 @@ class FakeGmail:
         self.expected_thread_id: str | None = "t1"
         self.expected_to = "aina@example.test"
         self.listed = ["t1", "t2"]
+        # When set, maps the request's pageToken (None for the first page) to (ids, next token).
+        self.pages: dict[str | None, tuple[list[str], str | None]] | None = None
+        self.list_params: list[dict[str, str]] = []
         self.extra_threads: dict[str, dict[str, Any]] = {}
         self.sends: list[dict[str, Any]] = []
         self.send_mode = "ok"
@@ -106,7 +116,15 @@ class FakeGmail:
             self.send_counter += 1
             return httpx.Response(200, json={"id": f"gmail-msg-{self.send_counter}"})
         if path.endswith("/threads"):
-            return httpx.Response(200, json={"threads": [{"id": tid} for tid in self.listed]})
+            params = dict(request.url.params)
+            self.list_params.append(params)
+            ids, next_token = self.listed, None
+            if self.pages is not None:
+                ids, next_token = self.pages[params.get("pageToken")]
+            body: dict[str, Any] = {"threads": [{"id": tid} for tid in ids]}
+            if next_token:
+                body["nextPageToken"] = next_token
+            return httpx.Response(200, json=body)
         for tid, thread in self.extra_threads.items():
             if path.endswith(f"/threads/{tid}"):
                 return httpx.Response(200, json=thread)
@@ -126,7 +144,7 @@ class FakeGmail:
                                 "headers": [
                                     {"name": "From", "value": "Demo Aina <aina@example.test>"},
                                     {"name": "Subject", "value": "Order MGL-TEST-005"},
-                                    {"name": "Date", "value": "Thu, 23 Oct 2026 10:00:00 +0800"},
+                                    {"name": "Date", "value": _days_ago(2)},
                                     {"name": "Message-ID", "value": "<m1@mail.example.test>"},
                                 ],
                                 "parts": [
@@ -1078,7 +1096,7 @@ def _msg(
     headers = [
         {"name": "From", "value": sender},
         {"name": "Subject", "value": "Order help"},
-        {"name": "Date", "value": "Mon, 26 Oct 2026 09:00:00 +0800"},
+        {"name": "Date", "value": _days_ago(1)},
         {"name": "Message-ID", "value": f"<{msg_id}@mail.example.test>"},
     ]
     if reply_to:
@@ -1309,3 +1327,292 @@ async def test_send_call_has_a_hard_deadline(world: World, monkeypatch: pytest.M
     hung = await _send(world, draft)
     assert hung.status_code == 502 and hung.json()["detail"] == "send_outcome_unknown"
     assert await _status(world, draft["id"]) == "sending"
+
+
+SYNC = "/console/v1/email/sync"
+SYNC_MORE = "/console/v1/email/sync/more"
+ATTENTION = "/console/v1/email/attention"
+
+
+async def _mailbox_row(world: World, user: str = "staff") -> dict[str, Any]:
+    rows = await world.q(
+        "SELECT id, sync_page_token, last_sync_at, last_synced_at FROM email_mailboxes "
+        "WHERE client_id=%s AND user_id=%s",
+        (world.tenant, world.users[user]),
+    )
+    return rows[0]
+
+
+async def _put_thread(
+    world: World,
+    thread_id: str,
+    *,
+    user: str = "staff",
+    days_ago: float = 1,
+    minutes_ago: float = 0,
+    category: str | None = None,
+    priority: str | None = None,
+    owner_latest: bool | None = False,
+    body: str | None = "Hello",
+    subject: str | None = None,
+) -> None:
+    mailbox = await _mailbox_row(world, user)
+    analysed = category is not None
+    await world.q(
+        "INSERT INTO email_threads(client_id,mailbox_id,thread_id,subject,sender,snippet,"
+        "latest_message_id,latest_body,received_at,category,priority,summary,action_items,"
+        "analysed_at,latest_from_owner) "
+        "VALUES (%s,%s,%s,%s,%s,'hi',%s,%s,now()-%s*interval '1 day'-%s*interval '1 minute',"
+        "%s,%s,%s,%s,%s,%s)",
+        (
+            world.tenant,
+            mailbox["id"],
+            thread_id,
+            subject or f"Subject {thread_id}",
+            f"Sender <{thread_id}@customer.test>",
+            f"m-{thread_id}",
+            body,
+            days_ago,
+            minutes_ago,
+            category,
+            priority,
+            f"Summary of {thread_id}" if analysed else None,
+            json.dumps([f"Next step for {thread_id}"] if analysed else []),
+            datetime.now(UTC) if analysed else None,
+            owner_latest,
+        ),
+    )
+
+
+async def _thread_ids(world: World, user: str = "staff") -> set[str]:
+    rows = await world.q(
+        "SELECT thread_id FROM email_threads WHERE client_id=%s AND mailbox_id=%s",
+        (world.tenant, (await _mailbox_row(world, user))["id"]),
+    )
+    return {row["thread_id"] for row in rows}
+
+
+async def test_sync_uses_ninety_days_and_stores_page_token(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert email_service.SYNC_QUERY == "newer_than:90d -in:chats"
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.pages = {None: (["t1", "t2"], "tok-2")}
+    before = await world.call("staff", "GET", "/console/v1/email/context")
+    assert before.json()["more_available"] is False and before.json()["last_synced_at"] is None
+    synced = await world.call("staff", "POST", SYNC)
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["detail"] == {"threads": 2}
+    assert world.gmail.list_params == [{"q": "newer_than:90d -in:chats", "maxResults": "20"}]
+    mailbox = await _mailbox_row(world)
+    assert mailbox["sync_page_token"] == "tok-2" and mailbox["last_sync_at"] is not None
+    # The authoritative time is last_sync_at; the new column is not used.
+    assert mailbox["last_synced_at"] is None
+    context = (await world.call("staff", "GET", "/console/v1/email/context")).json()
+    assert context["more_available"] is True
+    assert context["mailbox"]["last_sync_at"] == context["last_synced_at"] is not None
+    # A fresh sync starts again from the newest page and resets the token.
+    world.gmail.pages = {None: (["t1"], None)}
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    assert (await _mailbox_row(world))["sync_page_token"] is None
+    assert (await world.call("staff", "GET", "/console/v1/email/context")).json()[
+        "more_available"
+    ] is False
+
+
+async def test_sync_more_pages_without_duplicates_and_reports_done(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.extra_threads = {
+        "t3": _thread("t3", _msg("c1", "Cara <cara@customer.test>")),
+        "t4": _thread("t4", _msg("d1", "Dev <dev@customer.test>")),
+    }
+    # The second page repeats t2, as it does when new mail shifts the pages.
+    world.gmail.pages = {
+        None: (["t1", "t2"], "tok-2"),
+        "tok-2": (["t2", "t3"], "tok-3"),
+        "tok-3": (["t4"], None),
+    }
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    synced_at = (await _mailbox_row(world))["last_sync_at"]
+    key = uuid4()
+    first = await world.call("staff", "POST", SYNC_MORE, key=key)
+    assert first.status_code == 200, first.text
+    assert first.json()["detail"] == {"threads": 2, "done": False}
+    assert world.gmail.list_params[-1]["pageToken"] == "tok-2"
+    assert (await _mailbox_row(world))["sync_page_token"] == "tok-3"
+    calls = len(world.gmail.requests)
+    again = await world.call("staff", "POST", SYNC_MORE, key=key)
+    assert again.json()["duplicate"] is True and len(world.gmail.requests) == calls
+    last = await world.call("staff", "POST", SYNC_MORE)
+    assert last.json()["detail"] == {"threads": 1, "done": True}
+    assert (await _mailbox_row(world))["sync_page_token"] is None
+    assert (await world.call("staff", "GET", "/console/v1/email/context")).json()[
+        "more_available"
+    ] is False
+    assert await _thread_ids(world) == {"t1", "t2", "t3", "t4"}
+    # No token left: the answer is local, Gmail is not called, and the sync time is unchanged.
+    calls = len(world.gmail.requests)
+    done = await world.call("staff", "POST", SYNC_MORE)
+    assert done.status_code == 200 and done.json()["detail"] == {"threads": 0, "done": True}
+    assert len(world.gmail.requests) == calls
+    assert (await _mailbox_row(world))["last_sync_at"] == synced_at
+    # The caller must be able to write, and the mailbox must be connected.
+    assert (await world.call("reader", "POST", SYNC_MORE)).status_code == 403
+    assert (await world.call("admin", "POST", SYNC_MORE)).json()[
+        "detail"
+    ] == "mailbox_not_connected"
+
+
+async def test_cleanup_caps_at_200_and_90_days(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    await _connect(world, "admin")
+    world.gmail.pages = {None: ([], None)}
+    for index in range(1, 204):
+        await _put_thread(world, f"r{index}", days_ago=0, minutes_ago=index, category="other")
+    await _put_thread(world, "d89", days_ago=89, category="other", priority="low")
+    await _put_thread(world, "d91", days_ago=91, category="other")
+    await _put_thread(world, "d120", days_ago=120)
+    await _put_thread(world, "undated", days_ago=0)
+    await world.q("UPDATE email_threads SET received_at=NULL WHERE thread_id='undated'")
+    # Another member's mailbox is never touched by this member's cleanup.
+    for thread in ("a-old", "a-ancient"):
+        await _put_thread(world, thread, user="admin", days_ago=200)
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    kept = await _thread_ids(world)
+    # The newest 200 within 90 days stay; an undated thread sorts last, as in the thread list.
+    assert kept == {f"r{index}" for index in range(1, 201)}
+    assert await _thread_ids(world, "admin") == {"a-old", "a-ancient"}
+    # More: the same cleanup runs after a load-more.
+    world.gmail.pages = {None: ([], "tok-2"), "tok-2": ([], None)}
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    await _put_thread(world, "late-old", days_ago=95)
+    assert (await world.call("staff", "POST", SYNC_MORE)).status_code == 200
+    assert "late-old" not in await _thread_ids(world)
+    assert len(await _thread_ids(world)) == 200
+
+
+async def test_cleanup_keeps_unsent_drafts_of_removed_threads(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.pages = {None: ([], None)}
+    mailbox = await _mailbox_row(world)
+    await _put_thread(world, "old", days_ago=120, category="billing", priority="high")
+    await _put_thread(world, "fresh", days_ago=1)
+    draft_ids: dict[str, UUID] = {}
+    for status in ("draft", "exported", "sending", "sent"):
+        for thread in ("old", "fresh"):
+            draft_id = uuid4()
+            draft_ids[f"{status}:{thread}"] = draft_id
+            await world.q(
+                "INSERT INTO email_drafts(client_id,mailbox_id,id,thread_id,recipient,to_addresses,"
+                "subject,body,status,source,reply_to_message_id) "
+                "VALUES (%s,%s,%s,%s,'x@customer.test',ARRAY['x@customer.test'],'Hi','Body',"
+                "%s,'human',%s)",
+                (world.tenant, mailbox["id"], draft_id, thread, status, f"m-{thread}"),
+            )
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    assert await _thread_ids(world) == {"fresh"}
+    rows = await world.q(
+        "SELECT id, thread_id, reply_to_message_id, status, body FROM email_drafts "
+        "WHERE mailbox_id=%s",
+        (mailbox["id"],),
+    )
+    by_id = {row["id"]: row for row in rows}
+    assert len(rows) == 8
+    for label, draft_id in draft_ids.items():
+        status, thread = label.split(":")
+        row = by_id[draft_id]
+        assert row["status"] == status and row["body"] == "Body"
+        if thread == "old":
+            assert row["thread_id"] is None and row["reply_to_message_id"] is None, label
+        else:
+            assert row["thread_id"] == "fresh" and row["reply_to_message_id"] == "m-fresh", label
+
+
+async def test_sync_and_more_never_call_the_model(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.pages = {None: (["t1", "t2"], "tok-2"), "tok-2": (["t2"], None)}
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    assert (await world.call("staff", "POST", SYNC_MORE)).status_code == 200
+    assert (await world.call("staff", "POST", SYNC_MORE)).status_code == 200
+    assert world.model.calls == []
+    rows = await world.q(
+        "SELECT category, analysed_at FROM email_threads WHERE client_id=%s", (world.tenant,)
+    )
+    assert rows and all(row["category"] is None and row["analysed_at"] is None for row in rows)
+
+
+async def test_attention_excludes_noise_and_owner_latest_and_caps_analyses(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    await _enable_and_connect(world, monkeypatch)
+    await world.q(
+        "UPDATE email_mailboxes SET last_sync_at=%s WHERE client_id=%s AND user_id=%s",
+        (datetime(2026, 10, 29, 1, 15, tzinfo=UTC), world.tenant, world.users["staff"]),
+    )
+    # Already analysed: three kept, noise and owner-latest excluded.
+    await _put_thread(world, "A", days_ago=5, category="complaint", priority="high")
+    await _put_thread(world, "B", days_ago=4, category="billing", priority="normal")
+    await _put_thread(world, "C", days_ago=3, category="other", priority="low")
+    await _put_thread(world, "N", days_ago=1, category="newsletter_or_promotion", priority="high")
+    await _put_thread(world, "S", days_ago=1, category="spam_or_phishing", priority="high")
+    await _put_thread(
+        world, "O", days_ago=1, category="customer_request", priority="high", owner_latest=True
+    )
+    # Not analysed yet: the five newest eligible ones are analysed, the owner's and the
+    # bodiless ones never are.
+    for index in range(1, 8):
+        await _put_thread(world, f"U{index}", days_ago=0, minutes_ago=index)
+    await _put_thread(world, "O2", days_ago=0, minutes_ago=0.5, owner_latest=True)
+    await _put_thread(world, "NB", days_ago=0, minutes_ago=0.2, body=None)
+    requests_before = len(world.gmail.requests)
+
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert len(world.model.calls) == 5
+    assert len(world.gmail.requests) == requests_before
+    items = page.json()["items"]
+    assert [item["thread_id"] for item in items] == ["A", "U1", "U2", "U3", "U4", "U5", "B", "C"]
+    assert set(items[0]) >= {"thread_id", "sender", "subject", "summary", "next_steps"}
+    assert items[0]["sender"] == "Sender <A@customer.test>" and items[0]["subject"] == "Subject A"
+    assert items[0]["next_steps"] == ["Next step for A"]
+    assert page.json()["as_of"].startswith("2026-10-29T01:15:00")
+    analysed = {
+        row["thread_id"]
+        for row in await world.q(
+            "SELECT thread_id FROM email_threads WHERE analysed_at IS NOT NULL"
+        )
+    }
+    assert {"U1", "U2", "U3", "U4", "U5"} <= analysed and not analysed & {"U6", "U7", "O2", "NB"}
+
+    # The next summary analyses the rest; at most ten items come back, lowest priority last out.
+    await _put_thread(world, "E", days_ago=2, category="internal", priority="normal")
+    second = await world.call("staff", "GET", ATTENTION)
+    assert len(world.model.calls) == 7
+    ids = [item["thread_id"] for item in second.json()["items"]]
+    assert len(ids) == 10 and ids[0] == "A" and "C" not in ids
+    assert not {"N", "S", "O", "O2", "NB"} & set(ids)
+    # Nothing identifying reaches the logs.
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "customer.test" not in logged and "Subject " not in logged and "Summary of" not in logged
+    third = await world.call("staff", "GET", ATTENTION)
+    assert third.status_code == 200 and len(world.model.calls) == 7
+
+
+async def test_attention_refused_for_read_only(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    refused = await world.call("reader", "GET", ATTENTION)
+    assert refused.status_code == 403 and refused.json()["detail"] == "permission_denied"
+    assert world.model.calls == []
+    # Members who can use the assistant need a connected mailbox.
+    assert (await world.call("admin", "GET", ATTENTION)).json()["detail"] == "mailbox_not_connected"
