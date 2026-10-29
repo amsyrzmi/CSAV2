@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { CircleUser, LogOut } from "lucide-react";
 import { PAUSE_KEY, parsePause } from "@/lib/motion";
-import { setMotionPaused } from "@/components/console/fs/useMotionAllowed";
+import { PAUSE_EVENT, setMotionPaused } from "@/components/console/fs/useMotionAllowed";
 import { BAR_BUTTON, POPOVER } from "./ThemeControl";
 import { useDismiss } from "./useDismiss";
 
@@ -44,6 +44,21 @@ export function UserMenu({ account }: { account: ShellAccount }) {
     setOpen(!open);
   }
 
+  // Keep the switch honest if the preference changes elsewhere while the menu is open.
+  useEffect(() => {
+    if (!open) return;
+    const sync = (event?: Event) => {
+      if (event instanceof StorageEvent && event.key !== null && event.key !== PAUSE_KEY) return;
+      setPaused(storedPause());
+    };
+    window.addEventListener("storage", sync);
+    window.addEventListener(PAUSE_EVENT, sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener(PAUSE_EVENT, sync);
+    };
+  }, [open]);
+
   function toggleMotion() {
     const next = !paused;
     setMotionPaused(next);
@@ -56,14 +71,16 @@ export function UserMenu({ account }: { account: ShellAccount }) {
         ref={triggerRef}
         type="button"
         data-testid="shell-user-menu"
-        aria-label="Account menu"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={toggleMenu}
         className={`${BAR_BUTTON} max-w-52`}
       >
         <CircleUser size={18} aria-hidden="true" className="shrink-0" />
-        <span className="hidden truncate sm:inline">{account.name}</span>
+        <span className="sr-only sm:not-sr-only sm:truncate">
+          <span className="sr-only">Account menu, </span>
+          {account.name}
+        </span>
       </button>
       {open && (
         <div
@@ -81,7 +98,7 @@ export function UserMenu({ account }: { account: ShellAccount }) {
                 Calm motion
               </span>
               <span id={noteId} className="mt-0.5 block text-xs text-[color:var(--fs-text-secondary)]">
-                Stops decorative animation. Nothing on the server pauses.
+                Pauses animated decoration in the inbox and side panels. Nothing on the server pauses.
               </span>
             </div>
             <button

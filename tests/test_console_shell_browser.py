@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -584,5 +585,57 @@ async def test_signout_error_is_visible_in_mobile_layout(console: Console) -> No
         # The user can try again.
         await page.get_by_test_id("shell-user-menu").click()
         await expect(page.get_by_role("button", name="Sign out", exact=True)).to_be_enabled()
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_user_menu_trigger_name_contains_its_visible_name(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services")
+    try:
+        # WCAG 2.5.3: voice control says the visible words, so the name must contain them.
+        trigger = page.get_by_test_id("shell-user-menu")
+        await expect(trigger).to_contain_text("Synthetic User")
+        await expect(trigger).to_have_accessible_name(re.compile("Synthetic User"))
+        await expect(trigger).to_have_accessible_name(re.compile("Account menu"))
+        await trigger.click()
+        await expect(page.get_by_test_id("shell-user-menu-panel")).to_contain_text(
+            "Pauses animated decoration in the inbox and side panels."
+        )
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_motion_switch_follows_the_stored_preference_while_open(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services")
+    try:
+        await page.get_by_test_id("shell-user-menu").click()
+        toggle = page.get_by_test_id("shell-motion-toggle")
+        await expect(toggle).to_have_attribute("aria-checked", "false")
+        # Another part of the page (or another tab) changes it while the menu is open.
+        await page.evaluate(
+            "() => { localStorage.setItem('fs-motion-paused', '1');"
+            " window.dispatchEvent(new Event('fs-motion-pause-change')); }"
+        )
+        await expect(toggle).to_have_attribute("aria-checked", "true")
+        await page.evaluate(
+            "() => { localStorage.removeItem('fs-motion-paused');"
+            " window.dispatchEvent(new Event('fs-motion-pause-change')); }"
+        )
+        await expect(toggle).to_have_attribute("aria-checked", "false")
+    finally:
+        await close_page(playwright, browser)
+
+
+@pytest.mark.parametrize("width", (1280, 390))
+async def test_sign_out_resolves_once_with_the_user_menu_open(console: Console, width: int) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/services", width=width, height=800
+    )
+    try:
+        await page.get_by_test_id("shell-user-menu").click()
+        await expect(page.get_by_test_id("shell-user-menu-panel")).to_be_visible()
+        sign_out = page.get_by_role("button", name="Sign out", exact=True)
+        await expect(sign_out).to_have_count(1)
+        await expect(sign_out).to_be_visible()
     finally:
         await close_page(playwright, browser)

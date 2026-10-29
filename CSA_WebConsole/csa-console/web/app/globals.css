@@ -377,12 +377,6 @@
 [data-motion="off"] .fs-fade { animation: none !important; }
 
 /* ---------- app shell ---------- */
-.topbar {
-  background: color-mix(in srgb, var(--fs-shell) 72%, transparent);
-  backdrop-filter: saturate(180%) blur(14px);
-  -webkit-backdrop-filter: saturate(180%) blur(14px);
-}
-
 .subnav-link {
   position: relative;
   display: inline-flex;

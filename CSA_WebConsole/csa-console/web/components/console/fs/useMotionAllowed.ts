@@ -5,7 +5,7 @@ import { PAUSE_KEY, motionAllowed, parsePause } from "@/lib/motion";
 
 const REDUCED_QUERY = "(prefers-reduced-motion: reduce)";
 /** Same-tab signal; the browser's own `storage` event only reaches other tabs. */
-const PAUSE_EVENT = "fs-motion-pause-change";
+export const PAUSE_EVENT = "fs-motion-pause-change";
 
 function readPaused(): boolean {
   try {
