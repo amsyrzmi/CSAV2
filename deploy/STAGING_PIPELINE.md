@@ -51,6 +51,9 @@ development gateway is not running as a service today, so nothing is lost now.
 recreating the gateway, run `sudo python3 -m scripts.staging_secrets smtp-install --secret-dir /srv/csa-staging/secrets`
 once (section 10); compose will not recreate the gateway while the SMTP secret files are missing.
 
+**Once the email assistant is wired (section 11):** the two Google OAuth files must also
+exist before the gateway is recreated; compose will not recreate it while either is missing.
+
 Run from an approved checkout of `main` that contains this file. The gateway is
 recreated because it gains the embedding settings, the hooks network and the
 loopback port; the console is unavailable for a few seconds while that happens.
@@ -226,7 +229,8 @@ Expected: `created pipeline/staging_whatsapp_app_secret (0400)` and the same for
 `staging_whatsapp_verify_token`, then no check failures. On the first rollout that
 includes B4, also run `sudo python3 -m scripts.staging_secrets smtp-install --secret-dir /srv/csa-staging/secrets`
 once (section 10) before recreating the gateway, which will not be recreated while the
-SMTP secret files are missing. Then apply `0470` with
+SMTP secret files are missing. Likewise, write the two Google OAuth files (section 11)
+first, or compose will not recreate the gateway. Then apply `0470` with
 the `migrate` one-shot and recreate gateway, worker, delivery and frontend with
 `--no-deps --pull never`, as for any release.
 
@@ -365,6 +369,58 @@ Verify, with nothing secret on screen:
 3. To switch mail off again, unset `CSA_STAGING_INVITE_MAIL` (or set it to `false`) and
    rerun the `up` line above. The console then says "Copy this link and send it to
    <address>."
+
+## 11. Staff email assistant (Google)
+
+The staff email assistant (`csa/email/`, `docs/EMAIL_ASSISTANT.md`) lets each staff member
+connect their own Gmail mailbox. It uses an **Internal** Google OAuth client in the
+fourstacks.my Google Cloud project with the redirect
+`https://staging-console.fourstacks.my/console/v1/email/oauth/callback`. Internal means
+only fourstacks.my Google accounts can connect, with no test users and no seven-day
+token expiry. Only the gateway uses it, through `provider-egress`. The assistant is off
+unless `CSA_STAGING_EMAIL_ASSISTANT=true`.
+
+**Before rolling out an image that contains this wiring**, the owner writes the two
+secret files. Compose refuses to recreate the gateway while either file is missing, so do
+this first. The files are root-written, owned `1000:1000`, mode 0400, and nothing is echoed
+(the secret prompt uses `read -s`). There is no install action; `check` accepts both files
+absent or both present and flags one without the other:
+
+```bash
+D=/srv/csa-staging/secrets/runtime
+read -r -p "Google Client ID: " V; printf '%s' "$V" | sudo tee "$D/google_client_id" >/dev/null; unset V
+read -r -s -p "Google Client secret: " V; echo; printf '%s' "$V" | sudo tee "$D/google_client_secret" >/dev/null; unset V
+sudo chown 1000:1000 "$D/google_client_id" "$D/google_client_secret"
+sudo chmod 0400 "$D/google_client_id" "$D/google_client_secret"
+```
+
+Then, in the section-2 shell, recreate the gateway with the flag on:
+
+```bash
+export CSA_STAGING_EMAIL_ASSISTANT=true
+csa_pipeline_compose config --quiet || exit 1
+csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway
+```
+
+Per tenant, to use it:
+
+1. In the console, Services (platform administrator): activate the `staff_email` package
+   for the client.
+2. A tenant administrator turns on the Email assistant switch.
+3. Each staff member connects their Gmail on the Email assistant tab.
+
+Verify, with nothing secret on screen:
+
+1. Connect a fourstacks.my mailbox on the Email assistant tab: Google's consent screen
+   appears and, after approval, the tab shows the mailbox as connected.
+2. Run a sync: threads from the last 14 days are listed.
+3. If the gateway fails to start with `EMAIL_ASSISTANT_ENABLED requires GOOGLE_CLIENT_ID,
+   GOOGLE_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI`, a file is empty or missing. If
+   Google reports `redirect_uri_mismatch`, the client's redirect does not match the URI
+   above exactly.
+4. To switch it off, unset `CSA_STAGING_EMAIL_ASSISTANT` (or set it to `false`) and rerun
+   the `up` line above. Stored mailbox tokens stay encrypted in the database; staff can
+   disconnect first to revoke and erase them.
 
 ## Rollback
 

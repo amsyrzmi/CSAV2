@@ -42,11 +42,18 @@ Every write carries an `Idempotency-Key`; receipts are immutable
 | `GROQ_API_KEY`, `GROQ_MODEL` | Reused for analysis and drafting. |
 
 Google Cloud prerequisites, done once by the owner: enable the Gmail API,
-configure the OAuth consent screen (External, Testing is enough for a pilot;
-add each mailbox address as a test user), add the redirect URI above to the
-OAuth client, and request only the two scopes listed. Testing-mode refresh
-tokens expire after seven days; the module reports
-`mailbox_reauthorization_required` and the user reconnects.
+configure the OAuth consent screen, add the redirect URI above to the OAuth
+client (web application type), and request only the two scopes listed.
+
+- **Staging** uses an **Internal** client in the fourstacks.my Google Cloud
+  project. Only fourstacks.my accounts can connect, so there are no test users
+  and no seven-day refresh-token expiry.
+- **Production for client tenants** needs an **External** client with Google
+  verification, because `gmail.readonly` is a restricted scope. The owner
+  decided on 2026-10-29 to keep inbox reading. Planned email management will
+  also add `gmail.send`, which changes the verification scope.
+- In a client in Testing mode, refresh tokens expire after seven days; the
+  module reports `mailbox_reauthorization_required` and the user reconnects.
 
 ## Not included
 

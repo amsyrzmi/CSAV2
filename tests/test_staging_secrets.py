@@ -237,6 +237,42 @@ def test_check_reports_a_bad_or_half_installed_smtp_file(tmp_path: Path) -> None
     ]
 
 
+GOOGLE = ("google_client_id", "google_client_secret")
+
+
+def _write_google(target: Path, mode: int = 0o400) -> None:
+    """The owner writes the Google OAuth client straight into ``runtime/`` (synthetic values)."""
+    for name in GOOGLE:
+        path = target / "runtime" / name
+        path.write_text(f"SYNTHETIC-{name}")
+        path.chmod(mode)
+
+
+def test_google_oauth_files_are_optional_and_valid_as_a_pair(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    assert staging_secrets.check(target, UID) == []
+    _write_google(target)
+    assert staging_secrets.check(target, UID) == []
+
+
+def test_check_reports_a_bad_or_half_installed_google_oauth_file(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    _write_google(target)
+    (target / "runtime/google_client_id").chmod(0o440)
+    assert staging_secrets.check(target, UID) == ["runtime/google_client_id: mode is not 0400"]
+    (target / "runtime/google_client_id").chmod(0o400)
+    (target / "runtime/google_client_secret").unlink()
+    assert staging_secrets.check(target, UID) == [
+        "runtime/google_client_secret: missing while its pair is installed"
+    ]
+    (target / "runtime/google_client_id").unlink()
+    (target / "runtime/google_client_secret").write_text("SYNTHETIC")
+    (target / "runtime/google_client_secret").chmod(0o400)
+    assert staging_secrets.check(target, UID) == [
+        "runtime/google_client_id: missing while its pair is installed"
+    ]
+
+
 def test_smtp_install_main_never_prints_values(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
