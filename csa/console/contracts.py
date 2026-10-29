@@ -129,6 +129,8 @@ class IssuedTokenOut(Contract):
     token: str | None
     expires_at: datetime
     delivery: Literal["manual", "email"] = "manual"
+    # Why a link is shown for manual sharing: mail is switched off, or the send failed.
+    delivery_note: Literal["mail_off", "send_failed"] | None = None
 
 
 class MemberPatchIn(Contract):

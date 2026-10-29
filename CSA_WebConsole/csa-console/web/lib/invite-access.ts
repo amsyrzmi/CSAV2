@@ -30,12 +30,21 @@ export function defaultHrAccess(role: TenantRole): "staff" | "none" {
 }
 
 /** The same shape for an invitation, a renewal and a reset. */
-export interface Delivered { token: string | null; delivery: "manual" | "email" }
+export interface Delivered {
+  token: string | null;
+  delivery: "manual" | "email";
+  delivery_note?: "mail_off" | "send_failed" | null;
+}
 
+/**
+ * Mail switched off is normal, so it only says where the link goes. Only a send that failed
+ * says so. A response without a note (an older server) is treated as mail switched off.
+ */
 export function deliveryMessage(result: Delivered, email: string, kind: "invite" | "reset" = "invite"): string {
-  return result.delivery === "email"
-    ? `${kind === "reset" ? "Reset link" : "Invitation"} emailed to ${email}`
-    : "We couldn't send the email. Copy this link and send it yourself.";
+  if (result.delivery === "email") return `${kind === "reset" ? "Reset link" : "Invitation"} emailed to ${email}`;
+  return result.delivery_note === "send_failed"
+    ? "We couldn't send the email. Copy this link and send it yourself."
+    : `Copy this link and send it to ${email}.`;
 }
 
 /** The link to share by hand; empty when the server emailed it and kept the token to itself. */

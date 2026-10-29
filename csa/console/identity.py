@@ -63,6 +63,7 @@ class IdentityConfig(BaseModel):
 # Called with the raw link and its expiry after the token transaction commits.
 Notify = Callable[[str, datetime], Awaitable[MailOutcome]]
 Delivery = Literal["manual", "email"]
+DeliveryNote = Literal["mail_off", "send_failed"]
 
 
 class Recipient(BaseModel):
@@ -143,8 +144,13 @@ class IdentityService:
         follow-up ``identity.delivery`` row; if that write fails the response still stands.
         """
         delivery: Delivery = "manual"
-        if notify is not None and await notify(self.link(raw), row["expires_at"]) == "sent":
-            delivery = "email"
+        note: DeliveryNote | None = "mail_off"
+        if notify is not None:
+            outcome = await notify(self.link(raw), row["expires_at"])
+            if outcome == "sent":
+                delivery, note = "email", None
+            elif outcome != "smtp_disabled":
+                note = "send_failed"
         try:
             async with self.pool.connection() as conn, conn.transaction():
                 await self._context(conn, actor_id, client_id)
@@ -167,6 +173,7 @@ class IdentityService:
             token=None if delivery == "email" else raw,
             expires_at=row["expires_at"],
             delivery=delivery,
+            delivery_note=note,
         )
 
     async def check_ready(self) -> None:

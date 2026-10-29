@@ -48,12 +48,22 @@ test("the default is Staff, and none for a read-only invitee", () => {
 });
 
 test("deliveryMessage says the invitation was emailed, or how to share the link", () => {
-  assert.equal(invite.deliveryMessage({ token: null, delivery: "email" }, "aina@example.my"),
+  assert.equal(invite.deliveryMessage({ token: null, delivery: "email", delivery_note: null }, "aina@example.my"),
     "Invitation emailed to aina@example.my");
-  assert.equal(invite.deliveryMessage({ token: "synthetic", delivery: "manual" }, "aina@example.my"),
-    "We couldn't send the email. Copy this link and send it yourself.");
   assert.equal(invite.deliveryMessage({ token: null, delivery: "email" }, "aina@example.my", "reset"),
     "Reset link emailed to aina@example.my");
+});
+
+test("switched-off mail only says where to send the link, and a failed send says so", () => {
+  const manual = { token: "synthetic", delivery: "manual" };
+  assert.equal(invite.deliveryMessage({ ...manual, delivery_note: "mail_off" }, "aina@example.my"),
+    "Copy this link and send it to aina@example.my.");
+  // An older response has no note: it reads as mail switched off, not as a failure.
+  assert.equal(invite.deliveryMessage(manual, "aina@example.my"), "Copy this link and send it to aina@example.my.");
+  assert.equal(invite.deliveryMessage({ ...manual, delivery_note: null }, "aina@example.my"),
+    "Copy this link and send it to aina@example.my.");
+  assert.equal(invite.deliveryMessage({ ...manual, delivery_note: "send_failed" }, "aina@example.my"),
+    "We couldn't send the email. Copy this link and send it yourself.");
 });
 
 test("a link is built only when the server returned a token", () => {

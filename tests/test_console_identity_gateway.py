@@ -438,6 +438,7 @@ async def test_invite_emails_and_hides_the_token(mail_world: MailWorld) -> None:
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["delivery"] == "email" and body["token"] is None
+    assert body["delivery_note"] is None
     [mail] = mail_world.transport.sent
     assert mail.to == email
     assert mail.subject == "You're invited to Kedai Synthetic HR on FourStacks"
@@ -467,6 +468,7 @@ async def test_mail_failure_falls_back_to_manual_without_leaking(
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["delivery"] == "manual" and body["token"]
+    assert body["delivery_note"] == "send_failed"
     users = await mail_world.q("SELECT id FROM console_users WHERE email=%s", email)
     assert len(users) == 1
     tokens = await mail_world.q("SELECT id FROM console_tokens WHERE user_id=%s", users[0]["id"])
@@ -483,6 +485,7 @@ async def test_renew_and_reset_email(mail_world: MailWorld) -> None:
     transport.failure = smtplib.SMTPAuthenticationError(535, b"synthetic")
     response, email = await mail_world.invite(mail_world.owner)
     assert response.json()["delivery"] == "manual"
+    assert response.json()["delivery_note"] == "send_failed"
     token_id = response.json()["id"]
     transport.failure = None
     renewed = await mail_world.mutate(
@@ -490,6 +493,7 @@ async def test_renew_and_reset_email(mail_world: MailWorld) -> None:
     )
     assert renewed.status_code == 201, renewed.text
     assert renewed.json()["delivery"] == "email" and renewed.json()["token"] is None
+    assert renewed.json()["delivery_note"] is None
     [mail] = transport.sent
     assert mail.to == email and "Kedai Synthetic HR" in mail.text
     transport.failure = TimeoutError("synthetic relay timeout")
@@ -498,6 +502,7 @@ async def test_renew_and_reset_email(mail_world: MailWorld) -> None:
     )
     assert again.status_code == 201, again.text
     assert again.json()["delivery"] == "manual" and again.json()["token"]
+    assert again.json()["delivery_note"] == "send_failed"
     _, member_id = await mail_world.accept(again.json()["token"])
     transport.failure = None
     reset = await mail_world.mutate(
@@ -514,6 +519,7 @@ async def test_renew_and_reset_email(mail_world: MailWorld) -> None:
     )
     assert manual.status_code == 201, manual.text
     assert manual.json()["delivery"] == "manual" and manual.json()["token"]
+    assert manual.json()["delivery_note"] == "send_failed"
     # Tenant admins still cannot reset passwords, and nothing is mailed when they try.
     sent = len(transport.sent)
     denied = await mail_world.mutate(mail_world.owner, f"/console/v1/admin/users/{member_id}/reset")
@@ -674,9 +680,30 @@ async def test_slow_relay_falls_back_to_manual(mail_world: MailWorld) -> None:
         release.set()
     assert response.status_code == 201, response.text
     assert response.json()["delivery"] == "manual" and response.json()["token"]
+    assert response.json()["delivery_note"] == "send_failed"
     assert {
         "event": "console_mail_not_sent",
         "category": "smtp_timeout",
         "log_level": "warning",
     } in logs
     assert len(await mail_world.q("SELECT 1 FROM console_users WHERE email=%s", email)) == 1
+
+
+@requires_docker
+async def test_mail_switched_off_is_not_reported_as_a_failure(mail_world: MailWorld) -> None:
+    mail_world.app.state.mailer = Mailer(None, SENDER)
+    response, _ = await mail_world.invite(mail_world.owner)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["delivery"] == "manual" and body["token"]
+    assert body["delivery_note"] == "mail_off"
+    renewed = await mail_world.mutate(
+        mail_world.owner, f"/console/v1/admin/invites/{body['id']}/renew"
+    )
+    assert renewed.json()["delivery_note"] == "mail_off"
+    mail_world.app.state.mailer = None
+    again = await mail_world.mutate(
+        mail_world.owner, f"/console/v1/admin/invites/{renewed.json()['id']}/renew"
+    )
+    assert again.json()["delivery"] == "manual" and again.json()["delivery_note"] == "mail_off"
+    assert mail_world.transport.sent == []

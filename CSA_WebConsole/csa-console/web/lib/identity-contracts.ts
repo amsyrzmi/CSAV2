@@ -95,6 +95,8 @@ export interface IssuedInvitation {
   token: string | null;
   expires_at: string;
   delivery: "manual" | "email";
+  /** Why the link is shown: mail is switched off, or the send failed. Absent on older responses. */
+  delivery_note?: "mail_off" | "send_failed" | null;
 }
 export interface Capability {
   name: string;

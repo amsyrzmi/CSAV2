@@ -4528,6 +4528,21 @@
             "title": "Delivery",
             "type": "string"
           },
+          "delivery_note": {
+            "anyOf": [
+              {
+                "enum": [
+                  "mail_off",
+                  "send_failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Note"
+          },
           "expires_at": {
             "format": "date-time",
             "title": "Expires At",
