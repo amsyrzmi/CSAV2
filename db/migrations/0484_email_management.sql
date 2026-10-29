@@ -10,8 +10,8 @@
 --     written by code that predates this migration have none until they are saved again.
 --   public.email_threads: latest_rfc_message_id, latest_references, latest_reply_to and
 --     latest_from_owner, taken from the thread's latest message when it is synced.
---   public.email_mailboxes: sync_page_token (the Gmail pageToken for the next load-more) and
---     last_synced_at.
+--   public.email_mailboxes: sync_page_token (the Gmail pageToken for the next load-more). The
+--     sync time stays in the existing last_sync_at.
 --   public.console_proposals_kind_check also allows 'email_send' (every earlier kind is kept).
 --   public.console_workspace_turns_action_check also allows 'email_reply', 'email_team',
 --     'inbox_summary' and 'email_send' (every earlier action is kept).
@@ -19,7 +19,8 @@
 --     csa_app only. Returns the active employees whose assigned manager is the caller's employee,
 --     where the caller comes from app.hr_user_id through hr_employee_accounts. It returns nothing
 --     unless the caller is an enabled member of p_client and holds directory.read on
---     assigned_manager (the approves_team switch rows).
+--     assigned_manager (the approves_team switch rows), and p_client is the session's
+--     app.client_id. The caller is never one of their own reports.
 -- No new tables, roles or policies, and no grants to csa_identity. RLS on the email tables is
 -- unchanged (owner-only on app.hr_user_id); nothing is FORCEd.
 -- Pre-check: 0430 (email tables), 0460 (console_proposals, console_workspace_turns), 0480
@@ -74,8 +75,7 @@ ALTER TABLE public.email_threads
     ADD COLUMN IF NOT EXISTS latest_from_owner boolean;
 
 ALTER TABLE public.email_mailboxes
-    ADD COLUMN IF NOT EXISTS sync_page_token text,
-    ADD COLUMN IF NOT EXISTS last_synced_at timestamptz;
+    ADD COLUMN IF NOT EXISTS sync_page_token text;
 
 ALTER TABLE public.console_proposals DROP CONSTRAINT IF EXISTS console_proposals_kind_check;
 ALTER TABLE public.console_proposals ADD CONSTRAINT console_proposals_kind_check
@@ -96,7 +96,8 @@ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_te
 DECLARE
  v_user uuid := nullif(current_setting('app.hr_user_id', true), '')::uuid;
 BEGIN
- IF v_user IS NULL OR p_client IS NULL THEN RETURN; END IF;
+ IF v_user IS NULL OR p_client IS NULL
+  OR p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN RETURN; END IF;
  RETURN QUERY
  SELECT r.id, r.display_name, r.work_email
  FROM public.console_memberships m
@@ -106,6 +107,7 @@ BEGIN
  JOIN public.hr_employee_accounts a ON a.client_id = m.client_id AND a.user_id = m.user_id
  JOIN public.hr_employees me ON me.client_id = a.client_id AND me.id = a.employee_id AND me.is_active
  JOIN public.hr_employees r ON r.client_id = me.client_id AND r.manager_id = me.id AND r.is_active
+      AND r.id <> me.id
  WHERE m.client_id = p_client AND m.user_id = v_user AND m.is_enabled
  ORDER BY lower(r.display_name), r.id;
 END $$;

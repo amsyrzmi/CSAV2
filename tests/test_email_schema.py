@@ -112,9 +112,15 @@ def test_draft_columns_and_checks(owner: psycopg.Connection[Any]) -> None:
         (client, mailbox),
     )
     owner.execute(
-        "UPDATE email_mailboxes SET sync_page_token='tok', last_synced_at=now() WHERE id=%s",
+        "UPDATE email_mailboxes SET sync_page_token='tok', last_sync_at=now() WHERE id=%s",
         (mailbox,),
     )
+    # 0484 adds no second sync-time column: last_sync_at stays the only one.
+    column = owner.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='email_mailboxes' AND column_name='last_synced_at'"
+    ).fetchone()
+    assert column is None
 
 
 def test_existing_drafts_backfill_to_addresses(owner: psycopg.Connection[Any]) -> None:
@@ -204,11 +210,18 @@ def add_employee(
 
 
 def direct_reports(
-    app_dsn: str, client: uuid.UUID, caller: uuid.UUID | None
+    app_dsn: str,
+    client: uuid.UUID,
+    caller: uuid.UUID | None,
+    *,
+    session_client: uuid.UUID | None | str = "same",
 ) -> list[tuple[uuid.UUID, str, str | None]]:
     with psycopg.connect(app_dsn) as conn:
         if caller is not None:
             conn.execute("SELECT set_config('app.hr_user_id', %s, false)", (str(caller),))
+        tenant = client if session_client == "same" else session_client
+        if tenant is not None:
+            conn.execute("SELECT set_config('app.client_id', %s, false)", (str(tenant),))
         return cast(
             list[tuple[uuid.UUID, str, str | None]],
             conn.execute("SELECT * FROM email_my_direct_reports(%s)", (client,)).fetchall(),
@@ -252,6 +265,15 @@ def test_direct_reports_only_for_approvers(owner: psycopg.Connection[Any], app_d
     assert direct_reports(app_dsn, client, None) == []
     # Another tenant's caller, even holding the grant there, sees none of this tenant.
     assert direct_reports(app_dsn, client, stranger) == []
+
+    # The session's tenant must be the one asked about.
+    assert direct_reports(app_dsn, client, manager_user, session_client=None) == []
+    assert direct_reports(app_dsn, client, manager_user, session_client=other) == []
+
+    # A manager recorded as their own manager is never one of their own reports.
+    owner.execute("UPDATE hr_employees SET manager_id=id WHERE id=%s", (manager,))
+    rows = direct_reports(app_dsn, client, manager_user)
+    assert sorted(row[0] for row in rows) == sorted([first, second])
 
     # A disabled membership loses the read.
     owner.execute(
