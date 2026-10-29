@@ -116,6 +116,9 @@ class InvitationAccess:
             preset = cast(PresetId, found["preset"])
             if preset != "staff" and not found["chooser_is_owner"]:
                 return "pending"
+            # The accept request must not hang on a busy tenant: a lock wait past 5 s raises
+            # LockNotAvailable, logged as database_error, and the access stays pending.
+            await sql.execute("hr/invitation_lock_timeout.sql", conn=conn)
             await self._write(conn, client_id, token_id, override=False)
         return "applied"
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -267,6 +269,39 @@ async def test_chooser_no_longer_owner_leaves_it_pending_and_owner_apply_works(
     assert late.status_code == 409 and late.json()["detail"] == "invitation_already_handled"
 
 
+@pytest.mark.parametrize("disabled", ["account", "membership"])
+async def test_disabled_chooser_leaves_non_staff_pending_and_staff_still_applies(
+    world: HrWorld, disabled: str
+) -> None:
+    manager = await invite(world, "owner", "manager")
+    staff = await invite(world, "owner", "staff")
+    # The owner row still names them, but a disabled ex-owner's choice waits for an owner.
+    if disabled == "account":
+        await world.q(
+            "UPDATE console_users SET is_enabled=false WHERE id=%s", (world.users["owner"],)
+        )
+    else:
+        await world.q(
+            "UPDATE console_memberships SET is_enabled=false WHERE client_id=%s AND user_id=%s",
+            (world.tenant, world.users["owner"]),
+        )
+    found = await preset_row(world, world.tenant, world.tenant, UUID(manager["id"]))
+    assert found == []  # Not consumed yet.
+    first = await accept(world, manager["token"])
+    second = await accept(world, staff["token"])
+    assert await held(world, first) == EMPTY
+    assert await records(world, manager["id"]) == []
+    [row] = await preset_row(world, world.tenant, world.tenant, UUID(manager["id"]))
+    assert row["chooser_is_owner"] is False
+    access = InvitationAccess(world.service)
+    assert await access.apply_on_accept(world.tenant, UUID(manager["id"])) == "pending"
+    with pytest.raises(psycopg.Error, match="hr_invitation_owner_required"):
+        await direct_apply(world, UUID(manager["id"]), payload(rows(PRESETS["manager"], EMPTY)))
+    assert await held(world, second) == rows(PRESETS["staff"], EMPTY)
+    [record] = await records(world, staff["id"])
+    assert record["details"]["chosen_by"] == str(world.users["owner"])
+
+
 async def test_non_owner_rows_outside_staff_are_refused(world: HrWorld) -> None:
     issued = await invite(world, "admin", "staff")
     member, token_id = await accept_only(world, issued["token"])
@@ -511,3 +546,29 @@ async def test_apply_failure_inside_is_logged_by_category(
         ("hr_invitation_access_failed", "database_error")
     ]
     assert await held(world, member) == EMPTY
+
+
+async def test_apply_on_accept_gives_up_on_a_held_tenant_lock(world: HrWorld) -> None:
+    issued = await invite(world, "admin", "staff")
+    member, token_id = await accept_only(world, issued["token"])
+    access = InvitationAccess(world.service)
+    async with world.owner_pool.connection() as holder, holder.transaction():
+        await holder.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (f"{world.tenant}:hr-operations",),
+        )
+        started = time.monotonic()
+        with capture_logs() as logs:
+            outcome = await asyncio.wait_for(access.apply_on_accept(world.tenant, token_id), 20)
+        waited = time.monotonic() - started
+    assert outcome == "failed"
+    assert 4 <= waited < 15
+    assert [(e["event"], e["category"]) for e in logs] == [
+        ("hr_invitation_access_failed", "database_error")
+    ]
+    assert await held(world, member) == EMPTY and await records(world, token_id) == []
+    listed = await world.call("owner", "GET", INVITATIONS)
+    assert [item["token_id"] for item in listed.json()["items"]] == [str(token_id)]
+    # The lock released, the access still waits and applies.
+    assert await access.apply_on_accept(world.tenant, token_id) == "applied"
+    assert await held(world, member) == rows(PRESETS["staff"], EMPTY)

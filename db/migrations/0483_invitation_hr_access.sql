@@ -7,8 +7,9 @@
 -- Only invitations may carry a preset, and the preset and its chooser are set together or not at all.
 -- Adds five HR functions, all SECURITY DEFINER, pinned to search_path, EXECUTE to csa_app only:
 --   public.hr_invitation_preset(p_client, p_token): the consumed invitation's preset, chooser, whether
---     the chooser is the HR owner now, whether it was applied or dismissed already, and the member's
---     current grant, workflow and area rows (the hr_owner_access_summary JSON shapes).
+--     the chooser is the HR owner now (and still an enabled user with an enabled membership here),
+--     whether it was applied or dismissed already, and the member's current grant, workflow and area
+--     rows (the hr_owner_access_summary JSON shapes). For accept-time use only: no owner check.
 --   public.hr_apply_invitation_access(p_client, p_token, p_rows, p_on, p_added, p_owner_override):
 --     adds the preset's rows to the invitee's access (never removes) and records operation
 --     invitation_access, keyed by the token, with the resulting switches (p_on) and the ones it turned
@@ -59,6 +60,9 @@ BEGIN
 END $$;
 
 -- The invitation's preset, for an accepted invite of this tenant whose user is an enabled member.
+-- For accept-time use only (InvitationAccess.apply_on_accept and the apply it leads to): it returns
+-- the invitee's own rows without an owner check by design, because the new member has no HR session
+-- yet. It writes nothing; hr_apply_invitation_access checks everything again under its locks.
 CREATE OR REPLACE FUNCTION public.hr_invitation_preset(p_client uuid, p_token uuid) RETURNS TABLE(
     user_id uuid, preset text, chosen_by uuid, chooser_is_owner boolean, applied boolean,
     grants jsonb, workflows jsonb, areas jsonb)
@@ -68,9 +72,12 @@ BEGIN
   OR p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN RETURN; END IF;
  RETURN QUERY
  SELECT t.user_id, t.hr_preset, t.hr_preset_chosen_by,
-  -- A platform admin never carries a tenant HR owner's right to grant presets.
+  -- A platform admin never carries a tenant HR owner's right to grant presets, and a disabled
+  -- ex-owner's choice waits for the current owner.
   EXISTS(SELECT 1 FROM public.hr_client_owners o JOIN public.console_users c ON c.id=o.user_id
-         WHERE o.client_id=p_client AND o.user_id=t.hr_preset_chosen_by AND NOT c.is_platform_admin),
+         JOIN public.console_memberships cm ON cm.user_id=o.user_id AND cm.client_id=p_client
+         WHERE o.client_id=p_client AND o.user_id=t.hr_preset_chosen_by AND NOT c.is_platform_admin
+         AND c.is_enabled AND cm.is_enabled),
   EXISTS(SELECT 1 FROM public.hr_operations op
          WHERE op.client_id=p_client AND op.request_key=p_token
          AND op.operation IN ('invitation_access','invitation_access.dismiss')),
@@ -125,8 +132,11 @@ BEGIN
  IF EXISTS(SELECT 1 FROM public.hr_operations op WHERE op.client_id=p_client AND op.request_key=p_token
            AND op.operation IN ('invitation_access','invitation_access.dismiss')) THEN
   RAISE EXCEPTION 'hr_invitation_applied' USING ERRCODE='23514'; END IF;
+ -- The chooser counts as the HR owner only while still an enabled user with an enabled membership.
  owner_chooser := EXISTS(SELECT 1 FROM public.hr_client_owners o JOIN public.console_users c ON c.id=o.user_id
-  WHERE o.client_id=p_client AND o.user_id=tok.hr_preset_chosen_by AND NOT c.is_platform_admin FOR SHARE OF o);
+  JOIN public.console_memberships cm ON cm.user_id=o.user_id AND cm.client_id=p_client
+  WHERE o.client_id=p_client AND o.user_id=tok.hr_preset_chosen_by AND NOT c.is_platform_admin
+  AND c.is_enabled AND cm.is_enabled FOR SHARE OF o, cm);
  IF owner_chooser IS NOT TRUE AND p_owner_override IS NOT TRUE THEN
   IF tok.hr_preset IS DISTINCT FROM 'staff' THEN
    RAISE EXCEPTION 'hr_invitation_owner_required' USING ERRCODE='42501'; END IF;
