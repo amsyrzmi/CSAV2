@@ -82,6 +82,18 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
         assert not {"SMTP_USERNAME", "SMTP_PASSWORD"} & {
             s["target"] for s in services[name]["secrets"]
         }
+    # Staff email assistant: the Google OAuth client on the gateway only, off by default.
+    assert gateway_secrets["GOOGLE_CLIENT_ID"] == "staging_google_client_id"
+    assert gateway_secrets["GOOGLE_CLIENT_SECRET"] == "staging_google_client_secret"
+    gateway_env = services["gateway"]["environment"]
+    assert gateway_env["EMAIL_ASSISTANT_ENABLED"] == "false"
+    assert gateway_env["GOOGLE_OAUTH_REDIRECT_URI"] == (
+        "https://staging.invalid/console/v1/email/oauth/callback"
+    )
+    for name in ("worker", "delivery"):
+        assert not {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"} & {
+            s["target"] for s in services[name]["secrets"]
+        }
     # Queue claims run under RLS; only the owner role sees unscoped rows.
     for name in ("worker", "delivery"):
         targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
@@ -121,6 +133,16 @@ def test_pipeline_switches_invitation_mail_on_from_the_environment(tmp_path: Pat
         env_overrides={"CSA_STAGING_INVITE_MAIL": "true"},
     )
     assert config["services"]["gateway"]["environment"]["INVITE_MAIL_ENABLED"] == "true"
+
+
+def test_pipeline_switches_the_email_assistant_on_from_the_environment(tmp_path: Path) -> None:
+    config = render(
+        tmp_path,
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_EMAIL_ASSISTANT": "true"},
+    )
+    assert config["services"]["gateway"]["environment"]["EMAIL_ASSISTANT_ENABLED"] == "true"
 
 
 def test_pipeline_keeps_one_shot_and_migration_services_out_of_normal_startup(

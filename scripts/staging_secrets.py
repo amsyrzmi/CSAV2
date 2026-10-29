@@ -51,6 +51,10 @@ WHATSAPP_FILES = (
 # ``check`` because mail is off by default, but they come as a pair.
 SMTP_NAMES = ("smtp_username", "smtp_password")
 SMTP_FILES = tuple(f"runtime/{name}" for name in SMTP_NAMES)
+# Google OAuth client for the staff email assistant. The owner writes these straight
+# into ``runtime/`` (no install step); they are optional for ``check`` but come as a pair.
+GOOGLE_FILES = ("runtime/google_client_id", "runtime/google_client_secret")
+OPTIONAL_PAIRS = (SMTP_FILES, GOOGLE_FILES)
 DSN_ROLES = {
     "migration/staging_owner_dsn": ("csa", "database/staging_owner_password"),
     "runtime/staging_domain_dsn": ("csa_app", "migration/staging_app_password"),
@@ -231,7 +235,7 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
             values[name] = value
     for directory in DIRECTORIES:
         for entry in (target / directory).iterdir():
-            if f"{directory}/{entry.name}" not in (*FILES, *SMTP_FILES):
+            if f"{directory}/{entry.name}" not in (*FILES, *SMTP_FILES, *GOOGLE_FILES):
                 failures.append(f"{directory}/{entry.name}: unexpected entry")
     for name in PASSWORDS:
         if name in values and len(values[name]) < 32:
@@ -256,14 +260,15 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
         path = target / name
         if path.exists() or path.is_symlink():
             _read(path, runtime_uid, failures, name)
-    present = [
-        name for name in SMTP_FILES if (target / name).exists() or (target / name).is_symlink()
-    ]
-    for name in SMTP_FILES:
-        if name in present:
-            _read(target / name, runtime_uid, failures, name)
-        elif present:
-            failures.append(f"{name}: missing while its pair is installed")
+    for pair in OPTIONAL_PAIRS:
+        present = [
+            name for name in pair if (target / name).exists() or (target / name).is_symlink()
+        ]
+        for name in pair:
+            if name in present:
+                _read(target / name, runtime_uid, failures, name)
+            elif present:
+                failures.append(f"{name}: missing while its pair is installed")
     key = values.get("runtime/staging_credentials_key")
     if key is not None:
         try:

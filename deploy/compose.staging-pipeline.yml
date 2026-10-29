@@ -32,6 +32,9 @@ services:
       WHATSAPP_CALLBACK_BASE_URL: ${CSA_STAGING_HOOKS_ORIGIN:?approved staging hooks HTTPS origin required}
       # Invitation and reset mail. Off unless the owner sets CSA_STAGING_INVITE_MAIL=true.
       INVITE_MAIL_ENABLED: ${CSA_STAGING_INVITE_MAIL:-false}
+      # Staff email assistant (Gmail). Off unless the owner sets CSA_STAGING_EMAIL_ASSISTANT=true.
+      EMAIL_ASSISTANT_ENABLED: ${CSA_STAGING_EMAIL_ASSISTANT:-false}
+      GOOGLE_OAUTH_REDIRECT_URI: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging origin required}/console/v1/email/oauth/callback
     secrets:
       - source: staging_whatsapp_app_secret
         target: WHATSAPP_APP_SECRET
@@ -42,6 +45,11 @@ services:
         target: SMTP_USERNAME
       - source: staging_smtp_password
         target: SMTP_PASSWORD
+      # Google OAuth client; the assistant stays inactive unless the flag is on.
+      - source: staging_google_client_id
+        target: GOOGLE_CLIENT_ID
+      - source: staging_google_client_secret
+        target: GOOGLE_CLIENT_SECRET
     networks: ["data", "app", "embeddings", "provider-egress", "gateway-host"]
     # Loopback-only publish for the staging hooks Caddy site (POST /hooks/* only).
     # 18081 belongs to the development gateway; never reuse it here.
@@ -202,3 +210,9 @@ secrets:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/smtp_username
   staging_smtp_password:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/smtp_password
+  # Written by the owner before a gateway with the email assistant is recreated (section 11
+  # of STAGING_PIPELINE.md): compose refuses to start a service whose secret file is missing.
+  staging_google_client_id:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/google_client_id
+  staging_google_client_secret:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/google_client_secret
