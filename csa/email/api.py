@@ -374,4 +374,10 @@ def build_email_router() -> APIRouter:
     ) -> SendResult:
         return await service.send_draft(session, draft_id, body.version, request_key)
 
+    @router.post("/drafts/{draft_id}/release", response_model=DraftOut)
+    async def release_send(
+        draft_id: UUID, session: Session, service: Service, request_key: RequestKey
+    ) -> DraftOut:
+        return await service.release_send(session, draft_id, request_key)
+
     return router

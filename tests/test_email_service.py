@@ -1173,3 +1173,55 @@ async def test_send_isolated_per_owner(world: World, monkeypatch: pytest.MonkeyP
     own_tenant = await _send(world, draft, name="outsider")
     assert own_tenant.status_code == 409 and own_tenant.json()["detail"] == "assistant_disabled"
     assert world.gmail.sends == [] and await _status(world, draft["id"]) == "draft"
+
+
+async def test_release_lets_the_owner_retry_an_unknown_send(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    await _connect(world, "admin")
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    release = f"{DRAFTS}/{draft['id']}/release"
+    world.gmail.send_mode = "timeout"
+    first_key = uuid4()
+    unknown = await _send(world, draft, key=first_key)
+    assert unknown.status_code == 502 and unknown.json()["detail"] == "send_outcome_unknown"
+    world.gmail.send_mode = "ok"
+    # Too early: a Gmail call could still be running.
+    early = await world.call("staff", "POST", release)
+    assert early.status_code == 409 and early.json()["detail"] == "draft_not_releasable"
+    assert await _status(world, draft["id"]) == "sending"
+    await world.q(
+        "UPDATE email_drafts SET updated_at=clock_timestamp()-interval '121 seconds' WHERE id=%s",
+        (draft["id"],),
+    )
+    # Another owner cannot see the draft at all.
+    other = await world.call("admin", "POST", release)
+    assert other.status_code == 404 and other.json()["detail"] == "resource_unavailable"
+    release_key = uuid4()
+    released = await world.call("staff", "POST", release, key=release_key)
+    assert released.status_code == 200, released.text
+    assert released.json()["status"] == "draft" and released.json()["sent_at"] is None
+    again = await world.call("staff", "POST", release, key=release_key)
+    assert again.status_code == 200 and again.json()["id"] == draft["id"]
+    # The old key still never calls Gmail; a new key sends exactly once.
+    calls = len(world.gmail.sends)
+    stale = await _send(world, draft, key=first_key)
+    assert stale.status_code == 502 and len(world.gmail.sends) == calls
+    sent = await _send(world, released.json(), key=uuid4())
+    assert sent.status_code == 200, sent.text
+    assert len(world.gmail.sends) == calls + 1
+    # The released attempt no longer counts toward the hourly limit.
+    assert sent.json()["remaining_this_hour"] == 19
+    # A sent draft is not releasable.
+    done = await world.call("staff", "POST", release)
+    assert done.status_code == 409 and done.json()["detail"] == "draft_not_releasable"
+    # Nor is one that has a Gmail message id recorded.
+    other_draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    await world.q(
+        "UPDATE email_drafts SET status='sending', gmail_message_id='gmail-msg-x', "
+        "updated_at=clock_timestamp()-interval '1 hour' WHERE id=%s",
+        (other_draft["id"],),
+    )
+    recorded = await world.call("staff", "POST", f"{DRAFTS}/{other_draft['id']}/release")
+    assert recorded.status_code == 409 and recorded.json()["detail"] == "draft_not_releasable"

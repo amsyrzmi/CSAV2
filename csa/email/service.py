@@ -73,6 +73,8 @@ TOKEN_REFRESH_MARGIN = timedelta(seconds=90)
 MODEL_TIMEOUT_SECONDS = 20.0
 SYNC_QUERY = "newer_than:14d -in:chats"
 SEND_LIMIT_PER_HOUR = 20
+# A claim this old cannot have a Gmail call still running (the client times out at 20 seconds).
+RELEASE_AFTER_SECONDS = 120
 # Clear refusals: Gmail sent nothing, so the draft goes back to `draft`. Any other provider
 # error after the claim leaves the outcome unknown and the draft stays `sending`.
 SAFE_SEND_REFUSALS = frozenset(
@@ -1440,6 +1442,52 @@ class EmailService:
             gmail_message_id=message_id,
             remaining_this_hour=remaining,
         )
+
+    async def release_send(self, session: EmailSession, draft_id: UUID, key: UUID) -> DraftOut:
+        """Return a draft stuck in `sending` to `draft` after the owner checked Gmail Sent.
+
+        Only a claim with no recorded Gmail message id, at least `RELEASE_AFTER_SECONDS` old,
+        is released, under the same mailbox lock as sending. Earlier send keys keep their
+        stored outcome and never call Gmail; a send with a new key starts afresh, and the
+        released attempt no longer counts toward the hourly limit.
+        """
+        self._require_write(session)
+        fingerprint = _fingerprint("draft.release", {"id": str(draft_id)})
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            replay = await self._replay(conn, session, key, "draft.release", fingerprint)
+            mailbox = await self._mailbox(conn, session, connected=False)
+            if replay is not None:
+                return await self._existing_draft(conn, session, mailbox, draft_id)
+            await q.execute(
+                "email/key_lock.sql",
+                (f"email-send:{session.tenant_id}:{mailbox['id']}",),
+                conn=conn,
+            )
+            current = await q.fetch_one(
+                "email/draft_get.sql", (session.tenant_id, mailbox["id"], draft_id), conn=conn
+            )
+            if current is None:
+                raise EmailPolicyError("resource_unavailable")
+            released = await q.fetch_one(
+                "email/draft_send_unlock.sql",
+                (session.tenant_id, mailbox["id"], draft_id, RELEASE_AFTER_SECONDS),
+                conn=conn,
+            )
+            if released is None:
+                raise EmailPolicyError("draft_not_releasable")
+            await self._record(
+                conn,
+                session,
+                key,
+                "draft.release",
+                fingerprint,
+                Receipt(operation="draft.release", resource_id=str(draft_id), status="released"),
+            )
+            out = await self._draft_out(conn, session, mailbox, released)
+            await self._session(conn, session)
+        return out
 
     async def _send_plan(
         self,
