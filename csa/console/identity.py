@@ -14,6 +14,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 import psycopg
+import structlog
 from fastapi import HTTPException, Request, Response
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -38,6 +39,8 @@ from csa.console.records import (
 )
 from csa.console.security import digest, hash_password, token, verify_password
 from csa.core.db import q
+
+logger = structlog.get_logger(__name__)
 
 SESSION_COOKIE = "csa_session"
 CSRF_COOKIE = "csa_csrf"
@@ -131,24 +134,34 @@ class IdentityService:
         raw: str,
         row: dict[str, Any],
         actor_id: UUID,
-        action: str,
-        target_id: UUID,
+        kind: Literal["invite", "reset"],
         client_id: UUID | None = None,
-        **details: Any,
     ) -> IssuedTokenOut:
-        """Send after commit, then audit the outcome; a failed send only means a manual link.
+        """Send after commit; a failed send only means the link is shown for manual sharing.
 
-        The audit row needs the outcome, so it is written in its own transaction once the send
-        has finished. The user and token are never rolled back or recreated by a mail failure.
+        The mutation's own audit row is already committed with it. The outcome goes in a
+        follow-up ``identity.delivery`` row; if that write fails the response still stands.
         """
         delivery: Delivery = "manual"
         if notify is not None and await notify(self.link(raw), row["expires_at"]) == "sent":
             delivery = "email"
-        async with self.pool.connection() as conn, conn.transaction():
-            await self._context(conn, actor_id, client_id)
-            await self._audit(
-                conn, actor_id, action, target_id, client_id, **details, delivery=delivery
-            )
+        try:
+            async with self.pool.connection() as conn, conn.transaction():
+                await self._context(conn, actor_id, client_id)
+                await self._audit(
+                    conn,
+                    actor_id,
+                    "identity.delivery",
+                    row["id"],
+                    client_id,
+                    token_id=str(row["id"]),
+                    kind=kind,
+                    delivery=delivery,
+                )
+        except Exception:
+            # The token is committed and its audit row exists; losing only this row is
+            # preferable to failing a request whose link may already have been emailed.
+            logger.warning("console_delivery_audit_failed", category="audit_write_failed")
         return IssuedTokenOut(
             id=row["id"],
             token=None if delivery == "email" else raw,
@@ -522,18 +535,17 @@ class IdentityService:
                         actor.user_id if data.hr_preset else None,
                     ),
                 )
+                await self._audit(
+                    conn,
+                    actor.user_id,
+                    "identity.invited",
+                    user["id"],
+                    data.client_id,
+                    role=data.role,
+                )
         except psycopg.errors.ForeignKeyViolation as exc:
             raise HTTPException(404, "tenant not found") from exc
-        return await self._deliver(
-            notify,
-            raw,
-            result,
-            actor.user_id,
-            "identity.invited",
-            user["id"],
-            data.client_id,
-            role=data.role,
-        )
+        return await self._deliver(notify, raw, result, actor.user_id, "invite", data.client_id)
 
     async def invitations(
         self, actor: ConsoleActor, client_id: UUID | None, limit: int
@@ -598,16 +610,15 @@ class IdentityService:
                     old["hr_preset_chosen_by"],
                 ),
             )
-        return await self._deliver(
-            notify,
-            raw,
-            row,
-            actor.user_id,
-            "identity.invitation_renewed",
-            row["id"],
-            old["client_id"],
-            previous_token_id=str(token_id),
-        )
+            await self._audit(
+                conn,
+                actor.user_id,
+                "identity.invitation_renewed",
+                row["id"],
+                old["client_id"],
+                previous_token_id=str(token_id),
+            )
+        return await self._deliver(notify, raw, row, actor.user_id, "invite", old["client_id"])
 
     async def inspect_token(self, raw: str) -> TokenInfoOut:
         async with self.pool.connection() as conn, conn.transaction():
@@ -686,9 +697,8 @@ class IdentityService:
                     None,
                 ),
             )
-        return await self._deliver(
-            notify, raw, row, actor.user_id, "identity.reset_issued", user_id
-        )
+            await self._audit(conn, actor.user_id, "identity.reset_issued", user_id)
+        return await self._deliver(notify, raw, row, actor.user_id, "reset")
 
     async def revoke_token(self, actor: ConsoleActor, token_id: UUID) -> None:
         async with self.pool.connection() as conn, conn.transaction():

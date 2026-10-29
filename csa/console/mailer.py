@@ -72,9 +72,11 @@ class SmtpTransport:
 
 
 class Mailer:
-    def __init__(self, transport: Transport | None, sender: str) -> None:
+    def __init__(self, transport: Transport | None, sender: str, *, limit: float = 15) -> None:
         self.transport = transport
         self.sender = sender
+        # Bounds the whole send; the socket timeout bounds each SMTP operation inside it.
+        self.limit = limit
 
     @property
     def enabled(self) -> bool:
@@ -102,8 +104,10 @@ class Mailer:
 
     async def send(self, mail: OutgoingMail) -> MailOutcome:
         outcome = await self._attempt(mail)
-        if outcome != "sent":
-            # Category only: the exception text can carry the recipient address.
+        # Category only: the exception text can carry the recipient address.
+        if outcome == "smtp_disabled":
+            logger.info("console_mail_not_sent", category=outcome)
+        elif outcome != "sent":
             logger.warning("console_mail_not_sent", category=outcome)
         return outcome
 
@@ -111,7 +115,9 @@ class Mailer:
         if self.transport is None:
             return "smtp_disabled"
         try:
-            await asyncio.to_thread(self.transport.send, mail, self.sender)
+            await asyncio.wait_for(
+                asyncio.to_thread(self.transport.send, mail, self.sender), self.limit
+            )
         except smtplib.SMTPAuthenticationError:
             return "smtp_auth_failed"
         except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError):

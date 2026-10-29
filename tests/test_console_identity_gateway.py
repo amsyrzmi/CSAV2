@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import smtplib
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -600,15 +601,82 @@ async def test_audit_records_delivery(mail_world: MailWorld) -> None:
         mail_world.platform, f"/console/v1/admin/users/{member_id}/reset"
     )
     assert reset.json()["delivery"] == "email"
+    # The mutation's own audit rows are unchanged and committed with it.
     invited = await audits(mail_world, "identity.invited")
-    # The fixture's two tenant admins were invited (and emailed) first.
-    assert [row["details"]["delivery"] for row in invited[-2:]] == ["email", "manual"]
-    assert all(row["details"]["role"] == "tenant_staff" for row in invited[-2:])
+    assert [row["details"] for row in invited[-2:]] == [{"role": "tenant_staff"}] * 2
     [renewal] = await audits(mail_world, "identity.invitation_renewed")
-    assert renewal["details"] == {"previous_token_id": manual.json()["id"], "delivery": "manual"}
+    assert renewal["details"] == {"previous_token_id": manual.json()["id"]}
     assert renewal["target_id"] == renewed.json()["id"]
     [reset_row] = await audits(mail_world, "identity.reset_issued")
-    assert reset_row["details"] == {"delivery": "email"}
+    assert reset_row["details"] == {} and reset_row["target_id"] == member_id
+    # Each issued token gets one follow-up row with the outcome, and nothing else.
+    outcomes = {
+        row["target_id"]: row["details"] for row in await audits(mail_world, "identity.delivery")
+    }
+    for issued, kind, delivery in (
+        (emailed, "invite", "email"),
+        (manual, "invite", "manual"),
+        (renewed, "invite", "manual"),
+        (reset, "reset", "email"),
+    ):
+        token_id = issued.json()["id"]
+        assert outcomes[token_id] == {"token_id": token_id, "kind": kind, "delivery": delivery}
     everything = repr(await mail_world.q("SELECT details FROM console_audit"))
     assert "#token=" not in everything and renewed.json()["token"] not in everything
+    assert "@example.test" not in repr(list(outcomes.values()))
     assert emailed.json()["token"] is None
+
+
+@requires_docker
+async def test_failed_delivery_audit_still_returns_the_invitation(
+    mail_world: MailWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = mail_world.app.state.identity_service
+    original = service._audit
+
+    async def failing(conn: Any, actor_id: Any, action: str, *args: Any, **details: Any) -> None:
+        if action == "identity.delivery":
+            raise psycopg.OperationalError("synthetic audit outage")
+        await original(conn, actor_id, action, *args, **details)
+
+    monkeypatch.setattr(service, "_audit", failing)
+    with capture_logs() as logs:
+        response, email = await mail_world.invite(mail_world.owner)
+    assert response.status_code == 201, response.text
+    assert response.json()["delivery"] == "email" and response.json()["token"] is None
+    assert {
+        "event": "console_delivery_audit_failed",
+        "category": "audit_write_failed",
+        "log_level": "warning",
+    } in logs
+    assert email not in repr(logs)
+    [user] = await mail_world.q("SELECT id FROM console_users WHERE email=%s", email)
+    [invited] = await mail_world.q(
+        "SELECT 1 FROM console_audit WHERE action='identity.invited' AND target_id=%s",
+        str(user["id"]),
+    )
+    assert invited
+
+
+@requires_docker
+async def test_slow_relay_falls_back_to_manual(mail_world: MailWorld) -> None:
+    release = threading.Event()
+
+    class SlowTransport:
+        def send(self, mail: OutgoingMail, sender: str) -> None:
+            release.wait(5)
+
+    mail_world.app.state.mailer = Mailer(SlowTransport(), SENDER, limit=0.05)
+    try:
+        with capture_logs() as logs:
+            response, email = await mail_world.invite(mail_world.owner)
+    finally:
+        release.set()
+    assert response.status_code == 201, response.text
+    assert response.json()["delivery"] == "manual" and response.json()["token"]
+    assert {
+        "event": "console_mail_not_sent",
+        "category": "smtp_timeout",
+        "log_level": "warning",
+    } in logs
+    assert len(await mail_world.q("SELECT 1 FROM console_users WHERE email=%s", email)) == 1

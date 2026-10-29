@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import smtplib
+import threading
 from datetime import UTC, datetime
 from typing import Any
 
@@ -180,11 +181,33 @@ async def test_mailer_sends_through_the_transport() -> None:
     assert logs == []
 
 
+async def test_slow_relay_is_bounded_and_reported_as_timeout() -> None:
+    release = threading.Event()
+
+    class SlowTransport:
+        def send(self, mail: OutgoingMail, sender: str) -> None:
+            release.wait(5)
+
+    try:
+        with capture_logs() as logs:
+            outcome = await Mailer(SlowTransport(), SENDER, limit=0.05).send(MAIL)
+    finally:
+        release.set()
+    assert outcome == "smtp_timeout"
+    assert logs == [
+        {"event": "console_mail_not_sent", "category": "smtp_timeout", "log_level": "warning"}
+    ]
+
+
+def test_mailer_limit_defaults_to_fifteen_seconds() -> None:
+    assert Mailer(None, SENDER).limit == 15
+
+
 async def test_disabled_mailer_reports_smtp_disabled() -> None:
     with capture_logs() as logs:
         assert await Mailer(None, SENDER).send(MAIL) == "smtp_disabled"
     assert logs == [
-        {"event": "console_mail_not_sent", "category": "smtp_disabled", "log_level": "warning"}
+        {"event": "console_mail_not_sent", "category": "smtp_disabled", "log_level": "info"}
     ]
 
 
