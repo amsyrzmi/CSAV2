@@ -52,7 +52,7 @@ export function CustomerCard({
         <dd className={value}>{waiting > 0
           ? <StatusLabel tone="attention">{waiting === 1 ? "1 reply" : `${waiting} replies`}</StatusLabel> : "None"}</dd></div>
     </dl>
-    <div className="mt-5 border-t border-[#E8EEF8] pt-3">
+    <div className="mt-5 border-t border-[color:var(--fs-ink-100)] pt-3">
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" className="size-4" checked={includeHandled}
           onChange={(event) => onIncludeHandled(event.target.checked)} />

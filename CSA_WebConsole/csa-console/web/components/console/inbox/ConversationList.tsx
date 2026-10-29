@@ -21,10 +21,10 @@ export function contactOf(conversation: Pick<Conversation, "contact">): Contact 
   return cleanContact(conversation.contact ?? NO_CONTACT);
 }
 
-/** The channel pill. Sky tint from the approved mockup (#0B5A8C on #D3EEFF is 6.4:1). */
+/** The channel pill. Sky tint from the approved mockup; the --fs-channel-* pair is contrast-tested in every theme. */
 export function ChannelBadge({ channel, testId }: { channel: Conversation["channel"]; testId: string }) {
   return <span data-testid={testId}
-    className="inline-flex items-center whitespace-nowrap rounded-full bg-[#D3EEFF] px-2 py-0.5 text-xs font-semibold text-[#0B5A8C]">
+    className="inline-flex items-center whitespace-nowrap rounded-full bg-[var(--fs-channel-bg)] px-2 py-0.5 text-xs font-semibold text-[color:var(--fs-channel-text)]">
     {CHANNEL_NAME[channel]}</span>;
 }
 
@@ -32,7 +32,7 @@ export function ChannelBadge({ channel, testId }: { channel: Conversation["chann
 export function SenderLabel({ known }: { known: boolean }) {
   const text = senderLabel(known);
   return known ? <StatusLabel tone="customer">{text}</StatusLabel>
-    : <span className="inline-flex rounded-full outline-1 -outline-offset-1 outline-[#7B8CA5] outline-dashed">
+    : <span className="inline-flex rounded-full outline-1 -outline-offset-1 outline-[color:var(--fs-border-control)] outline-dashed">
       <StatusLabel tone="neutral">{text}</StatusLabel></span>;
 }
 
@@ -72,7 +72,7 @@ export function ConversationList({
   const short = [...search.trim()].length === 1;
   const showRows = !status.forbidden && items.length > 0;
   return <section aria-labelledby={`${searchId}-title`} className="flex min-h-0 min-w-0 flex-1 flex-col">
-    <div className="space-y-3 border-b border-[#E8EEF8] p-3">
+    <div className="space-y-3 border-b border-[color:var(--fs-ink-100)] p-3">
       <h2 id={`${searchId}-title`} tabIndex={-1} data-conversation-list-heading
         className="text-base font-semibold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">Conversations</h2>
       <div>
@@ -91,13 +91,13 @@ export function ConversationList({
           return <button key={chip.view} type="button" data-testid={chip.testId} aria-pressed={pressed}
             onClick={() => onView(chip.view)}
             className={`inline-flex min-h-8 items-center gap-1 rounded-full border px-2.5 pointer-coarse:min-h-11 ${pressed
-              ? "border-[var(--fs-primary)] bg-[var(--fs-primary)] text-white"
-              : "border-[#D8E1F0] bg-white text-ink-700 hover:border-[var(--fs-primary)]"}`}>
+              ? "border-[var(--fs-primary)] bg-[var(--fs-primary)] text-[color:var(--fs-on-primary)]"
+              : "border-[color:var(--fs-border)] bg-[var(--fs-surface)] text-ink-700 hover:border-[var(--fs-primary)]"}`}>
             {/* Sized on a span: the tokens' unlayered `font: inherit` on buttons beats utilities. */}
             <span className={`text-xs ${pressed ? "font-semibold" : "font-medium"}`}>{chip.label}</span>
             {chip.view === "review" && <span key={nudge} data-testid="inbox-needs-review-count"
               aria-label={reviewCount === null ? "count loading" : undefined}
-              className={`inline-block rounded-full bg-[#FFF1CC] px-1.5 text-xs font-semibold text-[#854D0E] ${nudge > 0 ? "fs-nudge" : ""}`}>
+              className={`inline-block rounded-full bg-[var(--fs-warning-bg)] px-1.5 text-xs font-semibold text-[color:var(--fs-warning)] ${nudge > 0 ? "fs-nudge" : ""}`}>
               {reviewCount ?? "–"}</span>}
           </button>;
         })}
@@ -149,8 +149,8 @@ function Row({ item, selected, disabled, now, onSelect }: {
   return <li>
     <button type="button" data-conversation-id={item.id} aria-current={selected ? "true" : undefined}
       disabled={disabled} onClick={() => onSelect(item.id)}
-      className={`flex w-full min-w-0 items-start gap-3 border-b border-[#E8EEF8] px-3 py-3 text-left focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-60 ${selected
-        ? "bg-[#EDF2FF] shadow-[inset_3px_0_0_var(--fs-primary)]" : "bg-white hover:bg-[#F6F9FE]"}`}>
+      className={`flex w-full min-w-0 items-start gap-3 border-b border-[color:var(--fs-ink-100)] px-3 py-3 text-left focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-60 ${selected
+        ? "bg-[var(--fs-surface-blue)] shadow-[inset_3px_0_0_var(--fs-primary)]" : "bg-[var(--fs-surface)] hover:bg-[var(--fs-tile)]"}`}>
       <CustomerAvatar id={item.id} name={contact.display_name} size={40} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-baseline gap-2">

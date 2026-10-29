@@ -86,9 +86,9 @@ export function Thread({
 
   return <section aria-labelledby={`thread-${id}-title`} data-testid="inbox-thread"
     className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-    <header className={`flex flex-col gap-2 border-b border-[#D8E1F0] px-3 py-2.5 ${motion
+    <header className={`flex flex-col gap-2 border-b border-[color:var(--fs-border)] px-3 py-2.5 ${motion
       ? "transition-[background-color,box-shadow] duration-200 ease-(--fs-ease-out)" : ""} ${muted
-      ? "bg-[#EEF1F8] shadow-[inset_0_4px_0_#15203A]" : "bg-white"}`} data-room={muted ? "staff" : "assistant"}>
+      ? "bg-[var(--fs-room-staff-bg)] shadow-[inset_0_4px_0_var(--fs-room-staff-bar)]" : "bg-[var(--fs-surface)]"}`} data-room={muted ? "staff" : "assistant"}>
       {/* Phone: Back and View details on one row, the customer on the next. */}
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <button type="button" className={`${secondary} shrink-0 px-2.5 md:hidden`} onClick={onBack}
@@ -121,13 +121,13 @@ export function Thread({
           }}>{current.human_muted ? "Release to AI" : "Take over"}</button>
       </div>}
     </header>
-    {(detailError || messages.error) && <div className="border-b border-[#D8E1F0] p-3">
+    {(detailError || messages.error) && <div className="border-b border-[color:var(--fs-border)] p-3">
       {/* A refusal (403) carries the server's plain words; retrying will not change it. */}
       <Notice error>{messages.status === 403 && messages.error ? messages.error
         : "We could not refresh this conversation. We will keep trying every few seconds."}</Notice></div>}
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={logRef} role="log" aria-label={`Messages with ${title}`} tabIndex={0} onScroll={readPosition}
-        className="min-h-0 flex-1 overflow-y-auto bg-linear-to-b from-[#EEF3FC] to-[#E6EEFB] px-3 py-3 focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)]">
+        className="min-h-0 flex-1 overflow-y-auto bg-linear-to-b from-[var(--fs-log-from)] to-[var(--fs-log-to)] px-3 py-3 focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)]">
         {messages.next_cursor !== null && <div className="mb-3 text-center">
           <button type="button" className={secondary} onClick={onOlder}>Older messages</button></div>}
         {!messages.loaded && !messages.error && <div aria-hidden className="space-y-3">
@@ -136,7 +136,7 @@ export function Thread({
         {messages.loaded && ordered.length === 0 && <p className="py-6 text-center text-sm text-ink-700">No messages yet.</p>}
         <ol className="flex flex-col">{threadItems(ordered).map((item) => item.kind === "day"
           ? <li key={item.key} className="my-3 flex justify-center">
-            <span className="rounded-full border border-[#D8E1F0] bg-white px-2.5 py-0.5 text-[11px] text-ink-700">{item.label}</span></li>
+            <span className="rounded-full border border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-2.5 py-0.5 text-[11px] text-ink-700">{item.label}</span></li>
           : <MessageItem key={item.key} item={item} contactId={id} contactName={contact.display_name} motion={motion}
             arrived={baseline !== null && timeOf(item.message.created_at) > baseline} />)}</ol>
         {pending.length > 0 && <div className="mt-3 flex flex-col items-end gap-3">
@@ -148,13 +148,13 @@ export function Thread({
       </div>
       <div aria-live="polite" className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
         {unseen > 0 && <button type="button" data-testid="inbox-new-messages-pill" onClick={() => toBottom(motion)}
-          className={`pointer-events-auto inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--fs-primary)] px-3.5 text-xs font-semibold text-white shadow-[var(--fs-shadow-popover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] ${motion ? "fs-fade" : ""}`}>
+          className={`pointer-events-auto inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--fs-primary)] px-3.5 text-xs font-semibold text-[color:var(--fs-on-primary)] shadow-[var(--fs-shadow-popover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] ${motion ? "fs-fade" : ""}`}>
           <ArrowDown aria-hidden size={14} /><span className="text-xs font-semibold">{newMessagesText(unseen)}</span></button>}
       </div>
     </div>
     {feedback}
     {current?.human_muted
-      ? <form key="reply" className={`border-t border-[#D8E1F0] bg-white p-3 ${roomMotion}`}
+      ? <form key="reply" className={`border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 ${roomMotion}`}
         onSubmit={(event) => { event.preventDefault(); void act("reply"); }}>
         <label className="block"><span className="text-sm font-medium">Human reply</span>
           <textarea className={`${field} mt-1 h-24 py-2`} value={text} maxLength={2000} disabled={blocked}
@@ -163,7 +163,7 @@ export function Thread({
         <div className="mt-2 flex justify-end">
           <button className={action} disabled={blocked || !!detailError || !text.trim()}>Queue reply</button></div>
       </form>
-      : <p key="hint" className={`border-t border-[#D8E1F0] bg-white px-3 py-3 text-sm text-ink-700 ${roomMotion}`}>
+      : <p key="hint" className={`border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-3 py-3 text-sm text-ink-700 ${roomMotion}`}>
         Take over to reply as a team member.</p>}
   </section>;
 }

@@ -24,8 +24,9 @@ export function ReviewCard({ approval, now, blocked, onPropose, onEdit, onView }
   const open = approval.status === "pending" && !expired;
   const label = approvalLabel(approval.status, expired);
   return <article aria-label={`Held reply, ${label.text.toLowerCase()}`}
-    className={`min-w-0 rounded-[14px] border border-l-4 bg-white p-3 text-sm ${open
-      ? "border-[#F0D98C] border-l-[#E0A82E]" : "border-[#D8E1F0] border-l-[#7B8CA5]"}`}>
+    className={`min-w-0 rounded-[14px] border border-l-4 bg-[var(--fs-surface)] p-3 text-sm ${open
+      ? "border-[color:var(--fs-attention-border)] border-l-[var(--fs-attention-edge)]"
+      : "border-[color:var(--fs-border)] border-l-[var(--fs-border-control)]"}`}>
     <div className="flex flex-wrap items-center gap-2">
       <StatusLabel tone={label.tone}>{label.text}</StatusLabel>
       {approval.status === "pending" && <span className="text-xs text-ink-600">

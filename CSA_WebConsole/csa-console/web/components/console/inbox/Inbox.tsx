@@ -24,7 +24,7 @@ const PANE = "card min-h-0 min-w-0 flex-col overflow-hidden";
 function Feedback({ actions, framed }: { actions: InboxActions; framed: boolean }) {
   const { error, notice, proposal, pending, busy } = actions;
   if (!error && !notice && !proposal && !(pending && !busy)) return null;
-  return <div className={`space-y-2 ${framed ? "max-h-[45%] overflow-y-auto border-t border-[#D8E1F0] bg-white p-3" : ""}`}>
+  return <div className={`space-y-2 ${framed ? "max-h-[45%] overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3" : ""}`}>
     {error && <Notice error>{error}</Notice>}
     {notice && <Notice>{notice}</Notice>}
     {proposal && <ProposalCard key={proposal.id} proposal={proposal} tenantId={actions.tenantId}
