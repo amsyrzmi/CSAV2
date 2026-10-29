@@ -162,6 +162,15 @@ export function subscriptionsPath(
 
 const id = (value: string) => `/${encodeURIComponent(value)}`;
 
+export interface SubscriptionSettings {
+  /** The tenant's IANA time zone (clients.timezone). */
+  timezone: string;
+}
+
+export function getSettings(tenantId: string | null): Promise<SubscriptionSettings> {
+  return api(subscriptionsPath(tenantId, "/settings"));
+}
+
 export function listPlans(tenantId: string | null, includeArchived: boolean): Promise<PlanOut[]> {
   return api(subscriptionsPath(tenantId, "/plans", { include_archived: includeArchived ? "true" : null }));
 }

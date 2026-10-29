@@ -5548,6 +5548,7 @@
               "business",
               "hr",
               "email",
+              "subscriptions",
               "activity",
               "chat"
             ],
@@ -7818,6 +7819,20 @@
           "enabled"
         ],
         "title": "SettingsIn",
+        "type": "object"
+      },
+      "SettingsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezone"
+        ],
+        "title": "SettingsOut",
         "type": "object"
       },
       "ShiftRecord": {
@@ -19427,6 +19442,73 @@
         ]
       }
     },
+    "/console/v1/subscriptions/settings": {
+      "get": {
+        "operationId": "settings_console_v1_subscriptions_settings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Settings",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
     "/console/v1/subscriptions/{subscription_id}": {
       "get": {
         "operationId": "detail_console_v1_subscriptions__subscription_id__get",
@@ -20304,6 +20386,7 @@
                           "business",
                           "hr",
                           "email",
+                          "subscriptions",
                           "activity",
                           "chat"
                         ],
