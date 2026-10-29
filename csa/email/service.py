@@ -479,13 +479,17 @@ class EmailService:
             await self._session(conn, session)
         access = await self._access_token(session, mailbox)
         assert self.gmail is not None
-        thread_ids = await self.gmail.list_thread_ids(
+        thread_ids, _next_page = await self.gmail.list_thread_ids(
             access, query=SYNC_QUERY, limit=self.sync_limit
         )
         fetched: list[FetchedThread] = []
         for thread_id in thread_ids:
             try:
-                fetched.append(await self.gmail.fetch_thread(access, thread_id))
+                fetched.append(
+                    await self.gmail.fetch_thread(
+                        access, thread_id, owner_address=mailbox["address"]
+                    )
+                )
             except GmailError as exc:
                 if exc.code == "thread_empty":
                     continue

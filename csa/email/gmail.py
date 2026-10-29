@@ -1,8 +1,9 @@
 """Minimal Gmail REST and Google OAuth client with bounded responses.
 
 Scopes are read-only plus compose: the client can list and read threads and
-create drafts in the connecting user's own mailbox. There is deliberately no
-send method. Errors never carry tokens or message content.
+create drafts or send messages in the connecting user's own mailbox
+(`gmail.compose` covers `users.messages.send`; callers must have a confirmed
+send card first). Errors never carry tokens or message content.
 """
 
 from __future__ import annotations
@@ -13,15 +14,18 @@ import html
 import json
 import re
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
+from email.utils import parseaddr, parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 from pydantic import SecretStr
+
+from csa.agents.staged.models import reject_header_control_chars, validate_mailbox_address
 
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -33,6 +37,9 @@ SCOPES = (
 MAX_JSON_BYTES = 1_048_576
 MAX_BODY_CHARS = 20_000
 TIMEOUT_SECONDS = 20.0
+MAX_RECIPIENTS = 20
+MAX_SUBJECT_CHARS = 200
+MAX_BODY_INPUT_CHARS = 20_000
 
 
 class GmailError(Exception):
@@ -62,6 +69,12 @@ class FetchedThread:
     received_at: datetime | None
     labels: tuple[str, ...]
     unread: bool
+    latest_rfc_message_id: str | None = None
+    latest_references: str | None = None
+    latest_reply_to: str | None = None
+    latest_from: str | None = None
+    latest_non_owner_from: str | None = None
+    latest_non_owner_reply_to: str | None = None
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -123,13 +136,64 @@ def _header(headers: list[dict[str, Any]], name: str) -> str:
     return ""
 
 
-def build_reply_mime(*, to: str, subject: str, body: str) -> bytes:
-    """Plain-text reply; headers already validated by the draft contract."""
+def _checked_addresses(values: Sequence[str]) -> list[str]:
+    return [validate_mailbox_address(value) for value in values]
+
+
+def build_message_mime(
+    *,
+    to: Sequence[str],
+    cc: Sequence[str] = (),
+    bcc: Sequence[str] = (),
+    subject: str,
+    body: str,
+    in_reply_to: str | None = None,
+    references: str | None = None,
+) -> bytes:
+    """Plain-text message. Every address and header value uses the draft contract's rules.
+
+    Gmail delivers to the Bcc header and drops it from the sent copy.
+    """
+    try:
+        to_list, cc_list, bcc_list = (
+            _checked_addresses(to),
+            _checked_addresses(cc),
+            _checked_addresses(bcc),
+        )
+        if not 1 <= len(to_list) + len(cc_list) + len(bcc_list) <= MAX_RECIPIENTS:
+            raise ValueError("one to twenty recipients required")
+        if (
+            not subject
+            or len(subject) > MAX_SUBJECT_CHARS
+            or len(body) > MAX_BODY_INPUT_CHARS
+            or "\x00" in body
+        ):
+            raise ValueError("subject or body out of bounds")
+        reject_header_control_chars(subject)
+        threading = {"In-Reply-To": in_reply_to, "References": references}
+        for value in threading.values():
+            if value is not None:
+                reject_header_control_chars(value)
+    except ValueError as exc:
+        raise GmailError("invalid_message") from exc
     message = EmailMessage()
-    message["To"] = to
+    if to_list:
+        message["To"] = ", ".join(to_list)
+    if cc_list:
+        message["Cc"] = ", ".join(cc_list)
+    if bcc_list:
+        message["Bcc"] = ", ".join(bcc_list)
     message["Subject"] = subject
+    for name, value in threading.items():
+        if value:
+            message[name] = value
     message.set_content(body)
     return message.as_bytes()
+
+
+def build_reply_mime(*, to: str, subject: str, body: str) -> bytes:
+    """Plain-text single-recipient reply; headers validated by `build_message_mime`."""
+    return build_message_mime(to=[to], subject=subject, body=body)
 
 
 class GmailClient:
@@ -260,19 +324,21 @@ class GmailClient:
             raise GmailError("provider_invalid_response")
         return address.lower()
 
-    async def list_thread_ids(self, access: SecretStr, *, query: str, limit: int) -> list[str]:
-        data = await self._json(
-            self._api(
-                access,
-                "GET",
-                "threads",
-                params={"q": query, "maxResults": str(max(1, min(limit, 50)))},
-            )
-        )
+    async def list_thread_ids(
+        self, access: SecretStr, *, query: str, limit: int, page_token: str | None = None
+    ) -> tuple[list[str], str | None]:
+        params = {"q": query, "maxResults": str(max(1, min(limit, 50)))}
+        if page_token:
+            params["pageToken"] = page_token
+        data = await self._json(self._api(access, "GET", "threads", params=params))
         items = data.get("threads", []) or []
-        return [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
+        ids = [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
+        next_token = data.get("nextPageToken")
+        return ids, next_token if isinstance(next_token, str) and next_token else None
 
-    async def fetch_thread(self, access: SecretStr, thread_id: str) -> FetchedThread:
+    async def fetch_thread(
+        self, access: SecretStr, thread_id: str, *, owner_address: str
+    ) -> FetchedThread:
         data = await self._json(
             self._api(access, "GET", f"threads/{thread_id}", params={"format": "full"})
         )
@@ -294,6 +360,13 @@ class GmailClient:
         if received is None and str(latest.get("internalDate", "")).isdigit():
             received = datetime.fromtimestamp(int(latest["internalDate"]) / 1000, tz=UTC)
         labels = tuple(str(label) for label in latest.get("labelIds", []) or [])
+        owner = owner_address.strip().lower()
+        non_owner_headers: list[dict[str, Any]] | None = None
+        for message in reversed(messages):
+            candidate = (message.get("payload", {}) or {}).get("headers", []) or []
+            if parseaddr(_header(candidate, "From"))[1].strip().lower() != owner:
+                non_owner_headers = candidate
+                break
         return FetchedThread(
             thread_id=str(data.get("id", thread_id)),
             subject=_header(headers, "Subject")[:500],
@@ -304,6 +377,16 @@ class GmailClient:
             received_at=received,
             labels=labels,
             unread="UNREAD" in labels,
+            latest_rfc_message_id=_header(headers, "Message-ID")[:500] or None,
+            latest_references=_header(headers, "References")[:2000] or None,
+            latest_reply_to=_header(headers, "Reply-To")[:500] or None,
+            latest_from=_header(headers, "From")[:500] or None,
+            latest_non_owner_from=(
+                _header(non_owner_headers, "From")[:500] or None if non_owner_headers else None
+            ),
+            latest_non_owner_reply_to=(
+                _header(non_owner_headers, "Reply-To")[:500] or None if non_owner_headers else None
+            ),
         )
 
     async def create_draft(self, access: SecretStr, *, thread_id: str | None, mime: bytes) -> str:
@@ -324,3 +407,33 @@ class GmailClient:
         if not isinstance(draft_id, str) or not draft_id:
             raise GmailError("provider_invalid_response")
         return draft_id
+
+    async def send_message(self, access: SecretStr, *, thread_id: str | None, mime: bytes) -> str:
+        """Send through `users.messages.send` once; the caller owns at-most-once.
+
+        A 4xx is a clear refusal (`send_refused`: nothing was sent). A timeout, a connection
+        failure or a 5xx leaves the outcome unknown (`provider_unreachable`).
+        """
+        message: dict[str, Any] = {"raw": base64.urlsafe_b64encode(mime).decode("ascii")}
+        if thread_id:
+            message["threadId"] = thread_id
+        request = self._api(
+            access, "POST", "messages/send", content=json.dumps(message).encode("utf-8")
+        )
+        request.headers["content-type"] = "application/json"
+        try:
+            response = await self._http.send(request, follow_redirects=False)
+        except httpx.HTTPError as exc:
+            raise GmailError("provider_unreachable") from exc
+        if 400 <= response.status_code < 500:
+            raise GmailError("send_refused")
+        if response.status_code != 200:
+            raise GmailError("provider_unreachable")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise GmailError("provider_invalid_response") from exc
+        message_id = data.get("id") if isinstance(data, dict) else None
+        if not isinstance(message_id, str) or not message_id:
+            raise GmailError("provider_invalid_response")
+        return message_id
