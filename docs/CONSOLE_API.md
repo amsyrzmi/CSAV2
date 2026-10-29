@@ -640,12 +640,16 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
 
 ### Proposals and confirmation
 
-Every mutation is a proposal the user confirms on a card. Kinds: `email_export`
-(freeze a draft and save it to the user's own Gmail drafts), `email_send` (send a
-draft from the user's own Gmail, see [Email management](#email-management)), `training_submit` (submit a
-training request), `inbox_decision` (approve or reject a held customer reply) and
-`subscription_action` (a [subscription state change](#subscriptions), requested from the
-Subscriptions tab).
+Every mutation is a proposal the user confirms on a card. The kinds are:
+
+- `email_export`: freeze a draft and save it to the user's own Gmail drafts;
+- `email_send`: send a draft from the user's own Gmail (see
+  [Email management](#email-management));
+- `training_submit`: submit a training request;
+- `inbox_decision`: approve or reject a held customer reply;
+- `subscription_action`: a [subscription state change](#subscriptions), requested from
+  the Subscriptions tab.
+
 `ProposalOut` is `{id, kind, status, card, result, created_at, expires_at}`; the card
 holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
 
@@ -735,8 +739,8 @@ All routes sit under `/console/v1/email`, take the tenant `client_id` query, nee
 | `PUT /drafts/{draft_id}` | `{to?, cc?, bcc?, subject, body}` | Edited `DraftOut` (`recipient` is the old single-To field) |
 | `POST /drafts/{draft_id}/send` | `{version}` | `SendResult` `{outcome, sent_at, gmail_message_id, remaining_this_hour}` |
 | `POST /drafts/{draft_id}/release` | none | `DraftOut` back in `draft`, owner only |
-| `POST /threads/{thread_id}/reply` | `{instructions, language?, cc?, bcc?}` | 201 `DraftOut` addressed by the reply rule |
-| `POST /sync/more` | none | `Receipt` for the next page of 20 threads |
+| `POST /threads/{thread_id}/reply` | `{instructions?, language? (auto\|en\|ms), cc?, bcc?}` | 201 `DraftOut` addressed by the reply rule; 409 `reply_target_unavailable` when the only target is the owner |
+| `POST /sync/more` | none | `Receipt` for the next page of 20 threads; `{"threads": 0, "done": true}` once the mailbox holds 200 threads or cleanup removed the whole page |
 | `GET /attention` | none | `AttentionPage` `{as_of, items, skipped}` |
 
 `DraftOut` carries `to`, `cc`, `bcc`, `recipients` (each address with an `outside` flag),
@@ -745,7 +749,7 @@ All routes sit under `/console/v1/email`, take the tenant `client_id` query, nee
 recipients, subject and body; a client sends it back on `send` and never computes it.
 `EmailContext` gains `last_synced_at` and `more_available`.
 
-Send errors:
+Email errors:
 
 | Code | Status | Meaning |
 |---|---|---|
@@ -756,12 +760,13 @@ Send errors:
 | `draft_needs_staff_input` | 409 | A `[STAFF:` placeholder is still in the draft |
 | `send_limit_reached` | 429 | 20 sends in the last 60 minutes; the body has `retry_after` in seconds |
 | `send_refused` | 409 | Gmail refused the message with another 4xx; the draft is back in `draft` |
-| `mailbox_reauthorization_required` | 409 | Gmail answered 401 or 403; reconnect the mailbox |
-| `provider_rate_limited` | 409 | Gmail answered 429; the draft is back in `draft` |
+| `mailbox_reauthorization_required` | 409 | Gmail answered 401, or 403 for a reason other than a quota limit; reconnect the mailbox |
+| `provider_rate_limited` | 409 | Gmail answered 429, or 403 with the reason `userRateLimitExceeded`, `rateLimitExceeded` or `dailyLimitExceeded`; the draft is back in `draft` |
 | `invalid_message` | 409 | Gmail could not accept the message; the draft is back in `draft` |
 | `recipients_invalid` | 422 | Not 1 to 20 valid addresses in To, CC and BCC together |
 | `send_outcome_unknown` | 502 | Timeout, 5xx, 408, 409, 499 or a 200 without an id. The draft stays `sending`; the body has `message` "Check your Gmail Sent folder before trying again." |
 | `draft_not_releasable` | 409 | Release needs the owner, status `sending`, no Gmail id and a claim at least 120 seconds old |
+| `send_released` | 409 | A replay of a send key whose outcome was unknown, after the owner released the draft (it is back in `draft`). Gmail is not called; send again with a new key |
 | `reply_target_unavailable` | 409 | The only reply target is the mailbox owner |
 
 A send makes at most one Gmail call, with a 25-second deadline and no retry, after
@@ -771,14 +776,18 @@ late outcome from a released attempt never changes the row.
 `GET /attention` reads stored data only and runs at most 5 analyses. It leaves out
 `newsletter_or_promotion`, `spam_or_phishing` and threads whose latest message the owner
 sent, and returns up to 10 items. It skips threads it cannot analyse and counts them in
-`skipped`. It is refused for `read_only` members. `GET /threads` lists up to 100 of the up
-to 200 cached threads.
+`skipped`. It is refused for `read_only` members. `GET /threads` lists every cached
+thread, up to 200. A thread's time is Gmail's `internalDate` for its latest message (the
+`Date` header only when that is missing), and a message labelled `SENT` (send-as aliases
+included) counts as the owner's.
 
 `email_send` proposal: the card is made only after the planner asks to send and the user's
 own words say so. Its stored payload is `{draft_id, version}`; the card's title, summary
 and fields hold counts only, and so does the `email_export` card now. `expected_version` is
 the draft version, so an edit after the card was made makes the confirm return 409
-`draft_changed` and nothing is sent. The executor uses an idempotency key derived from the
+`draft_changed` and nothing is sent. The `email_export` card's `expected_version` is the
+same `draft_version`, bound to To, CC, BCC, subject and body, so any edit makes it
+`proposal_stale`. The executor uses an idempotency key derived from the
 proposal id. A refused confirm returns the send error body above (for example
 `send_limit_reached` with `retry_after`). The executed result is `{draft_id, outcome,
 sent_at, gmail_message_id, remaining_this_hour}`, with no content.
@@ -789,7 +798,9 @@ chosen by the model), `email_team` drafts one email to the caller's active direc
 `no_work_email` and `team_too_large` come back as plain answers), and `inbox_summary`
 answers from `GET /attention`; its failures are also plain answers, and the stored turn
 says only "Inbox summary: N items." Any address the model proposes must appear in the
-user's own message; an address seen only in the mailbox can never become a recipient.
+user's own message; an address seen only in the mailbox can never become a recipient. An
+employee id in To, CC or BCC must be in the message, among the ids an earlier directory
+turn offered, or `my_manager`; any other id is refused with 502 `planner_invalid_output`.
 
 ### HR assistant delegation
 

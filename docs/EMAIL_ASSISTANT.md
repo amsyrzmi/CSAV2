@@ -49,7 +49,10 @@ Only the draft's owner can send it.
   again:
   - any other 4xx: `send_refused`;
   - 401 or 403: shown as `mailbox_reauthorization_required`;
-  - 429: `provider_rate_limited`;
+  - 429, or a 403 whose Gmail reason is a quota limit (`userRateLimitExceeded`,
+    `rateLimitExceeded` or `dailyLimitExceeded`): `provider_rate_limited`. The
+    same quota 403s count as a rate limit for every other Gmail call, and the
+    Gmail error body is never logged;
   - a message Gmail cannot accept: `invalid_message`.
 - An ambiguous failure leaves the draft `sending` and returns 502
   `send_outcome_unknown` ("Check your Gmail Sent folder before trying again.").
@@ -65,6 +68,11 @@ only for the draft's owner, and only when all of these hold: the draft is
 old. Otherwise it returns 409 `draft_not_releasable`. The 120 seconds is longer
 than the 25-second Gmail deadline, so a release never runs while a send is still
 in flight. A released draft returns to `draft` and can be sent again.
+
+Replaying the old attempt's key after a release never calls Gmail. It returns 409
+`send_released` instead of the stored `send_outcome_unknown`, so a send card
+confirmed before the release says "You marked this email as not sent. Ask the
+assistant to send it again, or send it from the Email assistant tab."
 
 ### Limits and checks
 
@@ -91,9 +99,10 @@ Reply-To, else the From, of the latest message that was not sent by the mailbox
 owner. It never goes to the owner (`reply_target_unavailable`). There is no
 automatic reply-all.
 
-Known limitation: the owner is recognised by exact address. Aliases of the
-owner, such as plus-addresses and send-as addresses, are not recognised as the
-owner.
+A message counts as the owner's when Gmail labels it `SENT`, or when its From is
+the connected address. The `SENT` label covers send-as aliases, so a reply from
+an alias is never the reply target, and a thread whose latest message carries it
+counts as answered by the owner (it is left out of the attention summary).
 
 ### Email my team
 
@@ -111,15 +120,23 @@ access switch "approves team" and the `hr` package.
 - **Window:** the last 90 days, `newer_than:90d -in:chats`, in pages of 20.
 - **Load more:** `POST /console/v1/email/sync/more` fetches the next page using a
   Gmail page token stored per mailbox. The tab shows "Load older email" until
-  there is nothing left in the 90 days.
+  there is nothing left in the 90 days. Load more also stops at the cap: when
+  the mailbox holds 200 threads after cleanup, or cleanup removed every thread
+  the page brought, the token is cleared and the answer is
+  `{"threads": 0, "done": true}`, so the tab shows "No older email in the last
+  90 days".
 - **Caps:** at most 200 cached threads per mailbox, and none older than 90 days
   by their latest message. Cleanup runs after each sync and each load more.
+- **Message time:** a thread's time is when Gmail received its latest message
+  (`internalDate`). The sender's `Date` header is used only when `internalDate`
+  is missing, and a `Date` in the future counts as now, so it cannot rank a
+  thread first.
 - **Drafts survive cleanup.** Cleanup never deletes a draft. A removed thread's
   drafts lose their thread link and become new (unthreaded) emails, and the
   console does not show them as replies.
 - **Sync on open:** when the Email tab opens and the last sync was more than
   5 minutes ago. There is no background sync.
-- `GET /console/v1/email/threads` lists up to 100 of the up to 200 cached threads.
+- `GET /console/v1/email/threads` lists every cached thread, up to 200.
 - Sync and load more make no model call.
 
 ## Attention summary
@@ -132,8 +149,12 @@ data only.
   and threads whose latest message the owner sent.
 - It returns up to 10 items, most urgent first. `as_of` is the time of the last sync.
 - A thread it cannot analyse is skipped and counted in `skipped`. The summary
-  fails only when nothing can be shown and no model is configured
-  (`model_not_configured`).
+  fails only when nothing can be shown and every thread it tried to analyse
+  failed (for example `model_not_configured`). With nothing to show and
+  `skipped` above 0, the console says "Some emails couldn't be summarised."
+- An analysis is saved only while the thread's latest message is still the one
+  analysed. If a sync stored a newer message during the model call, the result
+  is dropped and the thread is analysed again later.
 - `read_only` members are refused. The console loads the summary when the tab
   opens (after sync on open) and after the Sync button, not after load more,
   because each load can spend up to 5 model calls.
@@ -150,6 +171,18 @@ Gmail drafts (`email_export`). See [CONSOLE_API.md](CONSOLE_API.md#workspace-ass
   characters, time, priority) as untrusted facts, with `<` and `>` escaped so a
   subject cannot close the prompt wrapper. A thread's sender can only be that
   thread's reply recipient. Any other address must be in the user's own message.
+- An employee id in To, CC or BCC must be one the user could have meant: an id
+  in the message (a directory result the user picked), an id an earlier
+  directory turn offered, or `my_manager` (present only when the message
+  mentions a manager). `my_team` ids serve "email my team" only. Any other id
+  is refused as invented (502 `planner_invalid_output`).
+- The save-to-Gmail-drafts card is bound to the whole draft (To, CC, BCC,
+  subject and body, the same `draft_version` as a send card), so any edit makes
+  it stale. Cards made before this change go stale once.
+- A card whose draft is no longer a draft (sent, sending or saved to Gmail)
+  offers no Confirm. A send card whose draft still has `[STAFF: …]` parts offers
+  no Send and says "Fill in the [STAFF: …] parts on the Email assistant tab,
+  then send it there."
 - Both email cards store counts only. The console fetches the draft
   (`GET /console/v1/email/drafts/{draft_id}`, owner only) to show the
   recipients and body when the card is open.
@@ -200,8 +233,8 @@ needs no third scope.
 ## Not included
 
 Mailbox push notifications (Pub/Sub), background sync, label changes,
-attachments, shared or team mailboxes, Outlook, reply-all and owner aliases
-(plus-addresses and send-as). Those are later phases.
+attachments, shared or team mailboxes, Outlook and reply-all. Those are later
+phases.
 
 ## Validation
 
