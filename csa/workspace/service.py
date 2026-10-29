@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from email.utils import parseaddr
 from typing import Any, Literal
 from uuid import UUID, uuid4, uuid5
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, Request
 from psycopg import AsyncConnection
@@ -24,8 +26,18 @@ from csa.console.services import PackageState, active_packages, require_package
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
+from csa.decide.completion import CompletionError
 from csa.email.api import email_http_error, email_session_from
-from csa.email.models import ComposeRequest, EmailPolicyError
+from csa.email.models import (
+    AttentionPage,
+    ComposeRequest,
+    DraftOut,
+    EmailPolicyError,
+    ReplyRequest,
+    TeamComposeRequest,
+    draft_version,
+    is_employee_ref,
+)
 from csa.email.service import EmailService
 from csa.hr.api import hr_session_from
 from csa.hr.policy import HrPolicyError
@@ -34,14 +46,18 @@ from csa.workspace.contracts import (
     MAX_WORK_TTL,
     AnswerProposal,
     AnswerResult,
+    CardField,
     ClarificationProposal,
     ClarificationResult,
     DirectoryLookupProposal,
     DirectoryResult,
     EmailComposeProposal,
+    EmailReplyProposal,
+    EmailTeamProposal,
     GuidanceProposal,
     GuidanceResult,
     InboxDecisionProposal,
+    InboxSummaryProposal,
     LocalOrderSummary,
     NavigateProposal,
     NavigateResult,
@@ -63,12 +79,15 @@ from csa.workspace.contracts import (
     WorkspaceWorkBinding,
     validate_workspace_execution,
 )
-from csa.workspace.directory import my_people, search_people, throttle_lookup
+from csa.workspace.directory import MyTeam, my_people, my_team, search_people, throttle_lookup
 from csa.workspace.planner import (
+    MailboxThreadFact,
     ManagerFact,
     PlannerFacts,
     PlannerInvalidOutput,
     PriorTurn,
+    TeamFact,
+    TeamMemberFact,
     WorkspacePlanner,
     detect_language,
 )
@@ -347,7 +366,9 @@ async def _insert_turn(
     page: str,
     resource_id: str | None,
     result: WorkspaceActionResult,
+    stored: WorkspaceActionResult | None = None,
 ) -> WorkspaceTurnOut:
+    """Store the turn; ``stored`` replaces ``result`` in the row when the answer is private."""
     body = redact(turn.body)
     if not body.strip() or len(body) > 8000:
         raise ValueError("workspace text could not be safely persisted")
@@ -364,7 +385,7 @@ async def _insert_turn(
             action,
             page,
             resource_id,
-            Jsonb(result.model_dump(mode="json")),
+            Jsonb((stored or result).model_dump(mode="json")),
         ),
         conn=conn,
     )
@@ -444,6 +465,33 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_packages": "No services are active.",
         "people_unavailable": "Looking up colleagues is not part of this workspace's "
         "subscribed services; it needs the HR service.",
+        "team_package_inactive": "Emailing your team needs the HR service, which is not "
+        "active for this workspace.",
+        "team_not_team_approver": "Emailing your team is for people who approve requests "
+        "for their team. Ask your administrator to turn on “Approves training, leave and "
+        "attendance for their team” for you in HR access.",
+        "team_no_employee_link": "Your account is not linked to an employee record, so your "
+        "team cannot be found.",
+        "team_no_reports": "Nobody reports to you in HR, so there is no team to email.",
+        "team_no_work_email": "Nobody on your team has a work email in HR. Ask HR to add "
+        "them first.",
+        "team_team_too_large": "Your team has more than 20 people with a work email. One "
+        "email can go to at most 20 people.",
+        "summary_none": "Nothing in your synced email needs your attention right now.",
+        "summary_head": "Here is what needs your attention in your synced email{as_of}:",
+        "summary_as_of": " (as of {time})",
+        "summary_from": "from {sender}, {priority} priority",
+        "summary_next": "Next: {steps}",
+        "summary_skipped": "{count} could not be summarised. Open the Email assistant tab "
+        "to read them.",
+        "summary_stored": "Inbox summary: {count}.",
+        "high": "high",
+        "normal": "normal",
+        "low": "low",
+        "email": "email",
+        "emails": "emails",
+        "item": "item",
+        "items": "items",
     },
     "ms": {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
@@ -457,6 +505,34 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_packages": "Tiada perkhidmatan aktif.",
         "people_unavailable": "Carian rakan sekerja bukan sebahagian daripada perkhidmatan "
         "yang dilanggan ruang kerja ini; ia memerlukan perkhidmatan HR.",
+        "team_package_inactive": "E-mel kepada pasukan anda memerlukan perkhidmatan HR, "
+        "yang tidak aktif untuk ruang kerja ini.",
+        "team_not_team_approver": "E-mel kepada pasukan hanya untuk mereka yang meluluskan "
+        "permohonan pasukan sendiri. Minta pentadbir anda menghidupkan “Approves training, "
+        "leave and attendance for their team” untuk anda dalam akses HR.",
+        "team_no_employee_link": "Akaun anda tidak dipautkan kepada rekod pekerja, jadi "
+        "pasukan anda tidak dapat dicari.",
+        "team_no_reports": "Tiada sesiapa melapor kepada anda dalam HR, jadi tiada pasukan "
+        "untuk dihantar e-mel.",
+        "team_no_work_email": "Tiada ahli pasukan anda yang mempunyai e-mel kerja dalam HR. "
+        "Minta HR menambahnya dahulu.",
+        "team_team_too_large": "Pasukan anda mempunyai lebih daripada 20 orang dengan e-mel "
+        "kerja. Satu e-mel boleh dihantar kepada paling ramai 20 orang.",
+        "summary_none": "Tiada e-mel yang disegerakkan memerlukan perhatian anda sekarang.",
+        "summary_head": "Ini yang memerlukan perhatian anda dalam e-mel yang disegerakkan{as_of}:",
+        "summary_as_of": " (setakat {time})",
+        "summary_from": "daripada {sender}, keutamaan {priority}",
+        "summary_next": "Seterusnya: {steps}",
+        "summary_skipped": "{count} tidak dapat diringkaskan. Buka tab Email assistant untuk "
+        "membacanya.",
+        "summary_stored": "Ringkasan peti masuk: {count}.",
+        "high": "tinggi",
+        "normal": "biasa",
+        "low": "rendah",
+        "email": "e-mel",
+        "emails": "e-mel",
+        "item": "item",
+        "items": "item",
     },
 }
 
@@ -622,6 +698,78 @@ async def _my_manager(
     return ManagerFact(employee_id=mine.manager.employee_id, reason=None)
 
 
+MAILBOX_FACTS = 10
+MAILBOX_SUBJECT_CHARS = 120
+# The message is about email (a reply, a thread, a sender, the inbox) in English or Malay.
+_MAIL_WORDS = re.compile(
+    r"\b(e-?mails?|e-?mel|inbox|gmail|mail|repl(?:y|ies|ied|ying)|respond|threads?|senders?"
+    r"|attention|balas|balasan|peti masuk)\b",
+    re.IGNORECASE,
+)
+_TEAM_WORDS = re.compile(r"\b(team|my reports|direct reports|pasukan|anak buah)\b", re.IGNORECASE)
+_SEND_WORDS = re.compile(r"\b(send|hantar|hantarkan|kirim|kirimkan)\b", re.IGNORECASE)
+_ADDRESS = re.compile(r"[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _email_service(request: Request) -> EmailService:
+    service = getattr(request.app.state, "email_service", None)
+    if not isinstance(service, EmailService):
+        raise HTTPException(503, "email_assistant_not_configured")
+    return service
+
+
+async def _mailbox_threads(
+    request: Request, actor: ConsoleActor, client_id: UUID, packages: list[PackageState]
+) -> list[MailboxThreadFact] | None:
+    """Up to ten recent synced threads of the caller's own mailbox, or None when unreadable.
+
+    Untrusted: any sender writes these. Subjects are redacted and cut; nothing here is logged
+    or stored.
+    """
+    service = getattr(request.app.state, "email_service", None)
+    if not isinstance(service, EmailService) or not _unlocked(packages, _TAB_GATES["email"]):
+        return None
+    try:
+        page = await service.threads(email_session_from(request, actor, client_id, mutation=False))
+    except EmailPolicyError:
+        return None
+    facts: list[MailboxThreadFact] = []
+    for item in page.items[:MAILBOX_FACTS]:
+        name, address = parseaddr(item.sender)
+        facts.append(
+            MailboxThreadFact(
+                thread_id=item.thread_id,
+                sender_name=" ".join(name.split())[:100] or None,
+                sender_address=address.strip().lower()[:254] or None,
+                subject=" ".join(redact(item.subject).split())[:MAILBOX_SUBJECT_CHARS],
+                received_at=item.received_at,
+                priority=item.priority,
+            )
+        )
+    return facts
+
+
+async def _my_team(
+    request: Request, actor: ConsoleActor, client_id: UUID, packages: list[PackageState]
+) -> MyTeam:
+    if not _unlocked(packages, _TAB_GATES["hr"]):
+        return MyTeam([], [], "package_inactive")
+    async with tx(request.app.state.pool, str(client_id)) as conn:
+        return await my_team(conn, client_id, actor.user_id)
+
+
+def _team_fact(team: MyTeam) -> TeamFact:
+    return TeamFact(
+        reports=[
+            TeamMemberFact(employee_id=p.employee_id, name=p.display_name) for p in team.reports
+        ],
+        skipped=[
+            TeamMemberFact(employee_id=p.employee_id, name=p.display_name) for p in team.skipped
+        ],
+        reason=team.reason,
+    )
+
+
 async def planner_facts(
     request: Request,
     actor: ConsoleActor,
@@ -647,6 +795,12 @@ async def planner_facts(
     manager = None
     if _MANAGER_WORDS.search(turn.body):
         manager = await _my_manager(request, actor, client_id, packages)
+    threads = None
+    if _MAIL_WORDS.search(turn.body):
+        threads = await _mailbox_threads(request, actor, client_id, packages)
+    team = None
+    if _TEAM_WORDS.search(turn.body):
+        team = _team_fact(await _my_team(request, actor, client_id, packages))
     return PlannerFacts(
         role=actor.role,
         packages=packages,
@@ -655,6 +809,8 @@ async def planner_facts(
         language=detect_language(turn.body),
         history=_prior_turns(rows, turn.body),
         my_manager=manager,
+        mailbox_threads=threads,
+        my_team=team,
     )
 
 
@@ -666,10 +822,69 @@ class _Planned:
     prepared: PreparedProposal | None = None
     lookup: str | None = None
     answer: AnswerProposal | None = None
+    summary: AttentionPage | None = None
 
 
 def _payload(proposal: TrainingSubmitProposal | InboxDecisionProposal) -> dict[str, Any]:
     return proposal.model_dump(mode="json", exclude={"action"}, exclude_none=True)
+
+
+def _requested_addresses(message: str, facts: PlannerFacts) -> set[str]:
+    """Addresses the user wrote: this message and the thread's earlier stored messages."""
+    texts = [message, *(turn.message for turn in facts.history)]
+    return {found.lower() for text in texts for found in _ADDRESS.findall(text)}
+
+
+def _check_recipients(
+    proposal: EmailComposeProposal | EmailReplyProposal, message: str, facts: PlannerFacts
+) -> None:
+    """Refuse a plan that adds an address the user did not write (Review Focus 4).
+
+    Mailbox facts are untrusted, so an address seen only there is never a recipient, CC or BCC;
+    a thread's sender is reached only through ``email_reply``, whose To comes from the thread
+    itself. Employee ids resolve through the directory, so they stay inside the company.
+    """
+    refs = [*proposal.cc, *proposal.bcc]
+    if isinstance(proposal, EmailComposeProposal) and proposal.recipient_address is not None:
+        refs.append(proposal.recipient_address)
+    if isinstance(proposal, EmailReplyProposal):
+        synced = {thread.thread_id for thread in facts.mailbox_threads or []}
+        if proposal.thread_id not in synced:
+            raise PlannerInvalidOutput()
+    allowed = _requested_addresses(message, facts)
+    for ref in refs:
+        if not is_employee_ref(ref) and ref.strip().lower() not in allowed:
+            raise PlannerInvalidOutput()
+
+
+def _asked_to_send(
+    proposal: EmailComposeProposal | EmailReplyProposal | EmailTeamProposal,
+    message: str,
+    facts: PlannerFacts,
+) -> bool:
+    """A send card only when the plan says so and the user's own words ask to send."""
+    texts = [message, *(turn.message for turn in facts.history)]
+    return proposal.send and any(_SEND_WORDS.search(text) for text in texts)
+
+
+async def _draft_card(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    registry: ProposalRegistry,
+    draft: DraftOut,
+    *,
+    send: bool,
+) -> PreparedProposal:
+    """A send card bound to the draft's version, or today's save-to-Gmail-drafts card."""
+    if send:
+        payload: dict[str, Any] = {"draft_id": str(draft.id), "version": draft_version(draft)}
+        return await registry.prepare(
+            request, actor, client_id, "email_send", payload, origin="assistant"
+        )
+    return await registry.prepare(
+        request, actor, client_id, "email_export", {"draft_id": str(draft.id)}, origin="assistant"
+    )
 
 
 async def _compose(
@@ -680,19 +895,23 @@ async def _compose(
     turn: WorkspaceTurnInput,
     proposal: EmailComposeProposal,
     registry: ProposalRegistry,
+    *,
+    send: bool,
 ) -> PreparedProposal:
-    """Write the draft (never sent) and prepare its export; the package gate runs first."""
-    service = getattr(request.app.state, "email_service", None)
-    if not isinstance(service, EmailService):
-        raise HTTPException(503, "email_assistant_not_configured")
+    """Write the draft (never sent here) and prepare its card; the package gate runs first."""
+    service = _email_service(request)
     await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
-    if proposal.recipient_employee_id is not None:
+    if proposal.recipient_employee_id is not None or any(
+        is_employee_ref(ref) for ref in [*proposal.cc, *proposal.bcc]
+    ):
         # Directory-resolved recipients need the hr package, as on POST /email/compose.
         await require_package(request.app.state.pool, client_id, frozenset({"hr"}))
     try:
         compose = ComposeRequest(
             recipient_employee_id=proposal.recipient_employee_id,
             recipient_address=proposal.recipient_address,
+            cc=list(proposal.cc),
+            bcc=list(proposal.bcc),
             subject=proposal.subject,
             # The planner may put everything in the subject; compose needs a nonblank brief.
             instructions=proposal.instructions or proposal.subject,
@@ -708,8 +927,146 @@ async def _compose(
         )
     except EmailPolicyError as exc:
         raise email_http_error(exc) from None
-    return await registry.prepare(
-        request, actor, client_id, "email_export", {"draft_id": str(draft.id)}, origin="assistant"
+    return await _draft_card(request, actor, client_id, registry, draft, send=send)
+
+
+async def _reply(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    thread_id: UUID,
+    turn: WorkspaceTurnInput,
+    proposal: EmailReplyProposal,
+    registry: ProposalRegistry,
+    *,
+    send: bool,
+) -> PreparedProposal:
+    """Draft a reply in a synced thread; the email service picks the To from the thread."""
+    service = _email_service(request)
+    await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
+    if any(is_employee_ref(ref) for ref in [*proposal.cc, *proposal.bcc]):
+        await require_package(request.app.state.pool, client_id, frozenset({"hr"}))
+    try:
+        reply = ReplyRequest(
+            instructions=proposal.instructions,
+            cc=list(proposal.cc),
+            bcc=list(proposal.bcc),
+            language=proposal.language,
+        )
+    except ValidationError:
+        raise HTTPException(422, "email_recipient_invalid") from None
+    try:
+        draft = await service.reply(
+            email_session_from(request, actor, client_id, mutation=True),
+            proposal.thread_id,
+            reply,
+            uuid5(turn.request_key, f"workspace_reply:{thread_id}"),
+        )
+    except EmailPolicyError as exc:
+        raise email_http_error(exc) from None
+    return await _draft_card(request, actor, client_id, registry, draft, send=send)
+
+
+async def _team_email(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    thread_id: UUID,
+    turn: WorkspaceTurnInput,
+    proposal: EmailTeamProposal,
+    facts: PlannerFacts,
+    registry: ProposalRegistry,
+) -> _Planned:
+    """One email to the caller's own direct reports, all in To, read fresh from HR here."""
+    service = _email_service(request)
+    await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
+    team = await _my_team(request, actor, client_id, facts.packages)
+    if team.reason is not None:
+        text = _TEXT[facts.language][f"team_{team.reason}"]
+        return _Planned(result=AnswerResult(action="answer", markdown=text))
+    try:
+        draft = await service.compose_team(
+            email_session_from(request, actor, client_id, mutation=True),
+            TeamComposeRequest(
+                to_employee_ids=[person.employee_id for person in team.reports],
+                subject=proposal.subject,
+                instructions=proposal.instructions or proposal.subject,
+                language=proposal.language,
+            ),
+            uuid5(turn.request_key, f"workspace_team:{thread_id}"),
+        )
+    except EmailPolicyError as exc:
+        raise email_http_error(exc) from None
+    send = _asked_to_send(proposal, turn.body, facts)
+    prepared = await _draft_card(request, actor, client_id, registry, draft, send=send)
+    if team.skipped:
+        names = ", ".join(person.display_name for person in team.skipped)
+        skipped = CardField(label="Not included", value=f"{names} (no work email)")
+        content = replace(prepared.content, fields=[*prepared.content.fields, skipped])
+        prepared = replace(prepared, content=content)
+    return _Planned(prepared=prepared)
+
+
+async def _summary(request: Request, actor: ConsoleActor, client_id: UUID) -> _Planned:
+    """Answers "what needs my attention" from synced mail; may analyse five threads first."""
+    service = _email_service(request)
+    await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
+    try:
+        page = await service.attention(
+            email_session_from(request, actor, client_id, mutation=False)
+        )
+    except EmailPolicyError as exc:
+        raise email_http_error(exc) from None
+    except (CompletionError, TimeoutError):
+        raise HTTPException(503, "email_model_unavailable") from None
+    return _Planned(summary=page)
+
+
+_MYT = ZoneInfo("Asia/Kuala_Lumpur")
+
+
+def _plain(text: str, limit: int) -> str:
+    """Untrusted mail text on one line, bounded; the console shows answers as plain text."""
+    return " ".join(text.split())[:limit]
+
+
+def _count(count: int, one: str, many: str, language: Literal["en", "ms"]) -> str:
+    return f"{count} {_TEXT[language][one if count == 1 else many]}"
+
+
+def _summary_markdown(page: AttentionPage, language: Literal["en", "ms"]) -> str:
+    """The answer the user sees now; it is not stored (see ``_summary_stored``)."""
+    text = _TEXT[language]
+    lines: list[str] = []
+    if page.items:
+        as_of = ""
+        if page.as_of is not None:
+            moment = page.as_of.astimezone(_MYT)
+            as_of = text["summary_as_of"].format(time=f"{moment.day} {moment:%b %Y, %H:%M}")
+        lines.append(text["summary_head"].format(as_of=as_of))
+        for index, item in enumerate(page.items, start=1):
+            source = text["summary_from"].format(
+                sender=_plain(item.sender, 200), priority=text[item.priority]
+            )
+            lines.append(f"{index}. {_plain(item.subject, 200)} ({source})")
+            if item.summary.strip():
+                lines.append(f"   {_plain(item.summary, 600)}")
+            steps = "; ".join(_plain(step, 200) for step in item.next_steps if step.strip())
+            if steps:
+                lines.append(f"   {text['summary_next'].format(steps=steps)}")
+    else:
+        lines.append(text["summary_none"])
+    if page.skipped:
+        count = _count(page.skipped, "email", "emails", language)
+        lines.append(text["summary_skipped"].format(count=count))
+    return "\n".join(lines)
+
+
+def _summary_stored(page: AttentionPage, language: Literal["en", "ms"]) -> AnswerResult:
+    """Counts only: turns are readable tenant-wide, mail content is owner-only."""
+    count = _count(len(page.items), "item", "items", language)
+    return AnswerResult(
+        action="answer", markdown=_TEXT[language]["summary_stored"].format(count=count)
     )
 
 
@@ -762,8 +1119,25 @@ async def _resolve(
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailComposeProposal):
-        prepared = await _compose(request, actor, client_id, thread_id, turn, proposal, registry)
+        _check_recipients(proposal, turn.body, facts)
+        send = _asked_to_send(proposal, turn.body, facts)
+        prepared = await _compose(
+            request, actor, client_id, thread_id, turn, proposal, registry, send=send
+        )
         return _Planned(prepared=prepared)
+    if isinstance(proposal, EmailReplyProposal):
+        _check_recipients(proposal, turn.body, facts)
+        send = _asked_to_send(proposal, turn.body, facts)
+        prepared = await _reply(
+            request, actor, client_id, thread_id, turn, proposal, registry, send=send
+        )
+        return _Planned(prepared=prepared)
+    if isinstance(proposal, EmailTeamProposal):
+        return await _team_email(
+            request, actor, client_id, thread_id, turn, proposal, facts, registry
+        )
+    if isinstance(proposal, InboxSummaryProposal):
+        return await _summary(request, actor, client_id)
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
 
 
@@ -831,6 +1205,10 @@ async def _finish(
             conn=conn,
         )
         return DirectoryResult(action="directory_lookup", candidates=found)
+    if planned.summary is not None:
+        return AnswerResult(
+            action="answer", markdown=_summary_markdown(planned.summary, facts.language)
+        )
     if planned.answer is None:
         raise RuntimeError("planned workspace turn has nothing to store")
     return await _answer(conn, actor, client_id, planned.answer, facts)
@@ -893,6 +1271,10 @@ async def create_planned_turn(
         if previous is not None and previous["page_key"] != context.tab:
             await registry.cancel_thread(conn, actor, client_id, thread_id)
         result = await _finish(conn, actor, client_id, thread_id, planned, facts, registry)
+        # The inbox summary is shown once and stored as counts only.
+        stored = None
+        if planned.summary is not None:
+            stored = _summary_stored(planned.summary, facts.language)
         return await _insert_turn(
             conn,
             actor,
@@ -904,4 +1286,5 @@ async def create_planned_turn(
             page=context.tab,
             resource_id=None,
             result=result,
+            stored=stored,
         )

@@ -231,6 +231,18 @@ class ComposeRequest(EmailModel):
         return self
 
 
+class TeamComposeRequest(EmailModel):
+    """A new email to the caller's team: every directory employee here goes in To.
+
+    Not an HTTP body: the workspace assistant builds it from the caller's own direct reports.
+    """
+
+    to_employee_ids: list[UUID] = Field(min_length=1, max_length=MAX_ADDRESSES)
+    subject: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(min_length=1, max_length=1000)
+    language: Literal["auto", "en", "ms"] = "auto"
+
+
 class DraftProposal(EmailModel):
     """Strict model output for a reply; validated again as EmailDraftInput before saving."""
 

@@ -19,7 +19,7 @@ import secrets
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from uuid import UUID, uuid4, uuid5
 
 from psycopg import AsyncConnection
@@ -61,6 +61,7 @@ from csa.email.models import (
     ReplyRequest,
     SendLimitReached,
     SendResult,
+    TeamComposeRequest,
     ThreadAnalysis,
     ThreadDetail,
     ThreadOut,
@@ -1187,35 +1188,96 @@ class EmailService:
 
     async def compose(self, session: EmailSession, request: ComposeRequest, key: UUID) -> DraftOut:
         """Write a new internal email to a resolved recipient; saved as a draft, never sent."""
+        recipient = request.recipient_employee_id or request.recipient_address
+        assert recipient is not None
+        return await self._compose(
+            session,
+            key,
+            operation="draft.compose",
+            payload=request.model_dump(mode="json"),
+            to_refs=[str(recipient)],
+            cc=request.cc,
+            bcc=request.bcc,
+            subject=request.subject,
+            instructions=request.instructions,
+            language=request.language,
+            team=False,
+        )
+
+    async def compose_team(
+        self, session: EmailSession, request: TeamComposeRequest, key: UUID
+    ) -> DraftOut:
+        """A new email to the caller's team, everyone in To; saved as a draft, never sent.
+
+        The caller chooses the employees (the workspace passes the caller's own direct reports);
+        each is resolved to a directory work email here, as on `compose`.
+        """
+        return await self._compose(
+            session,
+            key,
+            operation="draft.compose_team",
+            payload=request.model_dump(mode="json"),
+            to_refs=[str(employee) for employee in request.to_employee_ids],
+            cc=[],
+            bcc=[],
+            subject=request.subject,
+            instructions=request.instructions,
+            language=request.language,
+            team=True,
+        )
+
+    async def _compose(
+        self,
+        session: EmailSession,
+        key: UUID,
+        *,
+        operation: str,
+        payload: dict[str, Any],
+        to_refs: Sequence[str],
+        cc: Sequence[str],
+        bcc: Sequence[str],
+        subject: str,
+        instructions: str,
+        language: Literal["auto", "en", "ms"],
+        team: bool,
+    ) -> DraftOut:
         self._require_write(session)
         if self.model is None:
             raise EmailPolicyError("model_not_configured")
-        fingerprint = _fingerprint("draft.compose", request.model_dump(mode="json"))
+        fingerprint = _fingerprint(operation, payload)
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
             await self._require_enabled(conn, session)
-            replay = await self._replay(conn, session, key, "draft.compose", fingerprint)
+            replay = await self._replay(conn, session, key, operation, fingerprint)
             mailbox = await self._mailbox(conn, session, connected=False)
             if replay is not None:
                 return await self._existing_draft(conn, session, mailbox, UUID(replay.resource_id))
             recipient_name: str | None = None
-            address = request.recipient_address
-            if request.recipient_employee_id is not None:
+            addresses: list[str] = []
+            for ref in to_refs:
+                if not is_employee_ref(ref):
+                    addresses.append(ref)
+                    continue
                 person = await q.fetch_one(
-                    "email/recipient_get.sql",
-                    (session.tenant_id, request.recipient_employee_id),
-                    conn=conn,
+                    "email/recipient_get.sql", (session.tenant_id, UUID(ref)), conn=conn
                 )
                 if person is None or not person["work_email"]:
                     raise EmailPolicyError("recipient_unresolved")
-                recipient_name, address = person["display_name"], person["work_email"]
-            cc_addresses = await self._resolve_refs(conn, session, request.cc)
-            bcc_addresses = await self._resolve_refs(conn, session, request.bcc)
+                recipient_name = recipient_name or person["display_name"]
+                addresses.append(person["work_email"])
+            cc_addresses = await self._resolve_refs(conn, session, cc)
+            bcc_addresses = await self._resolve_refs(conn, session, bcc)
             brand = await q.fetch_one("turn/get_client_brand.sql", (session.tenant_id,), conn=conn)
             await self._session(conn, session)
-        assert address is not None
-        to, cc, bcc = self._recipient_lists([address], cc_addresses, bcc_addresses)
-        proposal = await self._compose_with_model(request, recipient_name, brand or {})
+        to, cc_list, bcc_list = self._recipient_lists(addresses, cc_addresses, bcc_addresses)
+        proposal = await self._compose_with_model(
+            subject,
+            instructions,
+            language,
+            None if team else recipient_name,
+            brand or {},
+            team=team,
+        )
         try:
             checked = validated_draft(
                 mailbox["id"], "compose", to[0], proposal.subject, proposal.body
@@ -1224,7 +1286,7 @@ class EmailService:
             raise EmailPolicyError("draft_rejected") from exc
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
-            replay = await self._replay(conn, session, key, "draft.compose", fingerprint)
+            replay = await self._replay(conn, session, key, operation, fingerprint)
             if replay is not None:
                 return await self._existing_draft(conn, session, mailbox, UUID(replay.resource_id))
             saved = await self._insert_draft(
@@ -1233,8 +1295,8 @@ class EmailService:
                 mailbox,
                 thread_id=None,
                 to=to,
-                cc=cc,
-                bcc=bcc,
+                cc=cc_list,
+                bcc=bcc_list,
                 subject=checked.subject,
                 body=checked.body,
                 reply_to_message_id=None,
@@ -1243,10 +1305,10 @@ class EmailService:
                 conn,
                 session,
                 key,
-                "draft.compose",
+                operation,
                 fingerprint,
                 Receipt(
-                    operation="draft.compose",
+                    operation=operation,
                     resource_id=str(saved["id"]),
                     status="drafted",
                     detail={"needs_facts_from_staff": proposal.needs_facts_from_staff},
@@ -1257,23 +1319,37 @@ class EmailService:
         return out
 
     async def _compose_with_model(
-        self, request: ComposeRequest, recipient_name: str | None, brand: dict[str, Any]
+        self,
+        subject: str,
+        instructions: str,
+        language: Literal["auto", "en", "ms"],
+        recipient_name: str | None,
+        brand: dict[str, Any],
+        *,
+        team: bool = False,
     ) -> DraftProposal:
         assert self.model is not None
         business = brand.get("brand_name") or "the business"
-        language = {"auto": "English", "en": "English", "ms": "Bahasa Melayu"}[request.language]
-        to = recipient_name or "the recipient"
+        written_in = {"auto": "English", "en": "English", "ms": "Bahasa Melayu"}[language]
+        if team:
+            audience = (
+                "It goes to the staff member's own team, several colleagues at once: greet "
+                'them together (for example "Hi team") and name nobody'
+            )
+        else:
+            to = recipient_name or "the recipient"
+            audience = f"It goes to one colleague, {to}: address them by that name"
         system = (
             f"You write a short internal email at {business} for a staff member to review. "
-            f"It goes to one colleague, {to}: address them by that name, in a friendly, "
-            f"professional colleague tone. Write in {language}. Plain text, no markdown. "
+            f"{audience}, in a friendly, "
+            f"professional colleague tone. Write in {written_in}. Plain text, no markdown. "
             "Use only the staff instructions; never invent facts, dates or commitments, and "
             "where a fact is missing write a bracketed placeholder such as [STAFF: confirm "
             "date] and list it in needs_facts_from_staff. Keep the requested subject unless "
             "it is clearly unusable. Return JSON only."
         )
         user = json.dumps(
-            {"subject": request.subject, "staff_instructions": request.instructions},
+            {"subject": subject, "staff_instructions": instructions},
             ensure_ascii=False,
         )
         async with asyncio.timeout(MODEL_TIMEOUT_SECONDS + 5):

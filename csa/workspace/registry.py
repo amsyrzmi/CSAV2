@@ -63,6 +63,20 @@ class ProposalError(HTTPException):
         super().__init__(_ERROR_STATUS[code], code)
 
 
+class ProposalActionRefused(HTTPException):
+    """An owning service's refusal whose response body carries more than the code.
+
+    ``content`` is the whole JSON body, for example ``{"detail": ..., "retry_after": 1200}``;
+    the confirm route returns it unchanged, with ``headers`` (such as ``Retry-After``).
+    """
+
+    def __init__(
+        self, status_code: int, content: dict[str, Any], headers: Mapping[str, str] | None = None
+    ) -> None:
+        super().__init__(status_code, content["detail"], headers=dict(headers or {}) or None)
+        self.content = content
+
+
 @dataclass(frozen=True)
 class CardContent:
     """What an executor renders for a proposal; the registry adds id, kind and expiry."""

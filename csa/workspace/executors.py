@@ -24,9 +24,9 @@ from csa.console.services import require_package
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
-from csa.email.api import email_http_error, email_session_from
+from csa.email.api import email_error_content, email_http_error, email_session_from
 from csa.email.gmail import GmailError
-from csa.email.models import EmailPolicyError
+from csa.email.models import DraftOut, EmailPolicyError, draft_version
 from csa.email.service import EmailService
 from csa.hr.api import hr_http_error, hr_session_from
 from csa.hr.models import TrainingAction, TrainingCommandInput, TrainingDraftInput, TrainingStatus
@@ -37,11 +37,18 @@ from csa.subscriptions.executor import SubscriptionActionExecutor
 from csa.workspace.contracts import (
     CardField,
     EmailExportProposal,
+    EmailSendProposal,
     InboxDecisionProposal,
     ProposalKind,
     TrainingSubmitProposal,
 )
-from csa.workspace.registry import CardContent, ProposalError, ProposalOrigin, ProposalRegistry
+from csa.workspace.registry import (
+    CardContent,
+    ProposalActionRefused,
+    ProposalError,
+    ProposalOrigin,
+    ProposalRegistry,
+)
 
 _ACTIVE = frozenset({"active"})
 _ACTIVE_OR_SUSPENDED = frozenset({"active", "suspended"})
@@ -252,6 +259,126 @@ class EmailExportExecutor:
         return draft.model_dump(mode="json")
 
 
+_NOT_A_DRAFT = {
+    "exported": "draft_already_exported",
+    "sending": "draft_already_sending",
+    "sent": "draft_already_sent",
+}
+
+
+def _email_refusal(exc: EmailPolicyError | GmailError) -> ProposalActionRefused:
+    """The email route's refusal: its status, body (`retry_after`, `message`) and headers."""
+    error = email_http_error(exc)
+    return ProposalActionRefused(error.status_code, email_error_content(exc), error.headers)
+
+
+def _people(count: int) -> str:
+    return f"{count} person" if count == 1 else f"{count} people"
+
+
+def send_card(draft: DraftOut) -> CardContent:
+    """Counts only: the console reads recipients, subject and body from the draft itself.
+
+    ``console_proposals`` rows are readable tenant-wide, so no address, subject or body is
+    stored here; the owner's email session renders them when the card is shown.
+    """
+    everyone = {r.address.lower() for r in draft.recipients}
+    outside = {r.address.lower() for r in draft.recipients if r.outside}
+    # A reply whose thread was cleaned up after sync has no thread link: it is a plain email now.
+    what = "reply" if draft.thread_id is not None and draft.reply_to_message_id else "email"
+    title = f"Send {what} to {_people(len(everyone))}"
+    if outside:
+        title += f" ({len(outside)} outside your company)"
+    counts = ", ".join(
+        f"{n} in {label}"
+        for label, n in (("To", len(draft.to)), ("CC", len(draft.cc)), ("BCC", len(draft.bcc)))
+        if n
+    )
+    summary = f"{counts}. We send it from your Gmail when you select Send."
+    if draft.needs_staff_input:
+        summary += " Fill in the [STAFF: …] parts before sending."
+    return CardContent(
+        title=title,
+        summary=summary,
+        fields=[
+            CardField(label="Subject", value="(shown on open)"),
+            CardField(label="Draft", value=str(draft.id)),
+        ],
+    )
+
+
+class EmailSendExecutor:
+    """Sends one of the caller's drafts from their own Gmail, at most once, after the card.
+
+    The payload is only ``draft_id`` and ``version`` (``draft_version`` at card time). Any edit
+    after the card was made changes the version, so confirming refuses with ``draft_changed``
+    and nothing is sent until a new card is confirmed.
+    """
+
+    kind: ProposalKind = "email_send"
+
+    @staticmethod
+    def _service(request: Request) -> EmailService:
+        service = getattr(request.app.state, "email_service", None)
+        if not isinstance(service, EmailService):
+            raise HTTPException(503, "email_assistant_not_configured")
+        return service
+
+    async def gate(
+        self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
+    ) -> None:
+        await require_package(
+            request.app.state.pool, client_id, frozenset({"staff_email"}), _ACTIVE
+        )
+
+    async def card(
+        self,
+        request: Request,
+        actor: ConsoleActor,
+        client_id: UUID,
+        payload: dict[str, Any],
+        *,
+        origin: ProposalOrigin,
+    ) -> tuple[CardContent, str | None]:
+        proposal = _parse(EmailSendProposal, self.kind, payload)
+        await self.gate(request, actor, client_id, origin=origin)
+        session = email_session_from(request, actor, client_id, mutation=True)
+        try:
+            draft = await self._service(request).draft_by_id(session, proposal.draft_id)
+            if draft.status != "draft":
+                raise EmailPolicyError(_NOT_A_DRAFT[draft.status])
+            version = draft_version(draft)
+            if version != proposal.version:
+                raise EmailPolicyError("draft_changed")
+        except EmailPolicyError as exc:
+            raise _email_refusal(exc) from None
+        return send_card(draft), version
+
+    async def execute(
+        self,
+        request: Request,
+        actor: ConsoleActor,
+        client_id: UUID,
+        payload: dict[str, Any],
+        *,
+        proposal_id: UUID,
+        expected_version: str | None,
+        origin: ProposalOrigin,
+    ) -> dict[str, Any]:
+        proposal = _parse(EmailSendProposal, self.kind, payload)
+        if expected_version != proposal.version:
+            raise RuntimeError("email send proposal is not bound to its version")
+        session = email_session_from(request, actor, client_id, mutation=True)
+        try:
+            result = await self._service(request).send_draft(
+                session, proposal.draft_id, proposal.version, _key(proposal_id, "email_send")
+            )
+        except (EmailPolicyError, GmailError) as exc:
+            raise _email_refusal(exc) from None
+        # Outcome, time and Gmail's message id only: never an address, subject or body.
+        return {"draft_id": str(proposal.draft_id), **result.model_dump(mode="json")}
+
+
 class InboxDecisionExecutor:
     kind: ProposalKind = "inbox_decision"
 
@@ -325,6 +452,7 @@ def build_proposal_registry() -> ProposalRegistry:
         {
             "training_submit": TrainingSubmitExecutor(),
             "email_export": EmailExportExecutor(),
+            "email_send": EmailSendExecutor(),
             "inbox_decision": InboxDecisionExecutor(),
             "subscription_action": SubscriptionActionExecutor(),
         }
