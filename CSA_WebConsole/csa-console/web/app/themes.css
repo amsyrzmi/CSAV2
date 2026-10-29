@@ -1,0 +1,147 @@
+/* Console themes: cobalt (default), night and bureau.
+   The root layout sets data-theme on <html> from the fs-theme cookie, so the first paint is
+   already themed. Every colour the console uses lives here; the contrast test
+   (tests/theme-contrast.test.mjs) reads this file and is the authority on the values.
+
+   --color-white overrides Tailwind's built-in white. bg-white, text-white and border-white
+   compile to var(--color-white), so remapping it re-themes files that still use those
+   utilities. It follows the card surface; --fs-on-primary is the label colour on the accent
+   for code that is converted to tokens.
+
+   Only #rrggbb colours: the contrast test parses them. */
+
+:root,
+[data-theme="cobalt"] {
+  color-scheme: light;
+  --fs-bg: #e3ebfa;
+  --fs-shell: #e3ebfa;
+  --fs-rail: #edf2fc;
+  --fs-surface: #ffffff;
+  --fs-surface-raised: #fbfdff;
+  --fs-surface-blue: #e7efff;
+  --fs-tile: #f3f7ff;
+  --fs-text: #0b1b3f;
+  --fs-text-secondary: #53648b;
+  --fs-primary: #0047ab;
+  --fs-primary-hover: #003a8f;
+  --fs-on-primary: #ffffff;
+  --fs-border: #d4def2;
+  --fs-border-control: #6b7fa6;
+  --fs-focus: #0047ab;
+  --fs-disabled-bg: #e8eef9;
+  --fs-disabled-text: #53648b;
+  --fs-success: #166534;
+  --fs-success-bg: #eefbf3;
+  --fs-warning: #854d0e;
+  --fs-warning-bg: #fff7e0;
+  --fs-danger: #b42318;
+  --fs-danger-bg: #fff1f0;
+  --fs-info: #0047ab;
+  --fs-info-bg: #e7efff;
+  --fs-human: #8a4a00;
+  --fs-ink-950: #060f26;
+  --fs-ink-800: #1a2b57;
+  --fs-ink-700: #2d3f6b;
+  --fs-ink-400: #8a98ba;
+  --fs-ink-200: #dbe4f5;
+  --fs-ink-100: #e9eff9;
+  --fs-ink-50: #f3f7ff;
+  --fs-brand-100: #d6e4ff;
+  --fs-brand-200: #b5ceff;
+  --fs-brand-900: #0b2d6b;
+  --color-white: #ffffff;
+  --fs-radius-control: 6px;
+  --fs-shadow-card: 0 1px 2px #0b1b3f14;
+  --fs-shadow-popover: 0 8px 28px #0b1b3f1f;
+  --fs-shadow-dialog: 0 24px 64px #0b1b3f2e;
+}
+
+[data-theme="night"] {
+  color-scheme: dark;
+  --fs-bg: #0e1626;
+  --fs-shell: #0e1626;
+  --fs-rail: #111b2e;
+  --fs-surface: #141e33;
+  --fs-surface-raised: #1a2640;
+  --fs-surface-blue: #172a52;
+  --fs-tile: #18233b;
+  --fs-text: #e8eefc;
+  --fs-text-secondary: #93a0bf;
+  --fs-primary: #6ea2ff;
+  --fs-primary-hover: #8bb6ff;
+  --fs-on-primary: #0b1220;
+  --fs-border: #24314f;
+  --fs-border-control: #6f81a8;
+  --fs-focus: #8bb6ff;
+  --fs-disabled-bg: #1b2742;
+  --fs-disabled-text: #93a0bf;
+  --fs-success: #6ee7a0;
+  --fs-success-bg: #0f2c1e;
+  --fs-warning: #f2b84b;
+  --fs-warning-bg: #33270b;
+  --fs-danger: #ff9b92;
+  --fs-danger-bg: #3b1a1a;
+  --fs-info: #8bb6ff;
+  --fs-info-bg: #172a52;
+  --fs-human: #f2b84b;
+  --fs-ink-950: #f6f9ff;
+  --fs-ink-800: #d3ddf5;
+  --fs-ink-700: #b8c4e0;
+  --fs-ink-400: #7a89ab;
+  --fs-ink-200: #2a3858;
+  --fs-ink-100: #1b2742;
+  --fs-ink-50: #18233b;
+  --fs-brand-100: #22386b;
+  --fs-brand-200: #2f4b8a;
+  --fs-brand-900: #cfe0ff;
+  --color-white: #141e33;
+  --fs-radius-control: 6px;
+  --fs-shadow-card: 0 1px 2px #00000066;
+  --fs-shadow-popover: 0 8px 28px #00000066;
+  --fs-shadow-dialog: 0 24px 64px #00000099;
+}
+
+[data-theme="bureau"] {
+  color-scheme: light;
+  --fs-bg: #f6f1e7;
+  --fs-shell: #f6f1e7;
+  --fs-rail: #efe8d8;
+  --fs-surface: #fffdf8;
+  --fs-surface-raised: #fffefb;
+  --fs-surface-blue: #e8eefc;
+  --fs-tile: #f8f3e8;
+  --fs-text: #14213d;
+  --fs-text-secondary: #5c6272;
+  --fs-primary: #1f4fd8;
+  --fs-primary-hover: #1a40ad;
+  --fs-on-primary: #ffffff;
+  --fs-border: #ddd3be;
+  --fs-border-control: #857a60;
+  --fs-focus: #1f4fd8;
+  --fs-disabled-bg: #ece4d2;
+  --fs-disabled-text: #5c6272;
+  --fs-success: #1b5e32;
+  --fs-success-bg: #e8f3e6;
+  --fs-warning: #7a4608;
+  --fs-warning-bg: #f8ecd0;
+  --fs-danger: #a8261b;
+  --fs-danger-bg: #f9e4dc;
+  --fs-info: #1a40ad;
+  --fs-info-bg: #e6ecfb;
+  --fs-human: #8a4a00;
+  --fs-ink-950: #0b1530;
+  --fs-ink-800: #26324f;
+  --fs-ink-700: #3d4760;
+  --fs-ink-400: #9a9686;
+  --fs-ink-200: #e6dcc6;
+  --fs-ink-100: #efe7d5;
+  --fs-ink-50: #f8f2e4;
+  --fs-brand-100: #dbe5fb;
+  --fs-brand-200: #bccbf5;
+  --fs-brand-900: #142e7a;
+  --color-white: #fffdf8;
+  --fs-radius-control: 0;
+  --fs-shadow-card: 3px 3px 0 #ddd3be;
+  --fs-shadow-popover: 3px 3px 0 #ddd3be;
+  --fs-shadow-dialog: 3px 3px 0 #ddd3be;
+}
