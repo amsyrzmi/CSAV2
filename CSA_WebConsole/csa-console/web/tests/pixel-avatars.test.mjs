@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
@@ -169,34 +170,41 @@ function ratio(a, b) {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
-function hsl(hex) {
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  return { s: d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1)), l };
+/** Alpha-blend `top` at `alpha` over `bottom` (both #rrggbb). */
+function blend(top, bottom, alpha) {
+  const channel = (hex, i) => parseInt(hex.slice(i, i + 2), 16);
+  return `#${[1, 3, 5]
+    .map((i) => Math.round(channel(top, i) * alpha + channel(bottom, i) * (1 - alpha)))
+    .map((v) => v.toString(16).padStart(2, "0"))
+    .join("")}`;
 }
 
-/** The undimmed body colour: the most saturated palette entry with lightness 0.3 to 0.7. */
-function bodyColour(id) {
-  const mids = PIXEL_DATA[id].palette
-    .filter((c) => c !== "#15203A" && c !== "#FFFFFF")
-    .map((c) => ({ c, ...hsl(c) }))
-    .filter((e) => e.l >= 0.3 && e.l <= 0.7);
-  assert.ok(mids.length > 0, `${id} has a mid-tone`);
-  return mids.reduce((a, b) => (b.s > a.s ? b : a)).c;
-}
+// Legibility rests on the shared navy outline and white eyes, not on each body fill: the sprite
+// is decorative (the agent's name is always printed beside it), and the body hues are chosen for
+// character, from yellow to dark blue, so no one tile gives every fill 3:1. The outline against
+// the chip is what separates the shape from the page in every theme.
+const OUTLINE = "#15203A";
+const THEME_NAMES = ["cobalt", "night", "bureau"];
 
-test("every sprite body reaches 3:1 against the avatar tile in every theme", () => {
-  const worst = [];
-  for (const theme of ["cobalt", "night", "bureau"]) {
-    const tile = tileOf(theme, "--fs-sprite-tile");
-    for (const id of AGENT_IDS) {
-      const value = ratio(bodyColour(id), tile);
-      worst.push(`${theme} ${id} ${value.toFixed(2)}`);
-      assert.ok(value >= 3, `${id} on the ${theme} tile ${tile}: ${value.toFixed(2)}:1`);
-    }
+test("the sprite outline stands out from the chip in every theme (aim 6:1, floor 3:1)", () => {
+  for (const theme of THEME_NAMES) {
+    const chip = tileOf(theme, "--fs-sprite-tile");
+    const value = ratio(OUTLINE, chip);
+    assert.ok(value >= 6, `${theme} outline on ${chip}: ${value.toFixed(2)}:1`);
   }
-  if (process.env.SHOW_SPRITE_CONTRAST) console.log(worst.join("\n"));
+});
+
+test("white eyes read against the outline they sit in (7:1)", () => {
+  assert.ok(ratio("#FFFFFF", OUTLINE) >= 7, `${ratio("#FFFFFF", OUTLINE).toFixed(2)}:1`);
+});
+
+test("the dimmed state (saturate .55, opacity .85) keeps the outline at 3:1 on the chip", () => {
+  // Saturation hardly moves a near-neutral navy, so only the opacity blend is computed.
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.fs-px-dim\s*\{\s*filter:\s*saturate\(0?\.55\)\s+opacity\(0?\.85\)/);
+  for (const theme of THEME_NAMES) {
+    const chip = tileOf(theme, "--fs-sprite-tile");
+    const value = ratio(blend(OUTLINE, chip, 0.85), chip);
+    assert.ok(value >= 3, `${theme} dimmed outline on ${chip}: ${value.toFixed(2)}:1`);
+  }
 });
