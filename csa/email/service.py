@@ -116,6 +116,12 @@ def _sent_by(header: str | None, owner: str) -> bool:
     return bool(owner) and parseaddr(header or "")[1].strip().lower() == owner
 
 
+def _owner_latest(item: FetchedThread, owner: str) -> bool:
+    """The owner sent the thread's latest message: Gmail's `SENT` label (send-as aliases too),
+    or a From of the connected address."""
+    return "SENT" in item.labels or _sent_by(item.latest_from or item.sender, owner)
+
+
 class _Threading(NamedTuple):
     message_id: str | None
     rfc_message_id: str | None
@@ -137,7 +143,8 @@ class _SendPlan(NamedTuple):
 def _reply_target(threading: _Threading, owner: str) -> str:
     """The latest non-owner message's Reply-To, else its From; never the owner.
 
-    Only the connected address counts as the owner: Gmail send-as aliases are not known here.
+    A message the mailbox sent (Gmail's `SENT` label, send-as aliases included) is never the
+    target; an address equal to the connected one is refused as well.
     """
     header = threading.target_reply_to
     if not (header or "").strip():
@@ -779,6 +786,16 @@ class EmailService:
             if replay is not None:
                 return replay
             await self._store_threads(conn, session, mailbox, fetched)
+            removed = await self._cleanup(conn, session, mailbox["id"])
+            count = await q.fetch_one(
+                "email/threads_count.sql", (session.tenant_id, mailbox["id"]), conn=conn
+            )
+            # Older pages can add nothing once cleanup drops all they bring, or once the cache is
+            # full (anything older ranks below the newest 200): load-more stops there.
+            pruned = bool(fetched) and {item.thread_id for item in fetched} <= removed
+            full = count is not None and count["threads"] >= MAX_CACHED_THREADS
+            if pruned or full:
+                next_page = None
             # Only advance while the stored token is still ours: a sync that ran meanwhile has
             # restarted from the newest page, and its token must win.
             await q.execute(
@@ -786,12 +803,15 @@ class EmailService:
                 (next_page, session.tenant_id, mailbox["id"], True, token),
                 conn=conn,
             )
-            await self._cleanup(conn, session, mailbox["id"])
             receipt = Receipt(
                 operation="mailbox.sync_more",
                 resource_id=str(mailbox["id"]),
                 status="synced",
-                detail={"threads": len(fetched), "done": next_page is None},
+                detail=(
+                    {"threads": 0, "done": True}
+                    if pruned or full
+                    else {"threads": len(fetched), "done": next_page is None}
+                ),
             )
             await self._session(conn, session)
             return await self._record(conn, session, key, "mailbox.sync_more", fingerprint, receipt)
@@ -845,17 +865,20 @@ class EmailService:
                     item.latest_rfc_message_id,
                     item.latest_references,
                     item.latest_reply_to,
-                    _sent_by(item.latest_from or item.sender, mailbox["address"] or ""),
+                    _owner_latest(item, mailbox["address"] or ""),
                 ),
                 conn=conn,
             )
 
     async def _cleanup(
         self, conn: AsyncConnection, session: EmailSession, mailbox_id: UUID
-    ) -> None:
-        """Keep at most 200 threads, none older than 90 days by latest message; keep every draft."""
+    ) -> set[str]:
+        """Keep at most 200 threads, none older than 90 days by latest message; keep every draft.
+
+        Returns the ids of the threads removed.
+        """
         tenant = session.tenant_id
-        await q.execute(
+        rows = await q.fetch_all(
             "email/threads_cleanup.sql",
             (
                 tenant,
@@ -869,6 +892,7 @@ class EmailService:
             ),
             conn=conn,
         )
+        return {row["thread_id"] for row in rows}
 
     def _require_assistant_member(self, session: EmailSession) -> None:
         """The same refusal as a write, without CSRF: for reads that also run the model."""
@@ -915,6 +939,7 @@ class EmailService:
                                 session.tenant_id,
                                 mailbox["id"],
                                 row["thread_id"],
+                                row["latest_message_id"],
                             ),
                             conn=conn,
                         )
@@ -989,6 +1014,7 @@ class EmailService:
                         session.tenant_id,
                         mailbox["id"],
                         thread_id,
+                        row["latest_message_id"],
                     ),
                     conn=conn,
                 )
@@ -1169,7 +1195,7 @@ class EmailService:
                         fetched.latest_rfc_message_id,
                         fetched.latest_references,
                         fetched.latest_reply_to,
-                        _sent_by(fetched.latest_from, owner),
+                        _owner_latest(fetched, owner),
                         session.tenant_id,
                         mailbox["id"],
                         row["thread_id"],
@@ -1827,7 +1853,11 @@ class EmailService:
     async def _send_replayed(
         self, conn: AsyncConnection, session: EmailSession, mailbox: dict[str, Any], key: UUID
     ) -> SendResult:
-        """The stored outcome for a key that already claimed a send. Never calls Gmail."""
+        """The stored outcome for a key that already claimed a send. Never calls Gmail.
+
+        An unknown outcome whose draft the owner has since released (it is back in `draft`)
+        answers `send_released`: the card's attempt is over, and a new send needs a new key.
+        """
         row = await q.fetch_one(
             "email/receipt_get.sql",
             (session.tenant_id, session.subject_id, _result_key(key)),
@@ -1837,6 +1867,17 @@ class EmailService:
             # Claimed, and the outcome is not recorded yet: the first request is still sending.
             raise EmailPolicyError("draft_already_sending")
         result = Receipt.model_validate(row["receipt"])
+        if row["operation"] != "draft.send.result" or result.operation != "draft.send.result":
+            # Not a send outcome under the derived key: never treat it as one.
+            raise EmailPolicyError("send_outcome_unknown")
+        if result.status == "unknown":
+            current = await q.fetch_one(
+                "email/draft_get.sql",
+                (session.tenant_id, mailbox["id"], UUID(result.resource_id)),
+                conn=conn,
+            )
+            if current is not None and current["status"] == "draft":
+                raise EmailPolicyError("send_released")
         if result.status != "sent":
             raise EmailPolicyError(str(result.detail.get("code") or "send_outcome_unknown"))
         recent = await self._recent_sends(conn, session, mailbox)

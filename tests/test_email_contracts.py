@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from email import message_from_bytes
 from typing import Any
 from uuid import uuid4
@@ -410,6 +411,86 @@ async def test_fetch_thread_with_only_owner_messages_has_no_non_owner_target() -
         ACCESS, "t1", owner_address="owner@example.test"
     )
     assert fetched.latest_non_owner_from is None and fetched.latest_non_owner_reply_to is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": 403, "errors": [{"reason": "userRateLimitExceeded"}]},
+        {"code": 403, "errors": [{"domain": "usageLimits", "reason": "rateLimitExceeded"}]},
+        {"code": 403, "errors": [{"reason": "other"}, {"reason": "dailyLimitExceeded"}]},
+        {"code": 403, "status": "rateLimitExceeded"},
+    ],
+)
+async def test_gmail_quota_403_is_a_rate_limit(
+    error: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("DEBUG")
+    body = {"error": {**error, "message": "Synthetic quota text for alias@customer.test"}}
+    client = _client(lambda r: httpx.Response(403, json=body))
+    with pytest.raises(gmail.GmailError) as sent:
+        await client.send_message(ACCESS, thread_id=None, mime=b"x")
+    assert sent.value.code == "provider_rate_limited"
+    # The shared JSON reader (sync, drafts, tokens) reads it the same way.
+    with pytest.raises(gmail.GmailError) as listed:
+        await client.list_thread_ids(ACCESS, query="q", limit=5)
+    assert listed.value.code == "provider_rate_limited"
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "Synthetic quota text" not in logged and "customer.test" not in logged
+    assert "Synthetic quota text" not in str(sent.value) + str(listed.value)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(403, json={"error": {"errors": [{"reason": "insufficientPermissions"}]}}),
+        httpx.Response(403, json={"error": {"status": "PERMISSION_DENIED"}}),
+        httpx.Response(403, content=b"not json"),
+        httpx.Response(403, json=["userRateLimitExceeded"]),
+    ],
+)
+async def test_other_403s_stay_unauthorized(response: httpx.Response) -> None:
+    client = _client(lambda r: response)
+    with pytest.raises(gmail.GmailError) as sent:
+        await client.send_message(ACCESS, thread_id=None, mime=b"x")
+    assert sent.value.code == "provider_unauthorized"
+    with pytest.raises(gmail.GmailError) as listed:
+        await client.list_thread_ids(ACCESS, query="q", limit=5)
+    assert listed.value.code == "provider_unauthorized"
+
+
+async def _fetched(*messages: dict[str, Any]) -> gmail.FetchedThread:
+    thread = {"id": "t1", "messages": list(messages)}
+    return await _client(lambda r: httpx.Response(200, json=thread)).fetch_thread(
+        ACCESS, "t1", owner_address="owner@example.test"
+    )
+
+
+async def test_received_at_is_internal_date_before_the_date_header() -> None:
+    message = _message("m1", "a@customer.test", date="Mon, 06 Apr 2026 09:00:00 +0000")
+    message["internalDate"] = "1793000000000"
+    fetched = await _fetched(message)
+    assert fetched.received_at == datetime.fromtimestamp(1793000000, tz=UTC)
+    # Without internalDate the Date header is used; a future one counts as now, never later.
+    del message["internalDate"]
+    assert (await _fetched(message)).received_at == datetime(2026, 4, 6, 9, tzinfo=UTC)
+    future = _message("m2", "a@customer.test", date="Mon, 01 Jan 2120 09:00:00 +0000")
+    before = datetime.now(UTC)
+    received = (await _fetched(future)).received_at
+    assert received is not None and before <= received <= datetime.now(UTC)
+    undated = _message("m3", "a@customer.test", date="")
+    assert (await _fetched(undated)).received_at is None
+
+
+async def test_a_sent_labelled_alias_is_never_the_reply_target() -> None:
+    customer = _message("m1", "Aina <aina@customer.test>", date="Mon, 26 Oct 2026 09:00:00 +0000")
+    alias = _message("m2", "Sales <sales@example.test>", date="Mon, 26 Oct 2026 10:00:00 +0000")
+    alias["labelIds"] = ["SENT"]
+    fetched = await _fetched(customer, alias)
+    assert fetched.latest_message_id == "m2" and "SENT" in fetched.labels
+    assert fetched.latest_non_owner_from == "Aina <aina@customer.test>"
+    only_alias = await _fetched(alias)
+    assert only_alias.latest_non_owner_from is None
 
 
 # --- recipient rules --------------------------------------------------------

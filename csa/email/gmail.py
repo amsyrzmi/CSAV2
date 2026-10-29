@@ -45,6 +45,8 @@ MAX_MESSAGE_ID_CHARS = 500
 MAX_REFERENCES_CHARS = 2000
 # Statuses after which the message may still have been delivered: never a clear refusal.
 AMBIGUOUS_SEND_STATUSES = frozenset({408, 409, 499})
+# Gmail answers a quota limit with 403 and one of these reasons: a rate limit, not lost access.
+RATE_LIMIT_REASONS = frozenset({"userRateLimitExceeded", "rateLimitExceeded", "dailyLimitExceeded"})
 
 
 class GmailError(Exception):
@@ -139,6 +141,52 @@ def _header(headers: list[dict[str, Any]], name: str) -> str:
         if str(item.get("name", "")).lower() == name.lower():
             return str(item.get("value", ""))
     return ""
+
+
+def _from_owner(message: dict[str, Any], owner: str) -> bool:
+    """Gmail labels everything the mailbox sent, send-as aliases included, `SENT`."""
+    if "SENT" in (message.get("labelIds", []) or []):
+        return True
+    headers = (message.get("payload", {}) or {}).get("headers", []) or []
+    return bool(owner) and parseaddr(_header(headers, "From"))[1].strip().lower() == owner
+
+
+def _received_at(message: dict[str, Any], headers: list[dict[str, Any]]) -> datetime | None:
+    """When Gmail received the message (`internalDate`); the sender's Date header only if absent.
+
+    The Date header is set by the sender, so a fallback Date in the future counts as now.
+    """
+    internal = str(message.get("internalDate", ""))
+    if internal.isdigit():
+        return datetime.fromtimestamp(int(internal) / 1000, tz=UTC)
+    raw_date = _header(headers, "Date")
+    if not raw_date:
+        return None
+    try:
+        received = parsedate_to_datetime(raw_date)
+    except (TypeError, ValueError):
+        return None
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=UTC)
+    return min(received, datetime.now(UTC))
+
+
+def _rate_limited(response: httpx.Response) -> bool:
+    """A 403 that is a Gmail quota limit. The body is read for its reason only, never logged."""
+    if len(response.content) > MAX_JSON_BYTES:
+        return False
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, dict):
+        return False
+    reasons = {
+        item.get("reason") for item in error.get("errors", []) or [] if isinstance(item, dict)
+    }
+    reasons.add(error.get("status"))
+    return bool(reasons & RATE_LIMIT_REASONS)
 
 
 def _checked_addresses(values: Sequence[str]) -> list[str]:
@@ -266,10 +314,10 @@ class GmailClient:
             response = await self._http.send(request, follow_redirects=False)
         except httpx.HTTPError as exc:
             raise GmailError("provider_unreachable") from exc
+        if response.status_code == 429 or (response.status_code == 403 and _rate_limited(response)):
+            raise GmailError("provider_rate_limited")
         if response.status_code in {401, 403}:
             raise GmailError("provider_unauthorized")
-        if response.status_code == 429:
-            raise GmailError("provider_rate_limited")
         if response.status_code != expected:
             raise GmailError("provider_rejected")
         if len(response.content) > MAX_JSON_BYTES:
@@ -377,24 +425,13 @@ class GmailClient:
         latest = messages[-1]
         payload = latest.get("payload", {}) or {}
         headers = payload.get("headers", []) or []
-        received: datetime | None = None
-        raw_date = _header(headers, "Date")
-        if raw_date:
-            try:
-                received = parsedate_to_datetime(raw_date)
-                if received.tzinfo is None:
-                    received = received.replace(tzinfo=UTC)
-            except (TypeError, ValueError):
-                received = None
-        if received is None and str(latest.get("internalDate", "")).isdigit():
-            received = datetime.fromtimestamp(int(latest["internalDate"]) / 1000, tz=UTC)
+        received = _received_at(latest, headers)
         labels = tuple(str(label) for label in latest.get("labelIds", []) or [])
         owner = owner_address.strip().lower()
         non_owner_headers: list[dict[str, Any]] | None = None
         for message in reversed(messages):
-            candidate = (message.get("payload", {}) or {}).get("headers", []) or []
-            if parseaddr(_header(candidate, "From"))[1].strip().lower() != owner:
-                non_owner_headers = candidate
+            if not _from_owner(message, owner):
+                non_owner_headers = (message.get("payload", {}) or {}).get("headers", []) or []
                 break
         return FetchedThread(
             thread_id=str(data.get("id", thread_id)),
@@ -440,7 +477,8 @@ class GmailClient:
     async def send_message(self, access: SecretStr, *, thread_id: str | None, mime: bytes) -> str:
         """Send through `users.messages.send` once; the caller owns at-most-once.
 
-        Clear refusals, where nothing was sent: 401/403 `provider_unauthorized`, 429
+        Clear refusals, where nothing was sent: 401/403 `provider_unauthorized`, 429 or a 403
+        quota reason (`userRateLimitExceeded`, `rateLimitExceeded`, `dailyLimitExceeded`)
         `provider_rate_limited`, any other 4xx `send_refused`. A timeout, a connection failure,
         408/409/499 or a 5xx leaves the outcome unknown (`provider_unreachable`), and so does a
         200 without a message id (`provider_invalid_response`).
@@ -459,10 +497,10 @@ class GmailClient:
         status = response.status_code
         if status in AMBIGUOUS_SEND_STATUSES:
             raise GmailError("provider_unreachable")
+        if status == 429 or (status == 403 and _rate_limited(response)):
+            raise GmailError("provider_rate_limited")
         if status in {401, 403}:
             raise GmailError("provider_unauthorized")
-        if status == 429:
-            raise GmailError("provider_rate_limited")
         if 400 <= status < 500:
             raise GmailError("send_refused")
         if status != 200:

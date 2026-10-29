@@ -58,6 +58,11 @@ def _days_ago(days: float) -> str:
     return format_datetime(datetime.now(UTC) - timedelta(days=days))
 
 
+def _ms_ago(days: float) -> str:
+    """A Gmail `internalDate` (epoch milliseconds, as a string) `days` before now."""
+    return str(int((datetime.now(UTC) - timedelta(days=days)).timestamp() * 1000))
+
+
 class FakeGmail:
     """Records Gmail/OAuth requests; `messages/send` behaves as `send_mode` says."""
 
@@ -114,6 +119,10 @@ class FakeGmail:
                 return httpx.Response(401, json={"error": "expired"})
             if mode == "empty":
                 return httpx.Response(200, json={})
+            if mode.startswith("status:"):
+                status, _, reason = mode.removeprefix("status:").partition(":")
+                refusal = {"error": {"code": int(status), "errors": [{"reason": reason or "x"}]}}
+                return httpx.Response(int(status), json=refusal)
             self.send_counter += 1
             return httpx.Response(200, json={"id": f"gmail-msg-{self.send_counter}"})
         if path.endswith("/threads"):
@@ -139,7 +148,7 @@ class FakeGmail:
                             "id": "m1",
                             "labelIds": ["INBOX", "UNREAD"],
                             "snippet": "Where is my order?",
-                            "internalDate": "1761260000000",
+                            "internalDate": _ms_ago(2),
                             "payload": {
                                 "mimeType": "multipart/alternative",
                                 "headers": [
@@ -1092,24 +1101,34 @@ def _thread(thread_id: str, *messages: dict[str, Any]) -> dict[str, Any]:
 
 
 def _msg(
-    msg_id: str, sender: str, *, reply_to: str | None = None, refs: str | None = None
+    msg_id: str,
+    sender: str,
+    *,
+    reply_to: str | None = None,
+    refs: str | None = None,
+    labels: list[str] | None = None,
+    internal_days: float | None = None,
+    date_days: float = 1,
 ) -> dict[str, Any]:
     headers = [
         {"name": "From", "value": sender},
         {"name": "Subject", "value": "Order help"},
-        {"name": "Date", "value": _days_ago(1)},
+        {"name": "Date", "value": _days_ago(date_days)},
         {"name": "Message-ID", "value": f"<{msg_id}@mail.example.test>"},
     ]
     if reply_to:
         headers.append({"name": "Reply-To", "value": reply_to})
     if refs:
         headers.append({"name": "References", "value": refs})
-    return {
+    message: dict[str, Any] = {
         "id": msg_id,
-        "labelIds": ["INBOX"],
+        "labelIds": labels or ["INBOX"],
         "snippet": "hi",
         "payload": {"mimeType": "text/plain", "headers": headers, "body": {"data": _b64("Hello")}},
     }
+    if internal_days is not None:
+        message["internalDate"] = _ms_ago(internal_days)
+    return message
 
 
 async def test_reply_targets_latest_non_owner_sender_and_reply_to(
@@ -1286,12 +1305,18 @@ async def test_release_lets_the_owner_retry_an_unknown_send(
     assert released.json()["status"] == "draft" and released.json()["sent_at"] is None
     again = await world.call("staff", "POST", release, key=release_key)
     assert again.status_code == 200 and again.json()["id"] == draft["id"]
-    # The old key still never calls Gmail; a new key sends exactly once.
+    # The old key still never calls Gmail. Its draft is back in `draft`, so it says the owner
+    # marked the email as not sent instead of repeating the unknown outcome.
     calls = len(world.gmail.sends)
     stale = await _send(world, draft, key=first_key)
-    assert stale.status_code == 502 and len(world.gmail.sends) == calls
+    assert stale.status_code == 409 and stale.json()["detail"] == "send_released"
+    assert len(world.gmail.sends) == calls
     sent = await _send(world, released.json(), key=uuid4())
     assert sent.status_code == 200, sent.text
+    assert len(world.gmail.sends) == calls + 1
+    # Once the draft is sent again, the old key's outcome is still unknown, never a success.
+    after = await _send(world, draft, key=first_key)
+    assert after.status_code == 502 and after.json()["detail"] == "send_outcome_unknown"
     assert len(world.gmail.sends) == calls + 1
     # The released attempt no longer counts toward the hourly limit.
     assert sent.json()["remaining_this_hour"] == 19
@@ -1392,7 +1417,7 @@ ATTENTION = "/console/v1/email/attention"
 
 async def _mailbox_row(world: World, user: str = "staff") -> dict[str, Any]:
     rows = await world.q(
-        "SELECT id, sync_page_token, last_sync_at, last_synced_at FROM email_mailboxes "
+        "SELECT id, sync_page_token, last_sync_at FROM email_mailboxes "
         "WHERE client_id=%s AND user_id=%s",
         (world.tenant, world.users[user]),
     )
@@ -1462,8 +1487,6 @@ async def test_sync_uses_ninety_days_and_stores_page_token(
     assert world.gmail.list_params == [{"q": "newer_than:90d -in:chats", "maxResults": "20"}]
     mailbox = await _mailbox_row(world)
     assert mailbox["sync_page_token"] == "tok-2" and mailbox["last_sync_at"] is not None
-    # The authoritative time is last_sync_at; the new column is not used.
-    assert mailbox["last_synced_at"] is None
     context = (await world.call("staff", "GET", "/console/v1/email/context")).json()
     assert context["more_available"] is True
     assert context["mailbox"]["last_sync_at"] == context["last_synced_at"] is not None
@@ -1724,3 +1747,294 @@ async def test_attention_without_a_model_shows_stored_items(
     assert page.status_code == 200, page.text
     assert [item["thread_id"] for item in page.json()["items"]] == ["A"]
     assert page.json()["skipped"] == 2
+
+
+# ------------------------------------------------------------ final review: sync, owner, send
+
+
+async def test_thread_list_shows_every_cached_thread(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    for index in range(1, 201):
+        await _put_thread(world, f"r{index}", days_ago=0, minutes_ago=index)
+    page = await world.call("staff", "GET", "/console/v1/email/threads")
+    assert page.status_code == 200, page.text
+    assert len(page.json()["items"]) == email_service.MAX_CACHED_THREADS == 200
+
+
+async def test_sync_more_stops_at_the_cache_cap(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.extra_threads = {
+        "older": _thread("older", _msg("o1", "Old <old@customer.test>", internal_days=30)),
+    }
+    world.gmail.pages = {None: ([], "tok-2"), "tok-2": (["older"], "tok-3")}
+    for index in range(1, 201):
+        await _put_thread(world, f"r{index}", days_ago=0, minutes_ago=index)
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    assert (await _mailbox_row(world))["sync_page_token"] == "tok-2"
+    # The older page ranks below the newest 200, so cleanup drops it: load-more is over.
+    more = await world.call("staff", "POST", SYNC_MORE)
+    assert more.status_code == 200, more.text
+    assert more.json()["detail"] == {"threads": 0, "done": True}
+    assert (await _mailbox_row(world))["sync_page_token"] is None
+    context = (await world.call("staff", "GET", "/console/v1/email/context")).json()
+    assert context["more_available"] is False
+    assert "older" not in await _thread_ids(world) and len(await _thread_ids(world)) == 200
+
+
+async def test_sync_more_stops_when_cleanup_drops_the_whole_page(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.extra_threads = {
+        "x1": _thread("x1", _msg("x1m", "X <x@customer.test>", internal_days=95)),
+        "x2": _thread("x2", _msg("x2m", "Y <y@customer.test>", internal_days=120)),
+    }
+    world.gmail.pages = {None: (["t1"], "tok-2"), "tok-2": (["x1", "x2"], "tok-3")}
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    more = await world.call("staff", "POST", SYNC_MORE)
+    assert more.json()["detail"] == {"threads": 0, "done": True}
+    assert (await _mailbox_row(world))["sync_page_token"] is None
+    assert await _thread_ids(world) == {"t1"}
+
+
+async def test_received_time_is_gmail_internal_date_not_the_date_header(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.extra_threads = {
+        # The sender's Date says 200 days ago; Gmail received it today.
+        "late": _thread("late", _msg("l1", "L <l@customer.test>", date_days=200, internal_days=0)),
+        # A Date in the future must not put this thread first.
+        "future": _thread(
+            "future", _msg("f1", "F <f@customer.test>", date_days=-30, internal_days=1)
+        ),
+        "now": _thread("now", _msg("n1", "N <n@customer.test>", internal_days=0.01)),
+    }
+    world.gmail.listed = ["late", "future", "now"]
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    assert await _thread_ids(world) == {"late", "future", "now"}
+    items = (await world.call("staff", "GET", "/console/v1/email/threads")).json()["items"]
+    assert [item["thread_id"] for item in items] == ["late", "now", "future"]
+
+
+async def test_ninety_day_window_by_internal_date_on_sync_and_more(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    # The Date headers say the opposite of internalDate, so only internalDate can decide.
+    world.gmail.extra_threads = {
+        "d89": _thread("d89", _msg("a", "A <a@customer.test>", date_days=200, internal_days=89)),
+        "d91": _thread("d91", _msg("b", "B <b@customer.test>", date_days=1, internal_days=91)),
+        "m89": _thread("m89", _msg("c", "C <c@customer.test>", date_days=200, internal_days=89)),
+        "m91": _thread("m91", _msg("d", "D <d@customer.test>", date_days=1, internal_days=91)),
+    }
+    world.gmail.pages = {None: (["d89", "d91"], "tok-2"), "tok-2": (["m89", "m91"], None)}
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    assert await _thread_ids(world) == {"d89"}
+    more = await world.call("staff", "POST", SYNC_MORE)
+    assert more.json()["detail"] == {"threads": 2, "done": True}
+    assert await _thread_ids(world) == {"d89", "m89"}
+
+
+async def _change_latest_message(world: World, thread_id: str) -> None:
+    await world.q(
+        "UPDATE email_threads SET latest_message_id=latest_message_id||'+' "
+        "WHERE client_id=%s AND thread_id=%s",
+        (world.tenant, thread_id),
+    )
+
+
+async def test_a_stale_analysis_is_never_saved(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    await _put_thread(world, "U1", days_ago=0, minutes_ago=1)
+    await _put_thread(world, "U2", days_ago=0, minutes_ago=2)
+    working = world.model.json_completion
+
+    async def racing(schema: type[Any], *, system: str, user: str, **kwargs: Any) -> Any:
+        # A sync stores a newer message for U1 while the model is still answering.
+        if "Subject U1" in user:
+            await _change_latest_message(world, "U1")
+        return await working(schema, system=system, user=user, **kwargs)
+
+    monkeypatch.setattr(world.model, "json_completion", racing)
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert [item["thread_id"] for item in page.json()["items"]] == ["U2"]
+    rows = await world.q(
+        "SELECT thread_id, analysed_at FROM email_threads WHERE client_id=%s ORDER BY thread_id",
+        (world.tenant,),
+    )
+    assert [(row["thread_id"], row["analysed_at"] is None) for row in rows] == [
+        ("U1", True),
+        ("U2", False),
+    ]
+    # The same holds for a single analysis.
+    analysed = await world.call("staff", "POST", "/console/v1/email/threads/U1/analyse")
+    assert analysed.status_code == 200, analysed.text
+    assert analysed.json()["analysed_at"] is None
+    stored = await world.q(
+        "SELECT analysed_at FROM email_threads WHERE client_id=%s AND thread_id='U1'",
+        (world.tenant,),
+    )
+    assert stored == [{"analysed_at": None}]
+
+
+async def test_send_as_alias_with_the_sent_label_is_the_owner(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    alias = "Sales <sales@example.test>"
+    world.gmail.extra_threads = {
+        # The owner answered last from a send-as alias; Gmail labels it SENT.
+        "s1": _thread(
+            "s1",
+            _msg("p1", "Aina <aina@customer.test>"),
+            _msg("p2", alias, labels=["SENT"], refs="<p1@mail.example.test>"),
+        ),
+        # Only alias mail in the thread: nobody to reply to.
+        "s2": _thread("s2", _msg("q1", alias, labels=["SENT"])),
+    }
+    world.gmail.listed = ["s1", "s2"]
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    stored = await world.q(
+        "SELECT thread_id, latest_from_owner FROM email_threads WHERE client_id=%s "
+        "ORDER BY thread_id",
+        (world.tenant,),
+    )
+    assert stored == [
+        {"thread_id": "s1", "latest_from_owner": True},
+        {"thread_id": "s2", "latest_from_owner": True},
+    ]
+    reply_path = "/console/v1/email/threads/{}/reply"
+    reply = await world.call("staff", "POST", reply_path.format("s1"), {"instructions": "x"})
+    assert reply.status_code == 201, reply.text
+    assert reply.json()["to"] == ["aina@customer.test"]
+    assert reply.json()["reply_to_message_id"] == "p2"
+    refused = await world.call("staff", "POST", reply_path.format("s2"), {"instructions": "x"})
+    assert refused.status_code == 409 and refused.json()["detail"] == "reply_target_unavailable"
+    # Owner-latest threads never need attention, and are never analysed for it.
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200 and page.json()["items"] == []
+    assert not any(call[0] == "ThreadAnalysis" for call in world.model.calls)
+
+
+async def test_send_replay_needs_a_send_result_receipt(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    key = uuid4()
+    fingerprint = email_service._fingerprint(
+        "draft.send", {"id": draft["id"], "version": _version(draft)}
+    )
+    # A claimed send whose derived key holds something other than a send outcome.
+    for request_key, operation, status in (
+        (key, "draft.send", "sending"),
+        (email_service._result_key(key), "thread.analyse", "sent"),
+    ):
+        receipt = {
+            "operation": operation,
+            "resource_id": draft["id"],
+            "status": status,
+            "detail": {"gmail_message_id": "forged", "sent_at": datetime.now(UTC).isoformat()},
+        }
+        await world.q(
+            "INSERT INTO email_receipts(client_id,subject_id,request_key,operation,fingerprint,"
+            "receipt) VALUES (%s,%s,%s,%s,%s,%s)",
+            (
+                world.tenant,
+                world.users["staff"],
+                request_key,
+                operation,
+                fingerprint,
+                json.dumps(receipt),
+            ),
+        )
+    replayed = await _send(world, draft, key=key)
+    assert replayed.status_code == 502 and replayed.json()["detail"] == "send_outcome_unknown"
+    assert world.gmail.sends == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "status", "code", "after"),
+    [
+        ("status:408", 502, "send_outcome_unknown", "sending"),
+        ("status:429", 409, "provider_rate_limited", "draft"),
+        ("status:403:userRateLimitExceeded", 409, "provider_rate_limited", "draft"),
+        ("status:403:insufficientPermissions", 409, "mailbox_reauthorization_required", "draft"),
+    ],
+)
+async def test_gmail_status_decides_the_draft_after_a_send(
+    world: World, monkeypatch: pytest.MonkeyPatch, mode: str, status: int, code: str, after: str
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    world.gmail.send_mode = mode
+    result = await _send(world, draft)
+    assert result.status_code == status, result.text
+    assert result.json()["detail"] == code
+    assert await _status(world, draft["id"]) == after and len(world.gmail.sends) == 1
+
+
+async def test_other_tenants_and_mailboxless_members_never_reach_a_draft(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    release = f"{DRAFTS}/{draft['id']}/release"
+    # The outsider's own tenant has the assistant on and a connected mailbox.
+    enabled = await world.call("outsider", "PUT", "/console/v1/email/settings", {"enabled": True})
+    assert enabled.status_code == 200, enabled.text
+    await _connect(world, "outsider")
+    for response in (
+        await _send(world, draft, name="outsider"),
+        await world.call("outsider", "POST", release),
+        await world.call("outsider", "GET", f"{DRAFTS}/{draft['id']}"),
+    ):
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "resource_unavailable"
+    # A staff member of the tenant with no mailbox gets no draft either.
+    await world.q(
+        "UPDATE console_memberships SET role='tenant_staff' WHERE client_id=%s AND user_id=%s",
+        (world.tenant, world.users["admin"]),
+    )
+    for response in (
+        await _send(world, draft, name="admin"),
+        await world.call("admin", "POST", release),
+        await world.call("admin", "GET", f"{DRAFTS}/{draft['id']}"),
+    ):
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "mailbox_not_connected"
+    assert world.gmail.sends == [] and await _status(world, draft["id"]) == "draft"
+
+
+async def test_unsent_drafts_list_before_sent_ones(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    mailbox = await _mailbox_row(world)
+    unsent: dict[str, UUID] = {}
+    for status in ("draft", "sending", "exported"):
+        unsent[status] = await _insert_draft(world, to=["boss@example.test"])
+        await world.q(
+            "UPDATE email_drafts SET status=%s, updated_at=now()-interval '30 days' WHERE id=%s",
+            (status, unsent[status]),
+        )
+    # A hundred newer sent drafts would push the old unsent ones past the list's limit.
+    await world.q(
+        "INSERT INTO email_drafts(client_id,mailbox_id,id,recipient,to_addresses,subject,body,"
+        "status,source,sent_at,updated_at) "
+        "SELECT %s,%s,gen_random_uuid(),'x@customer.test',ARRAY['x@customer.test'],'Hi','Body',"
+        "'sent','human',now(),now()-n*interval '1 minute' FROM generate_series(1,100) n",
+        (world.tenant, mailbox["id"]),
+    )
+    items = (await world.call("staff", "GET", DRAFTS)).json()["items"]
+    assert len(items) == 100
+    assert {item["id"] for item in items[:3]} == {str(value) for value in unsent.values()}
+    assert all(item["status"] == "sent" for item in items[3:])
