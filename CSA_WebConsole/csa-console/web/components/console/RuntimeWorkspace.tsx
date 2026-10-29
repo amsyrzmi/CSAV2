@@ -197,9 +197,10 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
             {!avatar && <span data-testid={`agent-planned-${name}`} className="font-medium">Planned</span>}
             {agent.capability && <span data-testid={`agent-status-${name}`}
               className="font-medium text-ink-700">{active ? "Active" : "Not active"}</span>}
-            {pending && <span role="status" data-testid={`agent-pending-${name}`}
-              className="text-ink-600">Saving...</span>}
           </p>
+          {/* Always rendered (empty when idle) so assistive technology announces the change reliably. */}
+          <span role="status" data-testid={`agent-pending-${name}`}
+            className={pending ? "mt-1 block text-sm text-ink-600" : "block"}>{pending ? "Saving..." : ""}</span>
         </div>
       </header>
       <dl className="grid grid-cols-2 gap-3 text-sm">

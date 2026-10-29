@@ -1039,7 +1039,7 @@ async def test_packaged_m2_browser_acceptance(
         # Agents live in collapsed package cards on the Services tab; invoices is orders_products.
         await page.get_by_test_id("services-agents-toggle-orders_products").click()
         agents = page.get_by_test_id("services-agents-orders_products")
-        return agents.get_by_role("heading", name="Invoices").locator("xpath=..")
+        return agents.get_by_test_id("agent-card-invoice_agent")
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()

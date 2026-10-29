@@ -362,6 +362,8 @@ async def test_agent_switch_shows_pending_then_confirms(site: Site) -> None:
             await expect(steady).to_have_attribute("data-state", "idle")
             await watch_states(card)
             await watch_states(card_of(page, "kb_agent"))
+            # The status region exists before anything happens, so a screen reader announces it.
+            await expect(card.get_by_role("status")).to_be_empty()
 
             await card.get_by_role("button", name="Subscribe", exact=True).click()
 
@@ -380,7 +382,7 @@ async def test_agent_switch_shows_pending_then_confirms(site: Site) -> None:
 
             # Only now, with the server answer and the reloaded list, does the card change and wake.
             await expect(card.get_by_text("Subscribed", exact=True)).to_be_visible()
-            await expect(card.get_by_test_id("agent-pending-ticket_agent")).to_have_count(0)
+            await expect(card.get_by_test_id("agent-pending-ticket_agent")).to_be_empty()
             await expect(avatar).to_have_attribute("data-state", "wake", timeout=5_000)
             count, animation = await frames(card)
             assert count > 1 and animation != "none"
@@ -418,7 +420,7 @@ async def test_agent_switch_failure_keeps_old_state_and_shows_reason(site: Site)
             await expect(alert).to_have_text(REASON)
             await expect(card.get_by_text("Not subscribed")).to_be_visible()
             await expect(avatar).to_have_attribute("data-state", "still")
-            await expect(card.get_by_test_id("agent-pending-ticket_agent")).to_have_count(0)
+            await expect(card.get_by_test_id("agent-pending-ticket_agent")).to_be_empty()
             await expect(card.get_by_role("button", name="Subscribe", exact=True)).to_be_enabled()
             await page.wait_for_timeout(1_800)  # a wake would have started and ended by now
             assert await frames(card) == (1, "none")
