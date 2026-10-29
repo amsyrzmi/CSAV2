@@ -12,7 +12,7 @@ function moduleUrl(source) {
 const view = await import(moduleUrl(
   await readFile(new URL("../lib/services-view.ts", import.meta.url), "utf8"),
 ));
-const { serviceStats, rowAvatarState, statusLabel } = view;
+const { serviceStats, rowAvatarState, statusLabel, agentCountLabel } = view;
 
 const agent = (name, active) => ({ name, capability: { name, active } });
 const service = (key, status, agents = [], sellable = true) => ({
@@ -99,4 +99,10 @@ test("an unsellable service in any other status follows its status", () => {
   assert.deepEqual(statusLabel(service("a", "active", [], false)), { text: "Active", tone: "ok" });
   assert.deepEqual(statusLabel(service("a", "requested", [], false)), { text: "Requested", tone: "wait" });
   assert.deepEqual(statusLabel(service("a", "suspended", [], false)), { text: "Suspended", tone: "off" });
+});
+
+test("agentCountLabel reads as a short phrase", () => {
+  assert.equal(agentCountLabel(0), "No agents");
+  assert.equal(agentCountLabel(1), "1 agent");
+  assert.equal(agentCountLabel(4), "4 agents");
 });

@@ -1,10 +1,17 @@
 "use client";
 
+import { ArrowRight, Bot, CirclePause, Hourglass, Layers, Receipt, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { avatarForPackage } from "@/lib/agent-avatars";
 import { api, ApiError, patch } from "@/lib/api";
 import type { Agent, Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
-import { servicesClient, type PackageStatus, type Service } from "@/lib/services-api";
+import { servicesClient, type Service } from "@/lib/services-api";
+import {
+  agentCountLabel, rowAvatarState, serviceStats, statusLabel, type ServiceStats, type StatusTone,
+} from "@/lib/services-view";
+import AgentAvatar from "./fs/AgentAvatar";
+import { useAvatarTransition } from "./fs/useAvatarTransition";
 import { AgentCard } from "./RuntimeWorkspace";
 import { action, field, Heading, Notice, secondary } from "./ui";
 import { WhatsAppPanel } from "./WhatsAppPanel";
@@ -14,12 +21,29 @@ const GROUPS: { kind: Service["kind"]; title: string }[] = [
   { kind: "addon", title: "Add-ons" },
   { kind: "standalone", title: "Standalone" },
 ];
-const BADGE: Record<PackageStatus, { text: string; cls: string }> = {
-  available: { text: "Available", cls: "border-ink-300 bg-ink-50 text-ink-700" },
-  requested: { text: "Requested", cls: "border-amber-200 bg-amber-50 text-amber-800" },
-  active: { text: "Active", cls: "border-green-200 bg-green-50 text-green-800" },
-  suspended: { text: "Suspended", cls: "border-red-200 bg-red-50 text-red-800" },
+/** Status words take their colour from the theme tokens; the word itself always says the status. */
+const TONE_CLASS: Record<StatusTone, string> = {
+  ok: "text-[color:var(--fs-success)]",
+  wait: "text-[color:var(--fs-warning)]",
+  off: "text-[color:var(--fs-danger)]",
+  neutral: "text-ink-600",
 };
+const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-text-secondary)" };
+const CARD = "rounded-[14px] border border-[var(--fs-border)] bg-[var(--fs-surface)] shadow-[var(--fs-shadow-card)]";
+
+/** Plain words about what each count covers; the footer is not a link. */
+const STATS: {
+  id: string; label: string; footer: string; icon: LucideIcon; figure: (stats: ServiceStats) => number;
+}[] = [
+  { id: "active", label: "Active services", footer: "Services switched on", icon: Layers,
+    figure: (stats) => stats.active },
+  { id: "agents", label: "Agents on", footer: "Counted across all services", icon: Bot,
+    figure: (stats) => stats.agentsOn },
+  { id: "waiting", label: "Waiting for activation", footer: "Requests to activate", icon: Hourglass,
+    figure: (stats) => stats.waiting },
+  { id: "suspended", label: "Suspended", footer: "Services switched off", icon: CirclePause,
+    figure: (stats) => stats.suspended },
+];
 
 function message(cause: unknown) {
   return cause instanceof ApiError || cause instanceof Error ? cause.message : "Request failed.";
@@ -76,19 +100,46 @@ function ServiceList({ clientId, platform, canManage }: {
   }, [clientId]);
   if (!services) return error ? <Notice error>{error}</Notice> : <Notice>Loading services...</Notice>;
   // Any mutation can change other cards' permissions (add-ons follow the base), so reload all.
-  const reload = async () => setServices(await servicesClient(clientId).list());
+  // The rows read the fresh list to learn whether the server really made the change.
+  const reload = async () => {
+    const rows = await servicesClient(clientId).list();
+    setServices(rows);
+    return rows;
+  };
+  const stats = serviceStats(services);
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {STATS.map(({ id, label, footer, icon: Icon, figure }) => (
+          <div key={id} role="group" aria-labelledby={`services-stat-label-${id}`}
+            data-testid={`services-stat-${id}`} className={`flex min-w-0 flex-col overflow-hidden ${CARD}`}>
+            <div className="flex flex-1 flex-col gap-2 p-4">
+              <div className="flex items-start justify-between gap-2">
+                <p id={`services-stat-label-${id}`} className="min-w-0 text-sm text-ink-700">{label}</p>
+                <span aria-hidden="true" className="inline-flex size-8 flex-none items-center justify-center rounded-lg"
+                  style={{ background: "var(--fs-surface-blue)", color: "var(--fs-primary)" }}>
+                  <Icon className="size-4" />
+                </span>
+              </div>
+              <p className="font-(family-name:--fs-font-heading) text-3xl font-semibold tabular-nums">{figure(stats)}</p>
+            </div>
+            <p className="flex items-center justify-between gap-2 border-t border-[var(--fs-border)] bg-[var(--fs-surface-blue)] px-4 py-2 text-xs text-ink-600">
+              <span className="min-w-0">{footer}</span>
+              <ArrowRight aria-hidden="true" className="size-3.5 flex-none" />
+            </p>
+          </div>
+        ))}
+      </div>
       {GROUPS.map(({ kind, title }) => {
         const rows = services.filter((service) => service.kind === kind);
         if (!rows.length) return null;
         return (
-          <section key={kind} data-testid={`services-group-${kind}`}>
-            <h2 className="mb-3 text-lg font-semibold">{title}</h2>
-            <div className="grid gap-5 xl:grid-cols-2">
-              {rows.map((service) => <ServiceCard key={service.key} service={service}
+          <section key={kind} data-testid={`services-group-${kind}`} className={CARD}>
+            <h2 className="px-4 pt-4 pb-3 font-(family-name:--fs-font-heading) text-base font-semibold sm:px-5">{title}</h2>
+            <ul>
+              {rows.map((service) => <ServiceRow key={service.key} service={service}
                 clientId={clientId} platform={platform} onChanged={reload} />)}
-            </div>
+            </ul>
           </section>
         );
       })}
@@ -99,45 +150,69 @@ function ServiceList({ clientId, platform, canManage }: {
   );
 }
 
-function ServiceCard({ service, clientId, platform, onChanged }: {
-  service: Service; clientId: string | null; platform: boolean; onChanged: () => Promise<void>;
+type Outcome = "requested" | "active" | "suspended";
+
+/**
+ * One service row. The avatar follows the server, never the click: a row action starts a
+ * pending look (still, dimmed, "Working..."), and only when the call has resolved AND the
+ * reloaded list shows the new status does an activation wake the avatar or a suspension settle
+ * it. A failure restores the old look and shows the server's reason. A status that changes
+ * without an action here (a reload after another row's action) just shows its resting look.
+ */
+function ServiceRow({ service, clientId, platform, onChanged }: {
+  service: Service; clientId: string | null; platform: boolean; onChanged: () => Promise<Service[]>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [acting, setActing] = useState(false);
   const [error, setError] = useState("");
-  const [confirm, setConfirm] = useState<"" | "activate" | "suspend">("");
+  const [form, setForm] = useState<"" | "activate" | "suspend">("");
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
   const [open, setOpen] = useState(false);
   // The agent switch being saved and the server's reason for each failed one, shown on its card.
   const [switching, setSwitching] = useState<{ name: string; switchName: "is_enabled" | "client_enabled" } | null>(null);
   const [agentErrors, setAgentErrors] = useState<Record<string, string>>({});
-  const toggling = useRef(false);
+  // The ref closes the gap before a re-render disables the buttons: one request per click burst.
+  const working = useRef(false);
+  const transition = useAvatarTransition(rowAvatarState(service.status));
+  const { start, confirm: confirmTo, fail } = transition;
   const client = servicesClient(clientId);
   const query = clientId ? `client_id=${encodeURIComponent(clientId)}` : "";
-  const badge = !service.sellable && service.status === "available"
-    ? { text: "Coming soon", cls: "border-ink-300 bg-ink-50 text-ink-600" }
-    : BADGE[service.status];
+  const status = statusLabel(service);
+  const avatar = avatarForPackage(service.key);
+  const resting = transition.phase === "idle" || transition.phase === "still";
+  const avatarState = acting ? "pending" : resting ? rowAvatarState(service.status) : transition.state;
 
-  async function run(call: () => Promise<Service>) {
+  async function run(call: () => Promise<Service>, outcome: Outcome) {
+    if (working.current) return;
+    working.current = true;
     setBusy(true);
+    setActing(true);
     setError("");
+    start();
     try {
       await call();
-      await onChanged();
-      setConfirm("");
+      const rows = await onChanged();
+      const now = rows.find((row) => row.key === service.key)?.status;
+      setForm("");
       setReference("");
       setNote("");
+      if (outcome === "active" && now === "active") confirmTo("active");
+      else if (outcome === "suspended" && now === "suspended") confirmTo("inactive");
+      else fail(); // a request only moves the row to "requested": nothing to wake or settle
     } catch (cause) {
+      fail();
       setError(message(cause));
     } finally {
+      working.current = false;
       setBusy(false);
+      setActing(false);
     }
   }
   async function toggle(agent: Agent, switchName: "is_enabled" | "client_enabled") {
     const capability = agent.capability;
-    // The ref closes the gap before a re-render disables the buttons: one request per click burst.
-    if (!capability || toggling.current) return;
-    toggling.current = true;
+    if (!capability || working.current) return;
+    working.current = true;
     setBusy(true);
     setError("");
     setAgentErrors({});
@@ -149,50 +224,69 @@ function ServiceCard({ service, clientId, platform, onChanged }: {
     } catch (cause) {
       setAgentErrors({ [agent.name]: message(cause) });
     } finally {
-      toggling.current = false;
+      working.current = false;
       setBusy(false);
       setSwitching(null);
     }
   }
   return (
-    <article className="card p-5 sm:p-6" data-testid={`services-card-${service.key}`}>
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <h3 className="text-base font-semibold">{service.title}</h3>
-        <span data-testid={`services-status-${service.key}`}
-          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge.cls}`}>{badge.text}</span>
+    <li data-testid={`services-card-${service.key}`}
+      className="border-t border-dashed border-[var(--fs-border)] px-4 py-4 sm:px-5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+        <div className="flex min-w-0 flex-1 basis-60 items-start gap-3">
+          <span style={CHIP} className="inline-flex size-14 flex-none items-center justify-center rounded-xl">
+            {avatar ? <AgentAvatar agentId={avatar} size={48} label="" state={avatarState} /> :
+              <Receipt aria-hidden="true" className="size-6" />}
+          </span>
+          <div className="min-w-0">
+            <h3 className="font-(family-name:--fs-font-heading) text-base font-semibold">{service.title}</h3>
+            <p className="mt-0.5 text-sm text-ink-600 [overflow-wrap:anywhere]">{service.summary}</p>
+            {service.status === "requested" && <p className="mt-1 text-sm">
+              Requested{service.requested_at ? ` ${new Date(service.requested_at).toLocaleDateString()}` : ""}; awaiting activation.</p>}
+            {service.status === "active" && <p className="mt-1 text-sm [overflow-wrap:anywhere]" data-testid={`services-activation-${service.key}`}>
+              Activated{service.activated_at ? ` ${new Date(service.activated_at).toLocaleDateString()}` : ""} by a platform administrator
+              {service.reference ? `. Reference: ${service.reference}` : ""}.</p>}
+            {service.key === "staff_email" && service.inner_switch !== null && <p className="mt-1 text-sm text-ink-600">
+              Enabled by your tenant admin in the Email tab: currently {service.inner_switch ? "on" : "off"}.</p>}
+            {service.key === "hr" && <p className="mt-1 text-sm text-ink-600">
+              HR modules are enabled by your HR owner inside the HR tab.</p>}
+          </div>
+        </div>
+        <div className="flex items-start gap-x-5 text-sm">
+          <span className="whitespace-nowrap text-ink-600 sm:w-20">{agentCountLabel(service.agents.length)}</span>
+          {service.key === "e_invoicing" && <span data-testid="services-planned-e_invoicing"
+            className="font-medium text-ink-700">Planned</span>}
+          <span className="flex flex-col sm:w-24">
+            <span data-testid={`services-status-${service.key}`}
+              className={`font-medium ${TONE_CLASS[status.tone]}`}>{status.text}</span>
+            {/* Always rendered (empty when idle) so assistive technology announces the change reliably. */}
+            <span role="status" data-testid={`services-pending-${service.key}`}
+              className={acting ? "text-ink-600" : ""}>{acting ? "Working..." : ""}</span>
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {service.can_request && <button className={secondary} disabled={busy}
+            data-testid={`services-request-${service.key}`}
+            onClick={() => run(() => client.request(service.key), "requested")}>Request</button>}
+          {service.can_activate && form !== "activate" && <button className={action} disabled={busy}
+            data-testid={`services-activate-${service.key}`}
+            onClick={() => setForm("activate")}>Activate</button>}
+          {service.can_suspend && form !== "suspend" && <button className={secondary} disabled={busy}
+            data-testid={`services-suspend-${service.key}`}
+            onClick={() => setForm("suspend")}>Suspend</button>}
+          {service.agents.length > 0 && <button className={secondary} aria-expanded={open} disabled={busy}
+            data-testid={`services-agents-toggle-${service.key}`}
+            onClick={() => setOpen((value) => !value)}>
+            {open ? "Hide agents" : `Show agents (${service.agents.length})`}</button>}
+        </div>
       </div>
-      <p className="mb-3 text-sm text-ink-600">{service.summary}</p>
-      {service.status === "requested" && <p className="mb-3 text-sm">
-        Requested{service.requested_at ? ` ${new Date(service.requested_at).toLocaleDateString()}` : ""}; awaiting activation.</p>}
-      {service.status === "active" && <p className="mb-3 text-sm" data-testid={`services-activation-${service.key}`}>
-        Activated{service.activated_at ? ` ${new Date(service.activated_at).toLocaleDateString()}` : ""} by a platform administrator
-        {service.reference ? `. Reference: ${service.reference}` : ""}.</p>}
-      {service.key === "staff_email" && service.inner_switch !== null && <p className="mb-3 text-sm text-ink-600">
-        Enabled by your tenant admin in the Email tab: currently {service.inner_switch ? "on" : "off"}.</p>}
-      {service.key === "hr" && <p className="mb-3 text-sm text-ink-600">
-        HR modules are enabled by your HR owner inside the HR tab.</p>}
-      {platform && !service.consistent && <Notice error>
-        Inconsistent state: {service.inconsistencies.join(", ")}.</Notice>}
-      {error && <div className="my-3"><Notice error>{error}</Notice></div>}
-      <div className="mt-3 flex flex-wrap gap-2">
-        {service.can_request && <button className={action} disabled={busy}
-          data-testid={`services-request-${service.key}`}
-          onClick={() => run(() => client.request(service.key))}>Request</button>}
-        {service.can_activate && confirm !== "activate" && <button className={action} disabled={busy}
-          data-testid={`services-activate-${service.key}`}
-          onClick={() => setConfirm("activate")}>Activate</button>}
-        {service.can_suspend && confirm !== "suspend" && <button className={secondary} disabled={busy}
-          data-testid={`services-suspend-${service.key}`}
-          onClick={() => setConfirm("suspend")}>Suspend</button>}
-        {service.agents.length > 0 && <button className={secondary} aria-expanded={open}
-          data-testid={`services-agents-toggle-${service.key}`}
-          onClick={() => setOpen((value) => !value)}>
-          {open ? "Hide agents" : `Show agents (${service.agents.length})`}</button>}
-      </div>
-      {confirm === "activate" && service.can_activate && (
-        <form className="mt-4 space-y-3" onSubmit={(event) => {
+      {platform && !service.consistent && <div className="mt-3"><Notice error>
+        Inconsistent state: {service.inconsistencies.join(", ")}.</Notice></div>}
+      {error && <div className="mt-3"><Notice error>{error}</Notice></div>}
+      {form === "activate" && service.can_activate && (
+        <form className="mt-4 max-w-xl space-y-3" onSubmit={(event) => {
           event.preventDefault();
-          void run(() => client.activate(service.key, reference.trim(), note.trim() || null));
+          void run(() => client.activate(service.key, reference.trim(), note.trim() || null), "active");
         }}>
           <label className="block text-sm">Reference (required)
             <input className={field} data-testid="services-activate-reference" required maxLength={200}
@@ -206,14 +300,14 @@ function ServiceCard({ service, clientId, platform, onChanged }: {
             <button className={action} disabled={busy || !reference.trim()}
               data-testid="services-activate-confirm">Confirm activation</button>
             <button type="button" className={secondary} disabled={busy}
-              onClick={() => setConfirm("")}>Cancel</button>
+              onClick={() => setForm("")}>Cancel</button>
           </div>
         </form>
       )}
-      {confirm === "suspend" && service.can_suspend && (
-        <form className="mt-4 space-y-3" onSubmit={(event) => {
+      {form === "suspend" && service.can_suspend && (
+        <form className="mt-4 max-w-xl space-y-3" onSubmit={(event) => {
           event.preventDefault();
-          void run(() => client.suspend(service.key, note.trim() || null));
+          void run(() => client.suspend(service.key, note.trim() || null), "suspended");
         }}>
           <label className="block text-sm">Note (optional)
             <input className={field} data-testid="services-suspend-note" maxLength={500}
@@ -223,15 +317,16 @@ function ServiceCard({ service, clientId, platform, onChanged }: {
             <button className={action} disabled={busy}
               data-testid="services-suspend-confirm">Confirm suspension</button>
             <button type="button" className={secondary} disabled={busy}
-              onClick={() => setConfirm("")}>Cancel</button>
+              onClick={() => setForm("")}>Cancel</button>
           </div>
         </form>
       )}
-      {open && <div className="mt-4 space-y-4" data-testid={`services-agents-${service.key}`}>
+      {open && <div className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[repeat(2,minmax(0,1fr))]"
+        data-testid={`services-agents-${service.key}`}>
         {service.agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle}
           pending={switching?.name === agent.name ? switching.switchName : null}
           failed={agentErrors[agent.name] ?? null} />)}
       </div>}
-    </article>
+    </li>
   );
 }

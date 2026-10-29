@@ -22,10 +22,8 @@ const OWNED = [
   "app/globals.css",
 ];
 
-/** Exempt until the task that converts them; each later task removes its entry. */
-const PENDING = [
-  "components/console/ServicesWorkspace.tsx", // Task 16
-];
+/** Exempt until the task that converts them; each later task removes its entry. None left. */
+const PENDING = [];
 
 const WEB = new URL("../", import.meta.url).pathname;
 const PALETTE =

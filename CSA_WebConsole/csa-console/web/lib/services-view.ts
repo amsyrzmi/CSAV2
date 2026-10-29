@@ -44,3 +44,9 @@ export function statusLabel(service: Service): { text: string; tone: StatusTone 
   }
   return { ...LABELS[service.status] };
 }
+
+/** "No agents", "1 agent" or "4 agents". */
+export function agentCountLabel(count: number): string {
+  if (count <= 0) return "No agents";
+  return count === 1 ? "1 agent" : `${count} agents`;
+}
