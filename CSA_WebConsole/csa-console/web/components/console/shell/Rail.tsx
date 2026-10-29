@@ -99,7 +99,8 @@ export function Rail({
           <button
             type="button"
             data-testid="shell-rail-toggle"
-            aria-expanded={expanded}
+            // The name already says what a press does ("Expand" / "Collapse navigation"); adding
+            // aria-expanded would announce the state twice ("Collapse navigation, expanded").
             onClick={() => {
               setTip(null);
               onToggle();

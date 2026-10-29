@@ -278,9 +278,12 @@ Reviewed source comprises `app/` (including non-importing deferred stubs),
 controls, `lib/api.ts`, `lib/identity-*.ts`, `lib/server-identity.ts`,
 `lib/upstream.ts`, `lib/sandbox-chat.ts`, `lib/business.ts`, `proxy.ts`, the tool configuration, synthetic transport/state tests,
 and the supplied brand mark. The build-check script lists its exact file boundary.
-The supplied `ui-guide/fourstacks-tokens.css` is imported before product styles and
-scoped through `fs-ui`; the light canvas, blue actions, control boundaries, explicit
-role labels and brand mark follow the detailed UI guide. Font family names use local/system fallbacks because font files
+Colours live in `app/themes.css`, which defines three themes: cobalt (the default), night
+and bureau. The root layout sets `data-theme` on `<html>` from the `fs-theme` cookie, so the
+first paint is already themed; `tests/theme-contrast.test.mjs` checks every pair in every
+theme and `tests/theme-literals.test.mjs` keeps colour literals out of the redesigned
+components. `app/fourstacks-tokens.css` now holds only fonts, sizes, spacing and radii.
+Font family names use local/system fallbacks because font files
 were not supplied, and no remote font fetch is needed to build.
 
 ## Staff HR adoption (source implementation, 2026-10-21)

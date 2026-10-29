@@ -63,11 +63,16 @@
   --fs-channel-text: #0b5a8c;
   --fs-bubble-staff-bg: #183da5;
   --fs-bubble-staff-text: #ffffff;
+  /* The customer's message bubble on the thread log; night lifts it off the dark log. */
+  --fs-bubble-customer-bg: #ffffff;
+  --fs-bubble-customer-border: #d4def2;
   --fs-room-staff-bg: #eef1f8;
   --fs-room-staff-bar: #15203a;
   --fs-log-from: #eef3fc;
   --fs-log-to: #e6eefb;
   --fs-attention-border: #f0d98c;
+  /* Decorative by design: the review card's left edge; the words on the card carry the meaning,
+     so this colour has no contrast pair. */
   --fs-attention-edge: #e0a82e;
   --fs-customer-1-bg: #d9e5ff;
   --fs-customer-1-text: #183da5;
@@ -141,6 +146,8 @@
   --fs-channel-text: #c8f0ff;
   --fs-bubble-staff-bg: #2f56a8;
   --fs-bubble-staff-text: #ffffff;
+  --fs-bubble-customer-bg: #1a2640;
+  --fs-bubble-customer-border: #3d4f78;
   --fs-room-staff-bg: #1d2a47;
   --fs-room-staff-bar: #8bb6ff;
   --fs-log-from: #101a2e;
@@ -219,6 +226,8 @@
   --fs-channel-text: #0b5a7a;
   --fs-bubble-staff-bg: #1a40ad;
   --fs-bubble-staff-text: #fffdf8;
+  --fs-bubble-customer-bg: #fffdf8;
+  --fs-bubble-customer-border: #ddd3be;
   --fs-room-staff-bg: #efe8d8;
   --fs-room-staff-bar: #14213d;
   --fs-log-from: #f4eee0;

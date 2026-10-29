@@ -9,7 +9,7 @@ import type { Message } from "@/lib/inbox-api";
 import { authorLabel, clockTime, type ThreadItem } from "@/lib/inbox-thread";
 
 const BUBBLE = {
-  customer: "border border-[color:var(--fs-border)] bg-[var(--fs-surface)] text-ink-900",
+  customer: "border border-[color:var(--fs-bubble-customer-border)] bg-[var(--fs-bubble-customer-bg)] text-ink-900",
   assistant: "border border-[color:var(--fs-brand-200)] border-l-[3px] border-l-[var(--fs-primary)] bg-[var(--fs-surface)] text-ink-900",
   staff: "border border-[color:var(--fs-bubble-staff-bg)] bg-[var(--fs-bubble-staff-bg)] text-[color:var(--fs-bubble-staff-text)]",
 } as const;

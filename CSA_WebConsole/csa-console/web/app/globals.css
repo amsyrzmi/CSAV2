@@ -90,14 +90,16 @@
   ::selection { background: var(--color-brand-100); color: var(--color-ink-950); }
 
   :focus-visible {
-    outline: 2px solid var(--color-brand-500);
+    outline: 2px solid var(--fs-focus);
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--fs-focus) 14%, transparent);
     outline-offset: 2px;
     border-radius: var(--fs-radius-control);
   }
 
+  /* box-shadow is not transitioned: :focus-visible draws its halo with it, and a focus ring
+     must appear at once, not fade in. */
   button, a, input, select, textarea {
-    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-property: background-color, border-color, color, opacity, transform;
     transition-duration: 160ms;
     transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -155,12 +157,11 @@
   }
 
   /* ---------- typography ---------- */
+  /* Labels and table heads are sentence case and untracked: the redesign has no tracked capitals. */
   .eyebrow {
     color: var(--color-ink-500);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
   }
   .page-title {
     color: var(--color-ink-900);
@@ -205,10 +206,8 @@
     background: var(--fs-tile);
     padding: 0.7rem 1rem;
     color: var(--color-ink-500);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
     white-space: nowrap;
   }
   .table-frame tbody td {
@@ -426,6 +425,9 @@
 .fs-px-anim.fs-px-wake .fs-px-f6 { animation-delay: 1.125s; }
 .fs-px-anim.fs-px-wake .fs-px-f7 { animation-name: fs-px-hold; animation-delay: 1.3125s; }
 
+/* Frame 0 is forced visible only under .fs-px-anim: AgentAvatar always pairs fs-px-work and
+   fs-px-wake with fs-px-anim, so a lone work/wake class (a class list lagging a render) would at
+   worst blank one sprite for a frame, never show the wrong pose. Harmless; kept simple. */
 @media (prefers-reduced-motion: reduce) {
   .fs-px-anim .fs-px-frame,
   .fs-px-work .fs-px-frame,
