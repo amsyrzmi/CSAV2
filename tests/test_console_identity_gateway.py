@@ -707,3 +707,80 @@ async def test_mail_switched_off_is_not_reported_as_a_failure(mail_world: MailWo
     )
     assert again.json()["delivery"] == "manual" and again.json()["delivery_note"] == "mail_off"
     assert mail_world.transport.sent == []
+
+
+@requires_docker
+async def test_a_raising_notify_falls_back_to_manual_without_leaking(
+    mail_world: MailWorld, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from csa.console import auth
+
+    def broken(**kwargs: Any) -> OutgoingMail:
+        raise RuntimeError(f"synthetic template failure for {kwargs['to']} {kwargs['link']}")
+
+    monkeypatch.setattr(auth, "invitation_mail", broken)
+    caplog.set_level("DEBUG")
+    with capture_logs() as logs:
+        response, email = await mail_world.invite(mail_world.owner)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["delivery"] == "manual" and body["token"]
+    assert body["delivery_note"] == "send_failed"
+    users = await mail_world.q("SELECT id FROM console_users WHERE email=%s", email)
+    assert len(users) == 1
+    tokens = await mail_world.q("SELECT id FROM console_tokens WHERE user_id=%s", users[0]["id"])
+    assert len(tokens) == 1 and str(tokens[0]["id"]) == body["id"]
+    assert {
+        "event": "console_mail_not_sent",
+        "category": "smtp_error",
+        "log_level": "warning",
+    } in logs
+    captured = repr(logs) + caplog.text
+    assert email not in captured and "#token=" not in captured and body["token"] not in captured
+    assert "synthetic template failure" not in captured
+    assert mail_world.transport.sent == []
+
+
+@requires_docker
+async def test_renewing_an_invitation_without_a_tenant_is_not_found(
+    mail_world: MailWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.console.identity import Recipient
+
+    response, _ = await mail_world.invite(mail_world.owner)
+    assert response.status_code == 201, response.text
+    service = mail_world.app.state.identity_service
+
+    async def tenantless(*_args: Any) -> Recipient:
+        return Recipient(client_id=None, email="x@example.test", display_name="Synthetic")
+
+    monkeypatch.setattr(service, "invitation_recipient", tenantless)
+    sent = len(mail_world.transport.sent)
+    renewed = await mail_world.mutate(
+        mail_world.owner, f"/console/v1/admin/invites/{response.json()['id']}/renew"
+    )
+    assert renewed.status_code == 404
+    assert renewed.json() == {"detail": "pending invitation not found"}
+    assert len(mail_world.transport.sent) == sent
+
+
+@requires_docker
+@pytest.mark.parametrize("mailer", ["disabled", "absent"])
+async def test_an_invalid_tenant_timezone_does_not_block_inviting_with_mail_off(
+    mail_world: MailWorld, mailer: str
+) -> None:
+    await mail_world.q(
+        "UPDATE clients SET timezone='Synthetic/Nowhere' WHERE id=%s", mail_world.hr_tenant
+    )
+    mail_world.app.state.mailer = Mailer(None, SENDER) if mailer == "disabled" else None
+    response, email = await mail_world.invite(mail_world.owner)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["delivery"] == "manual" and body["token"]
+    assert body["delivery_note"] == "mail_off"
+    renewed = await mail_world.mutate(
+        mail_world.owner, f"/console/v1/admin/invites/{body['id']}/renew"
+    )
+    assert renewed.status_code == 201, renewed.text
+    assert renewed.json()["delivery_note"] == "mail_off"
+    assert len(await mail_world.q("SELECT 1 FROM console_users WHERE email=%s", email)) == 1

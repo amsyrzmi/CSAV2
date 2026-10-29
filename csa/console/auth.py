@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -41,6 +41,9 @@ from csa.hr.invitation_access import InvitationAccess
 from csa.hr.service import HrService
 
 logger = structlog.get_logger(__name__)
+
+# Only for rendering a message nobody is sent; the real zone is checked when mail is on.
+_FALLBACK_ZONE = "Asia/Kuala_Lumpur"
 
 
 class CsrfOut(BaseModel):
@@ -99,8 +102,17 @@ def _mailer(request: Request) -> Mailer | None:
     return mailer if isinstance(mailer, Mailer) else None
 
 
-async def _invite_facts(request: Request, actor: ConsoleActor, client_id: UUID) -> InviteFacts:
-    """Read the tenant facts on the app pool; the identity pool may not read clients or HR."""
+def _mail_on(mailer: Mailer | None) -> bool:
+    return mailer is not None and mailer.enabled
+
+
+async def _invite_facts(
+    request: Request, actor: ConsoleActor, client_id: UUID, *, mail_on: bool
+) -> InviteFacts:
+    """Read the tenant facts on the app pool; the identity pool may not read clients or HR.
+
+    The tenant's zone only matters for a message that is sent, so it is checked only then.
+    """
     async with tx(request.app.state.pool, str(client_id)) as conn:
         # A platform session never carries a tenant HR owner's right to grant presets.
         if not actor.platform_admin:
@@ -110,10 +122,17 @@ async def _invite_facts(request: Request, actor: ConsoleActor, client_id: UUID) 
         )
     if row is None:
         raise HTTPException(404, "tenant not found")
-    ZoneInfo(row["timezone"])  # Fail before any write, never after the invitation commits.
+    zone = row["timezone"]
+    if mail_on:
+        ZoneInfo(zone)  # Fail before any write, never after the invitation commits.
+    else:
+        try:
+            ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = _FALLBACK_ZONE
     return InviteFacts(
         business_name=row["business_name"],
-        timezone=row["timezone"],
+        timezone=zone,
         may_grant_hr=bool(row["may_grant_hr"]) and not actor.platform_admin,
     )
 
@@ -157,10 +176,9 @@ async def _invite(
             if exc.detail != "package_inactive":
                 raise
             raise HTTPException(422, "hr_not_available") from None
-    facts = await _invite_facts(request, actor, body.client_id)
-    notify = _invitation_notify(
-        _mailer(request), actor, facts, to=body.email, invitee_name=body.display_name
-    )
+    mailer = _mailer(request)
+    facts = await _invite_facts(request, actor, body.client_id, mail_on=_mail_on(mailer))
+    notify = _invitation_notify(mailer, actor, facts, to=body.email, invitee_name=body.display_name)
     return await service.invite(actor, body, may_grant_hr=facts.may_grant_hr, notify=notify)
 
 
@@ -323,8 +341,9 @@ def build_identity_router() -> APIRouter:
         if mailer is None:
             return await service.renew_invitation(actor, token_id)
         recipient = await service.invitation_recipient(actor, token_id)
-        assert recipient.client_id is not None
-        facts = await _invite_facts(request, actor, recipient.client_id)
+        if recipient.client_id is None:
+            raise HTTPException(404, "pending invitation not found")
+        facts = await _invite_facts(request, actor, recipient.client_id, mail_on=_mail_on(mailer))
         notify = _invitation_notify(
             mailer, actor, facts, to=recipient.email, invitee_name=recipient.display_name
         )

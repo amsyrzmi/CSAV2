@@ -146,7 +146,13 @@ class IdentityService:
         delivery: Delivery = "manual"
         note: DeliveryNote | None = "mail_off"
         if notify is not None:
-            outcome = await notify(self.link(raw), row["expires_at"])
+            try:
+                outcome = await notify(self.link(raw), row["expires_at"])
+            except Exception:
+                # Building the message failed before the mailer could categorise it. The
+                # exception text can carry the address or link, so only the category is logged.
+                logger.warning("console_mail_not_sent", category="smtp_error")
+                outcome = "smtp_error"
             if outcome == "sent":
                 delivery, note = "email", None
             elif outcome != "smtp_disabled":
