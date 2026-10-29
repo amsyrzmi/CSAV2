@@ -13746,6 +13746,23 @@
           },
           {
             "in": "query",
+            "name": "iss",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iss"
+            }
+          },
+          {
+            "in": "query",
             "name": "client_id",
             "required": false,
             "schema": {

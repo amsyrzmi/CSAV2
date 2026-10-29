@@ -350,8 +350,18 @@ async def test_full_flow_switch_connect_sync_triage_draft_export(
     state = query["state"][0]
     bad = await world.call("staff", "GET", "/console/v1/email/oauth/callback?code=abc&state=wrong")
     assert bad.status_code == 303 and "error=oauth_state_invalid" in bad.headers["location"]
+    # Google sends RFC 9207 `iss`; any other issuer is refused before the state is spent.
+    forged = await world.call(
+        "staff",
+        "GET",
+        f"/console/v1/email/oauth/callback?state={state}&iss=https://evil.example&code=abc",
+    )
+    assert forged.status_code == 303 and "error=oauth_issuer_invalid" in forged.headers["location"]
     done = await world.call(
-        "staff", "GET", f"/console/v1/email/oauth/callback?code=abc&state={state}"
+        "staff",
+        "GET",
+        f"/console/v1/email/oauth/callback?state={state}&iss=https://accounts.google.com"
+        "&code=abc&scope=https://www.googleapis.com/auth/gmail.readonly",
     )
     assert done.status_code == 303 and done.headers["location"] == "/portal/email?connected=1"
     replayed = await world.call(
