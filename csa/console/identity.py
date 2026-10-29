@@ -7,7 +7,10 @@ onboarding belongs to the tenant-scoped app pool, not this module.
 from __future__ import annotations
 
 import hmac
-from typing import Any, NoReturn
+from collections.abc import Awaitable, Callable
+from datetime import datetime
+from typing import Any, Literal, NoReturn
+from urllib.parse import quote
 from uuid import UUID
 
 import psycopg
@@ -25,6 +28,7 @@ from csa.console.contracts import (
     Role,
     TokenInfoOut,
 )
+from csa.console.mailer import MailOutcome
 from csa.console.records import (
     MembershipRecord,
     SessionRecord,
@@ -51,6 +55,20 @@ class IdentityConfig(BaseModel):
     login_window_seconds: int = Field(default=900, ge=1, le=3600)
     # Mirrors WORKSPACE_ASSISTANT_ENABLED so /auth/me can tell the console to show the dock.
     workspace_assistant: bool = False
+
+
+# Called with the raw link and its expiry after the token transaction commits.
+Notify = Callable[[str, datetime], Awaitable[MailOutcome]]
+Delivery = Literal["manual", "email"]
+
+
+class Recipient(BaseModel):
+    """Who a renewed invitation or a reset is mailed to; read before the mutation."""
+
+    model_config = ConfigDict(frozen=True)
+    client_id: UUID | None
+    email: str
+    display_name: str
 
 
 class _ApproverRecheckFailed(Exception):
@@ -101,6 +119,41 @@ class IdentityService:
     ) -> None:
         await self._exec(
             conn, "audit", (actor_id, client_id, action, str(target_id), Jsonb(details))
+        )
+
+    def link(self, raw: str) -> str:
+        """The console's existing link form; the token stays in the fragment, out of server logs."""
+        return f"{self.config.origins[0]}/invite#token={quote(raw, safe='')}"
+
+    async def _deliver(
+        self,
+        notify: Notify | None,
+        raw: str,
+        row: dict[str, Any],
+        actor_id: UUID,
+        action: str,
+        target_id: UUID,
+        client_id: UUID | None = None,
+        **details: Any,
+    ) -> IssuedTokenOut:
+        """Send after commit, then audit the outcome; a failed send only means a manual link.
+
+        The audit row needs the outcome, so it is written in its own transaction once the send
+        has finished. The user and token are never rolled back or recreated by a mail failure.
+        """
+        delivery: Delivery = "manual"
+        if notify is not None and await notify(self.link(raw), row["expires_at"]) == "sent":
+            delivery = "email"
+        async with self.pool.connection() as conn, conn.transaction():
+            await self._context(conn, actor_id, client_id)
+            await self._audit(
+                conn, actor_id, action, target_id, client_id, **details, delivery=delivery
+            )
+        return IssuedTokenOut(
+            id=row["id"],
+            token=None if delivery == "email" else raw,
+            expires_at=row["expires_at"],
+            delivery=delivery,
         )
 
     async def check_ready(self) -> None:
@@ -431,7 +484,12 @@ class IdentityService:
             raise HTTPException(403, "tenant administrator required")
 
     async def invite(
-        self, actor: ConsoleActor, data: InviteIn, *, may_grant_hr: bool = False
+        self,
+        actor: ConsoleActor,
+        data: InviteIn,
+        *,
+        may_grant_hr: bool = False,
+        notify: Notify | None = None,
     ) -> IssuedTokenOut:
         self.require_member_admin(actor, data.client_id)
         # Any inviting admin may choose none or Staff; the other presets need the tenant's HR owner.
@@ -464,17 +522,18 @@ class IdentityService:
                         actor.user_id if data.hr_preset else None,
                     ),
                 )
-                await self._audit(
-                    conn,
-                    actor.user_id,
-                    "identity.invited",
-                    user["id"],
-                    data.client_id,
-                    role=data.role,
-                )
         except psycopg.errors.ForeignKeyViolation as exc:
             raise HTTPException(404, "tenant not found") from exc
-        return IssuedTokenOut(id=result["id"], token=raw, expires_at=result["expires_at"])
+        return await self._deliver(
+            notify,
+            raw,
+            result,
+            actor.user_id,
+            "identity.invited",
+            user["id"],
+            data.client_id,
+            role=data.role,
+        )
 
     async def invitations(
         self, actor: ConsoleActor, client_id: UUID | None, limit: int
@@ -489,7 +548,28 @@ class IdentityService:
                 "console/identity/token_list.sql", (client_id, limit), conn=conn
             )
 
-    async def renew_invitation(self, actor: ConsoleActor, token_id: UUID) -> IssuedTokenOut:
+    async def invitation_recipient(self, actor: ConsoleActor, token_id: UUID) -> Recipient:
+        async with self.pool.connection() as conn, conn.transaction():
+            old = await self._one(conn, "token_id", (token_id,))
+            if not old or old["kind"] != "invite" or old["consumed_at"] is not None:
+                raise HTTPException(404, "pending invitation not found")
+            self.require_member_admin(actor, old["client_id"])
+            user = await self._one(conn, "user_id", (old["user_id"],))
+        return Recipient(
+            client_id=old["client_id"], email=user["email"], display_name=user["display_name"]
+        )
+
+    async def reset_recipient(self, actor: ConsoleActor, user_id: UUID) -> Recipient:
+        self.require_platform(actor)
+        async with self.pool.connection() as conn, conn.transaction():
+            user = await self._one(conn, "user_id", (user_id,))
+        if not user or not user["is_enabled"]:
+            raise HTTPException(404, "user not found")
+        return Recipient(client_id=None, email=user["email"], display_name=user["display_name"])
+
+    async def renew_invitation(
+        self, actor: ConsoleActor, token_id: UUID, *, notify: Notify | None = None
+    ) -> IssuedTokenOut:
         raw = token()
         async with self.pool.connection() as conn, conn.transaction():
             await self._exec(conn, "lock_admin")
@@ -518,15 +598,16 @@ class IdentityService:
                     old["hr_preset_chosen_by"],
                 ),
             )
-            await self._audit(
-                conn,
-                actor.user_id,
-                "identity.invitation_renewed",
-                row["id"],
-                old["client_id"],
-                previous_token_id=str(token_id),
-            )
-        return IssuedTokenOut(id=row["id"], token=raw, expires_at=row["expires_at"])
+        return await self._deliver(
+            notify,
+            raw,
+            row,
+            actor.user_id,
+            "identity.invitation_renewed",
+            row["id"],
+            old["client_id"],
+            previous_token_id=str(token_id),
+        )
 
     async def inspect_token(self, raw: str) -> TokenInfoOut:
         async with self.pool.connection() as conn, conn.transaction():
@@ -575,7 +656,9 @@ class IdentityService:
             )
         return await self.resolve(raw), raw, csrf
 
-    async def issue_reset(self, actor: ConsoleActor, user_id: UUID) -> IssuedTokenOut:
+    async def issue_reset(
+        self, actor: ConsoleActor, user_id: UUID, *, notify: Notify | None = None
+    ) -> IssuedTokenOut:
         self.require_platform(actor)
         raw = token()
         async with self.pool.connection() as conn, conn.transaction():
@@ -603,8 +686,9 @@ class IdentityService:
                     None,
                 ),
             )
-            await self._audit(conn, actor.user_id, "identity.reset_issued", user_id)
-        return IssuedTokenOut(id=row["id"], token=raw, expires_at=row["expires_at"])
+        return await self._deliver(
+            notify, raw, row, actor.user_id, "identity.reset_issued", user_id
+        )
 
     async def revoke_token(self, actor: ConsoleActor, token_id: UUID) -> None:
         async with self.pool.connection() as conn, conn.transaction():

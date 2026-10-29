@@ -125,9 +125,10 @@ class InviteIn(EmailInput):
 
 class IssuedTokenOut(Contract):
     id: UUID
-    token: str
+    # None when the link was emailed: the raw token then never leaves the server.
+    token: str | None
     expires_at: datetime
-    delivery: Literal["manual"] = "manual"
+    delivery: Literal["manual", "email"] = "manual"
 
 
 class MemberPatchIn(Contract):

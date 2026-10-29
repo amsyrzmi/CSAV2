@@ -4491,8 +4491,11 @@
         "additionalProperties": false,
         "properties": {
           "delivery": {
-            "const": "manual",
             "default": "manual",
+            "enum": [
+              "manual",
+              "email"
+            ],
             "title": "Delivery",
             "type": "string"
           },
@@ -4507,8 +4510,15 @@
             "type": "string"
           },
           "token": {
-            "title": "Token",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
           }
         },
         "required": [

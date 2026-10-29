@@ -29,6 +29,7 @@ from csa.channels.whatsapp_ingress import WhatsAppIngress
 from csa.console.auth import build_identity_router
 from csa.console.channels import build_channels_router
 from csa.console.identity import IdentityConfig, IdentityService
+from csa.console.mailer import Mailer
 from csa.console.middleware import ConsoleResponseHeaders
 from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
@@ -176,6 +177,8 @@ def create_app() -> FastAPI:
                 )
                 await identity.check_ready()
                 app.state.identity_service = identity
+                # Disabled unless the flag and both relay secrets are set; then links are manual.
+                app.state.mailer = Mailer.from_settings(settings)
                 hr = HrService(pool, session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS)
                 await hr.check_ready()
                 app.state.hr_service = hr

@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     CONSOLE_SESSION_ABSOLUTE_SECONDS: int = Field(default=43200, ge=300, le=604800)
     # Service token reads are limited to an explicitly configured tenant allowlist.
     CONSOLE_MACHINE_CLIENT_IDS: list[str] = Field(default_factory=list)
+    # Invitation and reset mail through the Workspace relay; active only with both secrets.
+    INVITE_MAIL_ENABLED: bool = False
+    INVITE_MAIL_FROM: str = "FourStacks <no-reply@fourstacks.my>"
+    SMTP_HOST: str = "smtp-relay.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: SecretStr | None = None
+    SMTP_PASSWORD: SecretStr | None = None
     TYPESAFE_API_KEY: SecretStr | None = None
     TEI_ENDPOINT: HttpUrl | None = None
     KB_EMBED_MODEL_LABEL: str = Field(default="tei-384", min_length=1, max_length=64)
