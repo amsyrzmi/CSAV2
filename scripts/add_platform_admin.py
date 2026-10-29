@@ -13,10 +13,16 @@ import argparse
 import asyncio
 import getpass
 import os
+import sys
 from urllib.parse import urlparse
 
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.core.db import build_pool
+
+# Same bounds as csa.console.security.hash_password, checked here at the prompt.
+MIN_PASSWORD_LENGTH = 12
+MAX_PASSWORD_LENGTH = 1024
+PASSWORD_ATTEMPTS = 3
 
 
 async def run(
@@ -42,6 +48,25 @@ async def run(
         await pool.close()
 
 
+def read_new_password() -> str | None:
+    """Prompt for the initial password; return None after too many bad attempts."""
+    for _ in range(PASSWORD_ATTEMPTS):
+        password = getpass.getpass(
+            f"Initial password (at least {MIN_PASSWORD_LENGTH} characters): "
+        )
+        if not MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH:
+            print(
+                f"Password must contain between {MIN_PASSWORD_LENGTH} and "
+                f"{MAX_PASSWORD_LENGTH} characters. Try again.",
+                file=sys.stderr,
+            )
+        elif password != getpass.getpass("Confirm initial password: "):
+            print("Passwords do not match. Try again.", file=sys.stderr)
+        else:
+            return password
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--approver-email", required=True)
@@ -55,9 +80,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     approver_password = getpass.getpass("Approver password: ")
-    password = getpass.getpass("Initial password (at least 12 characters): ")
-    if password != getpass.getpass("Confirm initial password: "):
-        parser.error("passwords do not match")
+    password = read_new_password()
+    if password is None:
+        parser.exit(1, "No valid initial password entered; no administrator was added.\n")
     asyncio.run(
         run(args.approver_email, approver_password, args.email, args.display_name, password)
     )
