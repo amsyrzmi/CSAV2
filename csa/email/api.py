@@ -43,7 +43,19 @@ from csa.email.service import EmailService
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
 _FORBIDDEN_HEADERS = ("x-employee-id", "x-manager-id", "x-hr-role", "x-hr-grants", "x-client-owner")
-_CALLBACK_QUERY = {"client_id", "code", "state", "scope", "authuser", "prompt", "hd", "error"}
+_CALLBACK_QUERY = {
+    "client_id",
+    "code",
+    "state",
+    "scope",
+    "authuser",
+    "prompt",
+    "hd",
+    "error",
+    "iss",
+}
+# Google sends RFC 9207 `iss` with the authorization response; only its own issuer is accepted.
+_GOOGLE_ISSUER = "https://accounts.google.com"
 _MAX_BODY = 32768
 
 
@@ -218,12 +230,15 @@ def build_email_router() -> APIRouter:
         code: Annotated[str | None, Query(max_length=2048)] = None,
         state: Annotated[str | None, Query(max_length=256)] = None,
         error: Annotated[str | None, Query(max_length=64)] = None,
+        iss: Annotated[str | None, Query(max_length=256)] = None,
     ) -> Response:
         target = "/email" if request.query_params.get("client_id") else "/portal/email"
         params: dict[str, str] = {}
         if request.query_params.get("client_id"):
             params["client_id"] = str(session.tenant_id)
-        if error or not code or not state:
+        if iss is not None and iss != _GOOGLE_ISSUER:
+            params["error"] = "oauth_issuer_invalid"
+        elif error or not code or not state:
             params["error"] = "provider_denied" if error else "oauth_state_invalid"
         else:
             try:
