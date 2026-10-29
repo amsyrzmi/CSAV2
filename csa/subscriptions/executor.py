@@ -161,11 +161,15 @@ async def _check_request(conn: Conn, client_id: UUID, action: ActionPayload, now
         raise HTTPException(422, "request_action_mismatch")
 
 
-async def _plan(conn: Conn, client_id: UUID, code: str | None) -> dict[str, Any] | None:
+async def _plan(
+    conn: Conn, client_id: UUID, code: str | None, *, share: bool = False
+) -> dict[str, Any] | None:
     if code is None:
         return None
     row: dict[str, Any] | None = await db.q.fetch_one(
-        "subscriptions/plan_get.sql", {"client_id": client_id, "code": code}, conn=conn
+        "subscriptions/plan_get_share.sql" if share else "subscriptions/plan_get.sql",
+        {"client_id": client_id, "code": code},
+        conn=conn,
     )
     return row
 
@@ -403,7 +407,9 @@ class SubscriptionActionExecutor:
                     raise HTTPException(409, "request_decided")
             if locked["version"] != int(expected_version.split(":", 1)[0]):
                 raise ProposalError("proposal_stale")
-            target = await _plan(conn, client_id, action.plan_code)
+            # Share-locked: a plan archive or edit waits for this transaction, so the target read
+            # here is the one the subscription update applies.
+            target = await _plan(conn, client_id, action.plan_code, share=True)
             tenant = await db.q.fetch_one(
                 "subscriptions/tenant_timezone.sql", {"client_id": client_id}, conn=conn
             )
