@@ -1202,6 +1202,30 @@ async def test_send_isolated_per_owner(world: World, monkeypatch: pytest.MonkeyP
     assert world.gmail.sends == [] and await _status(world, draft["id"]) == "draft"
 
 
+async def test_draft_read_by_id_is_owner_only(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    await _connect(world, "admin")
+    draft_id = await _insert_draft(world, to=["boss@example.test"], cc=["copy@gmail.com"])
+    requests = len(world.gmail.requests)
+    mine = await world.call("staff", "GET", f"{DRAFTS}/{draft_id}")
+    assert mine.status_code == 200, mine.text
+    assert mine.json() == await _draft(world, draft_id)
+    assert mine.json()["recipients"] == [
+        {"address": "boss@example.test", "outside": False},
+        {"address": "copy@gmail.com", "outside": True},
+    ]
+    assert mine.headers["cache-control"] == "no-store"
+    other = await world.call("admin", "GET", f"{DRAFTS}/{draft_id}")
+    assert other.status_code == 404 and other.json()["detail"] == "resource_unavailable"
+    missing = await world.call("staff", "GET", f"{DRAFTS}/{uuid4()}")
+    assert missing.status_code == 404
+    cross = await world.call("outsider", "GET", f"{DRAFTS}/{draft_id}?client_id={world.tenant}")
+    assert cross.status_code == 403 and cross.json()["detail"] == "tenant_not_authorized"
+    assert len(world.gmail.requests) == requests  # no Gmail call
+
+
 async def test_release_lets_the_owner_retry_an_unknown_send(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

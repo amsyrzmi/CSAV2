@@ -110,6 +110,11 @@ async def _turn_rows(w: SessionWorld) -> list[dict[str, Any]]:
     return await w.q("SELECT action, page_key, result FROM console_workspace_turns ORDER BY id")
 
 
+async def _draft_recipients(w: SessionWorld) -> list[list[str]]:
+    rows = await w.q("SELECT to_addresses FROM email_drafts ORDER BY created_at")
+    return [row["to_addresses"] for row in rows]
+
+
 async def _proposal_count(w: SessionWorld) -> int:
     return (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"]
 
@@ -357,8 +362,9 @@ async def test_email_compose_turn_drafts_and_proposes_export(planned) -> None:
     assert turn.status_code == 201, turn.text
     proposal = turn.json()["result"]["proposal"]
     assert proposal["kind"] == "email_export" and proposal["status"] == "requested"
-    fields = {f["label"]: f["value"] for f in proposal["card"]["fields"]}
-    assert fields["To"] == SEEDED_EMAIL
+    assert SEEDED_EMAIL not in json.dumps(proposal)  # the card holds counts only
+    assert proposal["card"]["title"] == "Save email to Gmail drafts for 1 person"
+    assert await _draft_recipients(w) == [[SEEDED_EMAIL]]
     assert [r["action"] for r in await _turn_rows(w)] == ["email_compose"]
     again = await _turn(w, browser, thread, "Email Ada about leave", "email", key=key)
     assert again.status_code == 200 and again.json()["duplicate"] is True
@@ -513,8 +519,7 @@ async def test_planner_remembers_the_thread_across_a_directory_pick(planned) -> 
     assert picked.status_code == 201, picked.text
     proposal = picked.json()["result"]["proposal"]
     assert proposal["kind"] == "email_export"
-    fields = {f["label"]: f["value"] for f in proposal["card"]["fields"]}
-    assert fields["To"] == "ali.roster@example.test"
+    assert await _draft_recipients(w) == [["ali.roster@example.test"]]
     prompt = model.calls[-1][2]
     assert "Email Ali about the roster" in prompt and str(ali) in prompt
     assert "Ali Roster" not in prompt and "ali.roster@example.test" not in prompt
@@ -581,8 +586,8 @@ async def test_email_my_boss_resolves_the_manager_before_planning(planned) -> No
     model.respond(to_manager)
     turn = await _turn(w, browser, thread, "Email my boss about leave on Friday", "email")
     assert turn.status_code == 201, turn.text
-    fields = {f["label"]: f["value"] for f in turn.json()["result"]["proposal"]["card"]["fields"]}
-    assert fields["To"] == "bea.boss@example.test"
+    assert turn.json()["result"]["proposal"]["kind"] == "email_export"
+    assert await _draft_recipients(w) == [["bea.boss@example.test"]]
     assert model.facts()["my_manager"] == {"employee_id": str(boss), "reason": None}
     assert "Bea Boss" not in model.calls[-1][2] and "bea.boss@" not in model.calls[-1][2]
     model.reply({"action": "answer", "markdown": "Hello."})

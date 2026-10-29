@@ -183,6 +183,62 @@ class TrainingSubmitExecutor:
         return receipt.model_dump(mode="json")
 
 
+_NOT_A_DRAFT = {
+    "exported": "draft_already_exported",
+    "sending": "draft_already_sending",
+    "sent": "draft_already_sent",
+}
+
+
+def _email_refusal(exc: EmailPolicyError | GmailError) -> ProposalActionRefused:
+    """The email route's refusal: its status, body (`retry_after`, `message`) and headers."""
+    error = email_http_error(exc)
+    return ProposalActionRefused(error.status_code, email_error_content(exc), error.headers)
+
+
+def _people(count: int) -> str:
+    return f"{count} person" if count == 1 else f"{count} people"
+
+
+def _audience(draft: DraftOut) -> tuple[str, str]:
+    """("3 people (1 outside your company)", "2 in To, 1 in CC"): counts, never addresses."""
+    everyone = {r.address.lower() for r in draft.recipients}
+    outside = {r.address.lower() for r in draft.recipients if r.outside}
+    audience = _people(len(everyone))
+    if outside:
+        audience += f" ({len(outside)} outside your company)"
+    counts = ", ".join(
+        f"{n} in {label}"
+        for label, n in (("To", len(draft.to)), ("CC", len(draft.cc)), ("BCC", len(draft.bcc)))
+        if n
+    )
+    return audience, counts
+
+
+def _content_fields(draft: DraftOut) -> list[CardField]:
+    return [
+        CardField(label="Subject", value="(shown on open)"),
+        CardField(label="Draft", value=str(draft.id)),
+    ]
+
+
+def send_card(draft: DraftOut) -> CardContent:
+    """Counts only: the console reads recipients, subject and body from the draft itself.
+
+    ``console_proposals`` rows are readable tenant-wide, so no address, subject or body is
+    stored here; the owner's email session renders them when the card is shown.
+    """
+    # A reply whose thread was cleaned up after sync has no thread link: it is a plain email now.
+    what = "reply" if draft.thread_id is not None and draft.reply_to_message_id else "email"
+    audience, counts = _audience(draft)
+    summary = f"{counts}. We send it from your Gmail when you select Send."
+    if draft.needs_staff_input:
+        summary += " Fill in the [STAFF: …] parts before sending."
+    return CardContent(
+        title=f"Send {what} to {audience}", summary=summary, fields=_content_fields(draft)
+    )
+
+
 class EmailExportExecutor:
     kind: ProposalKind = "email_export"
 
@@ -223,16 +279,13 @@ class EmailExportExecutor:
                 ensure_ascii=True,
             ).encode("ascii")
         ).hexdigest()
+        # Counts only, as on the send card: the console reads the draft itself when it shows it.
+        audience, counts = _audience(draft)
         return (
             CardContent(
-                title="Save email draft to Gmail",
-                summary=(
-                    f"Save the reply to {draft.recipient} in your Gmail drafts. Nothing is sent."
-                ),
-                fields=[
-                    CardField(label="To", value=draft.recipient),
-                    CardField(label="Subject", value=draft.subject),
-                ],
+                title=f"Save email to Gmail drafts for {audience}",
+                summary=f"{counts}. Nothing is sent.",
+                fields=_content_fields(draft),
             ),
             version,
         )
@@ -256,55 +309,12 @@ class EmailExportExecutor:
             )
         except (EmailPolicyError, GmailError) as exc:
             raise email_http_error(exc) from None
-        return draft.model_dump(mode="json")
-
-
-_NOT_A_DRAFT = {
-    "exported": "draft_already_exported",
-    "sending": "draft_already_sending",
-    "sent": "draft_already_sent",
-}
-
-
-def _email_refusal(exc: EmailPolicyError | GmailError) -> ProposalActionRefused:
-    """The email route's refusal: its status, body (`retry_after`, `message`) and headers."""
-    error = email_http_error(exc)
-    return ProposalActionRefused(error.status_code, email_error_content(exc), error.headers)
-
-
-def _people(count: int) -> str:
-    return f"{count} person" if count == 1 else f"{count} people"
-
-
-def send_card(draft: DraftOut) -> CardContent:
-    """Counts only: the console reads recipients, subject and body from the draft itself.
-
-    ``console_proposals`` rows are readable tenant-wide, so no address, subject or body is
-    stored here; the owner's email session renders them when the card is shown.
-    """
-    everyone = {r.address.lower() for r in draft.recipients}
-    outside = {r.address.lower() for r in draft.recipients if r.outside}
-    # A reply whose thread was cleaned up after sync has no thread link: it is a plain email now.
-    what = "reply" if draft.thread_id is not None and draft.reply_to_message_id else "email"
-    title = f"Send {what} to {_people(len(everyone))}"
-    if outside:
-        title += f" ({len(outside)} outside your company)"
-    counts = ", ".join(
-        f"{n} in {label}"
-        for label, n in (("To", len(draft.to)), ("CC", len(draft.cc)), ("BCC", len(draft.bcc)))
-        if n
-    )
-    summary = f"{counts}. We send it from your Gmail when you select Send."
-    if draft.needs_staff_input:
-        summary += " Fill in the [STAFF: …] parts before sending."
-    return CardContent(
-        title=title,
-        summary=summary,
-        fields=[
-            CardField(label="Subject", value="(shown on open)"),
-            CardField(label="Draft", value=str(draft.id)),
-        ],
-    )
+        # Stored on the proposal row, which the tenant can read: no address, subject or body.
+        return {
+            "draft_id": str(draft.id),
+            "status": draft.status,
+            "gmail_draft_id": draft.gmail_draft_id,
+        }
 
 
 class EmailSendExecutor:

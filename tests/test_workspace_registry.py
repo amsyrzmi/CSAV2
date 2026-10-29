@@ -1274,12 +1274,18 @@ async def test_email_export_proposal_end_to_end(proposals_app) -> None:
     draft_id = drafted.json()["id"]
     created = await _propose(w, browser, "email_export", {"draft_id": draft_id})
     assert created.status_code == 201, created.text
-    fields = {f["label"]: f["value"] for f in created.json()["card"]["fields"]}
-    assert fields == {"To": "aina@example.test", "Subject": "Re: Order MGL-TEST-005"}
+    card = created.json()["card"]
+    assert card["title"] == "Save email to Gmail drafts for 1 person"
+    assert card["summary"] == "1 in To. Nothing is sent."
+    assert {f["label"]: f["value"] for f in card["fields"]} == {
+        "Subject": "(shown on open)",
+        "Draft": draft_id,
+    }
     exported = await _http_confirm(w, browser, created.json()["id"])
     assert exported.status_code == 200, exported.text
     assert exported.json()["result"]["gmail_draft_id"] == "gmail-draft-1"
     assert exported.json()["result"]["status"] == "exported"
+    assert set(exported.json()["result"]) == {"draft_id", "status", "gmail_draft_id"}
     assert sum(1 for m, p, _ in gmail.requests if m == "POST" and p.endswith("/drafts")) == 1
     replay = await _http_confirm(w, browser, created.json()["id"])
     assert replay.status_code == 200 and replay.json() == exported.json()
@@ -1435,6 +1441,11 @@ async def test_send_proposal_stores_no_addresses_or_body(proposals_app) -> None:
     rows = await w.q("SELECT kind, payload FROM console_proposals")
     assert [r["kind"] for r in rows] == ["email_send"]
     assert set(rows[0]["payload"]) == {"draft_id", "version"}
+    await _assert_not_stored(w, outside, copied, "staff@example.test", SEND_SUBJECT, "Z9Q")
+
+
+async def _assert_not_stored(w: SessionWorld, *needles: str) -> None:
+    """No needle in any proposal, turn or console audit row (all readable tenant-wide)."""
     stored = [
         *(
             r["t"]
@@ -1452,5 +1463,42 @@ async def test_send_proposal_stores_no_addresses_or_body(proposals_app) -> None:
         *(r["t"] for r in await w.q("SELECT details::text t FROM console_audit")),
     ]
     assert stored
-    for needle in (outside, copied, "staff@example.test", SEND_SUBJECT, "Z9Q"):
+    for needle in needles:
         assert all(needle.lower() not in text.lower() for text in stored), needle
+
+
+async def test_export_proposal_stores_no_addresses_or_body(proposals_app) -> None:
+    """A reply the user did not ask to send gets an export card, also counts only."""
+    w, gmail = proposals_app
+    w.app.state.email_service.model = CleanDraftModel()
+    copied = "copy.person@example.test"
+    w.app.state.workspace_planner = WorkspacePlanner(
+        OnePlan({"action": "email_reply", "thread_id": "t1", "instructions": "Hi", "cc": [copied]})
+    )
+    browser = await _email_ready(w)
+    assert (await _email_call(w, browser, "POST", "/console/v1/email/sync")).status_code == 200
+    created = await w.mutate(browser, THREADS, {"request_key": str(uuid4())})
+    assert created.status_code == 201, created.text
+    turn = await w.mutate(
+        browser,
+        f"{THREADS}/{created.json()['id']}/turns",
+        {
+            "request_key": str(uuid4()),
+            "body": f"Reply to Aina's email and copy {copied}",
+            "page_context": {"tab": "email"},
+        },
+    )
+    assert turn.status_code == 201, turn.text
+    proposal = turn.json()["result"]["proposal"]
+    assert proposal["kind"] == "email_export"
+    assert proposal["card"]["title"] == "Save email to Gmail drafts for 2 people"
+    assert proposal["card"]["summary"] == "1 in To, 1 in CC. Nothing is sent."
+    done = await _http_confirm(w, browser, proposal["id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["result"]["status"] == "exported"
+    assert sum(1 for m, p, _ in gmail.requests if m == "POST" and p.endswith("/drafts")) == 1
+    rows = await w.q("SELECT kind, payload FROM console_proposals")
+    assert [(r["kind"], set(r["payload"])) for r in rows] == [("email_export", {"draft_id"})]
+    await _assert_not_stored(
+        w, "aina@example.test", copied, "staff@example.test", SEND_SUBJECT, "Z9Q", "MGL-TEST-005"
+    )

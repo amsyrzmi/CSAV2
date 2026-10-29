@@ -485,6 +485,11 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_skipped": "{count} could not be summarised. Open the Email assistant tab "
         "to read them.",
         "summary_stored": "Inbox summary: {count}.",
+        "summary_mailbox_not_connected": "Connect your Gmail on the Email assistant tab first.",
+        "summary_assistant_disabled": "The Email assistant is turned off for your workspace.",
+        "summary_permission_denied": "Your access doesn't include the email summary.",
+        "summary_unavailable": "I couldn't summarise your inbox just now. Try again in a few "
+        "minutes.",
         "high": "high",
         "normal": "normal",
         "low": "low",
@@ -526,6 +531,11 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_skipped": "{count} tidak dapat diringkaskan. Buka tab Email assistant untuk "
         "membacanya.",
         "summary_stored": "Ringkasan peti masuk: {count}.",
+        "summary_mailbox_not_connected": "Sambungkan Gmail anda di tab Email assistant dahulu.",
+        "summary_assistant_disabled": "Email assistant dimatikan untuk ruang kerja anda.",
+        "summary_permission_denied": "Akses anda tidak termasuk ringkasan e-mel.",
+        "summary_unavailable": "Saya tidak dapat meringkaskan peti masuk anda sekarang. Cuba "
+        "lagi dalam beberapa minit.",
         "high": "tinggi",
         "normal": "biasa",
         "low": "rendah",
@@ -1007,7 +1017,19 @@ async def _team_email(
     return _Planned(prepared=prepared)
 
 
-async def _summary(request: Request, actor: ConsoleActor, client_id: UUID) -> _Planned:
+# Summary refusals the person can act on are answered in words, like the team refusals.
+_SUMMARY_ANSWERS = {
+    "mailbox_not_connected": "summary_mailbox_not_connected",
+    "assistant_disabled": "summary_assistant_disabled",
+    "permission_denied": "summary_permission_denied",
+    "model_not_configured": "summary_unavailable",
+    "email_model_unavailable": "summary_unavailable",
+}
+
+
+async def _summary(
+    request: Request, actor: ConsoleActor, client_id: UUID, facts: PlannerFacts
+) -> _Planned:
     """Answers "what needs my attention" from synced mail; may analyse five threads first."""
     service = _email_service(request)
     await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
@@ -1016,10 +1038,15 @@ async def _summary(request: Request, actor: ConsoleActor, client_id: UUID) -> _P
             email_session_from(request, actor, client_id, mutation=False)
         )
     except EmailPolicyError as exc:
-        raise email_http_error(exc) from None
+        key = _SUMMARY_ANSWERS.get(exc.code)
+        if key is None:
+            raise email_http_error(exc) from None
     except (CompletionError, TimeoutError):
-        raise HTTPException(503, "email_model_unavailable") from None
-    return _Planned(summary=page)
+        key = _SUMMARY_ANSWERS["email_model_unavailable"]
+    else:
+        return _Planned(summary=page)
+    # Fixed copy, no mail content, so the turn row may store it as it is.
+    return _Planned(result=AnswerResult(action="answer", markdown=_TEXT[facts.language][key]))
 
 
 _MYT = ZoneInfo("Asia/Kuala_Lumpur")
@@ -1137,7 +1164,7 @@ async def _resolve(
             request, actor, client_id, thread_id, turn, proposal, facts, registry
         )
     if isinstance(proposal, InboxSummaryProposal):
-        return await _summary(request, actor, client_id)
+        return await _summary(request, actor, client_id, facts)
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
 
 

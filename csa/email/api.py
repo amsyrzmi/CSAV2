@@ -351,6 +351,14 @@ def build_email_router() -> APIRouter:
     async def drafts(session: Session, service: Service) -> DraftPage:
         return await service.drafts(session)
 
+    @router.get("/drafts/{draft_id}", response_model=DraftOut)
+    async def draft_by_id(draft_id: UUID, session: Session, service: Service) -> DraftOut:
+        """One of the caller's own drafts, read from the store only (no Gmail call).
+
+        Scoped to the caller's own mailbox, as sending is: anyone else's draft is 404.
+        """
+        return await service.draft_by_id(session, draft_id)
+
     @router.put("/drafts/{draft_id}", response_model=DraftOut)
     async def update_draft(
         draft_id: UUID,

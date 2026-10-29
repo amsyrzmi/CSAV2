@@ -440,3 +440,30 @@ async def test_what_needs_my_attention_answers_and_stores_no_content(planned) ->
     history = await browser.get(f"/console/v1/workspace/conversations/{thread}/turns")
     assert history.status_code == 200
     assert "MGL-TEST-005" not in history.text
+
+
+async def test_attention_refusals_are_plain_answers(planned) -> None:  # noqa: F811
+    world, model = planned
+    browser = await _mail_ready(world)
+    await _sync(world, browser)
+    unconnected, _ = await world.member(role="tenant_staff")
+
+    async def ask(who: httpx.AsyncClient) -> str:
+        model.reply({"action": "inbox_summary"})
+        thread = await _thread(world, who)
+        turn = await _turn(world, who, thread, "What needs my attention today?", "email")
+        assert turn.status_code == 201, turn.text
+        assert turn.json()["result"]["action"] == "answer"
+        return turn.json()["result"]["markdown"]
+
+    assert await ask(unconnected) == "Connect your Gmail on the Email assistant tab first."
+    world.app.state.email_service.model = None  # nothing is analysed yet, so nothing to show
+    assert await ask(browser) == (
+        "I couldn't summarise your inbox just now. Try again in a few minutes."
+    )
+    await world.q("UPDATE email_settings SET enabled=false WHERE client_id=%s", world.tenants[0])
+    assert await ask(browser) == "The Email assistant is turned off for your workspace."
+    rows = await world.q("SELECT action, result::text t FROM console_workspace_turns")
+    assert [r["action"] for r in rows] == ["inbox_summary"] * 3
+    for row in rows:
+        assert "MGL-TEST-005" not in row["t"] and "aina@example.test" not in row["t"]
