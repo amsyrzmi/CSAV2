@@ -118,7 +118,11 @@ Project shape: one branch, four commit groups, one PR (owner chose "both in one 
 - Python: the migration test and `tests/test_health.py` / `tests/test_migrate.py` for 0501 if approved; the inbox list and search tests for the follow-ups.
 - Visual check against the synthetic preview stack (scratchpad stub gateway) at 320, 768 and 1440 px, in all three themes.
 
-## 10. Decisions for the owner
+## 10. Owner decisions (approved 2026-10-29)
+
+Approved by the owner: 1 as recommended, 2 option B, 3 as recommended. The migration (0501) is therefore agreed.
+
+- Decision 2 detail (option B): a read-only, additive `last_change` object on each service (and agent capability) returned by the existing services and capabilities reads: `{action, at, actor}`, taken from the newest matching `console_audit` row (`service.requested`, `service.activated`, `service.suspended`, and the capability toggle actions). `actor` is a display name for platform administrators only; for every other role the API returns a role label ("a platform administrator") and no name or id. No new route, no schema change, tests for both audiences.
 
 1. **Inbox list cost (needs a migration).** Recommend three indexes in `0501` (`orders(contact_id)`, `subscriptions(contact_id)`, `approvals(conversation_id)`): additive, reversible, no change to write paths. The alternative, a maintained `conversations.last_activity_at`, changes every place that writes a message and is riskier.
 2. **"Last changed" line.** Recommend A: use only the fields already on the service row ("Requested 27 Oct", "Activated 20 Oct", with "by a platform administrator" as today), no backend change, and no date for a suspension because the row does not store one. Option B adds a read-only field from `console_audit` so suspensions and agent switches also show when and by whom; that is a Python task (`services.py`, `contracts.py`, a query, access rules, tests) and a named person shown to tenant members would be a new exposure, so B would show names to platform admins only.
