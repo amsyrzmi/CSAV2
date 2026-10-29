@@ -20,6 +20,7 @@ The owner wants the assistant to handle everyday email end to end, without actin
 - **CC and BCC** on new emails and replies, through the assistant ("and copy my boss") and the tab.
 - **"Email my team".** Draft one email to all of the person's direct reports, taken from the HR reporting lines (B2).
 - **"What needs my attention today".** A short summary of the person's synced threads, highest priority first, built from the analysis the email assistant already stores.
+- **More of the inbox.** Sync covers 90 days, "Load more" pages back 20 at a time, with at most 200 conversations kept, and the tab syncs when opened.
 
 ## Non-goals (this version)
 
@@ -128,6 +129,24 @@ The owner wants the assistant to handle everyday email end to end, without actin
 - **Reply drafts** made on the tab can be sent as replies in their thread.
 - **A sent draft** shows "Sent at <time>", and editing is disabled.
 - **"What needs my attention today"** is a panel at the top of the tab with the same summary the assistant gives.
+
+### Sync: more of the inbox (owner, 2026-10-29: follow my suggestions)
+
+Today `sync` lists at most 20 threads with `SYNC_QUERY = "newer_than:14d -in:chats"`, and only when the user clicks Sync.
+
+- **Window:** sync covers the last **90 days** (`newer_than:90d -in:chats`). The first page is still the newest 20.
+- **Load more:** `POST /console/v1/email/sync/more` (idempotency key, same session rules) fetches the next 20 older threads.
+  - It uses Gmail's `pageToken`, stored per mailbox. The token is not secret but is owner-only.
+  - When no page token is left, the tab shows "No older email in the last 90 days".
+  - Threads are matched by Gmail thread id, so a page that shifts because new mail arrived never creates duplicates.
+- **Caps:**
+  - At most **200 cached threads** per mailbox. Beyond that, the oldest by latest-message time are removed together with their analysis and any unsent drafts that are not linked to them.
+  - Threads whose latest message is older than **90 days** are removed.
+  - Both cleanups run at the end of each sync and load-more, so no new scheduled job is needed.
+- **Analysis stays on demand.** Load more never calls the model. A thread is analysed when opened, or by the attention summary (at most 5 per summary).
+- **Sync on open:** the Email assistant tab runs a sync when it opens if the last sync is older than 5 minutes, plus the Sync button. There is no background or periodic sync in this version; that is a later step.
+- **The UI** shows "Loading…" while a page is fetched, and "as of <time>" for the last sync.
+- **Migration 0484 adds** to `email_mailboxes`: `sync_page_token text`, `last_synced_at timestamptz`.
 
 ### Inbox summary
 
