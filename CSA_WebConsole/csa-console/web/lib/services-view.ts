@@ -1,3 +1,4 @@
+import type { LastChange } from "./identity-contracts";
 import type { PackageStatus, Service } from "./services-api";
 
 export interface ServiceStats {
@@ -49,4 +50,28 @@ export function statusLabel(service: Service): { text: string; tone: StatusTone 
 export function agentCountLabel(count: number): string {
   if (count <= 0) return "No agents";
   return count === 1 ? "1 agent" : `${count} agents`;
+}
+
+const CHANGE_WORDS: Record<LastChange["action"], string> = {
+  requested: "Requested",
+  activated: "Activated",
+  suspended: "Suspended",
+  subscribed: "Subscription turned on",
+  unsubscribed: "Subscription turned off",
+  tenant_switch_on: "Tenant switch turned on",
+  tenant_switch_off: "Tenant switch turned off",
+};
+
+/**
+ * "Activated 20 Oct 2026 by a platform administrator", or null when there is nothing to say.
+ * The actor is exactly the string the server sent (it already depends on who is looking);
+ * nothing here looks a name up or adds one. The caller renders it as text, never as markup.
+ */
+export function lastChangeText(change: LastChange | null | undefined): string | null {
+  if (!change) return null;
+  const words = Object.hasOwn(CHANGE_WORDS, change.action) ? CHANGE_WORDS[change.action] : null;
+  const when = new Date(change.at);
+  if (!words || Number.isNaN(when.getTime())) return null;
+  const date = when.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  return `${words} ${date} by ${change.actor}`;
 }

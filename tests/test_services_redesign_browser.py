@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -50,7 +51,14 @@ NO_WHATSAPP = {
 }
 
 
-def make_agent(name: str, title: str, *, active: bool) -> dict[str, Any]:
+def change(action: str, day: int, actor: str = "Preview Admin") -> dict[str, str]:
+    """A `last_change` as the server sends it: the actor is already the string to show."""
+    return {"action": action, "at": f"2026-10-{day:02d}T12:00:00Z", "actor": actor}
+
+
+def make_agent(
+    name: str, title: str, *, active: bool, last_change: dict[str, str] | None = None
+) -> dict[str, Any]:
     return {
         "name": name,
         "title": title,
@@ -63,6 +71,7 @@ def make_agent(name: str, title: str, *, active: bool) -> dict[str, Any]:
             "circuit_state": "closed",
             "fail_count": 0,
             "updated_at": "2026-10-25T00:00:00Z",
+            "last_change": last_change,
         },
         "implementation": "local",
         "readiness": "available",
@@ -89,8 +98,14 @@ def default_services() -> dict[str, dict[str, Any]]:
             can_suspend=True,
             reference="Q-1",
             activated_at="2026-10-20T00:00:00Z",
+            last_change=change("activated", 20),
             agents=[
-                make_agent("kb_agent", "Knowledge base agent", active=True),
+                make_agent(
+                    "kb_agent",
+                    "Knowledge base agent",
+                    active=True,
+                    last_change=change("subscribed", 22),
+                ),
                 make_agent("ticket_agent", "Ticketing & handoff agent", active=True),
                 make_agent("escalation_agent", "Escalation agent", active=True),
                 make_agent("order_approval", "Order approval agent", active=True),
@@ -114,6 +129,7 @@ def default_services() -> dict[str, dict[str, Any]]:
             "requested",
             can_activate=True,
             requested_at="2026-10-25T00:00:00Z",
+            last_change=change("requested", 25, "Tenant Admin Lee"),
             agents=[make_agent("subscription_agent", "Subscriptions agent", active=False)],
         ),
         make_service("bookings", "Bookings", "addon", "available", can_request=True),
@@ -121,7 +137,12 @@ def default_services() -> dict[str, dict[str, Any]]:
         make_service("e_invoicing", "E-invoicing", "addon", "available", sellable=False),
         make_service("hr", "People and HR", "standalone", "active", can_suspend=True),
         make_service(
-            "staff_email", "Staff email assistant", "standalone", "suspended", can_activate=True
+            "staff_email",
+            "Staff email assistant",
+            "standalone",
+            "suspended",
+            can_activate=True,
+            last_change=change("suspended", 27),
         ),
     ]
     return {row["key"]: row for row in rows}
@@ -215,6 +236,9 @@ class Stub:
     gate: asyncio.Event = field(default_factory=open_event)
     list_gate: asyncio.Event = field(default_factory=open_event)
     posts: list[dict[str, Any]] = field(default_factory=list)
+    patches: list[dict[str, Any]] = field(default_factory=list)
+    list_gets: int = 0
+    switch_change: dict[str, str] = field(default_factory=lambda: change("tenant_switch_off", 28))
     unexpected: list[str] = field(default_factory=list)
 
     def hold(self, *, reload: bool = False) -> None:
@@ -248,6 +272,7 @@ class Stub:
         elif path == "admin/clients" and request.method == "GET":
             data = [TENANT_PROFILE]
         elif path == "services" and request.method == "GET":
+            self.list_gets += 1
             await self.list_gate.wait()
             data = list(self.services.values())
         elif path == "channels/whatsapp" and request.method == "GET":
@@ -261,10 +286,29 @@ class Stub:
                 status, data = self.fail_status, {"detail": REASON}
             else:
                 data = self.apply(key, verb, body)
+        elif path.startswith("capabilities/") and request.method == "PATCH":
+            name = path.removeprefix("capabilities/")
+            self.patches.append({"name": name, "body": request.post_data_json})
+            await self.gate.wait()
+            data = self.switch_agent(name, request.post_data_json)
         else:
             self.unexpected.append(f"{request.method} {path}")
             status, data = 500, {"detail": "unexpected synthetic call"}
         await request_route.fulfill(status=status, json=data)
+
+    def switch_agent(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Apply a capability switch; the server records the change the list then reports."""
+        capability: dict[str, Any] = {}
+        for key, row in self.services.items():
+            agents = []
+            for agent in row["agents"]:
+                if agent["name"] == name:
+                    capability = {**agent["capability"], **body, "last_change": self.switch_change}
+                    capability["active"] = capability["is_enabled"] and capability["client_enabled"]
+                    agent = {**agent, "capability": capability}
+                agents.append(agent)
+            self.services[key] = {**row, "agents": agents}
+        return capability
 
 
 async def open_services(
@@ -275,9 +319,13 @@ async def open_services(
     width: int = 1280,
     height: int = 1000,
     theme: str | None = None,
+    tenant: bool = False,
     **options: Any,
 ) -> tuple[Any, Page, list[str]]:
     site.upstream.me, site.upstream.packages = make_me("platform_admin"), []
+    if tenant:
+        site.upstream.me = make_me("tenant_admin")
+        site.upstream.packages = [{"key": "customer_support", "status": "active"}]
     context = await browser.new_context(viewport={"width": width, "height": height}, **options)
     context.set_default_navigation_timeout(WAIT)
     cookies = [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
@@ -288,7 +336,9 @@ async def open_services(
     diagnostics: list[str] = []
     page.on("pageerror", lambda error: diagnostics.append(str(error)))
     await page.route("**/console/v1/**", stub.route)
-    await page.goto(f"{site.base}/services?client_id={TENANT}")
+    await page.goto(
+        f"{site.base}/portal/services" if tenant else f"{site.base}/services?client_id={TENANT}"
+    )
     await expect(row_of(page, "customer_support")).to_be_visible(timeout=WAIT)
     return context, page, diagnostics
 
@@ -705,6 +755,189 @@ async def test_layout_fits_320_and_1440_in_every_theme(site: Site) -> None:
                 assert not overflow["wide"], (theme, width, overflow)
             assert not diagnostics, diagnostics
             await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+def tenant_view(services: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """What the server sends a tenant member: the same changes, but only role labels as actors."""
+    labels = {"requested": "a member of your team", "subscribed": "a member of your team"}
+
+    def relabel(value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        return {**value, "actor": labels.get(value["action"], "a platform administrator")}
+
+    out: dict[str, dict[str, Any]] = {}
+    for key, row in services.items():
+        agents = [
+            {
+                **a,
+                "capability": {
+                    **a["capability"],
+                    "last_change": relabel(a["capability"]["last_change"]),
+                },
+            }
+            for a in row["agents"]
+        ]
+        out[key] = {**row, "last_change": relabel(row.get("last_change")), "agents": agents}
+    return out
+
+
+def line_of(page: Page, key: str) -> Locator:
+    return page.get_by_test_id(f"services-last-change-{key}")
+
+
+async def test_platform_admin_sees_who_made_each_change(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub)
+        await expect(line_of(page, "customer_support")).to_have_text(
+            "Activated 20 Oct 2026 by Preview Admin"
+        )
+        await expect(line_of(page, "subscriptions")).to_have_text(
+            "Requested 25 Oct 2026 by Tenant Admin Lee"
+        )
+        await expect(line_of(page, "staff_email")).to_have_text(
+            "Suspended 27 Oct 2026 by Preview Admin"
+        )
+        # The activation line that exists today is untouched and sits above the new line.
+        activation = row_of(page, "customer_support").get_by_test_id(
+            "services-activation-customer_support"
+        )
+        await expect(activation).to_contain_text("by a platform administrator")
+        await expect(activation).to_contain_text("Reference: Q-1")
+        order = await row_of(page, "customer_support").evaluate(
+            """row => {
+                const find = id => row.querySelector(`[data-testid="${id}-customer_support"]`);
+                const a = find("services-activation");
+                const b = find("services-last-change");
+                return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+            }"""
+        )
+        assert order, "the last-change line belongs below the activation line"
+
+        # Agent cards carry their own line, under the status words.
+        await (
+            row_of(page, "customer_support")
+            .get_by_test_id("services-agents-toggle-customer_support")
+            .click()
+        )
+        await expect(page.get_by_test_id("agent-last-change-kb_agent")).to_have_text(
+            "Subscription turned on 22 Oct 2026 by Preview Admin"
+        )
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_no_line_without_a_usable_change(site: Site) -> None:
+    stub = Stub()
+    stub.services["bookings"]["last_change"] = {**change("activated", 20), "at": "not a date"}
+    stub.services["marketplaces"]["last_change"] = {**change("exploded", 20)}
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub)
+        for key in ("hr", "orders_products", "bookings", "marketplaces", "e_invoicing"):
+            await expect(row_of(page, key)).to_be_visible()
+            await expect(line_of(page, key)).to_have_count(0)
+        await expect(line_of(page, "customer_support")).to_have_count(1)
+        # An agent with no change shows no line either; the others keep theirs.
+        await (
+            row_of(page, "customer_support")
+            .get_by_test_id("services-agents-toggle-customer_support")
+            .click()
+        )
+        await expect(page.get_by_test_id("agent-card-ticket_agent")).to_be_visible()
+        await expect(page.get_by_test_id("agent-last-change-ticket_agent")).to_have_count(0)
+        await expect(page.get_by_test_id("agent-last-change-kb_agent")).to_have_count(1)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_tenant_member_sees_only_the_role_labels_the_server_sends(site: Site) -> None:
+    stub = Stub(services=tenant_view(default_services()))
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub, tenant=True)
+        await expect(line_of(page, "customer_support")).to_have_text(
+            "Activated 20 Oct 2026 by a platform administrator"
+        )
+        await expect(line_of(page, "subscriptions")).to_have_text(
+            "Requested 25 Oct 2026 by a member of your team"
+        )
+        await expect(line_of(page, "hr")).to_have_count(0)
+        await (
+            row_of(page, "customer_support")
+            .get_by_test_id("services-agents-toggle-customer_support")
+            .click()
+        )
+        await expect(page.get_by_test_id("agent-last-change-kb_agent")).to_have_text(
+            "Subscription turned on 22 Oct 2026 by a member of your team"
+        )
+        # No name or id anywhere in the rows: the page only repeats what the server labelled.
+        for key in ("customer_support", "subscriptions", "staff_email"):
+            text = await row_of(page, key).inner_text()
+            for leaked in ("Preview Admin", "Tenant Admin Lee", "Synthetic Admin"):
+                assert leaked not in text, (key, leaked)
+            assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-", text), (key, text)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_actor_text_is_shown_as_text_not_markup(site: Site) -> None:
+    stub = Stub()
+    hostile = '<img src=x onerror="window.__pwned = 1"> & Co'
+    stub.services["hr"]["last_change"] = change("activated", 21, hostile)
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub)
+        await expect(line_of(page, "hr")).to_have_text(f"Activated 21 Oct 2026 by {hostile}")
+        await expect(line_of(page, "hr").locator("img")).to_have_count(0)
+        assert await page.evaluate("window.__pwned ?? null") is None
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+
+
+async def test_agent_switch_reloads_the_list_and_updates_the_line(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub)
+        await (
+            row_of(page, "customer_support")
+            .get_by_test_id("services-agents-toggle-customer_support")
+            .click()
+        )
+        line = page.get_by_test_id("agent-last-change-kb_agent")
+        await expect(line).to_have_text("Subscription turned on 22 Oct 2026 by Preview Admin")
+        loads = stub.list_gets
+
+        await page.get_by_test_id("agent-switch-kb_agent").click()
+        await expect(line).to_have_text("Tenant switch turned off 28 Oct 2026 by Preview Admin")
+        await expect(page.get_by_test_id("agent-pending-kb_agent")).to_be_empty()
+        assert stub.patches == [{"name": "kb_agent", "body": {"client_enabled": False}}]
+        # The reload that every confirmed action already does is the only fetch: no extra ones.
+        await page.wait_for_timeout(500)
+        assert stub.list_gets == loads + 1, (loads, stub.list_gets)
+        # The card's labelled values still read exactly as before.
+        card = page.get_by_test_id("agent-card-kb_agent")
+        await expect(card.get_by_text("Subscribed", exact=True)).to_have_count(1)
+        await expect(card.get_by_text("Off", exact=True)).to_have_count(1)
+        assert not diagnostics, diagnostics
+        await context.close()
 
     await with_browser(body)
     assert not stub.unexpected, stub.unexpected

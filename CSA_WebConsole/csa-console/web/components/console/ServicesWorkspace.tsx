@@ -8,7 +8,7 @@ import type { Agent, Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
 import { servicesClient, type Service } from "@/lib/services-api";
 import {
-  agentCountLabel, rowAvatarState, serviceStats, statusLabel, type ServiceStats, type StatusTone,
+  agentCountLabel, lastChangeText, rowAvatarState, serviceStats, statusLabel, type ServiceStats, type StatusTone,
 } from "@/lib/services-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
@@ -180,6 +180,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
   const query = clientId ? `client_id=${encodeURIComponent(clientId)}` : "";
   const status = statusLabel(service);
   const avatar = avatarForPackage(service.key);
+  const lastChange = lastChangeText(service.last_change);
   const resting = transition.phase === "idle" || transition.phase === "still";
   const avatarState = acting ? "pending" : resting ? rowAvatarState(service.status) : transition.state;
 
@@ -246,6 +247,8 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
             {service.status === "active" && <p className="mt-1 text-sm [overflow-wrap:anywhere]" data-testid={`services-activation-${service.key}`}>
               Activated{service.activated_at ? ` ${new Date(service.activated_at).toLocaleDateString()}` : ""} by a platform administrator
               {service.reference ? `. Reference: ${service.reference}` : ""}.</p>}
+            {lastChange && <p className="mt-1 text-sm text-ink-600 [overflow-wrap:anywhere]"
+              data-testid={`services-last-change-${service.key}`}>{lastChange}</p>}
             {service.key === "staff_email" && service.inner_switch !== null && <p className="mt-1 text-sm text-ink-600">
               Enabled by your tenant admin in the Email tab: currently {service.inner_switch ? "on" : "off"}.</p>}
             {service.key === "hr" && <p className="mt-1 text-sm text-ink-600">

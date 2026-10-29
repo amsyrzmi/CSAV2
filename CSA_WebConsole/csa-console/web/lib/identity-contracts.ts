@@ -95,6 +95,14 @@ export interface IssuedInvitation {
   expires_at: string;
   delivery: "manual";
 }
+/** The newest recorded change to a service or capability; `actor` is a ready-to-display string. */
+export interface LastChange {
+  action:
+    | "requested" | "activated" | "suspended" | "subscribed" | "unsubscribed"
+    | "tenant_switch_on" | "tenant_switch_off";
+  at: string;
+  actor: string;
+}
 export interface Capability {
   name: string;
   is_enabled: boolean;
@@ -104,6 +112,7 @@ export interface Capability {
   circuit_state: string;
   fail_count: number;
   updated_at: string;
+  last_change?: LastChange | null;
 }
 export interface Agent {
   name: string;

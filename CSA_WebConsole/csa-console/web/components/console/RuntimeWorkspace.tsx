@@ -8,6 +8,7 @@ import { api, patch } from "@/lib/api";
 import type {
   Agent, AgentRun, Client, Me, RunPage, RuntimeEvent, RuntimeOverview,
 } from "@/lib/identity-contracts";
+import { lastChangeText } from "@/lib/services-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
 import { field, Heading, Notice, Panel, secondary } from "./ui";
@@ -182,6 +183,7 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
   const subscribed = agent.capability?.is_enabled;
   const switchOn = agent.capability?.client_enabled;
   const name = agent.name;
+  const lastChange = lastChangeText(agent.capability?.last_change);
   return (
     <article data-testid={`agent-card-${name}`}
       className="rounded-[14px] border border-[var(--fs-border)] bg-[var(--fs-surface)] p-5 shadow-[var(--fs-shadow-card)] sm:p-6">
@@ -198,6 +200,8 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
             {agent.capability && <span data-testid={`agent-status-${name}`}
               className="font-medium text-ink-700">{active ? "Active" : "Not active"}</span>}
           </p>
+          {lastChange && <p data-testid={`agent-last-change-${name}`}
+            className="mt-1 text-sm text-ink-600 [overflow-wrap:anywhere]">{lastChange}</p>}
           {/* Always rendered (empty when idle) so assistive technology announces the change reliably. */}
           <span role="status" data-testid={`agent-pending-${name}`}
             className={pending ? "mt-1 block text-sm text-ink-600" : "block"}>{pending ? "Saving..." : ""}</span>

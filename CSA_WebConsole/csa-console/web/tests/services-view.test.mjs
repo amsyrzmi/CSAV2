@@ -12,7 +12,7 @@ function moduleUrl(source) {
 const view = await import(moduleUrl(
   await readFile(new URL("../lib/services-view.ts", import.meta.url), "utf8"),
 ));
-const { serviceStats, rowAvatarState, statusLabel, agentCountLabel } = view;
+const { serviceStats, rowAvatarState, statusLabel, agentCountLabel, lastChangeText } = view;
 
 const agent = (name, active) => ({ name, capability: { name, active } });
 const service = (key, status, agents = [], sellable = true) => ({
@@ -105,4 +105,47 @@ test("agentCountLabel reads as a short phrase", () => {
   assert.equal(agentCountLabel(0), "No agents");
   assert.equal(agentCountLabel(1), "1 agent");
   assert.equal(agentCountLabel(4), "4 agents");
+});
+
+const AT = "2026-10-20T12:00:00Z";
+const change = (action, actor = "Preview Admin", at = AT) => ({ action, at, actor });
+
+test("lastChangeText words every action with a stable date and the server's actor", () => {
+  const cases = [
+    ["requested", "Requested 20 Oct 2026 by Preview Admin"],
+    ["activated", "Activated 20 Oct 2026 by Preview Admin"],
+    ["suspended", "Suspended 20 Oct 2026 by Preview Admin"],
+    ["subscribed", "Subscription turned on 20 Oct 2026 by Preview Admin"],
+    ["unsubscribed", "Subscription turned off 20 Oct 2026 by Preview Admin"],
+    ["tenant_switch_on", "Tenant switch turned on 20 Oct 2026 by Preview Admin"],
+    ["tenant_switch_off", "Tenant switch turned off 20 Oct 2026 by Preview Admin"],
+  ];
+  for (const [action, text] of cases) assert.equal(lastChangeText(change(action)), text, action);
+});
+
+test("lastChangeText never starts a line with the bare word Subscribed", () => {
+  assert.equal(
+    lastChangeText(change("subscribed", "a member of your team")),
+    "Subscription turned on 20 Oct 2026 by a member of your team",
+  );
+});
+
+test("lastChangeText shows the role labels the server sends", () => {
+  assert.equal(
+    lastChangeText(change("suspended", "a platform administrator", "2026-10-27T12:00:00Z")),
+    "Suspended 27 Oct 2026 by a platform administrator",
+  );
+});
+
+test("lastChangeText is null without a change, with a bad date or an unknown action", () => {
+  assert.equal(lastChangeText(null), null);
+  assert.equal(lastChangeText(undefined), null);
+  assert.equal(lastChangeText(change("activated", "x", "not a date")), null);
+  assert.equal(lastChangeText(change("activated", "x", "")), null);
+  assert.equal(lastChangeText(change("exploded")), null);
+});
+
+test("lastChangeText returns an actor with markup characters unchanged (React escapes it)", () => {
+  const actor = `<img src=x onerror="alert(1)"> & "Co"`;
+  assert.equal(lastChangeText(change("activated", actor)), `Activated 20 Oct 2026 by ${actor}`);
 });

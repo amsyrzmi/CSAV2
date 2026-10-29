@@ -1,5 +1,5 @@
 import { api, post } from "./api";
-import type { Agent } from "./identity-contracts";
+import type { Agent, LastChange } from "./identity-contracts";
 
 export type AgentRow = Agent;
 export type PackageStatus = "available" | "requested" | "active" | "suspended";
@@ -26,6 +26,7 @@ export interface Service {
   can_request: boolean;
   can_activate: boolean;
   can_suspend: boolean;
+  last_change?: LastChange | null;
 }
 
 /** `clientId` is null for a tenant member and the target tenant for a platform admin. */
