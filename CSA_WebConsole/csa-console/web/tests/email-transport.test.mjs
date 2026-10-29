@@ -104,6 +104,48 @@ test("send posts the confirmed version with a key, and keeps the key only while 
   } finally { restore(); }
 });
 
+test("only a 4xx with a JSON body frees the send key; a 5xx never does", async () => {
+  const replies = [
+    () => Response.json({ detail: "provider_unreachable" }, { status: 502 }),
+    () => Response.json({ detail: "something_failed" }, { status: 503 }),
+    () => new Response("Bad gateway", { status: 400 }),
+    () => Response.json({ detail: "send_limit_reached", retry_after: 60 }, { status: 429 }),
+    () => Response.json({ detail: "send_released" }, { status: 409 }),
+    () => Response.json({ outcome: "sent", sent_at: null, gmail_message_id: "m1", remaining_this_hour: 19 }),
+  ];
+  const { requests, restore } = recorder((_p, _i, n) => replies[n - 1]());
+  try {
+    const client = emailClient("");
+    for (let attempt = 0; attempt < 5; attempt += 1) await assert.rejects(client.send(DRAFT, VERSION));
+    await client.send(DRAFT, VERSION);
+    assert.equal(key(requests[1]), key(requests[0]), "a 5xx with a JSON body keeps the key");
+    assert.equal(key(requests[2]), key(requests[1]), "another 5xx keeps it too");
+    assert.equal(key(requests[3]), key(requests[2]), "a 4xx without a JSON body keeps it");
+    assert.notEqual(key(requests[4]), key(requests[3]), "a 429 refusal frees it");
+    assert.notEqual(key(requests[5]), key(requests[4]), "a released send frees it");
+  } finally { restore(); }
+});
+
+test("email refusals the assistant dock shows are plain sentences", async () => {
+  const { api } = await import(apiUrl);
+  const copy = {
+    reply_target_unavailable: "I can't tell who to reply to in that conversation.",
+    email_recipient_invalid: "Check the email address.",
+    recipients_invalid: "Check the email addresses.",
+    draft_rejected: "I couldn't write that email. Try rephrasing.",
+    thread_body_unavailable: "I couldn't read that conversation from Gmail. Sync and try again.",
+    resource_unavailable: "That item isn't available any more.",
+  };
+  for (const [code, sentence] of Object.entries(copy)) {
+    const { restore } = recorder(() => Response.json({ detail: code }, { status: 409 }));
+    try {
+      const error = await api("/console/v1/workspace/conversations").catch((e) => e);
+      assert.equal(error.message, sentence);
+      assert.equal(error.code, code);
+    } finally { restore(); }
+  }
+});
+
 test("a released send gets a fresh key; the refusal keeps the wait and the message", async () => {
   const replies = [
     () => Response.json({ detail: "send_outcome_unknown" }, { status: 502 }),

@@ -90,11 +90,13 @@ export interface AttentionPage { items: AttentionItem[]; as_of: string | null; s
 
 /**
  * A send whose answer is lost or unknown keeps its key, so a retake replays the stored outcome
- * and Gmail is never called twice. A clear refusal frees the key for a fresh attempt.
+ * and Gmail is never called twice. Only a clear refusal, a 4xx (429 included) with a JSON body,
+ * frees the key for a fresh attempt; a 5xx never does.
  */
 const UNCERTAIN_SEND = new Set(["send_outcome_unknown", "draft_already_sending"]);
 const sendSettled = (error: unknown) =>
-  error instanceof ApiError && error.body !== undefined && !UNCERTAIN_SEND.has(error.code);
+  error instanceof ApiError && error.status >= 400 && error.status < 500 &&
+  error.body !== undefined && !UNCERTAIN_SEND.has(error.code);
 
 /** Same idempotency discipline as HR: a key stays with one exact operation until it succeeds. */
 export function emailClient(tenant: string) {

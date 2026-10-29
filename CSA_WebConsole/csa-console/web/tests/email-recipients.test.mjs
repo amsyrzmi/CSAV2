@@ -56,7 +56,7 @@ test("a send card whose draft was edited since is stale; the browser never hashe
   assert.equal(email.sendCardStale(card, { version: "a".repeat(64) }), false);
   assert.equal(email.sendCardStale(card, { version: "b".repeat(64) }), true);
   assert.equal(email.sendCardStale({ ...card, expected_version: null }, { version: "b".repeat(64) }), false);
-  // Export cards bind a different hash; only send cards compare against the draft's version.
+  // Only send cards compare here; the server re-checks an export card's version at confirm.
   assert.equal(email.sendCardStale({ ...card, kind: "email_export" }, { version: "b".repeat(64) }), false);
   assert.equal(email.draftVersion, undefined);
   assert.doesNotMatch(source, /crypto\.subtle|sha-?256/i);
@@ -93,6 +93,35 @@ test("the attention panel hides for no access and explains a missing summary", (
   assert.equal(email.attentionNote({ items: [{}], skipped: 2, as_of: null }), "Some emails couldn't be summarised.");
   assert.equal(email.attentionNote({ items: [], skipped: 2, as_of: null }), null);
   assert.equal(email.attentionNote({ items: [{}], skipped: 0, as_of: null }), null);
+  // With nothing to show, a skipped email means the panel cannot say "nothing".
+  assert.equal(email.attentionEmpty({ items: [], skipped: 2, as_of: null }), "Some emails couldn't be summarised.");
+  assert.equal(email.attentionEmpty({ items: [], skipped: 0, as_of: null }), "Nothing needs your attention right now.");
+  assert.equal(email.attentionEmpty({ items: [], as_of: null }), "Nothing needs your attention right now.");
+});
+
+test("email cards offer no Send or Confirm for a draft that is not ready", () => {
+  const send = { kind: "email_send", expected_version: "a".repeat(64) };
+  const exportCard = { kind: "email_export", expected_version: "c".repeat(64) };
+  const ready = { status: "draft", version: "a".repeat(64), needs_staff_input: false };
+  assert.equal(email.emailCardBlock(send, ready), null);
+  assert.equal(email.emailCardBlock(exportCard, ready), null);
+  for (const [status, code] of [
+    ["sent", "draft_already_sent"], ["sending", "draft_already_sending"], ["exported", "draft_already_exported"],
+  ]) {
+    assert.equal(email.emailCardBlock(send, { ...ready, status }), code);
+    assert.equal(email.emailCardBlock(exportCard, { ...ready, status }), code, "export cards too");
+  }
+  const placeholders = { ...ready, needs_staff_input: true };
+  assert.equal(email.emailCardBlock(send, placeholders), "card_needs_staff_input");
+  assert.equal(email.emailErrorSentence({ code: "card_needs_staff_input" }),
+    "Fill in the [STAFF: …] parts on the Email assistant tab, then send it there.");
+  assert.equal(email.emailCardBlock(exportCard, placeholders), null, "saving to Gmail drafts keeps placeholders");
+  assert.equal(email.emailCardBlock(send, { ...ready, version: "b".repeat(64) }), "draft_changed");
+});
+
+test("a send the owner released says so on the card", () => {
+  assert.equal(email.emailErrorSentence({ code: "send_released" }),
+    "You marked this email as not sent. Ask the assistant to send it again, or send it from the Email assistant tab.");
 });
 
 test("sync on open only when the last sync is older than five minutes", () => {

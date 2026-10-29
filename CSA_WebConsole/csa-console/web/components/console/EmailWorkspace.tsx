@@ -7,7 +7,7 @@ import {
   emailClient, type AttentionPage, type Draft, type DraftEdit, type EmailContext, type Thread, type ThreadDetail,
 } from "@/lib/email-api";
 import {
-  addressesLookValid, attentionNote, attentionProblem, emailErrorSentence, formatAddresses,
+  addressesLookValid, attentionEmpty, attentionNote, attentionProblem, emailErrorSentence, formatAddresses,
   formatWhen, isReply, needsSync, parseAddresses,
 } from "@/lib/email-recipients";
 import { usePublishContext } from "@/lib/page-context";
@@ -196,7 +196,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
             () => client.sync(), async r => { const ctx = await refreshAll(); setMessage(`Synced ${String((r.detail as { threads?: number }).threads ?? 0)} threads.`); loadAttention(ctx); },
           )}>Sync inbox</button>
           <button className={secondary} disabled={busy} onClick={() => run(
-            () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setMessage("Mailbox disconnected; cached threads remain readable."); },
+            () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" }); setMessage("Mailbox disconnected; cached threads remain readable."); },
           )}>Disconnect</button>
         </>}
       </div>
@@ -270,7 +270,7 @@ function AttentionPanel({ attention, busy, onOpen }: {
       {page?.as_of && <p className="-mt-3 mb-3 text-xs text-ink-500">as of {formatWhen(page.as_of)}</p>}
       {attention.state === "loading" && <p className="text-sm">Loading…</p>}
       {attention.state === "error" && <p className="text-sm">{attention.text}</p>}
-      {page && page.items.length === 0 && <p className="text-sm">Nothing needs your attention right now.</p>}
+      {page && page.items.length === 0 && <p className="text-sm">{attentionEmpty(page)}</p>}
       {page && page.items.length > 0 && <ul className="divide-y">
         {page.items.map(item => <li key={item.thread_id} className="py-2 text-sm">
           <button type="button" className="w-full text-left hover:bg-neutral-50" disabled={busy} onClick={() => onOpen(item.thread_id)}>

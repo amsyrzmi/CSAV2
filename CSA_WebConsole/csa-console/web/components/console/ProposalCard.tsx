@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { resultSummary } from "@/lib/assistant-view";
 import { emailClient, type Draft } from "@/lib/email-api";
-import { cardFieldsShown, draftIdFromCard, emailErrorSentence, sendCardStale } from "@/lib/email-recipients";
+import { cardFieldsShown, draftIdFromCard, emailCardBlock, emailErrorSentence } from "@/lib/email-recipients";
 import {
   cancelProposal,
   confirmProposal,
@@ -19,12 +19,8 @@ const FINAL_EMAIL_CODES = new Set([
   "draft_already_sending",
   "draft_already_exported",
   "send_outcome_unknown",
+  "send_released",
 ]);
-const NOT_A_DRAFT: Record<string, string> = {
-  sending: "draft_already_sending",
-  sent: "draft_already_sent",
-  exported: "draft_already_exported",
-};
 
 /** One shared-registry proposal: nothing changes until the user confirms it here. */
 export function ProposalCard({
@@ -62,10 +58,9 @@ export function ProposalCard({
     return () => { live = false; };
   }, [draftId, tenantId]);
 
-  // Already sent or sending says so; an edit since the card was made says it changed.
-  const staleCode = proposal.kind === "email_send" && draft
-    ? NOT_A_DRAFT[draft.status] ?? (sendCardStale(proposal.card, draft) ? "draft_changed" : undefined)
-    : undefined;
+  // Already sent, sending or exported says so on both email cards. A send card also says when
+  // [STAFF: …] parts are left to fill in, or when the draft was edited since the card was made.
+  const staleCode = isEmail && draft ? emailCardBlock(proposal.card, draft) ?? undefined : undefined;
   const waitingForDraft = draftId !== null && draft === null;
 
   async function decide(kind: "confirm" | "cancel") {

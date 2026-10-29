@@ -101,8 +101,34 @@ export function sendCardStale(
   return card.kind === "email_send" && card.expected_version !== null && card.expected_version !== draft.version;
 }
 
+/** A card's draft that is no longer a draft offers no Send or Confirm. */
+const NOT_A_DRAFT: Record<string, string> = {
+  sending: "draft_already_sending",
+  sent: "draft_already_sent",
+  exported: "draft_already_exported",
+};
+
+/**
+ * Why a send or export card offers no Send or Confirm for the draft as read now, as a code for
+ * `emailErrorSentence`, or null when it can be confirmed. The server re-checks all of these.
+ */
+export function emailCardBlock(
+  card: { kind: string; expected_version: string | null },
+  draft: { status: string; version: string; needs_staff_input: boolean },
+): string | null {
+  const notADraft = NOT_A_DRAFT[draft.status];
+  if (notADraft) return notADraft;
+  if (card.kind !== "email_send") return null;
+  if (draft.needs_staff_input) return "card_needs_staff_input";
+  return sendCardStale(card, draft) ? "draft_changed" : null;
+}
+
 const sentences: Record<string, string> = {
   draft_needs_staff_input: "Fill in the [STAFF: …] parts before sending.",
+  // A send card in the assistant: the placeholders are filled in on the Email tab.
+  card_needs_staff_input: "Fill in the [STAFF: …] parts on the Email assistant tab, then send it there.",
+  send_released:
+    "You marked this email as not sent. Ask the assistant to send it again, or send it from the Email assistant tab.",
   send_outcome_unknown: "We couldn't confirm the email was sent. Check your Gmail Sent folder before trying again.",
   draft_changed: "This email changed after you opened it. Review it and send again.",
   draft_already_sent: "This email was already sent.",
@@ -152,6 +178,11 @@ export function attentionProblem(error: unknown): "hide" | string | null {
   if (code === "model_not_configured" || code === "email_model_unavailable") return "The summary isn't available right now.";
   return code === "mailbox_not_connected" ? sentences.mailbox_not_connected : null;
 }
+const SOME_SKIPPED = "Some emails couldn't be summarised.";
 export function attentionNote(page: { items: unknown[]; skipped?: number }): string | null {
-  return (page.skipped ?? 0) > 0 && page.items.length > 0 ? "Some emails couldn't be summarised." : null;
+  return (page.skipped ?? 0) > 0 && page.items.length > 0 ? SOME_SKIPPED : null;
+}
+/** The line for a summary with no items: a skipped email means it may not be "nothing". */
+export function attentionEmpty(page: { skipped?: number }): string {
+  return (page.skipped ?? 0) > 0 ? SOME_SKIPPED : "Nothing needs your attention right now.";
 }
