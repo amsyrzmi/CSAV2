@@ -71,3 +71,11 @@ test("a link is built only when the server returned a token", () => {
   assert.equal(invite.inviteLink({ token: "a b/1", delivery: "manual" }, "https://console.example"),
     "https://console.example/invite#token=a%20b%2F1");
 });
+
+test("the invitation list names the chosen HR access only with the hr package and a preset", () => {
+  assert.equal(invite.invitationHrAccess("manager", true), "HR access: Manager");
+  assert.equal(invite.invitationHrAccess("staff", true), "HR access: Staff");
+  assert.equal(invite.invitationHrAccess(null, true), null);
+  assert.equal(invite.invitationHrAccess("manager", false), null);
+  assert.equal(invite.invitationHrAccess(null, false), null);
+});

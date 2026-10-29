@@ -499,6 +499,7 @@ export function TeamManagement({
             key={selected}
             clientId={selected}
             revision={revision}
+            hasHrPackage={facts?.hasHrPackage ?? false}
             onIssued={showToken}
           />
         </div>

@@ -5,7 +5,7 @@ import {
   accessRecent, applyInvitation, dismissInvitation, pendingInvitations,
   type AccessEvent, type PendingInvitationAccess,
 } from "@/lib/hr-access-api";
-import { eventText, FEATURE_LABELS, FEATURES_COPY, PENDING_COPY, pendingText, refusalText } from "@/lib/hr-access-copy";
+import { eventText, FEATURE_LABELS, FEATURES_COPY, PENDING_COPY, pendingText } from "@/lib/hr-access-copy";
 import { formatDateTime } from "@/lib/subscriptions-api";
 import { action, Notice, Panel, secondary } from "./ui";
 import { plain } from "./HrAccessPanel";
@@ -93,8 +93,10 @@ export function HrAccessRecent({ tenant, refresh }: { tenant: string; refresh: n
 }
 
 /**
- * Access chosen on an invitation that could not be applied when it was accepted, because the
- * person who chose it is no longer the HR owner. The owner applies it or dismisses it.
+ * Access chosen on an invitation that was not applied when it was accepted: the person who chose
+ * a preset other than Staff is no longer the HR owner, or the apply failed (a Staff one too).
+ * The owner applies it or dismisses it. Apply answers `saved`; a refusal is an error (409 when it
+ * was already handled, 404 when the invitation is unavailable), shown from the catch.
  * Nothing shows while the list is empty.
  */
 export function HrAccessPending({ tenant, readonly, onApplied }: { tenant: string; readonly: boolean; onApplied: () => void }) {
@@ -118,13 +120,9 @@ export function HrAccessPending({ tenant, readonly, onApplied }: { tenant: strin
     setWorking(item.token_id); setProblem(""); setNote("");
     try {
       if (apply) {
-        const result = await applyInvitation(tenant, item.token_id);
-        if (result.outcome === "refused") {
-          setProblem(`${item.display_name}: Not saved. ${refusalText(result.reason)}`);
-        } else {
-          setNote(`${item.display_name} now has the access chosen on their invitation.`);
-          onApplied();
-        }
+        await applyInvitation(tenant, item.token_id);
+        setNote(`${item.display_name} now has the access chosen on their invitation.`);
+        onApplied();
       } else {
         await dismissInvitation(tenant, item.token_id);
         setNote(`Dismissed. ${item.display_name}'s access stays as it is.`);

@@ -2,8 +2,8 @@
 import { useEffect, useState } from "react";
 import { api, del, post } from "@/lib/api";
 import type { IssuedInvitation } from "@/lib/identity-contracts";
-import { PRESET_COPY } from "@/lib/hr-access-copy";
 import type { PresetId } from "@/lib/hr-access-api";
+import { invitationHrAccess } from "@/lib/invite-access";
 import { Notice, Panel, secondary } from "./ui";
 
 interface Invitation {
@@ -20,10 +20,12 @@ interface Invitation {
 export function InvitationList({
   clientId,
   revision,
+  hasHrPackage,
   onIssued,
 }: {
   clientId: string;
   revision: number;
+  hasHrPackage: boolean;
   onIssued: (
     token: IssuedInvitation,
     email: string,
@@ -90,6 +92,8 @@ export function InvitationList({
                 : expired
                   ? "Expired"
                   : "Pending";
+            const hrAccess =
+              row.kind === "invite" ? invitationHrAccess(row.hr_preset, hasHrPackage) : null;
             return (
               <li
                 key={row.id}
@@ -101,12 +105,7 @@ export function InvitationList({
                     {row.kind === "reset" ? "Password reset" : "Invitation"} ·{" "}
                     {status}
                   </p>
-                  {row.kind === "invite" && (
-                    <p className="mt-1 text-xs text-ink-500">
-                      HR access:{" "}
-                      {row.hr_preset ? PRESET_COPY[row.hr_preset].label : "No HR access"}
-                    </p>
-                  )}
+                  {hrAccess && <p className="mt-1 text-xs text-ink-500">{hrAccess}</p>}
                 </div>
                 {!row.consumed_at && (
                   <div className="flex flex-wrap gap-2">

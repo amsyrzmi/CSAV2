@@ -24,6 +24,14 @@ export function hrAccessOptions(
   ];
 }
 
+/**
+ * The "HR access" line on an invitation in the list: only where the tenant has the HR package
+ * and a preset was chosen. Otherwise there is nothing to say, so the line is hidden.
+ */
+export function invitationHrAccess(preset: PresetId | null, hasHrPackage: boolean): string | null {
+  return hasHrPackage && preset ? `HR access: ${PRESET_COPY[preset].label}` : null;
+}
+
 /** Staff can see basic details and make their own requests; a read-only member starts with nothing. */
 export function defaultHrAccess(role: TenantRole): "staff" | "none" {
   return role === "read_only" ? "none" : "staff";
