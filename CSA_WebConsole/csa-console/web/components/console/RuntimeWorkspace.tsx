@@ -1,12 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Receipt } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { avatarForAgent } from "@/lib/agent-avatars";
 import { api, patch } from "@/lib/api";
 import type {
   Agent, AgentRun, Client, Me, RunPage, RuntimeEvent, RuntimeOverview,
 } from "@/lib/identity-contracts";
+import AgentAvatar from "./fs/AgentAvatar";
+import { useAvatarTransition } from "./fs/useAvatarTransition";
 import { field, Heading, Notice, Panel, secondary } from "./ui";
+
+type SwitchName = "is_enabled" | "client_enabled";
 
 export function RuntimeWorkspace({
   me, mode, initialAgent = "", initialClientId = "",
@@ -59,6 +65,9 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [switching, setSwitching] = useState<{ name: string; switchName: SwitchName } | null>(null);
+  const [failures, setFailures] = useState<Record<string, string>>({});
+  const inFlight = useRef(false);
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState("");
   const path = `/console/v1/agents?${query}`;
@@ -71,21 +80,29 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
       });
     return () => controller.abort();
   }, [path, revision]);
-  async function toggle(agent: Agent, switchName: "is_enabled" | "client_enabled") {
+  async function toggle(agent: Agent, switchName: SwitchName) {
     const capability = agent.capability;
-    if (!capability) return;
+    // The ref closes the gap before a re-render disables the buttons: one request per click burst.
+    if (!capability || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError("");
+    setFailures({});
+    setSwitching({ name: agent.name, switchName });
     try {
       await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
         { [switchName]: !capability[switchName] });
       setAgents(await api<Agent[]>(path));
     } catch (cause) {
-      setError((cause as Error).message);
+      const reason = (cause as Error).message;
+      setError(reason);
+      setFailures({ [agent.name]: reason });
       // Controls must not use stale switch values after a failed refresh.
       setAgents(null);
     } finally {
+      inFlight.current = false;
       setBusy(false);
+      setSwitching(null);
     }
   }
   const detail = agents?.find((agent) => agent.name === selected && agent.can_view_specialized);
@@ -113,43 +130,106 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
       </Panel>}
       {!agents ? <Notice>{error ? "Agent state unavailable. Refresh to retry." : "Loading agents..."}</Notice> :
         <div className="grid gap-5 xl:grid-cols-2">
-          {agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle} />)}
+          {agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle}
+            pending={switching?.name === agent.name ? switching.switchName : null}
+            failed={failures[agent.name] ?? null} />)}
         </div>}
     </div>
   );
 }
 
-export function AgentCard({ agent, busy, onToggle }: {
+/** The sprite chip colour, shared by the avatar tile and the icon shown for an agent without one. */
+const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-text-secondary)" };
+
+/**
+ * One agent: avatar chip, title, status words, the details, and the two switches.
+ *
+ * The avatar follows the server, never the click. `pending` (the switch being saved) shows a
+ * still, dimmed avatar and a "Saving..." label; when it clears, `failed` restores the old look
+ * and shows the reason, a newly active capability plays the short wake, a newly inactive one
+ * settles, and an unchanged one just restores. A change nobody made here (a reload or a poll)
+ * is shown at once without a wake, because the resting look is derived from `capability.active`
+ * and only the transition phases come from the hook. Parents must keep `key` stable (the agent
+ * name) so a reload while pending does not remount the card and lose the pending request.
+ */
+export function AgentCard({ agent, busy, onToggle, pending = null, failed = null }: {
   agent: Agent; busy: boolean;
-  onToggle: (agent: Agent, switchName: "is_enabled" | "client_enabled") => void;
+  onToggle: (agent: Agent, switchName: SwitchName) => void;
+  pending?: SwitchName | null;
+  failed?: string | null;
 }) {
+  const active = Boolean(agent.capability?.active);
+  const avatar = avatarForAgent(agent.name);
+  const transition = useAvatarTransition(active ? "idle" : "still");
+  const { start, confirm, fail } = transition;
+  const previous = useRef<SwitchName | null>(null);
+  const activeAtStart = useRef(active);
+  useEffect(() => {
+    const before = previous.current;
+    if (pending === before) return;
+    previous.current = pending;
+    if (pending) {
+      activeAtStart.current = active;
+      start();
+    } else if (failed || active === activeAtStart.current) {
+      fail();
+    } else {
+      confirm(active ? "active" : "inactive");
+    }
+  }, [pending, failed, active, start, confirm, fail]);
+  const resting = transition.phase === "idle" || transition.phase === "still";
+  const state = pending ? "pending" : resting ? (active ? "idle" : "still") : transition.state;
+  const subscribed = agent.capability?.is_enabled;
+  const switchOn = agent.capability?.client_enabled;
+  const name = agent.name;
   return (
-  <Panel title={agent.title}>
-            <dl className="grid grid-cols-2 gap-3 text-sm">
-              <div><dt className="text-ink-500">Subscription</dt><dd>{agent.capability?.is_enabled ? "Subscribed" : "Not subscribed"}</dd></div>
-              <div><dt className="text-ink-500">Tenant switch</dt><dd>{agent.capability?.client_enabled ? "On" : "Off"}</dd></div>
-              <div><dt className="text-ink-500">Implementation</dt><dd>{label(agent.implementation)}</dd></div>
-              <div><dt className="text-ink-500">Setup</dt><dd>{label(agent.readiness)}</dd></div>
-              <div><dt className="text-ink-500">Circuit</dt><dd>{agent.capability?.circuit_state ?? "Not registered"}</dd></div>
-              <div><dt className="text-ink-500">Failure count</dt><dd>{agent.capability?.fail_count ?? "Not registered"}</dd></div>
-            </dl>
-            <p className="my-4 text-sm text-ink-600">{agent.detail}</p>
-            {agent.embedding_model && <p className="mb-4 text-sm">
-              Embeddings: {agent.embedding_model}. Compatible chunks: {agent.compatible_chunks ?? "Unknown"};
-              incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
-            </p>}
-            {agent.required_system && <p className="mb-3 text-sm">Required safety capability; disabling is prohibited.</p>}
-              <div className="flex flex-wrap gap-2">
-                {agent.can_subscribe && <button className={secondary} disabled={busy}
-                  onClick={() => onToggle(agent, "is_enabled")}>
-                  {agent.capability?.is_enabled ? "Remove subscription" : "Subscribe"}
-                </button>}
-                {agent.can_toggle && <button className={secondary} disabled={busy}
-                  onClick={() => onToggle(agent, "client_enabled")}>
-                  Turn tenant switch {agent.capability?.client_enabled ? "off" : "on"}
-                </button>}
-              </div>
-          </Panel>
+    <article data-testid={`agent-card-${name}`}
+      className="rounded-[14px] border border-[var(--fs-border)] bg-[var(--fs-surface)] p-5 shadow-[var(--fs-shadow-card)] sm:p-6">
+      <header className="mb-4 flex items-start gap-3">
+        {avatar ? <AgentAvatar agentId={avatar} size={48} label="" state={state} /> :
+          <span aria-hidden="true" style={CHIP}
+            className="inline-flex size-12 flex-none items-center justify-center rounded-[10px]">
+            <Receipt className="size-6" />
+          </span>}
+        <div className="min-w-0 flex-1">
+          <h3 className="font-(family-name:--fs-font-heading) text-base font-semibold">{agent.title}</h3>
+          <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            {!avatar && <span data-testid={`agent-planned-${name}`} className="font-medium">Planned</span>}
+            {agent.capability && <span data-testid={`agent-status-${name}`}
+              className="font-medium text-ink-700">{active ? "Active" : "Not active"}</span>}
+            {pending && <span role="status" data-testid={`agent-pending-${name}`}
+              className="text-ink-600">Saving...</span>}
+          </p>
+        </div>
+      </header>
+      <dl className="grid grid-cols-2 gap-3 text-sm">
+        <div><dt className="text-ink-500">Subscription</dt><dd>{subscribed ? "Subscribed" : "Not subscribed"}</dd></div>
+        <div><dt className="text-ink-500">Tenant switch</dt><dd>{switchOn ? "On" : "Off"}</dd></div>
+        <div><dt className="text-ink-500">Implementation</dt><dd>{label(agent.implementation)}</dd></div>
+        <div><dt className="text-ink-500">Setup</dt><dd>{label(agent.readiness)}</dd></div>
+        <div><dt className="text-ink-500">Circuit</dt><dd>{agent.capability?.circuit_state ?? "Not registered"}</dd></div>
+        <div><dt className="text-ink-500">Failure count</dt><dd>{agent.capability?.fail_count ?? "Not registered"}</dd></div>
+      </dl>
+      <p className="my-4 text-sm text-ink-600">{agent.detail}</p>
+      {agent.embedding_model && <p className="mb-4 text-sm">
+        Embeddings: {agent.embedding_model}. Compatible chunks: {agent.compatible_chunks ?? "Unknown"};
+        incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
+      </p>}
+      {agent.required_system && <p className="mb-3 text-sm">Required safety capability; disabling is prohibited.</p>}
+      {failed && <div className="mb-3"><Notice error>{failed}</Notice></div>}
+      <div className="flex flex-wrap gap-2">
+        {agent.can_subscribe && <button className={secondary} disabled={busy}
+          data-testid={`agent-subscribe-${name}`}
+          onClick={() => onToggle(agent, "is_enabled")}>
+          {subscribed ? "Remove subscription" : "Subscribe"}
+        </button>}
+        {agent.can_toggle && <button className={secondary} disabled={busy}
+          data-testid={`agent-switch-${name}`}
+          onClick={() => onToggle(agent, "client_enabled")}>
+          Turn tenant switch {switchOn ? "off" : "on"}
+        </button>}
+      </div>
+    </article>
   );
 }
 

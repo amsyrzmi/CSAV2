@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError, patch } from "@/lib/api";
 import type { Agent, Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
@@ -108,6 +108,10 @@ function ServiceCard({ service, clientId, platform, onChanged }: {
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
   const [open, setOpen] = useState(false);
+  // The agent switch being saved and the server's reason for each failed one, shown on its card.
+  const [switching, setSwitching] = useState<{ name: string; switchName: "is_enabled" | "client_enabled" } | null>(null);
+  const [agentErrors, setAgentErrors] = useState<Record<string, string>>({});
+  const toggling = useRef(false);
   const client = servicesClient(clientId);
   const query = clientId ? `client_id=${encodeURIComponent(clientId)}` : "";
   const badge = !service.sellable && service.status === "available"
@@ -131,17 +135,23 @@ function ServiceCard({ service, clientId, platform, onChanged }: {
   }
   async function toggle(agent: Agent, switchName: "is_enabled" | "client_enabled") {
     const capability = agent.capability;
-    if (!capability) return;
+    // The ref closes the gap before a re-render disables the buttons: one request per click burst.
+    if (!capability || toggling.current) return;
+    toggling.current = true;
     setBusy(true);
     setError("");
+    setAgentErrors({});
+    setSwitching({ name: agent.name, switchName });
     try {
       await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
         { [switchName]: !capability[switchName] });
       await onChanged();
     } catch (cause) {
-      setError(message(cause));
+      setAgentErrors({ [agent.name]: message(cause) });
     } finally {
+      toggling.current = false;
       setBusy(false);
+      setSwitching(null);
     }
   }
   return (
@@ -218,7 +228,9 @@ function ServiceCard({ service, clientId, platform, onChanged }: {
         </form>
       )}
       {open && <div className="mt-4 space-y-4" data-testid={`services-agents-${service.key}`}>
-        {service.agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle} />)}
+        {service.agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle}
+          pending={switching?.name === agent.name ? switching.switchName : null}
+          failed={agentErrors[agent.name] ?? null} />)}
       </div>}
     </article>
   );
