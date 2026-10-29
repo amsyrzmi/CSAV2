@@ -1,9 +1,11 @@
 # Staff email assistant
 
-Status: implemented as a staff-only, draft-only module (migration `0430`,
-`csa/email/`, console tab "Email assistant"). It is never part of the customer
-planner, and nothing in it sends email. Each staff member connects their own
-Gmail mailbox; nobody else in the tenant, including administrators, can read it.
+Status: implemented as a staff-only module (migration `0430`, with sending and
+paging added by `0484`; `csa/email/`, console tab "Email assistant"). It is never
+part of the customer planner. Email leaves only from the staff member's own
+Gmail, only after they confirm it, and at most once. Each staff member connects
+their own Gmail mailbox; nobody else in the tenant, including administrators, can
+read it.
 
 ## What it does
 
@@ -11,22 +13,160 @@ Gmail mailbox; nobody else in the tenant, including administrators, can read it.
 | --- | --- |
 | Tenant switch | Off by default. A tenant administrator switches it on or off (`PUT /console/v1/email/settings`), recorded with a receipt. |
 | Connect mailbox | OAuth 2.0 with PKCE against Google, scopes `gmail.readonly` and `gmail.compose` only. The callback must come back to the same console session that started it; the state is single-use and expires after ten minutes. Tokens are AES-GCM encrypted per mailbox and readable only through the connecting user's own session (row-level security on `app.hr_user_id`). |
-| Sync | Pulls up to 20 threads from the last 14 days: subject, sender, snippet, labels and the latest message's text body (plain text preferred, HTML stripped, 20,000 characters max). Re-syncing a thread whose latest message changed clears its previous analysis. |
+| Sync | Pulls threads from the last 90 days (`newer_than:90d -in:chats`), 20 at a time: subject, sender, snippet, labels and the latest message's text body (plain text preferred, HTML stripped, 20,000 characters max). Re-syncing a thread whose latest message changed clears its previous analysis. See [Sync](#sync). |
 | Analyse | Sends the thread text to the configured model as untrusted data and stores a strict result: category, priority, language, a bounded summary and up to five action items. No tool calls exist for the model to invoke. |
 | Draft a reply | The model proposes a plain-text reply in the tenant's persona and tone, in English, Malay or the customer's language. Missing facts become `[STAFF: …]` placeholders. The proposal is validated by the same header-injection and recipient rules as the staged email contract before it is stored. |
-| Edit, delete, export | Staff edit drafts locally. "Save to my Gmail drafts" creates a Gmail draft in the user's own mailbox through the compose scope; sending still happens in Gmail by a human. Exported drafts are frozen here. |
-| Compose a new email | `POST /console/v1/email/compose` takes exactly one of `recipient_employee_id` (resolved through the company directory; 422 `recipient_unresolved` when the person has no work email) or `recipient_address`, plus a required `subject` and required `instructions` (optional `language`, default `auto`), and writes a model-drafted internal email with `thread_id` null and `source="model"`. It needs the same `staff_email` package and tenant switch, is saved only as a local draft and is exported through the existing export flow, which the workspace assistant wraps in an `email_export` proposal the user confirms. Nothing is sent. |
+| Edit, delete, export | Staff edit drafts locally, including To, CC and BCC. "Save to my Gmail drafts" creates a Gmail draft in the user's own mailbox through the compose scope and sends nothing. Exported drafts are frozen here. |
+| Send | Staff send a draft from their own Gmail after confirming it. See [Sending](#sending). |
+| Reply | `POST /console/v1/email/threads/{thread_id}/reply` drafts a reply to a thread, with optional CC and BCC. See [Replies](#replies). |
+| What needs my attention | `GET /console/v1/email/attention` lists up to 10 threads that need the user. See [Attention summary](#attention-summary). |
+| Compose a new email | `POST /console/v1/email/compose` takes exactly one of `recipient_employee_id` (resolved through the company directory; 422 `recipient_unresolved` when the person has no work email) or `recipient_address`, plus a required `subject` and required `instructions` (optional `language`, default `auto`), and writes a model-drafted internal email with `thread_id` null and `source="model"`. It needs the same `staff_email` package and tenant switch and is saved as a local draft. Staff can then send it, or export it through the existing export flow, which the workspace assistant wraps in an `email_export` proposal the user confirms. Nothing is sent by compose itself. |
 | Disconnect | Revokes and erases both tokens; cached threads stay readable until the mailbox is reconnected. |
 
 Every write carries an `Idempotency-Key`; receipts are immutable
 (`email_receipts`) and a replay with a different payload is refused.
+
+## Sending
+
+No new Google scope is needed. `gmail.compose` already permits
+`users.messages.send`, so nobody has to reconnect their mailbox.
+
+A send comes from a draft, through `POST /console/v1/email/drafts/{draft_id}/send`,
+with the draft's `version` and an `Idempotency-Key`. The server computes the
+version (`DraftOut.version`); a send whose version no longer matches the stored
+draft is refused, so an edit after a confirmation cannot be sent by accident.
+Only the draft's owner can send it.
+
+### At most once
+
+- The server claims the draft (`sending`) under a per-mailbox advisory lock
+  before Gmail is called. Each claim is bound to its attempt (`send_claim_id`),
+  so a late outcome from a superseded attempt never changes the row.
+- There is one Gmail call, with a 25-second deadline and no automatic retry.
+  A second request for the same draft, or a replay of the same key, never
+  calls Gmail again.
+- A clear refusal returns the draft to `draft`, so the user can fix it and try
+  again:
+  - any other 4xx: `send_refused`;
+  - 401 or 403: shown as `mailbox_reauthorization_required`;
+  - 429: `provider_rate_limited`;
+  - a message Gmail cannot accept: `invalid_message`.
+- An ambiguous failure leaves the draft `sending` and returns 502
+  `send_outcome_unknown` ("Check your Gmail Sent folder before trying again.").
+  These are timeouts, 5xx answers, 408, 409, 499 and a 200 without a message id.
+  The user must check Sent first, because the email may have gone.
+
+### Release
+
+`POST /console/v1/email/drafts/{draft_id}/release` is the way out of an unknown
+outcome. In the console it is the button "I checked — it wasn't sent". It works
+only for the draft's owner, and only when all of these hold: the draft is
+`sending`, it has no Gmail message id, and the claim is at least 120 seconds
+old. Otherwise it returns 409 `draft_not_releasable`. The 120 seconds is longer
+than the 25-second Gmail deadline, so a release never runs while a send is still
+in flight. A released draft returns to `draft` and can be sent again.
+
+### Limits and checks
+
+- **Hourly limit:** 20 sends per owner in a rolling 60 minutes, counting
+  `sending` and `sent`. Beyond that the answer is 429 `send_limit_reached` with
+  `retry_after` (seconds).
+- **Recipients:** To, CC and BCC together are 1 to 20 addresses, de-duplicated
+  without regard to case, each checked by the same header-injection rules as the
+  staged email contract. A BCC address goes only in the raw message, so the To
+  recipient's copy shows no Bcc.
+- **Placeholders:** a draft that still contains `[STAFF:` cannot be sent
+  (`draft_needs_staff_input`).
+- **Outside your company:** every address is marked inside or outside. An
+  address is inside when it matches an active directory `work_email` of the
+  tenant, or when it shares the owner's domain and that domain is not a public
+  provider (such as Gmail, Yahoo, Outlook, Hotmail, iCloud or Proton). The send
+  dialog and the assistant card show "Outside your company" beside the others.
+
+### Replies
+
+`POST /console/v1/email/threads/{thread_id}/reply` (201) drafts a reply to the
+thread, in the thread, with optional `cc` and `bcc`. The reply goes to the
+Reply-To, else the From, of the latest message that was not sent by the mailbox
+owner. It never goes to the owner (`reply_target_unavailable`). There is no
+automatic reply-all.
+
+Known limitation: the owner is recognised by exact address. Aliases of the
+owner, such as plus-addresses and send-as addresses, are not recognised as the
+owner.
+
+### Email my team
+
+In the workspace assistant, "email my team" drafts one email to the caller's
+active direct reports, all in To (the caller is excluded). It needs the HR
+access switch "approves team" and the `hr` package.
+
+- Reports without a work email are skipped and named on the card.
+- More than 20 reports with a work email is refused (`team_too_large`).
+- Without the switch, or with no reports, the assistant answers in plain words
+  and drafts nothing.
+
+## Sync
+
+- **Window:** the last 90 days, `newer_than:90d -in:chats`, in pages of 20.
+- **Load more:** `POST /console/v1/email/sync/more` fetches the next page using a
+  Gmail page token stored per mailbox. The tab shows "Load older email" until
+  there is nothing left in the 90 days.
+- **Caps:** at most 200 cached threads per mailbox, and none older than 90 days
+  by their latest message. Cleanup runs after each sync and each load more.
+- **Drafts survive cleanup.** Cleanup never deletes a draft. A removed thread's
+  drafts lose their thread link and become new (unthreaded) emails, and the
+  console does not show them as replies.
+- **Sync on open:** when the Email tab opens and the last sync was more than
+  5 minutes ago. There is no background sync.
+- `GET /console/v1/email/threads` lists up to 100 of the up to 200 cached threads.
+- Sync and load more make no model call.
+
+## Attention summary
+
+`GET /console/v1/email/attention` answers "what needs my attention" from stored
+data only.
+
+- It runs at most 5 analyses of threads that have none yet, and makes no Gmail call.
+- It leaves out threads classed `newsletter_or_promotion` or `spam_or_phishing`,
+  and threads whose latest message the owner sent.
+- It returns up to 10 items, most urgent first. `as_of` is the time of the last sync.
+- A thread it cannot analyse is skipped and counted in `skipped`. The summary
+  fails only when nothing can be shown and no model is configured
+  (`model_not_configured`).
+- `read_only` members are refused. The console loads the summary when the tab
+  opens (after sync on open) and after the Sync button, not after load more,
+  because each load can spend up to 5 model calls.
+- In the workspace assistant, a failure becomes a plain answer, not an error.
+
+## Workspace assistant
+
+The assistant can reply to a thread, email the team, summarise the inbox and
+send. A send card (`email_send`) is made only when the planner asks to send and
+the user's own words say so (send, hantar, kirim). Otherwise the card saves to
+Gmail drafts (`email_export`). See [CONSOLE_API.md](CONSOLE_API.md#workspace-assistant).
+
+- The planner sees up to 10 recent threads (sender, subject cut to 120
+  characters, time, priority) as untrusted facts, with `<` and `>` escaped so a
+  subject cannot close the prompt wrapper. A thread's sender can only be that
+  thread's reply recipient. Any other address must be in the user's own message.
+- Both email cards store counts only. The console fetches the draft
+  (`GET /console/v1/email/drafts/{draft_id}`, owner only) to show the
+  recipients and body when the card is open.
+- The inbox summary answer is not saved. The stored turn says "Inbox summary: N items."
+
+## Privacy
+
+Addresses, subjects and bodies are kept out of logs, audit rows,
+`console_proposals` and `console_workspace_turns`. The cards, turns and audit
+rows hold ids, counts and outcomes only.
 
 ## Authority model
 
 - Session validation reuses `public.hr_lock_session`, so console roles, CSRF,
   idle limits and membership state are enforced identically to HR, and the
   database binds the verified user for row-level security.
-- Read-only members can see the context page only. Platform administrators
+- Read-only members can see the context page only. The attention summary is refused for them. Platform administrators
   must hold a membership in the tenant to use the module there.
 - Email bodies and subjects are untrusted input. They are passed to the model
   only inside the JSON `user` payload under an explicit untrusted-data rule,
@@ -43,23 +183,25 @@ Every write carries an `Idempotency-Key`; receipts are immutable
 
 Google Cloud prerequisites, done once by the owner: enable the Gmail API,
 configure the OAuth consent screen, add the redirect URI above to the OAuth
-client (web application type), and request only the two scopes listed.
+client (web application type), and request only the two scopes listed. Sending
+needs no third scope.
 
 - **Staging** uses an **Internal** client in the fourstacks.my Google Cloud
   project. Only fourstacks.my accounts can connect, so there are no test users
   and no seven-day refresh-token expiry.
 - **Production for client tenants** needs an **External** client with Google
   verification, because the scopes are restricted (`gmail.readonly` and
-  `gmail.compose`; `gmail.send` when added). The owner
-  decided on 2026-10-29 to keep inbox reading. Planned email management will
-  also add `gmail.send`, which widens the verification scope.
+  `gmail.compose`). The owner decided on 2026-10-29 to keep inbox reading.
+  Email management adds no scope: `gmail.compose` already permits sending, so the
+  verification scope does not widen.
 - In a client in Testing mode, refresh tokens expire after seven days; the
   module reports `mailbox_reauthorization_required` and the user reconnects.
 
 ## Not included
 
-Mailbox push notifications (Pub/Sub), label changes, sending, attachments,
-shared or team mailboxes, Outlook. Those are later phases.
+Mailbox push notifications (Pub/Sub), background sync, label changes,
+attachments, shared or team mailboxes, Outlook, reply-all and owner aliases
+(plus-addresses and send-as). Those are later phases.
 
 ## Validation
 
@@ -69,4 +211,12 @@ shared or team mailboxes, Outlook. Those are later phases.
   tokens, sync replay, triage with an injected instruction, persona drafting,
   validation failures, export without send, cross-user and cross-tenant
   isolation, immutable receipts, token refresh and disconnect.
-- `tests/email-transport.test.mjs`: client idempotency, tenant binding, headers.
+- `tests/test_email_schema.py`, `tests/test_workspace_planner.py`,
+  `tests/test_workspace_registry.py` and `tests/test_console_workspace.py`: the
+  `0484` schema, the assistant's reply, team, summary and send cards, and the
+  stale-card and at-most-once rules.
+- `tests/email-transport.test.mjs` and `tests/email-recipients.test.mjs`: client
+  idempotency, tenant binding, headers, send-key handling, recipient groups and
+  error sentences.
+- `tests/test_email_management_browser.py`: sync on open, load more, CC and
+  send, release, and the send card in the assistant.
