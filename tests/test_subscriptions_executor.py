@@ -11,6 +11,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import httpx
+import psycopg
 import pytest
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
 from csa.subscriptions.api import build_subscriptions_router
@@ -284,6 +285,48 @@ async def test_change_plan_future_sets_pending_fields_only(sessions: SessionWorl
     refused = await propose(w, staff, sub, body)
     assert refused.status_code == 422
     assert refused.json()["detail"] == "price_override_requires_immediate_change"
+
+
+async def test_change_plan_holds_a_share_lock_on_the_target_plan(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.subscriptions import executor
+    from psycopg import errors
+
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "gold", "59.90")
+    sub = await subscribe(w, staff)
+    created = await propose(w, staff, sub, {"action": "change_plan", "plan_code": "gold"})
+    assert created.status_code == 201, created.text
+
+    real_plan = executor._plan
+    archive_blocked: list[bool] = []
+
+    async def try_archive() -> bool:
+        async with await psycopg.AsyncConnection.connect(w.owner_dsn, autocommit=True) as conn:
+            await conn.execute("SET lock_timeout = '300ms'")
+            try:
+                await conn.execute(
+                    "UPDATE plans SET is_active = false WHERE client_id = %s AND code = 'gold'",
+                    (w.tenants[0],),
+                )
+            except errors.LockNotAvailable:
+                return True
+            return False
+
+    async def plan_then_try_archive(conn: Any, client_id: UUID, code: Any, **kwargs: Any) -> Any:
+        # Runs inside the executor's transaction: right after it read the target plan.
+        row = await real_plan(conn, client_id, code, **kwargs)
+        if kwargs.get("share"):
+            archive_blocked.append(await try_archive())
+        return row
+
+    monkeypatch.setattr(executor, "_plan", plan_then_try_archive)
+    done = await confirm(w, staff, created.json()["id"])
+    assert done.status_code == 200, done.text
+    assert archive_blocked == [True]
 
 
 async def test_price_override_requires_reason(sessions: SessionWorld) -> None:

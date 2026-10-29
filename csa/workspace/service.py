@@ -421,6 +421,7 @@ _TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "business": (frozenset({"orders_products", "marketplaces"}), _ACTIVE),
     "hr": (frozenset({"hr"}), _ACTIVE),
     "email": (frozenset({"staff_email"}), _ACTIVE),
+    "subscriptions": (frozenset({"subscriptions"}), _ACTIVE),
 }
 # Record kind -> the package gate of the service that owns it.
 _RECORD_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {

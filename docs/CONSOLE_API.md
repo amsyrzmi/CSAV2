@@ -571,7 +571,7 @@ payload or employee/contact identity mapping is stored.
 | `GET /workspace/people/me` | tenant query | The caller's employee link and manager |
 
 `page_context` is `{tab, section?, record?}` where `tab` is one of `overview`,
-`services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `activity`, `chat` and
+`services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `subscriptions`, `activity`, `chat` and
 `record` is `{kind, id, version?}`. The legacy `page_hint` path (fixed page guidance and a
 single local order read with `source:"local_records"`, `marketplace_sync:"unavailable"`
 and an `as_of` timestamp) is unchanged; reusing a request key with different input, or
@@ -720,6 +720,7 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 
 | Method/path | Who | Result |
 |---|---|---|
+| `GET /settings` | any tenant member | `{timezone}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar |
 | `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active}` |
 | `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`. 409 `plan_exists`; audited `subscriptions.plan.created` |
 | `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives). 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active or paused subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
@@ -734,7 +735,7 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 "Writers" are `tenant_admin` and `tenant_staff` in their own tenant, and platform admins
 who select a tenant with `?client_id=`. Every member of the tenant may read, including
 `read_only`; a `read_only` writer attempt and any other tenant's id are 403. The static
-paths (`/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
+paths (`/settings`, `/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
 "Add subscription" form uses `GET /customers` to find the customer, then `POST` (the
 collection) with an active plan and an optional start date.
 

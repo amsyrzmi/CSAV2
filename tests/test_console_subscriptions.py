@@ -66,6 +66,18 @@ def when(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+async def test_settings_return_the_tenant_time_zone_to_every_role(sessions: SessionWorld) -> None:
+    w = sessions
+    reader, _ = await w.member(role="read_only")
+    other, _ = await w.member(role="tenant_admin", tenant=w.tenants[1])
+    await w.q("UPDATE clients SET timezone='Asia/Kuching' WHERE id=%s", w.tenants[0])
+    await w.q("UPDATE clients SET timezone='UTC' WHERE id=%s", w.tenants[1])
+
+    shown = await reader.get(f"{BASE}/settings")
+    assert shown.status_code == 200 and shown.json() == {"timezone": "Asia/Kuching"}
+    assert (await other.get(f"{BASE}/settings")).json() == {"timezone": "UTC"}
+
+
 async def test_plans_crud_roles_and_isolation(sessions: SessionWorld) -> None:
     w = sessions
     admin, _ = await w.member(role="tenant_admin")

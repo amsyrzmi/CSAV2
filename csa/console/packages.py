@@ -64,7 +64,10 @@ PACKAGES: tuple[Package, ...] = (
     Package(
         key="subscriptions",
         title="Subscriptions",
-        summary="Shows subscription plans and status and records unexecuted subscription requests.",
+        summary=(
+            "Keeps your plans and customers' subscriptions, "
+            "and lets staff change them or answer requests."
+        ),
         kind="addon",
         requires=("customer_support",),
         capabilities=("subscription_agent",),
