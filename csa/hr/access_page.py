@@ -165,16 +165,16 @@ def _switches_of(details: Mapping[str, Any]) -> frozenset[SwitchId]:
 _SAVED_SWITCHES = frozenset(s for s, r in SWITCHES.items() if r.grants or r.workflows)
 
 
-def _recorded_on(details: Mapping[str, Any]) -> frozenset[SwitchId]:
-    """The switches an invitation_access event recorded as `on`, ignoring unknown ids."""
-    recorded = set(details.get("on") or ())
+def _recorded(details: Mapping[str, Any], key: str) -> frozenset[SwitchId]:
+    """Switch ids an invitation_access event recorded (`on` or `added`), ignoring unknown ids."""
+    recorded = set(details.get(key) or ())
     return frozenset(s for s in SWITCH_IDS if s in recorded)
 
 
 def _baseline(operation: str, details: Mapping[str, Any]) -> frozenset[SwitchId]:
     """What an earlier event leaves on, for the next access.save diff of the same person."""
     if operation == "invitation_access":
-        return _recorded_on(details) & _SAVED_SWITCHES
+        return _recorded(details, "on") & _SAVED_SWITCHES
     return _switches_of(details)
 
 
@@ -451,7 +451,7 @@ class HrAccessPage:
                 items.append(
                     AccessEvent(
                         **common,
-                        turned_on=_ordered(_recorded_on(details)),
+                        turned_on=_ordered(_recorded(details, "added")),
                         turned_off=[],
                         area=None,
                         area_enabled=None,

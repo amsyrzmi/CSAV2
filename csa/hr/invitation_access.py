@@ -8,6 +8,7 @@ HR owner applies or dismisses it on "Who can do what".
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal, cast
 from uuid import UUID
 
@@ -24,7 +25,7 @@ from csa.hr.access_contracts import (
     PendingInvitationAccess,
     PendingInvitationPage,
 )
-from csa.hr.access_switches import EMPTY, PRESETS, SWITCH_IDS, PresetId, rows
+from csa.hr.access_switches import EMPTY, PRESETS, AccessRows, PresetId, rows, state
 from csa.hr.operations import HrOperations
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import HrSession
@@ -45,9 +46,8 @@ _REFUSALS = {
 
 
 def preset_rows(preset: PresetId) -> dict[str, Any]:
-    """The preset's rows in the hr_owner_access_summary JSON shapes, plus its switches as `on`."""
-    on = PRESETS[preset]
-    found = rows(on, EMPTY)
+    """The preset's rows in the hr_owner_access_summary JSON shapes."""
+    found = rows(PRESETS[preset], EMPTY)
     return {
         "grants": [
             {"action": g.action, "scope": g.scope, "fields": list(g.fields)}
@@ -58,8 +58,18 @@ def preset_rows(preset: PresetId) -> dict[str, Any]:
             for w in sorted(found.workflows)
         ],
         "areas": sorted(found.areas),
-        "on": [s for s in SWITCH_IDS if s in on],
     }
+
+
+def switches_after(current: Mapping[str, Any], preset: PresetId) -> tuple[list[str], list[str]]:
+    """The member's switches once the preset is added to their current rows, and the ones it adds.
+
+    These are recorded for Recent changes only; the database never authorizes on them.
+    """
+    before = AccessRows.from_summary(current["grants"], current["workflows"], current["areas"])
+    after = before.union(rows(PRESETS[preset], EMPTY))
+    on_before, on_after = state(before).on, state(after).on
+    return sorted(on_after), sorted(on_after - on_before)
 
 
 async def _refusing(conn: AsyncConnection, path: str, params: tuple[Any, ...]) -> None:
@@ -106,13 +116,27 @@ class InvitationAccess:
             preset = cast(PresetId, found["preset"])
             if preset != "staff" and not found["chooser_is_owner"]:
                 return "pending"
-            await self._lock(conn, client_id)
-            await _refusing(
-                conn,
-                "hr/invitation_apply.sql",
-                (client_id, token_id, Jsonb(preset_rows(preset)), False),
-            )
+            await self._write(conn, client_id, token_id, override=False)
         return "applied"
+
+    async def _write(
+        self, conn: AsyncConnection, tenant: UUID, token_id: UUID, *, override: bool
+    ) -> UUID:
+        """Take the HR operations lock, read the member's rows afresh, and apply the preset."""
+        await self._lock(conn, tenant)
+        found = await sql.fetch_one("hr/invitation_preset.sql", (tenant, token_id), conn=conn)
+        if found is None:
+            raise HrPolicyError("resource_unavailable")
+        if found["applied"]:
+            raise HrPolicyError("invitation_already_handled")
+        preset = cast(PresetId, found["preset"])
+        on, added = switches_after(found, preset)
+        await _refusing(
+            conn,
+            "hr/invitation_apply.sql",
+            (tenant, token_id, Jsonb(preset_rows(preset)), on, added, override),
+        )
+        return found["user_id"]
 
     async def _owner(self, conn: AsyncConnection, session: HrSession, *, mutation: bool) -> None:
         if mutation and (session.csrf_hash is None or session.capability is not None):
@@ -135,19 +159,9 @@ class InvitationAccess:
         tenant = session.tenant_id
         async with tx(self.core.pool, str(tenant)) as conn:
             await self._owner(conn, session, mutation=True)
-            found = await sql.fetch_one("hr/invitation_preset.sql", (tenant, token_id), conn=conn)
-            if found is None:
-                raise HrPolicyError("resource_unavailable")
-            if found["applied"]:
-                raise HrPolicyError("invitation_already_handled")
-            await self._lock(conn, tenant)
-            await _refusing(
-                conn,
-                "hr/invitation_apply.sql",
-                (tenant, token_id, Jsonb(preset_rows(cast(PresetId, found["preset"]))), True),
-            )
+            user = await self._write(conn, tenant, token_id, override=True)
             await self.core._session(conn, session)
-        return AccessPersonResult(user_id=found["user_id"], outcome="saved")
+        return AccessPersonResult(user_id=user, outcome="saved")
 
     async def dismiss(self, session: HrSession, token_id: UUID) -> None:
         tenant = session.tenant_id

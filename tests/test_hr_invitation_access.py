@@ -14,6 +14,7 @@ from csa.core.tenancy import tx
 from csa.hr.access_switches import (
     EMPTY,
     PRESETS,
+    SWITCHES,
     AccessRows,
     GrantRow,
     WorkflowRow,
@@ -34,6 +35,8 @@ pytestmark = [requires_docker, pytest.mark.asyncio]
 PASSWORD = "synthetic-invitee-password"
 INVITATIONS = "/console/v1/hr/access/invitations"
 RECENT = "/console/v1/hr/access/recent"
+PEOPLE = "/console/v1/hr/access/people"
+CHANGES = "/console/v1/hr/access/changes"
 
 
 async def invite(
@@ -115,7 +118,7 @@ async def count(world: HrWorld) -> tuple[int, int]:
     return ops[0]["n"], events[0]["n"]
 
 
-def payload(found: AccessRows, preset: str) -> dict[str, Any]:
+def payload(found: AccessRows) -> dict[str, Any]:
     return {
         "grants": [
             {"action": g.action, "scope": g.scope, "fields": list(g.fields)}
@@ -126,7 +129,6 @@ def payload(found: AccessRows, preset: str) -> dict[str, Any]:
             for w in sorted(found.workflows)
         ],
         "areas": sorted(found.areas),
-        "on": sorted(PRESETS[preset]),  # type: ignore[index]
     }
 
 
@@ -135,8 +137,8 @@ async def direct_apply(
 ) -> None:
     async with tx(world.service.pool, str(world.tenant)) as conn:
         await conn.execute(
-            "SELECT public.hr_apply_invitation_access(%s,%s,%s,%s)",
-            (world.tenant, token_id, Jsonb(body), override),
+            "SELECT public.hr_apply_invitation_access(%s,%s,%s,%s::text[],%s::text[],%s)",
+            (world.tenant, token_id, Jsonb(body), [], [], override),
         )
 
 
@@ -163,6 +165,7 @@ async def test_staff_invitation_applies_on_accept(world: HrWorld) -> None:
         "user_id": str(member),
         "preset": "staff",
         "on": sorted(PRESETS["staff"]),
+        "added": sorted(PRESETS["staff"]),
         "chosen_by": str(world.users["admin"]),
     }
 
@@ -175,9 +178,7 @@ async def test_apply_is_idempotent_and_refuses_twice(world: HrWorld) -> None:
     access = InvitationAccess(world.service)
     assert await access.apply_on_accept(world.tenant, UUID(issued["id"])) == "none"
     with pytest.raises(psycopg.Error, match="hr_invitation_applied"):
-        await direct_apply(
-            world, UUID(issued["id"]), payload(rows(PRESETS["staff"], EMPTY), "staff")
-        )
+        await direct_apply(world, UUID(issued["id"]), payload(rows(PRESETS["staff"], EMPTY)))
     assert await count(world) == before
     assert len(await records(world, issued["id"])) == 1
 
@@ -222,9 +223,7 @@ async def test_chooser_no_longer_owner_leaves_it_pending_and_owner_apply_works(
     assert await records(world, manager["id"]) == []
     # The database refuses a non-Staff preset from a chooser who is no longer the owner.
     with pytest.raises(psycopg.Error, match="hr_invitation_owner_required"):
-        await direct_apply(
-            world, UUID(manager["id"]), payload(rows(PRESETS["manager"], EMPTY), "manager")
-        )
+        await direct_apply(world, UUID(manager["id"]), payload(rows(PRESETS["manager"], EMPTY)))
 
     listed = await world.call("admin", "GET", INVITATIONS)
     assert listed.status_code == 200, listed.text
@@ -269,24 +268,22 @@ async def test_non_owner_rows_outside_staff_are_refused(world: HrWorld) -> None:
     wider = staff._replace(workflows=staff.workflows | {payroll})
     before = await count(world)
     with pytest.raises(psycopg.Error, match="hr_invitation_rows_refused"):
-        await direct_apply(world, token_id, payload(wider, "staff"))
+        await direct_apply(world, token_id, payload(wider))
     team = staff._replace(
         grants=staff.grants | {GrantRow("training.decide", "assigned_manager", ())}
     )
     with pytest.raises(psycopg.Error, match="hr_invitation_rows_refused"):
-        await direct_apply(world, token_id, payload(team, "staff"))
+        await direct_apply(world, token_id, payload(team))
     with pytest.raises(psycopg.Error, match="hr_invitation_rows_refused"):
-        await direct_apply(
-            world, token_id, payload(staff._replace(areas=frozenset({"payroll"})), "staff")
-        )
+        await direct_apply(world, token_id, payload(staff._replace(areas=frozenset({"payroll"}))))
     assert await held(world, member) == EMPTY
     assert await count(world) == before
 
 
 async def test_staff_pairs_in_sql_match_python(world: HrWorld) -> None:
     [row] = await world.q(
-        "SELECT pg_get_functiondef("
-        "'public.hr_apply_invitation_access(uuid,uuid,jsonb,boolean)'::regprocedure) AS body"
+        "SELECT pg_get_functiondef('public.hr_apply_invitation_access"
+        "(uuid,uuid,jsonb,text[],text[],boolean)'::regprocedure) AS body"
     )
     found = re.search(r"staff constant jsonb := '(\{.*?\})'", row["body"], re.S)
     assert found is not None
@@ -304,7 +301,7 @@ async def test_unconsumed_or_other_tenant_token_is_refused(world: HrWorld) -> No
     token_id = UUID(issued["id"])
     assert await preset_row(world, world.tenant, world.tenant, token_id) == []
     with pytest.raises(psycopg.Error, match="hr_invitation_unavailable"):
-        await direct_apply(world, token_id, payload(rows(PRESETS["staff"], EMPTY), "staff"))
+        await direct_apply(world, token_id, payload(rows(PRESETS["staff"], EMPTY)))
     member, _ = await accept_only(world, issued["token"])
     [found] = await preset_row(world, world.tenant, world.tenant, token_id)
     assert found == {
@@ -313,6 +310,9 @@ async def test_unconsumed_or_other_tenant_token_is_refused(world: HrWorld) -> No
         "chosen_by": world.users["admin"],
         "chooser_is_owner": False,
         "applied": False,
+        "grants": [],
+        "workflows": [],
+        "areas": [],
     }
     assert await preset_row(world, world.other_tenant, world.other_tenant, token_id) == []
     assert await preset_row(world, world.tenant, world.other_tenant, token_id) == []
@@ -343,6 +343,62 @@ async def test_existing_access_is_kept_not_replaced(world: HrWorld) -> None:
     assert outcome == "applied"
     expected = rows(PRESETS["staff"] | switch_set("payroll_review"), EMPTY)
     assert await held(world, member) == expected
+
+
+async def test_recorded_switches_include_access_the_member_already_had(world: HrWorld) -> None:
+    issued = await invite(world, "admin", "staff")
+    member, token_id = await accept_only(world, issued["token"])
+    review = SWITCHES["payroll_review"]
+    for w in review.workflows:
+        await world.q(
+            "INSERT INTO hr_workflow_grants(client_id,user_id,domain,action,scope) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (world.tenant, member, w.domain, w.action, w.scope),
+        )
+    for area in review.areas:
+        await world.q(
+            "INSERT INTO hr_private_grants(client_id,user_id,area,approved_by) "
+            "VALUES (%s,%s,%s,%s)",
+            (world.tenant, member, area, world.users["owner"]),
+        )
+    access = InvitationAccess(world.service)
+    assert await access.apply_on_accept(world.tenant, token_id) == "applied"
+    [record] = await records(world, token_id)
+    assert record["details"]["on"] == sorted(PRESETS["staff"] | switch_set("payroll_review"))
+    assert record["details"]["added"] == sorted(PRESETS["staff"])
+
+    def mine(page: dict[str, Any]) -> list[dict[str, Any]]:
+        return [i for i in page["items"] if i["target_user_id"] == str(member)]
+
+    [invitation] = mine((await world.call("owner", "GET", RECENT)).json())
+    assert invitation["source"] == "invitation"
+    assert invitation["turned_on"] == ["directory", "own_requests"]
+    # An owner save that leaves payroll alone does not report payroll_review as turned on.
+    people = await world.call("owner", "GET", f"{PEOPLE}?q=Synthetic+Invitee")
+    assert people.status_code == 200, people.text
+    [person] = [p for p in people.json()["items"] if p["user_id"] == str(member)]
+    assert set(person["on"]) == set(PRESETS["staff"]) | {"payroll_review"}
+    saved = await world.call(
+        "owner",
+        "POST",
+        CHANGES,
+        {
+            "batch_id": str(uuid4()),
+            "version": people.json()["version"],
+            "changes": [
+                {
+                    "user_id": str(member),
+                    "on": [*person["on"], "approves_team"],
+                    "base": person["on"],
+                }
+            ],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["results"][0]["outcome"] == "saved"
+    page = mine((await world.call("owner", "GET", RECENT)).json())
+    save = next(i for i in page if i["area"] is None and i["source"] == "page")
+    assert save["turned_on"] == ["approves_team"] and save["turned_off"] == []
 
 
 async def test_platform_admin_staff_invitation_applies_and_is_named(world: HrWorld) -> None:

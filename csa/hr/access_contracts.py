@@ -94,9 +94,9 @@ class AccessChangeResult(HrModel):
 class AccessEvent(HrModel):
     """One change: a save on this page, or access set on an invitation when it was accepted.
 
-    For an invitation the actor is whoever chose the preset, and `turned_on` is the preset's
-    switches. A platform admin's name is "FourStacks admin"; a name is None once that person is
-    no longer an enabled member.
+    For an invitation the actor is whoever chose the preset, and `turned_on` is the switches the
+    preset added to what the person already had. A platform admin's name is "FourStacks admin";
+    a name is None once that person is no longer an enabled member.
     """
 
     occurred_at: datetime

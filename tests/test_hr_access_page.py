@@ -626,6 +626,7 @@ async def test_recent_changes_use_an_invitation_as_the_baseline(world: HrWorld) 
         "user_id": str(world.users["operator"]),
         "preset": "hr_team",
         "on": hr_team,
+        "added": hr_team,
         "chosen_by": str(world.users["owner"]),
     }
     await world.q(
