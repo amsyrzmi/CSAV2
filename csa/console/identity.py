@@ -634,7 +634,8 @@ class IdentityService:
         display_name: str | None = None,
         *,
         previous_session: str = "",
-    ) -> tuple[ConsoleActor, str, str]:
+    ) -> tuple[ConsoleActor, str, str, UUID, UUID | None]:
+        """Also returns the consumed token's id and client_id (None for a password reset)."""
         password_hash = await hash_password(password)
         async with self.pool.connection() as conn, conn.transaction():
             await self._exec(conn, "lock_admin")
@@ -665,7 +666,7 @@ class IdentityService:
                 row["user_id"],
                 row["client_id"],
             )
-        return await self.resolve(raw), raw, csrf
+        return await self.resolve(raw), raw, csrf, row["id"], row["client_id"]
 
     async def issue_reset(
         self, actor: ConsoleActor, user_id: UUID, *, notify: Notify | None = None

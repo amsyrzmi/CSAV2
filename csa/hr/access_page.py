@@ -33,6 +33,7 @@ from csa.hr.access_contracts import (
 )
 from csa.hr.access_switches import (
     SWITCH_IDS,
+    SWITCHES,
     AccessLimitError,
     AccessRows,
     AccessWarning,
@@ -157,6 +158,37 @@ def _refused(user_id: UUID, reason: str) -> AccessPersonResult:
 def _switches_of(details: Mapping[str, Any]) -> frozenset[SwitchId]:
     saved = AccessRows.from_summary(details.get("grants", []), details.get("workflows", []), [])
     return grant_switches(saved.grants, saved.workflows)
+
+
+# Switches an access.save can show: those with grant or workflow rows. Area-only switches are
+# private_access.save events of their own.
+_SAVED_SWITCHES = frozenset(s for s, r in SWITCHES.items() if r.grants or r.workflows)
+
+
+def _recorded_on(details: Mapping[str, Any]) -> frozenset[SwitchId]:
+    """The switches an invitation_access event recorded as `on`, ignoring unknown ids."""
+    recorded = set(details.get("on") or ())
+    return frozenset(s for s in SWITCH_IDS if s in recorded)
+
+
+def _baseline(operation: str, details: Mapping[str, Any]) -> frozenset[SwitchId]:
+    """What an earlier event leaves on, for the next access.save diff of the same person."""
+    if operation == "invitation_access":
+        return _recorded_on(details) & _SAVED_SWITCHES
+    return _switches_of(details)
+
+
+def _actor(event: Mapping[str, Any]) -> UUID:
+    """Who made the change: the chooser for an invitation (the invitee is the record's subject)."""
+    if event["operation"] == "invitation_access":
+        return UUID(event["details"]["chosen_by"])
+    return event["subject_id"]
+
+
+def _name(row: Mapping[str, Any]) -> str | None:
+    if row["is_platform_admin"]:
+        return "FourStacks admin"
+    return row["display_name"] if row["is_enabled_member"] else None
 
 
 def _ordered(switches: frozenset[SwitchId]) -> list[SwitchId]:
@@ -361,11 +393,11 @@ class HrAccessPage:
 
     async def recent(self, session: HrSession, *, cursor: str | None) -> AccessEventPage:
         tenant = session.tenant_id
+        baselines = ("access.save", "invitation_access")
         async with tx(self.core.pool, str(tenant)) as conn:
             HrOperations.owner(await self.core._access(conn, session))
             position = _event_position(cursor)
             moment, key = position if position is not None else (None, None)
-            summary = await sql.fetch_all("hr/access_summary.sql", (tenant,), conn=conn)
             events = await sql.fetch_all(
                 "hr/access_event_page.sql", (tenant, moment, moment, key, PAGE_SIZE + 1), conn=conn
             )
@@ -377,34 +409,55 @@ class HrAccessPage:
                 target = event["details"]["user_id"]
                 prior = next(
                     (
-                        e["details"]
+                        e
                         for e in events[index + 1 :]
-                        if e["operation"] == "access.save" and e["details"]["user_id"] == target
+                        if e["operation"] in baselines and e["details"]["user_id"] == target
                     ),
                     None,
                 )
                 if prior is None:
-                    row = await sql.fetch_one(
+                    prior = await sql.fetch_one(
                         "hr/access_event_previous.sql",
                         (tenant, target, event["occurred_at"], event["request_key"]),
                         conn=conn,
                     )
-                    prior = row["details"] if row is not None else None
-                earlier[index] = _switches_of(prior) if prior is not None else frozenset()
+                earlier[index] = (
+                    _baseline(prior["operation"], prior["details"])
+                    if prior is not None
+                    else frozenset()
+                )
+            ids = {_actor(e) for e in page} | {UUID(e["details"]["user_id"]) for e in page}
+            found = await sql.fetch_all(
+                "hr/actor_names.sql", (tenant, sorted(ids, key=str)), conn=conn
+            )
             await self.core._session(conn, session)
-        names = {row["user_id"]: row["display_name"] for row in summary}
+        names = {row["user_id"]: _name(row) for row in found}
         items: list[AccessEvent] = []
         for index, event in enumerate(page):
             details = event["details"]
             target = UUID(details["user_id"])
-            common = {
+            invitation = event["operation"] == "invitation_access"
+            actor = _actor(event)
+            common: dict[str, Any] = {
                 "occurred_at": event["occurred_at"],
-                "actor_user_id": event["subject_id"],
-                "actor_name": names.get(event["subject_id"]),
+                "source": "invitation" if invitation else "page",
+                "preset": details["preset"] if invitation else None,
+                "actor_user_id": actor,
+                "actor_name": names.get(actor),
                 "target_user_id": target,
                 "target_name": names.get(target),
             }
-            if event["operation"] == "access.save":
+            if invitation:
+                items.append(
+                    AccessEvent(
+                        **common,
+                        turned_on=_ordered(_recorded_on(details)),
+                        turned_off=[],
+                        area=None,
+                        area_enabled=None,
+                    )
+                )
+            elif event["operation"] == "access.save":
                 now, before = _switches_of(details), earlier[index]
                 items.append(
                     AccessEvent(

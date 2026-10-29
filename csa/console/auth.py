@@ -8,6 +8,7 @@ from typing import Annotated, Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 
@@ -36,6 +37,10 @@ from csa.console.security import digest
 from csa.console.services import require_package
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.hr.invitation_access import InvitationAccess
+from csa.hr.service import HrService
+
+logger = structlog.get_logger(__name__)
 
 
 class CsrfOut(BaseModel):
@@ -159,6 +164,23 @@ async def _invite(
     return await service.invite(actor, body, may_grant_hr=facts.may_grant_hr, notify=notify)
 
 
+async def _apply_invitation_access(request: Request, client_id: UUID, token_id: UUID) -> None:
+    """Apply the HR access chosen on the invitation; acceptance has committed and stands.
+
+    Any failure is logged by category only and leaves the access for the HR owner to apply.
+    """
+    hr = getattr(request.app.state, "hr_service", None)
+    if not isinstance(hr, HrService):
+        return
+    try:
+        outcome = await InvitationAccess(hr).apply_on_accept(client_id, token_id)
+    except Exception:
+        logger.warning("hr_invitation_access_failed", category="unexpected_error")
+        return
+    if outcome == "pending":
+        logger.info("hr_invitation_access_pending", category="chooser_not_hr_owner")
+
+
 Service = Annotated[IdentityService, Depends(identity_service)]
 Actor = Annotated[ConsoleActor, Depends(_actor)]
 Mutation = Annotated[ConsoleActor, Depends(_mutation)]
@@ -260,12 +282,14 @@ def build_identity_router() -> APIRouter:
             request.client.host if request.client else "unknown",
             purpose="token",
         )
-        actor, raw, csrf_token = await service.accept_token(
+        actor, raw, csrf_token, token_id, client_id = await service.accept_token(
             body.token.get_secret_value(),
             body.password.get_secret_value(),
             body.display_name,
             previous_session=request.cookies.get(SESSION_COOKIE, ""),
         )
+        if client_id is not None:
+            await _apply_invitation_access(request, client_id, token_id)
         service.set_cookies(response, raw, csrf_token)
         return actor.me(csrf_token, workspace_assistant=service.config.workspace_assistant)
 
