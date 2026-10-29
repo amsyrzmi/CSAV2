@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 
+// lastChangeText formats in the runtime's local zone (the viewer's, in a browser). Pin the zone
+// so the expected dates hold wherever the suite runs; Node re-reads TZ when it is assigned.
+process.env.TZ = "UTC";
+
 function moduleUrl(source) {
   const code = ts.transpileModule(source, { compilerOptions: {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022,
@@ -12,7 +16,7 @@ function moduleUrl(source) {
 const view = await import(moduleUrl(
   await readFile(new URL("../lib/services-view.ts", import.meta.url), "utf8"),
 ));
-const { serviceStats, rowAvatarState, statusLabel, agentCountLabel, lastChangeText } = view;
+const { serviceStats, rowAvatarState, statusLabel, agentCountLabel, lastChangeText, shortDate } = view;
 
 const agent = (name, active) => ({ name, capability: { name, active } });
 const service = (key, status, agents = [], sellable = true) => ({
@@ -145,7 +149,29 @@ test("lastChangeText is null without a change, with a bad date or an unknown act
   assert.equal(lastChangeText(change("exploded")), null);
 });
 
+test("lastChangeText is null when the date or the actor is not a string", () => {
+  // new Date(null) is 1 Jan 1970 and a missing actor would read "by undefined".
+  assert.equal(lastChangeText(change("activated", "Preview Admin", null)), null);
+  assert.equal(lastChangeText(change("activated", "Preview Admin", 1761000000000)), null);
+  assert.equal(lastChangeText({ action: "activated", at: AT }), null);
+  assert.equal(lastChangeText(change("activated", null)), null);
+  assert.equal(lastChangeText(change("activated", 42)), null);
+  assert.equal(lastChangeText(change("activated", "")), null);
+});
+
+test("lastChangeText dates follow the pinned zone, not the UTC calendar day by accident", () => {
+  assert.equal(
+    lastChangeText(change("activated", "Preview Admin", "2026-10-20T23:59:00Z")),
+    "Activated 20 Oct 2026 by Preview Admin",
+  );
+});
+
 test("lastChangeText returns an actor with markup characters unchanged (React escapes it)", () => {
   const actor = `<img src=x onerror="alert(1)"> & "Co"`;
   assert.equal(lastChangeText(change("activated", actor)), `Activated 20 Oct 2026 by ${actor}`);
+});
+
+test("shortDate gives the same short date as the last-changed line, or null", () => {
+  assert.equal(shortDate("2026-10-20T08:30:00Z"), "20 Oct 2026");
+  for (const bad of [null, undefined, "", "not a date", 0, {}]) assert.equal(shortDate(bad), null, String(bad));
 });

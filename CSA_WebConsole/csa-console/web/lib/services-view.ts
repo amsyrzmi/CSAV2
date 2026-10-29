@@ -62,6 +62,14 @@ const CHANGE_WORDS: Record<LastChange["action"], string> = {
   tenant_switch_off: "Tenant switch turned off",
 };
 
+/** "20 Oct 2026" in the viewer's zone, or null for anything that is not a parseable date string. */
+export function shortDate(value: unknown): string | null {
+  if (typeof value !== "string" || !value) return null;
+  const when = new Date(value);
+  if (Number.isNaN(when.getTime())) return null;
+  return when.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
 /**
  * "Activated 20 Oct 2026 by a platform administrator", or null when there is nothing to say.
  * The actor is exactly the string the server sent (it already depends on who is looking);
@@ -69,9 +77,10 @@ const CHANGE_WORDS: Record<LastChange["action"], string> = {
  */
 export function lastChangeText(change: LastChange | null | undefined): string | null {
   if (!change) return null;
+  // The payload is untyped at runtime: a null date would read 1 Jan 1970, a missing actor "by undefined".
+  if (typeof change.at !== "string" || typeof change.actor !== "string" || !change.actor) return null;
   const words = Object.hasOwn(CHANGE_WORDS, change.action) ? CHANGE_WORDS[change.action] : null;
-  const when = new Date(change.at);
-  if (!words || Number.isNaN(when.getTime())) return null;
-  const date = when.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  const date = shortDate(change.at);
+  if (!words || !date) return null;
   return `${words} ${date} by ${change.actor}`;
 }

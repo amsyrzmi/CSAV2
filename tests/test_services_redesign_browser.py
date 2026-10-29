@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "CSA_WebConsole/csa-console/web"
 REASON = "Activation is locked while billing is reviewed."
 THEMES = ("cobalt", "night", "bureau")
+WIDTHS = (320, 390, 768, 1024, 1440)
 NO_WHATSAPP = {
     "connected": False,
     "display_phone": None,
@@ -326,6 +327,8 @@ async def open_services(
     if tenant:
         site.upstream.me = make_me("tenant_admin")
         site.upstream.packages = [{"key": "customer_support", "status": "active"}]
+    # Dates on the last-changed line are rendered in the browser's zone; pin it so they are stable.
+    options.setdefault("timezone_id", "UTC")
     context = await browser.new_context(viewport={"width": width, "height": height}, **options)
     context.set_default_navigation_timeout(WAIT)
     cookies = [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
@@ -716,7 +719,7 @@ async def test_double_submit_sends_one_request(site: Site) -> None:
     assert not stub.unexpected, stub.unexpected
 
 
-async def test_layout_fits_320_and_1440_in_every_theme(site: Site) -> None:
+async def test_layout_fits_every_width_in_every_theme(site: Site) -> None:
     stub = Stub()
 
     async def body(browser: Any) -> None:
@@ -738,7 +741,8 @@ async def test_layout_fits_320_and_1440_in_every_theme(site: Site) -> None:
                 .click()
             )
             await expect(page.get_by_test_id("services-activate-reference")).to_be_visible()
-            for width, height in ((320, 800), (1440, 900)):
+            for width in WIDTHS:
+                height = 800 if width < 768 else 900
                 await page.set_viewport_size({"width": width, "height": height})
                 await page.wait_for_timeout(150)
                 overflow = await page.evaluate(

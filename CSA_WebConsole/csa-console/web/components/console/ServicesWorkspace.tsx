@@ -8,7 +8,7 @@ import type { Agent, Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
 import { servicesClient, type Service } from "@/lib/services-api";
 import {
-  agentCountLabel, lastChangeText, rowAvatarState, serviceStats, statusLabel, type ServiceStats, type StatusTone,
+  agentCountLabel, lastChangeText, rowAvatarState, serviceStats, shortDate, statusLabel, type ServiceStats, type StatusTone,
 } from "@/lib/services-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
@@ -116,7 +116,8 @@ function ServiceList({ clientId, platform, canManage }: {
             <div className="flex flex-1 flex-col gap-2 p-4">
               <div className="flex items-start justify-between gap-2">
                 <p id={`services-stat-label-${id}`} className="min-w-0 text-sm text-ink-700">{label}</p>
-                <span aria-hidden="true" className="inline-flex size-8 flex-none items-center justify-center rounded-lg"
+                {/* Below 360 px two cards share 300 px: the chip would clip "Suspended", so it steps aside. */}
+                <span aria-hidden="true" className="hidden size-8 flex-none items-center justify-center rounded-lg min-[360px]:inline-flex"
                   style={{ background: "var(--fs-surface-blue)", color: "var(--fs-primary)" }}>
                   <Icon className="size-4" />
                 </span>
@@ -243,9 +244,9 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
             <h3 className="font-(family-name:--fs-font-heading) text-base font-semibold">{service.title}</h3>
             <p className="mt-0.5 text-sm text-ink-600 [overflow-wrap:anywhere]">{service.summary}</p>
             {service.status === "requested" && <p className="mt-1 text-sm">
-              Requested{service.requested_at ? ` ${new Date(service.requested_at).toLocaleDateString()}` : ""}; awaiting activation.</p>}
+              Requested{shortDate(service.requested_at) ? ` ${shortDate(service.requested_at)}` : ""}; awaiting activation.</p>}
             {service.status === "active" && <p className="mt-1 text-sm [overflow-wrap:anywhere]" data-testid={`services-activation-${service.key}`}>
-              Activated{service.activated_at ? ` ${new Date(service.activated_at).toLocaleDateString()}` : ""} by a platform administrator
+              Activated{shortDate(service.activated_at) ? ` ${shortDate(service.activated_at)}` : ""} by a platform administrator
               {service.reference ? `. Reference: ${service.reference}` : ""}.</p>}
             {lastChange && <p className="mt-1 text-sm text-ink-600 [overflow-wrap:anywhere]"
               data-testid={`services-last-change-${service.key}`}>{lastChange}</p>}
