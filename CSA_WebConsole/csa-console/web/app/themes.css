@@ -8,7 +8,9 @@
    utilities. It follows the card surface; --fs-on-primary is the label colour on the accent
    for code that is converted to tokens.
 
-   Only #rrggbb colours: the contrast test parses them. */
+   Colours are #rrggbb so the contrast test can parse them; the scrim and shadow tokens are
+   8-digit translucent hex. tests/theme-literals.test.mjs keeps colour literals out of the
+   components, so this file is the only place for them. */
 
 :root,
 [data-theme="cobalt"] {
@@ -49,6 +51,28 @@
   --fs-brand-100: #d6e4ff;
   --fs-brand-200: #b5ceff;
   --fs-brand-900: #0b2d6b;
+  --fs-border-strong: #b9c7e6;
+  --fs-neutral-bg: #eaf0fa;
+  --fs-neutral-text: #445577;
+  --fs-customer-bg: #dce8ff;
+  --fs-customer-text: #183da5;
+  --fs-team-bg: #15203a;
+  --fs-team-text: #ffffff;
+  --fs-customer-1-bg: #d9e5ff;
+  --fs-customer-1-text: #183da5;
+  --fs-customer-2-bg: #cfebff;
+  --fs-customer-2-text: #0b5a8c;
+  --fs-customer-3-bg: #e0e6fb;
+  --fs-customer-3-text: #2c3e9e;
+  --fs-customer-4-bg: #d2eef6;
+  --fs-customer-4-text: #164b8d;
+  --fs-skeleton: #e9eff9;
+  --fs-skeleton-shine: #f6f9ff;
+  --fs-scrim: #1c2b4066;
+  --fs-auth-from: #101a30;
+  --fs-auth-to: #0a1222;
+  --fs-auth-text: #ffffff;
+  --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7fa6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --color-white: #ffffff;
   --fs-radius-control: 6px;
   --fs-shadow-card: 0 1px 2px #0b1b3f14;
@@ -94,6 +118,28 @@
   --fs-brand-100: #22386b;
   --fs-brand-200: #2f4b8a;
   --fs-brand-900: #cfe0ff;
+  --fs-border-strong: #36466a;
+  --fs-neutral-bg: #1f2b47;
+  --fs-neutral-text: #b8c4e0;
+  --fs-customer-bg: #1e3566;
+  --fs-customer-text: #bcd3ff;
+  --fs-team-bg: #2a3858;
+  --fs-team-text: #f6f9ff;
+  --fs-customer-1-bg: #1d3a6e;
+  --fs-customer-1-text: #cfe0ff;
+  --fs-customer-2-bg: #14425f;
+  --fs-customer-2-text: #c8f0ff;
+  --fs-customer-3-bg: #2a3470;
+  --fs-customer-3-text: #d6dcff;
+  --fs-customer-4-bg: #173f6a;
+  --fs-customer-4-text: #c4e4ff;
+  --fs-skeleton: #1b2742;
+  --fs-skeleton-shine: #2a3858;
+  --fs-scrim: #00000099;
+  --fs-auth-from: #101a30;
+  --fs-auth-to: #0a1222;
+  --fs-auth-text: #ffffff;
+  --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236f81a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --color-white: #141e33;
   --fs-radius-control: 6px;
   --fs-shadow-card: 0 1px 2px #00000066;
@@ -139,6 +185,28 @@
   --fs-brand-100: #dbe5fb;
   --fs-brand-200: #bccbf5;
   --fs-brand-900: #142e7a;
+  --fs-border-strong: #c4b79a;
+  --fs-neutral-bg: #ece4d2;
+  --fs-neutral-text: #3d4760;
+  --fs-customer-bg: #dbe5fb;
+  --fs-customer-text: #1a40ad;
+  --fs-team-bg: #14213d;
+  --fs-team-text: #fffdf8;
+  --fs-customer-1-bg: #d9e5ff;
+  --fs-customer-1-text: #183da5;
+  --fs-customer-2-bg: #cfebff;
+  --fs-customer-2-text: #0b5a8c;
+  --fs-customer-3-bg: #e0e6fb;
+  --fs-customer-3-text: #2c3e9e;
+  --fs-customer-4-bg: #d2eef6;
+  --fs-customer-4-text: #164b8d;
+  --fs-skeleton: #efe7d5;
+  --fs-skeleton-shine: #f8f2e4;
+  --fs-scrim: #14213d66;
+  --fs-auth-from: #101a30;
+  --fs-auth-to: #0a1222;
+  --fs-auth-text: #ffffff;
+  --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23857a60' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --color-white: #fffdf8;
   --fs-radius-control: 0;
   --fs-shadow-card: 3px 3px 0 #ddd3be;

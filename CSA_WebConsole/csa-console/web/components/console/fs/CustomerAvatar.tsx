@@ -1,8 +1,8 @@
-import { CUSTOMER_TINTS, initialsFor, tintIndex } from "@/lib/customer-identity";
+import { initialsFor, tintIndex } from "@/lib/customer-identity";
 import type { AvatarSize } from "./AgentAvatar";
 
 /**
- * A customer is a circle of initials in one of four blues, or a dashed circle with "?"
+ * A customer is a circle of initials in one of four tints (theme tokens, blue in Cobalt), or a dashed circle with "?"
  * when there is no real name. Agents are never round, so the two cannot be confused.
  * Decorative unless a label is given: the row text already carries the name.
  */
@@ -19,7 +19,7 @@ export default function CustomerAvatar({
   label?: string;
 }) {
   const initials = initialsFor(name);
-  const tint = CUSTOMER_TINTS[tintIndex(id)];
+  const tint = tintIndex(id) + 1;
   const accessible = label ? { role: "img", "aria-label": label } : { "aria-hidden": true };
   return (
     <span
@@ -40,8 +40,8 @@ export default function CustomerAvatar({
         lineHeight: 1,
         userSelect: "none",
         ...(initials
-          ? { background: tint.background, color: tint.color }
-          : { background: "#FFFFFF", color: "#566274", border: "1.5px dashed #7B8CA5" }),
+          ? { background: `var(--fs-customer-${tint}-bg)`, color: `var(--fs-customer-${tint}-text)` }
+          : { background: "var(--fs-surface)", color: "var(--fs-text-secondary)", border: "1.5px dashed var(--fs-border-control)" }),
       }}
     >
       {initials ?? "?"}

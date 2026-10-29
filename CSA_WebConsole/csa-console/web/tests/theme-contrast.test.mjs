@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
 
 const css = await readFile(new URL("../app/themes.css", import.meta.url), "utf8");
 const THEMES = ["cobalt", "night", "bureau"];
@@ -39,6 +40,9 @@ const COLOUR_TOKENS = [
   "--fs-on-primary", "--fs-shell", "--fs-rail", "--fs-tile", "--fs-human", "--color-white",
   "--fs-ink-950", "--fs-ink-800", "--fs-ink-700", "--fs-ink-400", "--fs-ink-200", "--fs-ink-100",
   "--fs-ink-50", "--fs-brand-100", "--fs-brand-200", "--fs-brand-900",
+  "--fs-border-strong", "--fs-neutral-bg", "--fs-neutral-text", "--fs-customer-bg", "--fs-customer-text",
+  "--fs-team-bg", "--fs-team-text", "--fs-skeleton", "--fs-skeleton-shine", "--fs-auth-from", "--fs-auth-to", "--fs-auth-text",
+  ...[1, 2, 3, 4].flatMap((n) => [`--fs-customer-${n}-bg`, `--fs-customer-${n}-text`]),
 ];
 
 // [foreground token, background token, minimum ratio, what it protects]
@@ -72,6 +76,20 @@ const PAIRS = [
   ["--fs-success", "--fs-surface", 4.5, "success word on a card"],
   ["--fs-warning", "--fs-surface", 4.5, "warning word on a card"],
   ["--fs-danger", "--fs-surface", 4.5, "danger word on a card"],
+  ["--fs-disabled-text", "--fs-disabled-bg", 4.5, "disabled control text"],
+  ["--fs-text-secondary", "--fs-surface-blue", 4.5, "muted text on the soft accent"],
+  ["--fs-text-secondary", "--fs-ink-100", 4.5, "inactive tab on the tab strip"],
+  ["--fs-ink-700", "--fs-ink-50", 4.5, "table cell text on a hovered row"],
+  ["--fs-border-control", "--fs-tile", 3, "input border on a tile"],
+  ["--fs-border-control", "--fs-rail", 3, "input border on the rail"],
+  ["--fs-neutral-text", "--fs-neutral-bg", 4.5, "status label: neutral"],
+  ["--fs-customer-text", "--fs-customer-bg", 4.5, "status label: customer"],
+  ["--fs-team-text", "--fs-team-bg", 4.5, "status label: team"],
+  ...[1, 2, 3, 4].map((n) => [`--fs-customer-${n}-text`, `--fs-customer-${n}-bg`, 4.5, `customer avatar tint ${n}`]),
+  ["--fs-auth-text", "--fs-auth-from", 4.5, "text on the sign-in panel, top"],
+  ["--fs-auth-text", "--fs-auth-to", 4.5, "text on the sign-in panel, bottom"],
+  ["--fs-text-secondary", "--fs-surface", 4.5, "unknown customer avatar mark"],
+  ["--fs-border-control", "--fs-surface", 3, "unknown customer avatar dashed outline"],
   ["--color-white", "--fs-primary", 4.5, "text-white utility on bg-brand-600"],
   ["--color-white", "--fs-text", 4.5, "text-white utility on bg-ink-900"],
 ];
@@ -122,4 +140,33 @@ test("bureau uses a hard 3px offset shadow and square controls; the others stay 
     assert.notEqual(map["--fs-radius-control"], "0");
     assert.doesNotMatch(map["--fs-shadow-popover"], /^3px 3px 0 /);
   }
+});
+
+test("the select chevron is drawn in the control border colour", () => {
+  for (const theme of THEMES) {
+    const map = tokens(theme);
+    const hex = map["--fs-border-control"].slice(1).toLowerCase();
+    assert.match(map["--fs-select-chevron"] ?? "", /^url\("data:image\/svg\+xml,/, theme);
+    assert.ok(map["--fs-select-chevron"].toLowerCase().includes(`stroke='%23${hex}'`), `${theme} chevron stroke`);
+  }
+});
+
+test("the scrim and shadows are translucent hex that themes.css owns", () => {
+  for (const theme of THEMES) {
+    const map = tokens(theme);
+    assert.match(map["--fs-scrim"] ?? "", /^#[0-9a-f]{8}$/i, `${theme} scrim`);
+  }
+});
+
+test("cobalt customer tints match the library's approved blues", async () => {
+  const source = await readFile(new URL("../lib/customer-identity.ts", import.meta.url), "utf8");
+  const code = ts.transpileModule(source, { compilerOptions: {
+    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022,
+  } }).outputText;
+  const { CUSTOMER_TINTS } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+  const map = tokens("cobalt");
+  CUSTOMER_TINTS.forEach((tint, i) => {
+    assert.equal(map[`--fs-customer-${i + 1}-bg`].toLowerCase(), tint.background.toLowerCase());
+    assert.equal(map[`--fs-customer-${i + 1}-text`].toLowerCase(), tint.color.toLowerCase());
+  });
 });

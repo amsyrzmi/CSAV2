@@ -64,11 +64,11 @@
   --app-bg: var(--fs-bg);
   --surface: var(--fs-surface);
   --hairline: var(--fs-border);
-  --hairline-strong: #d8deea;
-  --shadow-xs: 0 1px 2px rgb(11 18 32 / 0.05);
-  --shadow-sm: 0 1px 2px rgb(11 18 32 / 0.05), 0 2px 8px -2px rgb(11 18 32 / 0.07);
-  --shadow-md: 0 1px 2px rgb(11 18 32 / 0.05), 0 10px 28px -10px rgb(11 18 32 / 0.13);
-  --shadow-lg: 0 24px 64px -16px rgb(11 18 32 / 0.22), 0 2px 6px rgb(11 18 32 / 0.06);
+  --hairline-strong: var(--fs-border-strong);
+  --shadow-xs: var(--fs-shadow-card);
+  --shadow-sm: var(--fs-shadow-card);
+  --shadow-md: var(--fs-shadow-popover);
+  --shadow-lg: var(--fs-shadow-dialog);
 }
 
 @layer base {
@@ -91,9 +91,9 @@
 
   :focus-visible {
     outline: 2px solid var(--color-brand-500);
-    box-shadow: 0 0 0 4px rgb(69 112 240 / 0.12);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--fs-focus) 14%, transparent);
     outline-offset: 2px;
-    border-radius: 6px;
+    border-radius: var(--fs-radius-control);
   }
 
   button, a, input, select, textarea {
@@ -106,15 +106,15 @@
 
   select {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238f97ab' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-image: var(--fs-select-chevron);
     background-repeat: no-repeat;
     background-position: right 0.65rem center;
     padding-right: 2.25rem !important;
   }
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-thumb { background: #d9dee8; border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
-  ::-webkit-scrollbar-thumb:hover { background: #c0c8d6; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb { background: var(--fs-border-strong); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fs-ink-400); border: 3px solid transparent; background-clip: content-box; }
   ::-webkit-scrollbar-track { background: transparent; }
 
   @media (prefers-reduced-motion: reduce) {
@@ -202,7 +202,7 @@
     top: 0;
     z-index: 1;
     border-bottom: 1px solid var(--hairline);
-    background: #f8fafd;
+    background: var(--fs-tile);
     padding: 0.7rem 1rem;
     color: var(--color-ink-500);
     font-size: 0.6875rem;
@@ -219,7 +219,7 @@
   }
   .table-frame tbody tr:last-child td { border-bottom: 0; }
   .table-frame tbody tr { transition: background-color 140ms ease; }
-  .table-frame tbody tr:hover { background: #f6f9fe; }
+  .table-frame tbody tr:hover { background: var(--color-ink-50); }
   .table-frame tbody tr.row-link { cursor: pointer; }
   .table-frame tbody tr.row-link:hover td:first-child { box-shadow: inset 2px 0 0 var(--color-brand-500); }
 
@@ -274,15 +274,15 @@
   }
   .tab:hover { color: var(--color-ink-900); }
   .tab[aria-selected="true"] {
-    background: white;
+    background: var(--surface);
     color: var(--color-ink-900);
-    box-shadow: 0 1px 2px rgb(11 18 32 / 0.08), 0 0 0 1px rgb(11 18 32 / 0.04);
+    box-shadow: var(--fs-shadow-card);
   }
 
   /* ---------- feedback ---------- */
   .skeleton {
     border-radius: 8px;
-    background: linear-gradient(90deg, #f0f3f8 0px, #f8f9fc 120px, #f0f3f8 240px);
+    background: linear-gradient(90deg, var(--fs-skeleton) 0px, var(--fs-skeleton-shine) 120px, var(--fs-skeleton) 240px);
     background-size: 800px 100%;
     animation: var(--animate-shimmer);
   }
@@ -295,7 +295,7 @@
     border: 1px solid var(--hairline);
     border-bottom-width: 2px;
     border-radius: 5px;
-    background: white;
+    background: var(--surface);
     padding: 0 0.3rem;
     color: var(--color-ink-500);
     font-family: var(--font-sans);
@@ -316,8 +316,8 @@
 
   .grid-backdrop {
     background-image:
-      linear-gradient(to right, rgb(255 255 255 / 0.05) 1px, transparent 1px),
-      linear-gradient(to bottom, rgb(255 255 255 / 0.05) 1px, transparent 1px);
+      linear-gradient(to right, color-mix(in srgb, var(--fs-auth-text) 5%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--fs-auth-text) 5%, transparent) 1px, transparent 1px);
     background-size: 44px 44px;
   }
 }
@@ -378,7 +378,7 @@
 
 /* ---------- app shell ---------- */
 .shell-sidebar {
-  background: #ffffff;
+  background: var(--fs-rail);
   border-right: 1px solid var(--hairline);
 }
 .shell-nav-link {
@@ -419,7 +419,7 @@
 .shell-collapsed .shell-nav-link[aria-current="page"]::before { left: -0.5rem; }
 
 .topbar {
-  background: rgb(255 255 255 / 0.72);
+  background: color-mix(in srgb, var(--fs-shell) 72%, transparent);
   backdrop-filter: saturate(180%) blur(14px);
   -webkit-backdrop-filter: saturate(180%) blur(14px);
 }
@@ -456,19 +456,19 @@
 /* auth backdrop */
 .auth-aside {
   background:
-    radial-gradient(80% 60% at 100% 0%, rgb(69 112 240 / 0.4), transparent 60%),
-    radial-gradient(60% 50% at 0% 100%, rgb(16 185 129 / 0.14), transparent 60%),
-    linear-gradient(160deg, #101a30 0%, #0a1222 100%);
+    radial-gradient(80% 60% at 100% 0%, color-mix(in srgb, var(--fs-primary) 40%, transparent), transparent 60%),
+    radial-gradient(60% 50% at 0% 100%, color-mix(in srgb, var(--fs-success) 14%, transparent), transparent 60%),
+    linear-gradient(160deg, var(--fs-auth-from) 0%, var(--fs-auth-to) 100%);
 }
 
 /* recharts polish */
-.recharts-cartesian-axis-tick-value { fill: #8f97ab; font-size: 11px; }
-.recharts-tooltip-cursor { fill: rgb(69 112 240 / 0.07); }
-.recharts-cartesian-grid line { stroke: #f0f3f8; }
+.recharts-cartesian-axis-tick-value { fill: var(--fs-text-secondary); font-size: 11px; }
+.recharts-tooltip-cursor { fill: color-mix(in srgb, var(--fs-primary) 7%, transparent); }
+.recharts-cartesian-grid line { stroke: var(--color-ink-100); }
 .chart-tooltip {
   border: 1px solid var(--hairline);
   border-radius: 10px;
-  background: rgb(255 255 255 / 0.96);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
   padding: 0.6rem 0.75rem;
   box-shadow: var(--shadow-md);
   font-size: 12px;

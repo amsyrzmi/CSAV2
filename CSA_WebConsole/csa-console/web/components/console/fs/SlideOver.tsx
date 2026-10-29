@@ -80,7 +80,7 @@ export default function SlideOver({
         downOnBackdropRef.current = false;
         if (closeIt) onClose();
       }}
-      className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-sm border-0 bg-white p-0 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-dialog)] backdrop:bg-[#1c2b40]/40"
+      className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-sm border-0 bg-[var(--fs-surface)] p-0 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-dialog)] backdrop:bg-[var(--fs-scrim)]"
     >
       <div
         className={`flex h-full flex-col ${open && motionAllowed ? "fs-slide-in-right" : ""}`}
