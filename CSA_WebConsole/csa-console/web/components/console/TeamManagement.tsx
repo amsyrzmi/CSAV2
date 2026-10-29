@@ -8,10 +8,34 @@ import type {
   TenantRole,
 } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
+import { hrClient } from "@/lib/hr-api";
+import {
+  defaultHrAccess,
+  deliveryMessage,
+  hrAccessOptions,
+  inviteLink,
+  type HrAccessValue,
+} from "@/lib/invite-access";
+import { servicesClient } from "@/lib/services-api";
+import { formatDateTime } from "@/lib/subscriptions-api";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 import { InvitationList } from "./InvitationList";
 
 const roles: TenantRole[] = ["tenant_admin", "tenant_staff", "read_only"];
+const MALAYSIA = "Asia/Kuala_Lumpur";
+/** What the invite form needs to know about the selected tenant. */
+interface Facts {
+  hasHrPackage: boolean;
+  isHrOwner: boolean;
+  timeZone: string;
+}
+/** The link or message on show, with who it is for. Reset links expire in Malaysia time. */
+interface Shown {
+  issued: IssuedInvitation;
+  email: string;
+  kind: "invite" | "reset";
+  timeZone: string;
+}
 export function TeamManagement({
   platform = false,
   clientId = null,
@@ -26,8 +50,9 @@ export function TeamManagement({
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<TenantRole>("tenant_staff");
-  const [issued, setIssued] = useState<IssuedInvitation | null>(null);
-  const [link, setLink] = useState("");
+  const [hrAccess, setHrAccess] = useState<HrAccessValue>(defaultHrAccess("tenant_staff"));
+  const [facts, setFacts] = useState<Facts | null>(null);
+  const [shown, setShown] = useState<Shown | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -59,6 +84,39 @@ export function TeamManagement({
       live = false;
     };
   }, [selected]);
+  useEffect(() => {
+    if (!selected) return;
+    let live = true;
+    // The package list and the HR owner decide what the HR access select offers. If either
+    // cannot be read, the select stays hidden and the server still refuses a preset it should not give.
+    const packages = servicesClient(platform ? selected : null)
+      .active()
+      .then((rows) => rows.some((row) => row.key === "hr" && row.status === "active"))
+      .catch(() => false);
+    // Only a tenant member can be the HR owner, and only where HR is switched on.
+    const owner = packages.then((hasHrPackage) =>
+      platform || !hasHrPackage
+        ? false
+        : hrClient(selected)
+            .context()
+            .then((context) => context.client_owner)
+            .catch(() => false),
+    );
+    const zone = platform
+      ? Promise.resolve(clients?.find((client) => client.id === selected)?.timezone)
+      : api<Client>("/console/v1/profile")
+          .then((client) => client.timezone)
+          .catch(() => undefined);
+    void Promise.all([packages, owner, zone]).then(
+      ([hasHrPackage, isHrOwner, timeZone]) => {
+        if (live) setFacts({ hasHrPackage, isHrOwner, timeZone: timeZone ?? MALAYSIA });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [platform, selected, clients]);
+  const options = facts ? hrAccessOptions({ ...facts, role }) : [];
   async function reload() {
     setMembers(
       await api<Member[]>(
@@ -66,13 +124,19 @@ export function TeamManagement({
       ),
     );
   }
-  function showToken(token: IssuedInvitation) {
+  function showToken(
+    token: IssuedInvitation,
+    to: string,
+    kind: "invite" | "reset",
+  ) {
     if (selection.current !== selected) return;
     setRevision((value) => value + 1);
-    setIssued(token);
-    setLink(
-      `${window.location.origin}/invite#token=${encodeURIComponent(token.token)}`,
-    );
+    setShown({
+      issued: token,
+      email: to,
+      kind,
+      timeZone: kind === "reset" ? MALAYSIA : (facts?.timeZone ?? MALAYSIA),
+    });
   }
   async function invite(event: React.FormEvent) {
     event.preventDefault();
@@ -85,7 +149,14 @@ export function TeamManagement({
           email,
           display_name: name,
           role,
+          // Left out when the select is hidden or "No HR access" is chosen.
+          ...(options.some((option) => option.value === hrAccess) &&
+          hrAccess !== "none"
+            ? { hr_preset: hrAccess }
+            : {}),
         }),
+        email,
+        "invite",
       );
       setEmail("");
       setName("");
@@ -121,6 +192,8 @@ export function TeamManagement({
         await post<IssuedInvitation>(
           `/console/v1/admin/users/${member.user_id}/reset`,
         ),
+        member.email,
+        "reset",
       );
     } catch (cause) {
       setError((cause as Error).message);
@@ -140,13 +213,12 @@ export function TeamManagement({
     }
   }
   async function revokeLink() {
-    if (!issued) return;
+    if (!shown) return;
     setBusy(true);
     setError("");
     try {
-      await del(`/console/v1/admin/invites/${issued.id}`);
-      setIssued(null);
-      setLink("");
+      await del(`/console/v1/admin/invites/${shown.issued.id}`);
+      setShown(null);
       setRevision((value) => value + 1);
     } catch (cause) {
       setError((cause as Error).message);
@@ -179,8 +251,9 @@ export function TeamManagement({
               selection.current = e.target.value;
               setSelected(e.target.value);
               setMembers(null);
-              setIssued(null);
-              setLink("");
+              setShown(null);
+              setFacts(null);
+              setHrAccess(defaultHrAccess(role));
               setError("");
             }}
           >
@@ -199,38 +272,51 @@ export function TeamManagement({
         <Notice>Select a tenant to manage its members.</Notice>
       ) : (
         <div className="space-y-5">
-          {issued && (
-            <Panel title="Share the secure link">
-              <p className="mb-3 text-sm text-ink-600">
-                Give this single-use link directly to the intended person.
-                Expires{" "}
-                {new Date(issued.expires_at).toLocaleString(undefined, {
-                  timeZone: "Asia/Kuala_Lumpur",
-                })}{" "}
-                (Malaysia time).
+          {shown && (
+            <Panel
+              title={
+                shown.issued.delivery === "email"
+                  ? "Link emailed"
+                  : "Share the secure link"
+              }
+            >
+              <p data-testid="invite-delivery" className="mb-3 text-sm text-ink-600">
+                {deliveryMessage(shown.issued, shown.email, shown.kind)}
               </p>
-              <label htmlFor="issued-link" className="sr-only">
-                Secure invitation or reset link
-              </label>
-              <input
-                id="issued-link"
-                type="text"
-                autoComplete="off"
-                readOnly
-                className={field}
-                value={link}
-                onFocus={(e) => e.target.select()}
-              />
+              <p className="mb-3 text-sm text-ink-600">
+                {shown.issued.delivery === "email"
+                  ? "The link works once."
+                  : "Give this single-use link directly to the intended person."}{" "}
+                Expires{" "}
+                {formatDateTime(shown.issued.expires_at, shown.timeZone)} (
+                {shown.timeZone === MALAYSIA
+                  ? "Malaysia time"
+                  : `${shown.timeZone.replaceAll("_", " ")} time`}
+                ).
+              </p>
+              {shown.issued.delivery === "manual" && (
+                <>
+                  <label htmlFor="issued-link" className="sr-only">
+                    Secure invitation or reset link
+                  </label>
+                  <input
+                    id="issued-link"
+                    type="text"
+                    autoComplete="off"
+                    readOnly
+                    className={field}
+                    value={inviteLink(shown.issued, window.location.origin)}
+                    onFocus={(e) => e.target.select()}
+                  />
+                </>
+              )}
               <div className="mt-4 flex flex-wrap gap-3">
                 <button
                   type="button"
                   className={secondary}
-                  onClick={() => {
-                    setIssued(null);
-                    setLink("");
-                  }}
+                  onClick={() => setShown(null)}
                 >
-                  Hide link
+                  {shown.issued.delivery === "email" ? "Hide message" : "Hide link"}
                 </button>
                 <button
                   type="button"
@@ -279,7 +365,11 @@ export function TeamManagement({
                   id="member-role"
                   className={field}
                   value={role}
-                  onChange={(e) => setRole(e.target.value as TenantRole)}
+                  onChange={(e) => {
+                    const next = e.target.value as TenantRole;
+                    setRole(next);
+                    setHrAccess(defaultHrAccess(next));
+                  }}
                 >
                   {roles.map((value) => (
                     <option key={value} value={value}>
@@ -288,6 +378,32 @@ export function TeamManagement({
                   ))}
                 </select>
               </div>
+              {options.length > 0 && (
+                <div className="md:col-span-2">
+                  <label htmlFor="member-hr-access" className="mb-2 block text-sm">
+                    HR access
+                  </label>
+                  <select
+                    id="member-hr-access"
+                    data-testid="invite-hr-access"
+                    className={field}
+                    value={hrAccess}
+                    onChange={(e) => setHrAccess(e.target.value as HrAccessValue)}
+                  >
+                    {options.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs text-ink-600">
+                    {options.find((option) => option.value === hrAccess)?.explanation}
+                    {facts?.isHrOwner
+                      ? ""
+                      : " Only the HR owner can give more than Staff."}
+                  </p>
+                </div>
+              )}
               <div className="flex items-end">
                 <button className={action} disabled={busy}>
                   {busy ? "Saving…" : "Create invitation"}

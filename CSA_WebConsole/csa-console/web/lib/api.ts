@@ -25,6 +25,14 @@ const explained: Record<string, string> = {
   whatsapp_token_rejected:
     "WhatsApp did not accept that access token for this phone number ID. Check both in your Meta app, then try again.",
   whatsapp_unreachable: "We could not reach WhatsApp to check the number. Wait a minute and try again.",
+  // Invitations and the HR access chosen on them.
+  hr_preset_requires_hr_owner: "Only the HR owner can give this access. Choose Staff or No HR access.",
+  hr_not_available: "HR isn't switched on for this business.",
+  invitation_already_handled: "This was already applied or dismissed. Reload to see the latest.",
+  invitation_owner_required: "Only the HR owner can give this access. Ask them to apply or dismiss it.",
+  invitation_rows_refused:
+    "This member's access could not be changed here. Check their access in Advanced, then try again.",
+  invitation_arguments_invalid: "We could not read that invitation. Reload to see the latest.",
   // Subscriptions (csa/subscriptions): plans, actions and the request queue.
   plan_unavailable: "That plan is not available for this company.",
   action_not_allowed: "This change is not possible from the subscription's current state.",

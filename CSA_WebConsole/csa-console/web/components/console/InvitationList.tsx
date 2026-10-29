@@ -2,6 +2,8 @@
 import { useEffect, useState } from "react";
 import { api, del, post } from "@/lib/api";
 import type { IssuedInvitation } from "@/lib/identity-contracts";
+import { PRESET_COPY } from "@/lib/hr-access-copy";
+import type { PresetId } from "@/lib/hr-access-api";
 import { Notice, Panel, secondary } from "./ui";
 
 interface Invitation {
@@ -13,6 +15,7 @@ interface Invitation {
   expires_at: string;
   consumed_at: string | null;
   revoked_at: string | null;
+  hr_preset: PresetId | null;
 }
 export function InvitationList({
   clientId,
@@ -21,7 +24,11 @@ export function InvitationList({
 }: {
   clientId: string;
   revision: number;
-  onIssued: (token: IssuedInvitation) => void;
+  onIssued: (
+    token: IssuedInvitation,
+    email: string,
+    kind: "invite" | "reset",
+  ) => void;
 }) {
   const [rows, setRows] = useState<Invitation[] | null>(null);
   const [error, setError] = useState("");
@@ -50,6 +57,8 @@ export function InvitationList({
           await post<IssuedInvitation>(
             `/console/v1/admin/invites/${row.id}/renew`,
           ),
+          row.email,
+          row.kind,
         );
       else await del(`/console/v1/admin/invites/${row.id}`);
       setRows(await api<Invitation[]>(endpoint));
@@ -92,6 +101,12 @@ export function InvitationList({
                     {row.kind === "reset" ? "Password reset" : "Invitation"} ·{" "}
                     {status}
                   </p>
+                  {row.kind === "invite" && (
+                    <p className="mt-1 text-xs text-ink-500">
+                      HR access:{" "}
+                      {row.hr_preset ? PRESET_COPY[row.hr_preset].label : "No HR access"}
+                    </p>
+                  )}
                 </div>
                 {!row.consumed_at && (
                   <div className="flex flex-wrap gap-2">

@@ -1,10 +1,13 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { hrClient, type AgentSwitch } from "@/lib/hr-api";
-import { accessRecent, type AccessEvent } from "@/lib/hr-access-api";
-import { eventText, FEATURE_LABELS, FEATURES_COPY } from "@/lib/hr-access-copy";
+import {
+  accessRecent, applyInvitation, dismissInvitation, pendingInvitations,
+  type AccessEvent, type PendingInvitationAccess,
+} from "@/lib/hr-access-api";
+import { eventText, FEATURE_LABELS, FEATURES_COPY, PENDING_COPY, pendingText, refusalText } from "@/lib/hr-access-copy";
 import { formatDateTime } from "@/lib/subscriptions-api";
-import { Notice, Panel, secondary } from "./ui";
+import { action, Notice, Panel, secondary } from "./ui";
 import { plain } from "./HrAccessPanel";
 
 /**
@@ -87,4 +90,69 @@ export function HrAccessRecent({ tenant, refresh }: { tenant: string; refresh: n
       {next && <button type="button" className={secondary} disabled={loading} onClick={() => void load(next)}>Load more</button>}
     </div>
   </details>;
+}
+
+/**
+ * Access chosen on an invitation that could not be applied when it was accepted, because the
+ * person who chose it is no longer the HR owner. The owner applies it or dismisses it.
+ * Nothing shows while the list is empty.
+ */
+export function HrAccessPending({ tenant, readonly, onApplied }: { tenant: string; readonly: boolean; onApplied: () => void }) {
+  const [items, setItems] = useState<PendingInvitationAccess[] | null>(null);
+  const [working, setWorking] = useState("");
+  const [problem, setProblem] = useState("");
+  const [note, setNote] = useState("");
+  const reload = useCallback(async () => {
+    try { setItems((await pendingInvitations(tenant)).items); }
+    catch (cause) { setProblem(plain(cause, "We could not load the invitations waiting for HR access. Refresh the page to try again.")); }
+  }, [tenant]);
+  useEffect(() => {
+    let active = true;
+    pendingInvitations(tenant).then(
+      (page) => { if (active) setItems(page.items); },
+      (cause) => { if (active) setProblem(plain(cause, "We could not load the invitations waiting for HR access. Refresh the page to try again.")); },
+    );
+    return () => { active = false; };
+  }, [tenant]);
+  async function decide(item: PendingInvitationAccess, apply: boolean) {
+    setWorking(item.token_id); setProblem(""); setNote("");
+    try {
+      if (apply) {
+        const result = await applyInvitation(tenant, item.token_id);
+        if (result.outcome === "refused") {
+          setProblem(`${item.display_name}: Not saved. ${refusalText(result.reason)}`);
+        } else {
+          setNote(`${item.display_name} now has the access chosen on their invitation.`);
+          onApplied();
+        }
+      } else {
+        await dismissInvitation(tenant, item.token_id);
+        setNote(`Dismissed. ${item.display_name}'s access stays as it is.`);
+      }
+      await reload();
+    } catch (cause) {
+      setProblem(plain(cause, "We could not do that. Reload to see the latest, then try again."));
+      await reload();
+    } finally { setWorking(""); }
+  }
+  if (!problem && !note && !items?.length) return null;
+  return <div data-testid="hr-access-pending"><Panel title={PENDING_COPY.title}>
+    <p className="mb-4 text-sm text-ink-600">{PENDING_COPY.description}</p>
+    {problem && <Notice error>{problem}</Notice>}
+    {note && <Notice>{note}</Notice>}
+    <ul className="divide-y divide-ink-200">{items?.map((item) =>
+      <li key={item.token_id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm">
+        <div className="min-w-0">
+          <p className="font-medium">{item.display_name}</p>
+          <p className="text-ink-600">{pendingText(item)}</p>
+          <p className="text-xs text-ink-500">Accepted {formatDateTime(item.accepted_at, "Asia/Kuala_Lumpur")}</p>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" className={action} disabled={readonly || working !== ""}
+            data-testid={`hr-access-pending-apply-${item.token_id}`} onClick={() => void decide(item, true)}>Apply access</button>
+          <button type="button" className={secondary} disabled={readonly || working !== ""}
+            data-testid={`hr-access-pending-dismiss-${item.token_id}`} onClick={() => void decide(item, false)}>Dismiss</button>
+        </div>
+      </li>)}</ul>
+  </Panel></div>;
 }
