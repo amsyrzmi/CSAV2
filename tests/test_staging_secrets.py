@@ -150,3 +150,106 @@ def test_generated_runtime_values_satisfy_settings(tmp_path: Path) -> None:
     }
     settings = Settings(_env_file=None, _secrets_dir=no_mounts, **values)  # type: ignore[call-arg]
     assert settings.IDENTITY_DATABASE_URL is not None
+
+
+SMTP = ("smtp_username", "smtp_password")
+
+
+def _stage_smtp(target: Path, mode: int = 0o600) -> dict[str, str]:
+    """Top-level files as the owner leaves them before ``smtp-install`` (synthetic values)."""
+    values = {name: f"SYNTHETIC-{name}-{'x' * 24}" for name in SMTP}
+    for name, value in values.items():
+        (target / name).write_text(value)
+        (target / name).chmod(mode)
+    return values
+
+
+def test_smtp_files_are_optional_for_check(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    assert not any((target / "runtime" / name).exists() for name in SMTP)
+    assert staging_secrets.check(target, UID) == []
+
+
+def test_smtp_install_moves_files_with_expected_mode_and_owner(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    values = _stage_smtp(target)
+    moved = staging_secrets.install_smtp(target, UID)
+    assert moved == ["runtime/smtp_username", "runtime/smtp_password"]
+    for name in SMTP:
+        assert not (target / name).exists()
+        installed = target / "runtime" / name
+        info = installed.lstat()
+        assert stat.S_ISREG(info.st_mode)
+        assert stat.S_IMODE(info.st_mode) == 0o400
+        assert info.st_uid == UID
+        assert installed.read_text() == values[name]
+    assert staging_secrets.check(target, UID) == []
+
+
+def test_smtp_install_is_a_no_op_when_already_installed(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    values = _stage_smtp(target)
+    staging_secrets.install_smtp(target, UID)
+    assert staging_secrets.install_smtp(target, UID) == []
+    assert {name: (target / "runtime" / name).read_text() for name in SMTP} == values
+
+
+def test_smtp_install_refuses_symlinks_and_overwrites(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    values = _stage_smtp(target)
+    (target / "smtp_password").unlink()
+    (target / "smtp_password").symlink_to(target / "database/staging_owner_password")
+    with pytest.raises(staging_secrets.ProvisionError, match="smtp_password: not a regular file"):
+        staging_secrets.install_smtp(target, UID)
+    # Nothing was moved, not even the good file.
+    assert (target / "smtp_username").read_text() == values["smtp_username"]
+    assert not (target / "runtime/smtp_username").exists()
+    (target / "smtp_password").unlink()
+    _stage_smtp(target)
+    (target / "runtime/smtp_password").write_text("already here")
+    (target / "runtime/smtp_password").chmod(0o400)
+    with pytest.raises(staging_secrets.ProvisionError, match="exists in both places"):
+        staging_secrets.install_smtp(target, UID)
+    assert (target / "runtime/smtp_password").read_text() == "already here"
+
+
+def test_smtp_install_needs_both_files_and_the_runtime_uid(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    _stage_smtp(target)
+    (target / "smtp_password").unlink()
+    with pytest.raises(staging_secrets.ProvisionError, match="smtp_password: missing"):
+        staging_secrets.install_smtp(target, UID)
+    with pytest.raises(staging_secrets.ProvisionError, match="runtime UID"):
+        staging_secrets.install_smtp(target, UID + 1)
+    assert (target / "smtp_username").exists()
+
+
+def test_check_reports_a_bad_or_half_installed_smtp_file(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    _stage_smtp(target)
+    staging_secrets.install_smtp(target, UID)
+    (target / "runtime/smtp_username").chmod(0o440)
+    assert staging_secrets.check(target, UID) == ["runtime/smtp_username: mode is not 0400"]
+    (target / "runtime/smtp_username").chmod(0o400)
+    (target / "runtime/smtp_password").unlink()
+    assert staging_secrets.check(target, UID) == [
+        "runtime/smtp_password: missing while its pair is installed"
+    ]
+
+
+def test_smtp_install_main_never_prints_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "secrets"
+    args = ["--secret-dir", str(target), "--runtime-uid", str(UID)]
+    assert staging_secrets.main(["create", *args]) == 0
+    values = _stage_smtp(target)
+    capsys.readouterr()
+    assert staging_secrets.main(["smtp-install", *args]) == 0
+    output = capsys.readouterr()
+    assert "installed runtime/smtp_username (0400)" in output.out
+    assert "installed runtime/smtp_password (0400)" in output.out
+    for value in values.values():
+        assert value not in output.out + output.err
+    assert staging_secrets.main(["smtp-install", *args]) == 0
+    assert "already installed" in capsys.readouterr().out

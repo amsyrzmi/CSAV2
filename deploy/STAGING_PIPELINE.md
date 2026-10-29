@@ -310,6 +310,55 @@ not from a reseller's page.
 To switch WhatsApp off again, write `disabled` into both files the same way and
 recreate gateway and delivery.
 
+## 10. Invitation mail (owner runs; nothing is printed)
+
+Invitations, renewals and admin-issued resets are emailed from
+`FourStacks <no-reply@fourstacks.my>` through the Google Workspace relay
+`smtp-relay.gmail.com:587` (STARTTLS, SMTP auth, allowed from the staging host's IP).
+Only the gateway sends. Mail is off unless **both** are true: `CSA_STAGING_INVITE_MAIL=true`
+and the two relay secrets are present. Until then the console shows the link to copy,
+as before.
+
+**Before rolling out an image that contains this wiring**, install the two secret files.
+The owner leaves `smtp_username` and `smtp_password` (root-only) at the top of
+`/srv/csa-staging/secrets/`. Compose refuses to recreate the gateway while either
+secret file is missing, so do this first. `smtp-install` moves them into `runtime/` as
+`1000:1000`, mode 0400, never reads or prints them, refuses a symlink, and does nothing
+if they are already installed. It needs root only because the files are root-owned. Run
+from the main checkout, which has the action:
+
+```bash
+sudo python3 -m scripts.staging_secrets smtp-install --secret-dir /srv/csa-staging/secrets
+```
+
+Expected: `installed runtime/smtp_username (0400)` and the same for `smtp_password`, then
+`OK 10 staging secret files; values not displayed` (a second run prints `already
+installed; nothing to move`). `check` passes with or without the two files, but flags
+one without the other.
+
+Then, in the section-2 shell, recreate the gateway with the flag on:
+
+```bash
+export CSA_STAGING_INVITE_MAIL=true
+csa_pipeline_compose config --quiet || exit 1
+csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway
+```
+
+Verify, with nothing secret on screen:
+
+1. Console → Your team → Invite a member, using an address you can read. The panel says
+   "Invitation emailed to <address>" and shows no link; the mail arrives from
+   `no-reply@fourstacks.my` with a link that opens `/invite`.
+2. If the panel instead says "We couldn't send the email", the relay refused. Find the
+   category (never the address or link) with
+   `csa_pipeline_compose logs --no-log-prefix gateway 2>&1 | grep -o 'smtp_[a-z_]*' | sort | uniq -c`:
+   `smtp_auth_failed` means a wrong username or app password, `smtp_refused` a sender or
+   IP the relay does not allow, `smtp_timeout` that the relay is unreachable from the host.
+   The invitation still exists; copy its link from the panel meanwhile.
+3. To switch mail off again, unset `CSA_STAGING_INVITE_MAIL` (or set it to `false`) and
+   rerun the `up` line above. The console then says "Copy this link and send it to
+   <address>."
+
 ## Rollback
 
 Stop only `worker`, `delivery` and `staging-embeddings`; the gateway can stay

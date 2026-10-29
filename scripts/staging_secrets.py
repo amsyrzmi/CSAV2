@@ -46,6 +46,11 @@ WHATSAPP_FILES = (
     "pipeline/staging_whatsapp_app_secret",
     "pipeline/staging_whatsapp_verify_token",
 )
+# Invitation mail relay credentials. The owner leaves them at the top of the secret
+# directory; ``smtp-install`` moves them into ``runtime/``. They stay optional for
+# ``check`` because mail is off by default, but they come as a pair.
+SMTP_NAMES = ("smtp_username", "smtp_password")
+SMTP_FILES = tuple(f"runtime/{name}" for name in SMTP_NAMES)
 DSN_ROLES = {
     "migration/staging_owner_dsn": ("csa", "database/staging_owner_password"),
     "runtime/staging_domain_dsn": ("csa_app", "migration/staging_app_password"),
@@ -142,6 +147,48 @@ def provision_whatsapp_defaults(secret_dir: Path, runtime_uid: int) -> list[str]
     return sorted(created)
 
 
+def install_smtp(secret_dir: Path, runtime_uid: int) -> list[str]:
+    """Move the owner's top-level SMTP files into ``runtime/``; never read, print or overwrite.
+
+    Ownership goes to the runtime UID (and the ``runtime/`` group) with mode 0400, which needs
+    root when the files are root-owned. Everything is validated before the first move, so a
+    refusal leaves the directory as it was. Returns the files moved; already installed is [].
+    """
+    target = _validate_target(secret_dir)
+    euid = os.geteuid()
+    if euid not in (0, runtime_uid):
+        raise ProvisionError(f"run as root or the container runtime UID {runtime_uid}")
+    runtime = target / "runtime"
+    if runtime.is_symlink() or not runtime.is_dir():
+        raise ProvisionError("runtime secret directory must already exist")
+    group = runtime.lstat().st_gid
+    pending = []
+    for name in SMTP_NAMES:
+        source, installed = target / name, runtime / name
+        have_source = source.exists() or source.is_symlink()
+        have_installed = installed.exists() or installed.is_symlink()
+        if have_source and have_installed:
+            raise ProvisionError(f"{name}: exists in both places; refusing to overwrite")
+        if have_installed:
+            continue
+        if not have_source:
+            raise ProvisionError(f"{name}: missing")
+        info = source.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ProvisionError(f"{name}: not a regular file")
+        if euid != 0 and info.st_uid != euid:
+            raise ProvisionError(f"{name}: owned by another user; run as root")
+        pending.append(name)
+    for name in pending:
+        source, installed = target / name, runtime / name
+        os.chown(source, runtime_uid, group, follow_symlinks=False)
+        os.chmod(source, 0o400)
+        # A hard link fails if the destination appeared meanwhile, unlike rename.
+        os.link(source, installed, follow_symlinks=False)
+        os.unlink(source)
+    return [f"runtime/{name}" for name in pending]
+
+
 def _read(path: Path, runtime_uid: int, failures: list[str], name: str) -> str | None:
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode):
@@ -184,7 +231,7 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
             values[name] = value
     for directory in DIRECTORIES:
         for entry in (target / directory).iterdir():
-            if f"{directory}/{entry.name}" not in FILES:
+            if f"{directory}/{entry.name}" not in (*FILES, *SMTP_FILES):
                 failures.append(f"{directory}/{entry.name}: unexpected entry")
     for name in PASSWORDS:
         if name in values and len(values[name]) < 32:
@@ -209,6 +256,14 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
         path = target / name
         if path.exists() or path.is_symlink():
             _read(path, runtime_uid, failures, name)
+    present = [
+        name for name in SMTP_FILES if (target / name).exists() or (target / name).is_symlink()
+    ]
+    for name in SMTP_FILES:
+        if name in present:
+            _read(target / name, runtime_uid, failures, name)
+        elif present:
+            failures.append(f"{name}: missing while its pair is installed")
     key = values.get("runtime/staging_credentials_key")
     if key is not None:
         try:
@@ -225,7 +280,7 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("create", "check", "whatsapp-defaults"))
+    parser.add_argument("action", choices=("create", "check", "whatsapp-defaults", "smtp-install"))
     parser.add_argument("--secret-dir", type=Path, required=True)
     parser.add_argument("--runtime-uid", type=int, default=1000)
     args = parser.parse_args(argv)
@@ -236,6 +291,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "whatsapp-defaults":
             for name in provision_whatsapp_defaults(args.secret_dir, args.runtime_uid):
                 print(f"created {name} (0400)")
+        elif args.action == "smtp-install":
+            moved = install_smtp(args.secret_dir, args.runtime_uid)
+            for name in moved:
+                print(f"installed {name} (0400)")
+            if not moved:
+                print("already installed; nothing to move")
         failures = check(args.secret_dir, args.runtime_uid)
     except (OSError, ProvisionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
