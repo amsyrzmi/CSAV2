@@ -68,6 +68,8 @@ loopback port; the console is unavailable for a few seconds while that happens.
   export CSA_STAGING_FRONTEND_IMAGE=ghcr.io/amsyrzmi/csa-frontend@sha256:af62b0cab9074c9d177c6b74413d44c1fc0af3fbeeb9162d22eefd9c8c803e4f
   export CSA_STAGING_CONSOLE_ORIGIN=https://staging-console.fourstacks.my
   export CSA_STAGING_HOOKS_ORIGIN=https://hooks.fourstacks.my
+  export CSA_STAGING_INVITE_MAIL=true  # keep on once switched on (section 10)
+  export CSA_STAGING_EMAIL_ASSISTANT=true  # keep on once switched on (section 11)
 
   csa_pipeline_compose() {
     docker compose --env-file /dev/null --project-name csa-staging \
@@ -328,7 +330,9 @@ Invitations, renewals and admin-issued resets are emailed from
 `smtp-relay.gmail.com:587` (STARTTLS, SMTP auth, allowed from the staging host's IP).
 Only the gateway sends. Mail is off unless **both** are true: `CSA_STAGING_INVITE_MAIL=true`
 and the two relay secrets are present. Until then the console shows the link to copy,
-as before.
+as before. `CSA_STAGING_INVITE_MAIL` and `CSA_STAGING_EMAIL_ASSISTANT` (section 11) are
+independent and both must be exported (`=true`) in the shell whenever the gateway is
+recreated, or the feature whose variable is missing is switched off.
 
 **Before rolling out an image that contains this wiring**, install the two secret files.
 The owner leaves `smtp_username` and `smtp_password` (root-only) at the top of
@@ -378,10 +382,12 @@ fourstacks.my Google Cloud project with the redirect
 `https://staging-console.fourstacks.my/console/v1/email/oauth/callback`. Internal means
 only fourstacks.my Google accounts can connect, with no test users and no seven-day
 token expiry. Only the gateway uses it, through `provider-egress`. The assistant is off
-unless `CSA_STAGING_EMAIL_ASSISTANT=true`.
+unless `CSA_STAGING_EMAIL_ASSISTANT=true`. That variable and `CSA_STAGING_INVITE_MAIL`
+(section 10) are independent and both must be exported (`=true`) in the shell whenever the
+gateway is recreated, or the feature whose variable is missing is switched off.
 
-**Before rolling out an image that contains this wiring**, the owner writes the two
-secret files. Compose refuses to recreate the gateway while either file is missing, so do
+**Before the gateway is next recreated from a checkout that contains this compose file**,
+the owner writes the two secret files. Compose refuses to recreate the gateway while either file is missing, so do
 this first. The files are root-written, owned `1000:1000`, mode 0400, and nothing is echoed
 (the secret prompt uses `read -s`). There is no install action; `check` accepts both files
 absent or both present and flags one without the other:
@@ -415,7 +421,7 @@ Verify, with nothing secret on screen:
    appears and, after approval, the tab shows the mailbox as connected.
 2. Run a sync: threads from the last 14 days are listed.
 3. If the gateway fails to start with `EMAIL_ASSISTANT_ENABLED requires GOOGLE_CLIENT_ID,
-   GOOGLE_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI`, a file is empty or missing. If
+   GOOGLE_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI`, a file is empty. If
    Google reports `redirect_uri_mismatch`, the client's redirect does not match the URI
    above exactly.
 4. To switch it off, unset `CSA_STAGING_EMAIL_ASSISTANT` (or set it to `false`) and rerun

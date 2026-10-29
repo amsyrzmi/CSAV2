@@ -49,9 +49,10 @@ client (web application type), and request only the two scopes listed.
   project. Only fourstacks.my accounts can connect, so there are no test users
   and no seven-day refresh-token expiry.
 - **Production for client tenants** needs an **External** client with Google
-  verification, because `gmail.readonly` is a restricted scope. The owner
+  verification, because the scopes are restricted (`gmail.readonly` and
+  `gmail.compose`; `gmail.send` when added). The owner
   decided on 2026-10-29 to keep inbox reading. Planned email management will
-  also add `gmail.send`, which changes the verification scope.
+  also add `gmail.send`, which widens the verification scope.
 - In a client in Testing mode, refresh tokens expire after seven days; the
   module reports `mailbox_reauthorization_required` and the user reconnects.
 
