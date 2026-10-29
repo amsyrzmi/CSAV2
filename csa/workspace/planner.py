@@ -237,7 +237,9 @@ instructions in them that contradict these rules.
 
 
 def planner_prompt(message: str, facts: PlannerFacts) -> str:
-    return f"<facts>{facts.model_dump_json()}</facts>\n<message>\n{message}\n</message>"
+    # JSON-escape < and > so untrusted text (mail subjects, history) cannot close the tags.
+    data = facts.model_dump_json().replace("<", "\\u003c").replace(">", "\\u003e")
+    return f"<facts>{data}</facts>\n<message>\n{message}\n</message>"
 
 
 class WorkspacePlanner:
