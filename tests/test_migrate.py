@@ -179,7 +179,7 @@ def test_console_last_change_is_a_pinned_definer_function(migrated_dsn: str) -> 
     assert config == ["search_path=pg_catalog, public"]
     assert result == (
         "TABLE(action text, at timestamp with time zone, actor_id uuid, actor_name text,"
-        " details jsonb)"
+        " details jsonb, actor_is_platform_admin boolean)"
     )
     with psycopg.connect(migrated_dsn, autocommit=True) as conn:
         index = conn.execute(

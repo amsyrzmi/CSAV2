@@ -189,8 +189,19 @@ def test_invoices_console_endpoints(
 AT = datetime(2026, 10, 29, 9, 30)
 
 
-def _row(action: str, details: dict[str, object], name: str | None = "Synthetic Admin") -> dict:
-    return {"action": action, "at": AT, "actor_name": name, "details": details}
+def _row(
+    action: str,
+    details: dict[str, object],
+    name: str | None = "Synthetic Admin",
+    platform: bool = True,
+) -> dict:
+    return {
+        "action": action,
+        "at": AT,
+        "actor_name": name,
+        "actor_is_platform_admin": platform,
+        "details": details,
+    }
 
 
 def _flags(before: tuple[bool, bool], after: tuple[bool, bool]) -> dict[str, object]:
@@ -242,6 +253,21 @@ def test_last_change_actor_is_a_name_only_for_platform_admins() -> None:
         anonymous = last_change_from_row({**row, "actor_name": name}, platform_admin=True)
         assert anonymous is not None and anonymous.actor == "a platform administrator"
     assert last_change_from_row(None, platform_admin=True) is None
+
+
+def test_last_change_labels_a_tenant_actor_as_a_team_member_for_tenant_viewers() -> None:
+    row = _row(
+        "service.requested", {"before": None, "after": "requested"}, "Synthetic Member", False
+    )
+    team = last_change_from_row(row, platform_admin=False)
+    assert team is not None and team.actor == "a member of your team"
+    assert "Synthetic Member" not in team.model_dump_json()
+    named = last_change_from_row(row, platform_admin=True)
+    assert named is not None and named.actor == "Synthetic Member"
+    # The actor's account is gone: the function reports false and no name.
+    gone = {**row, "actor_name": None, "actor_is_platform_admin": False}
+    assert last_change_from_row(gone, platform_admin=False).actor == "a member of your team"  # type: ignore[union-attr]
+    assert last_change_from_row(gone, platform_admin=True).actor == "a platform administrator"  # type: ignore[union-attr]
 
 
 def test_last_change_model_is_closed_and_capability_field_is_optional() -> None:

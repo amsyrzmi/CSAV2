@@ -492,6 +492,7 @@ async def test_hr_and_email_apis_require_their_packages(sessions, services_app):
 # --- last_change (0502): newest matching console_audit row, read through a definer function.
 
 ROLE_LABEL = "a platform administrator"
+TEAM_LABEL = "a member of your team"
 
 
 async def _services(sessions: SessionWorld, tenant: UUID, actor: ConsoleActor) -> dict[str, Any]:
@@ -557,6 +558,11 @@ async def test_last_change_tracks_request_and_suspension(sessions: SessionWorld)
     change = (await _services(sessions, tenant, admin))["customer_support"].last_change
     assert change is not None and change.action == "requested"
     assert change.actor == tenant_admin.display_name
+    # The tenant admin's own request reads as a team member's, never by name.
+    mine = (await _services(sessions, tenant, tenant_admin))["customer_support"].last_change
+    assert mine is not None and mine.action == "requested" and mine.actor == TEAM_LABEL
+    for secret in (str(tenant_admin.user_id), tenant_admin.email, tenant_admin.display_name):
+        assert secret not in mine.model_dump_json()
     await activate_package(pool, tenant, "customer_support", ActivateIn(reference="Q"), actor=admin)
     await activate_package(pool, tenant, "orders_products", ActivateIn(reference="Q"), actor=admin)
     await suspend_package(pool, tenant, "orders_products", SuspendIn(), actor=admin)
@@ -588,6 +594,9 @@ async def test_capability_toggles_map_to_last_change_actions(sessions: SessionWo
     change = await toggle(tenant_admin, client_enabled=True)
     assert change is not None and change.action == "tenant_switch_on"
     assert change.actor == tenant_admin.display_name
+    seen_by_tenant = (await _services(sessions, tenant, tenant_admin))["orders_products"]
+    switch = _agent_change(seen_by_tenant, "order_agent")
+    assert switch is not None and switch.action == "tenant_switch_on" and switch.actor == TEAM_LABEL
     change = await toggle(tenant_admin, client_enabled=False)
     assert change is not None and change.action == "tenant_switch_off"
     change = await toggle(admin, is_enabled=False)
@@ -622,7 +631,15 @@ async def test_last_change_never_crosses_tenants(sessions: SessionWorld) -> None
     async with tx(sessions.pool, str(other)) as conn:
         rows = await (await conn.execute(call, (other,))).fetchall()
     assert len(rows) == 1 and rows[0]["action"] == "service.activated"
-    assert set(rows[0]) == {"action", "at", "actor_id", "actor_name", "details"}
+    assert set(rows[0]) == {
+        "action",
+        "at",
+        "actor_id",
+        "actor_name",
+        "actor_is_platform_admin",
+        "details",
+    }
+    assert rows[0]["actor_is_platform_admin"] is True
     # Without a tenant in the transaction the function returns nothing.
     async with sessions.pool.connection() as conn:
         assert await (await conn.execute(call, (other,))).fetchall() == []
