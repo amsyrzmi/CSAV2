@@ -145,3 +145,19 @@ def test_make_reset_only_disposable_container(pg_container: object, migrated_dsn
             "'console_inbox_actions','console_workspace_threads','console_workspace_turns')"
         ).fetchall()
         assert len(rows) == 6 and all(row[1] and not row[2] for row in rows)
+
+
+@requires_docker
+def test_inbox_list_indexes_exist(migrated_dsn: str) -> None:
+    # 0501: the inbox list query probes orders and subscriptions by (client_id, contact_id)
+    # and approvals by (client_id, conversation_id). orders already has orders_recent_idx
+    # (client_id, contact_id, placed_at), which serves the same probe, so 0501 adds no orders index.
+    with psycopg.connect(migrated_dsn, autocommit=True) as conn:
+        defs = dict(
+            conn.execute(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'"
+            ).fetchall()
+        )
+    assert "(client_id, contact_id)" in defs["subscriptions_client_contact_idx"]
+    assert "(client_id, conversation_id)" in defs["approvals_client_conversation_idx"]
+    assert "(client_id, contact_id," in defs["orders_recent_idx"]
