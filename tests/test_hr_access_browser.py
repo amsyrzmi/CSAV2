@@ -252,6 +252,9 @@ class World:
             return 200, {"results": results, "version": self.stamp(), "warnings": []}
         if path == "hr/access/recent" and method == "GET" and owner:
             return 200, {"items": list(reversed(self.events)), "next_cursor": None}
+        if path == "hr/access/invitations" and method == "GET" and owner:
+            # B4's pending panel loads on this page; this world has no invitations.
+            return 200, {"items": []}
         self.unexpected.append(f"{method} {path}?{params}")
         return 500, {"detail": "unexpected synthetic call"}
 

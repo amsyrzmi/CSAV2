@@ -74,6 +74,14 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
         assert "provider-egress" in services[name]["networks"]
     gateway_secrets = {s["target"]: s["source"] for s in services["gateway"]["secrets"]}
     assert gateway_secrets["LG_DATABASE_URL"] == "staging_checkpoint_dsn"
+    # Invitation mail: relay credentials on the gateway only, and off unless switched on.
+    assert gateway_secrets["SMTP_USERNAME"] == "staging_smtp_username"
+    assert gateway_secrets["SMTP_PASSWORD"] == "staging_smtp_password"
+    assert services["gateway"]["environment"]["INVITE_MAIL_ENABLED"] == "false"
+    for name in ("worker", "delivery"):
+        assert not {"SMTP_USERNAME", "SMTP_PASSWORD"} & {
+            s["target"] for s in services[name]["secrets"]
+        }
     # Queue claims run under RLS; only the owner role sees unscoped rows.
     for name in ("worker", "delivery"):
         targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
@@ -103,6 +111,16 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
     for name in ("worker", "delivery", "staging-db"):
         assert "gateway-host" not in services[name]["networks"]
     assert "/tmp/worker.alive" in services["worker"]["healthcheck"]["test"][-1]
+
+
+def test_pipeline_switches_invitation_mail_on_from_the_environment(tmp_path: Path) -> None:
+    config = render(
+        tmp_path,
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_INVITE_MAIL": "true"},
+    )
+    assert config["services"]["gateway"]["environment"]["INVITE_MAIL_ENABLED"] == "true"
 
 
 def test_pipeline_keeps_one_shot_and_migration_services_out_of_normal_startup(

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 
@@ -26,8 +30,20 @@ from csa.console.contracts import (
     TokenInfoOut,
     UserPatchIn,
 )
-from csa.console.identity import CSRF_COOKIE, SESSION_COOKIE, IdentityService
+from csa.console.identity import CSRF_COOKIE, SESSION_COOKIE, IdentityService, Notify
+from csa.console.mail_templates import invitation_mail, reset_mail
+from csa.console.mailer import Mailer, MailOutcome
 from csa.console.security import digest
+from csa.console.services import require_package
+from csa.core import db
+from csa.core.tenancy import tx
+from csa.hr.invitation_access import InvitationAccess
+from csa.hr.service import HrService
+
+logger = structlog.get_logger(__name__)
+
+# Only for rendering a message nobody is sent; the real zone is checked when mail is on.
+_FALLBACK_ZONE = "Asia/Kuala_Lumpur"
 
 
 class CsrfOut(BaseModel):
@@ -72,6 +88,115 @@ async def _mutation(
 ) -> ConsoleActor:
     await service.require_csrf(request, actor)
     return actor
+
+
+@dataclass(frozen=True)
+class InviteFacts:
+    business_name: str
+    timezone: str
+    may_grant_hr: bool
+
+
+def _mailer(request: Request) -> Mailer | None:
+    mailer = getattr(request.app.state, "mailer", None)
+    return mailer if isinstance(mailer, Mailer) else None
+
+
+def _mail_on(mailer: Mailer | None) -> bool:
+    return mailer is not None and mailer.enabled
+
+
+async def _invite_facts(
+    request: Request, actor: ConsoleActor, client_id: UUID, *, mail_on: bool
+) -> InviteFacts:
+    """Read the tenant facts on the app pool; the identity pool may not read clients or HR.
+
+    The tenant's zone only matters for a message that is sent, so it is checked only then.
+    """
+    async with tx(request.app.state.pool, str(client_id)) as conn:
+        # A platform session never carries a tenant HR owner's right to grant presets.
+        if not actor.platform_admin:
+            await db.q.execute("console/invite_facts_context.sql", (str(actor.user_id),), conn=conn)
+        row = await db.q.fetch_one(
+            "console/invite_facts.sql", (actor.user_id, client_id), conn=conn
+        )
+    if row is None:
+        raise HTTPException(404, "tenant not found")
+    zone = row["timezone"]
+    if mail_on:
+        ZoneInfo(zone)  # Fail before any write, never after the invitation commits.
+    else:
+        try:
+            ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = _FALLBACK_ZONE
+    return InviteFacts(
+        business_name=row["business_name"],
+        timezone=zone,
+        may_grant_hr=bool(row["may_grant_hr"]) and not actor.platform_admin,
+    )
+
+
+def _invitation_notify(
+    mailer: Mailer | None,
+    actor: ConsoleActor,
+    facts: InviteFacts,
+    *,
+    to: str,
+    invitee_name: str,
+) -> Notify | None:
+    if mailer is None:
+        return None
+
+    async def notify(link: str, expires_at: datetime) -> MailOutcome:
+        return await mailer.send(
+            invitation_mail(
+                to=to,
+                invitee_name=invitee_name,
+                inviter_name=actor.display_name,
+                business_name=facts.business_name,
+                link=link,
+                expires_at=expires_at,
+                tz=facts.timezone,
+            )
+        )
+
+    return notify
+
+
+async def _invite(
+    request: Request, body: InviteIn, actor: ConsoleActor, service: IdentityService
+) -> IssuedTokenOut:
+    # Authorise first, so the package and facts reads never answer for another tenant.
+    service.require_member_admin(actor, body.client_id)
+    if body.hr_preset is not None:
+        try:
+            await require_package(request.app.state.pool, body.client_id, frozenset({"hr"}))
+        except HTTPException as exc:
+            if exc.detail != "package_inactive":
+                raise
+            raise HTTPException(422, "hr_not_available") from None
+    mailer = _mailer(request)
+    facts = await _invite_facts(request, actor, body.client_id, mail_on=_mail_on(mailer))
+    notify = _invitation_notify(mailer, actor, facts, to=body.email, invitee_name=body.display_name)
+    return await service.invite(actor, body, may_grant_hr=facts.may_grant_hr, notify=notify)
+
+
+async def _apply_invitation_access(request: Request, client_id: UUID, token_id: UUID) -> None:
+    """Apply the HR access chosen on the invitation; acceptance has committed and stands.
+
+    Any failure is logged by category only and leaves the access for the HR owner to apply.
+    """
+    hr = getattr(request.app.state, "hr_service", None)
+    if not isinstance(hr, HrService):
+        return
+    try:
+        outcome = await InvitationAccess(hr).apply_on_accept(client_id, token_id)
+    except Exception:
+        logger.warning("hr_invitation_access_failed", category="unexpected_error")
+        return
+    if outcome == "pending":
+        logger.info("hr_invitation_access_pending", category="chooser_not_hr_owner")
 
 
 Service = Annotated[IdentityService, Depends(identity_service)]
@@ -175,23 +300,29 @@ def build_identity_router() -> APIRouter:
             request.client.host if request.client else "unknown",
             purpose="token",
         )
-        actor, raw, csrf_token = await service.accept_token(
+        actor, raw, csrf_token, token_id, client_id = await service.accept_token(
             body.token.get_secret_value(),
             body.password.get_secret_value(),
             body.display_name,
             previous_session=request.cookies.get(SESSION_COOKIE, ""),
         )
+        if client_id is not None:
+            await _apply_invitation_access(request, client_id, token_id)
         service.set_cookies(response, raw, csrf_token)
         return actor.me(csrf_token, workspace_assistant=service.config.workspace_assistant)
 
     @router.post("/admin/invites", response_model=IssuedTokenOut, status_code=201)
-    async def admin_invite(body: InviteIn, actor: Mutation, service: Service) -> IssuedTokenOut:
+    async def admin_invite(
+        body: InviteIn, request: Request, actor: Mutation, service: Service
+    ) -> IssuedTokenOut:
         service.require_platform(actor)
-        return await service.invite(actor, body)
+        return await _invite(request, body, actor, service)
 
     @router.post("/team/invites", response_model=IssuedTokenOut, status_code=201)
-    async def team_invite(body: InviteIn, actor: Mutation, service: Service) -> IssuedTokenOut:
-        return await service.invite(actor, body)
+    async def team_invite(
+        body: InviteIn, request: Request, actor: Mutation, service: Service
+    ) -> IssuedTokenOut:
+        return await _invite(request, body, actor, service)
 
     @router.get("/admin/invites", response_model=list[InvitationOut])
     async def invitation_list(
@@ -203,8 +334,20 @@ def build_identity_router() -> APIRouter:
         return await service.invitations(actor, client_id, limit)
 
     @router.post("/admin/invites/{token_id}/renew", response_model=IssuedTokenOut, status_code=201)
-    async def invitation_renew(token_id: UUID, actor: Mutation, service: Service) -> IssuedTokenOut:
-        return await service.renew_invitation(actor, token_id)
+    async def invitation_renew(
+        token_id: UUID, request: Request, actor: Mutation, service: Service
+    ) -> IssuedTokenOut:
+        mailer = _mailer(request)
+        if mailer is None:
+            return await service.renew_invitation(actor, token_id)
+        recipient = await service.invitation_recipient(actor, token_id)
+        if recipient.client_id is None:
+            raise HTTPException(404, "pending invitation not found")
+        facts = await _invite_facts(request, actor, recipient.client_id, mail_on=_mail_on(mailer))
+        notify = _invitation_notify(
+            mailer, actor, facts, to=recipient.email, invitee_name=recipient.display_name
+        )
+        return await service.renew_invitation(actor, token_id, notify=notify)
 
     @router.delete("/admin/invites/{token_id}", status_code=204)
     async def revoke_invite(token_id: UUID, actor: Mutation, service: Service) -> None:
@@ -233,8 +376,25 @@ def build_identity_router() -> APIRouter:
         await service.set_user_enabled(actor, user_id, body.is_enabled)
 
     @router.post("/admin/users/{user_id}/reset", response_model=IssuedTokenOut, status_code=201)
-    async def reset_issue(user_id: UUID, actor: Mutation, service: Service) -> IssuedTokenOut:
-        return await service.issue_reset(actor, user_id)
+    async def reset_issue(
+        user_id: UUID, request: Request, actor: Mutation, service: Service
+    ) -> IssuedTokenOut:
+        mailer = _mailer(request)
+        if mailer is None:
+            return await service.issue_reset(actor, user_id)
+        recipient = await service.reset_recipient(actor, user_id)
+
+        async def notify(link: str, expires_at: datetime) -> MailOutcome:
+            return await mailer.send(
+                reset_mail(
+                    to=recipient.email,
+                    name=recipient.display_name,
+                    link=link,
+                    expires_at=expires_at,
+                )
+            )
+
+        return await service.issue_reset(actor, user_id, notify=notify)
 
     @router.post("/admin/users/{user_id}/revoke-sessions", status_code=204)
     async def revoke_sessions(user_id: UUID, actor: Mutation, service: Service) -> None:

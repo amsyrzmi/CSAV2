@@ -91,9 +91,12 @@ export interface Member {
 }
 export interface IssuedInvitation {
   id: string;
-  token: string;
+  /** Null when the server emailed the link: the raw token then never leaves the server. */
+  token: string | null;
   expires_at: string;
-  delivery: "manual";
+  delivery: "manual" | "email";
+  /** Why the link is shown: mail is switched off, or the send failed. Absent on older responses. */
+  delivery_note?: "mail_off" | "send_failed" | null;
 }
 export interface Capability {
   name: string;

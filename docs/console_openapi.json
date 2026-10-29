@@ -125,6 +125,7 @@
       },
       "AccessEvent": {
         "additionalProperties": false,
+        "description": "One change: a save on this page, or access set on an invitation when it was accepted.\n\nFor an invitation the actor is whoever chose the preset, and `turned_on` is the switches the\npreset added to what the person already had. A platform admin's name is \"FourStacks admin\";\na name is None once that person is no longer an enabled member.",
         "properties": {
           "actor_name": {
             "anyOf": [
@@ -167,6 +168,32 @@
           "occurred_at": {
             "format": "date-time",
             "title": "Occurred At",
+            "type": "string"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "manager",
+                  "hr_team",
+                  "payroll_preparer",
+                  "payroll_reviewer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
+          },
+          "source": {
+            "enum": [
+              "page",
+              "invitation"
+            ],
+            "title": "Source",
             "type": "string"
           },
           "target_name": {
@@ -222,6 +249,8 @@
         },
         "required": [
           "occurred_at",
+          "source",
+          "preset",
           "actor_user_id",
           "actor_name",
           "target_user_id",
@@ -4230,6 +4259,24 @@
             "title": "Expires At",
             "type": "string"
           },
+          "hr_preset": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "manager",
+                  "hr_team",
+                  "payroll_preparer",
+                  "payroll_reviewer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hr Preset"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -4303,6 +4350,24 @@
             "minLength": 3,
             "title": "Email",
             "type": "string"
+          },
+          "hr_preset": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "manager",
+                  "hr_team",
+                  "payroll_preparer",
+                  "payroll_reviewer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hr Preset"
           },
           "role": {
             "enum": [
@@ -4455,10 +4520,28 @@
         "additionalProperties": false,
         "properties": {
           "delivery": {
-            "const": "manual",
             "default": "manual",
+            "enum": [
+              "manual",
+              "email"
+            ],
             "title": "Delivery",
             "type": "string"
+          },
+          "delivery_note": {
+            "anyOf": [
+              {
+                "enum": [
+                  "mail_off",
+                  "send_failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Note"
           },
           "expires_at": {
             "format": "date-time",
@@ -4471,8 +4554,15 @@
             "type": "string"
           },
           "token": {
-            "title": "Token",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
           }
         },
         "required": [
@@ -6373,6 +6463,87 @@
           "reversal_reason"
         ],
         "title": "PayrollSnapshotRecord",
+        "type": "object"
+      },
+      "PendingInvitationAccess": {
+        "additionalProperties": false,
+        "description": "An accepted invitation whose HR access was neither applied nor dismissed.",
+        "properties": {
+          "accepted_at": {
+            "format": "date-time",
+            "title": "Accepted At",
+            "type": "string"
+          },
+          "chooser_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chooser Name"
+          },
+          "chosen_by": {
+            "format": "uuid",
+            "title": "Chosen By",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "preset": {
+            "enum": [
+              "staff",
+              "manager",
+              "hr_team",
+              "payroll_preparer",
+              "payroll_reviewer"
+            ],
+            "title": "Preset",
+            "type": "string"
+          },
+          "token_id": {
+            "format": "uuid",
+            "title": "Token Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token_id",
+          "user_id",
+          "display_name",
+          "preset",
+          "chosen_by",
+          "chooser_name",
+          "accepted_at"
+        ],
+        "title": "PendingInvitationAccess",
+        "type": "object"
+      },
+      "PendingInvitationPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PendingInvitationAccess"
+            },
+            "maxItems": 50,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PendingInvitationPage",
         "type": "object"
       },
       "PersonOut": {
@@ -14167,6 +14338,169 @@
           }
         },
         "summary": "Access Changes",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/access/invitations": {
+      "get": {
+        "operationId": "access_invitations_console_v1_hr_access_invitations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingInvitationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Access Invitations",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/access/invitations/{token_id}/apply": {
+      "post": {
+        "operationId": "access_invitation_apply_console_v1_hr_access_invitations__token_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Token Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessPersonResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Access Invitation Apply",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/access/invitations/{token_id}/dismiss": {
+      "post": {
+        "operationId": "access_invitation_dismiss_console_v1_hr_access_invitations__token_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Token Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Access Invitation Dismiss",
         "tags": [
           "HR"
         ]

@@ -30,11 +30,18 @@ services:
       TEI_PASSAGE_PREFIX: "passage: "
       # Meta calls the hooks hostname, not the console origin.
       WHATSAPP_CALLBACK_BASE_URL: ${CSA_STAGING_HOOKS_ORIGIN:?approved staging hooks HTTPS origin required}
+      # Invitation and reset mail. Off unless the owner sets CSA_STAGING_INVITE_MAIL=true.
+      INVITE_MAIL_ENABLED: ${CSA_STAGING_INVITE_MAIL:-false}
     secrets:
       - source: staging_whatsapp_app_secret
         target: WHATSAPP_APP_SECRET
       - source: staging_whatsapp_verify_token
         target: WHATSAPP_VERIFY_TOKEN
+      # Relay credentials; mail stays inactive unless the flag is on and both are present.
+      - source: staging_smtp_username
+        target: SMTP_USERNAME
+      - source: staging_smtp_password
+        target: SMTP_PASSWORD
     networks: ["data", "app", "embeddings", "provider-egress", "gateway-host"]
     # Loopback-only publish for the staging hooks Caddy site (POST /hooks/* only).
     # 18081 belongs to the development gateway; never reuse it here.
@@ -189,3 +196,9 @@ secrets:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_whatsapp_app_secret
   staging_whatsapp_verify_token:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_whatsapp_verify_token
+  # Installed by `staging_secrets smtp-install` before a gateway with invitation mail is
+  # recreated: compose refuses to start a service whose secret file is missing.
+  staging_smtp_username:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/smtp_username
+  staging_smtp_password:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/smtp_password

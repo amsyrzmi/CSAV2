@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any, get_args
 
 import psycopg
 import pytest
+from csa.console.contracts import ConsoleActor, HrPreset, InviteIn, Role
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.hr.access_switches import PresetId
+from fastapi import HTTPException
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
@@ -157,3 +161,198 @@ async def test_identity_readiness_rejects_owner_and_accidental_domain_grants(
         finally:
             await owner.execute("REVOKE SELECT ON contacts FROM csa_identity")
     await service.check_ready()
+
+
+class InviteWorld:
+    """A synthetic tenant with two tenant admins and a platform admin, on the identity pool."""
+
+    def __init__(self, dsn: str, service: IdentityService, tenant: uuid.UUID) -> None:
+        self.dsn = dsn
+        self.service = service
+        self.tenant = tenant
+        self.admins: list[ConsoleActor] = []
+        self.platform: ConsoleActor | None = None
+
+    @staticmethod
+    def actor(
+        user_id: uuid.UUID, *, tenant: uuid.UUID | None, platform: bool = False
+    ) -> ConsoleActor:
+        return ConsoleActor(
+            user_id=user_id,
+            email=f"{user_id}@example.test",
+            display_name="Synthetic Actor",
+            platform_admin=platform,
+            must_change_password=False,
+            session_id=uuid.uuid4(),
+            client_id=None if platform else tenant,
+            role=Role.PLATFORM_ADMIN if platform else Role.TENANT_ADMIN,
+            memberships=[],
+            csrf_hash="synthetic",
+        )
+
+    def invite_in(self, **overrides: Any) -> InviteIn:
+        fields: dict[str, Any] = {
+            "email": f"invitee-{uuid.uuid4()}@example.test",
+            "client_id": self.tenant,
+            "role": "tenant_staff",
+            "display_name": "Synthetic Invitee",
+        }
+        return InviteIn(**(fields | overrides))
+
+    async def rows(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        async with await psycopg.AsyncConnection.connect(self.dsn, autocommit=True) as owner:
+            async with owner.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(query, params)  # type: ignore[arg-type]
+                return await cursor.fetchall()
+
+    async def token(self, token_id: uuid.UUID) -> dict[str, Any]:
+        return (await self.rows("SELECT * FROM console_tokens WHERE id=%s", token_id))[0]
+
+
+@pytest.fixture
+async def invites(
+    migrated_dsn: str, identity_pool: AsyncConnectionPool
+) -> AsyncIterator[InviteWorld]:
+    tenant = uuid.uuid4()
+    service = IdentityService(
+        identity_pool, IdentityConfig(origins=("https://console.example.test",))
+    )
+    world = InviteWorld(migrated_dsn, service, tenant)
+    async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
+        await owner.execute(
+            "INSERT INTO clients(id, slug, name, platform_version) VALUES (%s,%s,%s,'test')",
+            (tenant, f"invites-{tenant}", "Synthetic Invite Tenant"),
+        )
+        for _ in range(2):
+            user_id = uuid.uuid4()
+            await owner.execute(
+                "INSERT INTO console_users(id,email,display_name,password_hash) "
+                "VALUES (%s,%s,'Synthetic Admin','synthetic-hash')",
+                (user_id, f"{user_id}@example.test"),
+            )
+            await owner.execute(
+                "INSERT INTO console_memberships(user_id,client_id,role) "
+                "VALUES (%s,%s,'tenant_admin')",
+                (user_id, tenant),
+            )
+            world.admins.append(InviteWorld.actor(user_id, tenant=tenant))
+        platform_id = uuid.uuid4()
+        await owner.execute(
+            "INSERT INTO console_users(id,email,display_name,password_hash,is_platform_admin) "
+            "VALUES (%s,%s,'Synthetic Platform','synthetic-hash',true)",
+            (platform_id, f"{platform_id}@example.test"),
+        )
+        world.platform = InviteWorld.actor(platform_id, tenant=None, platform=True)
+    yield world
+
+
+async def test_invite_stores_preset_and_chooser(invites: InviteWorld) -> None:
+    admin = invites.admins[0]
+    issued = await invites.service.invite(admin, invites.invite_in(hr_preset="staff"))
+    row = await invites.token(issued.id)
+    assert row["hr_preset"] == "staff"
+    assert row["hr_preset_chosen_by"] == admin.user_id
+    assert row["kind"] == "invite"
+
+
+async def test_non_owner_cannot_choose_manager(invites: InviteWorld) -> None:
+    before_users = await invites.rows("SELECT count(*) AS n FROM console_users")
+    before_tokens = await invites.rows("SELECT count(*) AS n FROM console_tokens")
+    data = invites.invite_in(hr_preset="manager")
+    with pytest.raises(HTTPException) as denied:
+        await invites.service.invite(invites.admins[0], data)
+    assert denied.value.status_code == 403
+    assert denied.value.detail == "hr_preset_requires_hr_owner"
+    assert await invites.rows("SELECT count(*) AS n FROM console_users") == before_users
+    assert await invites.rows("SELECT count(*) AS n FROM console_tokens") == before_tokens
+    assert not await invites.rows("SELECT 1 FROM console_users WHERE email=%s", data.email)
+
+
+async def test_hr_owner_may_choose_manager(invites: InviteWorld) -> None:
+    admin = invites.admins[0]
+    issued = await invites.service.invite(
+        admin, invites.invite_in(hr_preset="manager"), may_grant_hr=True
+    )
+    row = await invites.token(issued.id)
+    assert row["hr_preset"] == "manager"
+    assert row["hr_preset_chosen_by"] == admin.user_id
+
+
+async def test_platform_admin_may_choose_only_staff(invites: InviteWorld) -> None:
+    # The routes pass may_grant_hr=False for every caller until Task 2, and a platform admin
+    # never becomes an HR owner, so the service-level rule is what /admin/invites enforces.
+    assert invites.platform is not None
+    with pytest.raises(HTTPException) as denied:
+        await invites.service.invite(invites.platform, invites.invite_in(hr_preset="manager"))
+    assert denied.value.status_code == 403
+    assert denied.value.detail == "hr_preset_requires_hr_owner"
+    issued = await invites.service.invite(invites.platform, invites.invite_in(hr_preset="staff"))
+    row = await invites.token(issued.id)
+    assert row["hr_preset"] == "staff"
+    assert row["hr_preset_chosen_by"] == invites.platform.user_id
+
+
+async def test_renewal_keeps_preset_and_chooser(invites: InviteWorld) -> None:
+    owner, other = invites.admins
+    issued = await invites.service.invite(
+        owner, invites.invite_in(hr_preset="manager"), may_grant_hr=True
+    )
+    renewed = await invites.service.renew_invitation(other, issued.id)
+    assert renewed.id != issued.id
+    row = await invites.token(renewed.id)
+    assert row["hr_preset"] == "manager"
+    assert row["hr_preset_chosen_by"] == owner.user_id
+    assert row["created_by"] == other.user_id
+    assert (await invites.token(issued.id))["revoked_at"] is not None
+
+
+async def test_omitted_preset_stores_none(invites: InviteWorld) -> None:
+    issued = await invites.service.invite(invites.admins[0], invites.invite_in())
+    row = await invites.token(issued.id)
+    assert row["hr_preset"] is None
+    assert row["hr_preset_chosen_by"] is None
+    renewed = await invites.service.renew_invitation(invites.admins[1], issued.id)
+    row = await invites.token(renewed.id)
+    assert row["hr_preset"] is None and row["hr_preset_chosen_by"] is None
+
+
+async def test_listing_returns_the_preset(invites: InviteWorld) -> None:
+    issued = await invites.service.invite(
+        invites.admins[0], invites.invite_in(hr_preset="hr_team"), may_grant_hr=True
+    )
+    listed = await invites.service.invitations(invites.admins[0], invites.tenant, 10)
+    assert {row["id"]: row["hr_preset"] for row in listed}[issued.id] == "hr_team"
+
+
+async def test_reset_tokens_cannot_carry_a_preset(invites: InviteWorld) -> None:
+    admin = invites.admins[0]
+    async with await psycopg.AsyncConnection.connect(invites.dsn, autocommit=True) as owner:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await owner.execute(
+                "INSERT INTO console_tokens(user_id,kind,token_hash,expires_at,created_by,"
+                "hr_preset,hr_preset_chosen_by) "
+                "VALUES (%s,'reset',%s,now()+interval '1 hour',%s,'staff',%s)",
+                (admin.user_id, "a" * 64, admin.user_id, admin.user_id),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await owner.execute(
+                "INSERT INTO console_tokens(user_id,client_id,role,kind,token_hash,expires_at,"
+                "created_by,hr_preset) "
+                "VALUES (%s,%s,'tenant_staff','invite',%s,now()+interval '1 hour',%s,'staff')",
+                (admin.user_id, invites.tenant, "b" * 64, admin.user_id),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await owner.execute(
+                "INSERT INTO console_tokens(user_id,client_id,role,kind,token_hash,expires_at,"
+                "created_by,hr_preset,hr_preset_chosen_by) "
+                "VALUES (%s,%s,'tenant_staff','invite',%s,now()+interval '1 hour',%s,'owner',%s)",
+                (admin.user_id, invites.tenant, "c" * 64, admin.user_id, admin.user_id),
+            )
+
+
+async def test_contract_presets_match_the_access_switch_presets() -> None:
+    assert get_args(HrPreset) == get_args(PresetId)
+
+
+async def test_identity_isolation_still_holds(invites: InviteWorld) -> None:
+    await invites.service.check_ready()

@@ -138,6 +138,29 @@ warnings and the version; the page shows what it returns. Switch ids:
   `access.save` lists `turned_on` and `turned_off` against that person's previous
   `access.save`; a private-area event gives `area` and `area_enabled`. A member who
   is no longer enabled has `actor_name` or `target_name` `null` ("Former member").
+  Each event has a `source`: `page` for a save on this page, or `invitation` for access
+  set on an invitation when it was accepted. An `invitation` event carries the `preset`
+  (otherwise `null`); its actor is whoever chose the preset (a platform admin shows as
+  "FourStacks admin"), and `turned_on` is only what the preset added to what the person
+  already had.
+- **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
+  below) is applied when the invitation is accepted. If it is not, it waits for the HR
+  owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an
+  enabled user with an enabled membership in the tenant), or any preset, Staff included,
+  whose apply failed (for example the tenant's HR lock was held for more than 5 s). HR owner
+  only, tenant query as for the other `/access` routes:
+  - `GET /access/invitations` returns `PendingInvitationPage`: `items` of
+    `{token_id, user_id, display_name, preset, chosen_by, chooser_name, accepted_at}`.
+    `chooser_name` is "FourStacks admin" for a platform admin and `null` once the chooser
+    is no longer an enabled member.
+  - `POST /access/invitations/{token_id}/apply` applies the chosen preset now, on top of
+    what the person already has (it never turns a switch off), and returns an
+    `AccessPersonResult` with `outcome` `saved`. It checks again that the caller is the HR
+    owner. Refusals are errors, never a `refused` outcome: 409
+    `invitation_already_handled` when it was already applied or dismissed; 404
+    `resource_unavailable` for an unknown token.
+  - `POST /access/invitations/{token_id}/dismiss` leaves the person's access as it is; 204.
+    The same 409 applies.
 - The company features ("What the HR assistant can help with") stay on
   `PUT /agents`. They control only the HR assistant and agents; they never limit
   what staff can do in the console, and no switch or warning depends on them.
@@ -975,10 +998,10 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 | POST `/invites/accept` | `{token,password,display_name?}` | Single-use acceptance, membership/session creation |
 | GET/POST `/admin/clients` | POST `{slug,name,timezone?}` | Platform admin; list (up to 200) / audited creation |
 | GET `/profile` | Platform selection if applicable | Verified tenant profile |
-| POST `/admin/invites` | `{email,display_name,client_id,role}` | Platform admin; issue manual-delivery invitation |
+| POST `/admin/invites` | `{email,display_name,client_id,role,hr_preset?}` | Platform admin; issue an invitation, emailed when mail is on |
 | POST `/team/invites` | Same | Selected tenant admin/platform; no platform role grants |
-| GET `/admin/invites` | `client_id=UUID` | Authorized tenant admin/platform; pending/used/revoked/expiry metadata |
-| POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement; same scoped authorization |
+| GET `/admin/invites` | `client_id=UUID` | Authorized tenant admin/platform; pending/used/revoked/expiry metadata, and `hr_preset` (`null` for none) |
+| POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement (keeps `hr_preset` and who chose it); same scoped authorization |
 | DELETE `/admin/invites/{id}` | — | Revoke invitation; reset-token revocation requires platform admin |
 | GET `/team` | `client_id=UUID` | Selected tenant admin/platform; member list |
 | PATCH `/team/{user_id}` | query `client_id`; `{role?,is_enabled?}` | Scoped member change; revoke affected tenant sessions; protect last admin |
@@ -994,9 +1017,36 @@ writes, and read-only users cannot mutate. Membership changes and disablement pr
 last active tenant administrator; platform disablement also protects the last platform admin.
 
 Invitations/reset tokens are hashed, expire after 48 hours, and are consumed under locks.
-Raw tokens are returned once to the authorized issuer for **manual delivery**. The UI uses
-`/invite#token=...` and immediately clears the fragment before submitting the token in JSON.
-There is no email provider integration. Existing credentialed accounts cannot be overwritten
+The UI uses `/invite#token=...` and immediately clears the fragment before submitting the
+token in JSON.
+
+**Delivery (B4).** Invite, renew and admin-issued reset return `IssuedTokenOut`:
+`{id, token, expires_at, delivery, delivery_note}`. With invitation mail on
+(`INVITE_MAIL_ENABLED` and both `SMTP_USERNAME` and `SMTP_PASSWORD` secrets, sent through
+the Google Workspace relay `smtp-relay.gmail.com:587` with STARTTLS, 10 s timeout),
+the link is emailed after the token commits: `delivery` is `email`, `delivery_note` is
+`null` and **`token` is `null`**, so the raw token never leaves the server. Otherwise
+`delivery` is `manual` and the raw token is returned once to the authorized issuer, with
+`delivery_note` saying why: `mail_off` (mail is not configured, which is normal) or
+`send_failed` (the relay refused, timed out or failed; the user and token still exist
+once, with no retry). Failures are logged by category only (`smtp_disabled`,
+`smtp_auth_failed`, `smtp_refused`, `smtp_timeout`, `smtp_error`), never with the address,
+link or body; a message that fails to build is `smtp_error` too. The gateway names itself
+in EHLO as `SMTP_EHLO_HOSTNAME` (default `fourstacks.my`). With `INVITE_MAIL_ENABLED` on but
+a relay secret missing or empty, startup logs one warning, `console_mail_inactive` with
+category `secrets_missing`, and mail stays off. Reset links expire in `Asia/Kuala_Lumpur`
+time; invitation links in the tenant's `clients.timezone`, which is checked before the
+invitation is written only while mail is on (with mail off an invalid zone does not block
+inviting). Renewing an invitation that has no tenant is 404 `pending invitation not found`.
+
+**HR access on an invitation.** `InviteIn.hr_preset` is one of `staff`, `manager`,
+`hr_team`, `payroll_preparer`, `payroll_reviewer`, or omitted for no HR access. Any
+inviting admin may choose none or `staff`; the other presets only the tenant's HR owner
+(403 `hr_preset_requires_hr_owner`, checked again at apply time). A preset on a tenant
+without the `hr` package is 422 `hr_not_available`. The preset and who chose it are stored
+on the token (migration 0483) and applied when the invitation is accepted; see
+`/access/invitations` under "HR access page" for one that must wait for the HR owner.
+Existing credentialed accounts cannot be overwritten
 through invitations; cross-tenant account attachment and membership switching remain deferred.
 Admin-issued password resets require an account that has already set its password.
 A pending invitation returns 409 without revoking its token; renew or accept that invitation

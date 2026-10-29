@@ -29,6 +29,8 @@ from csa.hr.access_contracts import (
     AccessChanges,
     AccessEventPage,
     AccessPeoplePage,
+    AccessPersonResult,
+    PendingInvitationPage,
 )
 from csa.hr.access_page import HrAccessPage
 from csa.hr.access_switches import SwitchId
@@ -36,6 +38,7 @@ from csa.hr.agents import HrAgentDescription, describe_agent
 from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan, TrainingSubmitIntent
 from csa.hr.automation_models import HrOperation, OperationReceipt
 from csa.hr.cases import CasePage, HrWorkflowService
+from csa.hr.invitation_access import InvitationAccess
 from csa.hr.models import (
     DirectoryProjection,
     HrModel,
@@ -307,6 +310,20 @@ def build_hr_router() -> APIRouter:
         cursor: Annotated[str | None, Query(max_length=200)] = None,
     ) -> AccessEventPage:
         return await HrAccessPage(service).recent(session, cursor=cursor)
+
+    @router.get("/access/invitations", response_model=PendingInvitationPage)
+    async def access_invitations(session: Session, service: Service) -> PendingInvitationPage:
+        return await InvitationAccess(service).pending(session)
+
+    @router.post("/access/invitations/{token_id}/apply", response_model=AccessPersonResult)
+    async def access_invitation_apply(
+        token_id: UUID, session: Session, service: Service
+    ) -> AccessPersonResult:
+        return await InvitationAccess(service).apply(session, token_id)
+
+    @router.post("/access/invitations/{token_id}/dismiss", status_code=204)
+    async def access_invitation_dismiss(token_id: UUID, session: Session, service: Service) -> None:
+        await InvitationAccess(service).dismiss(session, token_id)
 
     @router.get("/records/{area}", response_model=Records)
     async def records(

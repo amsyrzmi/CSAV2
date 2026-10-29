@@ -616,3 +616,43 @@ async def test_recent_changes_show_disabled_people_without_names(world: HrWorld)
     event = next(i for i in items if i["target_user_id"] == str(world.users["operator"]))
     assert event["target_name"] is None and event["actor_name"] == "Synthetic Staff"
     assert event["turned_on"] == ["approves_team"]
+
+
+async def test_recent_changes_use_an_invitation_as_the_baseline(world: HrWorld) -> None:
+    await clear_operator(world)
+    key = uuid4()
+    hr_team = ["attendance", "directory", "hr_team", "own_requests", "recruitment"]
+    details = {
+        "user_id": str(world.users["operator"]),
+        "preset": "hr_team",
+        "on": hr_team,
+        "added": hr_team,
+        "chosen_by": str(world.users["owner"]),
+    }
+    await world.q(
+        "INSERT INTO hr_operations(client_id,subject_id,request_key,operation,fingerprint,"
+        "receipt) VALUES (%s,%s,%s,'invitation_access',%s,%s)",
+        (world.tenant, world.users["operator"], key, "0" * 64, Jsonb({"status": "saved"})),
+    )
+    await world.q(
+        "INSERT INTO hr_authority_events(client_id,subject_id,request_key,operation,details) "
+        "VALUES (%s,%s,%s,'invitation_access',%s)",
+        (world.tenant, world.users["operator"], key, Jsonb(details)),
+    )
+    await turn(world, "operator", ["directory", "own_requests", "hr_team", "approves_team"])
+    items = (await recent(world))["items"]
+    save, invitation = [i for i in items if i["target_user_id"] == str(world.users["operator"])]
+    assert save["source"] == "page" and save["preset"] is None
+    # Areas are not part of an access.save, so the invitation's area switches are not "turned off".
+    assert save["turned_on"] == ["approves_team"] and save["turned_off"] == []
+    assert invitation["source"] == "invitation" and invitation["preset"] == "hr_team"
+    assert invitation["actor_user_id"] == str(world.users["owner"])
+    assert invitation["actor_name"] == "Synthetic Staff"
+    assert invitation["turned_on"] == [
+        "directory",
+        "own_requests",
+        "hr_team",
+        "recruitment",
+        "attendance",
+    ]
+    assert invitation["turned_off"] == [] and invitation["area"] is None

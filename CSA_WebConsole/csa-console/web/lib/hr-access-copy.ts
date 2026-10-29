@@ -1,4 +1,4 @@
-import type { AccessEvent, AccessWarningOut, PresetId, SwitchId } from "./hr-access-api";
+import type { AccessEvent, AccessWarningOut, PendingInvitationAccess, PresetId, SwitchId } from "./hr-access-api";
 
 /** Words for the "Who can do what" page. Copy follows docs/WRITING_GUIDE.md. */
 export type SwitchGroup = "Everyday" | "Responsibilities" | "Private areas";
@@ -147,6 +147,8 @@ const quoted = (ids: SwitchId[]) => ids.map((id) => `"${SWITCH_COPY[id].label}"`
 export function eventText(e: AccessEvent): string {
   const actor = formerMember(e.actor_name);
   const target = formerMember(e.target_name);
+  if (e.source === "invitation" && e.preset)
+    return `Set on invitation by ${actor}: ${PRESET_COPY[e.preset].label} for ${target}`;
   if (e.area) {
     const area = AREAS[e.area] ?? `the private ${e.area} area`;
     return `${actor} ${e.area_enabled ? "opened" : "closed"} ${area} for ${target}`;
@@ -159,3 +161,13 @@ export function eventText(e: AccessEvent): string {
     ? `${actor} ${parts.join(" and ")} for ${target}`
     : `${actor} changed custom access for ${target}`;
 }
+
+/** The preset waiting on an accepted invitation, and who chose it. */
+export function pendingText(item: PendingInvitationAccess): string {
+  return `${PRESET_COPY[item.preset].label}, chosen by ${formerMember(item.chooser_name)}`;
+}
+
+export const PENDING_COPY = {
+  title: "Waiting for access chosen on the invitation",
+  description: "These members accepted an invitation with HR access chosen for them. Apply it to give them that access, or dismiss it to leave their access as it is.",
+};

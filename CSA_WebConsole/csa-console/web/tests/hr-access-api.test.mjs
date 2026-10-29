@@ -195,3 +195,55 @@ test("the new refusal reasons read as plain sentences", () => {
   assert.notEqual(partly, copy.refusalText(null));
   assert.doesNotMatch(partly, /_/);
 });
+
+const PENDING_ID = "66666666-6666-4666-8666-666666666666";
+
+test("the pending, apply and dismiss calls carry the tenant", async () => {
+  const pending = { items: [{ token_id: PENDING_ID, user_id: USER, display_name: "Aina Rahman", preset: "manager",
+    chosen_by: MANAGER, chooser_name: "Daniel Lim", accepted_at: "2026-10-29T01:00:00Z" }] };
+  const applied = { user_id: USER, outcome: "saved", reason: null };
+  const [, requests] = await capture(async () => {
+    assert.deepEqual(await access.pendingInvitations(TENANT), pending);
+    assert.deepEqual(await access.applyInvitation(TENANT, PENDING_ID), applied);
+    assert.equal(await access.dismissInvitation(TENANT, PENDING_ID), undefined);
+  }, (path) => path.includes("/dismiss") ? new Response(null, { status: 204 })
+    : path.includes("/apply") ? Response.json(applied) : Response.json(pending));
+  assert.deepEqual(requests.map(([path, init]) => [init.method ?? "GET", path]), [
+    ["GET", `/console/v1/hr/access/invitations?${SUFFIX}`],
+    ["POST", `/console/v1/hr/access/invitations/${PENDING_ID}/apply?${SUFFIX}`],
+    ["POST", `/console/v1/hr/access/invitations/${PENDING_ID}/dismiss?${SUFFIX}`],
+  ]);
+  for (const [, init] of requests.slice(1)) assert.equal(init.headers.get("X-CSRF-Token"), "synthetic-csrf");
+});
+
+test("an invitation that was already handled keeps its code and reads as a sentence", async () => {
+  const [failure] = await capture(
+    () => access.applyInvitation(TENANT, PENDING_ID).then(() => null, (cause) => cause),
+    () => Response.json({ detail: "invitation_already_handled" }, { status: 409 }),
+  );
+  assert.ok(failure instanceof ApiError);
+  assert.equal(failure.code, "invitation_already_handled");
+  assert.equal(failure.message, "This was already applied or dismissed. Reload to see the latest.");
+});
+
+const event = (extra) => ({
+  occurred_at: "2026-10-29T01:00:00Z", source: "invitation", preset: "manager", actor_user_id: MANAGER,
+  actor_name: "Daniel Lim", target_user_id: USER, target_name: "Aina Rahman",
+  turned_on: ["approves_team"], turned_off: [], area: null, area_enabled: null, ...extra,
+});
+
+test("an invitation event names who chose the access and the preset", () => {
+  assert.equal(copy.eventText(event({})), "Set on invitation by Daniel Lim: Manager for Aina Rahman");
+  assert.match(copy.eventText(event({ actor_name: "FourStacks admin", preset: "staff" })), /FourStacks admin/);
+  assert.match(copy.eventText(event({ actor_name: null })), /Set on invitation by Former member/);
+  assert.equal(copy.eventText(event({ source: "page", preset: null, turned_on: ["recruitment"] })),
+    'Daniel Lim turned on "Works on recruitment" for Aina Rahman');
+});
+
+test("the pending line names the preset and who chose it", () => {
+  const row = { token_id: PENDING_ID, user_id: USER, display_name: "Aina Rahman", preset: "payroll_reviewer",
+    chosen_by: MANAGER, chooser_name: null, accepted_at: "2026-10-29T01:00:00Z" };
+  assert.equal(copy.pendingText(row), "Payroll reviewer, chosen by Former member");
+  assert.equal(copy.pendingText({ ...row, chooser_name: "FourStacks admin", preset: "staff" }),
+    "Staff, chosen by FourStacks admin");
+});
