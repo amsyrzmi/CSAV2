@@ -50,7 +50,7 @@ export function MessageItem({ item, contactId, contactName, motion, arrived }: {
   const outbound = sender !== "customer";
   const avatar = !last ? <span aria-hidden className="w-8 shrink-0" />
     : sender === "customer" ? <CustomerAvatar id={contactId} name={contactName} size={32} />
-    : sender === "assistant" ? <AgentAvatar agentId="support" size={32} />
+    : sender === "assistant" ? <AgentAvatar agentId="support" size={32} state="rest" />
     : <TeamAvatar />;
   const corner = outbound ? (last ? "rounded-br-[4px]" : "") : (last ? "rounded-bl-[4px]" : "");
   return <li className={`flex min-w-0 items-end gap-2 ${first ? "mt-3" : "mt-1"} ${outbound ? "flex-row-reverse" : ""} ${arrived && motion ? "fs-message-in" : ""}`}>

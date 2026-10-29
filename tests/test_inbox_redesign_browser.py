@@ -700,36 +700,43 @@ async def test_agent_avatar_loads_and_the_proxy_still_denies_by_default(shell: S
             assert (refused.status_code, refused.text) == (404, "Not found"), path
 
 
-async def avatar_frames(page: Page) -> list[str]:
-    """Computed animation names of every frame of the open thread's support sprite."""
-    sprite = page.get_by_test_id("inbox-thread").locator("[data-agent='support'] svg").first
-    await expect(sprite.locator(".fs-px-f0 rect").first).to_be_attached(timeout=WAIT)
-    return await sprite.locator(".fs-px-frame").evaluate_all(
+async def avatar_frames(avatar: Any) -> list[str]:
+    """Computed animation names of every frame of one sprite (a `[data-agent]` tile)."""
+    await expect(avatar.locator(".fs-px-f0 rect").first).to_be_attached(timeout=WAIT)
+    return await avatar.locator(".fs-px-frame").evaluate_all(
         "els => els.map(el => getComputedStyle(el).animationName)"
     )
 
 
 async def test_agent_avatar_is_still_under_reduced_motion(shell: Shell) -> None:
-    # Control: with motion allowed the sprite loops four frames, so "none" below means something.
-    state = Inbox()
-    async with inbox_page(shell, state) as page:
-        await rows_loaded(page)
-        await open_thread(page, NAMED)
-        frames = page.get_by_test_id("inbox-thread").locator("[data-agent='support'] .fs-px-frame")
+    # Control: the empty-state avatar is an idle sprite, so with motion allowed it loops four
+    # frames and "none" below means something.
+    empty_state = Inbox(items=[], needs_review_count=0)
+    async with inbox_page(shell, empty_state) as page:
+        avatar = page.get_by_test_id("inbox-list-state-empty").locator("[data-agent='support']")
+        frames = avatar.locator(".fs-px-frame")
         await expect(frames).to_have_count(4, timeout=WAIT)
-        names = await frames.evaluate_all(
-            "els => els.map(el => getComputedStyle(el).animationName)"
-        )
-        assert names == ["fs-px-show"] * 4
-    state = Inbox()
-    async with inbox_page(shell, state, reduced_motion=True) as page:
+        assert await avatar_frames(avatar) == ["fs-px-show"] * 4
+    async with inbox_page(shell, empty_state, reduced_motion=True) as page:
         assert await page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        avatar = page.get_by_test_id("inbox-list-state-empty").locator("[data-agent='support']")
+        assert await avatar_frames(avatar) == ["none"]  # frame 0 only, and it does not animate
+        await page.wait_for_timeout(600)  # long enough for the motion hook to have run
+        assert await avatar_frames(avatar) == ["none"]
+        frame = avatar.locator(".fs-px-f0")
+        assert await frame.evaluate("el => getComputedStyle(el).opacity") == "1"
+
+
+async def test_thread_avatar_is_a_static_undimmed_rest_pose_even_with_motion_allowed(
+    shell: Shell,
+) -> None:
+    async with inbox_page(shell, Inbox()) as page:
         await rows_loaded(page)
         await open_thread(page, NAMED)
-        assert await avatar_frames(page) == ["none"]  # frame 0 only, and it does not animate
-        await page.wait_for_timeout(600)  # long enough for the motion hook to have run
-        assert await avatar_frames(page) == ["none"]
-        frame = (
-            page.get_by_test_id("inbox-thread").locator("[data-agent='support'] .fs-px-f0").first
-        )
-        assert await frame.evaluate("el => getComputedStyle(el).opacity") == "1"
+        avatar = page.get_by_test_id("inbox-thread").locator("[data-agent='support']").first
+        assert await avatar_frames(avatar) == ["none"]
+        await page.wait_for_timeout(600)  # an idle sprite would have gained its other frames
+        assert await avatar_frames(avatar) == ["none"]
+        assert await avatar.get_attribute("data-state") == "rest"
+        # Not dimmed: past replies are not inactive agents.
+        assert await avatar.locator("svg").evaluate("el => getComputedStyle(el).filter") == "none"

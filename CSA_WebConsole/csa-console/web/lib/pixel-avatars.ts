@@ -38,7 +38,8 @@ export function decodeFrame(encoded: string, grid: SpriteGrid): number[][] {
     for (const [, symbol, count] of row.matchAll(TOKEN)) {
       const run = Number(count);
       if (run < 1) throw new Error(`Malformed sprite row ${y}: count must be at least 1`);
-      if (cells.length + run > grid) break;
+      // Check before pushing, so a runaway count never allocates and a full row plus more throws.
+      if (cells.length + run > grid) throw new Error(`Sprite row ${y} is wider than the grid ${grid}`);
       const value = symbol === "." ? -1 : symbol.charCodeAt(0) - 97;
       for (let i = 0; i < run; i += 1) cells.push(value);
     }
@@ -58,11 +59,11 @@ export function frameRects(frame: number[][], palette: string[]): SpriteRect[] {
     let x = 0;
     while (x < row.length) {
       const index = row[x];
-      if (index < 0) {
+      if (index === -1) {
         x += 1;
         continue;
       }
-      const fill = palette[index];
+      const fill = index >= 0 ? palette[index] : undefined;
       if (fill === undefined) throw new Error(`Palette has no entry ${index}`);
       let end = x + 1;
       while (end < row.length && row[end] === index) end += 1;
@@ -73,7 +74,11 @@ export function frameRects(frame: number[][], palette: string[]): SpriteRect[] {
   return rects;
 }
 
-export type AvatarState = "idle" | "still" | "pending" | "working" | "wake";
+/**
+ * `rest` is frame 0, undimmed, never animated: for a sprite that only marks who spoke (a past
+ * reply in a thread). `still` and `pending` are the same but dimmed, to say "not active".
+ */
+export type AvatarState = "idle" | "still" | "pending" | "rest" | "working" | "wake";
 
 /** Which generated frame set a state plays. */
 export type FrameSet = "idle";
@@ -87,6 +92,7 @@ export function frameSetFor(state: AvatarState): FrameSet {
     case "idle":
     case "still":
     case "pending":
+    case "rest":
     case "working":
     case "wake":
       return "idle";
@@ -98,12 +104,12 @@ export function frameSetFor(state: AvatarState): FrameSet {
 export type AvatarPlan = { animate: boolean; dimmed: boolean; frameSet: FrameSet };
 
 /**
- * What to draw. `still` and `pending` are dimmed and never animate; the other states animate
- * only while decorative motion is allowed (see `useMotionAllowed`). When `animate` is false
- * the sprite is frame 0 alone.
+ * What to draw. `still` and `pending` are dimmed and never animate; `rest` never animates and is
+ * not dimmed; the other states animate only while decorative motion is allowed (see
+ * `useMotionAllowed`). When `animate` is false the sprite is frame 0 alone.
  */
 export function avatarPlan(state: AvatarState, motionAllowed: boolean): AvatarPlan {
   const frameSet = frameSetFor(state);
   const dimmed = state === "still" || state === "pending";
-  return { animate: !dimmed && motionAllowed, dimmed, frameSet };
+  return { animate: state !== "rest" && !dimmed && motionAllowed, dimmed, frameSet };
 }

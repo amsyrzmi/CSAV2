@@ -382,7 +382,7 @@
    visible for the first quarter of the one-second loop, offset by a quarter second.
    Reduced motion and data-motion="off" stop it and show frame 0, in case the class lags. */
 .fs-px { display: block; }
-.fs-px-dim { filter: saturate(0.45) opacity(0.75); }
+.fs-px-dim { filter: saturate(0.55) opacity(0.85); }
 @keyframes fs-px-show {
   0% { opacity: 1; }
   25% { opacity: 0; }

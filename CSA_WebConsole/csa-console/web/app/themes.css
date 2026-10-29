@@ -22,6 +22,7 @@
   --fs-surface-raised: #fbfdff;
   --fs-surface-blue: #e7efff;
   --fs-tile: #f3f7ff;
+  --fs-sprite-tile: #0f1a33;
   --fs-text: #0b1b3f;
   --fs-text-secondary: #53648b;
   --fs-primary: #0047ab;
@@ -99,6 +100,7 @@
   --fs-surface-raised: #1a2640;
   --fs-surface-blue: #172a52;
   --fs-tile: #18233b;
+  --fs-sprite-tile: #0b1324;
   --fs-text: #e8eefc;
   --fs-text-secondary: #93a0bf;
   --fs-primary: #6ea2ff;
@@ -176,6 +178,7 @@
   --fs-surface-raised: #fffefb;
   --fs-surface-blue: #e8eefc;
   --fs-tile: #f8f3e8;
+  --fs-sprite-tile: #0f1a33;
   --fs-text: #14213d;
   --fs-text-secondary: #5c6272;
   --fs-primary: #1f4fd8;

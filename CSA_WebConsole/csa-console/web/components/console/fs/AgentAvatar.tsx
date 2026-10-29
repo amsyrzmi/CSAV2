@@ -73,7 +73,7 @@ function AgentAvatar({
         width: size,
         height: size,
         borderRadius: 10,
-        background: "var(--fs-tile)",
+        background: "var(--fs-sprite-tile)",
         overflow: "hidden",
       }}
     >
