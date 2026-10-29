@@ -116,8 +116,8 @@ def test_add_admin_cli_requires_deliberate_flag_before_reading_passwords(
     prompt.assert_not_called()
 
 
-def _run_add_admin_cli(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> Mock:
-    """Drive main() with scripted getpass answers; return the mocked run()."""
+def _run_add_admin_cli(monkeypatch: pytest.MonkeyPatch, answers: list[str], run: Mock) -> None:
+    """Drive main() with scripted getpass answers; `run` stands in for the database call."""
     from scripts import add_platform_admin
 
     monkeypatch.setattr(
@@ -135,17 +135,16 @@ def _run_add_admin_cli(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> M
         ],
     )
     monkeypatch.setattr(add_platform_admin.getpass, "getpass", Mock(side_effect=answers))
-    run = Mock(return_value=None)
     monkeypatch.setattr(add_platform_admin, "run", run)
     monkeypatch.setattr(add_platform_admin.asyncio, "run", lambda coro: None)
     add_platform_admin.main()
-    return run
 
 
 def test_add_admin_cli_reprompts_on_short_password_and_mismatch(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    run = _run_add_admin_cli(
+    run = Mock(return_value=None)
+    _run_add_admin_cli(
         monkeypatch,
         [
             "approver-pass-123",
@@ -155,6 +154,7 @@ def test_add_admin_cli_reprompts_on_short_password_and_mismatch(
             "synthetic-pass-456",
             "synthetic-pass-456",
         ],
+        run,
     )
     err = capsys.readouterr().err
     assert "between 12 and 1024 characters" in err
@@ -168,13 +168,12 @@ def test_add_admin_cli_reprompts_on_short_password_and_mismatch(
 def test_add_admin_cli_exits_cleanly_after_three_bad_passwords(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from scripts import add_platform_admin
-
+    run = Mock(side_effect=AssertionError("must not add an administrator"))
     with pytest.raises(SystemExit) as error:
-        _run_add_admin_cli(monkeypatch, ["approver-pass-123", "short", "short", "short"])
+        _run_add_admin_cli(monkeypatch, ["approver-pass-123", "short", "short", "short"], run)
     assert error.value.code == 1
     assert "no administrator was added" in capsys.readouterr().err
-    add_platform_admin.run.assert_not_called()
+    run.assert_not_called()
 
 
 async def test_add_admin_cli_rejects_missing_or_owner_dsn_before_opening_pool(
