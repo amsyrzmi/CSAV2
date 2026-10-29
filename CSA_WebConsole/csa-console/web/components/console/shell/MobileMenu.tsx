@@ -1,0 +1,90 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import { LogOut, Menu } from "lucide-react";
+import SlideOver from "@/components/console/fs/SlideOver";
+import type { NavLink } from "@/lib/navigation";
+import { navIcon } from "./icons";
+import type { ShellAccount } from "./Rail";
+
+/**
+ * Below 1024 px the rail is hidden and this button opens the full labelled list on a native
+ * <dialog> (SlideOver gives Escape, the inert page behind it and focus back to the button).
+ * Following a link closes it.
+ */
+export function MobileMenu({
+  links,
+  path,
+  account,
+}: {
+  links: NavLink[];
+  path: string;
+  account: ShellAccount;
+}) {
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    // Widening to desktop shows the rail, so a dialog left open would only hide it.
+    const wide = window.matchMedia("(min-width: 1024px)");
+    const close = () => {
+      if (wide.matches) setOpen(false);
+    };
+    wide.addEventListener("change", close);
+    return () => wide.removeEventListener("change", close);
+  }, []);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-testid="shell-menu"
+        aria-label="Open navigation menu"
+        aria-haspopup="dialog"
+        onClick={() => setOpen(true)}
+        className="flex h-11 w-11 items-center justify-center rounded-[10px] border border-[color:var(--fs-border-control)] text-[color:var(--fs-text)] hover:bg-[var(--fs-tile)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] lg:hidden"
+      >
+        <Menu size={20} aria-hidden="true" />
+      </button>
+      <SlideOver
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Menu"
+        returnFocusTo={buttonRef}
+      >
+        <nav aria-label="Main navigation" className="flex flex-col gap-1">
+          {links.map(({ href, label, key }) => {
+            const Icon = navIcon(key);
+            return (
+              <Link
+                key={href}
+                href={href}
+                aria-current={path === href ? "page" : undefined}
+                onClick={() => setOpen(false)}
+                className="flex min-h-11 items-center gap-3 rounded-[10px] px-3 text-sm font-medium text-[color:var(--fs-text-secondary)] hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] aria-[current=page]:bg-[var(--fs-surface-blue)] aria-[current=page]:font-semibold aria-[current=page]:text-[color:var(--fs-text)] aria-[current=page]:[&_svg]:text-[color:var(--fs-primary)]"
+              >
+                <Icon size={18} aria-hidden="true" />
+                {label}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="mt-4 border-t border-[color:var(--fs-border)] pt-4">
+          <p className="break-words text-sm font-semibold">{account.name}</p>
+          <p className="mt-1 text-xs text-[color:var(--fs-text-secondary)]">{account.role}</p>
+          <button
+            type="button"
+            disabled={account.busy}
+            onClick={account.onSignOut}
+            className="mt-3 flex min-h-11 items-center gap-2 text-sm text-[color:var(--fs-text-secondary)] hover:text-[color:var(--fs-primary)]"
+          >
+            <LogOut size={16} aria-hidden="true" />
+            {account.busy ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
+      </SlideOver>
+    </>
+  );
+}

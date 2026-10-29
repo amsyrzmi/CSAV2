@@ -4,65 +4,42 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useState } from "react";
-import {
-  Building2,
-  LayoutDashboard,
-  Mail,
-  LogOut,
-  Users,
-  KeyRound,
-  Bot,
-  Activity,
-  BookOpen,
-  MessageSquare,
-  CreditCard,
-  type LucideIcon,
-} from "lucide-react";
 import { identity } from "@/lib/identity-api";
 import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
-import { navigationFor, type NavKey } from "@/lib/navigation";
+import { navigationFor } from "@/lib/navigation";
+import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
+import { MobileMenu } from "@/components/console/shell/MobileMenu";
+import { Rail } from "@/components/console/shell/Rail";
 import { Notice } from "@/components/console/ui";
 import { PageContextProvider } from "@/lib/page-context";
-
-const icons: Record<NavKey, LucideIcon> = {
-  overview: LayoutDashboard,
-  services: Bot,
-  hr: Users,
-  activity: Activity,
-  knowledge_base: BookOpen,
-  chat: MessageSquare,
-  inbox: MessageSquare,
-  email: Mail,
-  business: Building2,
-  tenants: Building2,
-  members: Users,
-  team: Users,
-  password: KeyRound,
-  subscriptions: CreditCard,
-};
 
 export function AppShell({
   me,
   packages,
   children,
+  initialRail,
 }: {
   me: Me;
   packages: PackageState[];
   children: React.ReactNode;
+  initialRail?: RailState;
 }) {
   const path = usePathname();
   const router = useRouter();
   const admin = me.role === "platform_admin";
   const home = admin ? "/" : "/portal";
-  const links = navigationFor(me, packages).map((link) => ({
-    ...link,
-    icon: icons[link.key],
-  }));
+  const links = navigationFor(me, packages);
+  const [rail, setRail] = useState<RailState>(initialRail ?? "collapsed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  function toggleRail() {
+    const next: RailState = rail === "expanded" ? "collapsed" : "expanded";
+    setRail(next);
+    writeRail(next);
+  }
   async function signOut() {
     setBusy(true);
     setError("");
@@ -75,75 +52,61 @@ export function AppShell({
       setBusy(false);
     }
   }
+  // Task 9 moves the name, role and Sign out into a top-bar user menu.
+  const account = {
+    name: me.user.display_name || me.user.email,
+    role: me.role ? roleLabels[me.role] : "No active membership",
+    busy,
+    onSignOut: signOut,
+  };
   return (
-    <div className="min-h-screen lg:flex">
-      <aside className="shell-sidebar flex flex-col lg:sticky lg:top-0 lg:h-screen lg:w-60 lg:shrink-0">
-        <Link href={home} className="flex h-20 items-center gap-3 px-6">
-          <Image
-            src="/brand/fourstacks-mark.svg"
-            alt=""
-            width={32}
-            height={32}
-          />
-          <span className="brand-wordmark text-lg font-semibold">
-            fourstacks.
-          </span>
-        </Link>
-        <nav
-          aria-label="Main navigation"
-          className="flex flex-wrap gap-1 p-3 lg:flex-col"
-        >
-          {links.map(({ href, label, icon: Icon }) => (
+    <div className="min-h-dvh bg-[var(--fs-shell)] sm:p-3 lg:p-4">
+      <div className="flex min-h-dvh border-[color:var(--fs-border)] bg-[var(--fs-surface)] text-[color:var(--fs-text)] shadow-[var(--fs-shadow-card)] sm:min-h-[calc(100dvh-1.5rem)] sm:rounded-2xl sm:border lg:min-h-[calc(100dvh-2rem)]">
+        <Rail
+          links={links}
+          path={path}
+          home={home}
+          state={rail}
+          onToggle={toggleRail}
+          account={account}
+        />
+        <div className="min-w-0 flex-1">
+          <header className="flex items-center gap-3 border-b border-[color:var(--fs-border)] px-5 py-4 sm:px-8 sm:py-5">
+            <MobileMenu links={links} path={path} account={account} />
             <Link
-              key={href}
-              href={href}
-              aria-current={path === href ? "page" : undefined}
-              className="shell-nav-link"
+              href={home}
+              aria-label="fourstacks home"
+              className="flex items-center lg:hidden"
             >
-              <Icon size={18} />
-              {label}
+              <Image
+                src="/brand/fourstacks-mark.svg"
+                alt=""
+                width={32}
+                height={32}
+              />
             </Link>
-          ))}
-        </nav>
-        <div className="mt-auto border-t border-ink-200 p-5">
-          <p className="break-words text-sm font-semibold">
-            {me.user.display_name || me.user.email}
-          </p>
-          <p className="mt-1 text-xs text-ink-500">
-            {me.role ? roleLabels[me.role] : "No active membership"}
-          </p>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={signOut}
-            className="mt-4 flex min-h-11 items-center gap-2 text-sm text-ink-600 hover:text-brand-600"
-          >
-            <LogOut size={16} />
-            {busy ? "Signing out…" : "Sign out"}
-          </button>
-        </div>
-      </aside>
-      <div className="min-w-0 flex-1">
-        <header className="border-b border-ink-200 bg-white px-5 py-5 sm:px-8">
-          <p className="eyebrow">CSA Console</p>
-          <p className="mt-1 text-sm text-ink-600">
-            {admin ? "Platform administration" : "Tenant workspace"}
-          </p>
-        </header>
-        <main className="mx-auto max-w-6xl p-5 sm:p-8">
-          {error && (
-            <div className="mb-5">
-              <Notice error>{error}</Notice>
+            <div className="min-w-0">
+              <p className="eyebrow">CSA Console</p>
+              <p className="mt-1 text-sm text-[color:var(--fs-text-secondary)]">
+                {admin ? "Platform administration" : "Tenant workspace"}
+              </p>
             </div>
-          )}
-          <PageContextProvider>
-            {children}
-            {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}
-            <Suspense fallback={null}>
-              <AssistantDock me={me} packages={packages} />
-            </Suspense>
-          </PageContextProvider>
-        </main>
+          </header>
+          <main className="mx-auto max-w-6xl p-5 sm:p-8">
+            {error && (
+              <div className="mb-5">
+                <Notice error>{error}</Notice>
+              </div>
+            )}
+            <PageContextProvider>
+              {children}
+              {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}
+              <Suspense fallback={null}>
+                <AssistantDock me={me} packages={packages} />
+              </Suspense>
+            </PageContextProvider>
+          </main>
+        </div>
       </div>
     </div>
   );

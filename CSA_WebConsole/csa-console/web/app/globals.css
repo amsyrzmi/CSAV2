@@ -377,47 +377,6 @@
 [data-motion="off"] .fs-fade { animation: none !important; }
 
 /* ---------- app shell ---------- */
-.shell-sidebar {
-  background: var(--fs-rail);
-  border-right: 1px solid var(--hairline);
-}
-.shell-nav-link {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  border-radius: 9px;
-  padding: 0.5rem 0.7rem;
-  color: var(--color-ink-600);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.shell-nav-link svg { flex-shrink: 0; color: var(--color-ink-400); transition: color 160ms ease; }
-.shell-nav-link:hover { background: var(--color-ink-50); color: var(--color-ink-900); }
-.shell-nav-link:hover svg { color: var(--color-ink-600); }
-.shell-nav-link[aria-current="page"] {
-  background: var(--color-brand-50);
-  color: var(--color-brand-700);
-  font-weight: 600;
-  box-shadow: none;
-}
-.shell-nav-link[aria-current="page"] svg { color: var(--color-brand-600); }
-.shell-nav-link[aria-current="page"]::before {
-  content: "";
-  position: absolute;
-  left: -0.75rem;
-  top: 50%;
-  height: 1.1rem;
-  width: 3px;
-  transform: translateY(-50%);
-  border-radius: 0 3px 3px 0;
-  background: var(--color-brand-600);
-  box-shadow: none;
-}
-.shell-collapsed .shell-nav-link { justify-content: center; padding: 0.55rem; }
-.shell-collapsed .shell-nav-link[aria-current="page"]::before { left: -0.5rem; }
-
 .topbar {
   background: color-mix(in srgb, var(--fs-shell) 72%, transparent);
   backdrop-filter: saturate(180%) blur(14px);

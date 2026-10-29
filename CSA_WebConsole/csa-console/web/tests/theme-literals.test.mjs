@@ -25,7 +25,6 @@ const OWNED = [
 /** Exempt until the task that converts them; each later task removes its entry. */
 const PENDING = [
   "components/console/fs/AgentAvatar.tsx", // replaced in Task 11
-  "components/AppShell.tsx", // Tasks 8 and 9
   "components/console/RuntimeWorkspace.tsx", // Task 15
   "components/console/ServicesWorkspace.tsx", // Task 16
 ];
