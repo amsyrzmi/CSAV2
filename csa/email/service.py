@@ -890,9 +890,13 @@ class EmailService:
                 conn=conn,
             )
             await self._session(conn, session)
-        if pending:
-            if self.model is None:
-                raise EmailPolicyError("model_not_configured")
+        # A thread that cannot be analysed (no model, a refusal, invalid output, a timeout) is
+        # skipped, not fatal: any sender can make one, and it would be picked again every time.
+        skipped = 0
+        failure: BaseException | None = None
+        if pending and self.model is None:
+            skipped, failure = len(pending), EmailPolicyError("model_not_configured")
+        elif pending:
             results = await asyncio.gather(
                 *(self._analyse_with_model(row) for row in pending), return_exceptions=True
             )
@@ -914,9 +918,18 @@ class EmailService:
                             conn=conn,
                         )
                 await self._session(conn, session)
-            for result in results:
-                if isinstance(result, BaseException):
+            failures = [result for result in results if isinstance(result, BaseException)]
+            for result in failures:
+                if not isinstance(result, Exception):
                     raise result
+            skipped, failure = len(failures), (failures[0] if failures else None)
+        if failure is not None:
+            # Counts and an error code only: never subjects, addresses or message text.
+            logger.warning(
+                "email attention skipped=%d code=%s",
+                skipped,
+                getattr(failure, "code", type(failure).__name__),
+            )
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
             mailbox = await self._mailbox(conn, session, connected=False)
@@ -926,7 +939,10 @@ class EmailService:
                 conn=conn,
             )
             await self._session(conn, session)
+        if not rows and failure is not None and skipped == len(pending):
+            raise failure
         return AttentionPage(
+            skipped=skipped,
             items=[
                 AttentionItem(
                     thread_id=row["thread_id"],

@@ -26,6 +26,7 @@ from csa.console.auth import build_identity_router
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.security import digest
 from csa.core import crypto, db
+from csa.decide.completion import CompletionError
 from csa.email import gmail as gmail_module
 from csa.email import service as email_service
 from csa.email.api import build_email_router
@@ -1616,3 +1617,55 @@ async def test_attention_refused_for_read_only(
     assert world.model.calls == []
     # Members who can use the assistant need a connected mailbox.
     assert (await world.call("admin", "GET", ATTENTION)).json()["detail"] == "mailbox_not_connected"
+
+
+async def test_attention_skips_a_thread_the_model_cannot_analyse(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    await _enable_and_connect(world, monkeypatch)
+    await _put_thread(world, "A", days_ago=5, category="complaint", priority="high")
+    for index in (1, 2, 3):
+        await _put_thread(world, f"U{index}", days_ago=0, minutes_ago=index)
+    working = world.model.json_completion
+
+    async def flaky(schema: type[Any], *, system: str, user: str, **kwargs: Any) -> Any:
+        if "Subject U2" in user:
+            raise CompletionError("invalid_json")
+        return await working(schema, system=system, user=user, **kwargs)
+
+    monkeypatch.setattr(world.model, "json_completion", flaky)
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert [item["thread_id"] for item in page.json()["items"]] == ["A", "U1", "U3"]
+    assert page.json()["skipped"] == 1
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "skipped=1 code=invalid_json" in logged
+    assert "customer.test" not in logged and "Subject " not in logged
+    # The thread that fails is tried again next time and skipped again, without breaking the page.
+    again = await world.call("staff", "GET", ATTENTION)
+    assert again.status_code == 200 and again.json()["skipped"] == 1
+    # When every attempt fails and nothing is stored, the original error is raised.
+    await world.q(
+        "DELETE FROM email_threads WHERE client_id=%s AND thread_id<>'U2'", (world.tenant,)
+    )
+    failed = await world.call("staff", "GET", ATTENTION)
+    assert failed.status_code == 503 and failed.json()["detail"] == "email_model_unavailable"
+
+
+async def test_attention_without_a_model_shows_stored_items(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    monkeypatch.setattr(world.app.state.email_service, "model", None)
+    # Nothing stored and nothing analysed: the model is needed.
+    await _put_thread(world, "U1", days_ago=0, minutes_ago=1)
+    refused = await world.call("staff", "GET", ATTENTION)
+    assert refused.status_code == 503 and refused.json()["detail"] == "model_not_configured"
+    # Stored analyses are still shown; unanalysed candidates are counted as skipped.
+    await _put_thread(world, "A", days_ago=5, category="billing", priority="high")
+    await _put_thread(world, "U2", days_ago=0, minutes_ago=2)
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert [item["thread_id"] for item in page.json()["items"]] == ["A"]
+    assert page.json()["skipped"] == 2

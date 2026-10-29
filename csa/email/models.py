@@ -172,6 +172,8 @@ class AttentionPage(EmailModel):
 
     items: list[AttentionItem]
     as_of: AwareDatetime | None
+    # Candidates left without a summary because analysis failed or no model is set.
+    skipped: int = 0
 
 
 class ThreadAnalysis(EmailModel):
