@@ -24,6 +24,7 @@ from csa.subscriptions.contracts import (
     PlanPatch,
     RequestOut,
     RequestPage,
+    SettingsOut,
     Status,
     SubscriptionCreateIn,
     SubscriptionDetail,
@@ -66,6 +67,15 @@ def like_pattern(q: str) -> str:
     """Contains-match pattern for ILIKE with the user's own wildcards made literal."""
     escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+async def get_settings(conn: Conn, client_id: UUID) -> SettingsOut:
+    row = await db.q.fetch_one(
+        "subscriptions/tenant_timezone.sql", {"client_id": client_id}, conn=conn
+    )
+    if row is None:
+        raise RuntimeError(f"tenant {client_id} has no clients row")
+    return SettingsOut.model_validate(row)
 
 
 async def list_plans(conn: Conn, client_id: UUID, *, include_archived: bool) -> list[PlanOut]:

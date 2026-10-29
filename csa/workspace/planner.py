@@ -151,7 +151,7 @@ Actions:
 - answer: reply in markdown. Add reads only when needed: "read_current_record" (the open \
 record's summary), "my_profile" (the user's own manager), "my_packages" (active services).
 - navigate: open a console tab (overview, services, inbox, knowledge_base, business, hr, \
-email, activity, chat), optionally a section or record.
+email, subscriptions, activity, chat), optionally a section or record.
 - directory_lookup: search the company directory by a person's name or job title.
 - email_compose: draft a new internal email (saved as a draft, never sent). Use \
 recipient_employee_id only with an id from the message, history or my_manager; \

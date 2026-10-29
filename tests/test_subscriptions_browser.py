@@ -182,6 +182,8 @@ class World:
             self.unexpected.append(f"{method} {path} with params {params}")
             return 400, {"detail": "tenant mismatch"}
         writer = self.upstream.me["role"] != "read_only"
+        if path == "subscriptions/settings" and method == "GET":
+            return 200, {"timezone": "Asia/Kuala_Lumpur"}
         if path == "subscriptions/plans" and method == "GET":
             return 200, self.plans
         if path.startswith("subscriptions/plans/") and method == "PATCH" and writer:
@@ -387,6 +389,20 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(rows.first).to_contain_text("Aisyah Rahman")
         searches = [c for c in world.calls if c["path"] == "subscriptions" and c["method"] == "GET"]
         assert searches[-1]["params"] == {"q": "aisyah"}, searches
+
+        # The drawer is a modal dialog: focus moves into it, Escape closes it and focus returns
+        # to the row's name button (the row itself was clicked).
+        drawer = await open_customer(page, "Aisyah Rahman")
+        await expect(page.get_by_role("dialog", name="Aisyah Rahman")).to_be_visible()
+        assert await page.evaluate(
+            "() => document.querySelector('[data-testid=subscription-drawer]')"
+            ".contains(document.activeElement)"
+        )
+        await page.keyboard.press("Escape")
+        await expect(drawer).to_be_hidden(timeout=WAIT)
+        await expect(
+            page.get_by_test_id("subscription-row").first.get_by_role("button")
+        ).to_be_focused()
 
         # (c) Pause goes through a card; confirming it calls confirm and the row follows.
         drawer = await open_customer(page, "Aisyah Rahman")

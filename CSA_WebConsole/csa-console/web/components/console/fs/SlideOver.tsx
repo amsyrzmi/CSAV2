@@ -9,19 +9,26 @@ import { useMotionAllowed } from "./useMotionAllowed";
  * inert page behind it and the top layer, so there is no focus-trap library. Escape, the
  * Close button and a click on the backdrop all call `onClose`; the parent owns `open`.
  * Focus goes back to `returnFocusTo` (or whatever had it when the panel opened), and the
- * page behind does not scroll while it is open.
+ * page behind does not scroll while it is open. `widthClass` sets the panel's max width;
+ * `testId` and `closeTestId` are for browser tests.
  */
 export default function SlideOver({
   open,
   onClose,
   title,
   returnFocusTo,
+  widthClass = "max-w-sm",
+  testId,
+  closeTestId,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   returnFocusTo?: RefObject<HTMLElement | null>;
+  widthClass?: string;
+  testId?: string;
+  closeTestId?: string;
   children: ReactNode;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -59,6 +66,7 @@ export default function SlideOver({
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
+      data-testid={testId}
       onCancel={(event) => {
         // Escape: let the parent decide, then the effect above closes the dialog.
         event.preventDefault();
@@ -80,7 +88,7 @@ export default function SlideOver({
         downOnBackdropRef.current = false;
         if (closeIt) onClose();
       }}
-      className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-sm border-0 bg-white p-0 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-dialog)] backdrop:bg-[#1c2b40]/40"
+      className={`fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full ${widthClass} border-0 bg-white p-0 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-dialog)] backdrop:bg-[#1c2b40]/40`}
     >
       <div
         className={`flex h-full flex-col ${open && motionAllowed ? "fs-slide-in-right" : ""}`}
@@ -92,7 +100,7 @@ export default function SlideOver({
           >
             {title}
           </h2>
-          <button type="button" className={secondary} onClick={onClose}>
+          <button type="button" className={secondary} data-testid={closeTestId} onClick={onClose}>
             Close
           </button>
         </div>

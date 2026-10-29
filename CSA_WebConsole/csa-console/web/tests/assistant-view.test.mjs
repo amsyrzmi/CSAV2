@@ -58,6 +58,9 @@ test("the route names the current tab; published context wins", () => {
   assert.equal(view.tabForPath("/portal/faq", staff, all), "knowledge_base");
   assert.equal(view.tabForPath("/hr", admin, []), "hr");
   assert.equal(view.tabForPath("/portal/team", { ...staff, role: "tenant_admin" }, all), null);
+  const subscriptions = [...all, { key: "subscriptions", status: "active" }];
+  assert.equal(view.tabForPath("/portal/subscriptions", staff, subscriptions), "subscriptions");
+  assert.equal(view.tabForPath("/portal/subscriptions", staff, all), null);
   assert.equal(view.tabLabel("inbox", staff, all), "Customer inbox");
   const inbox = { tab: "inbox", record: { kind: "conversation", id: "c1" } };
   assert.deepEqual(view.effectiveContext(inbox, "hr"), inbox);
