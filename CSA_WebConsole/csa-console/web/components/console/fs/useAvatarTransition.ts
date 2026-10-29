@@ -26,9 +26,11 @@ export interface AvatarTransition {
  * then `confirm(...)` only once the API call has resolved with the new state, or `fail()`.
  * Only a confirmation animates (a short wake after activation, a settle after suspension).
  *
- * If the server state changes WITHOUT a user action here (for example the 3-second poll
- * finds the service active), do not call `confirm`: re-initialise from the server state
- * instead, so no wake plays for a change nobody confirmed in this tab.
+ * The hook has no reset. Consumers derive the resting look (idle or still) from the server
+ * status themselves and take only the pending, wake and settle phases from the hook. So if the
+ * server state changes WITHOUT a user action here (a reload or a poll finds the service
+ * active), do not call `confirm`: the derived resting look shows the new state at once, and
+ * no wake plays for a change nobody confirmed in this tab.
  */
 export function useAvatarTransition(initial: Phase): AvatarTransition {
   const motionAllowed = useMotionAllowed();

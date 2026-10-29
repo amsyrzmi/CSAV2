@@ -186,6 +186,7 @@ try {
       ["email transport tests", "../tests/email-transport.test.mjs"],
       ["services transport tests", "../tests/services-api.test.mjs"],
       ["services view tests", "../tests/services-view.test.mjs"],
+      ["avatar transition tests", "../tests/avatar-transition.test.mjs"],
       ["subscriptions transport tests", "../tests/subscriptions-api.test.mjs"],
       ["channels transport tests", "../tests/channels-transport.test.mjs"],
       ["navigation tests", "../tests/nav-visibility.test.mjs"],
