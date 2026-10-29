@@ -47,3 +47,18 @@ export function avatarForAgent(name: string): AgentId | null {
   if (capability) return capability;
   return (AGENT_IDS as readonly string[]).includes(name) ? (name as AgentId) : null;
 }
+
+const PACKAGE_AVATARS = new Map<string, AgentId>([
+  ["customer_support", "support"],
+  ["orders_products", "orders"],
+  ["subscriptions", "subscriptions"],
+  ["bookings", "bookings"],
+  ["marketplaces", "ecommerce"],
+  ["hr", "hr"],
+  ["staff_email", "email"],
+]);
+
+/** The avatar for a package key; null when there is none (e_invoicing is planned) or the key is unknown. */
+export function avatarForPackage(key: string): AgentId | null {
+  return PACKAGE_AVATARS.get(key) ?? null;
+}

@@ -12,7 +12,7 @@ function moduleUrl(source) {
 const avatars = await import(moduleUrl(
   await readFile(new URL("../lib/agent-avatars.ts", import.meta.url), "utf8"),
 ));
-const { AGENT_IDS, AGENT_TITLES, avatarForAgent } = avatars;
+const { AGENT_IDS, AGENT_TITLES, avatarForAgent, avatarForPackage } = avatars;
 
 test("capability names map onto the eleven avatar ids in one place", () => {
   const expected = {
@@ -43,6 +43,25 @@ test("lhdn_agent and unknown names have no avatar", () => {
   assert.equal(avatarForAgent(""), null);
   assert.equal(avatarForAgent("constructor"), null);
   assert.equal(avatarForAgent("__proto__"), null);
+});
+
+test("packages map onto avatars and e_invoicing has none", () => {
+  const expected = {
+    customer_support: "support",
+    orders_products: "orders",
+    subscriptions: "subscriptions",
+    bookings: "bookings",
+    marketplaces: "ecommerce",
+    hr: "hr",
+    staff_email: "email",
+  };
+  for (const [key, id] of Object.entries(expected)) {
+    assert.equal(avatarForPackage(key), id, key);
+  }
+  assert.equal(avatarForPackage("e_invoicing"), null);
+  for (const key of ["", "nonsense", "support", "constructor", "__proto__", "toString"]) {
+    assert.equal(avatarForPackage(key), null, key);
+  }
 });
 
 test("there are eleven distinct ids and each has a title", () => {
