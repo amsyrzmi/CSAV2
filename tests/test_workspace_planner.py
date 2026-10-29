@@ -394,7 +394,9 @@ async def test_email_compose_turn_drafts_and_proposes_export(planned) -> None:
     }
     model.reply(compose)
     key = str(uuid4())
-    turn = await _turn(w, browser, thread, "Email Ada about leave", "email", key=key)
+    # The id is in the message, as when the user picks a directory result.
+    asked = f"Email employee {ada} about leave"
+    turn = await _turn(w, browser, thread, asked, "email", key=key)
     assert turn.status_code == 201, turn.text
     proposal = turn.json()["result"]["proposal"]
     assert proposal["kind"] == "email_export" and proposal["status"] == "requested"
@@ -402,7 +404,7 @@ async def test_email_compose_turn_drafts_and_proposes_export(planned) -> None:
     assert proposal["card"]["title"] == "Save email to Gmail drafts for 1 person"
     assert await _draft_recipients(w) == [[SEEDED_EMAIL]]
     assert [r["action"] for r in await _turn_rows(w)] == ["email_compose"]
-    again = await _turn(w, browser, thread, "Email Ada about leave", "email", key=key)
+    again = await _turn(w, browser, thread, asked, "email", key=key)
     assert again.status_code == 200 and again.json()["duplicate"] is True
     assert again.json()["result"] == turn.json()["result"]
     assert len(model.calls) == 1  # a replayed turn never re-plans
@@ -629,6 +631,56 @@ async def test_email_my_boss_resolves_the_manager_before_planning(planned) -> No
     model.reply({"action": "answer", "markdown": "Hello."})
     await _turn(w, browser, thread, "Hello there", "email")
     assert model.facts()["my_manager"] is None  # only resolved when the message asks
+
+
+@requires_docker
+async def test_employee_ids_must_come_from_the_turns_facts(planned) -> None:
+    """Review Focus 4: an employee id in To, CC or BCC is one the user could have meant."""
+    w, model = planned
+    tenant = w.tenants[0]
+    browser = await _mail_ready(w, "hr")
+    me = (await browser.get("/console/v1/auth/me")).json()
+    boss, staff = uuid4(), uuid4()
+    await w.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,work_email,manager_id)"
+        " VALUES (%s,%s,'Bea Boss','bea.boss@example.test',NULL),"
+        " (%s,%s,'Synthetic Staff',NULL,%s)",
+        tenant, boss, tenant, staff, boss,
+    )  # fmt: skip
+    await w.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        tenant, me["user"]["id"], staff,
+    )  # fmt: skip
+    thread = await _thread(w, browser)
+    order = {
+        "action": "email_compose",
+        "recipient_address": "ops@example.test",
+        "subject": "Order",
+        "instructions": "Ask about the order",
+    }
+    # The user never mentioned a manager, so my_manager is not a fact: a BCC to the manager
+    # is the model's own idea and is refused.
+    model.reply({**order, "bcc": [str(boss)]})
+    asked = "Email ops@example.test about the order"
+    blind = await _turn(w, browser, thread, asked, "email")
+    assert blind.status_code == 502 and blind.json()["detail"] == "planner_invalid_output"
+    assert model.facts()["my_manager"] is None
+    # An id from nowhere is refused in To and CC as well.
+    model.reply({**order, "recipient_address": None, "recipient_employee_id": str(uuid4())})
+    invented = await _turn(w, browser, thread, "Email the ops lead about the order", "email")
+    assert invented.status_code == 502 and invented.json()["detail"] == "planner_invalid_output"
+    model.reply({**order, "cc": [str(uuid4())]})
+    copied = await _turn(w, browser, thread, asked, "email")
+    assert copied.status_code == 502 and copied.json()["detail"] == "planner_invalid_output"
+    assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
+    # When the user asks to copy their manager, my_manager is a fact and the BCC is allowed.
+    model.reply({**order, "bcc": [str(boss)]})
+    meant = await _turn(
+        w, browser, thread, "Email ops@example.test about the order and bcc my manager", "email"
+    )
+    assert meant.status_code == 201, meant.text
+    rows = await w.q("SELECT bcc FROM email_drafts")
+    assert rows == [{"bcc": ["bea.boss@example.test"]}]
 
 
 @requires_docker

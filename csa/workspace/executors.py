@@ -10,7 +10,6 @@ acting twice.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any
 from uuid import UUID, uuid5
@@ -272,13 +271,9 @@ class EmailExportExecutor:
             draft = await self._service(request).draft_by_id(session, proposal.draft_id)
         except EmailPolicyError as exc:
             raise email_http_error(exc) from None
-        # Bind the content the user sees; an edit makes the card stale, the export does not.
-        version = hashlib.sha256(
-            json.dumps(
-                [draft.thread_id, draft.recipient, draft.subject, draft.body],
-                ensure_ascii=True,
-            ).encode("ascii")
-        ).hexdigest()
+        # Bound to the whole draft the user sees (To, CC, BCC, subject, body), as a send card
+        # is: any edit makes the card stale, the export does not.
+        version = draft_version(draft)
         # Counts only, as on the send card: the console reads the draft itself when it shows it.
         audience, counts = _audience(draft)
         return (

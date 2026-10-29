@@ -719,6 +719,9 @@ _MAIL_WORDS = re.compile(
 _TEAM_WORDS = re.compile(r"\b(team|my reports|direct reports|pasukan|anak buah)\b", re.IGNORECASE)
 _SEND_WORDS = re.compile(r"\b(send|hantar|hantarkan|kirim|kirimkan)\b", re.IGNORECASE)
 _ADDRESS = re.compile(r"[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_EMPLOYEE_ID = re.compile(
+    r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
+)
 
 
 def _email_service(request: Request) -> EmailService:
@@ -840,9 +843,24 @@ def _payload(proposal: TrainingSubmitProposal | InboxDecisionProposal) -> dict[s
 
 
 def _requested_addresses(message: str, facts: PlannerFacts) -> set[str]:
-    """Addresses the user wrote: this message and the thread's earlier stored messages."""
+    """Addresses the user wrote. History is redacted at storage, so only the current message
+    supplies any; earlier messages are read too and add none."""
     texts = [message, *(turn.message for turn in facts.history)]
     return {found.lower() for text in texts for found in _ADDRESS.findall(text)}
+
+
+def _offered_employee_ids(message: str, facts: PlannerFacts) -> set[UUID]:
+    """Employee ids the user could have meant in an email_compose or email_reply.
+
+    Ids in this message (a directory result the user picked), the ids earlier directory turns
+    offered, and my_manager. my_team ids are not among them: they serve email_team only, whose
+    recipients the server adds itself.
+    """
+    ids = {UUID(found) for found in _EMPLOYEE_ID.findall(message)}
+    ids.update(employee for turn in facts.history for employee in turn.offered_employee_ids)
+    if facts.my_manager is not None and facts.my_manager.employee_id is not None:
+        ids.add(facts.my_manager.employee_id)
+    return ids
 
 
 def _check_recipients(
@@ -852,18 +870,26 @@ def _check_recipients(
 
     Mailbox facts are untrusted, so an address seen only there is never a recipient, CC or BCC;
     a thread's sender is reached only through ``email_reply``, whose To comes from the thread
-    itself. Employee ids resolve through the directory, so they stay inside the company.
+    itself. An employee id in To, CC or BCC must be one the facts offered the user (see
+    ``_offered_employee_ids``); any other id is refused like an invented one.
     """
     refs = [*proposal.cc, *proposal.bcc]
-    if isinstance(proposal, EmailComposeProposal) and proposal.recipient_address is not None:
-        refs.append(proposal.recipient_address)
+    if isinstance(proposal, EmailComposeProposal):
+        if proposal.recipient_address is not None:
+            refs.append(proposal.recipient_address)
+        if proposal.recipient_employee_id is not None:
+            refs.append(str(proposal.recipient_employee_id))
     if isinstance(proposal, EmailReplyProposal):
         synced = {thread.thread_id for thread in facts.mailbox_threads or []}
         if proposal.thread_id not in synced:
             raise PlannerInvalidOutput()
     allowed = _requested_addresses(message, facts)
+    offered = _offered_employee_ids(message, facts)
     for ref in refs:
-        if not is_employee_ref(ref) and ref.strip().lower() not in allowed:
+        if is_employee_ref(ref):
+            if UUID(ref) not in offered:
+                raise PlannerInvalidOutput()
+        elif ref.strip().lower() not in allowed:
             raise PlannerInvalidOutput()
 
 

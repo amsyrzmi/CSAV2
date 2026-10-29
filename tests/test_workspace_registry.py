@@ -1502,3 +1502,84 @@ async def test_export_proposal_stores_no_addresses_or_body(proposals_app) -> Non
     await _assert_not_stored(
         w, "aina@example.test", copied, "staff@example.test", SEND_SUBJECT, "Z9Q", "MGL-TEST-005"
     )
+
+
+async def _connected_member(w: SessionWorld) -> httpx.AsyncClient:
+    """Another tenant_staff member with their own connected mailbox (the tenant is ready)."""
+    browser, _ = await w.member(role="tenant_staff")
+    started = await _email_call(w, browser, "POST", "/console/v1/email/mailbox/connect")
+    assert started.status_code == 200, started.text
+    state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+    done = await browser.get(f"/console/v1/email/oauth/callback?code=abc&state={state}")
+    assert done.status_code == 303 and "error" not in done.headers["location"], done.text
+    return browser
+
+
+async def _new_draft(w: SessionWorld, browser: httpx.AsyncClient) -> DraftOut:
+    drafted = await _email_call(
+        w, browser, "POST", "/console/v1/email/threads/t1/draft", {"instructions": "Hi"}
+    )
+    assert drafted.status_code == 201, drafted.text
+    return DraftOut.model_validate(drafted.json())
+
+
+async def test_send_card_for_another_members_draft_is_refused(proposals_app) -> None:
+    """A send card names only the caller's own drafts, at creation and again at confirm."""
+    w, gmail = proposals_app
+    w.app.state.email_service.model = CleanDraftModel()
+    owner = await _email_ready(w)
+    assert (await _email_call(w, owner, "POST", "/console/v1/email/sync")).status_code == 200
+    theirs = await _new_draft(w, owner)
+    other = await _connected_member(w)
+    assert (await _email_call(w, other, "POST", "/console/v1/email/sync")).status_code == 200
+    payload = {"draft_id": str(theirs.id), "version": draft_version(theirs)}
+    refused = await _propose(w, other, "email_send", payload)
+    assert refused.status_code == 404 and refused.json()["detail"] == "resource_unavailable"
+    # A card made for the member's own draft, then pointed at the other draft (hash kept
+    # valid), is refused at confirm as well.
+    mine = await _new_draft(w, other)
+    created = await _propose(
+        w, other, "email_send", {"draft_id": str(mine.id), "version": draft_version(mine)}
+    )
+    assert created.status_code == 201, created.text
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    await w.q(
+        "UPDATE console_proposals SET payload=%s, payload_sha256=%s, expected_version=%s "
+        "WHERE id=%s",
+        json.dumps(payload),
+        hashlib.sha256(canonical.encode()).hexdigest(),
+        payload["version"],
+        created.json()["id"],
+    )
+    confirmed = await _http_confirm(w, other, created.json()["id"])
+    assert confirmed.status_code == 404 and confirmed.json()["detail"] == "resource_unavailable"
+    assert gmail.sends == []
+    statuses = await w.q("SELECT status FROM email_drafts ORDER BY created_at")
+    assert [row["status"] for row in statuses] == ["draft", "draft"]
+
+
+async def test_export_card_goes_stale_after_a_cc_edit(proposals_app) -> None:
+    """The export card binds the whole draft, CC and BCC included, as a send card does."""
+    w, gmail = proposals_app
+    browser = await _email_ready(w)
+    assert (await _email_call(w, browser, "POST", "/console/v1/email/sync")).status_code == 200
+    draft = await _new_draft(w, browser)
+    created = await _propose(w, browser, "email_export", {"draft_id": str(draft.id)})
+    assert created.status_code == 201, created.text
+    assert created.json()["card"]["expected_version"] == draft_version(draft)
+    edited = await _email_call(
+        w,
+        browser,
+        "PUT",
+        f"/console/v1/email/drafts/{draft.id}",
+        {
+            "to": draft.to,
+            "cc": ["copy.person@example.test"],
+            "subject": draft.subject,
+            "body": draft.body,
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    stale = await _http_confirm(w, browser, created.json()["id"])
+    assert stale.status_code == 409 and stale.json()["detail"] == "proposal_stale", stale.text
+    assert not any(m == "POST" and p.endswith("/drafts") for m, p, _ in gmail.requests)
