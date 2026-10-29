@@ -1974,6 +1974,16 @@
             "title": "Is Enabled",
             "type": "boolean"
           },
+          "last_change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -4862,6 +4872,40 @@
         "title": "KbGapOut",
         "type": "object"
       },
+      "LastChange": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "requested",
+              "activated",
+              "suspended",
+              "subscribed",
+              "unsubscribed",
+              "tenant_switch_on",
+              "tenant_switch_off"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "at",
+          "actor"
+        ],
+        "title": "LastChange",
+        "type": "object"
+      },
       "LeaveBalanceSave": {
         "additionalProperties": false,
         "properties": {
@@ -7651,6 +7695,16 @@
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "last_change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "note": {
             "anyOf": [

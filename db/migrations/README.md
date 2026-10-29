@@ -8,7 +8,8 @@ Reserved ranges (client growth program, 2026-10-27):
 
 - `0470`–`0479`: lane A (WhatsApp channel, support refinements).
 - `0480`–`0489`: lane B (subscriptions, HR access page, invitation mail).
-- `0500`–`0509`: console redesign (Telegram username on the contact, inbox list indexes in 0501).
+- `0500`–`0509`: console redesign (Telegram username on the contact, inbox list indexes in 0501,
+  the `console_last_change` audit read function and its target index in 0502).
 
 Whoever merges a migration raises `EXPECTED_SCHEMA_VERSION` to the highest
 merged version. Lanes never reference each other's tables.

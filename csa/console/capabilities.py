@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
+from csa.console.last_change import LastChange
 from csa.core import db
 from csa.core.tenancy import tx
 
@@ -26,6 +27,8 @@ class CapabilityOut(BaseModel):
     fail_count: int
     capability_kind: str
     updated_at: datetime
+    # Filled by the services read only (csa.console.services.list_services).
+    last_change: LastChange | None = None
 
 
 class CapabilityToggleIn(BaseModel):

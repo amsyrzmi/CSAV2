@@ -161,3 +161,28 @@ def test_inbox_list_indexes_exist(migrated_dsn: str) -> None:
     assert "(client_id, contact_id)" in defs["subscriptions_client_contact_idx"]
     assert "(client_id, conversation_id)" in defs["approvals_client_conversation_idx"]
     assert "(client_id, contact_id," in defs["orders_recent_idx"]
+
+
+@requires_docker
+def test_console_last_change_is_a_pinned_definer_function(migrated_dsn: str) -> None:
+    # 0502: csa_app reads the newest audit row per target only through this function.
+    with psycopg.connect(migrated_dsn, autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT p.prosecdef, p.provolatile, p.proconfig, pg_get_userbyid(p.proowner),"
+            " pg_get_function_result(p.oid)"
+            " FROM pg_proc p WHERE p.oid ="
+            " 'public.console_last_change(uuid,text,text[])'::regprocedure"
+        ).fetchone()
+    assert row is not None
+    definer, volatility, config, owner, result = row
+    assert definer is True and volatility == "s" and owner == "csa"
+    assert config == ["search_path=pg_catalog, public"]
+    assert result == (
+        "TABLE(action text, at timestamp with time zone, actor_id uuid, actor_name text,"
+        " details jsonb)"
+    )
+    with psycopg.connect(migrated_dsn, autocommit=True) as conn:
+        index = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'console_audit_tenant_target_time'"
+        ).fetchone()
+    assert index is not None and "(client_id, target_id, created_at DESC)" in index[0]
