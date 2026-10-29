@@ -14174,6 +14174,53 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "enum": [
+                        "send_limit_reached"
+                      ],
+                      "type": "string"
+                    },
+                    "retry_after": {
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "retry_after"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`send_limit_reached`: wait `retry_after` seconds (also in `Retry-After`)."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`send_outcome_unknown` (with `message`) or an unreachable provider."
           }
         },
         "summary": "Send Draft",

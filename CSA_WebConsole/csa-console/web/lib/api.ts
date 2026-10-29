@@ -4,6 +4,8 @@ export class ApiError extends Error {
     message: string,
     /** The server's raw `detail` code when it differs from the shown message. */
     public code: string = message,
+    /** The decoded JSON error body, when there was one (for example `retry_after`). */
+    public body?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -69,6 +71,7 @@ async function decode<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
     let code = message;
+    let detail: Record<string, unknown> | undefined;
     try {
       const body: unknown = await response.json();
       if (
@@ -79,11 +82,12 @@ async function decode<T>(response: Response): Promise<T> {
       ) {
         code = body.detail;
         message = explained[code] ?? code;
+        detail = body as Record<string, unknown>;
       }
     } catch {
       /* Non-JSON gateway failures keep their HTTP status. */
     }
-    throw new ApiError(response.status, message, code);
+    throw new ApiError(response.status, message, code, detail);
   }
   return response.status === 204
     ? (undefined as T)

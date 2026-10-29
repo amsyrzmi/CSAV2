@@ -13,6 +13,7 @@ async function load(name, replacements = {}) {
 }
 const view = await import(await load("assistant-view.ts", {
   '"@/lib/navigation"': JSON.stringify(await load("navigation.ts")),
+  '"@/lib/email-recipients"': JSON.stringify(await load("email-recipients.ts")),
 }));
 
 const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t1", csrf_token: "", workspace_assistant: true };
@@ -116,8 +117,11 @@ test("open proposals honour local outcomes and expiry", () => {
 });
 
 test("settled proposals summarise their receipts", () => {
-  assert.match(view.resultSummary(proposal("p", { status: "executed", result: { subject: "Hi", recipient: "a@b.test" } })), /“Hi”.*a@b\.test.*Nothing was sent/);
-  assert.match(view.resultSummary(proposal("p", { status: "executed", result: null })), /Gmail drafts/);
+  // Export receipts hold no subject or address (counts-only cards), so the line is generic.
+  assert.equal(view.resultSummary(proposal("p", { status: "executed", result: { draft_id: "d1", status: "exported", gmail_draft_id: "g1" } })), "Saved to your Gmail drafts. Nothing was sent.");
+  assert.equal(view.resultSummary(proposal("p", { status: "executed", result: null })), "Saved to your Gmail drafts. Nothing was sent.");
+  assert.match(view.resultSummary(proposal("p", { kind: "email_send", status: "executed", result: { draft_id: "d1", outcome: "sent", sent_at: "2026-10-27T01:15:00Z", gmail_message_id: "m1", remaining_this_hour: 19 } })), /^Sent at \d{1,2} Oct 2026, \d{2}:\d{2}\.$/);
+  assert.equal(view.resultSummary(proposal("p", { kind: "email_send", status: "executed", result: null })), "Sent from your Gmail.");
   assert.equal(view.resultSummary(proposal("p", { kind: "training_submit", status: "executed", result: { request: { title: "AWS", status: "pending_approval" } } })), "Submitted “AWS” (now pending approval).");
   assert.equal(view.resultSummary(proposal("p", { kind: "training_submit", status: "executed", result: {} })), "Training request submitted.");
   assert.match(view.resultSummary(proposal("p", { kind: "inbox_decision", status: "executed" })), /recorded/);

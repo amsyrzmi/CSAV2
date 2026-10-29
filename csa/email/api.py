@@ -232,6 +232,42 @@ Service = Annotated[EmailService, Depends(_service)]
 RequestKey = Annotated[UUID, Header(alias="Idempotency-Key")]
 
 
+# Documented refusal bodies of `/send` (see `email_error_content`); other refusals are `{detail}`.
+_SEND_REFUSALS: dict[int | str, dict[str, Any]] = {
+    429: {
+        "description": "`send_limit_reached`: wait `retry_after` seconds (also in `Retry-After`).",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail", "retry_after"],
+                    "properties": {
+                        "detail": {"type": "string", "enum": ["send_limit_reached"]},
+                        "retry_after": {"type": "integer", "minimum": 1},
+                    },
+                }
+            }
+        },
+    },
+    502: {
+        # `message` comes with `send_outcome_unknown`; provider failures carry `detail` only.
+        "description": "`send_outcome_unknown` (with `message`) or an unreachable provider.",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {
+                        "detail": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                }
+            }
+        },
+    },
+}
+
+
 def build_email_router() -> APIRouter:
     router = APIRouter(prefix="/console/v1/email", tags=["Email"], route_class=EmailRoute)
 
@@ -381,7 +417,7 @@ def build_email_router() -> APIRouter:
     ) -> DraftOut:
         return await service.export_draft(session, draft_id, request_key)
 
-    @router.post("/drafts/{draft_id}/send", response_model=SendResult)
+    @router.post("/drafts/{draft_id}/send", response_model=SendResult, responses=_SEND_REFUSALS)
     async def send_draft(
         draft_id: UUID,
         body: SendRequest,
