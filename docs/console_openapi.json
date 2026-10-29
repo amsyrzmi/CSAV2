@@ -4230,6 +4230,24 @@
             "title": "Expires At",
             "type": "string"
           },
+          "hr_preset": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "manager",
+                  "hr_team",
+                  "payroll_preparer",
+                  "payroll_reviewer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hr Preset"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -4303,6 +4321,24 @@
             "minLength": 3,
             "title": "Email",
             "type": "string"
+          },
+          "hr_preset": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "manager",
+                  "hr_team",
+                  "payroll_preparer",
+                  "payroll_reviewer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hr Preset"
           },
           "role": {
             "enum": [

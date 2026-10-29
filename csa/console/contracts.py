@@ -9,6 +9,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+# The B2 preset ids (csa.hr.access_switches.PresetId), spelled out so the contracts module stays
+# free of HR imports; tests/test_console_identity.py pins the two lists together.
+HrPreset = Literal["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"]
+
 
 class Role(StrEnum):
     PLATFORM_ADMIN = "platform_admin"
@@ -116,6 +120,7 @@ class InviteIn(EmailInput):
     client_id: UUID
     role: Literal["tenant_admin", "tenant_staff", "read_only"]
     display_name: str = Field(min_length=1, max_length=120)
+    hr_preset: HrPreset | None = None
 
 
 class IssuedTokenOut(Contract):
@@ -169,3 +174,4 @@ class InvitationOut(Contract):
     consumed_at: datetime | None
     revoked_at: datetime | None
     created_at: datetime
+    hr_preset: HrPreset | None = None

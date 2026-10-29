@@ -430,8 +430,13 @@ class IdentityService:
         if actor.client_id != client_id or actor.role != Role.TENANT_ADMIN:
             raise HTTPException(403, "tenant administrator required")
 
-    async def invite(self, actor: ConsoleActor, data: InviteIn) -> IssuedTokenOut:
+    async def invite(
+        self, actor: ConsoleActor, data: InviteIn, *, may_grant_hr: bool = False
+    ) -> IssuedTokenOut:
         self.require_member_admin(actor, data.client_id)
+        # Any inviting admin may choose none or Staff; the other presets need the tenant's HR owner.
+        if data.hr_preset not in (None, "staff") and not may_grant_hr:
+            raise HTTPException(403, "hr_preset_requires_hr_owner")
         raw = token()
         try:
             async with self.pool.connection() as conn, conn.transaction():
@@ -455,6 +460,8 @@ class IdentityService:
                         digest(raw),
                         self.config.token_seconds,
                         actor.user_id,
+                        data.hr_preset,
+                        actor.user_id if data.hr_preset else None,
                     ),
                 )
                 await self._audit(
@@ -506,6 +513,9 @@ class IdentityService:
                     digest(raw),
                     self.config.token_seconds,
                     actor.user_id,
+                    # The chooser stays whoever picked it, not whoever renews.
+                    old["hr_preset"],
+                    old["hr_preset_chosen_by"],
                 ),
             )
             await self._audit(
@@ -589,6 +599,8 @@ class IdentityService:
                     digest(raw),
                     self.config.token_seconds,
                     actor.user_id,
+                    None,
+                    None,
                 ),
             )
             await self._audit(conn, actor.user_id, "identity.reset_issued", user_id)
