@@ -192,6 +192,22 @@ def _redact_telegram_urls(
     return event
 
 
+class _DropConsoleQuery(logging.Filter):
+    """Strip the query string from uvicorn access lines for `/console/` paths.
+
+    Console list filters carry personal data (the inbox search text), and uvicorn's access
+    log records the full request target. Other paths keep theirs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            target = args[2]
+            if target.startswith("/console/") and "?" in target:
+                record.args = (*args[:2], target.split("?", 1)[0], *args[3:])
+        return True
+
+
 def configure_logging(env: str = "prod") -> None:
     """Configure structlog + stdlib logging for the process.
 
@@ -236,6 +252,9 @@ def configure_logging(env: str = "prod") -> None:
     )
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, _DropConsoleQuery) for item in access.filters):
+        access.addFilter(_DropConsoleQuery())
 
 
 def get_logger(name: str | None = None) -> structlog.typing.FilteringBoundLogger:

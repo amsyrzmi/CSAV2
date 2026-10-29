@@ -2,7 +2,7 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
   --color-ink-950: #0a1222;
@@ -56,6 +56,10 @@
 
 :root {
   color-scheme: light;
+  /* next/font variables (set on <html> in layout.tsx) in front of the token fallbacks. */
+  --fs-font-body: var(--font-inter), 'Inter', system-ui, sans-serif;
+  --fs-font-heading: var(--font-space-grotesk), 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --fs-font-brand: var(--font-manrope), 'Manrope', 'Inter', system-ui, sans-serif;
   --app-bg: var(--fs-bg);
   --surface: var(--fs-surface);
   --hairline: var(--fs-border);
@@ -327,6 +331,50 @@
   to { opacity: 1; transform: none; }
 }
 
+/* ---------- FourStacks motion (UI guide section 9) ----------
+   Feedback 120-180 ms, panels 180-240 ms, all on --fs-ease-out. Each class does nothing
+   under prefers-reduced-motion, or inside an ancestor with data-motion="off" (set from
+   useMotionAllowed so a pause setting, hidden tab or offscreen element can switch it off). */
+@keyframes fs-message-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fs-nudge {
+  0% { transform: none; }
+  40% { transform: translateX(-3px); }
+  70% { transform: translateX(2px); }
+  100% { transform: none; }
+}
+@keyframes fs-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fs-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fs-slide-in-right {
+  from { opacity: 0.4; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+
+.fs-message-in { animation: fs-message-in 180ms var(--fs-ease-out) both; }
+.fs-slide-in-right { animation: fs-slide-in-right 220ms var(--fs-ease-out) both; }
+.fs-nudge { animation: fs-nudge 160ms var(--fs-ease-out) both; }
+.fs-slide-up { animation: fs-slide-up 220ms var(--fs-ease-out) both; }
+.fs-fade { animation: fs-fade 140ms var(--fs-ease-out) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-message-in, .fs-nudge, .fs-slide-up, .fs-slide-in-right, .fs-fade, .skeleton { animation: none !important; }
+}
+[data-motion="off"] .fs-message-in,
+[data-motion="off"] .fs-nudge,
+[data-motion="off"] .fs-slide-up,
+[data-motion="off"] .fs-slide-in-right,
+[data-motion="off"] .skeleton,
+[data-motion="off"] .fs-fade { animation: none !important; }
+
 /* ---------- app shell ---------- */
 .shell-sidebar {
   background: #ffffff;
@@ -427,5 +475,5 @@
 }
 
 /* FourStacks supplied UI guide: explicit light canvas and typography fallbacks. */
-h1, h2, h3, .page-title { font-family: "Space Grotesk", "Inter", system-ui, sans-serif; }
-.brand-wordmark { font-family: "Manrope", "Inter", system-ui, sans-serif; }
+h1, h2, h3, .page-title { font-family: var(--fs-font-heading); }
+.brand-wordmark { font-family: var(--fs-font-brand); }

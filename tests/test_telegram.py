@@ -6,7 +6,12 @@ import uuid
 
 import httpx
 import pytest
-from csa.channels.telegram import TelegramAdapter, TelegramDeliveryError, TelegramUpdateError
+from csa.channels.telegram import (
+    TelegramAdapter,
+    TelegramDeliveryError,
+    TelegramUpdateError,
+    telegram_username,
+)
 from csa.contracts.callbacks import CallbackCodec
 
 
@@ -193,3 +198,34 @@ def test_group_text_is_parsed_only_as_a_reply_to_an_alert() -> None:
     assert (event.is_group, event.chat_id, event.reply_to_message_id) == (True, "-100", 40)
     with pytest.raises(TelegramUpdateError, match="private"):
         TelegramAdapter.parse(update(), public_id="devbotendpoint0001")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("aisyah_r", "aisyah_r"),
+        ("Abcd", "Abcd"),
+        ("a" * 32, "a" * 32),
+        ("ab", None),
+        ("has space", None),
+        ("a-b-c-d", None),
+        ("a" * 33, None),
+        ("abcd\n", None),
+        ("", None),
+        (123, None),
+        (None, None),
+    ],
+)
+def test_username_is_parsed_and_invalid_values_become_none(
+    value: object, expected: str | None
+) -> None:
+    assert telegram_username(value) == expected
+    update = _message_update(text="Hi")
+    update["message"]["from"]["username"] = value  # type: ignore[index]
+    event = TelegramAdapter.parse(update, public_id="devbotendpoint0001")
+    assert event.username == expected
+
+
+def test_missing_username_is_none() -> None:
+    event = TelegramAdapter.parse(_message_update(text="Hi"), public_id="devbotendpoint0001")
+    assert event.username is None

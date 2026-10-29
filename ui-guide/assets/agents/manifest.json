@@ -106,5 +106,95 @@
     ],
     "avatar": "invoices.svg",
     "working": "invoices-working.svg"
+  },
+  {
+    "id": "assistant",
+    "title": "Workspace assistant",
+    "artKind": null,
+    "silhouette": "beacon",
+    "eyeCount": 2,
+    "color": "#4666F0",
+    "shade": "#2A3FBF",
+    "accent": "#A9C4FF",
+    "backdrop": "#EEF1FF",
+    "spectrum": [
+      "#9AAEFF",
+      "#4A66F2",
+      "#2A3FBF"
+    ],
+    "avatar": "assistant.svg",
+    "working": null
+  },
+  {
+    "id": "hr",
+    "title": "HR assistant",
+    "artKind": null,
+    "silhouette": "clover",
+    "eyeCount": 2,
+    "color": "#2B6CB0",
+    "shade": "#1A3F78",
+    "accent": "#8FD0F0",
+    "backdrop": "#EBF4FB",
+    "spectrum": [
+      "#7FC3F2",
+      "#3584D6",
+      "#21509F"
+    ],
+    "avatar": "hr.svg",
+    "working": null
+  },
+  {
+    "id": "email",
+    "title": "Email assistant",
+    "artKind": null,
+    "silhouette": "swallow",
+    "eyeCount": 3,
+    "color": "#1A7AD0",
+    "shade": "#1B4C9A",
+    "accent": "#9FDCFF",
+    "backdrop": "#EAF5FE",
+    "spectrum": [
+      "#7AD0FF",
+      "#2A8DE6",
+      "#2A55BD"
+    ],
+    "avatar": "email.svg",
+    "working": null
+  },
+  {
+    "id": "subscriptions",
+    "title": "Subscriptions agent",
+    "artKind": null,
+    "silhouette": "loop",
+    "eyeCount": 2,
+    "color": "#2A52D6",
+    "shade": "#162E85",
+    "accent": "#94B8FF",
+    "backdrop": "#EDF1FD",
+    "spectrum": [
+      "#7FA2FF",
+      "#2F58E0",
+      "#1A35A3"
+    ],
+    "avatar": "subscriptions.svg",
+    "working": null
+  },
+  {
+    "id": "bookings",
+    "title": "Bookings agent",
+    "artKind": null,
+    "silhouette": "tabs",
+    "eyeCount": 2,
+    "color": "#1D6FD0",
+    "shade": "#174A96",
+    "accent": "#8AD6FF",
+    "backdrop": "#EAF4FF",
+    "spectrum": [
+      "#74C8FF",
+      "#2A86E8",
+      "#2653BC"
+    ],
+    "avatar": "bookings.svg",
+    "working": null
   }
 ]

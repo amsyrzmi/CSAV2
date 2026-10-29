@@ -401,7 +401,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(
             page.get_by_text("not part of your organisation's active service packages")
         ).to_be_visible(timeout=WAIT)
-        await expect(page.get_by_text("· Telegram")).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-channel-badge")).to_have_count(0)
         await expect_navigation(page, ("Services",), GATED)
         assert any(c["path"] == "inbox/conversations" for c in calls)
 
