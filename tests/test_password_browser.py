@@ -315,6 +315,8 @@ async def test_password_server_error_is_shown(console: Console) -> None:
     answers: list[Reply] = [
         (429, {"detail": "too many attempts; try again later"}),
         (422, {"detail": "new password must differ from the current password"}),
+        (401, {"detail": "invalid current password"}),
+        (500, {"detail": "something the form does not know"}),
     ]
     playwright, browser, page, posts = await open_page(console, "/portal/password", answers=answers)
     try:
@@ -322,7 +324,7 @@ async def test_password_server_error_is_shown(console: Console) -> None:
         submit = page.get_by_test_id("password-submit")
         await submit.click()
         error = page.get_by_test_id("password-error")
-        await expect(error).to_have_text("too many attempts; try again later")
+        await expect(error).to_have_text("Too many attempts. Wait a few minutes, then try again.")
         await expect(error).to_have_attribute("role", "alert")
         # The typed values stay so the person can correct and retry.
         await expect(page.get_by_test_id("password-current")).to_have_value(CURRENT)
@@ -330,10 +332,35 @@ async def test_password_server_error_is_shown(console: Console) -> None:
         await expect(page.get_by_test_id("password-confirm")).to_have_value(NEW)
         await expect(submit).to_be_enabled()
         await submit.click()
-        await expect(error).to_have_text("new password must differ from the current password")
-        assert len(posts) == 2
+        await expect(error).to_have_text(
+            "Choose a new password that is different from your current one."
+        )
+        await submit.click()
+        await expect(error).to_have_text("That is not your current password.")
+        # A message the form does not know passes through unchanged.
+        await submit.click()
+        await expect(error).to_have_text("something the form does not know")
+        assert len(posts) == 4
         await expect(page.get_by_test_id("password-success")).to_have_count(0)
         await expect(page.get_by_test_id("password-new")).to_have_value(NEW)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_password_form_carries_the_account_email_for_password_managers(
+    console: Console,
+) -> None:
+    playwright, browser, page, _posts = await open_page(console, "/portal/password")
+    try:
+        user = page.locator("form input[autocomplete='username']")
+        await expect(user).to_have_count(1)
+        await expect(user).to_have_value("synthetic@example.test")
+        await expect(user).to_have_attribute("readonly", "")
+        await expect(user).to_have_attribute("aria-hidden", "true")
+        await expect(user).to_have_attribute("tabindex", "-1")
+        # Not a field a person meets: no label, not in the accessibility tree.
+        # Only the three password fields are in the tree (the email input is aria-hidden).
+        await expect(page.get_by_role("main").get_by_role("textbox")).to_have_count(3)
     finally:
         await close_page(playwright, browser)
 

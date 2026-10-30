@@ -1,14 +1,16 @@
 "use client";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ApiError } from "@/lib/api";
 import { identity } from "@/lib/identity-api";
+import { passwordErrorText } from "@/lib/password-messages";
 import { PasswordInput } from "@/components/ui/password-input";
 import { action, Notice, Panel } from "@/components/console/ui";
 
 const SUCCESS = "Password updated. Other devices have been signed out.";
 
 /** Change the signed-in person's own password without leaving the dashboard shell. */
-export function PasswordPanel() {
+export function PasswordPanel({ email }: { email: string }) {
   const router = useRouter();
   const [current, setCurrent] = useState("");
   const [password, setPassword] = useState("");
@@ -39,7 +41,7 @@ export function PasswordPanel() {
       setConfirmation("");
       setDone(true);
     } catch (cause) {
-      setError((cause as Error).message);
+      setError(passwordErrorText((cause as Error).message, cause instanceof ApiError ? cause.status : undefined));
     } finally {
       sending.current = false;
       setBusy(false);
@@ -50,6 +52,17 @@ export function PasswordPanel() {
     <div className="max-w-xl">
       <Panel title="Change your password">
         <form onSubmit={submit} className="space-y-5">
+          {/* Lets a password manager file the new password under the right account. Not for people. */}
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            value={email}
+            className="sr-only"
+          />
           <div>
             <label htmlFor="password-current" className="mb-2 block text-sm">
               Current password
