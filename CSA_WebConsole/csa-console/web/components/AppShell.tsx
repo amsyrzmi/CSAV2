@@ -73,7 +73,10 @@ export function AppShell({
         state={rail}
         onToggle={toggleRail}
       />
-      <div className="min-w-0 flex-1">
+      {/* A page marked `data-fill` (Overview) gets the whole window below the top bar: the
+          column becomes exactly the viewport tall (never shorter than 30rem) and <main> fills
+          it edge to edge, so the page's own scroll areas scroll instead of the document. */}
+      <div className="min-w-0 flex-1 has-[[data-fill]]:flex has-[[data-fill]]:h-dvh has-[[data-fill]]:min-h-[30rem] has-[[data-fill]]:flex-col">
         <TopBar
           links={links}
           path={path}
@@ -87,7 +90,7 @@ export function AppShell({
             <Notice error>{error}</Notice>
           </div>
         )}
-        <main className="mx-auto max-w-6xl p-5 sm:p-8">
+        <main className="mx-auto max-w-6xl p-5 sm:p-8 has-[[data-fill]]:flex has-[[data-fill]]:min-h-0 has-[[data-fill]]:w-full has-[[data-fill]]:max-w-none has-[[data-fill]]:flex-1 has-[[data-fill]]:flex-col has-[[data-fill]]:p-0">
           <PageContextProvider>
             {children}
             {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}

@@ -1,12 +1,14 @@
 """Real browser acceptance for the loading screen (five walking agents).
 
-The real Next.js shell runs unmodified from a disposable staged copy. Its layouts and the
-Overview page fetch `/auth/me`, `/services/active` and `/profile` server-side, so a loopback
-stub origin answers those, and it can hold any one of them back. That is the deterministic
-trigger for the two loading files:
+The real Next.js shell runs unmodified from a disposable staged copy. Its layouts fetch
+`/auth/me`, `/services/active` and `/profile` server-side, so a loopback stub origin answers
+those, and it can hold any one of them back. Overview (`/portal`) became the client-side
+assistant home and no longer waits on the server, so the staged copy replaces that one page
+with a test-only server page that awaits `/profile` (production routing and the loading files
+are unchanged). That is the deterministic trigger for the two loading files:
 
 * in the shell: open `/portal/services`, then hold `/profile` back and follow the Overview
-  link. The Overview page awaits `/profile` on the server, so `app/portal/loading.tsx` shows
+  link. The stand-in page awaits `/profile` on the server, so `app/portal/loading.tsx` shows
   inside the shell (the layout's own decorative read gives up after 3 s and lets the shell
   render); until then the root file shows full screen;
 * full screen: open `/portal` with `/auth/me` held back. The layout awaits identity inside the
@@ -49,6 +51,13 @@ TENANT_PROFILE = {
     "status": "active",
 }
 WAIT = 60_000  # First visit to each route compiles it in `next dev`.
+SLOW_PAGE = """import { requireOwnProfile } from "@/lib/server-identity";
+
+export default async function SlowPage() {
+  const profile = await requireOwnProfile();
+  return <h1>Slow page for {profile.name}</h1>;
+}
+"""
 AGENTS = ["support", "orders", "tickets", "bookings", "knowledge"]
 
 
@@ -166,6 +175,8 @@ def console(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[no-untype
             capture_output=True,
         )
         (stage / "node_modules").symlink_to(WEB / "node_modules", target_is_directory=True)
+        # Test-only stand-in for Overview in the disposable copy: a server page that waits.
+        (stage / "app/portal/page.tsx").write_text(SLOW_PAGE)
         port = free_port()
         log_path = tmp_path / "frontend.log"
         log = log_path.open("w")
@@ -270,6 +281,8 @@ async def open_loading(console: Console, **options: Any) -> tuple[Any, Any, Page
         console, "/portal", hold="/console/v1/auth/me", **options
     )
     await expect(page.get_by_test_id("loading-screen")).to_be_visible(timeout=WAIT)
+    # The streamed fallback can be visible before the parser has reached all five sprites.
+    await expect(page.locator("[data-agent]")).to_have_count(5)
     return playwright, browser, page
 
 
@@ -277,7 +290,8 @@ async def open_shell_loading(console: Console, **options: Any) -> tuple[Any, Any
     """The loading screen inside the shell: a client navigation to a slow server page.
 
     While `/profile` is held back the layout's own 3 s read gives up (it only decorates the user
-    menu), the shell appears, and the Overview page keeps waiting: that is `app/portal/loading.tsx`.
+    menu), the shell appears, and the stand-in Overview page keeps waiting: that is
+    `app/portal/loading.tsx`.
     """
     playwright, browser, page = await open_console(console, "/portal/services", **options)
     await expect(page.get_by_test_id("shell-topbar")).to_be_visible()
@@ -336,7 +350,9 @@ async def test_loading_screen_shows_five_agents_and_the_word_loading(console: Co
             # The page replaces it when the held answer arrives.
             console.upstream.release()
             await expect(screen).to_have_count(0)
-            await expect(page.get_by_role("heading", name="Your workspace")).to_be_visible()
+            await expect(
+                page.get_by_role("heading", name="Slow page for Synthetic Tenant")
+            ).to_be_visible()
         finally:
             await close_console(console, playwright, browser)
 

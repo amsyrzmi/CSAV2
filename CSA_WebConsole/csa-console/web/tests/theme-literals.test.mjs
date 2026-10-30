@@ -23,10 +23,13 @@ const OWNED = [
   "components/console/InboxWorkspace.tsx",
   "components/console/SandboxWorkspace.tsx",
   "components/console/chat/",
+  "components/console/overview/",
   "app/globals.css",
   "app/layout.tsx",
   "app/(admin)/layout.tsx",
   "app/portal/layout.tsx",
+  "app/(admin)/page.tsx",
+  "app/portal/page.tsx",
   "app/(auth)/login/page.tsx",
 ];
 

@@ -177,6 +177,13 @@ class World:
             return 200, {"csrf_token": "synthetic-csrf"}
         if path == "admin/clients" and platform:
             return 200, [TENANT_PROFILE]
+        # Overview is the assistant home: its status strip and the sandbox chat history.
+        if path == "services/active" and method == "GET":
+            return 200, {"packages": self.upstream.packages}
+        if path == "inbox/conversations" and method == "GET":
+            return 200, {"items": [], "next_cursor": None, "needs_review_count": 0}
+        if path == "chat/conversations" and method == "GET":
+            return 200, {"items": [], "next_cursor": None}
         # Platform admins must always name the tenant; members never do.
         if path.startswith("subscriptions") and (params.get("client_id") == TENANT) != platform:
             self.unexpected.append(f"{method} {path} with params {params}")

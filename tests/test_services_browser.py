@@ -302,6 +302,12 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             data = rows["customer_support"]
         elif path in {"inbox/conversations", "inbox/approvals"}:
             status, data = 403, {"detail": "package_inactive"}
+        elif path == "services/active" and request.method == "GET":
+            # Overview's status strip (Overview is the assistant home).
+            data = {"packages": upstream.packages}
+        elif path == "chat/conversations" and request.method == "GET":
+            # Overview's sandbox chat history.
+            data = {"items": [], "next_cursor": None}
         elif path == "channels/whatsapp" and request.method == "GET":
             # The Services WhatsApp card; the gateway gates it on Customer Support.
             if {"key": "customer_support", "status": "active"} in upstream.packages:
@@ -397,13 +403,15 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (f) A gated page opened directly shows the API's refusal and no conversations.
         upstream.me, upstream.packages = make_me("tenant_admin"), []
+        # Overview's status strip also reads the Inbox, so count only this page's calls.
+        start = len(calls)
         await page.goto(f"{base}/portal/inbox")
         await expect(
             page.get_by_text("not part of your organisation's active service packages")
         ).to_be_visible(timeout=WAIT)
         await expect(page.get_by_test_id("inbox-channel-badge")).to_have_count(0)
         await expect_navigation(page, ("Services",), GATED)
-        assert any(c["path"] == "inbox/conversations" for c in calls)
+        assert any(c["path"] == "inbox/conversations" for c in calls[start:])
 
         assert not unexpected, unexpected
         assert not upstream.unexpected, upstream.unexpected

@@ -342,7 +342,9 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
           <button className={secondary} onClick={() => setConfirmArchive(false)}>Cancel</button>
         </div>
       </div>}
-      <div ref={scroller} data-testid="sandbox-scroll" onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      {/* `relative`: the sr-only "You:" prefixes are absolutely positioned; without it they
+          escape the scroller's clip and stretch the page (Overview must not scroll). */}
+      <div ref={scroller} data-testid="sandbox-scroll" onScroll={onScroll} className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6">
           {pollError && <Notice error>Polling disconnected: {pollError}. History may be stale; reconnect does not resend messages.</Notice>}
           {turnCursor && <div className="text-center">
