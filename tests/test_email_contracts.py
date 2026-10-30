@@ -98,31 +98,23 @@ def test_draft_contract_rejects_header_injection_and_display_names() -> None:
     assert ok.recipient == "aina@example.test"
 
 
-def test_model_outputs_are_strict_and_bounded() -> None:
+def test_model_outputs_are_strict_on_structure() -> None:
+    base = {"category": "complaint", "priority": "high", "language": "en", "summary": "s"}
+    # Structure stays strict: an object, a non-empty summary, a list of string action items.
+    for broken in (
+        [base],
+        "complaint",
+        {**base, "summary": "  "},
+        {k: v for k, v in base.items() if k != "summary"},
+        {**base, "action_items": "call back"},
+        {**base, "action_items": [1]},
+        {**base, "category": None},
+        {**base, "priority": 3},
+    ):
+        with pytest.raises(ValidationError):
+            ThreadAnalysis.model_validate(broken)
     with pytest.raises(ValidationError):
-        ThreadAnalysis.model_validate(
-            {
-                "category": "complaint",
-                "priority": "high",
-                "language": "en",
-                "summary": "s",
-                "tool_call": "x",
-            }
-        )
-    with pytest.raises(ValidationError):
-        ThreadAnalysis.model_validate(
-            {"category": "complaint", "priority": "urgent", "language": "en", "summary": "s"}
-        )
-    with pytest.raises(ValidationError):
-        ThreadAnalysis.model_validate(
-            {
-                "category": "complaint",
-                "priority": "high",
-                "language": "en",
-                "summary": "s",
-                "action_items": ["x" * 201],
-            }
-        )
+        ThreadAnalysis.model_validate_json("[]")
     analysis = ThreadAnalysis.model_validate(
         {
             "category": "complaint",
@@ -133,6 +125,62 @@ def test_model_outputs_are_strict_and_bounded() -> None:
         }
     )
     assert analysis.action_items == ["a"]
+    # Unknown keys from the model are dropped, never stored or acted on.
+    extra = ThreadAnalysis.model_validate({**base, "tool_call": "x", "reason": "y"})
+    assert "tool_call" not in extra.model_dump() and "reason" not in extra.model_dump()
+
+
+def test_model_output_enums_are_normalised_not_rejected() -> None:
+    """The provider's JSON mode carries no schema, so the model drifts from the Literals."""
+    analysis = ThreadAnalysis.model_validate_json(
+        json.dumps(
+            {
+                "category": "Shipping Inquiry",
+                "priority": " High ",
+                "language": "English",
+                "summary": "s",
+            }
+        )
+    )
+    assert (analysis.category, analysis.priority, analysis.language) == ("other", "high", "other")
+    spaced = ThreadAnalysis.model_validate(
+        {"category": "Order or Delivery", "priority": "urgent", "language": "MS", "summary": "s"}
+    )
+    assert (spaced.category, spaced.priority, spaced.language) == (
+        "order_or_delivery",
+        "normal",
+        "ms",
+    )
+
+
+def test_model_output_text_is_truncated_not_rejected() -> None:
+    analysis = ThreadAnalysis.model_validate(
+        {
+            "category": "complaint",
+            "priority": "high",
+            "language": "en",
+            "summary": " " + "s" * 700,
+            "action_items": ["x" * 201, "b", " ", "c", "d", "e", "f", "g"],
+        }
+    )
+    assert analysis.summary == "s" * 600
+    assert analysis.action_items == ["x" * 200, "b", "c", "d", "e"]
+
+
+def test_analysis_prompt_lists_every_allowed_value() -> None:
+    from typing import get_args
+
+    from csa.email import models, service
+
+    for value in (
+        *get_args(models.Category),
+        *get_args(models.Priority),
+        *get_args(models.AnalysisLanguage),
+    ):
+        assert f'"{value}"' in service.ANALYSIS_SYSTEM, value
+
+
+def test_draft_proposal_is_strict() -> None:
     with pytest.raises(ValidationError):
         DraftProposal.model_validate({"subject": "", "body": "x"})
     with pytest.raises(ValidationError):

@@ -1743,6 +1743,61 @@ async def test_attention_skips_a_thread_the_model_cannot_analyse(
     assert failed.status_code == 503 and failed.json()["detail"] == "email_model_unavailable"
 
 
+async def test_attention_accepts_model_output_outside_the_literals(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Staging: the provider's JSON mode has no schema, so every analysis failed validation
+    (groq_invalid_output) and the summary was never available."""
+    caplog.set_level(logging.DEBUG)
+    await _enable_and_connect(world, monkeypatch)
+    for index in (1, 2):
+        await _put_thread(world, f"U{index}", days_ago=0, minutes_ago=index)
+    systems: list[str] = []
+    raw = json.dumps(
+        {
+            "category": "Shipping Inquiry",
+            "priority": "High",
+            "language": "English",
+            "summary": "s" * 700,
+            "action_items": [f"Step {n}" for n in range(1, 8)],
+            "confidence": 0.9,
+        }
+    )
+
+    async def drifting(schema: type[Any], *, system: str, user: str, **kwargs: Any) -> Any:
+        systems.append(system)
+        try:  # parsed exactly as GroqClient parses the provider's content
+            return schema.model_validate_json(raw)
+        except ValueError as exc:
+            raise CompletionError("groq_invalid_output") from exc
+
+    monkeypatch.setattr(world.model, "json_completion", drifting)
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert page.json()["skipped"] == 0
+    items = page.json()["items"]
+    assert [item["thread_id"] for item in items] == ["U1", "U2"]
+    assert {item["priority"] for item in items} == {"high"}
+    assert len(items[0]["summary"]) == 600
+    assert items[0]["next_steps"] == [f"Step {n}" for n in range(1, 6)]
+    rows = await world.q(
+        "SELECT DISTINCT category FROM email_threads WHERE client_id=%s", (world.tenant,)
+    )
+    assert [row["category"] for row in rows] == ["other"]
+    # The prompt names every allowed value, so the model has them to choose from.
+    for value in (
+        "customer_request",
+        "spam_or_phishing",
+        "other",
+        "low",
+        "normal",
+        "high",
+        "mixed",
+    ):
+        assert f'"{value}"' in systems[0], value
+    assert "groq_invalid_output" not in " ".join(r.getMessage() for r in caplog.records)
+
+
 async def test_attention_without_a_model_shows_stored_items(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
