@@ -6,6 +6,7 @@ import builtins
 import io
 import json
 import os
+import re
 import shutil
 import stat
 from collections.abc import Callable, Mapping, Sequence
@@ -1168,3 +1169,65 @@ def test_missing_binary_stops_cleanly_through_main(
     monkeypatch.setattr(sr.subprocess, "run", no_such_file)
     assert sr.main(["plan"]) == 1
     assert capsys.readouterr().out.startswith("Stopped at git: git not found")
+
+
+FORBIDDEN_SQL = (
+    "insert",
+    "update",
+    "delete",
+    "alter",
+    "drop",
+    "create",
+    "truncate",
+    "grant",
+    "revoke",
+)
+REPO = Path(__file__).resolve().parent.parent
+
+
+def _strip_sql_comments(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("--"))
+
+
+def test_check_files_are_read_only_selects() -> None:
+    files = sorted(sr.CHECKS_DIR.glob("*.sql"))
+    assert files, "expected at least the 0485 check file"
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        header = text.splitlines()[0]
+        assert header.startswith("--"), path.name
+        assert "read-only" in text.split("\n\n", 1)[0].lower(), path.name
+        body = _strip_sql_comments(text).lower()
+        assert body.strip().startswith("select"), path.name
+        for word in FORBIDDEN_SQL:
+            assert not re.search(rf"\b{word}\b", body), f"{path.name} contains {word}"
+
+
+def test_0485_check_keeps_the_scrub_predicates() -> None:
+    text = (sr.CHECKS_DIR / "0485.sql").read_text(encoding="utf-8")
+    assert "kind = 'email_export'" in text
+    assert "Save email draft to Gmail" in text
+    assert "chr(8220)" in text
+    assert "AS old_rows" in text
+
+
+def test_runbook_points_at_the_script_and_the_live_checkout() -> None:
+    text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
+    assert "scripts.staging_rollout plan" in text
+    assert "deploy/rollout_checks/0485.sql" in text
+    assert "/home/amsyrzmi/CSAV2" in text
+    assert "CSAV2-seed" not in text
+
+
+def test_skill_requires_plan_then_owner_go_then_apply() -> None:
+    text = (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    frontmatter = text.split("---", 2)[1]
+    assert "name: staging-rollout" in frontmatter
+    assert "description: Use when the owner asks to roll out, deploy or update staging" in (
+        frontmatter
+    )
+    for needle in ("plan", "apply", "--ff-only"):
+        assert needle in text
+    assert text.index("plan") < text.index("apply")

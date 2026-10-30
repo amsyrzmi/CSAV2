@@ -13,6 +13,59 @@ The gateway's model key is a disabled placeholder, there is no embedding
 service, and the public hostname reaches only the frontend, which has no
 webhook path. None of that is a code defect; the pipeline was never started.
 
+## Routine rollouts
+
+After a merge, `publish-staging-images` starts by itself once the push-to-main `ci` run is green
+and waits for the owner's approval on the `staging-images` environment. Once the owner has
+approved it and it has finished, the images of that commit are rolled out with
+`scripts/staging_rollout.py`. The first-time setup in the sections below stays manual.
+
+1. In the main checkout `/home/amsyrzmi/CSAV2` (never a worktree), bring it to the commit to roll
+   out: `git pull --ff-only origin main`.
+2. Show what a rollout would do. This changes nothing:
+
+   ```bash
+   .venv/bin/python -m scripts.staging_rollout plan
+   ```
+
+   It prints the target SHA, the two image digests, the digests running now (the rollback
+   references), the pending migrations, the steps, the check files and the exact `apply` command.
+   Exit 0 is ok, 2 means secret files are missing (`apply` will refuse), 1 is a stop printed as
+   `Stopped at <step>: ...`. If the images are not published yet it stops with
+   `images for <sha7> are not published yet (<state>)`, for example "waiting for approval": the
+   owner approves the `staging-images` environment on the publish run.
+3. Run `apply` with exactly the flags `plan` printed:
+
+   ```bash
+   .venv/bin/python -m scripts.staging_rollout apply
+   .venv/bin/python -m scripts.staging_rollout apply --migrations 0486,0487
+   ```
+
+   With migrations pending, `--migrations` must list exactly the pending versions that `plan`
+   printed; a mismatch means staging or the checkout changed, so run `plan` again. With nothing
+   pending, leave the flag out.
+
+`apply` re-derives the plan, pulls both images by digest and verifies them, then recreates
+`gateway`, `worker`, `delivery` and `frontend` in that order on the new images, checks `/readyz`
+and runs every check file in `deploy/rollout_checks/`. A service that reports unhealthy at first
+counts as started once it is healthy on the new image within 300 seconds (the gateway can take
+about 45 seconds on a memory-starved host).
+
+**A migration rollout stops all four services.** Owner decision of 2026-10-30, for every
+migration: `gateway`, `frontend`, `worker` and `delivery` are stopped before `migrate` runs, so no
+old code runs against the new schema. The console is unavailable and bot replies are delayed
+(queued, not lost) until the services are back, usually a few minutes.
+
+**Recovery.** On any failure `apply` stops, prints the step, the state staging is in, the
+`Rollback images:` it recorded and `Re-run plan, then apply, once the cause is fixed.` It never
+retries a migrate and never rolls one back (a migration cannot be un-applied). Fix the cause and
+run `plan` then `apply` again: the plan is derived afresh, so a migration already recorded is no
+longer pending.
+
+**Switches.** The non-secret staging switches live in `deploy/staging-rollout.env`. To change one,
+open a pull request; do not export it by hand. The script never opens the secret files; compose
+reads them.
+
 ## 1. Secret files (owner runs; nothing is printed)
 
 The keys live in the owner's ignored `.env.local`. Copy the two values into the
@@ -60,7 +113,7 @@ loopback port; the console is unavailable for a few seconds while that happens.
 
 ```bash
 (
-  cd /home/amsyrzmi/CSAV2-seed || exit 1
+  cd /home/amsyrzmi/CSAV2 || exit 1
   export NO_LOCAL_ENV=1 ENV=ci COMPOSE_PROFILES=
   export CSA_STAGING_PROJECT=csa-staging
   export CSA_STAGING_SECRET_DIR=/srv/csa-staging/secrets
@@ -136,7 +189,7 @@ touch the console route or any other hostname.
 
 ```bash
 (
-  cd /home/amsyrzmi/CSAV2-seed || exit 1
+  cd /home/amsyrzmi/CSAV2 || exit 1
   export NO_LOCAL_ENV=1 ENV=ci COMPOSE_PROFILES=
   export CSA_STAGING_PROJECT=csa-staging
   export CSA_STAGING_SECRET_DIR=/srv/csa-staging/secrets
@@ -450,34 +503,12 @@ In the section-2 shell:
    (`deploy/RELEASE.md`). The one-shot applies both in order; each in its own transaction.
 3. Recreate gateway, worker, delivery and frontend with `--no-deps --pull never`, with
    both `CSA_STAGING_INVITE_MAIL=true` and `CSA_STAGING_EMAIL_ASSISTANT=true` exported.
-4. Check that no old-shape row is left. This uses the scrub's own predicates and must print
-   `0`:
+4. Check that no old-shape row is left. The rollout script runs this check itself on every
+   apply; the query is `deploy/rollout_checks/0485.sql`. It uses the scrub's own predicates and
+   must print `0`. To run it by hand in the section-2 shell:
 
    ```bash
-   csa_pipeline_compose exec -T staging-db psql -U csa -d csa_staging -tA -v ON_ERROR_STOP=1 -f - <<'SQL'
-SELECT
-  (SELECT count(*) FROM public.console_proposals
-    WHERE kind = 'email_export'
-      AND (card->>'title' = 'Save email draft to Gmail'
-           OR strpos(card::text, '@') > 0
-           OR jsonb_path_exists(card, '$.fields[*] ? (@.label == "To"
-                  || (@.label == "Subject" && @.value != "(shown on open)"))')
-           OR (jsonb_typeof(result) = 'object'
-               AND result - ARRAY['draft_id', 'status', 'gmail_draft_id'] <> '{}'::jsonb)))
-  + (SELECT count(*) FROM public.console_workspace_turns
-    WHERE (result->>'action' = 'proposal' AND result#>>'{proposal,kind}' = 'email_export'
-           AND (result#>>'{proposal,card,title}' = 'Save email draft to Gmail'
-                OR strpos((result#>'{proposal,card}')::text, '@') > 0
-                OR jsonb_path_exists(result, '$.proposal.card.fields[*] ? (@.label == "To"
-                       || (@.label == "Subject" && @.value != "(shown on open)"))')
-                OR (jsonb_typeof(result#>'{proposal,result}') = 'object'
-                    AND (result#>'{proposal,result}')
-                        - ARRAY['draft_id', 'status', 'gmail_draft_id'] <> '{}'::jsonb)))
-       OR (result->>'action' = 'answer'
-           AND result->>'markdown' ~ ('Email draft [0-9a-f-]{36}: subject ' || chr(8220) || '.*'
-                                      || chr(8221) || ', status [a-z_]+\.')))
-  AS old_rows;
-SQL
+   csa_pipeline_compose exec -T staging-db psql -U csa -d csa_staging -tA -v ON_ERROR_STOP=1 -f - < deploy/rollout_checks/0485.sql
    ```
 
    Anything other than `0` means a row was written in a shape the scrub does not cover:
