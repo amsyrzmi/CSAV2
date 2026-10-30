@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** The Sandbox assistant folded into Overview; old links keep their tenant. */
+/** The private chat now lives on Overview; this old link redirects there and keeps the company. */
 export default async function ChatPage({
   searchParams,
 }: {

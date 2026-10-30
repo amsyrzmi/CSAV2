@@ -324,7 +324,7 @@ Archive is audited hide, not retention-approved purge.
 The browser distinguishes a **15-second HTTP timeout** (potentially accepted; retain the
 same in-memory request key/text and explicitly retry) from a definite 4xx rejection and
 from the **90-second turn deadline** (show delayed status, never invent delivery/failure).
-Polling can reconcile an uncertain send by its request key. Reconnect only refreshes
+Polling can reconcile an uncertain send by its request key. Check for new messages only refreshes
 history; it never resends. If the page/tenant is left or reloaded, check persisted history
 before submitting again; the retained draft/key are not stored in browser storage.
 Voice, arbitrary attachments and confirmation actions remain unavailable. KB upload is

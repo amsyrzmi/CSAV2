@@ -157,7 +157,8 @@ HTTP integration tests cover those role gates. A queued job alone still proves n
 worker nor TEI health. Use synthetic files and
 [the API rollout/recovery contract](../../../docs/CONSOLE_API.md#isolated-dev-rollout-prerequisites).
 
-M4 adds `/chat` and `/portal/chat`, explicitly labelled **Sandbox assistant**.
+M4 added `/chat` and `/portal/chat`; both now redirect to Overview (`/` and `/portal`),
+where the private chat lives, and keep a `client_id` if the link had one.
 Conversations are private to the verified account and tenant, with a separate sandbox
 contact. Only knowledge and product-information reads are allowed by the runtime;
 customer records, business mutations, staff escalation, callbacks/confirmations,
