@@ -1,4 +1,4 @@
-"""Staging rollout script: the read-only ``plan``, driven by a fake runner."""
+"""Staging rollout script: ``plan`` and ``apply``, driven by a fake runner."""
 
 from __future__ import annotations
 
@@ -521,11 +521,6 @@ def test_check_files_are_sorted_sql_only(tmp_path: Path) -> None:
     assert sr.check_files(tmp_path / "absent") == []
 
 
-def test_apply_is_not_implemented_yet(capsys: pytest.CaptureFixture[str]) -> None:
-    assert sr.main(["apply"], runner=FakeRunner([])) == 1
-    assert "not implemented" in capsys.readouterr().err
-
-
 def test_docker_config_dir_is_empty_private_and_removed(rollout_env: Path) -> None:
     paths = make_secret_files(rollout_env, "staging_owner_dsn")
     seen: list[tuple[int, list[str]]] = []
@@ -551,3 +546,559 @@ def test_docker_config_dir_is_empty_private_and_removed(rollout_env: Path) -> No
     assert all(mode == 0o700 and entries == [] for mode, entries in seen)
     assert len(set(dirs)) == 1
     assert not dirs[0].exists()
+
+
+# --- apply -------------------------------------------------------------------------------
+
+IMAGE_REFS = {"python": PYTHON_REF, "frontend": FRONTEND_REF}
+
+
+def step_label(argv: Sequence[str]) -> str | None:
+    """Name the calls that matter for ordering; reads of the plan phase are None."""
+    base = sr.compose_base()
+    docker = ["docker", "--host", sr.SOCKET]
+    if list(argv[: len(base)]) == base:
+        rest = list(argv[len(base) :])
+        if rest[:2] == ["--profile", "migration-approved"]:
+            rest = rest[2:]
+        if rest[:2] == ["config", "--quiet"]:
+            return "config"
+        if rest[:1] == ["stop"]:
+            return "stop"
+        if rest[:1] == ["run"]:
+            return "migrate"
+        if rest[:1] == ["up"]:
+            return f"up {rest[-1]}"
+        if rest[:1] == ["ps"]:
+            return "ps"
+        if rest[:1] == ["exec"]:
+            return "check" if "-f" in rest else "select"
+        return None
+    if list(argv[:3]) == docker and argv[3:4] == ["pull"]:
+        return "pull python" if "csa-python" in argv[4] else "pull frontend"
+    if list(argv[:3]) == docker and argv[3:4] == ["exec"]:
+        return "ready"
+    return None
+
+
+def labels(runner: FakeRunner) -> list[str]:
+    return [label for argv in runner.argvs if (label := step_label(argv))]
+
+
+class ApplyRig:
+    """A repo dir, a fake staging host, and a way to run ``apply`` against it."""
+
+    def __init__(
+        self,
+        tmp_path: Path,
+        secret_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        applied: Sequence[str] = ("0484", "0485"),
+        checkout: Sequence[str] = ("0484", "0485"),
+        overrides: Sequence[tuple[Predicate, Answer]] = (),
+        secrets: Sequence[str] = ("staging_owner_dsn",),
+        recorded: Sequence[str] | None = None,
+    ) -> None:
+        self.repo = tmp_path / "repo"
+        (self.repo / "deploy").mkdir(parents=True)
+        (self.repo / "deploy" / "staging-rollout.env").write_text(FLAGS_TEXT)
+        self.secret_dir = secret_dir
+        self.docker_config = tmp_path / "dc"
+        self.sleeps: list[float] = []
+        self.lines: list[str] = []
+        monkeypatch.setattr(
+            sr, "discover_migrations", lambda: [(v, Path(f"{v}_x.sql")) for v in checkout]
+        )
+        migrated = {"done": False}
+
+        def select(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+            versions = (recorded or checkout) if migrated["done"] else applied
+            return ok("".join(f"{v}\n" for v in versions))
+
+        def migrate(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+            migrated["done"] = True
+            return ok("applying migrations\n")
+
+        def inspect_pulled(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+            ref = argv[-1]
+            return ok(
+                json.dumps(
+                    [
+                        {
+                            "RepoDigests": [ref],
+                            "Config": {"Labels": {"org.opencontainers.image.revision": SHA}},
+                        }
+                    ]
+                )
+            )
+
+        def is_pulled_inspect(argv: Sequence[str]) -> bool:
+            return list(argv[3:5]) == ["image", "inspect"] and argv[-1] in IMAGE_REFS.values()
+
+        paths = make_secret_files(secret_dir, *[n for n in secrets if not n.startswith("absent")])
+        for name in secrets:
+            paths.setdefault(name, secret_dir / "absent" / name)
+        self.runner = staging_runner(applied=applied, secret_files=paths)
+        apply_rules: list[tuple[Predicate, Answer]] = [
+            *overrides,
+            (is_pulled_inspect, inspect_pulled),
+            (lambda argv: step_label(argv) == "config", ok()),
+            (lambda argv: (step_label(argv) or "").startswith("pull"), ok()),
+            (lambda argv: step_label(argv) == "stop", ok()),
+            (lambda argv: step_label(argv) == "migrate", migrate),
+            (lambda argv: (step_label(argv) or "").startswith("up "), ok()),
+            (lambda argv: step_label(argv) == "ready", ok()),
+            (lambda argv: step_label(argv) == "check", ok("0\n")),
+            (lambda argv: step_label(argv) == "ps", ok("gateway Up 5 seconds\nworker Up\n")),
+            (lambda argv: step_label(argv) == "select", select),
+        ]
+        self.runner.rules[:0] = apply_rules
+
+    def apply(self, confirmed: Sequence[str] = ()) -> int:
+        return sr.apply(
+            self.runner,
+            self.repo,
+            list(confirmed),
+            docker_config=self.docker_config,
+            secret_dir=self.secret_dir,
+            checks_dir=sr.CHECKS_DIR,
+            sleep=self.sleeps.append,
+            out=self.lines.append,
+        )
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
+@pytest.fixture
+def rig_factory(
+    tmp_path: Path, rollout_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> Callable[..., ApplyRig]:
+    def make(**kwargs: Any) -> ApplyRig:
+        return ApplyRig(tmp_path, rollout_env, monkeypatch, **kwargs)
+
+    return make
+
+
+MIGRATING = {"applied": ("0484", "0485"), "checkout": ("0484", "0485", "0486", "0487")}
+UP_ALL = ["up gateway", "up worker", "up delivery", "up frontend"]
+
+
+def test_parse_migrations() -> None:
+    assert sr.parse_migrations("0486,0487") == ["0486", "0487"]
+    assert sr.parse_migrations("0486, 0487,") == ["0486", "0487"]
+    assert sr.parse_migrations(None) == []
+    assert sr.parse_migrations("") == []
+
+
+def test_apply_image_only_runs_steps_in_order(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory()
+    assert rig.apply() == 0
+    assert labels(rig.runner) == [
+        "select",
+        "config",
+        "pull python",
+        "pull frontend",
+        *UP_ALL,
+        "ready",
+        "check",
+        "ps",
+    ]
+    assert "gateway Up 5 seconds" in rig.text
+    assert rig.lines[-1] == "Rollout of a1b2c3d finished."
+
+
+def test_apply_pulls_by_digest_and_recreates_with_the_documented_argv(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory()
+    assert rig.apply() == 0
+    docker = ["docker", "--host", sr.SOCKET]
+    assert [*docker, "pull", PYTHON_REF] in rig.runner.argvs
+    assert [*docker, "image", "inspect", FRONTEND_REF] in rig.runner.argvs
+    assert [*sr.compose_base(), "config", "--quiet"] in rig.runner.argvs
+    assert [
+        *sr.compose_base(),
+        "up",
+        "--detach",
+        "--wait",
+        "--wait-timeout",
+        "300",
+        "--no-deps",
+        "--pull",
+        "never",
+        "worker",
+    ] in rig.runner.argvs
+    assert [
+        *docker,
+        "exec",
+        "csa-staging-gateway-1",
+        "python",
+        "-c",
+        "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5)",
+    ] in rig.runner.argvs
+    assert [*sr.compose_base(), "ps", "--format", "{{.Service}} {{.Status}}"] in rig.runner.argvs
+
+
+def test_apply_with_migrations_stops_all_four_then_migrates_then_verifies(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(**MIGRATING)
+    assert rig.apply(["0486", "0487"]) == 0
+    assert labels(rig.runner) == [
+        "select",
+        "config",
+        "pull python",
+        "pull frontend",
+        "stop",
+        "migrate",
+        "select",
+        *UP_ALL,
+        "ready",
+        "check",
+        "ps",
+    ]
+    stop = next(a for a in rig.runner.argvs if step_label(a) == "stop")
+    assert stop[len(sr.compose_base()) :] == ["stop", "gateway", "frontend", "worker", "delivery"]
+    migrate = next(a for a in rig.runner.argvs if step_label(a) == "migrate")
+    assert migrate == [
+        *sr.compose_base(),
+        "--profile",
+        "migration-approved",
+        "run",
+        "--rm",
+        "--no-deps",
+        "migrate",
+    ]
+    assert "migrate exit=0" in rig.lines
+    assert "applying migrations" in rig.text
+
+
+def test_migration_approval_is_only_in_the_migrate_env(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(**MIGRATING)
+    assert rig.apply(["0486", "0487"]) == 0
+    key = "CSA_STAGING_MIGRATION_APPROVAL"
+    with_approval = [(argv, env) for argv, env, _ in rig.runner.calls if env and key in env]
+    assert len(with_approval) == 1
+    argv, env = with_approval[0]
+    assert step_label(argv) == "migrate"
+    assert env[key] == "approved-isolated-staging"
+
+
+@pytest.mark.parametrize("confirmed", [[], ["0486"], ["0486", "0488"]])
+def test_apply_refuses_when_pending_changed_since_plan(
+    rig_factory: Callable[..., ApplyRig], confirmed: list[str]
+) -> None:
+    rig = rig_factory(**MIGRATING)
+    assert rig.apply(confirmed) == 1
+    assert labels(rig.runner) == ["select"]
+    assert "Stopped at confirm: pending migrations changed since plan; run plan again" in rig.text
+
+
+def test_apply_refuses_migrations_flag_when_nothing_pending(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory()
+    assert rig.apply(["0486"]) == 1
+    assert labels(rig.runner) == ["select"]
+    assert "Stopped at confirm" in rig.text
+
+
+def test_apply_refuses_missing_secrets_before_any_change(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(secrets=("staging_owner_dsn", "absent_one"))
+    assert rig.apply() == 1
+    assert labels(rig.runner) == ["select"]
+    assert "Stopped at preflight: missing secret files: absent_one" in rig.text
+
+
+def test_plan_reads_secrets_before_staging(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory()
+    rig.apply()
+    joined = [" ".join(argv) for argv in rig.runner.argvs]
+    secrets = next(i for i, j in enumerate(joined) if "config --format json" in j)
+    first_read = next(
+        i for i, j in enumerate(joined) if "inspect --format {{.Image}}" in j or "psql" in j
+    )
+    assert secrets < first_read
+
+
+@pytest.mark.parametrize("bad", ["digest", "revision"])
+def test_pull_verification_rejects_mismatch(rig_factory: Callable[..., ApplyRig], bad: str) -> None:
+    label = "org.opencontainers.image.revision"
+    entry = {
+        "RepoDigests": [FRONTEND_REF if bad == "digest" else PYTHON_REF],
+        "Config": {"Labels": {label: OTHER_SHA if bad == "revision" else SHA}},
+    }
+    rig = rig_factory(
+        overrides=[
+            (
+                lambda argv: list(argv[3:5]) == ["image", "inspect"] and argv[-1] == PYTHON_REF,
+                ok(json.dumps([entry])),
+            )
+        ]
+    )
+    assert rig.apply() == 1
+    seen = labels(rig.runner)
+    assert not any(label.startswith("up") or label == "stop" for label in seen)
+    assert "Stopped at pull:" in rig.text
+
+
+def test_migrate_failure_stops_without_retry_or_recreate(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        **MIGRATING,
+        overrides=[(lambda argv: step_label(argv) == "migrate", Completed(1, "boom\n", ""))],
+    )
+    assert rig.apply(["0486", "0487"]) == 1
+    seen = labels(rig.runner)
+    assert seen.count("migrate") == 1
+    assert seen[-1] == "migrate"
+    assert "migrate exit=1" in rig.lines
+    assert "Stopped at migrate:" in rig.text
+    assert "check schema_migrations" in rig.text
+    assert "gateway, frontend, worker and delivery are stopped" in rig.text
+
+
+def test_migrate_must_record_every_pending_version(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(**MIGRATING, recorded=("0484", "0485", "0486"))
+    assert rig.apply(["0486", "0487"]) == 1
+    assert "schema_migrations lacks 0487" in rig.text
+    assert not any(label.startswith("up") for label in labels(rig.runner))
+
+
+def test_failed_check_stops_all_four_and_exits_nonzero(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(overrides=[(lambda argv: step_label(argv) == "check", ok("3\n"))])
+    assert rig.apply() == 1
+    last = next(a for a in reversed(rig.runner.argvs) if step_label(a))
+    assert step_label(last) == "stop"
+    assert last[len(sr.compose_base()) :] == ["stop", "gateway", "frontend", "worker", "delivery"]
+    assert "Stopped at check 0485.sql: printed 3, expected 0" in rig.text
+    assert "services stopped; investigate before the console is used again" in rig.text
+
+
+def test_every_check_file_runs_on_each_apply(
+    rig_factory: Callable[..., ApplyRig], rollout_env: Path
+) -> None:
+    (sr.CHECKS_DIR / "0486.sql").write_text("SELECT 1 - 1;\n")
+    rig = rig_factory()
+    assert rig.apply() == 0
+    assert labels(rig.runner).count("check") == 2
+    inputs = [text for argv, _, text in rig.runner.calls if step_label(argv) == "check"]
+    assert inputs == ["SELECT 0;\n", "SELECT 1 - 1;\n"]
+    check = next(a for a in rig.runner.argvs if step_label(a) == "check")
+    assert check[len(sr.compose_base()) :] == [
+        "exec",
+        "-T",
+        "staging-db",
+        "psql",
+        "-U",
+        "csa",
+        "-d",
+        "csa_staging",
+        "-tA",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-f",
+        "-",
+    ]
+
+
+def test_readiness_retries_then_fails(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory(overrides=[(lambda argv: step_label(argv) == "ready", fail(1))])
+    assert rig.apply() == 1
+    assert labels(rig.runner).count("ready") == 5
+    assert rig.sleeps == [3, 3, 3, 3]
+    assert "Stopped at readiness:" in rig.text
+    assert "check" not in labels(rig.runner)
+
+
+def health_answers(*statuses: str) -> Answer:
+    remaining = list(statuses)
+
+    def answer(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        return ok((remaining.pop(0) if len(remaining) > 1 else remaining[0]) + "\n")
+
+    return answer
+
+
+def is_health_inspect(argv: Sequence[str]) -> bool:
+    return "{{.State.Health.Status}}" in argv
+
+
+def test_slow_start_counts_as_success_once_healthy(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        overrides=[
+            (lambda argv: step_label(argv) == "up gateway", fail(1)),
+            (is_health_inspect, health_answers("starting", "starting", "healthy")),
+        ]
+    )
+    assert rig.apply() == 0
+    seen = labels(rig.runner)
+    assert seen[seen.index("up gateway") + 1 :][:3] == ["up worker", "up delivery", "up frontend"]
+    inspects = [a for a in rig.runner.argvs if is_health_inspect(a)]
+    assert (
+        inspects
+        == [
+            [
+                "docker",
+                "--host",
+                sr.SOCKET,
+                "inspect",
+                "--format",
+                "{{.State.Health.Status}}",
+                "csa-staging-gateway-1",
+            ]
+        ]
+        * 3
+    )
+    assert rig.sleeps == [5, 5]
+    assert "gateway reported unhealthy; waiting for it to become healthy" in rig.lines
+
+
+def test_never_healthy_fails_after_timeout(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory(
+        **MIGRATING,
+        overrides=[
+            (lambda argv: step_label(argv) == "up gateway", fail(1)),
+            (is_health_inspect, health_answers("unhealthy")),
+        ],
+    )
+    assert rig.apply(["0486", "0487"]) == 1
+    assert sum(rig.sleeps) <= 300
+    assert set(rig.sleeps) == {5}
+    assert "Stopped at recreate gateway:" in rig.text
+    assert "Rollback images:" in rig.text
+    assert RUNNING_REF in rig.text
+    assert "Re-run plan, then apply" in rig.text
+    assert "up worker" not in labels(rig.runner)
+
+
+def test_failure_prints_rollback_refs_and_rerun_hint(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        **MIGRATING,
+        overrides=[
+            (lambda argv: step_label(argv) == "up worker", fail(1)),
+            (is_health_inspect, health_answers("unhealthy")),
+        ],
+    )
+    assert rig.apply(["0486", "0487"]) == 1
+    assert "Stopped at recreate worker:" in rig.text
+    assert "Rollback images:" in rig.text
+    assert f"gateway: {RUNNING_REF}" in rig.text
+    assert rig.lines[-1] == "Re-run plan, then apply, once the cause is fixed."
+
+
+def test_apply_output_has_no_secret_values(
+    rig_factory: Callable[..., ApplyRig], capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig = rig_factory(**MIGRATING, secrets=("staging_owner_dsn", "staging_model_key"))
+    assert rig.apply(["0486", "0487"]) == 0
+    seen = [*rig.lines]
+    for argv, env, text in rig.runner.calls:
+        seen += [*argv, *(env or {}).values(), text or ""]
+    captured = capsys.readouterr()
+    seen += [captured.out, captured.err]
+    assert not any("SYNTHETIC-ONLY" in item for item in seen)
+    assert not any(str(rig.secret_dir) in line for line in rig.lines)
+
+
+def test_main_apply_wires_migrations_to_apply(
+    rollout_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rig = ApplyRig(tmp_path, rollout_env, monkeypatch, **MIGRATING)
+    assert sr.main(["apply", "--migrations", "0486,0487"], runner=rig.runner) == 0
+    assert labels(rig.runner).count("migrate") == 1
+
+
+def test_main_apply_refuses_a_wrong_confirmation(
+    rollout_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig = ApplyRig(tmp_path, rollout_env, monkeypatch, **MIGRATING)
+    assert sr.main(["apply"], runner=rig.runner) == 1
+    assert "Stopped at confirm:" in capsys.readouterr().out
+    assert labels(rig.runner) == ["select"]
+
+
+# --- one failure contract ------------------------------------------------------------------
+
+
+def _listing(case: str) -> str:
+    good = {"name": DIGEST_A, "metadata": {"container": {"tags": [SHA]}}}
+    return json.dumps(
+        {
+            "non-dict entry": ["text", good],
+            "null metadata": [{"name": DIGEST_A, "metadata": None}],
+            "null tags": [{"name": DIGEST_A, "metadata": {"container": {"tags": None}}}],
+            "non-string name": [{"name": 5, "metadata": {"container": {"tags": [SHA]}}}],
+        }[case]
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ["non-dict entry", "null metadata", "null tags", "non-string name"]
+)
+def test_malformed_gh_listing_stops_cleanly(
+    case: str, rollout_env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = staging_runner()
+    runner.rules.insert(0, (has("csa-python/versions"), ok(_listing(case))))
+    assert sr.main(["plan"], runner=runner) == 1
+    assert "Stopped at plan: gh returned an unexpected" in capsys.readouterr().out
+
+
+def test_malformed_gh_run_listing_stops_cleanly(
+    rollout_env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = staging_runner(published=False)
+    runner.rules.insert(0, (has("run list"), ok(json.dumps(["text", {"headSha": SHA}]))))
+    assert sr.main(["plan"], runner=runner) == 1
+    assert "Stopped at plan: gh returned an unexpected run listing" in capsys.readouterr().out
+
+
+def test_unreadable_flags_file_stops_cleanly(
+    tmp_path: Path, rig_factory: Callable[..., ApplyRig]
+) -> None:
+    rig = rig_factory()
+    (rig.repo / "deploy" / "staging-rollout.env").unlink()
+    assert rig.apply() == 1
+    assert "Stopped at flags: cannot read staging-rollout.env" in rig.text
+    assert labels(rig.runner) == []
+    with pytest.raises(RolloutError) as caught:
+        sr.load_flags(tmp_path)  # a directory is unreadable too
+    assert caught.value.step == "flags"
+
+
+def test_missing_binary_is_a_rollout_error() -> None:
+    with pytest.raises(RolloutError) as caught:
+        sr.SubprocessRunner().run(["csa-no-such-binary-xyz", "--version"])
+    assert caught.value.step == "csa-no-such-binary-xyz"
+    assert caught.value.message == "csa-no-such-binary-xyz not found"
+
+
+def test_missing_binary_stops_cleanly_through_main(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_such_file(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(sr.subprocess, "run", no_such_file)
+    assert sr.main(["plan"]) == 1
+    assert capsys.readouterr().out.startswith("Stopped at git: git not found")
