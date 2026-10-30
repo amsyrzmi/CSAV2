@@ -10,6 +10,7 @@ import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
 import { Rail } from "@/components/console/shell/Rail";
+import type { ShellAccount } from "@/components/console/shell/UserMenu";
 import { TopBar } from "@/components/console/shell/TopBar";
 import { Notice } from "@/components/console/ui";
 import { PageContextProvider } from "@/lib/page-context";
@@ -19,11 +20,13 @@ export function AppShell({
   packages,
   children,
   initialRail,
+  tenantName,
 }: {
   me: Me;
   packages: PackageState[];
   children: React.ReactNode;
   initialRail?: RailState;
+  tenantName?: string | null;
 }) {
   const path = usePathname();
   const router = useRouter();
@@ -50,8 +53,10 @@ export function AppShell({
       setBusy(false);
     }
   }
-  const account = {
+  const account: ShellAccount = {
     name: me.user.display_name || me.user.email,
+    email: me.user.email,
+    tenant: tenantName ?? null,
     role: me.role ? roleLabels[me.role] : "No active membership",
     busy,
     onSignOut: signOut,

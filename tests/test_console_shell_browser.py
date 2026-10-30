@@ -68,6 +68,7 @@ class Upstream:
     def __init__(self) -> None:
         self.me = make_me("tenant_admin")
         self.packages: list[dict[str, str]] = []
+        self.profile_status = 200
         self.seen: list[tuple[str, str]] = []
         self.unexpected: list[str] = []
         upstream = self
@@ -81,7 +82,10 @@ class Upstream:
                 elif path == "/console/v1/services/active":
                     self.reply(200, {"packages": upstream.packages})
                 elif path == "/console/v1/profile":
-                    self.reply(200, TENANT_PROFILE)
+                    if upstream.profile_status == 200:
+                        self.reply(200, TENANT_PROFILE)
+                    else:
+                        self.reply(upstream.profile_status, {"detail": "synthetic profile failure"})
                 else:
                     upstream.unexpected.append(f"GET {self.path}")
                     self.reply(500, {"detail": "unexpected synthetic upstream call"})
@@ -215,11 +219,14 @@ async def open_page(
     cookies: dict[str, str] | None = None,
     role: str = "tenant_admin",
     logout: tuple[int, list[str]] | None = None,
+    profile_status: int = 200,
 ) -> tuple[Any, Any, Page]:
     """A fresh context signed in as `role` with every package active, on `path`.
 
     `logout` is the status the stubbed sign-out answers with and a list that records each call.
+    `profile_status` is what the tenant profile read answers with (the user menu's tenant line).
     """
+    console.upstream.profile_status = profile_status
     console.upstream.me = make_me(role)
     console.upstream.packages = ALL_PACKAGES
     playwright = await async_playwright().start()
@@ -588,6 +595,52 @@ async def test_user_menu_shows_identity_and_closes_with_escape(console: Console)
         await expect(trigger).to_be_focused()
         # The identity text left the rail.
         await expect(page.get_by_test_id("shell-rail")).not_to_contain_text("Synthetic User")
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_user_menu_shows_name_email_role_and_tenant(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services")
+    try:
+        await page.get_by_test_id("shell-user-menu").click()
+        panel = page.get_by_test_id("shell-user-menu-panel")
+        await expect(panel).to_contain_text("Synthetic User")
+        await expect(panel.get_by_test_id("shell-user-email")).to_have_text(
+            "synthetic@example.test"
+        )
+        await expect(panel).to_contain_text("Tenant admin")
+        await expect(panel.get_by_test_id("shell-user-tenant")).to_have_text("Synthetic Tenant")
+        # The Calm motion switch is still there, below the account lines.
+        await expect(panel.get_by_test_id("shell-motion-toggle")).to_be_visible()
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_user_menu_has_no_tenant_line_for_platform_admin(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/", role="platform_admin")
+    try:
+        await page.get_by_test_id("shell-user-menu").click()
+        panel = page.get_by_test_id("shell-user-menu-panel")
+        await expect(panel.get_by_test_id("shell-user-email")).to_have_text(
+            "synthetic@example.test"
+        )
+        await expect(panel).to_contain_text("Platform admin")
+        await expect(panel.get_by_test_id("shell-user-tenant")).to_have_count(0)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_portal_layout_survives_a_failed_profile_read(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services", profile_status=500)
+    try:
+        await expect(page.locator("h1")).to_have_count(1)
+        await page.get_by_test_id("shell-user-menu").click()
+        panel = page.get_by_test_id("shell-user-menu-panel")
+        await expect(panel).to_contain_text("Synthetic User")
+        await expect(panel.get_by_test_id("shell-user-email")).to_have_text(
+            "synthetic@example.test"
+        )
+        await expect(panel.get_by_test_id("shell-user-tenant")).to_have_count(0)
     finally:
         await close_page(playwright, browser)
 

@@ -9,7 +9,9 @@ import { useDismiss } from "./useDismiss";
 
 export interface ShellAccount {
   name: string;
+  email: string;
   role: string;
+  tenant: string | null;
   busy: boolean;
   onSignOut: () => void;
 }
@@ -91,7 +93,21 @@ export function UserMenu({ account }: { account: ShellAccount }) {
           className={`${POPOVER} w-72 max-w-[calc(100vw-2rem)] p-4`}
         >
           <p className="break-words text-sm font-semibold">{account.name}</p>
+          <p
+            data-testid="shell-user-email"
+            className="mt-0.5 text-sm text-[color:var(--fs-text-secondary)] [overflow-wrap:anywhere]"
+          >
+            {account.email}
+          </p>
           <p className="mt-0.5 text-sm text-[color:var(--fs-text-secondary)]">{account.role}</p>
+          {account.tenant && (
+            <p
+              data-testid="shell-user-tenant"
+              className="mt-0.5 text-sm text-[color:var(--fs-text-secondary)] [overflow-wrap:anywhere]"
+            >
+              {account.tenant}
+            </p>
+          )}
           <div className="mt-4 flex items-center justify-between gap-4 border-t border-[color:var(--fs-border)] pt-4">
             <div className="min-w-0">
               <span id={`${noteId}-label`} className="block text-sm font-medium">

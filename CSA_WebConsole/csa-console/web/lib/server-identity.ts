@@ -34,6 +34,33 @@ export async function activePackages(): Promise<PackageState[]> {
   return ((await response.json()) as { packages: PackageState[] }).packages;
 }
 
+/**
+ * The signed-in tenant's name for the user menu, or null when it cannot be read. This is
+ * decoration, so a failed or slow profile read must never break the layout; only a 401 keeps
+ * the sign-in redirect, as everywhere else.
+ */
+export async function optionalTenantName(): Promise<string | null> {
+  const jar = await cookies();
+  let response: Response;
+  try {
+    response = await fetch(`${consoleOrigin()}/console/v1/profile`, {
+      headers: { cookie: jar.toString() },
+      cache: "no-store",
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {
+    return null;
+  }
+  if (response.status === 401) redirect("/login");
+  if (!response.ok) return null;
+  try {
+    const name = ((await response.json()) as Partial<Client>).name;
+    return typeof name === "string" && name.trim() ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function requireOwnProfile(): Promise<Client> {
   const jar = await cookies();
   const response = await fetch(`${consoleOrigin()}/console/v1/profile`, {
