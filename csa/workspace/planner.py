@@ -72,6 +72,9 @@ class PriorTurn(_Contract):
     question: str | None = None
     offered_options: list[str] = Field(default_factory=list)
     chosen: str | None = None
+    # Server-only (never in the prompt): addresses a clarification's question or options carried,
+    # which the turn service does not take as ones the user wrote.
+    offered_addresses: list[str] = Field(default_factory=list, exclude=True)
 
 
 class ManagerFact(_Contract):

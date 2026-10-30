@@ -200,3 +200,36 @@ test("a picked candidate continues the request the console holds", () => {
     origin: "Use employee e1 for: email ali@example.test",
   });
 });
+
+test("addresses in a planner-written question never enter the turn or the request", () => {
+  const turn = (id, key, body, result) => ({ id, request_key: key, body, created_at: "x", duplicate: false, result });
+  // The planner can quote mailbox data; the user did not write these addresses.
+  const question = "Do you mean ali@vendor.test or <ali@evil.test>?";
+  const asked = { action: "clarification", question, options: [] };
+  const typed = view.typedMessage("the second", [turn(1, "k1", "b", asked)], { k1: "copy Ali on it" });
+  assert.equal(typed.text, "the second\n(Answer to “Do you mean [address] or <[address]>?” for: copy Ali on it)");
+  assert.equal(typed.origin, "copy Ali on it; answered “Do you mean [address] or <[address]>?”: the second");
+  const clicked = view.optionAnswer({ label: "Second", value: "two" }, question, "copy Ali on it");
+  assert.ok(!clicked.text.includes("@") && !clicked.origin.includes("@"));
+  // The mask takes the whole run of non-space text around the @, punctuation included.
+  assert.equal(view.clarificationAnswer("x", "Send to a@b.test?", "o"), "x\n(Answer to “Send to [address]” for: o)");
+  // What the user wrote is kept as is.
+  assert.ok(view.typedMessage("me@mine.test", [turn(1, "k1", "b", asked)], { k1: "o" }).text.startsWith("me@mine.test\n"));
+});
+
+test("a long chain keeps the first request and the newest answers", () => {
+  const turn = (id, key, body, result) => ({ id, request_key: key, body, created_at: "x", duplicate: false, result });
+  let origin = "send email to danial";
+  for (let n = 1; n <= 30; n += 1) {
+    const asked = { action: "clarification", question: `Question ${n} ${"q".repeat(40)}?`, options: [] };
+    origin = view.typedMessage(`answer-${n}`, [turn(n, `k${n}`, "b", asked)], { [`k${n}`]: origin }).origin;
+  }
+  assert.ok(origin.length <= 1000, String(origin.length));
+  assert.ok(origin.startsWith("send email to danial; answered “"));
+  assert.ok(origin.endsWith("answer-30") && origin.includes("answer-29"));
+  assert.ok(!origin.includes("answer-1;") && !origin.includes("answer-2;"));
+  // An over-long request head is shortened so the newest answer still fits.
+  const asked = { action: "clarification", question: "Q?", options: [] };
+  const long = view.typedMessage("newest", [turn(1, "k1", "b", asked)], { k1: "h".repeat(3000) }).origin;
+  assert.ok(long.length <= 1000 && long.startsWith("hhh") && long.endsWith("; answered “Q?”: newest"));
+});

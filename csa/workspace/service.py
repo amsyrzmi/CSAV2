@@ -709,6 +709,10 @@ def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
             values = [option.value for option in result.options]
             item["question"] = result.question
             item["offered_options"] = values
+            labels = [option.label for option in result.options]
+            item["offered_addresses"] = sorted(
+                {a for text in (result.question, *values, *labels) for a in _addresses(text)}
+            )
             item["chosen"] = next(
                 (v for v in values if re.search(rf"(?<!\w){re.escape(v)}(?!\w)", following)),
                 None,
@@ -863,11 +867,41 @@ def _payload(proposal: TrainingSubmitProposal | InboxDecisionProposal) -> dict[s
     return proposal.model_dump(mode="json", exclude={"action"}, exclude_none=True)
 
 
+# The console's answer to a clarification: "<typed>\n(Answer to “<question>” for: <request>)",
+# where <request> folds earlier answers in as "; answered “<question>”: <answer>".
+_ANSWER_MARK = "\n(Answer to “"
+_REQUEST_MARK = "” for: "
+_ANSWERED_MARK = "; answered “"
+
+
+def _addresses(text: str) -> set[str]:
+    return {found.lower() for found in _ADDRESS.findall(text)}
+
+
 def _requested_addresses(message: str, facts: PlannerFacts) -> set[str]:
-    """Addresses the user wrote. History is redacted at storage, so only the current message
-    supplies any; earlier messages are read too and add none."""
-    texts = [message, *(turn.message for turn in facts.history)]
-    return {found.lower() for text in texts for found in _ADDRESS.findall(text)}
+    """Addresses the user wrote in this message; history is redacted at storage and adds none.
+
+    In an answer turn only the user's parts count: the typed text before the first
+    ``\\n(Answer to “`` and the request after the last ``” for: `` (the console's own copy of
+    what the user asked). The clarification question between them is planner-written and may
+    quote mailbox data, so it never counts.
+
+    An address the planner offered in an earlier clarification (its question, an option label or
+    value) counts only where the user wrote it: in the typed text, unless that text is just an
+    offered option value (a click), or in the first request before any ``; answered “``. Never
+    in a folded answer, which may be a click too.
+    """
+    typed, marked, rest = message.partition(_ANSWER_MARK)
+    request = ""
+    if marked:
+        _, found, after = rest.rpartition(_REQUEST_MARK)
+        request = after.strip().removesuffix(")") if found else ""
+    first, _, answers = request.partition(_ANSWERED_MARK)
+    offered = {address for turn in facts.history for address in turn.offered_addresses}
+    values = {value.strip().lower() for turn in facts.history for value in turn.offered_options}
+    picked = typed.strip().lower() in values
+    own = _addresses(first) | (_addresses(typed) - offered if picked else _addresses(typed))
+    return own | (_addresses(answers) - offered)
 
 
 def _offered_employee_ids(message: str, facts: PlannerFacts) -> set[UUID]:

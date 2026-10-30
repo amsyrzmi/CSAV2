@@ -98,6 +98,14 @@ const ORIGIN_CHARS = 1000;
 /** WorkspaceTurnInput.body max_length on the gateway. */
 const BODY_CHARS = 4000;
 
+/**
+ * A planner-written question can quote mailbox data, so its addresses never travel in a turn:
+ * the gateway accepts an address the current message carries as one the user wrote.
+ */
+function maskAddresses(text: string): string {
+  return text.replace(/[^\s@<>]+@[^\s@<>]+/g, "[address]");
+}
+
 function originOf(text: string, limit: number = ORIGIN_CHARS): string {
   const trimmed = text.trim();
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
@@ -140,17 +148,37 @@ export function clarificationAnswer(
   origin: string,
 ): string {
   const value = typeof answer === "string" ? answer.trim() : answer.value;
-  const head = `${value}\n(Answer to “${question}” for: `;
+  const head = `${value}\n(Answer to “${maskAddresses(question)}” for: `;
   const room = BODY_CHARS - head.length - ")".length - "…".length;
   if (room < 1) return value;
   return `${head}${originOf(origin, Math.min(ORIGIN_CHARS, room))})`;
+}
+
+const ANSWERED = "; answered “";
+
+/**
+ * The request with one more answer folded in, at most ORIGIN_CHARS where it can be: the first
+ * request is kept, the oldest answers are dropped first, and the first request is shortened
+ * only when the newest answer would not fit beside it.
+ */
+function foldAnswer(origin: string, question: string, answer: string): string {
+  const whole = origin.trim();
+  const cut = whole.indexOf(ANSWERED);
+  let head = cut < 0 ? whole : whole.slice(0, cut);
+  const answers = cut < 0 ? [] : whole.slice(cut + ANSWERED.length).split(ANSWERED);
+  answers.push(`${maskAddresses(question)}”: ${answer.trim()}`);
+  const joined = () => [head, ...answers].join(ANSWERED);
+  while (answers.length > 1 && joined().length > ORIGIN_CHARS) answers.shift();
+  const room = ORIGIN_CHARS - (joined().length - head.length) - "…".length;
+  if (joined().length > ORIGIN_CHARS) head = `${head.slice(0, Math.max(room, 100))}…`;
+  return joined();
 }
 
 /** The answer's turn; later clarifications continue the request with this answer folded in. */
 function answered(value: string, question: string, origin: string): Outgoing {
   return {
     text: clarificationAnswer(value, question, origin),
-    origin: `${origin.trim()}; answered “${question}”: ${value.trim()}`,
+    origin: foldAnswer(origin, question, value),
   };
 }
 
