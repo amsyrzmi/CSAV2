@@ -897,6 +897,70 @@ async def test_reply_uses_thread_from_facts(planned) -> None:
     assert await _draft_count(w) == 1
 
 
+@requires_docker
+async def test_stored_turns_carry_no_draft_subject(planned) -> None:
+    """A compose, a reply and answers about each open draft: no turn row holds a subject."""
+    w, model = planned
+    browser = await _mail_ready(w)
+    await _sync(w, browser)
+    thread = await _thread(w, browser)
+    model.reply(
+        {
+            "action": "email_compose",
+            "recipient_address": "ops@example.test",
+            "subject": "Synthetic quarterly figures",
+            "instructions": "Ask for the figures",
+        }
+    )
+    composed = await _turn(w, browser, thread, "Email ops@example.test for the figures", "email")
+    assert composed.status_code == 201, composed.text
+
+    def reply(facts: dict[str, Any]) -> dict[str, Any]:
+        aina = next(t for t in facts["mailbox_threads"] if t["sender_name"] == "Demo Aina")
+        return {"action": "email_reply", "thread_id": aina["thread_id"], "instructions": "Thanks"}
+
+    model.respond(reply)
+    replied = await _turn(w, browser, thread, "Reply to Aina's email", "email")
+    assert replied.status_code == 201, replied.text
+    drafts = await w.q("SELECT id, subject, status FROM email_drafts ORDER BY created_at")
+    assert len(drafts) == 2 and all(d["subject"] for d in drafts)
+
+    for draft in drafts:
+        model.reply(
+            {
+                "action": "answer",
+                "markdown": "Here is the open draft.",
+                "reads": ["read_current_record"],
+            }
+        )
+        record = {"kind": "draft", "id": str(draft["id"])}
+        key = str(uuid4())
+        asked = await _turn(
+            w, browser, thread, "What is this draft?", "email", record=record, key=key
+        )
+        assert asked.status_code == 201, asked.text
+        # The live answer shows the subject; the stored row does not.
+        line = f"Email draft {draft['id']}: subject “{draft['subject']}”, status {draft['status']}."
+        assert asked.json()["result"]["markdown"] == f"Here is the open draft.\n\n- {line}"
+        stored = (
+            f"Here is the open draft.\n\n- Email draft {draft['id']}, status {draft['status']}."
+        )
+        rows = await w.q(
+            "SELECT result FROM console_workspace_turns WHERE request_key=%s", UUID(key)
+        )
+        assert rows == [{"result": {"action": "answer", "markdown": stored}}]
+        again = await _turn(
+            w, browser, thread, "What is this draft?", "email", record=record, key=key
+        )
+        assert again.json()["duplicate"] is True and again.json()["result"]["markdown"] == stored
+
+    rows = await w.q("SELECT t::text AS row FROM console_workspace_turns t ORDER BY id")
+    assert len(rows) == 4
+    for row in rows:
+        for draft in drafts:
+            assert draft["subject"] not in row["row"]
+
+
 async def _team_lead(w: SessionWorld, browser: httpx.AsyncClient) -> dict[str, UUID]:
     """The caller's employee (managing itself, the known 0484 defect) and two reports."""
     tenant = w.tenants[0]

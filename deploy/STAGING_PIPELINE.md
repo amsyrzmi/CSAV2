@@ -428,6 +428,61 @@ Verify, with nothing secret on screen:
    the `up` line above. Stored mailbox tokens stay encrypted in the database; staff can
    disconnect first to revoke and erase them.
 
+### 11.1 Rolling out email management (0484 and 0485)
+
+`0485` scrubs the email content that the earlier `email_export` card wrote into
+`console_proposals` and `console_workspace_turns` (recipients, subjects and bodies). It runs
+once, when it is applied. The gateway still running the old code would keep writing old-shape
+rows between the migration and the recreate, and those rows would never be scrubbed. So stop
+the writers first. Only the gateway writes proposals and turns; `frontend` is stopped with it
+so nobody works against a stopped API. `worker` and `delivery` write neither and keep
+running. **The console is unavailable from step 1 until step 3 finishes** (a few minutes).
+
+In the section-2 shell:
+
+1. Stop the old writers:
+
+   ```bash
+   csa_pipeline_compose stop gateway frontend
+   ```
+
+2. Apply `0484` and `0485` with the `migrate` one-shot, as for any release
+   (`deploy/RELEASE.md`). The one-shot applies both in order; each in its own transaction.
+3. Recreate gateway, worker, delivery and frontend with `--no-deps --pull never`, with
+   both `CSA_STAGING_INVITE_MAIL=true` and `CSA_STAGING_EMAIL_ASSISTANT=true` exported.
+4. Check that no old-shape row is left. This uses the scrub's own predicates and must print
+   `0`:
+
+   ```bash
+   csa_pipeline_compose exec -T staging-db psql -U csa -d csa_staging -tA -v ON_ERROR_STOP=1 -f - <<'SQL'
+SELECT
+  (SELECT count(*) FROM public.console_proposals
+    WHERE kind = 'email_export'
+      AND (card->>'title' = 'Save email draft to Gmail'
+           OR strpos(card::text, '@') > 0
+           OR jsonb_path_exists(card, '$.fields[*] ? (@.label == "To"
+                  || (@.label == "Subject" && @.value != "(shown on open)"))')
+           OR (jsonb_typeof(result) = 'object'
+               AND result - ARRAY['draft_id', 'status', 'gmail_draft_id'] <> '{}'::jsonb)))
+  + (SELECT count(*) FROM public.console_workspace_turns
+    WHERE (result->>'action' = 'proposal' AND result#>>'{proposal,kind}' = 'email_export'
+           AND (result#>>'{proposal,card,title}' = 'Save email draft to Gmail'
+                OR strpos((result#>'{proposal,card}')::text, '@') > 0
+                OR jsonb_path_exists(result, '$.proposal.card.fields[*] ? (@.label == "To"
+                       || (@.label == "Subject" && @.value != "(shown on open)"))')
+                OR (jsonb_typeof(result#>'{proposal,result}') = 'object'
+                    AND (result#>'{proposal,result}')
+                        - ARRAY['draft_id', 'status', 'gmail_draft_id'] <> '{}'::jsonb)))
+       OR (result->>'action' = 'answer'
+           AND result->>'markdown' ~ ('Email draft [0-9a-f-]{36}: subject ' || chr(8220) || '.*'
+                                      || chr(8221) || ', status [a-z_]+\.')))
+  AS old_rows;
+SQL
+   ```
+
+   Anything other than `0` means a row was written in a shape the scrub does not cover:
+   stop and investigate before the console is used again.
+
 ## Rollback
 
 Stop only `worker`, `delivery` and `staging-embeddings`; the gateway can stay
