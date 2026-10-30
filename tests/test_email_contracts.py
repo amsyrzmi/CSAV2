@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from email import message_from_bytes
 from typing import Any
@@ -360,7 +360,7 @@ async def test_send_message_5xx_is_ambiguous_not_refused() -> None:
 
 
 def _messages_pages(
-    pages: dict[str | None, tuple[list[str], str | None]], seen: list[httpx.Request]
+    pages: Mapping[Any, tuple[list[str], str | None]], seen: list[httpx.Request]
 ) -> Callable[[httpx.Request], httpx.Response]:
     """users.messages.list, newest message first; each entry is one message's threadId."""
 
