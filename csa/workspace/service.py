@@ -916,9 +916,20 @@ _PLACEHOLDER_LABEL = re.compile(
     re.IGNORECASE,
 )
 _PLACEHOLDER_VALUE = re.compile(r"[a-z]+(?:_[a-z]+)+")
-# A clarification that asks for what the planner must write itself.
+# A snake_case value is a placeholder only when a token says what to type; real snake_case
+# choices (knowledge_base, first_aid, training_request) stay.
+_PLACEHOLDER_TOKENS = frozenset(
+    {
+        "enter", "type", "provide", "input", "specify", "write", "address", "subject", "body",
+        "email", "details", "message", "content",
+    }
+)  # fmt: skip
+# A clarification that asks for what the planner must write itself; corrected on email turns.
 _CONTENT_WORDS = re.compile(
     r"\b(subject|body|wording|content|tajuk|isi|kandungan)\b", re.IGNORECASE
+)
+_EMAIL_REQUEST = re.compile(
+    r"\b(email|e-?mel|emel|send|hantar|kirim|reply|balas|mail)\b", re.IGNORECASE
 )
 _CONTENT_NOTE = (
     "Do not ask for the subject or the wording. Write them yourself from the request; if the "
@@ -929,12 +940,15 @@ _CONTENT_NOTE = (
 def _is_placeholder(option: ClarificationOption) -> bool:
     """The option asks the user to type rather than offering a choice to click.
 
-    A label that starts with a whole word such as "Enter" or "Masukkan", or a snake_case value.
-    Real choices survive: "Enterprise plan", "First aid", an employee id or a thread id.
+    A label that starts with a whole word such as "Enter" or "Masukkan", or a snake_case value
+    with a token such as "enter", "address" or "subject" (enter_address, subject_body). Real
+    choices survive: "Enterprise plan", "First aid", knowledge_base, an employee id or a thread id.
     """
-    return bool(
-        _PLACEHOLDER_LABEL.match(option.label.strip())
-        or _PLACEHOLDER_VALUE.fullmatch(option.value.strip())
+    if _PLACEHOLDER_LABEL.match(option.label.strip()):
+        return True
+    value = option.value.strip()
+    return bool(_PLACEHOLDER_VALUE.fullmatch(value)) and not _PLACEHOLDER_TOKENS.isdisjoint(
+        value.split("_")
     )
 
 
@@ -945,15 +959,27 @@ def _asks_for_content(proposal: WorkspaceProposal) -> bool:
     )
 
 
+def _about_email(message: str, facts: PlannerFacts) -> bool:
+    """The turn is about email: mailbox facts were loaded, or the user's own words mention it.
+
+    Only the parts ``_authored`` counts, so a planner question or a clicked value never makes
+    a turn about email.
+    """
+    if facts.mailbox_threads is not None:
+        return True
+    return any(_EMAIL_REQUEST.search(part) for part in _authored(message, facts))
+
+
 async def _plan(planner: WorkspacePlanner, message: str, facts: PlannerFacts) -> WorkspaceProposal:
     """Plan the turn with at most two model calls.
 
-    A plan that asks for the subject or wording is re-planned once with a fixed server note. If
-    the model asks again, the user gets one plain question with no options. A planner error on
-    the re-plan is raised as on the first call.
+    On an email turn (see ``_about_email``), a plan that asks for the subject or wording is
+    re-planned once with a fixed server note. If the model asks again, the user gets one plain
+    question with no options. Any other clarification passes through after one call. A planner
+    error on the re-plan is raised as on the first call.
     """
     proposal = await planner.plan(message, facts)
-    if not _asks_for_content(proposal):
+    if not _asks_for_content(proposal) or not _about_email(message, facts):
         return proposal
     proposal = await planner.plan(message, facts, note=_CONTENT_NOTE)
     if not _asks_for_content(proposal):

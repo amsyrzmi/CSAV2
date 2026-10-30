@@ -781,8 +781,12 @@ thread, up to 200. A thread's time is Gmail's `internalDate` for its latest mess
 `Date` header only when that is missing), and a message labelled `SENT` (send-as aliases
 included) counts as the owner's.
 
-`email_send` proposal: the card is made only after the planner asks to send and the user's
-own words say so. Its stored payload is `{draft_id, version}`; the card's title, summary
+`email_send` proposal: the card follows the user's own words, never a planner question or
+a clicked option. A draft word (draft, draf, save, simpan) gives an `email_export` card; a
+send word (send, hantar, kirim) gives a send card; an email verb (email, e-mel) gives a send
+card when the planner also asks to send and the user did not write "write"; anything else is
+an `email_export` card (see [EMAIL_ASSISTANT.md](EMAIL_ASSISTANT.md#workspace-assistant)).
+Its stored payload is `{draft_id, version}`; the card's title, summary
 and fields hold counts only, and so does the `email_export` card now. `expected_version` is
 the draft version, so an edit after the card was made makes the confirm return 409
 `draft_changed` and nothing is sent. The `email_export` card's `expected_version` is the

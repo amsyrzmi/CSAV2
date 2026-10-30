@@ -183,16 +183,20 @@ Clarifications are checked by the server, not only by the planner prompt:
 
 - An option that only asks the user to type is dropped. That is a label that
   starts with a whole word such as Enter, Type, Provide, Input, Write, Specify,
-  Fill in, Masukkan, Taip, Berikan or Isi, or a snake_case value such as
-  `enter_address`. Real choices stay, for example "Enterprise plan", a
-  colleague (employee id) or a thread (thread id). A question left with no
-  options is answered by typing.
-- The assistant does not ask for the subject or the wording. When the planner's
-  question mentions the subject, body, wording or content (tajuk, isi,
-  kandungan), the server plans once more with a fixed correction. If the planner
-  asks again, the user gets one plain question with no options: "What should the
-  email say? Type a line or two and I'll write it." (in Malay for a Malay
-  message). A turn makes at most two planner calls.
+  Fill in, Masukkan, Taip, Berikan or Isi, or a snake_case value with a word
+  such as enter, address, subject, body, email or details in it
+  (`enter_address`, `subject_body`). Real choices stay, for example
+  "Enterprise plan", `knowledge_base`, a colleague (employee id) or a thread
+  (thread id). A question left with no options is answered by typing.
+- On an email turn (mailbox facts were loaded, or the user's own words say
+  email, send, reply, hantar, kirim or balas), the assistant does not ask for
+  the subject or the wording. When the planner's question mentions the subject,
+  body, wording or content (tajuk, isi, kandungan), the server plans once more
+  with a fixed correction. If the planner asks again, the user gets one plain
+  question with no options: "What should the email say? Type a line or two and
+  I'll write it." (in Malay for a Malay message). A turn makes at most two
+  planner calls. Other clarifications, such as "What content should the
+  training cover?", pass through unchanged.
 
 - The planner sees up to 10 recent threads (sender, subject cut to 120
   characters, time, priority) as untrusted facts, with `<` and `>` escaped so a

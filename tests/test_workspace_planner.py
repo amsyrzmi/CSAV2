@@ -355,6 +355,7 @@ def test_placeholder_filter_keeps_real_options() -> None:
         ("Masukkan alamat", "alamat"),
         ("  fill in the address", "address"),
         ("Danial", "enter_the_address"),
+        ("Danial's address", "email_address"),
     ):
         assert _is_placeholder(option(label, value)), label
     for label, value in (
@@ -363,6 +364,9 @@ def test_placeholder_filter_keeps_real_options() -> None:
         ("Danial Ihsan", str(uuid4())),
         ("Re: test signature", "18f3a2b4c5d6e7f8"),
         ("Typewriter", "typewriter"),
+        ("Knowledge base", "knowledge_base"),
+        ("First aid", "first_aid"),
+        ("Training request", "training_request"),
     ):
         assert not _is_placeholder(option(label, value)), label
 
@@ -412,6 +416,59 @@ def test_content_question_detection() -> None:
     assert not _asks_for_content(asked("Which subjects?"))  # whole words only
     # Only a clarification asks; an answer that mentions a subject does not.
     assert not _asks_for_content(AnswerProposal(action="answer", markdown="The subject is Hi."))
+
+
+def test_only_email_turns_are_about_email() -> None:
+    from csa.workspace.planner import PriorTurn
+    from csa.workspace.service import _about_email
+
+    empty = PlannerFacts(
+        role=Role.TENANT_STAFF, packages=[], page_context=None, record_summary=None, language="en"
+    )
+    for message in (
+        "send email to danial",
+        "Tolong hantar emel kepada danial",
+        "reply to Aina",
+        "e-mel danial",
+        "check my mail",
+    ):
+        assert _about_email(message, empty), message
+    assert not _about_email("Submit my training request", empty)
+    # Loaded mailbox facts make the turn about email whatever the words.
+    assert _about_email(
+        "What needs my attention?", empty.model_copy(update={"mailbox_threads": []})
+    )
+    # A clicked option is the planner's words: it never makes a turn about email.
+    asked = PriorTurn(
+        message="Submit my training request",
+        action="clarification",
+        result="clarification",
+        question="Which one?",
+        offered_options=["send by email"],
+    )
+    clicked = "send by email\n(Answer to “Which one?” for: Submit my training request)"
+    assert not _about_email(clicked, empty.model_copy(update={"history": [asked]}))
+
+
+async def test_content_question_outside_email_passes_through_with_one_call() -> None:
+    """Only email turns are corrected: a training clarification about content stays as asked."""
+    from csa.workspace.service import _plan
+
+    facts = PlannerFacts(
+        role=Role.TENANT_STAFF, packages=[], page_context=None, record_summary=None, language="en"
+    )
+    question = "What content should the training cover?"
+    model = ScriptedCompletion()
+    model.reply({"action": "clarification", "question": question, "options": []})
+    planned = await _plan(WorkspacePlanner(model), "Submit my training request", facts)
+    assert planned.action == "clarification" and planned.question == question
+    assert len(model.calls) == 1 and "<correction>" not in model.calls[0][2]
+    # The same question on an email turn is corrected once.
+    model.reply({"action": "clarification", "question": question, "options": []})
+    model.reply({"action": "answer", "markdown": "ok"})
+    corrected = await _plan(WorkspacePlanner(model), "send email to danial@example.test", facts)
+    assert corrected.action == "answer" and len(model.calls) == 3
+    assert model.calls[2][2].endswith(f"<correction>\n{CONTENT_NOTE}\n</correction>")
 
 
 def test_send_rule_follows_the_users_words() -> None:
