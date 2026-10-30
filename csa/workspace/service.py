@@ -625,6 +625,7 @@ async def _summarize(
         draft = await email.draft_by_id(
             email_session_from(request, actor, client_id, mutation=False), UUID(record.id)
         )
+        # The subject is for the planner and the live answer; _stored_answer drops it.
         return f"Email draft {draft.id}: subject “{redact(draft.subject)}”, status {draft.status}."
     except (HrPolicyError, EmailPolicyError):
         return _unavailable(record.kind)
@@ -632,6 +633,26 @@ async def _summarize(
         if exc.status_code in (403, 404):
             return _unavailable(record.kind)
         raise
+
+
+# The open draft's line as _summarize writes it (\u201c and \u201d are its curly quotes).
+# Migration 0485 rewrites older stored answers with the same pattern, so old and new rows read
+# alike.
+_DRAFT_SUBJECT = re.compile(
+    r"(Email draft [0-9a-f-]{36}): subject \u201c.*\u201d, (status [a-z_]+\.)", re.DOTALL
+)
+
+
+def _stored_answer(result: AnswerResult) -> AnswerResult | None:
+    """The row's copy of an answer that quoted an open draft: no subject, as on the cards.
+
+    Turns are readable tenant-wide and mail content is owner-only, so the subject is shown in
+    the live answer only. ``None`` when the answer quotes no draft.
+    """
+    markdown = _DRAFT_SUBJECT.sub(r"\1, \2", result.markdown)
+    if markdown == result.markdown:
+        return None
+    return AnswerResult(action="answer", markdown=markdown)
 
 
 async def record_summary(
@@ -1324,10 +1345,13 @@ async def create_planned_turn(
         if previous is not None and previous["page_key"] != context.tab:
             await registry.cancel_thread(conn, actor, client_id, thread_id)
         result = await _finish(conn, actor, client_id, thread_id, planned, facts, registry)
-        # The inbox summary is shown once and stored as counts only.
+        # The inbox summary is shown once and stored as counts only; an answer about an open
+        # draft is stored without its subject.
         stored = None
         if planned.summary is not None:
             stored = _summary_stored(planned.summary, facts.language)
+        elif isinstance(result, AnswerResult):
+            stored = _stored_answer(result)
         return await _insert_turn(
             conn,
             actor,
