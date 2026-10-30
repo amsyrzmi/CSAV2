@@ -887,6 +887,22 @@ def test_failed_check_stops_all_four_and_exits_nonzero(
     assert "services stopped; investigate before the console is used again" in rig.text
 
 
+def test_failed_check_with_failed_stop_does_not_claim_services_stopped(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        overrides=[
+            (lambda argv: step_label(argv) == "check", ok("3\n")),
+            (lambda argv: step_label(argv) == "stop", fail(1)),
+        ]
+    )
+    assert rig.apply() == 1
+    assert "Stopped at check 0485.sql: printed 3, expected 0" in rig.text
+    assert "compose stop failed (exit 1)" in rig.text
+    assert "may still be running; stop them by hand" in rig.text
+    assert "services stopped;" not in rig.text
+
+
 def test_every_check_file_runs_on_each_apply(
     rig_factory: Callable[..., ApplyRig], rollout_env: Path
 ) -> None:
@@ -936,12 +952,30 @@ def is_health_inspect(argv: Sequence[str]) -> bool:
     return "{{.State.Health.Status}}" in argv
 
 
+def image_after_up(service_label: str, *, recreated: bool = True) -> list[tuple[Predicate, Answer]]:
+    """Digest listing for running containers: the old ref until ``up`` runs, then the new one."""
+    state = {"up": False}
+
+    def mark(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        state["up"] = True
+        return fail(1)
+
+    def digests(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        ref = PYTHON_REF if state["up"] and recreated else RUNNING_REF
+        return ok(json.dumps([ref]))
+
+    return [
+        (lambda argv: step_label(argv) == service_label, mark),
+        (lambda argv: "{{json .RepoDigests}}" in argv, digests),
+    ]
+
+
 def test_slow_start_counts_as_success_once_healthy(
     rig_factory: Callable[..., ApplyRig],
 ) -> None:
     rig = rig_factory(
         overrides=[
-            (lambda argv: step_label(argv) == "up gateway", fail(1)),
+            *image_after_up("up gateway"),
             (is_health_inspect, health_answers("starting", "starting", "healthy")),
         ]
     )
@@ -966,6 +1000,38 @@ def test_slow_start_counts_as_success_once_healthy(
     )
     assert rig.sleeps == [5, 5]
     assert "gateway reported unhealthy; waiting for it to become healthy" in rig.lines
+
+
+def test_healthy_old_image_after_failed_up_is_not_a_recreate(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        overrides=[
+            *image_after_up("up worker", recreated=False),
+            (is_health_inspect, health_answers("healthy")),
+        ]
+    )
+    assert rig.apply() == 1
+    assert "Stopped at recreate worker:" in rig.text
+    assert "not healthy on the new image" in rig.text
+    assert "up delivery" not in labels(rig.runner)
+    assert "finished" not in rig.text
+    assert sum(rig.sleeps) <= 300
+
+
+def test_missing_container_after_failed_up_fails_without_waiting(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        overrides=[
+            (lambda argv: step_label(argv) == "up gateway", fail(1)),
+            (is_health_inspect, fail(1)),
+        ]
+    )
+    assert rig.apply() == 1
+    assert rig.sleeps == []
+    assert "Stopped at recreate gateway: gateway container not found after up failed" in rig.text
+    assert "up worker" not in labels(rig.runner)
 
 
 def test_never_healthy_fails_after_timeout(rig_factory: Callable[..., ApplyRig]) -> None:

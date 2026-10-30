@@ -34,6 +34,12 @@ SOCKET = "unix:///var/run/docker.sock"
 SECRET_DIR = Path("/srv/csa-staging/secrets")
 PROJECT = "csa-staging"
 APP_SERVICES = ("gateway", "worker", "delivery", "frontend")  # recreate order
+SERVICE_APP = {
+    "gateway": "python",
+    "worker": "python",
+    "delivery": "python",
+    "frontend": "frontend",
+}
 STOP_SERVICES = ("gateway", "frontend", "worker", "delivery")
 FLAGS_FILE = "deploy/staging-rollout.env"
 FLAG_KEYS = frozenset(
@@ -55,7 +61,8 @@ READY_TRIES = 5
 READY_PAUSE = 3
 HEALTH_POLL = 5
 HEALTH_WAIT = 300
-ALL_STOPPED = "gateway, frontend, worker and delivery are stopped"
+STOPPED_NAMES = "gateway, frontend, worker and delivery"
+ALL_STOPPED = f"{STOPPED_NAMES} are stopped"
 
 GHCR_OWNER = "ghcr.io/amsyrzmi"
 APPS = ("python", "frontend")
@@ -584,6 +591,7 @@ def _recreate(
     runner: Runner,
     env: Mapping[str, str],
     service: str,
+    expected: str,
     sleep: Callable[[float], None],
     out: Callable[[str], None],
 ) -> None:
@@ -604,7 +612,8 @@ def _recreate(
     )
     if up.returncode == 0:
         return
-    # A slow start on a loaded host reports unhealthy first and recovers; wait for it.
+    # A slow start on a loaded host reports unhealthy first and recovers; wait for it. Healthy
+    # only counts when the container runs the planned image: a failed up can leave the old one.
     out(f"{service} reported unhealthy; waiting for it to become healthy")
     waited = 0
     while True:
@@ -618,12 +627,18 @@ def _recreate(
             ],
             env=env,
         )
-        if health.stdout.strip() == "healthy":
+        if health.returncode != 0:
+            raise RolloutError(
+                f"recreate {service}",
+                f"{service} container not found after up failed",
+                f"{service} and any later services were not recreated on the new images",
+            )
+        if health.stdout.strip() == "healthy" and _running_image(runner, env, service) == expected:
             return
         if waited >= HEALTH_WAIT:
             raise RolloutError(
                 f"recreate {service}",
-                f"{service} was not healthy within {HEALTH_WAIT} s",
+                f"{service} was not healthy on the new image within {HEALTH_WAIT} s",
                 f"{service} and any later services were not recreated on the new images",
             )
         sleep(HEALTH_POLL)
@@ -672,12 +687,17 @@ def _run_checks(
         if result.returncode == 0 and value == "0":
             out(f"check {path.name}: 0")
             continue
-        runner.run([*compose_base(), "stop", *STOP_SERVICES], env=env)
+        stopped = runner.run([*compose_base(), "stop", *STOP_SERVICES], env=env)
         printed = f"printed {value or 'nothing'}" if result.returncode == 0 else "psql failed"
         raise RolloutError(
             f"check {path.name}",
             f"{printed}, expected 0",
-            state="services stopped; investigate before the console is used again",
+            state=(
+                "services stopped; investigate before the console is used again"
+                if stopped.returncode == 0
+                else f"compose stop failed (exit {stopped.returncode}); {STOPPED_NAMES} "
+                "may still be running; stop them by hand"
+            ),
         )
 
 
@@ -717,7 +737,8 @@ def apply(
         if plan.pending:
             _migrate(runner, env, plan.pending, out)
         for service in APP_SERVICES:
-            _recreate(runner, env, service, sleep, out)
+            expected = plan.images[SERVICE_APP[service]]
+            _recreate(runner, env, service, expected, sleep, out)
         _await_ready(runner, env, sleep)
         _run_checks(runner, env, checks_dir, out)
         status = runner.run(
