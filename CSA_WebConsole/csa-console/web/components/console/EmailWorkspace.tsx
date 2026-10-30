@@ -91,10 +91,15 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
     await refreshOpen();
     return ctx;
   }
-  /** Re-read the open thread so its body is current; a thread the sync removed is closed. */
+  /**
+   * Re-read the open thread so its body is current; a thread the sync removed is closed. Any
+   * other failure keeps the detail already shown, so the sync's own result still reports.
+   */
   async function refreshOpen() {
     const id = openThread.current;
-    const detail = await rereadThread(id, threadId => client.thread(threadId));
+    let detail: ThreadDetail | null;
+    try { detail = await rereadThread(id, threadId => client.thread(threadId)); }
+    catch { return; }
     // Only replace what is still open: the user may have picked another thread meanwhile.
     setSelected(current => (current?.thread_id === id ? detail : current));
   }
