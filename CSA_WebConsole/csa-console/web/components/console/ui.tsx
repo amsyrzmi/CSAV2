@@ -15,10 +15,12 @@ export function Notice({
   children,
   error = false,
   warning = false,
+  testId,
 }: {
   children: React.ReactNode;
   error?: boolean;
   warning?: boolean;
+  testId?: string;
 }) {
   const tone = error
     ? "border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] text-[var(--fs-danger)]"
@@ -28,6 +30,7 @@ export function Notice({
   return (
     <p
       role={error || warning ? "alert" : "status"}
+      data-testid={testId}
       className={`rounded-[var(--fs-radius-control)] border p-3 text-sm ${tone}`}
     >
       {children}

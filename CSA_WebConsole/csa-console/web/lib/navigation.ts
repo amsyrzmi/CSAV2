@@ -45,7 +45,7 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
     { key: "members", label: "Members", href: "/settings/team", show: admin },
     { key: "team", label: "Team", href: "/portal/team", show: me.role === "tenant_admin" },
-    { key: "password", label: "Password", href: "/change-password" },
+    { key: "password", label: "Password", href: to("password") },
   ];
   return entries
     .filter((e) => {

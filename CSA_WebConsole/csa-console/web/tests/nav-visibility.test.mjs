@@ -68,3 +68,13 @@ test("Subscriptions follows its package for members and is always there for plat
   const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
   assert.equal(admin.find((l) => l.label === "Subscriptions")?.href, "/subscriptions");
 });
+
+test("Password opens the in-shell page: /password for platform admins, /portal/password for tenant roles", () => {
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  assert.equal(admin.find((l) => l.key === "password")?.href, "/password");
+  for (const role of ["tenant_admin", "tenant_staff", "read_only"]) {
+    const link = navigationFor({ ...staff, role }, []).find((l) => l.key === "password");
+    assert.equal(link?.label, "Password", role);
+    assert.equal(link?.href, "/portal/password", role);
+  }
+});

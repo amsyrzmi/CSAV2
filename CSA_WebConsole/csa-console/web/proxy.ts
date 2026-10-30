@@ -4,6 +4,8 @@ const publicPages = new Set(["/login", "/invite", "/forgot-password"]);
 const adoptedPages = new Set([
   "/",
   "/change-password",
+  "/password",
+  "/portal/password",
   "/settings/clients",
   "/settings/team",
   "/portal",
