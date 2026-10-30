@@ -377,6 +377,84 @@ async def test_mobile_menu_closes_when_a_link_is_followed(console: Console) -> N
 
 
 @pytest.mark.parametrize("theme", THEMES)
+async def test_shell_fills_the_window_without_outer_gap(console: Console, theme: str) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/services", cookies={"fs-theme": theme}
+    )
+    try:
+        await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+        for width in (1280, 768, 390):
+            await page.set_viewport_size({"width": width, "height": 800})
+            measured = await page.evaluate(
+                """() => {
+                    const root = document.querySelector('[data-testid="shell-root"]');
+                    const box = root.getBoundingClientRect();
+                    const style = getComputedStyle(root);
+                    return {
+                        x: box.x, y: box.y, width: box.width, height: box.height,
+                        viewport: [window.innerWidth, window.innerHeight],
+                        scrollHeight: document.documentElement.scrollHeight,
+                        radius: style.borderTopLeftRadius, shadow: style.boxShadow,
+                        border: style.borderTopWidth,
+                    };
+                }"""
+            )
+            where = f"{theme} {width}px: {measured}"
+            assert (measured["x"], measured["y"]) == (0, 0), where
+            assert measured["width"] == measured["viewport"][0], where
+            # The page may be taller than the window (the document scrolls) but never leaves a gap.
+            assert measured["height"] >= measured["viewport"][1], where
+            assert measured["height"] == measured["scrollHeight"], where
+            assert measured["radius"] == "0px", where
+            assert measured["shadow"] == "none", where
+            assert measured["border"] == "0px", where
+        # On a desktop the rail starts at the window edge and the top bar spans the content.
+        await page.set_viewport_size({"width": 1280, "height": 800})
+        rail = await page.get_by_test_id("shell-rail").bounding_box()
+        assert rail is not None
+        assert (rail["x"], rail["y"]) == (0, 0)
+        topbar = await page.get_by_test_id("shell-topbar").bounding_box()
+        assert topbar is not None
+        assert (topbar["x"], topbar["y"]) == (rail["width"], 0)
+        assert topbar["x"] + topbar["width"] == 1280
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_collapse_toggle_is_the_first_focus_stop_on_desktop(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services")
+    try:
+        toggle = page.get_by_test_id("shell-rail-toggle")
+        await expect(toggle).to_be_visible()
+        await page.keyboard.press("Tab")
+        await expect(toggle).to_be_focused()
+        # It is also the first thing in the rail, above the brand mark and every link.
+        top = await page.evaluate(
+            """() => {
+                const rail = document.querySelector('[data-testid="shell-rail"]');
+                const toggle = rail.querySelector('[data-testid="shell-rail-toggle"]');
+                const others = [...rail.querySelectorAll('a')].map(
+                    (a) => a.getBoundingClientRect().top
+                );
+                return [toggle.getBoundingClientRect().top, Math.min(...others)];
+            }"""
+        )
+        assert top[0] < top[1], top
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_menu_button_is_first_focus_stop_on_narrow_screens(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services", width=390, height=844)
+    try:
+        await expect(page.get_by_test_id("shell-menu")).to_be_visible()
+        await page.keyboard.press("Tab")
+        await expect(page.get_by_test_id("shell-menu")).to_be_focused()
+    finally:
+        await close_page(playwright, browser)
+
+
+@pytest.mark.parametrize("theme", THEMES)
 async def test_no_page_overflow_at_320_and_1440_in_each_theme(console: Console, theme: str) -> None:
     playwright, browser, page = await open_page(
         console, "/portal/services", cookies={"fs-theme": theme}

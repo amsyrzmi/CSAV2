@@ -57,39 +57,40 @@ export function AppShell({
     onSignOut: signOut,
   };
   return (
-    <div className="min-h-dvh bg-[var(--fs-shell)] sm:p-3 lg:p-4">
-      <div className="flex min-h-dvh border-[color:var(--fs-border)] bg-[var(--fs-surface)] text-[color:var(--fs-text)] shadow-[var(--fs-shadow-card)] sm:min-h-[calc(100dvh-1.5rem)] sm:rounded-2xl sm:border lg:min-h-[calc(100dvh-2rem)]">
-        <Rail
+    <div
+      data-testid="shell-root"
+      className="flex min-h-dvh bg-[var(--fs-surface)] text-[color:var(--fs-text)]"
+    >
+      <Rail
+        links={links}
+        path={path}
+        home={home}
+        state={rail}
+        onToggle={toggleRail}
+      />
+      <div className="min-w-0 flex-1">
+        <TopBar
           links={links}
           path={path}
           home={home}
-          state={rail}
-          onToggle={toggleRail}
+          fallbackTitle={admin ? "Platform administration" : "Workspace"}
+          account={account}
         />
-        <div className="min-w-0 flex-1">
-          <TopBar
-            links={links}
-            path={path}
-            home={home}
-            fallbackTitle={admin ? "Platform administration" : "Workspace"}
-            account={account}
-          />
-          {/* Outside <main> and every dialog, so a failed sign-out is never hidden behind one. */}
-          {error && (
-            <div className="px-4 pt-4 sm:px-8">
-              <Notice error>{error}</Notice>
-            </div>
-          )}
-          <main className="mx-auto max-w-6xl p-5 sm:p-8">
-            <PageContextProvider>
-              {children}
-              {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}
-              <Suspense fallback={null}>
-                <AssistantDock me={me} packages={packages} />
-              </Suspense>
-            </PageContextProvider>
-          </main>
-        </div>
+        {/* Outside <main> and every dialog, so a failed sign-out is never hidden behind one. */}
+        {error && (
+          <div className="px-4 pt-4 sm:px-8">
+            <Notice error>{error}</Notice>
+          </div>
+        )}
+        <main className="mx-auto max-w-6xl p-5 sm:p-8">
+          <PageContextProvider>
+            {children}
+            {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}
+            <Suspense fallback={null}>
+              <AssistantDock me={me} packages={packages} />
+            </Suspense>
+          </PageContextProvider>
+        </main>
       </div>
     </div>
   );
