@@ -215,8 +215,13 @@ Object.defineProperty(window,"speechSynthesis",{value:{getVoices:()=>[
     try:
         await page.route("**/console/v1/**", route)
         await page.goto(f"http://127.0.0.1:{port}/login")
-        await page.get_by_label("Conversation", exact=True).select_option("synthetic")
+        # The conversation switcher is the history list (one button per conversation).
+        history = page.get_by_role("navigation", name="Your private conversations")
+        conversation = history.get_by_role("button", name="Conversation 1", exact=True)
+        await conversation.click()
         await page.get_by_label("Text question", exact=False).fill("Preserved typed draft")
+        # Voice controls sit in the composer's voice options tray, collapsed by default.
+        await page.get_by_role("button", name="Voice options", exact=True).click()
         voice = page.get_by_role("region", name="Hands-free voice chat")
         await voice.get_by_role("combobox").select_option("ms")
         await voice.get_by_role("checkbox").check()
@@ -238,7 +243,7 @@ Object.defineProperty(window,"speechSynthesis",{value:{getVoices:()=>[
         await expect(
             page.get_by_role("button", name="Send to sandbox", exact=True)
         ).to_be_disabled()
-        await expect(page.get_by_label("Conversation", exact=True)).to_be_disabled()
+        await expect(conversation).to_be_disabled()
         await expect(page.get_by_label("Text question", exact=False)).to_have_value(
             "Apakah waktu operasi?"
         )

@@ -21,6 +21,8 @@ const OWNED = [
   "components/console/ServicesWorkspace.tsx",
   "components/console/RuntimeWorkspace.tsx",
   "components/console/InboxWorkspace.tsx",
+  "components/console/SandboxWorkspace.tsx",
+  "components/console/chat/",
   "app/globals.css",
   "app/layout.tsx",
   "app/(admin)/layout.tsx",

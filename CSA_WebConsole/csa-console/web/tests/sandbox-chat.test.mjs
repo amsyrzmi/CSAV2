@@ -30,3 +30,35 @@ test("deadline is exactly 90 seconds, not an invented failure/delivery state", (
   for (const status of ["held", "available", "failed", "no_reply"])
     assert.equal(sandboxDelayed({ status, created_at }, start + 180_000), false);
 });
+
+const chat = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const ROLES = ["platform_admin", "tenant_admin", "tenant_staff", "read_only", null];
+const FORBIDDEN = /customer records?|order|ticket|invoice|booking|email|approv|escalat|payment/i;
+
+test("the disclaimer is full until the conversation has a message, then compact", () => {
+  assert.equal(chat.disclaimerMode(0), "full");
+  assert.equal(chat.disclaimerMode(1), "compact");
+  assert.equal(chat.disclaimerMode(5), "compact");
+});
+
+test("every role gets the same three prompt chips, all inside the sandbox limits", () => {
+  const expected = [
+    "Ask something a customer might ask",
+    "Check what the knowledge base says about a topic",
+    "Rephrase an answer for a customer",
+  ];
+  assert.deepEqual([...chat.SANDBOX_CHIPS], expected);
+  for (const role of ROLES) {
+    const chips = chat.chipsFor(role);
+    assert.deepEqual(chips, expected, `chips for ${role}`);
+    for (const chip of chips) assert.doesNotMatch(chip, FORBIDDEN, chip);
+  }
+  // A caller that edits its copy cannot change the shared list.
+  chat.chipsFor("tenant_staff").push("Approve a refund");
+  assert.deepEqual(chat.chipsFor("tenant_staff"), expected);
+});
+
+test("the compact disclaimer is one line naming the sandbox limits", () => {
+  assert.equal(chat.SANDBOX_COMPACT_NOTICE, "Private sandbox: knowledge and product questions only.");
+  assert.doesNotMatch(chat.SANDBOX_COMPACT_NOTICE, /\n/);
+});

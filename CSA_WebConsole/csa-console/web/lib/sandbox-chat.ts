@@ -1,3 +1,5 @@
+import type { Me } from "./identity-contracts";
+
 export type SandboxThread = {
   id: string;
   sequence: number;
@@ -33,4 +35,27 @@ export const sandboxStatus: Record<SandboxTurn["status"], string> = {
 export function sandboxDelayed(turn: SandboxTurn, now: number): boolean {
   return ["queued", "processing", "awaiting_delivery"].includes(turn.status)
     && now - Date.parse(turn.created_at) > 90_000;
+}
+
+/**
+ * Prompt chips on the empty chat. Each one only fills the composer (nothing is sent by a click)
+ * and stays inside what the sandbox answers: knowledge and product-information questions.
+ */
+export const CHIP_CUSTOMER_QUESTION = "Ask something a customer might ask";
+export const CHIP_KNOWLEDGE_CHECK = "Check what the knowledge base says about a topic";
+export const CHIP_REPHRASE = "Rephrase an answer for a customer";
+export const SANDBOX_CHIPS: readonly string[] = [CHIP_CUSTOMER_QUESTION, CHIP_KNOWLEDGE_CHECK, CHIP_REPHRASE];
+
+/** The one line the full limits notice collapses to once a conversation has a message. */
+export const SANDBOX_COMPACT_NOTICE = "Private sandbox: knowledge and product questions only.";
+
+/** The same three chips for every role (a read-only member sees them disabled). A fresh copy. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- the role is the seam for per-role chips
+export function chipsFor(role: Me["role"]): string[] {
+  return [...SANDBOX_CHIPS];
+}
+
+/** The full limits notice while the conversation is empty, one line once it has a message. */
+export function disclaimerMode(turnCount: number): "full" | "compact" {
+  return turnCount > 0 ? "compact" : "full";
 }
