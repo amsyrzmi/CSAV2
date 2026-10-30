@@ -1,9 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
-import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
-
-const subscribeNever = () => () => {};
+import { useMotionReport } from "@/components/console/fs/useMotionAllowed";
 
 /** The four stacked layers of public/brand/fourstacks-mark.svg, bottom to top. */
 const LAYERS = [
@@ -18,8 +15,8 @@ const LAYERS = [
  * third layer). The layers drop into place one after another (fs-logo-drop in globals.css). The
  * server render already carries the class, and CSS runs it unless reduced motion is asked for or
  * the document is marked Calm, so the drop starts at first paint and does not blink at hydration.
- * Once mounted, data-motion is "on" or "off" from the same hook the other animations use, and
- * "off" (paused, hidden tab) stops it. Before mount it is "auto": CSS alone decides.
+ * Once the hook has reported, data-motion is "on" or "off" from the same hook the other animations use, and
+ * "off" (paused, hidden tab) stops it. Until it reports it is "auto": CSS alone decides.
  */
 export function FourStacksLogo({
   size = 120,
@@ -28,9 +25,10 @@ export function FourStacksLogo({
   size?: number;
   animated?: boolean;
 }) {
-  const allowed = useMotionAllowed();
-  const mounted = useSyncExternalStore(subscribeNever, () => true, () => false);
-  const motion = !animated ? "off" : !mounted ? "auto" : allowed ? "on" : "off";
+  // null until the hook has reported once: stay "auto" until then, so the answer arriving never
+  // passes through "off" (which would stop and restart the drop).
+  const report = useMotionReport();
+  const motion = !animated ? "off" : report === null ? "auto" : report ? "on" : "off";
   return (
     <svg
       viewBox="0 0 48 52"

@@ -1,14 +1,11 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
 import AgentAvatar from "./AgentAvatar";
-import { useMotionAllowed } from "./useMotionAllowed";
+import { useMotionReport } from "./useMotionAllowed";
 import type { AgentId } from "@/lib/agent-avatars";
 
 /** The walking row, left to right. */
 const WALKERS: readonly AgentId[] = ["support", "orders", "tickets", "bookings", "knowledge"];
-
-const subscribeNever = () => () => {};
 
 /**
  * The route-level loading screen: five agents bob in a staggered wave over a scrolling dashed
@@ -19,17 +16,17 @@ const subscribeNever = () => () => {};
  *
  * When a full-screen load streams, this is the server-rendered fallback of a pending Suspense
  * boundary, which React does not hydrate until the page itself arrives. So the animation cannot
- * wait for a hook: `data-motion="auto"` (server render, and until mounted) lets the CSS in
+ * wait for a hook: `data-motion="auto"` (server render, and until the hook has reported) lets the CSS in
  * app/globals.css animate unless the visitor prefers reduced motion or the root layout's first
  * script marked the document as Calm (`data-calm`, from the stored pause preference). Once
- * mounted, the hook decides and `data-motion` is "on" or "off" (reduced motion, a hidden tab,
+ * the hook has reported, it decides and `data-motion` is "on" or "off" (reduced motion, a hidden tab,
  * the Calm preference). The word is always there, and the dots are a pseudo-element, so the
  * status text is exactly "Loading".
  */
 export default function FullPageLoading({ fullScreen = false }: { fullScreen?: boolean }) {
-  const allowed = useMotionAllowed();
-  const mounted = useSyncExternalStore(subscribeNever, () => true, () => false);
-  const motion = mounted ? (allowed ? "on" : "off") : "auto";
+  // null until the hook has reported once: "auto" until then, never a frame of "off" on the way to "on".
+  const report = useMotionReport();
+  const motion = report === null ? "auto" : report ? "on" : "off";
   return (
     <div
       role="status"
