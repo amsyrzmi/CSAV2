@@ -25,9 +25,10 @@ pytestmark = [requires_docker, pytest.mark.usefixtures("migrated_dsn")]
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "db" / "migrations" / "0485_email_scrub_old_cards.sql"
-RUNBOOK = ROOT / "deploy" / "STAGING_PIPELINE.md"
-# The rollout's step-4 check (deploy/STAGING_PIPELINE.md, section 11.1), verbatim: the scrub's
-# own predicates, counted across both tables. 0 once 0485 has applied with old writers stopped.
+CHECK_FILE = ROOT / "deploy" / "rollout_checks" / "0485.sql"
+# The rollout's 0485 check (deploy/rollout_checks/0485.sql, run by scripts/staging_rollout.py on
+# every apply), verbatim: the scrub's own predicates, counted across both tables. 0 once 0485 has
+# applied with old writers stopped.
 CHECK_QUERY = """\
 SELECT
   (SELECT count(*) FROM public.console_proposals
@@ -251,8 +252,8 @@ def old_rows(owner: psycopg.Connection[Any]) -> int:
     return cast(int, row[0])
 
 
-def test_runbook_check_query_is_the_tested_one() -> None:
-    assert CHECK_QUERY in RUNBOOK.read_text(encoding="utf-8")
+def test_rollout_check_query_is_the_tested_one() -> None:
+    assert CHECK_QUERY in CHECK_FILE.read_text(encoding="utf-8")
     assert CHECK_QUERY.isascii() and MIGRATION.read_text(encoding="utf-8").isascii()
 
 
