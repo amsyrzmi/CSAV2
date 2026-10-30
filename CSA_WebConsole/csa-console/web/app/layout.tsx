@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Inter, Manrope, Space_Grotesk } from "next/font/google";
 import { parseTheme, THEME_COOKIE } from "../lib/theme";
+import { PAUSE_KEY } from "../lib/motion";
 import "./globals.css";
 
 // Self-hosted at build time by next/font; each font exposes a CSS variable that
@@ -28,6 +29,10 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+// Runs before first paint: marks the document Calm when the stored pause preference is on, so CSS
+// (the unhydrated loading screen) can stay still. The hooks stay the source of truth once mounted.
+const CALM_SCRIPT = `try{if(window.localStorage.getItem(${JSON.stringify(PAUSE_KEY)})==="1")document.documentElement.setAttribute("data-calm","1")}catch(e){}`;
+
 export default async function RootLayout({
   children,
 }: {
@@ -40,8 +45,12 @@ export default async function RootLayout({
     <html
       lang="en"
       data-theme={theme}
+      suppressHydrationWarning
       className={`${spaceGrotesk.variable} ${inter.variable} ${manrope.variable}`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: CALM_SCRIPT }} />
+      </head>
       <body className="fs-ui min-h-screen">{children}</body>
     </html>
   );
