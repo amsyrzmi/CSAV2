@@ -6,8 +6,8 @@ import type { PackageState } from "./services-api";
 export type StripInput = { review: number | null; services: number | null };
 export type StripPart = { label: string; value: number };
 
-export const REVIEW_LABEL = "Replies needing review";
-export const SERVICES_LABEL = "Services active";
+export const REVIEW_LABEL = "Replies to check";
+export const SERVICES_LABEL = "Services on";
 
 /** A count the server could have sent; anything else is treated as unknown. */
 function known(value: unknown): value is number {

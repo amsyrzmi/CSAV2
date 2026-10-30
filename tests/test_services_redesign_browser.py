@@ -623,7 +623,9 @@ async def test_headings_keep_the_page_outline_valid(site: Site) -> None:
         await expect(page.get_by_role("heading", level=1)).to_have_text(["Services"])
         groups = page.get_by_role("heading", level=2)
         # The WhatsApp panel (shown while Customer support is active) is a section of its own.
-        await expect(groups).to_have_text(["Base", "Add-ons", "Standalone", "WhatsApp number"])
+        await expect(groups).to_have_text(
+            ["Core service", "Add-ons", "Separate services", "WhatsApp number"]
+        )
         titles = page.get_by_role("heading", level=3)
         await expect(titles.filter(has_text="Customer support")).to_have_count(1)
         for kind, count in (("base", 1), ("addon", 5), ("standalone", 2)):
@@ -956,7 +958,7 @@ async def test_agent_switch_reloads_the_list_and_updates_the_line(site: Site) ->
         loads = stub.list_gets
 
         await page.get_by_test_id("agent-switch-kb_agent").click()
-        await expect(line).to_have_text("Tenant switch turned off 28 Oct 2026 by Preview Admin")
+        await expect(line).to_have_text("Company switch turned off 28 Oct 2026 by Preview Admin")
         await expect(page.get_by_test_id("agent-pending-kb_agent")).to_be_empty()
         assert stub.patches == [{"name": "kb_agent", "body": {"client_enabled": False}}]
         # The reload that every confirmed action already does is the only fetch: no extra ones.

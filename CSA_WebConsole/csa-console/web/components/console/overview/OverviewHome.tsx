@@ -32,7 +32,7 @@ export function OverviewHome({ me }: { me: Me }) {
   } else if (!tenant) {
     body = (
       <div className="mx-auto w-full max-w-3xl p-5 sm:p-8">
-        <Notice>Ask a tenant administrator to review your membership.</Notice>
+        <Notice>Your account is not linked to a company yet. Ask your administrator to add you.</Notice>
       </div>
     );
   } else {
@@ -45,7 +45,7 @@ export function OverviewHome({ me }: { me: Me }) {
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-[color:var(--fs-border)] px-4 py-2.5 sm:px-6">
         {platform && <TenantSelect value={chosen} />}
         <p className="text-sm text-[color:var(--fs-text-secondary)]">
-          Sandbox: knowledge and product questions only
+          Private chat: ask about your knowledge base and products
         </p>
         {tenant && (
           <div className="sm:ml-auto">

@@ -446,7 +446,7 @@ async def test_double_click_sends_one_request(site: Site) -> None:
             # Two clicks inside one task: the second lands before any request has been answered.
             await button.evaluate("el => { el.click(); el.click(); }")
             await expect(button).to_be_disabled()
-            for other in await page.get_by_role("button", name="Turn tenant switch").all():
+            for other in await page.get_by_role("button", name="Turn company switch").all():
                 await expect(other).to_be_disabled()
             stub.gate.set()
             await expect(card.get_by_text("Subscribed", exact=True)).to_be_visible()
@@ -485,18 +485,18 @@ async def test_unlinked_agents_page_still_renders(site: Site) -> None:
                 kb.get_by_role("button", name="Remove subscription", exact=True)
             ).to_be_enabled()
             await expect(
-                kb.get_by_role("button", name="Turn tenant switch off", exact=True)
+                kb.get_by_role("button", name="Turn company switch off", exact=True)
             ).to_be_enabled()
             await expect(
                 card_of(page, "ticket_agent").get_by_role("button", name="Subscribe", exact=True)
             ).to_be_enabled()
             for label in (
                 "Subscription",
-                "Tenant switch",
-                "Implementation",
+                "Company switch",
+                "Build",
                 "Setup",
-                "Circuit",
-                "Failure count",
+                "Connection",
+                "Recent failures",
             ):
                 await expect(kb.locator("dt", has_text=label).first).to_be_visible()
             # No avatar for this one: an icon on the chip and the word "Planned" beside the title.

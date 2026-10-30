@@ -8,7 +8,7 @@ import { api, patch } from "@/lib/api";
 import type {
   Agent, AgentRun, Client, Me, RunPage, RuntimeEvent, RuntimeOverview,
 } from "@/lib/identity-contracts";
-import { lastChangeText, SAVED_NOT_REFRESHED } from "@/lib/services-view";
+import { buildText, connectionText, lastChangeText, SAVED_NOT_REFRESHED, setupText } from "@/lib/services-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
 import { field, Heading, Notice, Panel, secondary } from "./ui";
@@ -41,8 +41,10 @@ export function RuntimeWorkspace({
   const query = platform ? `client_id=${encodeURIComponent(selected)}` : "";
   return (
     <>
-      <Heading title={mode === "agents" ? "Agents" : "Runtime activity"}
-        description="CSAV2 capability controls and recorded execution metadata. No legacy workflow metrics." />
+      <Heading title={mode === "agents" ? "Agents" : "Assistant activity"}
+        description={mode === "agents"
+          ? "Switch your assistants on or off and see how each one is set up."
+          : "What your assistants did recently: each run, whether it worked and how long it took. Message text is never shown."} />
       {error && <Notice error>{error}</Notice>}
       {platform && (
         <div className="mb-5">
@@ -124,13 +126,13 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
       {error && <Notice error>{error}</Notice>}
       {stale && <Notice warning>{SAVED_NOT_REFRESHED}</Notice>}
       <button className={secondary} disabled={busy} onClick={() => setRevision((value) => value + 1)}>Refresh agents</button>
-      <Notice>Subscription, tenant switch, implementation, setup and circuit are independent.
-        Both switches on does not mean a provider is connected or healthy. Changes affect the next execution attempt; already-started work is not cancelled.</Notice>
+      <Notice>Subscription, company switch, build, setup and connection are separate things.
+        Both switches on does not mean the connection is working. A change applies from the next run; work already started carries on.</Notice>
       {agents && (
         <nav aria-label="Specialized agents" className="flex flex-wrap gap-2">
           {agents.filter((agent) => agent.can_view_specialized).map((agent) =>
             <button key={agent.name} className={secondary} onClick={() => setSelected(agent.name)}>
-              {agent.title}: {agent.implementation === "prepared_only" ? "prepared only" : label(agent.readiness)}
+              {agent.title}: {agent.implementation === "prepared_only" ? "prepared, not live yet" : setupText(agent.readiness)}
             </button>)}
         </nav>
       )}
@@ -232,11 +234,11 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
       </header>
       <dl className="grid grid-cols-2 gap-3 text-sm">
         <div><dt className="text-ink-500">Subscription</dt><dd>{subscribed ? "Subscribed" : "Not subscribed"}</dd></div>
-        <div><dt className="text-ink-500">Tenant switch</dt><dd>{switchOn ? "On" : "Off"}</dd></div>
-        <div><dt className="text-ink-500">Implementation</dt><dd>{label(agent.implementation)}</dd></div>
-        <div><dt className="text-ink-500">Setup</dt><dd>{label(agent.readiness)}</dd></div>
-        <div><dt className="text-ink-500">Circuit</dt><dd>{agent.capability?.circuit_state ?? "Not registered"}</dd></div>
-        <div><dt className="text-ink-500">Failure count</dt><dd>{agent.capability?.fail_count ?? "Not registered"}</dd></div>
+        <div><dt className="text-ink-500">Company switch</dt><dd>{switchOn ? "On" : "Off"}</dd></div>
+        <div><dt className="text-ink-500">Build</dt><dd>{buildText(agent.implementation)}</dd></div>
+        <div><dt className="text-ink-500">Setup</dt><dd>{setupText(agent.readiness)}</dd></div>
+        <div><dt className="text-ink-500">Connection</dt><dd>{agent.capability ? connectionText(agent.capability.circuit_state) : "Not set up"}</dd></div>
+        <div><dt className="text-ink-500">Recent failures</dt><dd>{agent.capability?.fail_count ?? "Not set up"}</dd></div>
       </dl>
       <p className="my-4 text-sm text-ink-600">{agent.detail}</p>
       {agent.embedding_model && <p className="mb-4 text-sm">
@@ -255,14 +257,12 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
         {agent.can_toggle && <button className={secondary} disabled={busy}
           data-testid={`agent-switch-${name}`}
           onClick={() => onToggle(agent, "client_enabled")}>
-          Turn tenant switch {switchOn ? "off" : "on"}
+          Turn company switch {switchOn ? "off" : "on"}
         </button>}
       </div>
     </article>
   );
 }
-
-function label(value: string) { return value.replaceAll("_", " "); }
 
 function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent: string }) {
   const [agent, setAgent] = useState(initialAgent);
@@ -316,8 +316,8 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
         </label>
         <button className={secondary}>Filter / refresh</button>
       </form>
-      <Notice>Polling every 5 seconds. Execution metadata only; no message text, raw inputs or outputs.
-        An empty list means no recorded executions, not proof that a provider is healthy.</Notice>
+      <Notice>This list refreshes every 5 seconds. It shows when each run happened, not what was said.
+        An empty list only means nothing has run yet; it does not mean everything is healthy.</Notice>
       <Panel title="Recorded runs">
         {!page ? <p>{error ? "Runtime data unavailable." : "Loading runs..."}</p> :
           page.items.length === 0 ? <p>No recorded runs for this selection.</p> :

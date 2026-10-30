@@ -35,7 +35,7 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "overview", label: "Overview", href: admin ? "/" : "/portal" },
     { key: "services", label: "Services", href: to("services") },
     { key: "hr", label: "People & HR", href: to("hr") },
-    { key: "activity", label: "Runtime activity", href: to("activity") },
+    { key: "activity", label: "Assistant activity", href: to("activity") },
     { key: "knowledge_base", label: "Knowledge base", href: admin ? "/knowledge-base" : "/portal/faq" },
     { key: "inbox", label: "Customer inbox", href: to("inbox"), show: writer },
     { key: "email", label: "Email assistant", href: to("email"), show: writer },

@@ -47,7 +47,7 @@ export const CHIP_REPHRASE = "Rephrase an answer for a customer";
 export const SANDBOX_CHIPS: readonly string[] = [CHIP_CUSTOMER_QUESTION, CHIP_KNOWLEDGE_CHECK, CHIP_REPHRASE];
 
 /** The one line the full limits notice collapses to once a conversation has a message. */
-export const SANDBOX_COMPACT_NOTICE = "Private sandbox: knowledge and product questions only.";
+export const SANDBOX_COMPACT_NOTICE = "Private chat. It only answers questions about your knowledge base and products.";
 
 /** The same three chips for every role (a read-only member sees them disabled). A fresh copy. */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the role is the seam for per-role chips

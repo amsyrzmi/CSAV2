@@ -14,7 +14,7 @@ export function ChatMessages({ turns, now, onReadAloud, readDisabled }: {
   onReadAloud: (body: string) => void;
   readDisabled: boolean;
 }) {
-  return <div className="space-y-6" role="log" aria-live="polite" aria-label="Sandbox messages">
+  return <div className="space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
     {turns.map((turn) => <article key={turn.id} className="space-y-4">
       <div className="flex flex-col items-end gap-1.5 pl-8 sm:pl-16">
         <p className="max-w-full whitespace-pre-wrap break-words rounded-[var(--fs-radius-bubble)] rounded-br-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)] px-4 py-2.5 text-[color:var(--fs-text)]">
@@ -27,7 +27,7 @@ export function ChatMessages({ turns, now, onReadAloud, readDisabled }: {
         <div className="min-w-0 flex-1">
           <p className="whitespace-pre-wrap break-words pt-1 leading-relaxed text-[color:var(--fs-text)]">
             <span className="sr-only">Sandbox assistant: </span>{reply.body}</p>
-          <button type="button" aria-label="Read reply aloud locally" title="Read reply aloud locally" disabled={readDisabled}
+          <button type="button" aria-label="Read reply aloud" title="Read reply aloud" disabled={readDisabled}
             onClick={() => onReadAloud(reply.body)}
             className="mt-1 -ml-2 inline-grid size-9 place-items-center rounded-[var(--fs-radius-control)] text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:size-11">
             <Volume2 size={16} aria-hidden /></button>

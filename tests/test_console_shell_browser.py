@@ -124,7 +124,7 @@ TENANT_LABELS = (
     "Overview",
     "Services",
     "People & HR",
-    "Runtime activity",
+    "Assistant activity",
     "Knowledge base",
     "Customer inbox",
     "Email assistant",
@@ -294,7 +294,7 @@ async def test_rail_tooltip_shows_on_hover_and_keyboard_focus(console: Console) 
         await expect(tip).to_have_text("Customer inbox")
         await page.mouse.move(700, 400)
         await expect(tip).to_have_count(0)
-        await page.get_by_role("link", name="Runtime activity", exact=True).focus()
+        await page.get_by_role("link", name="Assistant activity", exact=True).focus()
         await page.keyboard.press("Tab")
         await expect(tip).to_have_text("Knowledge base")
         await page.keyboard.press("Escape")
@@ -427,9 +427,15 @@ async def test_shell_fills_the_window_without_outer_gap(console: Console, theme:
         await close_page(playwright, browser)
 
 
-async def test_collapse_toggle_is_the_first_focus_stop_on_desktop(console: Console) -> None:
-    playwright, browser, page = await open_page(console, "/portal/services")
+@pytest.mark.parametrize("rail_state", ("expanded", "collapsed"))
+async def test_collapse_toggle_is_the_first_focus_stop_on_desktop(
+    console: Console, rail_state: str
+) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/services", cookies={"fs-rail": rail_state}
+    )
     try:
+        await expect(page.get_by_test_id("shell-rail")).to_have_attribute("data-rail", rail_state)
         toggle = page.get_by_test_id("shell-rail-toggle")
         await expect(toggle).to_be_visible()
         await page.keyboard.press("Tab")
@@ -474,8 +480,10 @@ async def test_no_page_overflow_at_320_and_1440_in_each_theme(console: Console, 
             await page.reload()
             for width in WIDTHS:
                 await page.set_viewport_size({"width": width, "height": 800})
+                # clientWidth excludes a vertical scrollbar; innerWidth would hide a 15 px overflow.
                 overflow = await page.evaluate(
-                    "() => [document.documentElement.scrollWidth, window.innerWidth]"
+                    "() => [document.documentElement.scrollWidth,"
+                    " document.documentElement.clientWidth]"
                 )
                 assert overflow[0] <= overflow[1], f"{theme} {rail} {width}px: {overflow}"
     finally:
@@ -495,9 +503,9 @@ async def test_theme_switch_applies_and_persists_without_flash(console: Console)
         await page.get_by_test_id("shell-theme").click()
         menu = page.get_by_role("menu")
         await expect(
-            menu.get_by_role("menuitemradio", name="Cobalt", exact=True)
+            menu.get_by_role("menuitemradio", name="Cobalt (light)", exact=True)
         ).to_have_attribute("aria-checked", "true")
-        await menu.get_by_role("menuitemradio", name="Night", exact=True).click()
+        await menu.get_by_role("menuitemradio", name="Night (dark)", exact=True).click()
         await expect(page.locator("html")).to_have_attribute("data-theme", "night")
         await expect(menu).to_have_count(0)
         await expect(page.get_by_test_id("shell-theme")).to_be_focused()
@@ -513,9 +521,9 @@ async def test_theme_switch_applies_and_persists_without_flash(console: Console)
         await expect(page.locator("html[data-theme='night']")).to_have_count(1)
         # The control marks the stored theme after a reload too.
         await page.get_by_test_id("shell-theme").click()
-        await expect(page.get_by_role("menuitemradio", name="Night", exact=True)).to_have_attribute(
-            "aria-checked", "true"
-        )
+        await expect(
+            page.get_by_role("menuitemradio", name="Night (dark)", exact=True)
+        ).to_have_attribute("aria-checked", "true")
     finally:
         await close_page(playwright, browser)
 
@@ -557,7 +565,7 @@ async def test_calm_motion_toggle_sets_pause_key(console: Console) -> None:
         await page.get_by_test_id("shell-user-menu").click()
         toggle = page.get_by_test_id("shell-motion-toggle")
         await expect(toggle).to_have_attribute("role", "switch")
-        await expect(toggle).to_have_accessible_name("Calm motion")
+        await expect(toggle).to_have_accessible_name("Reduce animations")
         await expect(toggle).to_have_attribute("aria-checked", "false")
         assert await page.evaluate("() => localStorage.getItem('fs-motion-paused')") is None
         await toggle.click()
@@ -609,7 +617,7 @@ async def test_user_menu_shows_name_email_role_and_tenant(console: Console) -> N
         )
         await expect(panel).to_contain_text("Tenant admin")
         await expect(panel.get_by_test_id("shell-user-tenant")).to_have_text("Synthetic Tenant")
-        # The Calm motion switch is still there, below the account lines.
+        # The "Reduce animations" switch is still there, below the account lines.
         await expect(panel.get_by_test_id("shell-motion-toggle")).to_be_visible()
     finally:
         await close_page(playwright, browser)
@@ -732,7 +740,7 @@ async def test_user_menu_trigger_name_contains_its_visible_name(console: Console
         await expect(trigger).to_have_accessible_name(re.compile("Account menu"))
         await trigger.click()
         await expect(page.get_by_test_id("shell-user-menu-panel")).to_contain_text(
-            "Pauses animated decoration in the inbox, side panels and agent avatars."
+            "Stops the moving effects on this screen."
         )
     finally:
         await close_page(playwright, browser)

@@ -35,13 +35,14 @@ CHIPS = [
     "Rephrase an answer for a customer",
 ]
 FULL_NOTICE = (
-    "No customer records, orders, bookings, tickets, invoices, payments, email or staff "
-    "escalation. No external customer sends. Business confirmations and attachments are "
-    "unavailable. Browser dictation fills a draft for review; read aloud uses a local browser "
-    "voice. Use Knowledge base for document uploads. Archive hides history; it does not "
-    "delete it."
+    "This chat only answers questions about your knowledge base and products. It cannot look up "
+    "customer records, orders, bookings, tickets, invoices or payments. It cannot read or send "
+    "email, message your customers or pass a question to your staff. It cannot confirm business "
+    "actions or take attachments. Dictation fills in your message for you to check before "
+    "sending, and read aloud uses your browser's voice. To add documents, use Knowledge base. "
+    "Archiving a chat hides it but does not delete it."
 )
-COMPACT = "Private sandbox: knowledge and product questions only."
+COMPACT = "Private chat. It only answers questions about your knowledge base and products."
 WIDTHS = [320, 390, 768, 1024, 1440]
 THEMES = ["cobalt", "night", "bureau"]
 REPLY = "Our opening hours are nine to six on weekdays."
@@ -287,7 +288,7 @@ async def test_empty_state_shows_prompt_chips_and_full_disclaimer(server: str) -
         await expect(notice).to_be_visible()
         assert squash(await notice.inner_text()) == FULL_NOTICE
         await expect(page.get_by_role("button", name="What it cannot do")).to_have_count(0)
-        await expect(page.get_by_label("Text question", exact=False)).to_be_enabled()
+        await expect(page.get_by_label("Your question", exact=False)).to_be_enabled()
         await expect(page.get_by_role("button", name="New chat")).to_be_enabled()
 
 
@@ -296,7 +297,7 @@ async def test_chip_fills_the_composer_without_sending(server: str) -> None:
     async with open_chat(server, api) as page:
         chip = page.get_by_role("button", name=CHIPS[1], exact=True)
         await chip.click(timeout=WAIT)
-        composer = page.get_by_label("Text question", exact=False)
+        composer = page.get_by_label("Your question", exact=False)
         await expect(composer).to_have_value(CHIPS[1])
         await expect(composer).to_be_focused()
         await page.wait_for_timeout(800)
@@ -307,10 +308,10 @@ async def test_chip_fills_the_composer_without_sending(server: str) -> None:
 async def test_send_shows_reply_and_compacts_the_disclaimer(server: str) -> None:
     api = Synthetic()
     async with open_chat(server, api) as page:
-        composer = page.get_by_label("Text question", exact=False)
+        composer = page.get_by_label("Your question", exact=False)
         await composer.fill("What are your opening hours?", timeout=WAIT)
-        await page.get_by_role("button", name="Send to sandbox", exact=True).click()
-        log = page.get_by_role("log", name="Sandbox messages")
+        await page.get_by_role("button", name="Send message", exact=True).click()
+        log = page.get_by_role("log", name="Chat messages")
         await expect(log.get_by_text(REPLY)).to_be_visible()
         await expect(log.get_by_text("What are your opening hours?")).to_be_visible()
         await expect(log.get_by_text("Available privately in this sandbox")).to_be_visible()
@@ -353,7 +354,7 @@ async def test_history_lists_conversations_and_new_chat_creates_one(server: str)
         await second.click()
         await expect(second).to_have_attribute("aria-current", "true")
         await expect(
-            page.get_by_role("log", name="Sandbox messages").get_by_text("Not on Sundays.")
+            page.get_by_role("log", name="Chat messages").get_by_text("Not on Sundays.")
         ).to_be_visible()
         await expect(page.get_by_text(COMPACT, exact=True)).to_be_visible()
         await page.get_by_role("button", name="New chat").click()
@@ -372,13 +373,12 @@ async def test_read_only_member_composer_is_disabled(server: str) -> None:
     async with open_chat(server, api, query="?role=read_only") as page:
         await expect(
             page.get_by_text(
-                "Read-only membership: sending, creating and archiving conversations are disabled."
+                "Read-only access: you can read your chats but not send messages, "
+                "start chats or archive them."
             )
         ).to_be_visible(timeout=WAIT)
-        await expect(page.get_by_label("Text question", exact=False)).to_be_disabled()
-        await expect(
-            page.get_by_role("button", name="Send to sandbox", exact=True)
-        ).to_be_disabled()
+        await expect(page.get_by_label("Your question", exact=False)).to_be_disabled()
+        await expect(page.get_by_role("button", name="Send message", exact=True)).to_be_disabled()
         await expect(page.get_by_role("button", name="New chat")).to_be_disabled()
         for chip in CHIPS:
             await expect(page.get_by_role("button", name=chip, exact=True)).to_be_disabled()
@@ -425,8 +425,8 @@ async def check_widths(page: Page, label: str) -> None:
         await page.set_viewport_size({"width": width, "height": 800})
         await page.wait_for_timeout(150)
         assert await overflow(page) <= 0, f"{label} overflows at {width}px"
-        composer = page.get_by_label("Text question", exact=False)
-        send = page.get_by_role("button", name="Send to sandbox", exact=True)
+        composer = page.get_by_label("Your question", exact=False)
+        send = page.get_by_role("button", name="Send message", exact=True)
         box = await composer.bounding_box()
         send_box = await send.bounding_box()
         assert box and send_box
@@ -441,7 +441,7 @@ async def check_widths(page: Page, label: str) -> None:
 
 
 async def composer_radius(page: Page) -> str:
-    return await page.get_by_label("Text question", exact=False).evaluate(
+    return await page.get_by_label("Your question", exact=False).evaluate(
         "element => getComputedStyle(element.parentElement).borderTopLeftRadius"
     )
 
@@ -459,8 +459,8 @@ async def test_chat_fits_five_widths_in_three_themes(server: str) -> None:
             radius = await composer_radius(page)
             assert (radius == "0px") == (theme == "bureau"), f"{theme} composer radius {radius}"
             await check_widths(page, f"{theme} empty")
-            await page.get_by_label("Text question", exact=False).fill("Opening hours?")
-            await page.get_by_role("button", name="Send to sandbox", exact=True).click()
+            await page.get_by_label("Your question", exact=False).fill("Opening hours?")
+            await page.get_by_role("button", name="Send message", exact=True).click()
             await expect(page.get_by_text(REPLY)).to_be_visible()
             await check_widths(page, f"{theme} reply")
 
@@ -504,18 +504,20 @@ async def test_failed_creation_keeps_the_draft_and_send_retries_it(server: str) 
     api = Synthetic()
     api.failed_creations = 1
     async with open_chat(server, api) as page:
-        composer = page.get_by_label("Text question", exact=False)
+        composer = page.get_by_label("Your question", exact=False)
         await composer.fill("Do you open on Sundays?", timeout=WAIT)
-        send = page.get_by_role("button", name="Send to sandbox", exact=True)
+        send = page.get_by_role("button", name="Send message", exact=True)
         await send.click()
-        await expect(page.get_by_text("Retry creation keeps the same request key.")).to_be_visible()
+        await expect(
+            page.get_by_text("Trying again repeats the same request, so no second chat is created.")
+        ).to_be_visible()
         # Not locked out, and the question is still there.
         await expect(composer).to_be_enabled()
         await expect(composer).to_have_value("Do you open on Sundays?")
         await expect(page.get_by_role("button", name=CHIPS[0], exact=True)).to_be_enabled()
         await expect(send).to_be_enabled()
         await send.click()
-        log = page.get_by_role("log", name="Sandbox messages")
+        log = page.get_by_role("log", name="Chat messages")
         await expect(log.get_by_text("Do you open on Sundays?")).to_be_visible()
         await expect(log.get_by_text(REPLY)).to_be_visible()
         creations = [body for path, body in api.bodies if path == "chat/conversations"]
@@ -546,7 +548,7 @@ async def test_scroll_follows_the_reader_not_the_poll(server: str) -> None:
     api.page_size = 20
     async with open_chat(server, api) as page:
         await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
-        log = page.get_by_role("log", name="Sandbox messages")
+        log = page.get_by_role("log", name="Chat messages")
         await expect(log.get_by_text(re.compile(r"Answer 30$"))).to_be_visible()
         scroller = page.get_by_test_id("sandbox-scroll")
         gap = "e => e.scrollHeight - e.scrollTop - e.clientHeight"
@@ -569,8 +571,8 @@ async def test_scroll_follows_the_reader_not_the_poll(server: str) -> None:
         await page.wait_for_timeout(300)
         assert abs(await scroller.evaluate("e => e.scrollTop") - 300) < 2
         # The reader's own question scrolls to the end.
-        await page.get_by_label("Text question", exact=False).fill("One more question")
-        await page.get_by_role("button", name="Send to sandbox", exact=True).click()
+        await page.get_by_label("Your question", exact=False).fill("One more question")
+        await page.get_by_role("button", name="Send message", exact=True).click()
         await expect(log.get_by_text("One more question")).to_be_visible()
         await page.wait_for_timeout(300)
         assert await scroller.evaluate(gap) < 2
@@ -586,13 +588,13 @@ async def test_disclaimer_shows_when_the_first_read_fails(server: str) -> None:
         notice = page.get_by_test_id("sandbox-disclaimer")
         await expect(notice).to_be_visible()
         assert squash(await notice.inner_text()) == FULL_NOTICE
-        await expect(page.get_by_label("Text question", exact=False)).to_be_enabled()
+        await expect(page.get_by_label("Your question", exact=False)).to_be_enabled()
 
 
 async def test_enter_sends_and_keeps_focus_but_not_with_shift_or_composition(server: str) -> None:
     api = Synthetic()
     async with open_chat(server, api) as page:
-        composer = page.get_by_label("Text question", exact=False)
+        composer = page.get_by_label("Your question", exact=False)
         await composer.fill("Hello", timeout=WAIT)
         await composer.press("Shift+Enter")
         await expect(composer).to_have_value("Hello\n")
@@ -613,7 +615,7 @@ async def test_enter_sends_and_keeps_focus_but_not_with_shift_or_composition(ser
         assert api.posts == []
         await composer.fill("What are your opening hours?")
         await composer.press("Enter")
-        log = page.get_by_role("log", name="Sandbox messages")
+        log = page.get_by_role("log", name="Chat messages")
         await expect(log.get_by_text(REPLY)).to_be_visible()
         assert api.posts == ["chat/conversations", "chat/conversations/thread-1/turns"]
         await expect(composer).to_have_value("")

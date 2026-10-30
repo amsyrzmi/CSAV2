@@ -219,7 +219,7 @@ Object.defineProperty(window,"speechSynthesis",{value:{getVoices:()=>[
         history = page.get_by_role("navigation", name="Your private conversations")
         conversation = history.get_by_role("button", name="Conversation 1", exact=True)
         await conversation.click()
-        await page.get_by_label("Text question", exact=False).fill("Preserved typed draft")
+        await page.get_by_label("Your question", exact=False).fill("Preserved typed draft")
         # Voice controls sit in the composer's voice options tray, collapsed by default.
         await page.get_by_role("button", name="Voice options", exact=True).click()
         voice = page.get_by_role("region", name="Hands-free voice chat")
@@ -240,20 +240,18 @@ Object.defineProperty(window,"speechSynthesis",{value:{getVoices:()=>[
                 break
             await asyncio.sleep(0.1)
         assert history_reads > previous_reads
-        await expect(
-            page.get_by_role("button", name="Send to sandbox", exact=True)
-        ).to_be_disabled()
+        await expect(page.get_by_role("button", name="Send message", exact=True)).to_be_disabled()
         await expect(conversation).to_be_disabled()
-        await expect(page.get_by_label("Text question", exact=False)).to_have_value(
+        await expect(page.get_by_label("Your question", exact=False)).to_have_value(
             "Apakah waktu operasi?"
         )
         if scenario == "discard":
             await voice.get_by_role("button", name="Discard local recovery").click()
-            await expect(page.get_by_label("Text question", exact=False)).to_have_value(
+            await expect(page.get_by_label("Your question", exact=False)).to_have_value(
                 "Preserved typed draft"
             )
-            await page.get_by_role("button", name="Send to sandbox", exact=True).click()
-            await expect(page.get_by_label("Text question", exact=False)).to_have_value("")
+            await page.get_by_role("button", name="Send message", exact=True).click()
+            await expect(page.get_by_label("Your question", exact=False)).to_have_value("")
             assert len(turns) == 2
             assert list(turns.values())[-1]["body"] == "Preserved typed draft"
             return
@@ -265,10 +263,10 @@ Object.defineProperty(window,"speechSynthesis",{value:{getVoices:()=>[
         assert len(turns) == 2
         assert attempts[0] == attempts[1], "uncertain acceptance resumes the same key"
         assert await page.evaluate("window.voiceTest.speakingWithMic") >= 1
-        await expect(page.get_by_label("Text question", exact=False)).to_have_value(
+        await expect(page.get_by_label("Your question", exact=False)).to_have_value(
             "Preserved typed draft"
         )
-        await expect(page.get_by_role("button", name="Send to sandbox", exact=True)).to_be_enabled()
+        await expect(page.get_by_role("button", name="Send message", exact=True)).to_be_enabled()
         count = len(attempts)
         await page.wait_for_timeout(1800)
         assert len(attempts) == count, "Stop prevents the next automatic submission"

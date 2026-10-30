@@ -52,14 +52,36 @@ export function agentCountLabel(count: number): string {
   return count === 1 ? "1 agent" : `${count} agents`;
 }
 
+/** Plain words for the agent card's build, setup and connection values (the raw codes stay in the API). */
+const BUILD_WORDS: Record<string, string> = {
+  local: "Ready",
+  prepared_only: "Prepared, not live yet",
+  not_implemented: "Not built yet",
+};
+const SETUP_WORDS: Record<string, string> = {
+  available: "Ready",
+  setup_required: "Setup needed",
+  configured_unverified: "Set up, not yet checked",
+  reindex_required: "Knowledge base needs re-indexing",
+};
+const CONNECTION_WORDS: Record<string, string> = {
+  closed: "Working",
+  open: "Paused after repeated failures",
+  half_open: "Trying again",
+};
+const spaced = (code: string) => code.replaceAll("_", " ");
+export const buildText = (code: string) => BUILD_WORDS[code] ?? spaced(code);
+export const setupText = (code: string) => SETUP_WORDS[code] ?? spaced(code);
+export const connectionText = (code: string) => CONNECTION_WORDS[code] ?? spaced(code);
+
 const CHANGE_WORDS: Record<LastChange["action"], string> = {
   requested: "Requested",
   activated: "Activated",
   suspended: "Suspended",
   subscribed: "Subscription turned on",
   unsubscribed: "Subscription turned off",
-  tenant_switch_on: "Tenant switch turned on",
-  tenant_switch_off: "Tenant switch turned off",
+  tenant_switch_on: "Company switch turned on",
+  tenant_switch_off: "Company switch turned off",
 };
 
 /** "20 Oct 2026" in the viewer's zone, or null for anything that is not a parseable date string. */

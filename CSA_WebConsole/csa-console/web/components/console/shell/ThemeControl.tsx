@@ -6,7 +6,7 @@ import { menuIndex } from "@/lib/shell-state";
 import { THEMES, parseTheme, writeTheme, type Theme } from "@/lib/theme";
 import { useDismiss } from "./useDismiss";
 
-const LABELS: Record<Theme, string> = { cobalt: "Cobalt", night: "Night", bureau: "Bureau" };
+const LABELS: Record<Theme, string> = { cobalt: "Cobalt (light)", night: "Night (dark)", bureau: "Bureau (warm)" };
 
 export const BAR_BUTTON =
   "flex h-10 min-w-10 items-center justify-center gap-2 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border-control)] px-2.5 text-sm font-medium text-[color:var(--fs-text)] hover:bg-[var(--fs-tile)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:h-11 pointer-coarse:min-w-11";
@@ -58,7 +58,7 @@ export function ThemeControl() {
         ref={triggerRef}
         type="button"
         data-testid="shell-theme"
-        aria-label="Theme"
+        aria-label="Colour theme"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : show())}
@@ -73,7 +73,7 @@ export function ThemeControl() {
         <Palette size={18} aria-hidden="true" />
       </button>
       {open && (
-        <div role="menu" aria-label="Theme" onKeyDown={onMenuKey} className={`${POPOVER} w-44`}>
+        <div role="menu" aria-label="Colour theme" onKeyDown={onMenuKey} className={`${POPOVER} w-44`}>
           {THEMES.map((theme, index) => (
             <button
               key={theme}

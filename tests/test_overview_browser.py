@@ -34,8 +34,8 @@ WEB = ROOT / "CSA_WebConsole/csa-console/web"
 TENANT = "11111111-1111-4111-8111-111111111111"
 WAIT = 60_000  # First visit to each route compiles it in `next dev`.
 REPLY = "Our opening hours are nine to six on weekdays."
-SANDBOX_LABEL = "Sandbox: knowledge and product questions only"
-MEMBERSHIP = "Ask a tenant administrator to review your membership."
+SANDBOX_LABEL = "Private chat: ask about your knowledge base and products"
+MEMBERSHIP = "Your account is not linked to a company yet. Ask your administrator to add you."
 WIDTHS = (320, 390, 768, 1024, 1440)
 THEMES = ("cobalt", "night", "bureau")
 CLIENTS = [{"id": "tenant-a", "name": "Tenant A"}, {"id": "tenant-b", "name": "Tenant B"}]
@@ -338,7 +338,7 @@ async def open_overview(
 
 
 def composer(page: Page) -> Any:
-    return page.get_by_label("Text question", exact=False)
+    return page.get_by_label("Your question", exact=False)
 
 
 async def requested(page: Page, api: Api, path: str) -> None:
@@ -361,10 +361,10 @@ async def test_overview_is_the_assistant_home_for_a_tenant_member(console: Conso
         await expect(composer(page)).to_be_enabled()
         await expect(page.get_by_text(SANDBOX_LABEL, exact=True)).to_be_visible()
         await expect(page.get_by_test_id("overview-strip-review")).to_have_text(
-            re.compile(r"^\s*3\s*Replies needing review\s*$")
+            re.compile(r"^\s*3\s*Replies to check\s*$")
         )
         await expect(page.get_by_test_id("overview-strip-services")).to_have_text(
-            re.compile(r"^\s*2\s*Services active\s*$")
+            re.compile(r"^\s*2\s*Services on\s*$")
         )
         # One h1 for the page (visually hidden); the chat's own heading is an h2.
         await expect(page.locator("h1")).to_have_count(1)
@@ -377,7 +377,7 @@ async def test_overview_is_the_assistant_home_for_a_tenant_member(console: Conso
         assert api.paths("inbox/conversations")[0] == "inbox/conversations?limit=1"
         # The chat works from the empty state.
         await composer(page).fill("When are you open?")
-        await page.get_by_role("button", name="Send to sandbox", exact=True).click()
+        await page.get_by_role("button", name="Send message", exact=True).click()
         await expect(page.get_by_text(REPLY)).to_be_visible()
         await expect(page.get_by_test_id("overview-strip")).to_be_visible()
 
@@ -438,7 +438,7 @@ async def test_strip_shows_both_numbers_for_staff(console: Console, support: str
         await expect(page.get_by_test_id("overview-strip-review")).to_contain_text("0")
         services = 1 if support == "suspended" else 2
         await expect(page.get_by_test_id("overview-strip-services")).to_contain_text(str(services))
-        assert await strip_text(page) == (f"0 Replies needing review {services} Services active")
+        assert await strip_text(page) == (f"0 Replies to check {services} Services on")
         # Plain text: nothing in the strip is a link or a live region.
         strip = page.get_by_test_id("overview-strip")
         await expect(strip.locator("a")).to_have_count(0)
@@ -462,7 +462,7 @@ async def test_strip_hides_review_for_read_only_and_when_inbox_read_fails(
         await expect(page.get_by_test_id("overview-strip-services")).to_contain_text("2")
         await requested(page, api, "inbox/conversations")
         await expect(page.get_by_test_id("overview-strip-review")).to_have_count(0)
-        assert await strip_text(page) == "2 Services active"
+        assert await strip_text(page) == "2 Services on"
     # Without Customer Support the Inbox is not asked; the chat still works.
     api = Api(packages=[package("hr")], review=7)
     async with open_overview(console, api, "/portal") as page:
@@ -497,6 +497,30 @@ async def test_chat_routes_redirect_to_overview_with_client_id(console: Console)
         await page.goto(f"{console.base}/portal/chat?client_id={TENANT}")
         await page.wait_for_url(f"{console.base}/portal?client_id={TENANT}")
         await expect(composer(page)).to_be_visible()
+
+
+@pytest.mark.parametrize(
+    ("query", "target"),
+    [
+        # Encoded by the redirect, never concatenated: the value stays one parameter.
+        ("client_id=a%26b%3Dc", "?client_id=a%26b%3Dc"),
+        # A repeated parameter is ambiguous, so it is dropped rather than guessed.
+        ("client_id=one&client_id=two", ""),
+        # A protocol-relative look-alike stays on this origin as an encoded value.
+        ("client_id=//evil.example", "?client_id=%2F%2Fevil.example"),
+        ("client_id=%20%20", ""),
+    ],
+)
+async def test_chat_redirect_keeps_awkward_client_ids_inert(
+    console: Console, query: str, target: str
+) -> None:
+    api = Api()
+    async with open_overview(console, api, "/chat", me=make_me("platform_admin")) as page:
+        await page.wait_for_url(f"{console.base}/")
+        await page.goto(f"{console.base}/chat?{query}")
+        await page.wait_for_url(f"{console.base}/{target}")
+        assert page.url.startswith(console.base + "/")
+        assert "evil" not in page.url.split("?")[0]
 
 
 @pytest.mark.parametrize("role", ["tenant_admin", "platform_admin"])
@@ -541,7 +565,7 @@ async def test_overview_does_not_scroll_the_page(console: Console) -> None:
             assert measured["scrollHeight"] <= measured["innerHeight"], where
             # The long conversation scrolls inside the message list instead.
             assert measured["inner"][0] > measured["inner"][1], where
-            await expect(page.get_by_role("button", name="Send to sandbox")).to_be_in_viewport()
+            await expect(page.get_by_role("button", name="Send message")).to_be_in_viewport()
 
 
 def intersects(a: Any, b: Any) -> bool:
@@ -564,7 +588,7 @@ async def test_composer_clear_of_the_dock_button(console: Console) -> None:
                 await page.set_viewport_size({"width": width, "height": 900})
                 await page.wait_for_timeout(150)
                 dock_box = await dock.bounding_box()
-                send_box = await page.get_by_role("button", name="Send to sandbox").bounding_box()
+                send_box = await page.get_by_role("button", name="Send message").bounding_box()
                 box = await composer(page).locator("..").bounding_box()
                 where = f"rail {rail} {width}px: dock {dock_box} send {send_box} composer {box}"
                 assert dock_box and send_box and box, where
@@ -588,6 +612,6 @@ async def test_overview_fits_five_widths_in_three_themes(console: Console) -> No
                 assert measured["scrollWidth"] <= measured["clientWidth"], where
                 assert measured["scrollHeight"] <= measured["innerHeight"], where
                 await expect(page.get_by_test_id("overview-strip")).to_be_in_viewport()
-                await expect(page.get_by_role("button", name="Send to sandbox")).to_be_in_viewport()
-                send = await page.get_by_role("button", name="Send to sandbox").bounding_box()
+                await expect(page.get_by_role("button", name="Send message")).to_be_in_viewport()
+                send = await page.get_by_role("button", name="Send message").bounding_box()
                 assert send and send["x"] + send["width"] <= width, where

@@ -11,8 +11,8 @@ const { stripParts, canSeeInboxCount, activeServiceCount } = await import(
   `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
 );
 
-const REVIEW = "Replies needing review";
-const SERVICES = "Services active";
+const REVIEW = "Replies to check";
+const SERVICES = "Services on";
 const pkg = (key, status) => ({ key, status });
 
 test("the strip lists review then services, and omits a part without a value", () => {

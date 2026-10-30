@@ -1203,7 +1203,7 @@ async def test_packaged_m2_browser_acceptance(
                 await tenant_page.get_by_role("button", name="Subscribe", exact=True).count() == 0
             )
             await tenant_invoice.get_by_role(
-                "button", name="Turn tenant switch on", exact=True
+                "button", name="Turn company switch on", exact=True
             ).click()
             await tenant_invoice.get_by_text("On", exact=True).wait_for()
             await tenant_page.reload()
@@ -1323,7 +1323,7 @@ async def test_packaged_m2_browser_acceptance(
             await reader_invoice.get_by_text("Not subscribed", exact=True).wait_for()
             assert (
                 await reader_page.get_by_role(
-                    "button", name=re.compile(r"Subscribe|Turn tenant switch")
+                    "button", name=re.compile(r"Subscribe|Turn company switch")
                 ).count()
                 == 0
             )

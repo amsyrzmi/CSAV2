@@ -13,7 +13,7 @@ import { localDictation, speakLocal } from "@/lib/hr-voice";
 import SlideOver from "./fs/SlideOver";
 import { ChatComposer } from "./chat/ChatComposer";
 import { CompactLimits, SandboxLimits } from "./chat/ChatDisclaimer";
-import { AssistantTile, ChatEmptyState } from "./chat/ChatEmptyState";
+import { ChatEmptyState } from "./chat/ChatEmptyState";
 import { ChatHistory, threadLabel } from "./chat/ChatHistory";
 import { ChatMessages } from "./chat/ChatMessages";
 import { field, Heading, Notice, secondary } from "./ui";
@@ -21,8 +21,8 @@ import { field, Heading, Notice, secondary } from "./ui";
 /**
  * The private sandbox assistant in a ChatGPT-style layout. By default it brings its own page
  * chrome (heading, and the tenant select for platform administrators). `chromeless` renders the
- * chat alone, filling its container's height, for a caller that owns the page header and passes
- * the tenant (Overview).
+ * chat alone, filling its container's height, for a caller that owns the page header, the
+ * no-tenant states and the tenant (Overview); without a tenant it renders nothing.
  */
 export function SandboxWorkspace({ me, chromeless = false, tenant: chosenTenant }: {
   me: Me;
@@ -51,10 +51,8 @@ export function SandboxWorkspace({ me, chromeless = false, tenant: chosenTenant 
   const sandbox = tenant ? <Sandbox key={tenant} query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""}
     canWrite={me.role !== null && me.role !== "read_only"} role={me.role}
     dockClearance={me.workspace_assistant === true} /> : null;
-  if (chromeless) return sandbox ?? <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
-    <AssistantTile />
-    <p className="text-[color:var(--fs-text-secondary)]">{platform ? "Choose a tenant to start chatting" : "Select a tenant to continue."}</p>
-  </div>;
+  // Chromeless is only rendered by Overview, which owns the "choose a tenant" state and passes a tenant.
+  if (chromeless) return sandbox;
   return <>
     <Heading title="Sandbox assistant" description="Private to your account and selected tenant. Knowledge and product-information questions only." />
     {error && <Notice error>{error}</Notice>}
@@ -231,7 +229,7 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
     } catch (cause) {
       if (alive.current) {
         setCreateFailed(true);
-        setError(`${(cause as Error).message}. Retry creation keeps the same request key.`);
+        setError(`${(cause as Error).message}. Trying again repeats the same request, so no second chat is created.`);
       }
       return null;
     } finally { if (alive.current) { setCreating(false); setBusy(false); } }
@@ -262,14 +260,14 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
       if (!alive.current) return;
       if (observed.current.has(draft.request_key)) {
         setPending(null);
-        setError("This request is already confirmed in history. Follow its recorded status; do not resend.");
+        setError("This message is already in the chat, so you do not need to send it again.");
         return;
       }
       if (cause instanceof ApiError && cause.status < 500 && cause.status !== 408) {
         setPending(null); setText(draft.body);
-        setError(`Request rejected (${cause.status}): ${cause.message}. Check history and correct the error before sending again.`);
+        setError(`We could not send your message: ${cause.message}. Check the chat, fix the problem, then try again.`);
       } else {
-        setError(`${(cause as Error).message}. Result may be uncertain: check history or retry this exact request, not a new message.`);
+        setError(`${(cause as Error).message}. We cannot tell whether it was sent. Check the chat, or send the same message again; it will not be delivered twice.`);
       }
     } finally { if (alive.current) setBusy(false); }
   }
@@ -312,7 +310,7 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
   const mode = disclaimerMode(turns.length);
   const history = (inPanel: boolean) => <ChatHistory threads={threads} loaded={threadsLoaded} selected={thread}
     showLabel={!inPanel} hasOlder={threadCursor !== null} onOlder={() => void olderThreads()}
-    newLabel={createFailed ? "Retry conversation creation" : "New chat"}
+    newLabel={createFailed ? "Try creating the chat again" : "New chat"}
     newDisabled={!canWrite || busy || pending !== null || voiceBusy || conversationVoiceBusy || listening}
     selectDisabled={locked}
     onNew={() => { setHistoryOpen(false); void create(); }}
@@ -330,13 +328,13 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
           {current ? threadLabel(current) : thread ? "Conversation" : "New chat"}</p>
         {thread && <>
           <button type="button" className={headerIcon} onClick={() => setRevision((value) => value + 1)}
-            aria-label="Reconnect / check status" title="Reconnect / check status"><RefreshCw size={16} aria-hidden /></button>
+            aria-label="Check for new messages" title="Check for new messages"><RefreshCw size={16} aria-hidden /></button>
           <button type="button" className={headerIcon} disabled={!canWrite || locked} onClick={() => setConfirmArchive(true)}
             aria-label="Archive conversation" title="Archive conversation"><Archive size={16} aria-hidden /></button>
         </>}
       </header>
       {confirmArchive && <div className="shrink-0 space-y-3 border-b border-[color:var(--fs-border)] px-3 py-3 sm:px-4">
-        <Notice>Hide this conversation from your list? History and queued work are retained. This does not delete messages or cancel an accepted turn.</Notice>
+        <Notice>Hide this chat from your list? Nothing is deleted, and a message already sent still gets its reply.</Notice>
         <div className="flex flex-wrap gap-3">
           <button className={secondary} disabled={locked} onClick={() => void archive()}>Confirm archive</button>
           <button className={secondary} onClick={() => setConfirmArchive(false)}>Cancel</button>
@@ -360,10 +358,10 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
       <div className={`shrink-0 px-3 pt-2 sm:px-6 ${dockClearance ? "pb-[4.5rem]" : "pb-3"}`}>
         <div ref={composerArea} className="mx-auto w-full max-w-3xl space-y-2">
           {error && <Notice error>{error}</Notice>}
-          {!canWrite && <Notice>Read-only membership: sending, creating and archiving conversations are disabled.</Notice>}
+          {!canWrite && <Notice>Read-only access: you can read your chats but not send messages, start chats or archive them.</Notice>}
           {pending && <Notice>{pending.source === "voice"
-            ? "Voice request retained. Resume the same request or explicitly discard local recovery. Check history for any accepted message."
-            : "Uncertain send retained. Retry uses the original text and request key. Polling can confirm acceptance without resending."}</Notice>}
+            ? "We could not confirm your voice message. Try the same message again, or discard it. Check the chat first in case it already arrived."
+            : "We could not confirm that your last message was sent. Sending again repeats exactly the same message, and the chat updates by itself if it did arrive."}</Notice>}
           <ChatComposer value={pending?.body ?? text} onChange={setText} textareaRef={composer}
             disabled={textDisabled} onSend={() => void send()} retry={pending?.source === "text"}
             sendDisabled={!canWrite || busy || creating || listening || voiceBusy || conversationVoiceBusy || pending?.source === "voice" || (!pending && !text.trim())}
@@ -381,7 +379,7 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
                   <option value="en-MY">English (Malaysia)</option>
                 </select>
               </div>
-              <p className="text-xs text-[color:var(--fs-text-secondary)]">Review dictated text before sending. Local dictation requires a secure browser with local speech support and an installed language pack matching your selection. Audio stays in your browser.</p>
+              <p className="text-xs text-[color:var(--fs-text-secondary)]">Check dictated text before you send it. Dictation needs a secure browser that supports speech and has the language you picked installed. Your voice stays in your browser.</p>
               {thread ? <>
                 <VoiceConversation key={`voice-${thread}`} conversation={thread} query={query}
                   disabled={!canWrite || busy || pending?.source === "text" || creating || listening || voiceBusy}

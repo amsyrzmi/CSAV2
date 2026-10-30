@@ -6,10 +6,13 @@ import { Notice } from "../ui";
 
 /** The sandbox limits, word for word as the page has always shown them. */
 export function SandboxLimits() {
-  return <Notice testId="sandbox-disclaimer">No customer records, orders, bookings, tickets, invoices, payments, email or staff escalation.
-    No external customer sends. Business confirmations and attachments are unavailable.
-    Browser dictation fills a draft for review; read aloud uses a local browser voice.
-    Use Knowledge base for document uploads. Archive hides history; it does not delete it.</Notice>;
+  return <Notice testId="sandbox-disclaimer">This chat only answers questions about your knowledge base and products.
+    It cannot look up customer records, orders, bookings, tickets, invoices or payments.
+    It cannot read or send email, message your customers or pass a question to your staff.
+    It cannot confirm business actions or take attachments.
+    Dictation fills in your message for you to check before sending, and read aloud uses your browser&apos;s voice.
+    To add documents, use Knowledge base.
+    Archiving a chat hides it but does not delete it.</Notice>;
 }
 
 /** Once a conversation has a message: one line, and a disclosure holding the full limits. */

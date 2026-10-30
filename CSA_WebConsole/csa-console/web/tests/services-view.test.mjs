@@ -18,7 +18,7 @@ const view = await import(moduleUrl(
 ));
 const {
   serviceStats, rowAvatarState, statusLabel, agentCountLabel, lastChangeText, shortDate, statusLine,
-  SAVED_NOT_REFRESHED,
+  SAVED_NOT_REFRESHED, buildText, setupText, connectionText,
 } = view;
 
 const agent = (name, active) => ({ name, capability: { name, active } });
@@ -124,8 +124,8 @@ test("lastChangeText words every action with a stable date and the server's acto
     ["suspended", "Suspended 20 Oct 2026 by Preview Admin"],
     ["subscribed", "Subscription turned on 20 Oct 2026 by Preview Admin"],
     ["unsubscribed", "Subscription turned off 20 Oct 2026 by Preview Admin"],
-    ["tenant_switch_on", "Tenant switch turned on 20 Oct 2026 by Preview Admin"],
-    ["tenant_switch_off", "Tenant switch turned off 20 Oct 2026 by Preview Admin"],
+    ["tenant_switch_on", "Company switch turned on 20 Oct 2026 by Preview Admin"],
+    ["tenant_switch_off", "Company switch turned off 20 Oct 2026 by Preview Admin"],
   ];
   for (const [action, text] of cases) assert.equal(lastChangeText(change(action)), text, action);
 });
@@ -229,4 +229,19 @@ test("statusLine is null for available and suspended rows", () => {
 
 test("the saved-but-stale message does not claim a failure", () => {
   assert.equal(SAVED_NOT_REFRESHED, "Saved, but the list could not refresh. Reload to see the change.");
+});
+
+test("the agent card words build, setup and connection in plain language, never as raw codes", () => {
+  assert.equal(buildText("local"), "Ready");
+  assert.equal(buildText("prepared_only"), "Prepared, not live yet");
+  assert.equal(buildText("not_implemented"), "Not built yet");
+  assert.equal(setupText("available"), "Ready");
+  assert.equal(setupText("setup_required"), "Setup needed");
+  assert.equal(setupText("configured_unverified"), "Set up, not yet checked");
+  assert.equal(setupText("reindex_required"), "Knowledge base needs re-indexing");
+  assert.equal(connectionText("closed"), "Working");
+  assert.equal(connectionText("open"), "Paused after repeated failures");
+  assert.equal(connectionText("half_open"), "Trying again");
+  // A code the table does not know still reads as words, not as an underscored identifier.
+  assert.equal(connectionText("some_new_state"), "some new state");
 });

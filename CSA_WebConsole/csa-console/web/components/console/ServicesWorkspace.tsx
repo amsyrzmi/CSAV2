@@ -18,9 +18,9 @@ import { action, field, Heading, Notice, secondary } from "./ui";
 import { WhatsAppPanel } from "./WhatsAppPanel";
 
 const GROUPS: { kind: Service["kind"]; title: string }[] = [
-  { kind: "base", title: "Base" },
+  { kind: "base", title: "Core service" },
   { kind: "addon", title: "Add-ons" },
-  { kind: "standalone", title: "Standalone" },
+  { kind: "standalone", title: "Separate services" },
 ];
 /** Status words take their colour from the theme tokens; the word itself always says the status. */
 const TONE_CLASS: Record<StatusTone, string> = {
@@ -68,7 +68,7 @@ export function ServicesWorkspace({ me, initialClientId = "" }: { me: Me; initia
   return (
     <>
       <Heading title="Services"
-        description="Service packages for this tenant: request, activation and the agents each package includes." />
+        description="The services this company can use. Request one, switch it on or off, and see which assistants it includes." />
       {error && <Notice error>{error}</Notice>}
       {platform && (
         <div className="mb-5">
@@ -80,7 +80,7 @@ export function ServicesWorkspace({ me, initialClientId = "" }: { me: Me; initia
           </select>
         </div>
       )}
-      {!clientId ? <Notice>Select a tenant with an active membership to continue.</Notice> :
+      {!clientId ? <Notice>Select a tenant to see its services.</Notice> :
         <ServiceList key={clientId} clientId={platform ? clientId : null} platform={platform}
           canManage={platform || me.role === "tenant_admin"} />}
     </>

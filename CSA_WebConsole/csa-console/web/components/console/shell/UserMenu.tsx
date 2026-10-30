@@ -111,10 +111,10 @@ export function UserMenu({ account }: { account: ShellAccount }) {
           <div className="mt-4 flex items-center justify-between gap-4 border-t border-[color:var(--fs-border)] pt-4">
             <div className="min-w-0">
               <span id={`${noteId}-label`} className="block text-sm font-medium">
-                Calm motion
+                Reduce animations
               </span>
               <span id={noteId} className="mt-0.5 block text-xs text-[color:var(--fs-text-secondary)]">
-                Pauses animated decoration in the inbox, side panels and agent avatars. Nothing on the server pauses.
+                Stops the moving effects on this screen. Your assistant keeps working as normal.
               </span>
             </div>
             <button

@@ -59,7 +59,7 @@ test("every role gets the same three prompt chips, all inside the sandbox limits
 });
 
 test("the compact disclaimer is one line naming the sandbox limits", () => {
-  assert.equal(chat.SANDBOX_COMPACT_NOTICE, "Private sandbox: knowledge and product questions only.");
+  assert.equal(chat.SANDBOX_COMPACT_NOTICE, "Private chat. It only answers questions about your knowledge base and products.");
   assert.doesNotMatch(chat.SANDBOX_COMPACT_NOTICE, /\n/);
 });
 
