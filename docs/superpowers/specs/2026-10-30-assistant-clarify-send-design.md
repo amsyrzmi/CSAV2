@@ -68,7 +68,7 @@ The rest of the clarification stays as is. Dropping all options leaves a plain q
 
 ### 4. Send from the user's words (`service.py` `_asked_to_send`, planner prompt line)
 
-**Rule.** It applies to the parts `_authored` counts. The first match wins:
+**Rule.** (Amended by the final review on 2026-10-30: negated send, "drafts", write words `write|tulis|karang` and stale clicks; the plan's Global Constraints hold the final rule.) It applies to the parts `_authored` counts. The first match wins:
 
 1. A draft word appears (`\b(draft|draf|save|simpan)\b`): **draft card**. This also covers "save it as a draft, don't send".
 2. A send word appears (the existing `_SEND_WORDS`): **Send card**.
