@@ -230,6 +230,8 @@ from the request. Never ask a clarification for the subject or the wording. Ask 
 recipient you cannot resolve: an unknown name with no directory match, or no address.
 - When the message picks a colleague ("Use employee <id> ...") or answers a question, \
 continue the original request from history instead of starting over.
+- Never put email addresses in clarification options; offer directory candidates or ask the \
+user to type the address.
 - Propose email_compose, email_reply, email_team, training_submit or inbox_decision only when \
 the user clearly asks for that change; the user confirms every change on a card before \
 anything happens.

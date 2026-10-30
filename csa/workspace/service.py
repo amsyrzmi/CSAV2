@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email.utils import parseaddr
@@ -905,23 +904,24 @@ def _inert(text: str) -> str:
 def _clarification(
     proposal: ClarificationProposal,
 ) -> tuple[ClarificationResult, ClarificationResult]:
-    """The clarification the user sees (inert) and the copy stored, with addresses masked.
+    """The clarification the user sees and the copy stored; options never carry an address.
 
-    A question can quote mailbox data, and turn rows hold no addresses. The live options keep
-    their values so a click sends the real one.
+    Everything is inert (see ``_inert``). Option labels and values have addresses masked live
+    too, so a click can never add an address: colleagues are picked by employee id and threads
+    by thread_id, and an outside address is typed by the user. Masking can lengthen a value, so
+    an option past its limit once masked is refused rather than cut (a cut value would no longer
+    be recognised as a click). The stored copy masks the question as well: turn rows hold no
+    address, while the live question may show one the user wrote.
     """
-
-    def build(clean: Callable[[str], str]) -> ClarificationResult:
-        return ClarificationResult(
-            action="clarification",
-            question=clean(proposal.question),
-            options=[
-                ClarificationOption(label=clean(o.label)[:100], value=clean(o.value)[:200])
-                for o in proposal.options
-            ],
-        )
-
-    return build(_inert), build(lambda text: _masked(_inert(text)))
+    pairs = [(_masked(_inert(o.label)), _masked(_inert(o.value))) for o in proposal.options]
+    if any(len(label) > 100 or len(value) > 200 for label, value in pairs):
+        raise PlannerInvalidOutput()
+    options = [ClarificationOption(label=label, value=value) for label, value in pairs]
+    question = _inert(proposal.question)
+    return (
+        ClarificationResult(action="clarification", question=question, options=options),
+        ClarificationResult(action="clarification", question=_masked(question), options=options),
+    )
 
 
 def _answer_parts(message: str) -> tuple[str, str, list[str]]:
@@ -1035,17 +1035,11 @@ def _asked_to_send(
 ) -> bool:
     """A send card only when the plan says so and the user's own words ask to send.
 
-    Only what the user said counts, in this message and in history: the typed text, the request
-    and folded answers (a clicked "send" is the user's choice), never a clarification question
-    such as "Should I send it?".
+    Only the parts ``_authored`` counts: typed text, the stored first request and typed folded
+    answers. Never a clarification question ("Should I send it?") and never a clicked value
+    ("yes, send it now"): the planner wrote both.
     """
-    said = [
-        part
-        for text in [message, *(turn.message for turn in facts.history)]
-        for typed, first, answers in [_answer_parts(text)]
-        for part in (typed, first, *answers)
-    ]
-    return proposal.send and any(_SEND_WORDS.search(part) for part in said)
+    return proposal.send and any(_SEND_WORDS.search(part) for part in _authored(message, facts))
 
 
 async def _draft_card(
