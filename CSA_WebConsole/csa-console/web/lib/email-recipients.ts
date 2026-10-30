@@ -158,6 +158,20 @@ function codeOf(error: unknown): string | null {
     ? error.code : null;
 }
 
+/**
+ * The open thread read again after a sync, so a reply that arrived shows in it: the fresh detail,
+ * or null when nothing is open or the sync's cleanup removed the thread (404
+ * `resource_unavailable`). Any other failure is thrown for the caller to show.
+ */
+export async function rereadThread<T>(threadId: string | null, read: (id: string) => Promise<T>): Promise<T | null> {
+  if (threadId === null) return null;
+  try { return await read(threadId); }
+  catch (error) {
+    if (codeOf(error) === "resource_unavailable") return null;
+    throw error;
+  }
+}
+
 /** The sentence for an email refusal (an `ApiError`, or anything with `code`), or null if unmapped. */
 export function emailErrorSentence(error: unknown): string | null {
   const code = codeOf(error);
