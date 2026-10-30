@@ -30,10 +30,12 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "CSA_WebConsole/csa-console/web"
 WAIT = 60_000  # The first visit compiles the harness in `next dev`.
 CHIPS = [
-    "Ask something a customer might ask",
-    "Check what the knowledge base says about a topic",
-    "Rephrase an answer for a customer",
+    "What does our knowledge base say about ",
+    "Which of our products ",
+    "How should we answer a customer who asks about ",
 ]
+# A chip's button reads the starter, then an ellipsis; a click fills the composer with the starter.
+CHIP_LABELS = [chip.rstrip() + "…" for chip in CHIPS]
 FULL_NOTICE = (
     "This chat only answers questions about your knowledge base and products. It cannot look up "
     "customer records, orders, bookings, tickets, invoices or payments. It cannot read or send "
@@ -283,7 +285,7 @@ async def test_empty_state_shows_prompt_chips_and_full_disclaimer(server: str) -
             timeout=WAIT
         )
         chips = page.get_by_test_id("sandbox-chips").get_by_role("button")
-        await expect(chips).to_have_text(CHIPS)
+        await expect(chips).to_have_text(CHIP_LABELS)
         notice = page.get_by_test_id("sandbox-disclaimer")
         await expect(notice).to_be_visible()
         assert squash(await notice.inner_text()) == FULL_NOTICE
@@ -295,7 +297,7 @@ async def test_empty_state_shows_prompt_chips_and_full_disclaimer(server: str) -
 async def test_chip_fills_the_composer_without_sending(server: str) -> None:
     api = Synthetic()
     async with open_chat(server, api) as page:
-        chip = page.get_by_role("button", name=CHIPS[1], exact=True)
+        chip = page.get_by_role("button", name=CHIP_LABELS[1], exact=True)
         await chip.click(timeout=WAIT)
         composer = page.get_by_label("Your question", exact=False)
         await expect(composer).to_have_value(CHIPS[1])
@@ -380,8 +382,8 @@ async def test_read_only_member_composer_is_disabled(server: str) -> None:
         await expect(page.get_by_label("Your question", exact=False)).to_be_disabled()
         await expect(page.get_by_role("button", name="Send message", exact=True)).to_be_disabled()
         await expect(page.get_by_role("button", name="New chat")).to_be_disabled()
-        for chip in CHIPS:
-            await expect(page.get_by_role("button", name=chip, exact=True)).to_be_disabled()
+        for label in CHIP_LABELS:
+            await expect(page.get_by_role("button", name=label, exact=True)).to_be_disabled()
         # Reading history still works.
         await page.get_by_role("button", name="Conversation 1", exact=True).click()
         await expect(page.get_by_role("button", name="Archive conversation")).to_be_disabled()
@@ -500,6 +502,23 @@ async def test_legacy_mode_keeps_heading_and_tenant_select_for_platform_admin(se
         assert "chat/conversations?client_id=tenant-a" in reads, reads
 
 
+async def test_switching_conversation_clears_a_failed_new_chat(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.failed_creations = 1
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="New chat", exact=True).click(timeout=WAIT)
+        failure = page.get_by_text(
+            "Trying again repeats the same request, so no second chat is created."
+        )
+        retry = page.get_by_role("button", name="Try creating the chat again")
+        await expect(failure).to_be_visible()
+        await expect(retry).to_be_visible()
+        await page.get_by_role("button", name="Conversation 1", exact=True).click()
+        await expect(failure).to_have_count(0)
+        await expect(page.get_by_role("button", name="New chat", exact=True)).to_be_visible()
+        await expect(retry).to_have_count(0)
+
+
 async def test_failed_creation_keeps_the_draft_and_send_retries_it(server: str) -> None:
     api = Synthetic()
     api.failed_creations = 1
@@ -514,7 +533,7 @@ async def test_failed_creation_keeps_the_draft_and_send_retries_it(server: str) 
         # Not locked out, and the question is still there.
         await expect(composer).to_be_enabled()
         await expect(composer).to_have_value("Do you open on Sundays?")
-        await expect(page.get_by_role("button", name=CHIPS[0], exact=True)).to_be_enabled()
+        await expect(page.get_by_role("button", name=CHIP_LABELS[0], exact=True)).to_be_enabled()
         await expect(send).to_be_enabled()
         await send.click()
         log = page.get_by_role("log", name="Chat messages")
@@ -583,7 +602,7 @@ async def test_disclaimer_shows_when_the_first_read_fails(server: str) -> None:
     api.failed_reads.add("thread-1")
     async with open_chat(server, api) as page:
         await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
-        await expect(page.get_by_text("Polling disconnected:", exact=False)).to_be_visible()
+        await expect(page.get_by_text("We lost touch with the chat:", exact=False)).to_be_visible()
         await expect(page.get_by_role("heading", name="How can I help today?")).to_have_count(0)
         notice = page.get_by_test_id("sandbox-disclaimer")
         await expect(notice).to_be_visible()

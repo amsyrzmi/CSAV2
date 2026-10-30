@@ -41,10 +41,15 @@ export function sandboxDelayed(turn: SandboxTurn, now: number): boolean {
  * Prompt chips on the empty chat. Each one only fills the composer (nothing is sent by a click)
  * and stays inside what the sandbox answers: knowledge and product-information questions.
  */
-export const CHIP_CUSTOMER_QUESTION = "Ask something a customer might ask";
-export const CHIP_KNOWLEDGE_CHECK = "Check what the knowledge base says about a topic";
-export const CHIP_REPHRASE = "Rephrase an answer for a customer";
-export const SANDBOX_CHIPS: readonly string[] = [CHIP_CUSTOMER_QUESTION, CHIP_KNOWLEDGE_CHECK, CHIP_REPHRASE];
+export const CHIP_KNOWLEDGE = "What does our knowledge base say about ";
+export const CHIP_PRODUCTS = "Which of our products ";
+export const CHIP_CUSTOMER_ASKS = "How should we answer a customer who asks about ";
+export const SANDBOX_CHIPS: readonly string[] = [CHIP_KNOWLEDGE, CHIP_PRODUCTS, CHIP_CUSTOMER_ASKS];
+
+/** The label on a chip: the starter without its trailing space, then an ellipsis to show the user finishes it. */
+export function chipLabel(chip: string): string {
+  return `${chip.trimEnd()}…`;
+}
 
 /** The one line the full limits notice collapses to once a conversation has a message. */
 export const SANDBOX_COMPACT_NOTICE = "Private chat. It only answers questions about your knowledge base and products.";

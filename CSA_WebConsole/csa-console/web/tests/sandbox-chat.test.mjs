@@ -43,11 +43,18 @@ test("the disclaimer is full until the conversation has a message, then compact"
 
 test("every role gets the same three prompt chips, all inside the sandbox limits", () => {
   const expected = [
-    "Ask something a customer might ask",
-    "Check what the knowledge base says about a topic",
-    "Rephrase an answer for a customer",
+    "What does our knowledge base say about ",
+    "Which of our products ",
+    "How should we answer a customer who asks about ",
   ];
   assert.deepEqual([...chat.SANDBOX_CHIPS], expected);
+  // Each starter ends in a space so the user types the rest; the button shows it with an ellipsis.
+  for (const chip of expected) assert.ok(chip.endsWith(" "), chip);
+  assert.deepEqual(expected.map(chat.chipLabel), [
+    "What does our knowledge base say about…",
+    "Which of our products…",
+    "How should we answer a customer who asks about…",
+  ]);
   for (const role of ROLES) {
     const chips = chat.chipsFor(role);
     assert.deepEqual(chips, expected, `chips for ${role}`);

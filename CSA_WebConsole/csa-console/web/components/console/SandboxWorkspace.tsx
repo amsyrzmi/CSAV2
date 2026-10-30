@@ -240,6 +240,9 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
     observed.current.clear();
     setThread(id); setTurns([]); setLoadedThread(""); setHistoryPages(1); setTurnCursor(null);
     setPollError(""); setConfirmArchive(false);
+    // A failed "new chat" does not follow the person into another conversation. The request key
+    // is kept (creationKey), so trying again later still repeats the same request.
+    setCreateFailed(false); setError("");
     if (!keepDraft) setText("");
   }
   async function send() {
@@ -320,7 +323,7 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
     <aside className="hidden min-h-0 flex-col border-r border-[color:var(--fs-border)] p-3 md:flex">{history(false)}</aside>
     <SlideOver open={historyOpen} onClose={() => setHistoryOpen(false)} title="Your private conversations"
       returnFocusTo={historyButton}>{history(true)}</SlideOver>
-    <section aria-label="Sandbox chat" className="flex min-h-0 min-w-0 flex-col">
+    <section aria-label="Chat" className="flex min-h-0 min-w-0 flex-col">
       <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-[color:var(--fs-border)] px-3 sm:px-4">
         <button ref={historyButton} type="button" className={`${secondary} shrink-0 px-3 md:hidden`} onClick={() => setHistoryOpen(true)}>
           <History size={16} aria-hidden />History</button>
@@ -344,7 +347,7 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
           escape the scroller's clip and stretch the page (Overview must not scroll). */}
       <div ref={scroller} data-testid="sandbox-scroll" onScroll={onScroll} className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6">
-          {pollError && <Notice error>Polling disconnected: {pollError}. History may be stale; reconnect does not resend messages.</Notice>}
+          {pollError && <Notice error>We lost touch with the chat: {pollError}. Use Check for new messages; it never sends anything again.</Notice>}
           {turnCursor && <div className="text-center">
             <button className={secondary} onClick={() => {
               if (scroller.current) scrolled.current.height = scroller.current.scrollHeight;

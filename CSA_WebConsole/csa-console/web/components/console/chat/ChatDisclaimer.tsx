@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import { SANDBOX_COMPACT_NOTICE } from "@/lib/sandbox-chat";
 import { Notice } from "../ui";
 
-/** The sandbox limits, word for word as the page has always shown them. */
+/** What the private chat cannot do, in plain words: shown in full while a chat is empty. */
 export function SandboxLimits() {
   return <Notice testId="sandbox-disclaimer">This chat only answers questions about your knowledge base and products.
     It cannot look up customer records, orders, bookings, tickets, invoices or payments.

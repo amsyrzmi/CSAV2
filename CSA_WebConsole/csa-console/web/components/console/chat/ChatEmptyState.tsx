@@ -1,4 +1,5 @@
 import AgentAvatar from "../fs/AgentAvatar";
+import { chipLabel } from "@/lib/sandbox-chat";
 import { SandboxLimits } from "./ChatDisclaimer";
 
 /** The assistant in a rounded tile, above a line of copy (and, inside a tenant, more below). */
@@ -26,7 +27,7 @@ export function ChatEmptyState({ chips, disabled, onChip }: {
       {chips.map((chip) => <li key={chip}>
         <button type="button" disabled={disabled} onClick={() => onChip(chip)}
           className="min-h-10 rounded-[var(--fs-radius-round)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] px-4 py-2 text-sm text-[color:var(--fs-text)] transition-colors duration-150 hover:border-[color:var(--fs-primary)] hover:bg-[var(--fs-surface-blue)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:border-[color:var(--fs-border)] disabled:bg-[var(--fs-disabled-bg)] disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:min-h-11">
-          {chip}</button>
+          {chipLabel(chip)}</button>
       </li>)}
     </ul>
   </div>;

@@ -21,12 +21,12 @@ export function ChatMessages({ turns, now, onReadAloud, readDisabled }: {
           <span className="sr-only">You: </span>{turn.body}</p>
         <p className="text-right text-xs text-[color:var(--fs-text-secondary)]">{sandboxStatus[turn.status]}</p>
       </div>
-      {sandboxDelayed(turn, now) && <Notice>Taking longer than the 90-second turn deadline. This is not a delivery confirmation or permission to resend. Check status; worker retries may still be pending.</Notice>}
+      {sandboxDelayed(turn, now) && <Notice>This is taking longer than usual. It may still arrive. Do not send it again yet; use Check for new messages.</Notice>}
       {turn.replies.map((reply) => <div key={reply.id} className="flex items-start gap-3">
         <AgentAvatar agentId="assistant" size={32} state="rest" label="" />
         <div className="min-w-0 flex-1">
           <p className="whitespace-pre-wrap break-words pt-1 leading-relaxed text-[color:var(--fs-text)]">
-            <span className="sr-only">Sandbox assistant: </span>{reply.body}</p>
+            <span className="sr-only">Assistant: </span>{reply.body}</p>
           <button type="button" aria-label="Read reply aloud" title="Read reply aloud" disabled={readDisabled}
             onClick={() => onReadAloud(reply.body)}
             className="mt-1 -ml-2 inline-grid size-9 place-items-center rounded-[var(--fs-radius-control)] text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:size-11">
