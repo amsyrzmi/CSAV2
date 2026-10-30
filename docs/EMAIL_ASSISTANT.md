@@ -164,9 +164,35 @@ data only.
 ## Workspace assistant
 
 The assistant can reply to a thread, email the team, summarise the inbox and
-send. A send card (`email_send`) is made only when the planner asks to send and
-the user's own words say so (send, hantar, kirim). Otherwise the card saves to
-Gmail drafts (`email_export`). See [CONSOLE_API.md](CONSOLE_API.md#workspace-assistant).
+send. See [CONSOLE_API.md](CONSOLE_API.md#workspace-assistant). The server picks
+the card from the user's own words. Only the parts of the turn the user wrote
+count, never a planner question or a clicked option. The first rule that matches
+wins:
+
+1. A draft word (draft, draf, save, simpan) gives a card that saves to Gmail
+   drafts (`email_export`), so "save it as a draft, don't send" stays a draft.
+2. A send word (send, hantar, hantarkan, kirim, kirimkan) gives a send card
+   (`email_send`).
+3. An email verb (email, e-mel, emel) gives a send card when the planner also
+   asks to send, unless the user wrote "write".
+4. Anything else gives a draft card.
+
+The user confirms either card before anything happens.
+
+Clarifications are checked by the server, not only by the planner prompt:
+
+- An option that only asks the user to type is dropped. That is a label that
+  starts with a whole word such as Enter, Type, Provide, Input, Write, Specify,
+  Fill in, Masukkan, Taip, Berikan or Isi, or a snake_case value such as
+  `enter_address`. Real choices stay, for example "Enterprise plan", a
+  colleague (employee id) or a thread (thread id). A question left with no
+  options is answered by typing.
+- The assistant does not ask for the subject or the wording. When the planner's
+  question mentions the subject, body, wording or content (tajuk, isi,
+  kandungan), the server plans once more with a fixed correction. If the planner
+  asks again, the user gets one plain question with no options: "What should the
+  email say? Type a line or two and I'll write it." (in Malay for a Malay
+  message). A turn makes at most two planner calls.
 
 - The planner sees up to 10 recent threads (sender, subject cut to 120
   characters, time, priority) as untrusted facts, with `<` and `>` escaped so a
