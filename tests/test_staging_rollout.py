@@ -26,6 +26,15 @@ DIGEST_B = "sha256:" + "b" * 64
 PYTHON_REF = f"ghcr.io/amsyrzmi/csa-python@{DIGEST_A}"
 FRONTEND_REF = f"ghcr.io/amsyrzmi/csa-frontend@{DIGEST_B}"
 RUNNING_REF = "ghcr.io/amsyrzmi/csa-python@sha256:" + "c" * 64
+PREV_SHA = "0f9e8d7" + "1" * 33  # the revision the running images were built from
+PLANNED_SHA = "9f8e7d6" + "2" * 33  # a SHA the owner planned before HEAD moved
+RUNNING_FORMAT = '{"digests": {{json .RepoDigests}}, "labels": {{json .Config.Labels}} }'
+REVISION = "org.opencontainers.image.revision"
+RESTART = (
+    "docker --host unix:///var/run/docker.sock start csa-staging-gateway-1 "
+    "csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1"
+)
+RERUN = "Re-run plan, then apply, once the cause is fixed."
 SOCKET_PREFIX = f"docker --host {sr.SOCKET}"
 
 ALL_FLAGS = {
@@ -79,6 +88,12 @@ def fail(code: int = 1, stderr: str = "") -> Completed:
     return Completed(code, "", stderr)
 
 
+def running_json(*refs: str, revision: str | None = PREV_SHA) -> str:
+    """What the running-image inspect prints: the digests and the image labels."""
+    labels = {REVISION: revision} if revision else None
+    return json.dumps({"digests": list(refs), "labels": labels})
+
+
 def versions_json(digest: str, *, tags: list[str]) -> str:
     return json.dumps(
         [
@@ -113,7 +128,7 @@ def staging_runner(
         (has("run list"), ok(json.dumps(run_list))),
         (
             has("image inspect"),
-            ok(json.dumps([RUNNING_REF, "docker.io/other@sha256:" + "d" * 64])),
+            ok(running_json(RUNNING_REF, "docker.io/other@sha256:" + "d" * 64)),
         ),
         (
             has("inspect --format {{.Image}}"),
@@ -310,6 +325,8 @@ def test_gh_failure_carries_only_the_first_stderr_line() -> None:
     ("status", "conclusion", "expected"),
     [
         ("waiting", "", "waiting for approval"),
+        ("pending", "", "in progress"),
+        ("requested", "", "in progress"),
         ("queued", "", "in progress"),
         ("in_progress", "", "in progress"),
         ("completed", "failure", "finished: failure"),
@@ -389,8 +406,8 @@ def test_plan_with_migrations_lists_steps_downtime_and_command(
         "Downtime: console unavailable and bot replies delayed "
         "(queued, not lost) until the services are back."
     ) in out
-    assert out.rstrip("\n").endswith(
-        ".venv/bin/python -m scripts.staging_rollout apply --migrations 0486,0487"
+    assert out.rstrip("\n").splitlines()[-1] == (
+        f".venv/bin/python -m scripts.staging_rollout apply --sha {SHA} --migrations 0486,0487"
     )
 
 
@@ -408,7 +425,9 @@ def test_plan_image_only_has_no_migration_steps(
     assert "pull and verify images" in out
     assert "recreate gateway, worker, delivery, frontend" in out
     assert "check readiness" in out
-    assert out.rstrip("\n").endswith(".venv/bin/python -m scripts.staging_rollout apply")
+    assert out.rstrip("\n").splitlines()[-1] == (
+        f".venv/bin/python -m scripts.staging_rollout apply --sha {SHA}"
+    )
 
 
 def test_plan_tolerates_stopped_containers(
@@ -429,6 +448,8 @@ def test_plan_shows_rollback_digests_when_running(
     out = capsys.readouterr().out
     assert out.count(RUNNING_REF) == 4
     assert "docker.io/other" not in out
+    assert "Rollback references (current containers):" in out
+    assert "running now" not in out
 
 
 def test_plan_lists_missing_secrets_by_name(
@@ -600,6 +621,7 @@ class ApplyRig:
         overrides: Sequence[tuple[Predicate, Answer]] = (),
         secrets: Sequence[str] = ("staging_owner_dsn",),
         recorded: Sequence[str] | None = None,
+        running: bool = True,
     ) -> None:
         self.repo = tmp_path / "repo"
         (self.repo / "deploy").mkdir(parents=True)
@@ -608,6 +630,7 @@ class ApplyRig:
         self.docker_config = tmp_path / "dc"
         self.sleeps: list[float] = []
         self.lines: list[str] = []
+        self.marks: list[tuple[str, int]] = []  # each line with the number of calls made so far
         monkeypatch.setattr(
             sr, "discover_migrations", lambda: [(v, Path(f"{v}_x.sql")) for v in checkout]
         )
@@ -640,7 +663,7 @@ class ApplyRig:
         paths = make_secret_files(secret_dir, *[n for n in secrets if not n.startswith("absent")])
         for name in secrets:
             paths.setdefault(name, secret_dir / "absent" / name)
-        self.runner = staging_runner(applied=applied, secret_files=paths)
+        self.runner = staging_runner(applied=applied, secret_files=paths, running=running)
         apply_rules: list[tuple[Predicate, Answer]] = [
             *overrides,
             (is_pulled_inspect, inspect_pulled),
@@ -656,16 +679,21 @@ class ApplyRig:
         ]
         self.runner.rules[:0] = apply_rules
 
-    def apply(self, confirmed: Sequence[str] = ()) -> int:
+    def out(self, line: str) -> None:
+        self.lines.append(line)
+        self.marks.append((line, len(self.runner.calls)))
+
+    def apply(self, confirmed: Sequence[str] = (), sha: str = SHA) -> int:
         return sr.apply(
             self.runner,
             self.repo,
             list(confirmed),
+            sha=sha,
             docker_config=self.docker_config,
             secret_dir=self.secret_dir,
             checks_dir=sr.CHECKS_DIR,
             sleep=self.sleeps.append,
-            out=self.lines.append,
+            out=self.out,
         )
 
     @property
@@ -860,11 +888,14 @@ def test_migrate_failure_stops_without_retry_or_recreate(
     assert rig.apply(["0486", "0487"]) == 1
     seen = labels(rig.runner)
     assert seen.count("migrate") == 1
-    assert seen[-1] == "migrate"
+    assert seen[seen.index("migrate") + 1 :] == ["select"]  # the re-read decides the recovery
     assert "migrate exit=1" in rig.lines
     assert "Stopped at migrate:" in rig.text
-    assert "check schema_migrations" in rig.text
     assert "gateway, frontend, worker and delivery are stopped" in rig.text
+    assert rig.lines[rig.lines.index("To bring the previous version back:") + 1] == RESTART
+    assert "Rollback images" not in rig.text
+    assert "Migrations were applied" not in rig.text
+    assert rig.lines[-1] == RERUN
 
 
 def test_migrate_must_record_every_pending_version(
@@ -962,12 +993,13 @@ def image_after_up(service_label: str, *, recreated: bool = True) -> list[tuple[
         return fail(1)
 
     def digests(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
-        ref = PYTHON_REF if state["up"] and recreated else RUNNING_REF
-        return ok(json.dumps([ref]))
+        if state["up"] and recreated:
+            return ok(running_json(PYTHON_REF, revision=SHA))
+        return ok(running_json(RUNNING_REF))
 
     return [
         (lambda argv: step_label(argv) == service_label, mark),
-        (lambda argv: "{{json .RepoDigests}}" in argv, digests),
+        (lambda argv: RUNNING_FORMAT in argv, digests),
     ]
 
 
@@ -1047,13 +1079,17 @@ def test_never_healthy_fails_after_timeout(rig_factory: Callable[..., ApplyRig])
     assert sum(rig.sleeps) <= 300
     assert set(rig.sleeps) == {5}
     assert "Stopped at recreate gateway:" in rig.text
-    assert "Rollback images:" in rig.text
-    assert RUNNING_REF in rig.text
+    assert (
+        "gateway, frontend, worker and delivery: gateway did not start on the new image; "
+        "worker, delivery and frontend are still stopped; the console is unavailable"
+    ) in rig.lines
+    assert "Rollback images:" not in rig.text
+    assert RUNNING_REF not in rig.text
     assert "Re-run plan, then apply" in rig.text
     assert "up worker" not in labels(rig.runner)
 
 
-def test_failure_prints_rollback_refs_and_rerun_hint(
+def test_recreate_failure_after_a_migration_says_fix_forward(
     rig_factory: Callable[..., ApplyRig],
 ) -> None:
     rig = rig_factory(
@@ -1065,9 +1101,19 @@ def test_failure_prints_rollback_refs_and_rerun_hint(
     )
     assert rig.apply(["0486", "0487"]) == 1
     assert "Stopped at recreate worker:" in rig.text
-    assert "Rollback images:" in rig.text
-    assert f"gateway: {RUNNING_REF}" in rig.text
-    assert rig.lines[-1] == "Re-run plan, then apply, once the cause is fixed."
+    assert (
+        "gateway, frontend, worker and delivery: gateway is up on the new images; "
+        "worker did not start on the new image; delivery and frontend are still stopped; "
+        "the console is unavailable"
+    ) in rig.lines
+    assert (
+        "Migrations were applied: 0486, 0487. The previous images fail /readyz against this "
+        "schema, so do not roll back; fix forward, then re-run plan and apply."
+    ) in rig.lines
+    assert "Rollback images:" not in rig.text
+    assert "To roll back" not in rig.text
+    assert RESTART not in rig.text
+    assert rig.lines[-1] == RERUN
 
 
 def test_apply_output_has_no_secret_values(
@@ -1088,7 +1134,8 @@ def test_main_apply_wires_migrations_to_apply(
     rollout_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rig = ApplyRig(tmp_path, rollout_env, monkeypatch, **MIGRATING)
-    assert sr.main(["apply", "--migrations", "0486,0487"], runner=rig.runner) == 0
+    argv = ["apply", "--sha", SHA, "--migrations", "0486,0487"]
+    assert sr.main(argv, runner=rig.runner) == 0
     assert labels(rig.runner).count("migrate") == 1
 
 
@@ -1099,9 +1146,19 @@ def test_main_apply_refuses_a_wrong_confirmation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     rig = ApplyRig(tmp_path, rollout_env, monkeypatch, **MIGRATING)
-    assert sr.main(["apply"], runner=rig.runner) == 1
+    assert sr.main(["apply", "--sha", SHA], runner=rig.runner) == 1
     assert "Stopped at confirm:" in capsys.readouterr().out
     assert labels(rig.runner) == ["select"]
+
+
+def test_main_apply_requires_sha(
+    rollout_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rig = ApplyRig(tmp_path, rollout_env, monkeypatch)
+    with pytest.raises(SystemExit) as caught:
+        sr.main(["apply"], runner=rig.runner)
+    assert caught.value.code == 2
+    assert rig.runner.calls == []
 
 
 # --- one failure contract ------------------------------------------------------------------
@@ -1217,6 +1274,21 @@ def test_runbook_points_at_the_script_and_the_live_checkout() -> None:
     assert "deploy/rollout_checks/0485.sql" in text
     assert "/home/amsyrzmi/CSAV2" in text
     assert "CSAV2-seed" not in text
+    assert "apply --sha" in text
+    for needle in (
+        "Nothing on staging was changed.",
+        "To bring the previous version back:",
+        "fix forward",
+        "To roll back:",
+        "stopped until",
+    ):
+        assert needle in text, needle
+
+
+def test_seed_runbook_points_at_the_live_checkout() -> None:
+    text = (REPO / "deploy" / "STAGING_SEED.md").read_text(encoding="utf-8")
+    assert "CSAV2-seed" not in text
+    assert "cd /home/amsyrzmi/CSAV2 " in text
 
 
 def test_skill_requires_plan_then_owner_go_then_apply() -> None:
@@ -1228,6 +1300,297 @@ def test_skill_requires_plan_then_owner_go_then_apply() -> None:
     assert "description: Use when the owner asks to roll out, deploy or update staging" in (
         frontmatter
     )
-    for needle in ("plan", "apply", "--ff-only"):
+    for needle in ("plan", "apply", "--ff-only", "--sha", "verbatim"):
         assert needle in text
     assert text.index("plan") < text.index("apply")
+
+
+# --- plan refusals added in the final review ------------------------------------------------
+
+
+def test_target_refuses_untracked_migration_files(tmp_path: Path) -> None:
+    runner = staging_runner()
+    runner.rules.insert(0, (has("-- db/migrations"), ok("?? db/migrations/0490_new.sql\n")))
+    with pytest.raises(RolloutError) as caught:
+        sr.target_sha(runner, tmp_path)
+    assert caught.value.step == "plan"
+    assert caught.value.message == "db/migrations has uncommitted or untracked files"
+    assert [
+        "git",
+        "-C",
+        str(tmp_path),
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        "db/migrations",
+    ] in runner.argvs
+
+
+def test_bad_migration_filename_is_a_plan_stop(
+    rollout_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from scripts.migrate import MigrationError
+
+    def broken() -> list[tuple[str, Path]]:
+        raise MigrationError("migration 'x.sql' has an invalid version")
+
+    monkeypatch.setattr(sr, "discover_migrations", broken)
+    paths = make_secret_files(rollout_env, "staging_owner_dsn")
+    assert sr.main(["plan"], runner=staging_runner(secret_files=paths)) == 1
+    assert "Stopped at plan: migration 'x.sql' has an invalid version" in capsys.readouterr().out
+
+
+def test_running_image_reads_digest_and_revision_with_the_documented_argv() -> None:
+    image_id = "sha256:" + "e" * 64
+    runner = FakeRunner(
+        [
+            (has("inspect --format {{.Image}}"), ok(image_id + "\n")),
+            (has("image inspect"), ok(running_json(RUNNING_REF))),
+        ]
+    )
+    running = sr.running_images(runner, {})
+    assert {service: (r.ref, r.revision) for service, r in running.items() if r} == {
+        service: (RUNNING_REF, PREV_SHA) for service in sr.APP_SERVICES
+    }
+    docker = ["docker", "--host", sr.SOCKET]
+    assert runner.argvs[:2] == [
+        [*docker, "inspect", "--format", "{{.Image}}", "csa-staging-gateway-1"],
+        [*docker, "image", "inspect", "--format", RUNNING_FORMAT, image_id],
+    ]
+
+
+# --- apply pins the planned SHA -------------------------------------------------------------
+
+
+MUTATING_LABELS = {"pull python", "pull frontend", "stop", "migrate", "check"}
+
+
+def is_mutating(label: str) -> bool:
+    return label in MUTATING_LABELS or label.startswith("up ")
+
+
+def test_apply_refuses_a_sha_other_than_head(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory(**MIGRATING)
+    assert rig.apply(["0486", "0487"], sha=PLANNED_SHA) == 1
+    assert labels(rig.runner) == []
+    assert "Stopped at confirm: HEAD changed since plan (9f8e7d6 → a1b2c3d); run plan again" in (
+        rig.lines
+    )
+    assert not any(argv[0] == "gh" for argv in rig.runner.argvs)
+
+
+def test_apply_prints_its_target_before_the_first_change(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(**MIGRATING)
+    assert rig.apply(["0486", "0487"]) == 0
+    texts = [line for line, _ in rig.marks]
+    start = texts.index(f"Target: {SHA}")
+    assert texts[start : start + 4] == [
+        f"Target: {SHA}",
+        f"  python: {PYTHON_REF}",
+        f"  frontend: {FRONTEND_REF}",
+        "Pending migrations: 0486, 0487",
+    ]
+    calls_before = rig.marks[start + 3][1]
+    before = [step_label(argv) for argv, _, _ in rig.runner.calls[:calls_before]]
+    assert not any(is_mutating(label) for label in before if label)
+    assert start < texts.index("Pulling and verifying images…")
+
+
+def test_apply_image_only_target_says_no_migrations(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory()
+    assert rig.apply() == 0
+    assert "Pending migrations: none" in rig.lines
+
+
+def test_apply_announces_each_step_as_it_starts(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory(**MIGRATING)
+    assert rig.apply(["0486", "0487"]) == 0
+    announced = [line for line in rig.lines if line.endswith("…")]
+    assert announced == [
+        "Checking compose config…",
+        "Pulling and verifying images…",
+        "Stopping gateway, frontend, worker, delivery…",
+        "Applying migrations 0486, 0487…",
+        "Confirming migrations recorded…",
+        "Recreating gateway…",
+        "Recreating worker…",
+        "Recreating delivery…",
+        "Recreating frontend…",
+        "Checking readiness…",
+        "Running check 0485.sql…",
+    ]
+
+
+# --- recovery depends on how far apply got --------------------------------------------------
+
+
+@pytest.mark.parametrize("case", ["preflight", "pull", "confirm"])
+def test_failure_before_any_change_says_nothing_changed(
+    rig_factory: Callable[..., ApplyRig], case: str
+) -> None:
+    if case == "preflight":
+        rig = rig_factory(secrets=("staging_owner_dsn", "absent_one"))
+        code = rig.apply()
+    elif case == "pull":
+        rig = rig_factory(overrides=[(lambda argv: step_label(argv) == "pull frontend", fail(1))])
+        code = rig.apply()
+    else:
+        rig = rig_factory(**MIGRATING)
+        code = rig.apply(["0486"])
+    assert code == 1
+    assert rig.lines[-2:] == ["Nothing on staging was changed.", RERUN]
+    assert "Rollback images" not in rig.text
+    assert RESTART not in rig.text
+
+
+def test_failed_stop_runs_no_migrate_and_offers_the_restart(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(**MIGRATING, overrides=[(lambda argv: step_label(argv) == "stop", fail(1))])
+    assert rig.apply(["0486", "0487"]) == 1
+    seen = labels(rig.runner)
+    assert "migrate" not in seen
+    assert seen[-1] == "stop"
+    assert "Stopped at stop: compose stop failed (exit 1)" in rig.text
+    assert rig.lines[rig.lines.index("To bring the previous version back:") + 1] == RESTART
+    assert "Rollback images" not in rig.text
+
+
+def test_migrate_failure_with_unreadable_schema_says_state_unknown(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    state = {"migrated": False}
+
+    def migrate(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        state["migrated"] = True
+        return Completed(1, "", "")
+
+    def select(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        return fail(2) if state["migrated"] else ok("0484\n0485\n")
+
+    rig = rig_factory(
+        **MIGRATING,
+        overrides=[
+            (lambda argv: step_label(argv) == "migrate", migrate),
+            (lambda argv: step_label(argv) == "select", select),
+        ],
+    )
+    assert rig.apply(["0486", "0487"]) == 1
+    assert "migration state is unknown" in rig.text
+    assert "check schema_migrations before restarting" in rig.text
+    assert "Rollback images" not in rig.text
+    assert "Nothing on staging was changed." not in rig.text
+
+
+def test_partly_recorded_migration_says_fix_forward_without_rollback_images(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(**MIGRATING, recorded=("0484", "0485", "0486"))
+    assert rig.apply(["0486", "0487"]) == 1
+    assert (
+        "Migrations were applied: 0486. The previous images fail /readyz against this schema, "
+        "so do not roll back; fix forward, then re-run plan and apply."
+    ) in rig.lines
+    assert "Rollback images" not in rig.text
+    assert RUNNING_REF not in rig.text
+    assert RESTART not in rig.text
+
+
+def test_image_only_recreate_failure_offers_the_previous_sha(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        overrides=[
+            *image_after_up("up worker", recreated=False),
+            (is_health_inspect, health_answers("unhealthy")),
+        ]
+    )
+    assert rig.apply() == 1
+    assert (
+        "gateway, frontend, worker and delivery: gateway is up on the new images; "
+        "worker did not start on the new image; delivery and frontend still run the previous "
+        "images"
+    ) in rig.lines
+    start = rig.lines.index("Rollback images:")
+    assert rig.lines[start + 1] == f"  gateway: {RUNNING_REF} (revision {PREV_SHA})"
+    assert (
+        f"To roll back: git checkout {PREV_SHA} in /home/amsyrzmi/CSAV2, run plan and apply, "
+        "then git checkout main."
+    ) in rig.lines
+    assert "Migrations were applied" not in rig.text
+    assert rig.lines[-1] == RERUN
+
+
+def test_image_only_failure_without_running_containers_says_none_known(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(
+        running=False,
+        overrides=[
+            (lambda argv: step_label(argv) == "up gateway", fail(1)),
+            (is_health_inspect, fail(1)),
+        ],
+    )
+    assert rig.apply() == 1
+    start = rig.lines.index("Rollback images:")
+    assert rig.lines[start + 1] == "  none known (not running)"
+    assert "To roll back" not in rig.text
+
+
+def test_rollback_images_of_mixed_revisions_ask_to_pick_one(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    frontend_old = "ghcr.io/amsyrzmi/csa-frontend@sha256:" + "f" * 64
+    seen = {"inspects": 0}
+
+    def digests(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        seen["inspects"] += 1  # plan reads gateway, worker, delivery, frontend in that order
+        if seen["inspects"] == 4:
+            return ok(running_json(frontend_old, revision=OTHER_SHA))
+        return ok(running_json(RUNNING_REF))
+
+    rig = rig_factory(
+        overrides=[
+            (lambda argv: RUNNING_FORMAT in argv, digests),
+            (lambda argv: step_label(argv) == "ready", fail(1)),
+        ]
+    )
+    assert rig.apply() == 1
+    assert f"  frontend: {frontend_old} (revision {OTHER_SHA})" in rig.lines
+    assert f"  gateway: {RUNNING_REF} (revision {PREV_SHA})" in rig.lines
+    assert not any(line.startswith("To roll back:") for line in rig.lines)
+    assert any("pick one" in line for line in rig.lines)
+
+
+def test_readiness_failure_names_the_state_and_offers_rollback(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(overrides=[(lambda argv: step_label(argv) == "ready", fail(1))])
+    assert rig.apply() == 1
+    assert "services are up on the new images but /readyz is failing" in rig.lines
+    assert "Rollback images:" in rig.lines
+    assert f"To roll back: git checkout {PREV_SHA}" in rig.text
+
+
+def test_readiness_failure_after_a_migration_says_fix_forward(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(**MIGRATING, overrides=[(lambda argv: step_label(argv) == "ready", fail(1))])
+    assert rig.apply(["0486", "0487"]) == 1
+    assert "services are up on the new images but /readyz is failing" in rig.lines
+    assert any(line.startswith("Migrations were applied: 0486, 0487.") for line in rig.lines)
+    assert "Rollback images" not in rig.text
+
+
+def test_failed_check_says_investigate_then_rerun(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory(overrides=[(lambda argv: step_label(argv) == "check", ok("3\n"))])
+    assert rig.apply() == 1
+    assert (
+        "Investigate what the check found before the console is used again, "
+        "then re-run plan and apply."
+    ) in rig.lines
+    assert "Rollback images" not in rig.text
+    assert "Nothing on staging was changed." not in rig.text

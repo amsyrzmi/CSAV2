@@ -27,16 +27,20 @@ refuses when HEAD is not on `origin/main` or the worktree has tracked changes.
    - Any other `Stopped at <step>: ...`: report it as it is and stop.
 3. Wait for the owner's go. A go covers this one plan only. If the plan output changes before
    `apply` (different SHA, digests or migrations), show the new plan and ask again.
-4. Apply with exactly the command line `plan` printed:
-   `.venv/bin/python -m scripts.staging_rollout apply`, plus
-   `--migrations <versions>` only when `plan` printed it. Report the result: the final status
-   lines, and any check output.
+4. Apply with exactly the command line `plan` printed last:
+   `.venv/bin/python -m scripts.staging_rollout apply --sha <full sha>`, plus
+   `--migrations <versions>` only when `plan` printed it. `apply` refuses if HEAD moved since
+   `plan`; then run `plan` again and ask again. Report the result: the final status lines, and
+   any check output. If it stops, show its `Stopped at ...` line, the state line and the recovery
+   lines verbatim, exactly as printed.
 
 ## If something goes wrong
 
-- If `apply` fails, show the script's own recovery lines as printed: the step, the state staging
-  is in, `Rollback images:` and `Re-run plan, then apply, once the cause is fixed.` Do not retry a
-  migrate or roll back by hand on your own; ask the owner.
+- If `apply` fails, show the script's own recovery lines verbatim: the step, the state staging
+  is in, then whichever applies (`Nothing on staging was changed.`, the `docker ... start` restart
+  command, `Migrations were applied: ...` with fix forward, or `Rollback images:` with the
+  previous SHA), and `Re-run plan, then apply, once the cause is fixed.` Do not retry a migrate,
+  restart or roll back on your own; ask the owner.
 - If a command is blocked by the permission system or a hook, give the owner numbered, copy-ready
   commands to run instead, and wait for the output.
 

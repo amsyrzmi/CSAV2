@@ -28,24 +28,29 @@ approved it and it has finished, the images of that commit are rolled out with
    .venv/bin/python -m scripts.staging_rollout plan
    ```
 
-   It prints the target SHA, the two image digests, the digests running now (the rollback
-   references), the pending migrations, the steps, the check files and the exact `apply` command.
+   It prints the target SHA, the two image digests, the digests of the current containers (the
+   rollback references), the pending migrations, the steps, the check files and the exact `apply`
+   command.
    Exit 0 is ok, 2 means secret files are missing (`apply` will refuse), 1 is a stop printed as
    `Stopped at <step>: ...`. If the images are not published yet it stops with
    `images for <sha7> are not published yet (<state>)`, for example "waiting for approval": the
    owner approves the `staging-images` environment on the publish run.
-3. Run `apply` with exactly the flags `plan` printed:
+3. Run `apply` with exactly the command line `plan` printed last:
 
    ```bash
-   .venv/bin/python -m scripts.staging_rollout apply
-   .venv/bin/python -m scripts.staging_rollout apply --migrations 0486,0487
+   .venv/bin/python -m scripts.staging_rollout apply --sha <full 40-character sha>
+   .venv/bin/python -m scripts.staging_rollout apply --sha <full 40-character sha> --migrations 0486,0487
    ```
 
-   With migrations pending, `--migrations` must list exactly the pending versions that `plan`
-   printed; a mismatch means staging or the checkout changed, so run `plan` again. With nothing
-   pending, leave the flag out.
+   `--sha` is required and must be the SHA `plan` showed: if HEAD moved since (a `git pull`),
+   `apply` stops with `HEAD changed since plan (<old> → <new>); run plan again` before changing
+   anything. With migrations pending, `--migrations` must list exactly the pending versions that
+   `plan` printed; a mismatch means staging or the checkout changed, so run `plan` again. With
+   nothing pending, leave the flag out.
 
-`apply` re-derives the plan, pulls both images by digest and verifies them, then recreates
+`apply` re-derives the plan and, before changing anything, prints its target (`Target: <sha>`,
+both image refs and `Pending migrations: ...`). It prints one line per step as the step starts.
+It pulls both images by digest and verifies them, then recreates
 `gateway`, `worker`, `delivery` and `frontend` in that order on the new images, checks `/readyz`
 and runs every check file in `deploy/rollout_checks/`. A service that reports unhealthy at first
 counts as started once it is healthy on the new image within 300 seconds (the gateway can take
@@ -56,11 +61,32 @@ migration: `gateway`, `frontend`, `worker` and `delivery` are stopped before `mi
 old code runs against the new schema. The console is unavailable and bot replies are delayed
 (queued, not lost) until the services are back, usually a few minutes.
 
-**Recovery.** On any failure `apply` stops, prints the step, the state staging is in, the
-`Rollback images:` it recorded and `Re-run plan, then apply, once the cause is fixed.` It never
-retries a migrate and never rolls one back (a migration cannot be un-applied). Fix the cause and
-run `plan` then `apply` again: the plan is derived afresh, so a migration already recorded is no
-longer pending.
+**Recovery.** On any failure `apply` stops and prints `Stopped at <step>: ...`, the state staging
+is in (which of the four services are stopped, recreated or still on the previous images), the
+recovery lines for how far it got, and last `Re-run plan, then apply, once the cause is fixed.`
+It never retries a migrate and never rolls one back (a migration cannot be un-applied). The
+recovery lines are:
+
+- **Nothing changed** (the confirmation, secret preflight, `compose config` or a pull failed):
+  `Nothing on staging was changed.` Fix the cause and run `plan` and `apply` again.
+- **Services stopped, no planned migration recorded** (the stop or `migrate` failed and
+  `schema_migrations` has none of the planned versions): `To bring the previous version back:`
+  followed by a copy-ready `docker --host unix:///var/run/docker.sock start
+  csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1`,
+  which restarts the old containers and needs no environment. If `schema_migrations` could not be
+  read, `apply` says the migration state is unknown: check `schema_migrations` before restarting.
+- **A planned migration was recorded**: `Migrations were applied: <versions>.` The previous images
+  fail `/readyz` against the new schema, so do not roll back: fix forward, then run `plan` and
+  `apply` again. The plan is derived afresh, so a recorded migration is no longer pending. No
+  rollback images are printed in this case.
+- **Image-only rollout failed during or after the recreate** (including
+  `services are up on the new images but /readyz is failing`): `Rollback images:` lists each
+  current container's image with its revision (`none known (not running)` when there is none).
+  When they share one revision it prints `To roll back: git checkout <previous sha> in
+  /home/amsyrzmi/CSAV2, run plan and apply, then git checkout main.`; otherwise pick one of the
+  listed revisions and do the same.
+- **A failed check** stops the four services again and they stay stopped until investigated:
+  investigate what the check found, then run `plan` and `apply` again.
 
 **Switches.** The non-secret staging switches live in `deploy/staging-rollout.env`. To change one,
 open a pull request; do not export it by hand. The script never opens the secret files; compose
