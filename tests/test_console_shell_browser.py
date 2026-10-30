@@ -623,6 +623,22 @@ async def test_user_menu_shows_name_email_role_and_tenant(console: Console) -> N
         await close_page(playwright, browser)
 
 
+async def test_user_menu_shows_the_email_once_when_there_is_no_display_name(
+    console: Console,
+) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services")
+    try:
+        console.upstream.me["user"]["display_name"] = ""
+        await page.reload()
+        await page.get_by_test_id("shell-user-menu").click()
+        panel = page.get_by_test_id("shell-user-menu-panel")
+        await expect(panel).to_contain_text("synthetic@example.test")
+        await expect(panel.get_by_test_id("shell-user-email")).to_have_count(0)
+        assert (await panel.inner_text()).count("synthetic@example.test") == 1
+    finally:
+        await close_page(playwright, browser)
+
+
 async def test_user_menu_has_no_tenant_line_for_platform_admin(console: Console) -> None:
     playwright, browser, page = await open_page(console, "/", role="platform_admin")
     try:
@@ -740,7 +756,7 @@ async def test_user_menu_trigger_name_contains_its_visible_name(console: Console
         await expect(trigger).to_have_accessible_name(re.compile("Account menu"))
         await trigger.click()
         await expect(page.get_by_test_id("shell-user-menu-panel")).to_contain_text(
-            "Stops the moving effects on this screen."
+            "Stops moving effects in the console on this device."
         )
     finally:
         await close_page(playwright, browser)

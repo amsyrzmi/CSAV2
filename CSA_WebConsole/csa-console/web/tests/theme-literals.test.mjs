@@ -31,6 +31,16 @@ const OWNED = [
   "app/(admin)/page.tsx",
   "app/portal/page.tsx",
   "app/(auth)/login/page.tsx",
+  "components/ui/auth-card.tsx",
+  "components/ui/FourStacksLogo.tsx",
+  "components/console/PasswordPanel.tsx",
+  "app/(admin)/password/page.tsx",
+  "app/portal/password/page.tsx",
+  "app/loading.tsx",
+  "app/(admin)/loading.tsx",
+  "app/portal/loading.tsx",
+  "app/(admin)/chat/page.tsx",
+  "app/portal/chat/page.tsx",
 ];
 
 /** OWNED directories allowed to hold no scanned file. None today. */

@@ -32,7 +32,7 @@ export function OverviewHome({ me }: { me: Me }) {
   } else if (!tenant) {
     body = (
       <div className="mx-auto w-full max-w-3xl p-5 sm:p-8">
-        <Notice>Your account is not linked to a company yet. Ask your administrator to add you.</Notice>
+        <Notice>Your account has no active company. Ask your administrator to check your access.</Notice>
       </div>
     );
   } else {
@@ -44,9 +44,11 @@ export function OverviewHome({ me }: { me: Me }) {
       <h1 className="sr-only">Overview</h1>
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-[color:var(--fs-border)] px-4 py-2.5 sm:px-6">
         {platform && <TenantSelect value={chosen} />}
-        <p className="text-sm text-[color:var(--fs-text-secondary)]">
-          Private chat: ask about your knowledge base and products
-        </p>
+        {tenant && (
+          <p className="text-sm text-[color:var(--fs-text-secondary)]">
+            Private chat: ask about your knowledge base and products
+          </p>
+        )}
         {tenant && (
           <div className="sm:ml-auto">
             <StatusStrip key={tenant} me={me} clientId={platform ? tenant : null} />

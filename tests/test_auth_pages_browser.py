@@ -248,7 +248,9 @@ async def test_auth_left_panel_is_brand_cobalt_in_every_theme(console: Console) 
                     seen[f"{theme}-{test_id}"] = tuple(  # type: ignore[assignment]
                         await panel.evaluate(
                             """(el) => {
-                              const wordmark = el.querySelector('[data-testid="auth-wordmark"]');
+                              const wordmark = el.querySelector(
+                                '[data-testid$="wordmark"]'
+                              );
                               const logo = el.querySelectorAll('svg path');
                               return [
                                 getComputedStyle(el).backgroundImage,

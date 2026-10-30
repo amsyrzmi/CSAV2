@@ -95,7 +95,7 @@ const PAIRS = [
   ["--fs-auth-text", "--fs-auth-to", 3, "sign-in panel text at the lightest corner (decorative; no text sits there)"],
   ["--fs-auth-logo", "--fs-auth-from", 3, "sign-in logo on the panel, darkest stop"],
   ["--fs-auth-logo", "--fs-auth-to", 3, "sign-in logo on the panel, lightest stop"],
-  ["--fs-auth-logo-accent", "--fs-auth-from", 3, "sign-in logo accent layer on the panel, darkest stop"],
+  ["--fs-auth-logo-accent", "--fs-auth-from", 3, "sign-in logo accent layer at the darkest stop; it sits about 2.6-2.8:1 mid-gradient, exempt there because the logo layer is decorative"],
   ["--fs-text-secondary", "--fs-surface", 4.5, "unknown customer avatar mark"],
   ["--fs-border-control", "--fs-surface", 3, "unknown customer avatar dashed outline"],
   ["--fs-channel-text", "--fs-channel-bg", 4.5, "inbox channel badge"],

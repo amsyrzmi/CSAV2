@@ -24,7 +24,7 @@ export function AuthCard({
       >
         <FourStacksLogo size={40} animated={false} />
         <span
-          data-testid="auth-wordmark"
+          data-testid="auth-banner-wordmark"
           className="brand-wordmark text-xl font-bold tracking-tight"
         >
           fourstacks

@@ -25,7 +25,7 @@ function storedPause(): boolean {
 }
 
 /**
- * The signed-in person: name, role, the Calm motion switch, and (below 1024 px, where the
+ * The signed-in person: name, role, the Reduce animations switch, and (below 1024 px, where the
  * top bar has no room for it) Sign out. From 1024 px Sign out is its own button in the bar,
  * so it is one click and keeps working for tests and habits that expect it on the page; the
  * copy inside this menu is `lg:hidden`, so the page never has two visible Sign out buttons.
@@ -93,12 +93,15 @@ export function UserMenu({ account }: { account: ShellAccount }) {
           className={`${POPOVER} w-72 max-w-[calc(100vw-2rem)] p-4`}
         >
           <p className="break-words text-sm font-semibold">{account.name}</p>
-          <p
-            data-testid="shell-user-email"
-            className="mt-0.5 text-sm text-[color:var(--fs-text-secondary)] [overflow-wrap:anywhere]"
-          >
-            {account.email}
-          </p>
+          {/* With no display name the name line already is the email; do not repeat it. */}
+          {account.name !== account.email && (
+            <p
+              data-testid="shell-user-email"
+              className="mt-0.5 text-sm text-[color:var(--fs-text-secondary)] [overflow-wrap:anywhere]"
+            >
+              {account.email}
+            </p>
+          )}
           <p className="mt-0.5 text-sm text-[color:var(--fs-text-secondary)]">{account.role}</p>
           {account.tenant && (
             <p
@@ -114,7 +117,7 @@ export function UserMenu({ account }: { account: ShellAccount }) {
                 Reduce animations
               </span>
               <span id={noteId} className="mt-0.5 block text-xs text-[color:var(--fs-text-secondary)]">
-                Stops the moving effects on this screen. Your assistant keeps working as normal.
+                Stops moving effects in the console on this device. Your assistant keeps working as normal.
               </span>
             </div>
             <button
