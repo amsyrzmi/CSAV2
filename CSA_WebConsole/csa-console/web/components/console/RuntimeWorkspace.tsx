@@ -126,8 +126,8 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
       {error && <Notice error>{error}</Notice>}
       {stale && <Notice warning>{SAVED_NOT_REFRESHED}</Notice>}
       <button className={secondary} disabled={busy} onClick={() => setRevision((value) => value + 1)}>Refresh agents</button>
-      <Notice>Subscription, company switch, build, setup and connection are separate things.
-        Both switches on does not mean the connection is working. A change applies from the next run; work already started carries on.</Notice>
+      <Notice>Subscription, company switch, build, setup and failure guard are separate things.
+        Both switches on does not mean the assistant is connected to its provider. A change applies from the next run; work already started carries on.</Notice>
       {agents && (
         <nav aria-label="Specialized agents" className="flex flex-wrap gap-2">
           {agents.filter((agent) => agent.can_view_specialized).map((agent) =>
@@ -237,8 +237,8 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
         <div><dt className="text-ink-500">Company switch</dt><dd>{switchOn ? "On" : "Off"}</dd></div>
         <div><dt className="text-ink-500">Build</dt><dd>{buildText(agent.implementation)}</dd></div>
         <div><dt className="text-ink-500">Setup</dt><dd>{setupText(agent.readiness)}</dd></div>
-        <div><dt className="text-ink-500">Connection</dt><dd>{agent.capability ? connectionText(agent.capability.circuit_state) : "Not set up"}</dd></div>
-        <div><dt className="text-ink-500">Recent failures</dt><dd>{agent.capability?.fail_count ?? "Not set up"}</dd></div>
+        <div><dt className="text-ink-500">Failure guard</dt><dd>{agent.capability ? connectionText(agent.capability.circuit_state) : "No record yet"}</dd></div>
+        <div><dt className="text-ink-500">Recent failures</dt><dd>{agent.capability?.fail_count ?? "No record yet"}</dd></div>
       </dl>
       <p className="my-4 text-sm text-ink-600">{agent.detail}</p>
       {agent.embedding_model && <p className="mb-4 text-sm">
@@ -320,7 +320,7 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
         An empty list only means nothing has run yet; it does not mean everything is healthy.</Notice>
       <Panel title="Recorded runs">
         {!page ? <p>{error ? "Runtime data unavailable." : "Loading runs..."}</p> :
-          page.items.length === 0 ? <p>No recorded runs for this selection.</p> :
+          page.items.length === 0 ? <p>{filter ? "Nothing has been recorded for this selection." : "Nothing has run yet. Runs appear here as your assistants work."}</p> :
             <ul className="divide-y divide-ink-200">{page.items.map((run) => <li key={run.id}>
               <button className="w-full py-4 text-left text-sm hover:text-brand-600" onClick={() => setSelected(run)}>
                 #{run.id} {run.agent} / {run.status} / {run.error_code ?? (run.ok ? "Succeeded" : "Failed")}

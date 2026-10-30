@@ -232,16 +232,16 @@ test("the saved-but-stale message does not claim a failure", () => {
 });
 
 test("the agent card words build, setup and connection in plain language, never as raw codes", () => {
-  assert.equal(buildText("local"), "Ready");
+  assert.equal(buildText("local"), "Built");
   assert.equal(buildText("prepared_only"), "Prepared, not live yet");
   assert.equal(buildText("not_implemented"), "Not built yet");
   assert.equal(setupText("available"), "Ready");
   assert.equal(setupText("setup_required"), "Setup needed");
   assert.equal(setupText("configured_unverified"), "Set up, not yet checked");
   assert.equal(setupText("reindex_required"), "Knowledge base needs re-indexing");
-  assert.equal(connectionText("closed"), "Working");
+  assert.equal(connectionText("closed"), "No recent failures");
   assert.equal(connectionText("open"), "Paused after repeated failures");
-  assert.equal(connectionText("half_open"), "Trying again");
+  assert.equal(connectionText("half_open"), "Testing again");
   // A code the table does not know still reads as words, not as an underscored identifier.
   assert.equal(connectionText("some_new_state"), "some new state");
 });

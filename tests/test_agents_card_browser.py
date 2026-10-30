@@ -495,7 +495,7 @@ async def test_unlinked_agents_page_still_renders(site: Site) -> None:
                 "Company switch",
                 "Build",
                 "Setup",
-                "Connection",
+                "Failure guard",
                 "Recent failures",
             ):
                 await expect(kb.locator("dt", has_text=label).first).to_be_visible()

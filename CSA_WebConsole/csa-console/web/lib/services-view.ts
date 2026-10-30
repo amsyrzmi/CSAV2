@@ -54,7 +54,7 @@ export function agentCountLabel(count: number): string {
 
 /** Plain words for the agent card's build, setup and connection values (the raw codes stay in the API). */
 const BUILD_WORDS: Record<string, string> = {
-  local: "Ready",
+  local: "Built",
   prepared_only: "Prepared, not live yet",
   not_implemented: "Not built yet",
 };
@@ -65,9 +65,9 @@ const SETUP_WORDS: Record<string, string> = {
   reindex_required: "Knowledge base needs re-indexing",
 };
 const CONNECTION_WORDS: Record<string, string> = {
-  closed: "Working",
+  closed: "No recent failures",
   open: "Paused after repeated failures",
-  half_open: "Trying again",
+  half_open: "Testing again",
 };
 const spaced = (code: string) => code.replaceAll("_", " ");
 export const buildText = (code: string) => BUILD_WORDS[code] ?? spaced(code);
