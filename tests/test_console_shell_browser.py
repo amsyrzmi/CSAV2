@@ -126,7 +126,6 @@ TENANT_LABELS = (
     "People & HR",
     "Runtime activity",
     "Knowledge base",
-    "Sandbox assistant",
     "Customer inbox",
     "Email assistant",
     "Business management",
@@ -295,9 +294,9 @@ async def test_rail_tooltip_shows_on_hover_and_keyboard_focus(console: Console) 
         await expect(tip).to_have_text("Customer inbox")
         await page.mouse.move(700, 400)
         await expect(tip).to_have_count(0)
-        await page.get_by_role("link", name="Knowledge base", exact=True).focus()
+        await page.get_by_role("link", name="Runtime activity", exact=True).focus()
         await page.keyboard.press("Tab")
-        await expect(tip).to_have_text("Sandbox assistant")
+        await expect(tip).to_have_text("Knowledge base")
         await page.keyboard.press("Escape")
         await expect(tip).to_have_count(0)
     finally:

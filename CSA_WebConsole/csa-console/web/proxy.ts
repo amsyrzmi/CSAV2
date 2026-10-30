@@ -18,6 +18,7 @@ const adoptedPages = new Set([
   "/portal/activity",
   "/knowledge-base",
   "/portal/faq",
+  // The Sandbox assistant folded into Overview: these only redirect there (keeping client_id).
   "/chat",
   "/portal/chat",
   "/inbox",

@@ -78,3 +78,14 @@ test("Password opens the in-shell page: /password for platform admins, /portal/p
     assert.equal(link?.href, "/portal/password", role);
   }
 });
+
+test("the Sandbox assistant entry is gone for every role: Overview is the assistant home", () => {
+  const all = active("customer_support", "hr", "staff_email", "orders_products", "subscriptions");
+  for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"]) {
+    const links = navigationFor({ ...staff, role }, all);
+    assert.ok(!links.some((l) => l.label === "Sandbox assistant" || l.key === "chat"), role);
+    assert.ok(!links.some((l) => l.href.endsWith("/chat")), role);
+    assert.equal(links[0].key, "overview", role);
+    assert.equal(links[0].href, role === "platform_admin" ? "/" : "/portal", role);
+  }
+});

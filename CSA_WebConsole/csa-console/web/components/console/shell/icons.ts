@@ -1,7 +1,6 @@
 import {
   Activity,
   BookOpen,
-  Bot,
   Briefcase,
   Building2,
   CreditCard,
@@ -21,7 +20,6 @@ import type { NavKey } from "@/lib/navigation";
 const BY_NAME: Record<string, LucideIcon> = {
   Activity,
   BookOpen,
-  Bot,
   Briefcase,
   Building2,
   CreditCard,

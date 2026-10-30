@@ -54,6 +54,17 @@ test("tab routes follow the shell navigation and keep the admin tenant", () => {
     assert.ok(view.tabHref(tab, staff, all, "t1"), tab);
 });
 
+test("the sandbox chat tab opens Overview, its home since the Sandbox entry folded into it", () => {
+  assert.equal(view.tabHref("chat", staff, all, "t1"), "/portal");
+  assert.equal(view.tabHref("chat", { ...staff, role: "read_only" }, [], "t1"), "/portal");
+  assert.equal(view.tabHref("chat", admin, [], "t9"), "/?client_id=t9");
+  assert.equal(view.tabLabel("chat", staff, all), "Overview");
+  // The Overview route stays the overview tab for page context.
+  assert.equal(view.tabForPath("/portal", staff, all), "overview");
+  assert.equal(view.tabForPath("/", admin, []), "overview");
+  assert.equal(view.tabForPath("/portal/chat", staff, all), null);
+});
+
 test("the route names the current tab; published context wins", () => {
   assert.equal(view.tabForPath("/portal/faq", staff, all), "knowledge_base");
   assert.equal(view.tabForPath("/hr", admin, []), "hr");

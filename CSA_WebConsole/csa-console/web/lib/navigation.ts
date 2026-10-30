@@ -2,7 +2,7 @@ import type { Me } from "./identity-contracts";
 import type { PackageState } from "./services-api";
 
 export type NavKey =
-  | "overview" | "services" | "hr" | "activity" | "knowledge_base" | "chat"
+  | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
   | "team" | "password" | "subscriptions";
 export interface NavLink { href: string; label: string; key: NavKey }
@@ -31,12 +31,12 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
   };
   const to = (path: string) => (admin ? `/${path}` : `/portal/${path}`);
   const entries: Array<NavLink & { show?: boolean }> = [
+    // Overview is the assistant home: the sandbox chat lives there (/chat redirects to it).
     { key: "overview", label: "Overview", href: admin ? "/" : "/portal" },
     { key: "services", label: "Services", href: to("services") },
     { key: "hr", label: "People & HR", href: to("hr") },
     { key: "activity", label: "Runtime activity", href: to("activity") },
     { key: "knowledge_base", label: "Knowledge base", href: admin ? "/knowledge-base" : "/portal/faq" },
-    { key: "chat", label: "Sandbox assistant", href: to("chat") },
     { key: "inbox", label: "Customer inbox", href: to("inbox"), show: writer },
     { key: "email", label: "Email assistant", href: to("email"), show: writer },
     { key: "business", label: "Business management", href: to("business"), show: writer },

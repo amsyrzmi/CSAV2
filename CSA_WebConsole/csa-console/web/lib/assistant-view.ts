@@ -37,6 +37,15 @@ export function dockTenant(me: Me, clientIdParam: string | null): string | null 
   return null;
 }
 
+/**
+ * The navigation entry that hosts a dock tab. The sandbox chat (`chat`) folded into Overview,
+ * so it opens and is named as Overview; every other tab is its own entry.
+ */
+function navEntry(tab: TabKey, me: Me, packages: PackageState[]) {
+  const key = tab === "chat" ? "overview" : tab;
+  return navigationFor(me, packages).find((item) => item.key === key);
+}
+
 /** Route for a tab through the shell navigation; null when the tab is not offered. */
 export function tabHref(
   tab: TabKey,
@@ -45,7 +54,7 @@ export function tabHref(
   tenantId: string | null,
   section: string | null = null,
 ): string | null {
-  const link = navigationFor(me, packages).find((item) => item.key === tab);
+  const link = navEntry(tab, me, packages);
   if (!link) return null;
   const query = new URLSearchParams();
   if (section) query.set("section", section);
@@ -66,7 +75,7 @@ export function tabForPath(
 }
 
 export function tabLabel(tab: TabKey, me: Me, packages: PackageState[]): string {
-  return navigationFor(me, packages).find((item) => item.key === tab)?.label ?? tab;
+  return navEntry(tab, me, packages)?.label ?? tab;
 }
 
 /** What the tab published, else the bare tab derived from the route. */

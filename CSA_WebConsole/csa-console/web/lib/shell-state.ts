@@ -30,7 +30,6 @@ export const NAV_ICONS: Record<NavKey, string> = {
   hr: "Users",
   activity: "Activity",
   knowledge_base: "BookOpen",
-  chat: "Bot",
   inbox: "Inbox",
   email: "Mail",
   business: "Briefcase",
