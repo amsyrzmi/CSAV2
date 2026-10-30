@@ -1077,7 +1077,7 @@ class EmailService:
                 system=system,
                 user=user,
                 timeout=MODEL_TIMEOUT_SECONDS,
-                max_tokens=900,
+                max_tokens=1500,
             )
 
     async def draft(

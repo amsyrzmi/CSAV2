@@ -179,13 +179,39 @@ class AttentionPage(EmailModel):
     skipped: int = 0
 
 
-def _choice(value: Any, allowed: tuple[str, ...], fallback: str) -> Any:
-    """A model's enum string, lowercased with spaces and hyphens as underscores; unknown values
-    become ``fallback``. A non-string is returned as is, so it still fails validation."""
+def _choice(
+    value: Any, allowed: tuple[str, ...], fallback: str, synonyms: dict[str, str] | None = None
+) -> Any:
+    """A model's enum string, lowercased with spaces and hyphens as underscores, then mapped
+    through ``synonyms``; unknown values become ``fallback``. A non-string is returned as is, so
+    it still fails validation."""
     if not isinstance(value, str):
         return value
     key = re.sub(r"[\s-]+", "_", value.strip().lower())
+    key = (synonyms or {}).get(key, key)
     return key if key in allowed else fallback
+
+
+# Keys are in _choice's normalised form (lowercase, underscores).
+_PRIORITY_SYNONYMS = {
+    "urgent": "high",
+    "critical": "high",
+    "important": "high",
+    "high_priority": "high",
+    "medium": "normal",
+    "normal_priority": "normal",
+    "moderate": "normal",
+    "low_priority": "low",
+    "minor": "low",
+}
+_LANGUAGE_SYNONYMS = {
+    "english": "en",
+    "malay": "ms",
+    "bahasa": "ms",
+    "bahasa_melayu": "ms",
+    "bm": "ms",
+    "mix": "mixed",
+}
 
 
 ANALYSIS_SUMMARY_CHARS = 600
@@ -197,7 +223,8 @@ class ThreadAnalysis(EmailModel):
     """Model output for one thread. No tool calls exist; free text is bounded.
 
     The provider's JSON mode carries no schema, so values are normalised rather than refused:
-    enum strings are lowercased and an unknown one falls back (category "other", priority
+    enum strings are lowercased, common synonyms are mapped ("urgent" is "high", "malay" is
+    "ms"), and an unknown one falls back (category "other", priority
     "normal", language "other"), a long summary or action item is cut, and items past five are
     dropped. Structure stays strict: an object, a non-empty summary, a list of strings. Unknown
     keys are ignored (dropped, never stored or acted on).
@@ -220,12 +247,12 @@ class ThreadAnalysis(EmailModel):
     @field_validator("priority", mode="before")
     @classmethod
     def known_priority(cls, value: Any) -> Any:
-        return _choice(value, get_args(Priority), "normal")
+        return _choice(value, get_args(Priority), "normal", _PRIORITY_SYNONYMS)
 
     @field_validator("language", mode="before")
     @classmethod
     def known_language(cls, value: Any) -> Any:
-        return _choice(value, get_args(AnalysisLanguage), "other")
+        return _choice(value, get_args(AnalysisLanguage), "other", _LANGUAGE_SYNONYMS)
 
     @field_validator("summary", mode="before")
     @classmethod

@@ -137,20 +137,45 @@ def test_model_output_enums_are_normalised_not_rejected() -> None:
             {
                 "category": "Shipping Inquiry",
                 "priority": " High ",
-                "language": "English",
+                "language": "Klingon",
                 "summary": "s",
             }
         )
     )
     assert (analysis.category, analysis.priority, analysis.language) == ("other", "high", "other")
     spaced = ThreadAnalysis.model_validate(
-        {"category": "Order or Delivery", "priority": "urgent", "language": "MS", "summary": "s"}
+        {"category": "Order or Delivery", "priority": "whenever", "language": "MS", "summary": "s"}
     )
     assert (spaced.category, spaced.priority, spaced.language) == (
         "order_or_delivery",
         "normal",
         "ms",
     )
+    # Common synonyms map before the fallback.
+    base = {"category": "other", "priority": "normal", "language": "en", "summary": "s"}
+    priorities = {
+        "Urgent": "high",
+        "critical": "high",
+        "important": "high",
+        "High Priority": "high",
+        "medium": "normal",
+        "normal priority": "normal",
+        "Moderate": "normal",
+        "low priority": "low",
+        "minor": "low",
+    }
+    for given, expected in priorities.items():
+        assert ThreadAnalysis.model_validate({**base, "priority": given}).priority == expected
+    languages = {
+        "English": "en",
+        "Malay": "ms",
+        "bahasa": "ms",
+        "Bahasa Melayu": "ms",
+        "BM": "ms",
+        "mix": "mixed",
+    }
+    for given, expected in languages.items():
+        assert ThreadAnalysis.model_validate({**base, "language": given}).language == expected
 
 
 def test_model_output_text_is_truncated_not_rejected() -> None:

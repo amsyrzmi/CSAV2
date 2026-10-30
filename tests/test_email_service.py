@@ -1766,6 +1766,8 @@ async def test_attention_accepts_model_output_outside_the_literals(
 
     async def drifting(schema: type[Any], *, system: str, user: str, **kwargs: Any) -> Any:
         systems.append(system)
+        # Room for a reasoning model's answer, so the JSON is not cut off.
+        assert kwargs["max_tokens"] == 1500
         try:  # parsed exactly as GroqClient parses the provider's content
             return schema.model_validate_json(raw)
         except ValueError as exc:
