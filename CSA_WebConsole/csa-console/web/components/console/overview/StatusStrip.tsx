@@ -56,6 +56,8 @@ export function StatusStrip({ me, clientId }: { me: Me; clientId: string | null 
       } catch {
         if (signal.aborted) return;
       }
+      // The review count depends on the services read above: the Inbox count is only asked for when
+      // the packages say Customer Support is on, so a failed services read hides both numbers.
       let review: number | null = null;
       if (canSeeInboxCount(role, packages)) {
         try {

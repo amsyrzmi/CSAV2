@@ -327,6 +327,11 @@ async def test_loading_screen_shows_five_agents_and_the_word_loading(console: Co
             for i in range(5):
                 await expect(sprites.nth(i)).to_have_attribute("data-state", "rest")
             await expect(page.get_by_test_id("loading-ground")).to_have_count(1)
+            # The full-screen fallback is never hydrated, so CSS alone animates it ("auto"); inside
+            # the shell the page has hydrated and the hook has decided ("on").
+            await expect(screen).to_have_attribute(
+                "data-motion", "on" if opener is open_shell_loading else "auto"
+            )
             if opener is open_shell_loading:
                 await expect(page.get_by_test_id("shell-topbar")).to_be_visible()
             else:

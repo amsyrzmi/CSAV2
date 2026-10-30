@@ -243,8 +243,9 @@ machine token to browsers. Empty allowlist grants no tenant access.
 
 ## Private sandbox assistant (M4)
 
-The `/chat` (platform) and `/portal/chat` (tenant) screens are **Sandbox assistant**,
-not a customer inbox. They use the verified session and tenant selector above.
+The private sandbox assistant lives on **Overview** (`/` for platform admins, `/portal` for tenant
+members); `/chat` and `/portal/chat` only redirect there, keeping `client_id`. It is not a customer
+inbox. It uses the verified session and tenant selector above.
 All chat reads additionally require a human session and exact conversation ownership;
 even another staff member or platform administrator cannot read someone else's sandbox.
 Machine principals are denied. Read-only members can read their existing history but

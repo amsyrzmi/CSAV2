@@ -63,7 +63,7 @@ export function Rail({
     <aside
       data-testid="shell-rail"
       data-rail={state}
-      className={`hidden shrink-0 border-r border-[color:var(--fs-border)] bg-[var(--fs-rail)] lg:block ${expanded ? "w-60" : "w-14"}`}
+      className={`hidden shrink-0 shadow-[inset_-1px_0_0_var(--fs-border)] bg-[var(--fs-rail)] lg:block ${expanded ? "w-60" : "w-14"}`}
     >
       <div
         onScroll={() => setTip(null)}

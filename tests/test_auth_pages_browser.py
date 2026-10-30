@@ -272,6 +272,47 @@ async def test_auth_left_panel_is_brand_cobalt_in_every_theme(console: Console) 
             assert seen[f"{theme}-{kind}"] == reference, (theme, kind, seen[f"{theme}-{kind}"])
 
 
+async def test_panel_text_sits_where_the_gradient_is_dark_enough(console: Console) -> None:
+    """theme-contrast.test.mjs assumes the text never passes 75% of the gradient.
+
+    This measures it: the farthest corner of the wordmark and the tagline along the 155deg gradient
+    line, as a fraction of the panel's gradient length, at the narrowest and widest panel layouts.
+    """
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            for width, height in ((1024, 600), (1440, 900), (1920, 1080)):
+                context = await new_context(console, browser, width=width)
+                page = await open_route(context, console, "/login")
+                await page.set_viewport_size({"width": width, "height": height})
+                panel = page.get_by_test_id("auth-panel")
+                await expect(panel).to_be_visible()
+                farthest = await page.evaluate(
+                    """() => {
+                      const panel = document
+                        .querySelector('[data-testid="auth-panel"]').getBoundingClientRect();
+                      const angle = (155 * Math.PI) / 180;
+                      const dx = Math.sin(angle), dy = -Math.cos(angle);
+                      const length = Math.abs(panel.width * dx) + Math.abs(panel.height * dy);
+                      const cx = panel.x + panel.width / 2, cy = panel.y + panel.height / 2;
+                      let worst = 0;
+                      for (const id of ['auth-wordmark', 'auth-tagline']) {
+                        const r = document
+                          .querySelector(`[data-testid="${id}"]`).getBoundingClientRect();
+                        const corners = [[r.left, r.top], [r.right, r.top],
+                          [r.left, r.bottom], [r.right, r.bottom]];
+                        for (const [x, y] of corners)
+                          worst = Math.max(worst, ((x - cx) * dx + (y - cy) * dy) / length + 0.5);
+                      }
+                      return worst;
+                    }"""
+                )
+                assert farthest <= 0.75, (width, height, farthest)
+                await context.close()
+        finally:
+            await browser.close()
+
+
 async def drop_animations(page: Page) -> list[str]:
     return await page.evaluate(
         """() => [...document.querySelectorAll('[data-testid="auth-panel"] svg path')]

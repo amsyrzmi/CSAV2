@@ -1,6 +1,9 @@
 "use client";
 
+import { useSyncExternalStore } from "react";
 import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
+
+const subscribeNever = () => () => {};
 
 /** The four stacked layers of public/brand/fourstacks-mark.svg, bottom to top. */
 const LAYERS = [
@@ -12,9 +15,11 @@ const LAYERS = [
 
 /**
  * The FourStacks mark in the brand-panel colours (--fs-auth-logo, with --fs-auth-logo-accent on the
- * third layer). The server render and the first paint are the finished mark; once mounted, and only
- * while decorative motion is allowed, the layers drop into place one after another (fs-logo-drop in
- * globals.css). Reduced motion, a hidden tab and the Calm motion preference all leave it still.
+ * third layer). The layers drop into place one after another (fs-logo-drop in globals.css). The
+ * server render already carries the class, and CSS runs it unless reduced motion is asked for or
+ * the document is marked Calm, so the drop starts at first paint and does not blink at hydration.
+ * Once mounted, data-motion is "on" or "off" from the same hook the other animations use, and
+ * "off" (paused, hidden tab) stops it. Before mount it is "auto": CSS alone decides.
  */
 export function FourStacksLogo({
   size = 120,
@@ -24,7 +29,8 @@ export function FourStacksLogo({
   animated?: boolean;
 }) {
   const allowed = useMotionAllowed();
-  const dropping = animated && allowed;
+  const mounted = useSyncExternalStore(subscribeNever, () => true, () => false);
+  const motion = !animated ? "off" : !mounted ? "auto" : allowed ? "on" : "off";
   return (
     <svg
       viewBox="0 0 48 52"
@@ -33,8 +39,8 @@ export function FourStacksLogo({
       fill="none"
       aria-hidden="true"
       focusable="false"
-      data-motion={dropping ? "on" : "off"}
-      className={dropping ? "fs-logo-drop" : undefined}
+      data-motion={motion}
+      className={animated ? "fs-logo-drop" : undefined}
     >
       {LAYERS.map((layer) => (
         <path

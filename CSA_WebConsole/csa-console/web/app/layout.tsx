@@ -30,7 +30,9 @@ export const metadata: Metadata = {
 };
 
 // Runs before first paint: marks the document Calm when the stored pause preference is on, so CSS
-// (the unhydrated loading screen) can stay still. The hooks stay the source of truth once mounted.
+// (the unhydrated loading screen, the auth logo) can stay still. data-calm is only a pre-hydration
+// hint: the hooks stay the source of truth once mounted. A future CSP needs a nonce (or a hash)
+// for this inline script.
 const CALM_SCRIPT = `try{if(window.localStorage.getItem(${JSON.stringify(PAUSE_KEY)})==="1")document.documentElement.setAttribute("data-calm","1")}catch(e){}`;
 
 export default async function RootLayout({

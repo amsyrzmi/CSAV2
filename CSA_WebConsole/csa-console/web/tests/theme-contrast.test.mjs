@@ -225,7 +225,8 @@ for (const theme of THEMES) {
   test(`${theme}: the tagline and wordmark read 4.5:1 where they sit on the panel gradient`, () => {
     const map = tokens(theme);
     // The text is centred in the left column, so it never reaches the far corner; 75% is the
-    // lowest it can sit. The far corner itself (the lightest stop) is 4.0:1 and is guarded above at 3:1.
+    // lowest it can sit (tests/test_auth_pages_browser.py measures the real position and asserts
+    // it stays at or below 75% at 1024, 1440 and 1920 px). The far corner itself (the lightest stop) is 4.0:1 and is guarded above at 3:1.
     const there = blend(map["--fs-auth-from"], map["--fs-auth-to"], 0.75);
     assert.ok(ratio(map["--fs-auth-text"], there) >= 4.5, `${theme}: ${ratio(map["--fs-auth-text"], there).toFixed(2)} at 75%`);
   });
