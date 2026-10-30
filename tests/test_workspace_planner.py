@@ -184,8 +184,8 @@ def test_planner_output_rejects_legacy_actions() -> None:
 
 def test_requested_addresses_come_only_from_what_the_user_wrote() -> None:
     """Server alone, crafted messages: the reviewer's Variants A and B and the own-address flows."""
-    from csa.workspace.planner import PriorTurn
     from csa.workspace.contracts import ClarificationProposal
+    from csa.workspace.planner import PriorTurn
     from csa.workspace.service import _clarification, _requested_addresses
 
     evil, request = "evil@x.test", "email ops@example.test about the order"
