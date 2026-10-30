@@ -57,7 +57,7 @@ owner and identity connection strings are mounted as read-only secret files.
 
 ```bash
 (
-  cd /home/amsyrzmi/CSAV2-seed || exit 1
+  cd /home/amsyrzmi/CSAV2 || exit 1
   docker run --rm --network csa-staging_data --user 1000:1000 \
     --env NO_LOCAL_ENV=1 \
     --env CSA_STAGING_SEED_APPROVAL=approved-isolated-staging \
