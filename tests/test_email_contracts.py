@@ -311,33 +311,90 @@ async def test_send_message_5xx_is_ambiguous_not_refused() -> None:
     assert err.value.code == "provider_unreachable"
 
 
-async def test_list_thread_ids_passes_page_token_and_returns_next() -> None:
-    seen: list[httpx.Request] = []
+def _messages_pages(
+    pages: dict[str | None, tuple[list[str], str | None]], seen: list[httpx.Request]
+) -> Callable[[httpx.Request], httpx.Response]:
+    """users.messages.list, newest message first; each entry is one message's threadId."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(
-            200, json={"threads": [{"id": "a"}, {"id": "b"}], "nextPageToken": "tok-2"}
-        )
+        assert request.method == "GET" and request.url.path.endswith("/users/me/messages")
+        thread_ids, token = pages[request.url.params.get("pageToken")]
+        body: dict[str, Any] = {
+            "messages": [{"id": f"m{i}-{tid}", "threadId": tid} for i, tid in enumerate(thread_ids)]
+        }
+        if token:
+            body["nextPageToken"] = token
+        return httpx.Response(200, json=body)
 
-    ids, next_token = await _client(handler).list_thread_ids(
-        ACCESS, query="newer_than:90d", limit=20, page_token="tok-1"
+    return handler
+
+
+async def test_recent_threads_follow_the_latest_message_not_creation() -> None:
+    """Gmail's threads.list orders by thread creation; messages.list orders by message time."""
+    seen: list[httpx.Request] = []
+    # An old conversation ("old-1a15") just got a reply, so its message is the newest; a
+    # newer-created but quiet conversation ("new-1a18") comes later.
+    pages = {None: (["old-1a15", "new-1a18", "old-1a15"], None)}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="newer_than:90d -in:chats", limit=20
     )
-    assert ids == ["a", "b"] and next_token == "tok-2"
-    assert seen[0].url.params["pageToken"] == "tok-1"
+    assert ids == ["old-1a15", "new-1a18"] and token is None
+    assert seen[0].url.params["q"] == "newer_than:90d -in:chats"
+    assert seen[0].url.params["maxResults"] == "20" and "pageToken" not in seen[0].url.params
+
+
+async def test_recent_threads_collapse_duplicates_and_stop_at_the_limit() -> None:
+    seen: list[httpx.Request] = []
+    # Page sizes follow the threads still needed, so a page never ends past the limit and the
+    # token returned is exactly where the next load starts.
+    first = ["a", "b", "a", "c", "b"]  # three distinct threads in five messages
+    pages = {None: (first, "tok-2"), "tok-2": (["c", "d"], "tok-3"), "tok-3": (["e"], "tok-4")}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="q", limit=5
+    )
+    assert ids == ["a", "b", "c", "d", "e"] and token == "tok-4"
+    assert [r.url.params["maxResults"] for r in seen] == ["5", "2", "1"]
+    assert [r.url.params.get("pageToken") for r in seen] == [None, "tok-2", "tok-3"]
+
+
+async def test_recent_threads_read_at_most_three_pages() -> None:
+    seen: list[httpx.Request] = []
+    pages = {None: (["a"], "tok-2"), "tok-2": (["a"], "tok-3"), "tok-3": (["b"], "tok-4")}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="q", limit=20
+    )
+    assert ids == ["a", "b"] and token == "tok-4" and len(seen) == 3
     assert seen[0].url.params["maxResults"] == "20"
 
 
-async def test_list_thread_ids_last_page_has_no_token() -> None:
+async def test_recent_threads_continue_from_the_page_token() -> None:
+    seen: list[httpx.Request] = []
+    pages = {"tok-4": (["f", "g"], None)}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="q", limit=20, page_token="tok-4"
+    )
+    assert ids == ["f", "g"] and token is None
+    assert seen[0].url.params["pageToken"] == "tok-4"
+
+
+async def test_recent_threads_empty_result_is_done() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"threads": [{"id": "a"}]})
+        return httpx.Response(200, json={"resultSizeEstimate": 0})
 
-    ids, next_token = await _client(handler).list_thread_ids(ACCESS, query="q", limit=5)
-    assert ids == ["a"] and next_token is None
-    assert "pageToken" not in seen[0].url.params
+    ids, token = await _client(handler).list_recent_thread_ids(ACCESS, query="q", limit=20)
+    assert ids == [] and token is None and len(seen) == 1
+
+
+async def test_recent_threads_reject_a_malformed_list() -> None:
+    with pytest.raises(gmail.GmailError) as err:
+        await _client(lambda r: httpx.Response(200, json={"messages": "x"})).list_recent_thread_ids(
+            ACCESS, query="q", limit=20
+        )
+    assert err.value.code == "provider_invalid_response"
 
 
 def _message(
@@ -433,7 +490,7 @@ async def test_gmail_quota_403_is_a_rate_limit(
     assert sent.value.code == "provider_rate_limited"
     # The shared JSON reader (sync, drafts, tokens) reads it the same way.
     with pytest.raises(gmail.GmailError) as listed:
-        await client.list_thread_ids(ACCESS, query="q", limit=5)
+        await client.list_recent_thread_ids(ACCESS, query="q", limit=5)
     assert listed.value.code == "provider_rate_limited"
     logged = " ".join(record.getMessage() for record in caplog.records)
     assert "Synthetic quota text" not in logged and "customer.test" not in logged
@@ -455,7 +512,7 @@ async def test_other_403s_stay_unauthorized(response: httpx.Response) -> None:
         await client.send_message(ACCESS, thread_id=None, mime=b"x")
     assert sent.value.code == "provider_unauthorized"
     with pytest.raises(gmail.GmailError) as listed:
-        await client.list_thread_ids(ACCESS, query="q", limit=5)
+        await client.list_recent_thread_ids(ACCESS, query="q", limit=5)
     assert listed.value.code == "provider_unauthorized"
 
 

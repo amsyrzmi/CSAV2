@@ -118,6 +118,7 @@ access switch "approves team" and the `hr` package.
 ## Sync
 
 - **Window:** the last 90 days, `newer_than:90d -in:chats`, in pages of 20.
+- **Order:** sync picks the 20 conversations with the most recent messages (Gmail `messages.list`, newest first, up to three list pages), so an old conversation with new mail is fetched again.
 - **Load more:** `POST /console/v1/email/sync/more` fetches the next page using a
   Gmail page token stored per mailbox. The tab shows "Load older email" until
   there is nothing left in the 90 days. Load more also stops at the cap: when

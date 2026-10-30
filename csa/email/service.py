@@ -819,10 +819,14 @@ class EmailService:
     async def _fetch_page(
         self, session: EmailSession, mailbox: dict[str, Any], page_token: str | None
     ) -> tuple[list[FetchedThread], str | None]:
-        """One page of threads from Gmail, outside any transaction, and the next page token."""
+        """One page of threads from Gmail, outside any transaction, and the next page token.
+
+        The page is the ``sync_limit`` conversations with the most recent messages after
+        ``page_token``; a thread seen before simply upserts again.
+        """
         access = await self._access_token(session, mailbox)
         assert self.gmail is not None
-        thread_ids, next_page = await self.gmail.list_thread_ids(
+        thread_ids, next_page = await self.gmail.list_recent_thread_ids(
             access, query=SYNC_QUERY, limit=self.sync_limit, page_token=page_token
         )
         fetched: list[FetchedThread] = []
