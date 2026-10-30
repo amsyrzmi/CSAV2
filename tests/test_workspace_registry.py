@@ -20,6 +20,7 @@ from csa.core.tenancy import tx
 from csa.decide.groq import GroqClient
 from csa.email.api import build_email_router
 from csa.email.gmail import GmailClient
+from csa.email.models import DraftOut, DraftProposal, draft_version
 from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
@@ -27,6 +28,7 @@ from csa.hr.service import HrService
 from csa.workspace import registry as registry_module
 from csa.workspace.contracts import CardField, ProposalKind
 from csa.workspace.executors import build_proposal_registry
+from csa.workspace.planner import WorkspacePlanner
 from csa.workspace.registry import (
     CLAIM_LEASE,
     CardContent,
@@ -821,6 +823,7 @@ async def proposals_app(
 
 
 PROPOSALS = "/console/v1/workspace/proposals"
+THREADS = "/console/v1/workspace/conversations"
 
 
 async def _propose(
@@ -1271,13 +1274,312 @@ async def test_email_export_proposal_end_to_end(proposals_app) -> None:
     draft_id = drafted.json()["id"]
     created = await _propose(w, browser, "email_export", {"draft_id": draft_id})
     assert created.status_code == 201, created.text
-    fields = {f["label"]: f["value"] for f in created.json()["card"]["fields"]}
-    assert fields == {"To": "aina@example.test", "Subject": "Re: Order MGL-TEST-005"}
+    card = created.json()["card"]
+    assert card["title"] == "Save email to Gmail drafts for 1 person"
+    assert card["summary"] == "1 in To. Nothing is sent."
+    assert {f["label"]: f["value"] for f in card["fields"]} == {
+        "Subject": "(shown on open)",
+        "Draft": draft_id,
+    }
     exported = await _http_confirm(w, browser, created.json()["id"])
     assert exported.status_code == 200, exported.text
     assert exported.json()["result"]["gmail_draft_id"] == "gmail-draft-1"
     assert exported.json()["result"]["status"] == "exported"
+    assert set(exported.json()["result"]) == {"draft_id", "status", "gmail_draft_id"}
     assert sum(1 for m, p, _ in gmail.requests if m == "POST" and p.endswith("/drafts")) == 1
     replay = await _http_confirm(w, browser, created.json()["id"])
     assert replay.status_code == 200 and replay.json() == exported.json()
     assert sum(1 for m, p, _ in gmail.requests if m == "POST" and p.endswith("/drafts")) == 1
+
+
+# ------------------------------------------------------------------ email_send proposals
+
+SEND_SUBJECT = "Synthetic roadmap Q7"
+SEND_BODY = "Synthetic body line Z9Q, nothing to fill in."
+
+
+class CleanDraftModel(ScriptedModel):
+    """Drafts with no [STAFF: ...] placeholder, so they can be sent."""
+
+    async def json_completion(
+        self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
+    ) -> Any:
+        if schema is DraftProposal:
+            self.calls.append((schema.__name__, system, user))
+            return DraftProposal(subject=SEND_SUBJECT, body=SEND_BODY)
+        return await super().json_completion(
+            schema, system=system, user=user, timeout=timeout, max_tokens=max_tokens
+        )
+
+
+class OnePlan:
+    """Planner model double: always proposes the same action."""
+
+    model = "scripted"
+
+    def __init__(self, proposal: dict[str, Any]) -> None:
+        self.proposal = proposal
+
+    async def json_completion(
+        self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
+    ) -> Any:
+        return schema.model_validate({"proposal": self.proposal})
+
+
+async def _email_ready(w: SessionWorld) -> httpx.AsyncClient:
+    tenant = w.tenants[0]
+    await activate(w, tenant, "staff_email")
+    await w.q("UPDATE email_settings SET enabled=true WHERE client_id=%s", tenant)
+    browser, _ = await w.member(role="tenant_staff")
+    started = await _email_call(w, browser, "POST", "/console/v1/email/mailbox/connect")
+    assert started.status_code == 200, started.text
+    state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+    done = await browser.get(f"/console/v1/email/oauth/callback?code=abc&state={state}")
+    assert done.status_code == 303 and "error" not in done.headers["location"], done.text
+    return browser
+
+
+async def _email_call(
+    w: SessionWorld, browser: httpx.AsyncClient, method: str, path: str, body: Any = None
+) -> httpx.Response:
+    headers = {**w.headers(browser), "Idempotency-Key": str(uuid4())}
+    return await browser.request(method, path, json=body, headers=headers)
+
+
+async def test_send_card_goes_stale_after_draft_edit(proposals_app) -> None:
+    """Review Focus 2: an edit after the card was made sends nothing until a new card."""
+    w, gmail = proposals_app
+    browser = await _email_ready(w)
+    assert (await _email_call(w, browser, "POST", "/console/v1/email/sync")).status_code == 200
+    drafted = await _email_call(
+        w, browser, "POST", "/console/v1/email/threads/t1/draft", {"instructions": "Hi"}
+    )
+    assert drafted.status_code == 201, drafted.text
+    draft = DraftOut.model_validate(drafted.json())
+    version = draft_version(draft)
+    created = await _propose(
+        w, browser, "email_send", {"draft_id": str(draft.id), "version": version}
+    )
+    assert created.status_code == 201, created.text
+    card = created.json()["card"]
+    assert card["kind"] == "email_send" and card["expected_version"] == version
+    assert card["title"] == "Send reply to 1 person"
+    assert {f["label"]: f["value"] for f in card["fields"]} == {
+        "Subject": "(shown on open)",
+        "Draft": str(draft.id),
+    }
+    assert "aina@example.test" not in json.dumps(card)
+
+    edited = await _email_call(
+        w,
+        browser,
+        "PUT",
+        f"/console/v1/email/drafts/{draft.id}",
+        {"to": ["aina@example.test"], "subject": draft.subject, "body": "Hi Aina, it ships today."},
+    )
+    assert edited.status_code == 200, edited.text
+    stale = await _http_confirm(w, browser, created.json()["id"])
+    assert stale.status_code == 409 and stale.json()["detail"] == "draft_changed"
+    assert gmail.sends == []
+    assert (await _row(w, UUID(created.json()["id"])))["status"] == "requested"
+    again = await _propose(
+        w, browser, "email_send", {"draft_id": str(draft.id), "version": version}
+    )
+    assert again.status_code == 409 and again.json()["detail"] == "draft_changed"
+
+    fresh_version = draft_version(DraftOut.model_validate(edited.json()))
+    fresh = await _propose(
+        w, browser, "email_send", {"draft_id": str(draft.id), "version": fresh_version}
+    )
+    assert fresh.status_code == 201, fresh.text
+    sent = await _http_confirm(w, browser, fresh.json()["id"])
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["status"] == "executed" and sent.json()["result"]["outcome"] == "sent"
+    assert len(gmail.sends) == 1
+
+
+async def test_send_proposal_stores_no_addresses_or_body(proposals_app) -> None:
+    w, gmail = proposals_app
+    w.app.state.email_service.model = CleanDraftModel()
+    outside, copied = "outside.person@gmail.com", "copy.person@example.test"
+    w.app.state.workspace_planner = WorkspacePlanner(
+        OnePlan(
+            {
+                "action": "email_compose",
+                "recipient_address": outside,
+                "cc": [copied],
+                "subject": "Plan",
+                "instructions": "Share the plan",
+                "send": True,
+            }
+        )
+    )
+    browser = await _email_ready(w)
+    created = await w.mutate(browser, THREADS, {"request_key": str(uuid4())})
+    assert created.status_code == 201, created.text
+    turn = await w.mutate(
+        browser,
+        f"{THREADS}/{created.json()['id']}/turns",
+        {
+            "request_key": str(uuid4()),
+            "body": f"Email {outside} and cc {copied} about the plan, then send it",
+            "page_context": {"tab": "email"},
+        },
+    )
+    assert turn.status_code == 201, turn.text
+    proposal = turn.json()["result"]["proposal"]
+    assert proposal["kind"] == "email_send"
+    assert proposal["card"]["title"] == "Send email to 2 people (1 outside your company)"
+    done = await _http_confirm(w, browser, proposal["id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "executed"
+    assert set(done.json()["result"]) == {
+        "draft_id", "outcome", "sent_at", "gmail_message_id", "remaining_this_hour",
+    }  # fmt: skip
+    assert len(gmail.sends) == 1
+
+    rows = await w.q("SELECT kind, payload FROM console_proposals")
+    assert [r["kind"] for r in rows] == ["email_send"]
+    assert set(rows[0]["payload"]) == {"draft_id", "version"}
+    await _assert_not_stored(w, outside, copied, "staff@example.test", SEND_SUBJECT, "Z9Q")
+
+
+async def _assert_not_stored(w: SessionWorld, *needles: str) -> None:
+    """No needle in any proposal, turn or console audit row (all readable tenant-wide)."""
+    stored = [
+        *(
+            r["t"]
+            for r in await w.q(
+                "SELECT concat_ws(' ', payload::text, card::text, result::text) t"
+                " FROM console_proposals"
+            )
+        ),
+        *(
+            r["t"]
+            for r in await w.q(
+                "SELECT concat_ws(' ', body, result::text) t FROM console_workspace_turns"
+            )
+        ),
+        *(r["t"] for r in await w.q("SELECT details::text t FROM console_audit")),
+    ]
+    assert stored
+    for needle in needles:
+        assert all(needle.lower() not in text.lower() for text in stored), needle
+
+
+async def test_export_proposal_stores_no_addresses_or_body(proposals_app) -> None:
+    """A reply the user did not ask to send gets an export card, also counts only."""
+    w, gmail = proposals_app
+    w.app.state.email_service.model = CleanDraftModel()
+    copied = "copy.person@example.test"
+    w.app.state.workspace_planner = WorkspacePlanner(
+        OnePlan({"action": "email_reply", "thread_id": "t1", "instructions": "Hi", "cc": [copied]})
+    )
+    browser = await _email_ready(w)
+    assert (await _email_call(w, browser, "POST", "/console/v1/email/sync")).status_code == 200
+    created = await w.mutate(browser, THREADS, {"request_key": str(uuid4())})
+    assert created.status_code == 201, created.text
+    turn = await w.mutate(
+        browser,
+        f"{THREADS}/{created.json()['id']}/turns",
+        {
+            "request_key": str(uuid4()),
+            "body": f"Reply to Aina's email and copy {copied}",
+            "page_context": {"tab": "email"},
+        },
+    )
+    assert turn.status_code == 201, turn.text
+    proposal = turn.json()["result"]["proposal"]
+    assert proposal["kind"] == "email_export"
+    assert proposal["card"]["title"] == "Save email to Gmail drafts for 2 people"
+    assert proposal["card"]["summary"] == "1 in To, 1 in CC. Nothing is sent."
+    done = await _http_confirm(w, browser, proposal["id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["result"]["status"] == "exported"
+    assert sum(1 for m, p, _ in gmail.requests if m == "POST" and p.endswith("/drafts")) == 1
+    rows = await w.q("SELECT kind, payload FROM console_proposals")
+    assert [(r["kind"], set(r["payload"])) for r in rows] == [("email_export", {"draft_id"})]
+    await _assert_not_stored(
+        w, "aina@example.test", copied, "staff@example.test", SEND_SUBJECT, "Z9Q", "MGL-TEST-005"
+    )
+
+
+async def _connected_member(w: SessionWorld) -> httpx.AsyncClient:
+    """Another tenant_staff member with their own connected mailbox (the tenant is ready)."""
+    browser, _ = await w.member(role="tenant_staff")
+    started = await _email_call(w, browser, "POST", "/console/v1/email/mailbox/connect")
+    assert started.status_code == 200, started.text
+    state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+    done = await browser.get(f"/console/v1/email/oauth/callback?code=abc&state={state}")
+    assert done.status_code == 303 and "error" not in done.headers["location"], done.text
+    return browser
+
+
+async def _new_draft(w: SessionWorld, browser: httpx.AsyncClient) -> DraftOut:
+    drafted = await _email_call(
+        w, browser, "POST", "/console/v1/email/threads/t1/draft", {"instructions": "Hi"}
+    )
+    assert drafted.status_code == 201, drafted.text
+    return DraftOut.model_validate(drafted.json())
+
+
+async def test_send_card_for_another_members_draft_is_refused(proposals_app) -> None:
+    """A send card names only the caller's own drafts, at creation and again at confirm."""
+    w, gmail = proposals_app
+    w.app.state.email_service.model = CleanDraftModel()
+    owner = await _email_ready(w)
+    assert (await _email_call(w, owner, "POST", "/console/v1/email/sync")).status_code == 200
+    theirs = await _new_draft(w, owner)
+    other = await _connected_member(w)
+    assert (await _email_call(w, other, "POST", "/console/v1/email/sync")).status_code == 200
+    payload = {"draft_id": str(theirs.id), "version": draft_version(theirs)}
+    refused = await _propose(w, other, "email_send", payload)
+    assert refused.status_code == 404 and refused.json()["detail"] == "resource_unavailable"
+    # A card made for the member's own draft, then pointed at the other draft (hash kept
+    # valid), is refused at confirm as well.
+    mine = await _new_draft(w, other)
+    created = await _propose(
+        w, other, "email_send", {"draft_id": str(mine.id), "version": draft_version(mine)}
+    )
+    assert created.status_code == 201, created.text
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    await w.q(
+        "UPDATE console_proposals SET payload=%s, payload_sha256=%s, expected_version=%s "
+        "WHERE id=%s",
+        json.dumps(payload),
+        hashlib.sha256(canonical.encode()).hexdigest(),
+        payload["version"],
+        created.json()["id"],
+    )
+    confirmed = await _http_confirm(w, other, created.json()["id"])
+    assert confirmed.status_code == 404 and confirmed.json()["detail"] == "resource_unavailable"
+    assert gmail.sends == []
+    statuses = await w.q("SELECT status FROM email_drafts ORDER BY created_at")
+    assert [row["status"] for row in statuses] == ["draft", "draft"]
+
+
+async def test_export_card_goes_stale_after_a_cc_edit(proposals_app) -> None:
+    """The export card binds the whole draft, CC and BCC included, as a send card does."""
+    w, gmail = proposals_app
+    browser = await _email_ready(w)
+    assert (await _email_call(w, browser, "POST", "/console/v1/email/sync")).status_code == 200
+    draft = await _new_draft(w, browser)
+    created = await _propose(w, browser, "email_export", {"draft_id": str(draft.id)})
+    assert created.status_code == 201, created.text
+    assert created.json()["card"]["expected_version"] == draft_version(draft)
+    edited = await _email_call(
+        w,
+        browser,
+        "PUT",
+        f"/console/v1/email/drafts/{draft.id}",
+        {
+            "to": draft.to,
+            "cc": ["copy.person@example.test"],
+            "subject": draft.subject,
+            "body": draft.body,
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    stale = await _http_confirm(w, browser, created.json()["id"])
+    assert stale.status_code == 409 and stale.json()["detail"] == "proposal_stale", stale.text
+    assert not any(m == "POST" and p.endswith("/drafts") for m, p, _ in gmail.requests)

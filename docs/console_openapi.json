@@ -1203,6 +1203,89 @@
         "title": "AttendanceInput",
         "type": "object"
       },
+      "AttentionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "next_steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Next Steps",
+            "type": "array"
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "sender",
+          "subject",
+          "priority",
+          "summary",
+          "next_steps"
+        ],
+        "title": "AttentionItem",
+        "type": "object"
+      },
+      "AttentionPage": {
+        "additionalProperties": false,
+        "description": "Up to ten threads that need the member's attention, from the last sync's stored mail.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AttentionItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "skipped": {
+            "default": 0,
+            "title": "Skipped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "as_of"
+        ],
+        "title": "AttentionPage",
+        "type": "object"
+      },
       "AuditOut": {
         "additionalProperties": false,
         "properties": {
@@ -2221,8 +2304,24 @@
       },
       "ComposeRequest": {
         "additionalProperties": false,
-        "description": "A new internal email: exactly one recipient, a directory employee or a plain address.",
+        "description": "A new email: one To recipient (a directory employee or a plain address), optional CC/BCC.\n\nCC and BCC entries are directory employee ids or plain addresses.",
         "properties": {
+          "bcc": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Bcc",
+            "type": "array"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Cc",
+            "type": "array"
+          },
           "instructions": {
             "maxLength": 1000,
             "minLength": 1,
@@ -2763,9 +2862,23 @@
       "DraftOut": {
         "additionalProperties": false,
         "properties": {
+          "bcc": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Bcc",
+            "type": "array"
+          },
           "body": {
             "title": "Body",
             "type": "string"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cc",
+            "type": "array"
           },
           "created_at": {
             "format": "date-time",
@@ -2788,9 +2901,43 @@
             "title": "Id",
             "type": "string"
           },
+          "needs_staff_input": {
+            "title": "Needs Staff Input",
+            "type": "boolean"
+          },
           "recipient": {
             "title": "Recipient",
             "type": "string"
+          },
+          "recipients": {
+            "items": {
+              "$ref": "#/components/schemas/RecipientOut"
+            },
+            "title": "Recipients",
+            "type": "array"
+          },
+          "reply_to_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply To Message Id"
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
           },
           "source": {
             "enum": [
@@ -2803,7 +2950,9 @@
           "status": {
             "enum": [
               "draft",
-              "exported"
+              "exported",
+              "sending",
+              "sent"
             ],
             "title": "Status",
             "type": "string"
@@ -2823,9 +2972,22 @@
             ],
             "title": "Thread Id"
           },
+          "to": {
+            "items": {
+              "type": "string"
+            },
+            "title": "To",
+            "type": "array"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "description": "`draft_version` of this draft: what `/send` and a send card are bound to.",
+            "readOnly": true,
+            "title": "Version",
             "type": "string"
           }
         },
@@ -2833,13 +2995,21 @@
           "id",
           "thread_id",
           "recipient",
+          "to",
+          "cc",
+          "bcc",
+          "recipients",
           "subject",
           "body",
           "status",
           "source",
           "gmail_draft_id",
+          "sent_at",
+          "needs_staff_input",
+          "reply_to_message_id",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "version"
         ],
         "title": "DraftOut",
         "type": "object"
@@ -2886,28 +3056,66 @@
       },
       "DraftUpdate": {
         "additionalProperties": false,
+        "description": "An edit by the person. `recipient` alone is the older single-address form of `to`.",
         "properties": {
+          "bcc": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Bcc",
+            "type": "array"
+          },
           "body": {
             "maxLength": 20000,
             "minLength": 1,
             "title": "Body",
             "type": "string"
           },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Cc",
+            "type": "array"
+          },
           "recipient": {
-            "maxLength": 254,
-            "minLength": 3,
-            "title": "Recipient",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient"
           },
           "subject": {
             "maxLength": 200,
             "minLength": 1,
             "title": "Subject",
             "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
           }
         },
         "required": [
-          "recipient",
           "subject",
           "body"
         ],
@@ -2934,6 +3142,18 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
           "mailbox": {
             "anyOf": [
               {
@@ -2946,6 +3166,11 @@
           },
           "model_configured": {
             "title": "Model Configured",
+            "type": "boolean"
+          },
+          "more_available": {
+            "default": false,
+            "title": "More Available",
             "type": "boolean"
           },
           "provider_configured": {
@@ -6900,6 +7125,7 @@
           "kind": {
             "enum": [
               "email_export",
+              "email_send",
               "training_submit",
               "inbox_decision",
               "subscription_action"
@@ -6957,6 +7183,7 @@
           "kind": {
             "enum": [
               "email_export",
+              "email_send",
               "training_submit",
               "inbox_decision",
               "subscription_action"
@@ -7076,6 +7303,25 @@
           "status"
         ],
         "title": "Receipt",
+        "type": "object"
+      },
+      "RecipientOut": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "outside": {
+            "title": "Outside",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "address",
+          "outside"
+        ],
+        "title": "RecipientOut",
         "type": "object"
       },
       "ReconcileOut": {
@@ -7310,6 +7556,46 @@
           "body"
         ],
         "title": "ReplyOut",
+        "type": "object"
+      },
+      "ReplyRequest": {
+        "additionalProperties": false,
+        "description": "A reply in a synced thread. The To address comes from the thread, never from here.",
+        "properties": {
+          "bcc": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Bcc",
+            "type": "array"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Cc",
+            "type": "array"
+          },
+          "instructions": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "language": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          }
+        },
+        "title": "ReplyRequest",
         "type": "object"
       },
       "RequestOut": {
@@ -7747,6 +8033,71 @@
           "reason"
         ],
         "title": "ScheduleCancel",
+        "type": "object"
+      },
+      "SendRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "SendRequest",
+        "type": "object"
+      },
+      "SendResult": {
+        "additionalProperties": false,
+        "description": "The outcome of one send. An unknown outcome is refused as `send_outcome_unknown`.",
+        "properties": {
+          "gmail_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gmail Message Id"
+          },
+          "outcome": {
+            "enum": [
+              "sent",
+              "unknown"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "remaining_this_hour": {
+            "minimum": 0.0,
+            "title": "Remaining This Hour",
+            "type": "integer"
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          }
+        },
+        "required": [
+          "outcome",
+          "sent_at",
+          "gmail_message_id",
+          "remaining_this_hour"
+        ],
+        "title": "SendResult",
         "type": "object"
       },
       "ServiceOut": {
@@ -13189,6 +13540,56 @@
         "summary": "Receipt"
       }
     },
+    "/console/v1/email/attention": {
+      "get": {
+        "operationId": "attention_console_v1_email_attention_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttentionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attention",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
     "/console/v1/email/compose": {
       "post": {
         "operationId": "compose_console_v1_email_compose_post",
@@ -13360,6 +13761,65 @@
       }
     },
     "/console/v1/email/drafts/{draft_id}": {
+      "get": {
+        "description": "One of the caller's own drafts, read from the store only (no Gmail call).\n\nScoped to the caller's own mailbox, as sending is: anyone else's draft is 404.",
+        "operationId": "draft_by_id_console_v1_email_drafts__draft_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft By Id",
+        "tags": [
+          "Email"
+        ]
+      },
       "put": {
         "operationId": "update_draft_console_v1_email_drafts__draft_id__put",
         "parameters": [
@@ -13574,6 +14034,203 @@
           }
         },
         "summary": "Export Draft",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/drafts/{draft_id}/release": {
+      "post": {
+        "operationId": "release_send_console_v1_email_drafts__draft_id__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release Send",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/drafts/{draft_id}/send": {
+      "post": {
+        "operationId": "send_draft_console_v1_email_drafts__draft_id__send_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "enum": [
+                        "send_limit_reached"
+                      ],
+                      "type": "string"
+                    },
+                    "retry_after": {
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "retry_after"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`send_limit_reached`: wait `retry_after` seconds (also in `Retry-After`)."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`send_outcome_unknown` (with `message`) or an unreachable provider."
+          }
+        },
+        "summary": "Send Draft",
         "tags": [
           "Email"
         ]
@@ -13935,6 +14592,66 @@
         ]
       }
     },
+    "/console/v1/email/sync/more": {
+      "post": {
+        "operationId": "sync_more_console_v1_email_sync_more_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync More",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
     "/console/v1/email/threads": {
       "get": {
         "operationId": "threads_console_v1_email_threads_get",
@@ -14187,6 +14904,85 @@
           }
         },
         "summary": "Draft",
+        "tags": [
+          "Email"
+        ]
+      }
+    },
+    "/console/v1/email/threads/{thread_id}/reply": {
+      "post": {
+        "operationId": "reply_console_v1_email_threads__thread_id__reply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reply",
         "tags": [
           "Email"
         ]
@@ -21024,6 +21820,7 @@
                   "kind": {
                     "enum": [
                       "email_export",
+                      "email_send",
                       "training_submit",
                       "inbox_decision",
                       "subscription_action"

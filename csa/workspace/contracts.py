@@ -125,19 +125,57 @@ class DirectoryLookupProposal(_Contract):
     query: str = Field(min_length=1, max_length=120)
 
 
+# A CC/BCC entry or new-email recipient: a directory employee id or a plain address. Addresses
+# are checked against the user's own words before anything is drafted (see the turn service).
+RecipientRef = Annotated[str, StringConstraints(min_length=3, max_length=254)]
+MAX_COPIES = 20
+
+
 class EmailComposeProposal(_Contract):
     action: Literal["email_compose"]
     recipient_employee_id: UUID | None = None
     recipient_address: str | None = Field(default=None, min_length=3, max_length=254)
+    cc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
+    bcc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
     subject: str = Field(min_length=1, max_length=200)
     instructions: str = Field(default="", max_length=1000)
     language: Literal["auto", "en", "ms"] = "auto"
+    # True only when the user clearly asked to send: the card is then a send card, not an export.
+    send: bool = False
 
     @model_validator(mode="after")
     def one_recipient(self) -> EmailComposeProposal:
         if (self.recipient_employee_id is None) == (self.recipient_address is None):
             raise ValueError("set exactly one of recipient_employee_id and recipient_address")
         return self
+
+
+class EmailReplyProposal(_Contract):
+    """A reply in a synced thread; its To comes from the thread, never from the model."""
+
+    action: Literal["email_reply"]
+    thread_id: str = Field(min_length=1, max_length=256)
+    instructions: str = Field(default="", max_length=1000)
+    cc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
+    bcc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
+    language: Literal["auto", "en", "ms"] = "auto"
+    send: bool = False
+
+
+class EmailTeamProposal(_Contract):
+    """One email to the caller's direct reports, all in To; the server picks the people."""
+
+    action: Literal["email_team"]
+    subject: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(default="", max_length=1000)
+    language: Literal["auto", "en", "ms"] = "auto"
+    send: bool = False
+
+
+class InboxSummaryProposal(_Contract):
+    """Answers "what needs my attention" from synced mail, with no card."""
+
+    action: Literal["inbox_summary"]
 
 
 class TrainingSubmitProposal(_Contract):
@@ -180,6 +218,9 @@ WorkspaceProposal = Annotated[
         NavigateProposal,
         DirectoryLookupProposal,
         EmailComposeProposal,
+        EmailReplyProposal,
+        EmailTeamProposal,
+        InboxSummaryProposal,
         TrainingSubmitProposal,
         InboxDecisionProposal,
         ClarificationProposal,
@@ -190,12 +231,26 @@ WorkspaceProposal = Annotated[
 ]
 WorkspaceActionProposal = WorkspaceProposal
 
-ProposalKind = Literal["email_export", "training_submit", "inbox_decision", "subscription_action"]
+ProposalKind = Literal[
+    "email_export", "email_send", "training_submit", "inbox_decision", "subscription_action"
+]
 
 
 class EmailExportProposal(_Contract):
     action: Literal["email_export"]
     draft_id: UUID
+
+
+class EmailSendProposal(_Contract):
+    """The whole stored payload of a send card: no address, subject or body.
+
+    ``version`` is ``csa.email.models.draft_version`` of the draft when the card was made, so
+    any edit afterwards makes the card stale.
+    """
+
+    action: Literal["email_send"]
+    draft_id: UUID
+    version: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ProposalCreate(_Contract):
@@ -236,6 +291,18 @@ class PersonOut(_Contract):
     display_name: str
     job_title: str | None
     work_email: str | None
+
+
+TeamReason = Literal[
+    "package_inactive",
+    "not_team_approver",
+    "no_employee_link",
+    "no_reports",
+    "no_work_email",
+    "team_too_large",
+]
+"""Why the caller's team cannot be emailed: no HR, no approves-team switch, no employee link,
+nobody reporting, no report with a work email, or more than 20 reports to email."""
 
 
 class MyPeopleOut(_Contract):

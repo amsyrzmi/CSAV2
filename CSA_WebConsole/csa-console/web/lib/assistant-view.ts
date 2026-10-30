@@ -1,5 +1,6 @@
 /** Pure helpers behind the assistant dock and proposal card (no React, no I/O). */
 import type { Me } from "@/lib/identity-contracts";
+import { formatWhen } from "@/lib/email-recipients";
 import { navigationFor } from "@/lib/navigation";
 import type { PackageState } from "@/lib/services-api";
 import type {
@@ -206,12 +207,15 @@ export function resultSummary(proposal: ProposalOut): string {
   if (proposal.status === "confirmed") return "Confirmed. The action is being completed.";
   const result = proposal.result;
   switch (proposal.kind) {
-    case "email_export": {
-      const subject = text(field(result, "subject"));
-      const recipient = text(field(result, "recipient"));
-      return subject && recipient
-        ? `Saved “${subject}” to your Gmail drafts, addressed to ${recipient}. Nothing was sent.`
-        : "Saved to your Gmail drafts. Nothing was sent.";
+    case "email_export":
+      // The receipt is {draft_id, status, gmail_draft_id}: no subject or address is stored.
+      return "Saved to your Gmail drafts. Nothing was sent.";
+    case "email_send": {
+      // csa/workspace/executors.py EmailSendExecutor: outcome, time and Gmail's id only.
+      const sentAt = text(field(result, "sent_at"));
+      return field(result, "outcome") === "sent" && sentAt
+        ? `Sent at ${formatWhen(sentAt)}.`
+        : "Sent from your Gmail.";
     }
     case "training_submit": {
       const request = field(result, "request");

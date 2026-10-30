@@ -25,6 +25,8 @@ from csa.console.services import require_package
 from csa.decide.completion import CompletionError
 from csa.email.gmail import GmailError
 from csa.email.models import (
+    SEND_OUTCOME_UNKNOWN_MESSAGE,
+    AttentionPage,
     ComposeRequest,
     ConnectOut,
     DraftOut,
@@ -35,9 +37,14 @@ from csa.email.models import (
     EmailPolicyError,
     EmailSession,
     Receipt,
+    ReplyRequest,
+    SendLimitReached,
+    SendRequest,
+    SendResult,
     SettingsIn,
     ThreadDetail,
     ThreadPage,
+    is_employee_ref,
 )
 from csa.email.service import EmailService
 
@@ -62,13 +69,17 @@ _MAX_BODY = 32768
 def email_http_error(exc: EmailPolicyError | GmailError) -> HTTPException:
     """Content-free HTTP form of an email refusal, shared with workspace proposals."""
     code = exc.code
+    if isinstance(exc, SendLimitReached):
+        return HTTPException(429, code, headers={"Retry-After": str(exc.retry_after)})
     if isinstance(exc, GmailError):
         status = 502 if code in {"provider_unreachable", "provider_invalid_response"} else 409
+    elif code == "send_outcome_unknown":
+        status = 502
     elif code == "session_unavailable":
         status = 401
     elif code in {"permission_denied", "csrf_required"}:
         status = 403
-    elif code == "recipient_unresolved":
+    elif code in {"recipient_unresolved", "recipients_invalid"}:
         status = 422
     elif code == "resource_unavailable":
         status = 404
@@ -77,6 +88,20 @@ def email_http_error(exc: EmailPolicyError | GmailError) -> HTTPException:
     else:
         status = 409
     return HTTPException(status, code)
+
+
+def email_error_content(exc: EmailPolicyError | GmailError) -> dict[str, Any]:
+    """Response body for a refusal: the code, plus the wait or the user message when one applies."""
+    content: dict[str, Any] = {"detail": exc.code}
+    if isinstance(exc, SendLimitReached):
+        content["retry_after"] = exc.retry_after
+    elif exc.code == "send_outcome_unknown":
+        content["message"] = SEND_OUTCOME_UNKNOWN_MESSAGE
+    return content
+
+
+def _uses_directory(*refs: list[str]) -> bool:
+    return any(is_employee_ref(ref) for group in refs for ref in group)
 
 
 def email_session_from(
@@ -121,7 +146,9 @@ class EmailRoute(APIRoute):
             except (EmailPolicyError, GmailError) as exc:
                 error = email_http_error(exc)
                 response = JSONResponse(
-                    status_code=error.status_code, content={"detail": error.detail}
+                    status_code=error.status_code,
+                    content=email_error_content(exc),
+                    headers=error.headers,
                 )
             except HTTPException as exc:
                 response = JSONResponse(
@@ -205,6 +232,42 @@ Service = Annotated[EmailService, Depends(_service)]
 RequestKey = Annotated[UUID, Header(alias="Idempotency-Key")]
 
 
+# Documented refusal bodies of `/send` (see `email_error_content`); other refusals are `{detail}`.
+_SEND_REFUSALS: dict[int | str, dict[str, Any]] = {
+    429: {
+        "description": "`send_limit_reached`: wait `retry_after` seconds (also in `Retry-After`).",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail", "retry_after"],
+                    "properties": {
+                        "detail": {"type": "string", "enum": ["send_limit_reached"]},
+                        "retry_after": {"type": "integer", "minimum": 1},
+                    },
+                }
+            }
+        },
+    },
+    502: {
+        # `message` comes with `send_outcome_unknown`; provider failures carry `detail` only.
+        "description": "`send_outcome_unknown` (with `message`) or an unreachable provider.",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {
+                        "detail": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                }
+            }
+        },
+    },
+}
+
+
 def build_email_router() -> APIRouter:
     router = APIRouter(prefix="/console/v1/email", tags=["Email"], route_class=EmailRoute)
 
@@ -258,6 +321,14 @@ def build_email_router() -> APIRouter:
     async def sync(session: Session, service: Service, request_key: RequestKey) -> Receipt:
         return await service.sync(session, request_key)
 
+    @router.post("/sync/more", response_model=Receipt)
+    async def sync_more(session: Session, service: Service, request_key: RequestKey) -> Receipt:
+        return await service.sync_more(session, request_key)
+
+    @router.get("/attention", response_model=AttentionPage)
+    async def attention(session: Session, service: Service) -> AttentionPage:
+        return await service.attention(session)
+
     @router.get("/threads", response_model=ThreadPage)
     async def threads(session: Session, service: Service) -> ThreadPage:
         return await service.threads(session)
@@ -284,6 +355,21 @@ def build_email_router() -> APIRouter:
     ) -> DraftOut:
         return await service.draft(session, thread_id, body, request_key)
 
+    @router.post("/threads/{thread_id}/reply", response_model=DraftOut, status_code=201)
+    async def reply(
+        request: Request,
+        thread_id: str,
+        body: ReplyRequest,
+        session: Session,
+        service: Service,
+        request_key: RequestKey,
+    ) -> DraftOut:
+        if not 1 <= len(thread_id) <= 256:
+            raise HTTPException(404, "resource_unavailable")
+        if _uses_directory(body.cc, body.bcc):
+            await require_package(request.app.state.pool, session.tenant_id, frozenset({"hr"}))
+        return await service.reply(session, thread_id, body, request_key)
+
     @router.post("/compose", response_model=DraftOut, status_code=201)
     async def compose(
         request: Request,
@@ -292,7 +378,7 @@ def build_email_router() -> APIRouter:
         service: Service,
         request_key: RequestKey,
     ) -> DraftOut:
-        if body.recipient_employee_id is not None:
+        if body.recipient_employee_id is not None or _uses_directory(body.cc, body.bcc):
             # Directory-resolved recipients come from HR records; gate before any write.
             await require_package(request.app.state.pool, session.tenant_id, frozenset({"hr"}))
         return await service.compose(session, body, request_key)
@@ -300,6 +386,14 @@ def build_email_router() -> APIRouter:
     @router.get("/drafts", response_model=DraftPage)
     async def drafts(session: Session, service: Service) -> DraftPage:
         return await service.drafts(session)
+
+    @router.get("/drafts/{draft_id}", response_model=DraftOut)
+    async def draft_by_id(draft_id: UUID, session: Session, service: Service) -> DraftOut:
+        """One of the caller's own drafts, read from the store only (no Gmail call).
+
+        Scoped to the caller's own mailbox, as sending is: anyone else's draft is 404.
+        """
+        return await service.draft_by_id(session, draft_id)
 
     @router.put("/drafts/{draft_id}", response_model=DraftOut)
     async def update_draft(
@@ -322,5 +416,21 @@ def build_email_router() -> APIRouter:
         draft_id: UUID, session: Session, service: Service, request_key: RequestKey
     ) -> DraftOut:
         return await service.export_draft(session, draft_id, request_key)
+
+    @router.post("/drafts/{draft_id}/send", response_model=SendResult, responses=_SEND_REFUSALS)
+    async def send_draft(
+        draft_id: UUID,
+        body: SendRequest,
+        session: Session,
+        service: Service,
+        request_key: RequestKey,
+    ) -> SendResult:
+        return await service.send_draft(session, draft_id, body.version, request_key)
+
+    @router.post("/drafts/{draft_id}/release", response_model=DraftOut)
+    async def release_send(
+        draft_id: UUID, session: Session, service: Service, request_key: RequestKey
+    ) -> DraftOut:
+        return await service.release_send(session, draft_id, request_key)
 
     return router

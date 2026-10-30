@@ -522,6 +522,9 @@ def test_workspace_proposal_discriminator_parses_every_kind() -> None:
         "navigate": {"tab": "inbox", "section": None, "record": None},
         "directory_lookup": {"query": "ann"},
         "email_compose": {"recipient_address": "a@example.com", "subject": "s", "instructions": ""},
+        "email_reply": {"thread_id": "t1", "cc": ["c@example.com"], "send": True},
+        "email_team": {"subject": "s", "instructions": "i"},
+        "inbox_summary": {},
         "training_submit": {"request_id": uuid4()},
         "inbox_decision": {
             "approval_id": 1,

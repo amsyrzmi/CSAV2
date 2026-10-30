@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
@@ -16,6 +18,18 @@ from csa.core.tenancy import tx
 
 from tests.conftest import requires_docker
 from tests.test_console_sessions import MACHINE_TOKEN, ORIGIN, SessionWorld
+from tests.test_workspace_planner import (  # noqa: F401 - fixture import
+    PROPOSALS,
+    _approves_team,
+    _mail_ready,
+    _sync,
+    _team_lead,
+    _thread,
+    _turn,
+    _turn_rows,
+    planned,
+)
+from tests.test_workspace_registry import CleanDraftModel, proposals_app  # noqa: F401
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
@@ -347,3 +361,109 @@ async def test_workspace_history_pagination_and_database_tenant_boundaries(
         "has_table_privilege('csa_ro','console_workspace_turns','SELECT') AS turns"
     )
     assert grants == [{"threads": False, "turns": False}]
+
+
+# --------------------------------------------------- assistant email: team send and attention
+
+
+async def test_email_my_team_and_send_it_drafts_then_sends_once(planned, proposals_app) -> None:  # noqa: F811
+    world, model = planned
+    _, gmail = proposals_app
+    world.app.state.email_service.model = CleanDraftModel()
+    browser = await _mail_ready(world, "hr")
+    ids = await _team_lead(world, browser)
+    await _approves_team(world, browser)
+    thread = await _thread(world, browser)
+
+    def team(facts: dict[str, Any]) -> dict[str, Any]:
+        if not facts["my_team"] or not facts["my_team"]["reports"]:
+            return {"action": "answer", "markdown": "No team."}
+        return {
+            "action": "email_team",
+            "subject": "Friday's meeting",
+            "instructions": "The meeting on Friday moves to 3 pm",
+            "send": True,
+        }
+
+    model.respond(team)
+    turn = await _turn(
+        world, browser, thread, "Email my team about Friday's meeting and send it", "email"
+    )
+    assert turn.status_code == 201, turn.text
+    proposal = turn.json()["result"]["proposal"]
+    assert proposal["kind"] == "email_send" and proposal["status"] == "requested"
+    assert proposal["card"]["title"] == "Send email to 2 people"
+    fields = {f["label"]: f["value"] for f in proposal["card"]["fields"]}
+    assert fields["Not included"] == "Bee Report (no work email)"
+    drafts = await world.q("SELECT thread_id, to_addresses, cc, bcc FROM email_drafts")
+    assert drafts == [
+        {
+            "thread_id": None,
+            "to_addresses": ["ali.report@example.test", "cai.report@example.test"],
+            "cc": [],
+            "bcc": [],
+        }
+    ]
+    assert [r["action"] for r in await _turn_rows(world)] == ["email_team"]
+    assert str(ids["lead"]) not in json.dumps(model.facts()["my_team"])
+
+    done = await world.mutate(browser, f"{PROPOSALS}/{proposal['id']}/confirm")
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "executed" and done.json()["result"]["outcome"] == "sent"
+    assert len(gmail.sends) == 1
+    raw = base64.urlsafe_b64decode(gmail.sends[0]["raw"] + "==").decode()
+    assert "ali.report@example.test" in raw and "cai.report@example.test" in raw
+    replay = await world.mutate(browser, f"{PROPOSALS}/{proposal['id']}/confirm")
+    assert replay.status_code == 200 and replay.json() == done.json()
+    assert len(gmail.sends) == 1
+
+
+async def test_what_needs_my_attention_answers_and_stores_no_content(planned) -> None:  # noqa: F811
+    world, model = planned
+    browser = await _mail_ready(world)
+    await _sync(world, browser)
+    thread = await _thread(world, browser)
+    model.reply({"action": "inbox_summary"})
+    turn = await _turn(world, browser, thread, "What needs my attention today?", "email")
+    assert turn.status_code == 201, turn.text
+    answer = turn.json()["result"]
+    assert answer["action"] == "answer"
+    assert "Order MGL-TEST-005" in answer["markdown"]
+    assert "Customer asks where order MGL-TEST-005 is." in answer["markdown"]
+    assert "Check order MGL-TEST-005 status" in answer["markdown"]
+
+    rows = await world.q("SELECT action, body, result::text t FROM console_workspace_turns")
+    assert [r["action"] for r in rows] == ["inbox_summary"]
+    for needle in ("MGL-TEST-005", "Customer asks", "aina@example.test", "Demo Aina", "Weekly"):
+        assert needle not in rows[0]["t"], needle
+    assert "Inbox summary: 2 items" in rows[0]["t"]
+    history = await browser.get(f"/console/v1/workspace/conversations/{thread}/turns")
+    assert history.status_code == 200
+    assert "MGL-TEST-005" not in history.text
+
+
+async def test_attention_refusals_are_plain_answers(planned) -> None:  # noqa: F811
+    world, model = planned
+    browser = await _mail_ready(world)
+    await _sync(world, browser)
+    unconnected, _ = await world.member(role="tenant_staff")
+
+    async def ask(who: httpx.AsyncClient) -> str:
+        model.reply({"action": "inbox_summary"})
+        thread = await _thread(world, who)
+        turn = await _turn(world, who, thread, "What needs my attention today?", "email")
+        assert turn.status_code == 201, turn.text
+        assert turn.json()["result"]["action"] == "answer"
+        return turn.json()["result"]["markdown"]
+
+    assert await ask(unconnected) == "Connect your Gmail on the Email assistant tab first."
+    world.app.state.email_service.model = None  # nothing is analysed yet, so nothing to show
+    assert await ask(browser) == (
+        "I couldn't summarise your inbox just now. Try again in a few minutes."
+    )
+    await world.q("UPDATE email_settings SET enabled=false WHERE client_id=%s", world.tenants[0])
+    assert await ask(browser) == "The Email assistant is turned off for your workspace."
+    rows = await world.q("SELECT action, result::text t FROM console_workspace_turns")
+    assert [r["action"] for r in rows] == ["inbox_summary"] * 3
+    for row in rows:
+        assert "MGL-TEST-005" not in row["t"] and "aina@example.test" not in row["t"]

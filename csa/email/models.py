@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Literal
 from uuid import UUID
 
@@ -11,11 +13,12 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    computed_field,
     field_validator,
     model_validator,
 )
 
-from csa.agents.staged.models import EmailDraftInput
+from csa.agents.staged.models import EmailDraftInput, validate_mailbox_address
 
 MODEL_DISCLOSURE = (
     "Analyse and Draft send the selected email text to the configured model provider. "
@@ -34,6 +37,32 @@ Category = Literal[
 ]
 Priority = Literal["low", "normal", "high"]
 Role = Literal["tenant_admin", "tenant_staff", "read_only"]
+DraftStatus = Literal["draft", "exported", "sending", "sent"]
+MAX_ADDRESSES = 20
+MAX_ADDRESS_CHARS = 254
+SEND_OUTCOME_UNKNOWN_MESSAGE = "Check your Gmail Sent folder before trying again."
+
+
+def check_address(value: str) -> str:
+    """One plain mailbox address under the draft contract's rules, at most 254 characters."""
+    if len(value) > MAX_ADDRESS_CHARS:
+        raise ValueError("address too long")
+    return validate_mailbox_address(value)
+
+
+def is_employee_ref(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _recipient_refs(values: list[str]) -> list[str]:
+    """Each entry is a directory employee id or a plain address."""
+    return [
+        str(UUID(value)) if is_employee_ref(value) else check_address(value) for value in values
+    ]
 
 
 class EmailModel(BaseModel):
@@ -46,6 +75,14 @@ class EmailPolicyError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class SendLimitReached(EmailPolicyError):
+    """The hourly send limit; `retry_after` is the seconds until the oldest send leaves it."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("send_limit_reached")
+        self.retry_after = retry_after
 
 
 class EmailSession(EmailModel):
@@ -74,6 +111,10 @@ class EmailContext(EmailModel):
     provider_configured: bool
     model_configured: bool
     mailbox: MailboxOut | None
+    # Sourced from the mailbox's last_sync_at; more_available is true while a Gmail page token is
+    # stored, that is, while an older page can still be loaded.
+    last_synced_at: AwareDatetime | None = None
+    more_available: bool = False
     disclosure: str = MODEL_DISCLOSURE
 
 
@@ -118,6 +159,24 @@ class ThreadPage(EmailModel):
     last_sync_at: AwareDatetime | None
 
 
+class AttentionItem(EmailModel):
+    thread_id: str
+    sender: str
+    subject: str
+    priority: Priority
+    summary: str
+    next_steps: list[str]
+
+
+class AttentionPage(EmailModel):
+    """Up to ten threads that need the member's attention, from the last sync's stored mail."""
+
+    items: list[AttentionItem]
+    as_of: AwareDatetime | None
+    # Candidates left without a summary because analysis failed or no model is set.
+    skipped: int = 0
+
+
 class ThreadAnalysis(EmailModel):
     """Strict model output for one thread. Free text is bounded; no tool calls exist."""
 
@@ -143,10 +202,15 @@ class DraftRequest(EmailModel):
 
 
 class ComposeRequest(EmailModel):
-    """A new internal email: exactly one recipient, a directory employee or a plain address."""
+    """A new email: one To recipient (a directory employee or a plain address), optional CC/BCC.
+
+    CC and BCC entries are directory employee ids or plain addresses.
+    """
 
     recipient_employee_id: UUID | None = None
     recipient_address: str | None = Field(default=None, min_length=3, max_length=254)
+    cc: list[str] = Field(default_factory=list, max_length=MAX_ADDRESSES)
+    bcc: list[str] = Field(default_factory=list, max_length=MAX_ADDRESSES)
     subject: str = Field(min_length=1, max_length=200)
     instructions: str = Field(min_length=1, max_length=1000)
     language: Literal["auto", "en", "ms"] = "auto"
@@ -156,11 +220,28 @@ class ComposeRequest(EmailModel):
     def plain_address(cls, value: str | None) -> str | None:
         return None if value is None else EmailDraftInput.validate_recipient(value)
 
+    @field_validator("cc", "bcc")
+    @classmethod
+    def refs(cls, values: list[str]) -> list[str]:
+        return _recipient_refs(values)
+
     @model_validator(mode="after")
     def one_recipient(self) -> ComposeRequest:
         if (self.recipient_employee_id is None) == (self.recipient_address is None):
             raise ValueError("exactly one recipient required")
         return self
+
+
+class TeamComposeRequest(EmailModel):
+    """A new email to the caller's team: every directory employee here goes in To.
+
+    Not an HTTP body: the workspace assistant builds it from the caller's own direct reports.
+    """
+
+    to_employee_ids: list[UUID] = Field(min_length=1, max_length=MAX_ADDRESSES)
+    subject: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(min_length=1, max_length=1000)
+    language: Literal["auto", "en", "ms"] = "auto"
 
 
 class DraftProposal(EmailModel):
@@ -171,23 +252,105 @@ class DraftProposal(EmailModel):
     needs_facts_from_staff: list[str] = Field(default_factory=list, max_length=5)
 
 
+class ReplyRequest(EmailModel):
+    """A reply in a synced thread. The To address comes from the thread, never from here."""
+
+    instructions: str = Field(default="", max_length=1000)
+    cc: list[str] = Field(default_factory=list, max_length=MAX_ADDRESSES)
+    bcc: list[str] = Field(default_factory=list, max_length=MAX_ADDRESSES)
+    language: Literal["auto", "en", "ms"] = "auto"
+
+    @field_validator("cc", "bcc")
+    @classmethod
+    def refs(cls, values: list[str]) -> list[str]:
+        return _recipient_refs(values)
+
+
+class RecipientOut(EmailModel):
+    address: str
+    outside: bool
+
+
 class DraftOut(EmailModel):
     id: UUID
     thread_id: str | None
     recipient: str
+    to: list[str]
+    cc: list[str]
+    bcc: list[str]
+    recipients: list[RecipientOut]
     subject: str
     body: str
-    status: Literal["draft", "exported"]
+    status: DraftStatus
     source: Literal["model", "human"]
     gmail_draft_id: str | None
+    sent_at: AwareDatetime | None
+    needs_staff_input: bool
+    reply_to_message_id: str | None
     created_at: AwareDatetime
     updated_at: AwareDatetime
 
+    @model_validator(mode="before")
+    @classmethod
+    def derived_version(cls, data: Any) -> Any:
+        """`version` is derived: a dumped draft validates, and an incoming version is ignored."""
+        if isinstance(data, dict) and "version" in data:
+            return {key: value for key, value in data.items() if key != "version"}
+        return data
+
+    @computed_field
+    @property
+    def version(self) -> str:
+        """`draft_version` of this draft: what `/send` and a send card are bound to."""
+        return draft_version(self)
+
 
 class DraftUpdate(EmailModel):
-    recipient: str = Field(min_length=3, max_length=254)
+    """An edit by the person. `recipient` alone is the older single-address form of `to`."""
+
+    recipient: str | None = Field(default=None, min_length=3, max_length=254)
+    to: list[str] | None = Field(default=None, max_length=MAX_ADDRESSES)
+    cc: list[str] = Field(default_factory=list, max_length=MAX_ADDRESSES)
+    bcc: list[str] = Field(default_factory=list, max_length=MAX_ADDRESSES)
     subject: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("recipient")
+    @classmethod
+    def plain_recipient(cls, value: str | None) -> str | None:
+        return None if value is None else check_address(value)
+
+    @field_validator("to", "cc", "bcc")
+    @classmethod
+    def plain_addresses(cls, values: list[str] | None) -> list[str] | None:
+        return None if values is None else [check_address(value) for value in values]
+
+    @model_validator(mode="after")
+    def some_recipient(self) -> DraftUpdate:
+        if self.to is None:
+            self.to = [self.recipient] if self.recipient is not None else []
+        if not self.to and not self.cc and not self.bcc:
+            raise ValueError("at least one recipient required")
+        return self
+
+
+class SendRequest(EmailModel):
+    version: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SendResult(EmailModel):
+    """The outcome of one send. An unknown outcome is refused as `send_outcome_unknown`."""
+
+    outcome: Literal["sent", "unknown"]
+    sent_at: AwareDatetime | None
+    gmail_message_id: str | None
+    remaining_this_hour: int = Field(ge=0)
+
+
+def draft_version(draft: DraftOut) -> str:
+    """Hash of exactly what a send card shows; any edit to these fields changes it."""
+    content = [draft.thread_id, draft.to, draft.cc, draft.bcc, draft.subject, draft.body]
+    return hashlib.sha256(json.dumps(content, ensure_ascii=True).encode("ascii")).hexdigest()
 
 
 class DraftPage(EmailModel):

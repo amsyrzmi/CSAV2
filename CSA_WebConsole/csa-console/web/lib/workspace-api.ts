@@ -44,6 +44,7 @@ export interface PageContext {
 
 export type ProposalKind =
   | "email_export"
+  | "email_send"
   | "training_submit"
   | "inbox_decision"
   | "subscription_action";

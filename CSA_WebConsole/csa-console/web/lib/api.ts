@@ -4,6 +4,8 @@ export class ApiError extends Error {
     message: string,
     /** The server's raw `detail` code when it differs from the shown message. */
     public code: string = message,
+    /** The decoded JSON error body, when there was one (for example `retry_after`). */
+    public body?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -21,6 +23,13 @@ const explained: Record<string, string> = {
     "This assistant is switched off for your organisation. An administrator can turn it on in its settings.",
   planner_unavailable: "The assistant is unavailable right now. Try again in a moment.",
   mailbox_not_connected: "Connect your Gmail in the Email tab first.",
+  // Email refusals the assistant dock shows as they are.
+  reply_target_unavailable: "I can't tell who to reply to in that conversation.",
+  email_recipient_invalid: "Check the email address.",
+  recipients_invalid: "Check the email addresses.",
+  draft_rejected: "I couldn't write that email. Try rephrasing.",
+  thread_body_unavailable: "I couldn't read that conversation from Gmail. Sync and try again.",
+  resource_unavailable: "That item isn't available any more.",
   whatsapp_number_in_use: "That WhatsApp number is already connected to another company.",
   whatsapp_token_rejected:
     "WhatsApp did not accept that access token for this phone number ID. Check both in your Meta app, then try again.",
@@ -69,6 +78,7 @@ async function decode<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
     let code = message;
+    let detail: Record<string, unknown> | undefined;
     try {
       const body: unknown = await response.json();
       if (
@@ -79,11 +89,12 @@ async function decode<T>(response: Response): Promise<T> {
       ) {
         code = body.detail;
         message = explained[code] ?? code;
+        detail = body as Record<string, unknown>;
       }
     } catch {
       /* Non-JSON gateway failures keep their HTTP status. */
     }
-    throw new ApiError(response.status, message, code);
+    throw new ApiError(response.status, message, code, detail);
   }
   return response.status === 204
     ? (undefined as T)

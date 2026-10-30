@@ -79,6 +79,24 @@ class SubscriptionInput(DraftModel):
         return self
 
 
+def validate_mailbox_address(value: str) -> str:
+    """One plain mailbox address: no display name, whitespace, controls or list separators."""
+    if (
+        value.count("@") != 1
+        or any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c in "<>,;:" for c in value)
+        or not all(value.split("@"))
+        or "." not in value.split("@")[1]
+    ):
+        raise ValueError("one plain mailbox address required")
+    return value
+
+
+def reject_header_control_chars(value: str) -> str:
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("header control characters forbidden")
+    return value
+
+
 class EmailDraftInput(DraftModel):
     action: Literal["draft_reply"] = "draft_reply"
     mailbox_connection_id: UUID
@@ -90,21 +108,12 @@ class EmailDraftInput(DraftModel):
     @field_validator("recipient")
     @classmethod
     def validate_recipient(cls, value: str) -> str:
-        if (
-            value.count("@") != 1
-            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c in "<>,;:" for c in value)
-            or not all(value.split("@"))
-            or "." not in value.split("@")[1]
-        ):
-            raise ValueError("one plain mailbox address required")
-        return value
+        return validate_mailbox_address(value)
 
     @field_validator("subject", "thread_id")
     @classmethod
     def reject_header_controls(cls, value: str) -> str:
-        if any(ord(c) < 32 or ord(c) == 127 for c in value):
-            raise ValueError("header control characters forbidden")
-        return value
+        return reject_header_control_chars(value)
 
 
 class ResearchInput(DraftModel):

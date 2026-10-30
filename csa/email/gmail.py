@@ -1,8 +1,9 @@
 """Minimal Gmail REST and Google OAuth client with bounded responses.
 
 Scopes are read-only plus compose: the client can list and read threads and
-create drafts in the connecting user's own mailbox. There is deliberately no
-send method. Errors never carry tokens or message content.
+create drafts or send messages in the connecting user's own mailbox
+(`gmail.compose` covers `users.messages.send`; callers must have a confirmed
+send card first). Errors never carry tokens or message content.
 """
 
 from __future__ import annotations
@@ -13,15 +14,18 @@ import html
 import json
 import re
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
+from email.utils import parseaddr, parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 from pydantic import SecretStr
+
+from csa.agents.staged.models import reject_header_control_chars, validate_mailbox_address
 
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -33,6 +37,16 @@ SCOPES = (
 MAX_JSON_BYTES = 1_048_576
 MAX_BODY_CHARS = 20_000
 TIMEOUT_SECONDS = 20.0
+MAX_RECIPIENTS = 20
+MAX_ADDRESS_CHARS = 254
+MAX_SUBJECT_CHARS = 200
+MAX_BODY_INPUT_CHARS = 20_000
+MAX_MESSAGE_ID_CHARS = 500
+MAX_REFERENCES_CHARS = 2000
+# Statuses after which the message may still have been delivered: never a clear refusal.
+AMBIGUOUS_SEND_STATUSES = frozenset({408, 409, 499})
+# Gmail answers a quota limit with 403 and one of these reasons: a rate limit, not lost access.
+RATE_LIMIT_REASONS = frozenset({"userRateLimitExceeded", "rateLimitExceeded", "dailyLimitExceeded"})
 
 
 class GmailError(Exception):
@@ -62,6 +76,12 @@ class FetchedThread:
     received_at: datetime | None
     labels: tuple[str, ...]
     unread: bool
+    latest_rfc_message_id: str | None = None
+    latest_references: str | None = None
+    latest_reply_to: str | None = None
+    latest_from: str | None = None
+    latest_non_owner_from: str | None = None
+    latest_non_owner_reply_to: str | None = None
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -123,13 +143,134 @@ def _header(headers: list[dict[str, Any]], name: str) -> str:
     return ""
 
 
-def build_reply_mime(*, to: str, subject: str, body: str) -> bytes:
-    """Plain-text reply; headers already validated by the draft contract."""
+def _from_owner(message: dict[str, Any], owner: str) -> bool:
+    """Gmail labels everything the mailbox sent, send-as aliases included, `SENT`."""
+    if "SENT" in (message.get("labelIds", []) or []):
+        return True
+    headers = (message.get("payload", {}) or {}).get("headers", []) or []
+    return bool(owner) and parseaddr(_header(headers, "From"))[1].strip().lower() == owner
+
+
+def _received_at(message: dict[str, Any], headers: list[dict[str, Any]]) -> datetime | None:
+    """When Gmail received the message (`internalDate`); the sender's Date header only if absent.
+
+    The Date header is set by the sender, so a fallback Date in the future counts as now.
+    """
+    internal = str(message.get("internalDate", ""))
+    if internal.isdigit():
+        return datetime.fromtimestamp(int(internal) / 1000, tz=UTC)
+    raw_date = _header(headers, "Date")
+    if not raw_date:
+        return None
+    try:
+        received = parsedate_to_datetime(raw_date)
+    except (TypeError, ValueError):
+        return None
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=UTC)
+    return min(received, datetime.now(UTC))
+
+
+def _rate_limited(response: httpx.Response) -> bool:
+    """A 403 that is a Gmail quota limit. The body is read for its reason only, never logged."""
+    if len(response.content) > MAX_JSON_BYTES:
+        return False
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, dict):
+        return False
+    reasons = {
+        item.get("reason") for item in error.get("errors", []) or [] if isinstance(item, dict)
+    }
+    reasons.add(error.get("status"))
+    return bool(reasons & RATE_LIMIT_REASONS)
+
+
+def _checked_addresses(values: Sequence[str]) -> list[str]:
+    checked: list[str] = []
+    for value in values:
+        if len(value) > MAX_ADDRESS_CHARS:
+            raise ValueError("address too long")
+        checked.append(validate_mailbox_address(value))
+    return checked
+
+
+def trim_references(value: str | None, limit: int = MAX_REFERENCES_CHARS) -> str | None:
+    """Keep the newest whole Message-IDs of a References chain within `limit` characters."""
+    ids = (value or "").split()
+    while ids and len(" ".join(ids)) > limit:
+        ids.pop(0)
+    return " ".join(ids) or None
+
+
+def _bounded(value: str, limit: int) -> str | None:
+    """A header kept whole or not at all: a cut Message-ID would point at nothing."""
+    value = value.strip()
+    return value if value and len(value) <= limit else None
+
+
+def build_message_mime(
+    *,
+    to: Sequence[str],
+    cc: Sequence[str] = (),
+    bcc: Sequence[str] = (),
+    subject: str,
+    body: str,
+    in_reply_to: str | None = None,
+    references: str | None = None,
+) -> bytes:
+    """Plain-text message. Every address and header value uses the draft contract's rules.
+
+    Bcc is written as a header because that is the only way `users.messages.send` takes it;
+    Gmail delivers to it and does not show it to other recipients.
+    """
+    try:
+        to_list, cc_list, bcc_list = (
+            _checked_addresses(to),
+            _checked_addresses(cc),
+            _checked_addresses(bcc),
+        )
+        if not 1 <= len(to_list) + len(cc_list) + len(bcc_list) <= MAX_RECIPIENTS:
+            raise ValueError("one to twenty recipients required")
+        if (
+            not subject
+            or len(subject) > MAX_SUBJECT_CHARS
+            or not body.strip()
+            or len(body) > MAX_BODY_INPUT_CHARS
+            or "\x00" in body
+        ):
+            raise ValueError("subject or body out of bounds")
+        reject_header_control_chars(subject)
+        threading = {"In-Reply-To": in_reply_to, "References": references}
+        limits = {"In-Reply-To": MAX_MESSAGE_ID_CHARS, "References": MAX_REFERENCES_CHARS}
+        for name, value in threading.items():
+            if value is not None:
+                reject_header_control_chars(value)
+                if len(value) > limits[name]:
+                    raise ValueError("threading header too long")
+    except ValueError as exc:
+        raise GmailError("invalid_message") from exc
     message = EmailMessage()
-    message["To"] = to
+    if to_list:
+        message["To"] = ", ".join(to_list)
+    if cc_list:
+        message["Cc"] = ", ".join(cc_list)
+    if bcc_list:
+        message["Bcc"] = ", ".join(bcc_list)
     message["Subject"] = subject
+    for name, value in threading.items():
+        if value:
+            message[name] = value
     message.set_content(body)
     return message.as_bytes()
+
+
+def build_reply_mime(*, to: str, subject: str, body: str) -> bytes:
+    """Plain-text single-recipient reply; headers validated by `build_message_mime`."""
+    return build_message_mime(to=[to], subject=subject, body=body)
 
 
 class GmailClient:
@@ -173,10 +314,10 @@ class GmailClient:
             response = await self._http.send(request, follow_redirects=False)
         except httpx.HTTPError as exc:
             raise GmailError("provider_unreachable") from exc
+        if response.status_code == 429 or (response.status_code == 403 and _rate_limited(response)):
+            raise GmailError("provider_rate_limited")
         if response.status_code in {401, 403}:
             raise GmailError("provider_unauthorized")
-        if response.status_code == 429:
-            raise GmailError("provider_rate_limited")
         if response.status_code != expected:
             raise GmailError("provider_rejected")
         if len(response.content) > MAX_JSON_BYTES:
@@ -260,19 +401,21 @@ class GmailClient:
             raise GmailError("provider_invalid_response")
         return address.lower()
 
-    async def list_thread_ids(self, access: SecretStr, *, query: str, limit: int) -> list[str]:
-        data = await self._json(
-            self._api(
-                access,
-                "GET",
-                "threads",
-                params={"q": query, "maxResults": str(max(1, min(limit, 50)))},
-            )
-        )
+    async def list_thread_ids(
+        self, access: SecretStr, *, query: str, limit: int, page_token: str | None = None
+    ) -> tuple[list[str], str | None]:
+        params = {"q": query, "maxResults": str(max(1, min(limit, 50)))}
+        if page_token:
+            params["pageToken"] = page_token
+        data = await self._json(self._api(access, "GET", "threads", params=params))
         items = data.get("threads", []) or []
-        return [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
+        ids = [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
+        next_token = data.get("nextPageToken")
+        return ids, next_token if isinstance(next_token, str) and next_token else None
 
-    async def fetch_thread(self, access: SecretStr, thread_id: str) -> FetchedThread:
+    async def fetch_thread(
+        self, access: SecretStr, thread_id: str, *, owner_address: str
+    ) -> FetchedThread:
         data = await self._json(
             self._api(access, "GET", f"threads/{thread_id}", params={"format": "full"})
         )
@@ -282,18 +425,14 @@ class GmailClient:
         latest = messages[-1]
         payload = latest.get("payload", {}) or {}
         headers = payload.get("headers", []) or []
-        received: datetime | None = None
-        raw_date = _header(headers, "Date")
-        if raw_date:
-            try:
-                received = parsedate_to_datetime(raw_date)
-                if received.tzinfo is None:
-                    received = received.replace(tzinfo=UTC)
-            except (TypeError, ValueError):
-                received = None
-        if received is None and str(latest.get("internalDate", "")).isdigit():
-            received = datetime.fromtimestamp(int(latest["internalDate"]) / 1000, tz=UTC)
+        received = _received_at(latest, headers)
         labels = tuple(str(label) for label in latest.get("labelIds", []) or [])
+        owner = owner_address.strip().lower()
+        non_owner_headers: list[dict[str, Any]] | None = None
+        for message in reversed(messages):
+            if not _from_owner(message, owner):
+                non_owner_headers = (message.get("payload", {}) or {}).get("headers", []) or []
+                break
         return FetchedThread(
             thread_id=str(data.get("id", thread_id)),
             subject=_header(headers, "Subject")[:500],
@@ -304,6 +443,16 @@ class GmailClient:
             received_at=received,
             labels=labels,
             unread="UNREAD" in labels,
+            latest_rfc_message_id=_bounded(_header(headers, "Message-ID"), MAX_MESSAGE_ID_CHARS),
+            latest_references=trim_references(_header(headers, "References")),
+            latest_reply_to=_header(headers, "Reply-To")[:500] or None,
+            latest_from=_header(headers, "From")[:500] or None,
+            latest_non_owner_from=(
+                _header(non_owner_headers, "From")[:500] or None if non_owner_headers else None
+            ),
+            latest_non_owner_reply_to=(
+                _header(non_owner_headers, "Reply-To")[:500] or None if non_owner_headers else None
+            ),
         )
 
     async def create_draft(self, access: SecretStr, *, thread_id: str | None, mime: bytes) -> str:
@@ -324,3 +473,43 @@ class GmailClient:
         if not isinstance(draft_id, str) or not draft_id:
             raise GmailError("provider_invalid_response")
         return draft_id
+
+    async def send_message(self, access: SecretStr, *, thread_id: str | None, mime: bytes) -> str:
+        """Send through `users.messages.send` once; the caller owns at-most-once.
+
+        Clear refusals, where nothing was sent: 401/403 `provider_unauthorized`, 429 or a 403
+        quota reason (`userRateLimitExceeded`, `rateLimitExceeded`, `dailyLimitExceeded`)
+        `provider_rate_limited`, any other 4xx `send_refused`. A timeout, a connection failure,
+        408/409/499 or a 5xx leaves the outcome unknown (`provider_unreachable`), and so does a
+        200 without a message id (`provider_invalid_response`).
+        """
+        message: dict[str, Any] = {"raw": base64.urlsafe_b64encode(mime).decode("ascii")}
+        if thread_id:
+            message["threadId"] = thread_id
+        request = self._api(
+            access, "POST", "messages/send", content=json.dumps(message).encode("utf-8")
+        )
+        request.headers["content-type"] = "application/json"
+        try:
+            response = await self._http.send(request, follow_redirects=False)
+        except httpx.HTTPError as exc:
+            raise GmailError("provider_unreachable") from exc
+        status = response.status_code
+        if status in AMBIGUOUS_SEND_STATUSES:
+            raise GmailError("provider_unreachable")
+        if status == 429 or (status == 403 and _rate_limited(response)):
+            raise GmailError("provider_rate_limited")
+        if status in {401, 403}:
+            raise GmailError("provider_unauthorized")
+        if 400 <= status < 500:
+            raise GmailError("send_refused")
+        if status != 200:
+            raise GmailError("provider_unreachable")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise GmailError("provider_invalid_response") from exc
+        message_id = data.get("id") if isinstance(data, dict) else None
+        if not isinstance(message_id, str) or not message_id:
+            raise GmailError("provider_invalid_response")
+        return message_id
