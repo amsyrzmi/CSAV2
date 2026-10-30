@@ -193,6 +193,19 @@ def _choice(
 
 
 # Keys are in _choice's normalised form (lowercase, underscores).
+_CATEGORY_SYNONYMS = {
+    **dict.fromkeys(("spam", "phishing", "scam", "junk"), "spam_or_phishing"),
+    **dict.fromkeys(
+        ("newsletter", "promotion", "promotional", "marketing", "advertisement"),
+        "newsletter_or_promotion",
+    ),
+    **dict.fromkeys(("order", "delivery", "shipping"), "order_or_delivery"),
+    **dict.fromkeys(("invoice", "payment"), "billing"),
+    **dict.fromkeys(("inquiry", "enquiry", "support"), "customer_request"),
+    **dict.fromkeys(("vendor", "supplier", "partner"), "vendor_or_partner"),
+}
+# Noise must never reach "what needs my attention": any value naming spam, phishing or a scam.
+_SPAM_MARKS = ("spam", "phish", "scam")
 _PRIORITY_SYNONYMS = {
     "urgent": "high",
     "critical": "high",
@@ -242,7 +255,9 @@ class ThreadAnalysis(EmailModel):
     @field_validator("category", mode="before")
     @classmethod
     def known_category(cls, value: Any) -> Any:
-        return _choice(value, get_args(Category), "other")
+        if isinstance(value, str) and any(mark in value.lower() for mark in _SPAM_MARKS):
+            return "spam_or_phishing"
+        return _choice(value, get_args(Category), "other", _CATEGORY_SYNONYMS)
 
     @field_validator("priority", mode="before")
     @classmethod

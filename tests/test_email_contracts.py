@@ -178,6 +178,41 @@ def test_model_output_enums_are_normalised_not_rejected() -> None:
         assert ThreadAnalysis.model_validate({**base, "language": given}).language == expected
 
 
+def test_model_output_category_synonyms_keep_noise_out() -> None:
+    """Spam or promotion drifting to "other" would put it in "what needs my attention"."""
+    base = {"priority": "normal", "language": "en", "summary": "s"}
+    categories = {
+        "Spam": "spam_or_phishing",
+        "phishing": "spam_or_phishing",
+        "scam": "spam_or_phishing",
+        "Junk": "spam_or_phishing",
+        "newsletter": "newsletter_or_promotion",
+        "Promotion": "newsletter_or_promotion",
+        "promotional": "newsletter_or_promotion",
+        "marketing": "newsletter_or_promotion",
+        "advertisement": "newsletter_or_promotion",
+        "order": "order_or_delivery",
+        "Delivery": "order_or_delivery",
+        "shipping": "order_or_delivery",
+        "invoice": "billing",
+        "payment": "billing",
+        "inquiry": "customer_request",
+        "enquiry": "customer_request",
+        "support": "customer_request",
+        "vendor": "vendor_or_partner",
+        "supplier": "vendor_or_partner",
+        "partner": "vendor_or_partner",
+        # Any value naming spam, phishing or a scam is spam_or_phishing.
+        "Possible phishing": "spam_or_phishing",
+        "likely-spam email": "spam_or_phishing",
+        "Scammer outreach": "spam_or_phishing",
+        "Shipping Inquiry": "other",
+    }
+    for given, expected in categories.items():
+        analysis = ThreadAnalysis.model_validate({**base, "category": given})
+        assert analysis.category == expected, given
+
+
 def test_model_output_text_is_truncated_not_rejected() -> None:
     analysis = ThreadAnalysis.model_validate(
         {

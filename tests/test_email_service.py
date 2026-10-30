@@ -1800,6 +1800,34 @@ async def test_attention_accepts_model_output_outside_the_literals(
     assert "groq_invalid_output" not in " ".join(r.getMessage() for r in caplog.records)
 
 
+async def test_attention_leaves_out_phishing_however_the_model_names_it(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    names = {"U1": "Phishing", "U2": "Possible phishing", "U3": "Customer Request"}
+    for index in (1, 2, 3):
+        await _put_thread(world, f"U{index}", days_ago=0, minutes_ago=index)
+
+    async def naming(schema: type[Any], *, system: str, user: str, **kwargs: Any) -> Any:
+        thread = next(t for t in names if f"Subject {t}" in user)
+        raw = {"category": names[thread], "priority": "high", "language": "en", "summary": "s"}
+        return schema.model_validate_json(json.dumps(raw))
+
+    monkeypatch.setattr(world.model, "json_completion", naming)
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert [item["thread_id"] for item in page.json()["items"]] == ["U3"]
+    rows = await world.q(
+        "SELECT thread_id, category FROM email_threads WHERE client_id=%s ORDER BY thread_id",
+        (world.tenant,),
+    )
+    assert [r["category"] for r in rows] == [
+        "spam_or_phishing",
+        "spam_or_phishing",
+        "customer_request",
+    ]
+
+
 async def test_attention_without_a_model_shows_stored_items(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
