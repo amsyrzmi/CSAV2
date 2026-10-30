@@ -747,7 +747,7 @@ _TEAM_WORDS = re.compile(r"\b(team|my reports|direct reports|pasukan|anak buah)\
 _SEND_WORDS = re.compile(r"\b(send|hantar|hantarkan|kirim|kirimkan)\b", re.IGNORECASE)
 _DRAFT_WORDS = re.compile(r"\b(drafts?|draf|save|simpan)\b", re.IGNORECASE)
 _NEGATED_SEND = re.compile(
-    r"\b(?:don'?t|do not|never|jangan)\s+(?:send|hantar|kirim)\w*", re.IGNORECASE
+    r"\b(?:don['’]?t|do not|never|jangan)\s+(?:send|hantar|kirim)\w*", re.IGNORECASE
 )
 _EMAIL_VERB = re.compile(r"\b(e-?mails?|e-?mel|emel)\b", re.IGNORECASE)
 _WRITE_WORD = re.compile(r"\b(write|tulis|karang)\b", re.IGNORECASE)

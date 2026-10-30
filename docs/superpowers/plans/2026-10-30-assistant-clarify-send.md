@@ -33,7 +33,7 @@
 - The `send` line, new text verbatim: `- send (on email_compose, email_reply and email_team): true when the user asks to send or to email someone ("send an email to…", "email Danial and tell him…"); false when they ask for a draft ("draft", "write", "save"). Either way the user confirms a card first.`
 
 **Send rule** (on `_authored` parts, less any part equal to a value an earlier card offered; the first match wins; amended by the final review)
-1. `\b(drafts?|draf|save|simpan)\b` or a negated send `\b(?:don'?t|do not|never|jangan)\s+(?:send|hantar|kirim)\w*` gives a draft card.
+1. `\b(drafts?|draf|save|simpan)\b` or a negated send `\b(?:don['’]?t|do not|never|jangan)\s+(?:send|hantar|kirim)\w*` gives a draft card.
 2. `_SEND_WORDS`, and either no `\b(write|tulis|karang)\b` or `proposal.send`, gives a Send card.
 3. `proposal.send` and `\b(e-?mails?|e-?mel|emel)\b` and not `\b(write|tulis|karang)\b` gives a Send card.
 4. Anything else gives a draft card.

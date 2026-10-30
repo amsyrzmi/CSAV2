@@ -593,6 +593,7 @@ def test_send_rule_follows_the_users_words() -> None:
         "Jangan hantar lagi",
         "never send this email",
         "dont send it",
+        "email danial but don’t send it yet",
     ):
         assert not _asked_to_send(plan(True), negated, empty), negated
     # A write word keeps a send word to a draft unless the model also says send.
