@@ -80,6 +80,19 @@ STATE_TTL_SECONDS = 600
 TOKEN_REFRESH_MARGIN = timedelta(seconds=90)
 MODEL_TIMEOUT_SECONDS = 20.0
 SYNC_QUERY = "newer_than:90d -in:chats"
+# Stored load-more tokens carry this prefix: they are users.messages.list tokens. A token stored
+# before the switch came from threads.list, means nothing to messages.list and counts as none.
+TOKEN_PREFIX = "m:"
+
+
+def _stored_token(token: str | None) -> str | None:
+    return f"{TOKEN_PREFIX}{token}" if token else None
+
+
+def _list_token(stored: str | None) -> str | None:
+    if stored is None or not stored.startswith(TOKEN_PREFIX):
+        return None
+    return stored.removeprefix(TOKEN_PREFIX) or None
 
 
 def _allowed(values: tuple[str, ...]) -> str:
@@ -537,7 +550,7 @@ class EmailService:
             model_configured=self.model is not None,
             mailbox=self._mailbox_out(row),
             last_synced_at=row["last_sync_at"] if row else None,
-            more_available=bool(row and row["sync_page_token"]),
+            more_available=bool(row and _list_token(row["sync_page_token"])),
         )
 
     async def threads(self, session: EmailSession) -> ThreadPage:
@@ -767,7 +780,7 @@ class EmailService:
             # A sync starts again from the newest page, so it replaces whatever token was stored.
             await q.execute(
                 "email/sync_page_save.sql",
-                (next_page, session.tenant_id, mailbox["id"], False, None),
+                (_stored_token(next_page), session.tenant_id, mailbox["id"], False, None),
                 conn=conn,
             )
             await self._cleanup(conn, session, mailbox["id"])
@@ -791,8 +804,15 @@ class EmailService:
             if replay is not None:
                 return replay
             mailbox = await self._mailbox(conn, session, connected=True)
-            token = mailbox["sync_page_token"]
+            stored = mailbox["sync_page_token"]
+            token = _list_token(stored)
             if token is None:
+                if stored is not None:  # an older threads.list token: clear it while it is ours
+                    await q.execute(
+                        "email/sync_page_save.sql",
+                        (None, session.tenant_id, mailbox["id"], True, stored),
+                        conn=conn,
+                    )
                 receipt = Receipt(
                     operation="mailbox.sync_more",
                     resource_id=str(mailbox["id"]),
@@ -803,8 +823,14 @@ class EmailService:
                 return await self._record(
                     conn, session, key, "mailbox.sync_more", fingerprint, receipt
                 )
+            cached = await q.fetch_all(
+                "email/thread_ids.sql", (session.tenant_id, mailbox["id"]), conn=conn
+            )
             await self._session(conn, session)
-        fetched, next_page = await self._fetch_page(session, mailbox, token)
+        # Threads already cached are not fetched again; only new ones count.
+        fetched, next_page = await self._fetch_page(
+            session, mailbox, token, skip=frozenset(row["thread_id"] for row in cached)
+        )
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
             replay = await self._replay(conn, session, key, "mailbox.sync_more", fingerprint)
@@ -825,7 +851,7 @@ class EmailService:
             # restarted from the newest page, and its token must win.
             await q.execute(
                 "email/sync_page_save.sql",
-                (next_page, session.tenant_id, mailbox["id"], True, token),
+                (_stored_token(next_page), session.tenant_id, mailbox["id"], True, stored),
                 conn=conn,
             )
             receipt = Receipt(
@@ -842,12 +868,18 @@ class EmailService:
             return await self._record(conn, session, key, "mailbox.sync_more", fingerprint, receipt)
 
     async def _fetch_page(
-        self, session: EmailSession, mailbox: dict[str, Any], page_token: str | None
+        self,
+        session: EmailSession,
+        mailbox: dict[str, Any],
+        page_token: str | None,
+        *,
+        skip: frozenset[str] = frozenset(),
     ) -> tuple[list[FetchedThread], str | None]:
         """One page of threads from Gmail, outside any transaction, and the next page token.
 
         The page is the ``sync_limit`` conversations with the most recent messages after
-        ``page_token``; a thread seen before simply upserts again.
+        ``page_token`` (a Gmail token, without TOKEN_PREFIX). Ids in ``skip`` are not fetched;
+        any other thread seen before simply upserts again.
         """
         access = await self._access_token(session, mailbox)
         assert self.gmail is not None
@@ -856,6 +888,8 @@ class EmailService:
         )
         fetched: list[FetchedThread] = []
         for thread_id in thread_ids:
+            if thread_id in skip:
+                continue
             try:
                 fetched.append(
                     await self.gmail.fetch_thread(
