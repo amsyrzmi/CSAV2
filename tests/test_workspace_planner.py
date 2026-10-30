@@ -281,6 +281,54 @@ def test_requested_addresses_come_only_from_what_the_user_wrote() -> None:
     assert _asked_to_send(plan, f"yes, send it now\n(Answer to “Ready?” for: {request})", facts())
 
 
+def test_clarification_text_uses_plain_spaces_only() -> None:
+    """Python's \\s also matches \\x1c-\\x1f and \\x85, JavaScript's does not: every whitespace run
+    becomes one plain space, so the console and the gateway mask and compare the same text."""
+    from csa.workspace.contracts import ClarificationProposal
+    from csa.workspace.planner import PriorTurn
+    from csa.workspace.service import _authored, _clarification
+
+    ada = uuid4()
+    raw = f"x@\x1fy send\x85{ada}"
+    live, stored = _clarification(
+        ClarificationProposal.model_validate(
+            {
+                "action": "clarification",
+                "question": "Ok?",
+                "options": [{"label": "Ok", "value": raw}],
+            }
+        )
+    )
+    plain = f"x@ y send {ada}"
+    assert live.options[0].value == stored.options[0].value == plain
+    history = PlannerFacts(
+        role=Role.TENANT_STAFF,
+        packages=[],
+        page_context=None,
+        record_summary=None,
+        language="en",
+        history=[
+            PriorTurn(
+                message="email [EMAIL_0] about it",
+                action="clarification",
+                result="clarification",
+                question="Ok?",
+                offered_options=[stored.options[0].value],
+            ),
+            PriorTurn(
+                message="Order",
+                action="clarification",
+                result="clarification",
+                question="What subject?",
+            ),
+        ],
+    )
+    # A folded click, as the console sends it or with the raw separators, is still a click.
+    for value in (plain, raw):
+        folded = f"Order\n(Answer to “What subject?” for: x; answered “Ok?”: {value})"
+        assert _authored(folded, history) == ["Order"]
+
+
 async def test_planner_prompt_writes_email_wording_and_keeps_my_team_to_email_team() -> None:
     """The rules travel in the system prompt the model receives; model behaviour is not tested."""
     model = ScriptedCompletion()

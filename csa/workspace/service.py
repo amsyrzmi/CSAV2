@@ -891,11 +891,13 @@ def _inert(text: str) -> str:
 
     The console repeats a clarification's question and a clicked option's value inside its
     answer turn, and the turn service reads that turn by the markers above to tell the user's
-    words from the planner's. Curly quotes and newlines become plain, and the marker phrases are
+    words from the planner's. Curly quotes and whitespace become plain, and the marker phrases are
     reworded, so a question, label or value can never end one part early or open another.
     """
     text = text.replace("“", '"').replace("”", '"')
-    text = re.sub(r"[\r\n]+", " ", text)
+    # Every whitespace run, newlines included, is one plain space: Python's \s also matches
+    # \x1c-\x1f and \x85 where JavaScript's does not, and both sides must mask the same text.
+    text = re.sub(r"\s+", " ", text)
     text = re.sub(r"\(\s*answer to", "(reply to", text, flags=re.IGNORECASE)
     text = re.sub(r";\s*answered", ", answered", text, flags=re.IGNORECASE)
     return text.replace('" for: ', '" - ')
