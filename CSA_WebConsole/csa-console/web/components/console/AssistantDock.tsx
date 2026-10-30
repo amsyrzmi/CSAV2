@@ -7,6 +7,7 @@ import {
   candidateAnswer,
   dockTenant,
   effectiveContext,
+  isAnswerable,
   openProposals,
   optionAnswer,
   originFor,
@@ -373,6 +374,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
               tenant={tenant}
               outcomes={outcomes}
               disabled={busy || resume !== null}
+              answerable={isAnswerable(turns, turn.id)}
               onSettled={settle}
               onAsk={(outgoing) => ask(outgoing)}
             />
@@ -447,6 +449,7 @@ function TurnResult({
   tenant,
   outcomes,
   disabled,
+  answerable,
   onSettled,
   onAsk,
 }: {
@@ -458,6 +461,8 @@ function TurnResult({
   tenant: string;
   outcomes: Record<string, ProposalOut>;
   disabled: boolean;
+  /** False for every card but the newest: older choices are history, not live questions. */
+  answerable: boolean;
   onSettled: (proposal: ProposalOut) => void;
   onAsk: (outgoing: Outgoing) => void;
 }) {
@@ -523,7 +528,7 @@ function TurnResult({
                   type="button"
                   data-testid="assistant-candidate"
                   className={`${secondary} w-full justify-start text-left`}
-                  disabled={disabled}
+                  disabled={disabled || !answerable}
                   onClick={() => onAsk(candidateAnswer(person, origin))}
                 >
                   <span>
@@ -551,7 +556,7 @@ function TurnResult({
                   key={option.value}
                   type="button"
                   className={secondary}
-                  disabled={disabled}
+                  disabled={disabled || !answerable}
                   onClick={() => onAsk(optionAnswer(option, view.question, origin))}
                 >
                   {option.label}

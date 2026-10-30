@@ -491,6 +491,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_permission_denied": "Your access doesn't include the email summary.",
         "summary_unavailable": "I couldn't summarise your inbox just now. Try again in a few "
         "minutes.",
+        "content_question": "What should the email say? Type a line or two and I'll write it.",
         "high": "high",
         "normal": "normal",
         "low": "low",
@@ -537,6 +538,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_permission_denied": "Akses anda tidak termasuk ringkasan e-mel.",
         "summary_unavailable": "Saya tidak dapat meringkaskan peti masuk anda sekarang. Cuba "
         "lagi dalam beberapa minit.",
+        "content_question": "Apa yang patut e-mel itu katakan? Taip satu atau dua ayat dan saya "
+        "akan menulisnya.",
         "high": "tinggi",
         "normal": "biasa",
         "low": "rendah",
@@ -742,6 +745,12 @@ _MAIL_WORDS = re.compile(
 )
 _TEAM_WORDS = re.compile(r"\b(team|my reports|direct reports|pasukan|anak buah)\b", re.IGNORECASE)
 _SEND_WORDS = re.compile(r"\b(send|hantar|hantarkan|kirim|kirimkan)\b", re.IGNORECASE)
+_DRAFT_WORDS = re.compile(r"\b(drafts?|draf|save|simpan)\b", re.IGNORECASE)
+_NEGATED_SEND = re.compile(
+    r"\b(?:don['’]?t|do not|never|jangan)\s+(?:send|hantar|kirim)\w*", re.IGNORECASE
+)
+_EMAIL_VERB = re.compile(r"\b(e-?mails?|e-?mel|emel)\b", re.IGNORECASE)
+_WRITE_WORD = re.compile(r"\b(write|tulis|karang)\b", re.IGNORECASE)
 _ADDRESS = re.compile(r"[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _EMPLOYEE_ID = re.compile(
     r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
@@ -903,19 +912,123 @@ def _inert(text: str) -> str:
     return text.replace('" for: ', '" - ')
 
 
+# An option that only asks the user to type ("Enter address", "Masukkan alamat") or a code the
+# model made up for one (enter_address, subject_body): clicking it would send the code back.
+_PLACEHOLDER_LABEL = re.compile(
+    r"(?:enter|type|provide|input|write|specify|fill in|masukkan|taip|berikan|isi)\b",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_VALUE = re.compile(r"[a-z]+(?:_[a-z]+)+")
+# A snake_case value is a placeholder only when a token says what to type; real snake_case
+# choices (knowledge_base, first_aid, training_request) stay.
+_PLACEHOLDER_TOKENS = frozenset(
+    {
+        "enter", "type", "provide", "input", "specify", "write", "address", "subject", "body",
+        "email", "details", "message", "content",
+    }
+)  # fmt: skip
+# A clarification that asks for what the planner must write itself; corrected on email turns.
+_CONTENT_WORDS = re.compile(
+    r"\b(subject|body|wording|content|tajuk|isi|kandungan)\b", re.IGNORECASE
+)
+# Email words only: "send" and "hantar" also send a training request, so they do not count.
+_EMAIL_REQUEST = re.compile(r"\b(e-?mails?|e-?mel|emel|reply|balas|mail)\b", re.IGNORECASE)
+_CONTENT_NOTE = (
+    "Do not ask for the subject or the wording. Write them yourself from the request; if the "
+    "request says nothing about the content, write a short, neutral email from what it does say."
+)
+
+
+def _is_placeholder(option: ClarificationOption) -> bool:
+    """The option asks the user to type rather than offering a choice to click.
+
+    A label that starts with a whole word such as "Enter" or "Masukkan", or a snake_case value
+    with a token such as "enter", "address" or "subject" (enter_address, subject_body). Real
+    choices survive: "Enterprise plan", "First aid", knowledge_base, an employee id or a thread id.
+    """
+    if _PLACEHOLDER_LABEL.match(option.label.strip()):
+        return True
+    value = option.value.strip()
+    return bool(_PLACEHOLDER_VALUE.fullmatch(value)) and not _PLACEHOLDER_TOKENS.isdisjoint(
+        value.split("_")
+    )
+
+
+def _asks_for_content(proposal: WorkspaceProposal) -> bool:
+    """A clarification asking for the subject or wording, which the planner writes itself."""
+    return isinstance(proposal, ClarificationProposal) and bool(
+        _CONTENT_WORDS.search(proposal.question)
+    )
+
+
+def _about_email(message: str, facts: PlannerFacts) -> bool:
+    """The user's own words are about email: an email word ("email", "e-mel", "reply",
+    "balas", "mail") or an address.
+
+    Only the parts ``_authored`` counts, so a planner question or a clicked value never makes
+    a turn about email. Loaded mailbox facts do not count either: words anywhere in the turn
+    load them, the folded planner question included. A bare send word ("send", "hantar") is
+    not email.
+    """
+    return any(
+        _EMAIL_REQUEST.search(part) or _addresses(part) for part in _authored(message, facts)
+    )
+
+
+def _picks_thread_or_colleague(proposal: WorkspaceProposal, facts: PlannerFacts) -> bool:
+    """A clarification offering a synced thread (thread_id) or a colleague (employee id).
+
+    Such a question may name a subject ("Which email, 'Invoice March' or 'Invoice April'?")
+    without asking the user to write one. The raw option values are checked.
+    """
+    if not isinstance(proposal, ClarificationProposal):
+        return False
+    threads = {thread.thread_id for thread in facts.mailbox_threads or []}
+    return any(
+        option.value.strip() in threads or is_employee_ref(option.value.strip())
+        for option in proposal.options
+    )
+
+
+async def _plan(planner: WorkspacePlanner, message: str, facts: PlannerFacts) -> WorkspaceProposal:
+    """Plan the turn with at most two model calls.
+
+    On an email turn (see ``_about_email``), a plan that asks for the subject or wording is
+    re-planned once with a fixed server note. If the model asks again, the user gets one plain
+    question with no options. A question that picks a thread or a colleague (see
+    ``_picks_thread_or_colleague``) and any other clarification pass through after one call. A
+    planner error on the re-plan is raised as on the first call.
+    """
+    proposal = await planner.plan(message, facts)
+    if (
+        not _asks_for_content(proposal)
+        or not _about_email(message, facts)
+        or _picks_thread_or_colleague(proposal, facts)
+    ):
+        return proposal
+    proposal = await planner.plan(message, facts, note=_CONTENT_NOTE)
+    if not _asks_for_content(proposal):
+        return proposal
+    question = _TEXT[facts.language]["content_question"]
+    return ClarificationProposal(action="clarification", question=question)
+
+
 def _clarification(
     proposal: ClarificationProposal,
 ) -> tuple[ClarificationResult, ClarificationResult]:
     """The clarification the user sees and the copy stored; options never carry an address.
 
-    Everything is inert (see ``_inert``). Option labels and values have addresses masked live
-    too, so a click can never add an address: colleagues are picked by employee id and threads
-    by thread_id, and an outside address is typed by the user. Masking can lengthen a value, so
-    an option past its limit once masked is refused rather than cut (a cut value would no longer
-    be recognised as a click). The stored copy masks the question as well: turn rows hold no
-    address, while the live question may show one the user wrote.
+    Placeholder options (see ``_is_placeholder``) are dropped first: the user types that answer,
+    so a question with none left is a plain question. Everything is inert (see ``_inert``).
+    Option labels and values have addresses masked live too, so a click can never add an
+    address: colleagues are picked by employee id and threads by thread_id, and an outside
+    address is typed by the user. Masking can lengthen a value, so an option past its limit once
+    masked is refused rather than cut (a cut value would no longer be recognised as a click). The
+    stored copy masks the question as well: turn rows hold no address, while the live question
+    may show one the user wrote.
     """
-    pairs = [(_masked(_inert(o.label)), _masked(_inert(o.value))) for o in proposal.options]
+    kept = [o for o in proposal.options if not _is_placeholder(o)]
+    pairs = [(_masked(_inert(o.label)), _masked(_inert(o.value))) for o in kept]
     if any(len(label) > 100 or len(value) > 200 for label, value in pairs):
         raise PlannerInvalidOutput()
     options = [ClarificationOption(label=label, value=value) for label, value in pairs]
@@ -1035,13 +1148,30 @@ def _asked_to_send(
     message: str,
     facts: PlannerFacts,
 ) -> bool:
-    """A send card only when the plan says so and the user's own words ask to send.
+    """A send card when the user's own words ask to send; the first rule that matches wins.
+
+    1. A draft word ("draft", "drafts", "save", "simpan") or a negated send ("don't send",
+       "do not send", "never send", "jangan hantar") gives a draft card, even next to "send".
+    2. A send word ("send", "hantar", "kirim") gives a send card, unless a write word ("write",
+       "tulis", "karang") is there too and the plan's ``send`` is false.
+    3. The plan's ``send`` with an email verb ("email", "e-mail", "e-mel") and no write word
+       gives a send card.
+    4. Anything else gives a draft card.
 
     Only the parts ``_authored`` counts: typed text, the stored first request and typed folded
     answers. Never a clarification question ("Should I send it?") and never a clicked value
-    ("yes, send it now"): the planner wrote both.
+    ("yes, send it now"): the planner wrote both. A part equal to a value any earlier card
+    offered does not count either, so typing an older card's "send it now" fails closed. The
+    user confirms either card.
     """
-    return proposal.send and any(_SEND_WORDS.search(part) for part in _authored(message, facts))
+    offered = [value for turn in facts.history for value in turn.offered_options]
+    text = "\n".join(part for part in _authored(message, facts) if not _picked(part, offered))
+    if _DRAFT_WORDS.search(text) or _NEGATED_SEND.search(text):
+        return False
+    written = bool(_WRITE_WORD.search(text))
+    if _SEND_WORDS.search(text) and (proposal.send or not written):
+        return True
+    return bool(proposal.send and _EMAIL_VERB.search(text) and not written)
 
 
 async def _draft_card(
@@ -1447,7 +1577,7 @@ async def create_planned_turn(
     if known is not None:
         return known  # a replay never re-plans or re-prepares
     facts = await planner_facts(request, actor, client_id, thread_id, turn)
-    proposal = await planner.plan(turn.body, facts)
+    proposal = await _plan(planner, turn.body, facts)
     planned = await _resolve(request, actor, client_id, thread_id, turn, proposal, facts, registry)
     async with tx(pool, str(client_id)) as conn:
         await lock_request(conn, client_id, actor.user_id, turn.request_key)
