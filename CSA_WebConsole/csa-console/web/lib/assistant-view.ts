@@ -95,10 +95,27 @@ export function resumeContext(
 
 /** How much of the originating message a follow-up turn repeats. */
 const ORIGIN_CHARS = 1000;
+/** WorkspaceTurnInput.body max_length on the gateway. */
+const BODY_CHARS = 4000;
 
-function originOf(text: string): string {
+function originOf(text: string, limit: number = ORIGIN_CHARS): string {
   const trimmed = text.trim();
-  return trimmed.length > ORIGIN_CHARS ? `${trimmed.slice(0, ORIGIN_CHARS)}…` : trimmed;
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
+}
+
+/**
+ * A message for the planner and the request it continues. `origin` is kept in the console's
+ * memory, unredacted: stored turn bodies have addresses masked, so a later follow-up repeats
+ * the console's copy instead.
+ */
+export interface Outgoing {
+  text: string;
+  origin: string;
+}
+
+/** The request a turn's result continues: the console's copy, else the stored (redacted) body. */
+export function originFor(turn: WorkspaceTurn, origins: Record<string, string>): string {
+  return origins[turn.request_key] ?? turn.body;
 }
 
 /** Follow-up turn text when the user picks a directory candidate from `origin`'s result. */
@@ -106,13 +123,60 @@ export function candidateFollowUp(person: PersonOut, origin: string): string {
   return `Use employee ${person.employee_id} for: ${originOf(origin)}`;
 }
 
-/** Follow-up turn text answering a clarification, carrying its question and request. */
+/** A picked candidate's turn; the follow-up itself is the request later turns continue. */
+export function candidateAnswer(person: PersonOut, origin: string): Outgoing {
+  const text = candidateFollowUp(person, origin);
+  return { text, origin: text };
+}
+
+/**
+ * Follow-up turn text answering a clarification (a clicked option or a typed reply), carrying
+ * its question and request. The request is cut to ORIGIN_CHARS, and further when the whole turn
+ * would pass the gateway's body limit; with no room left the answer goes alone.
+ */
 export function clarificationAnswer(
-  option: ClarificationOption,
+  answer: ClarificationOption | string,
   question: string,
   origin: string,
 ): string {
-  return `${option.value}\n(Answer to “${question}” for: ${originOf(origin)})`;
+  const value = typeof answer === "string" ? answer.trim() : answer.value;
+  const head = `${value}\n(Answer to “${question}” for: `;
+  const room = BODY_CHARS - head.length - ")".length - "…".length;
+  if (room < 1) return value;
+  return `${head}${originOf(origin, Math.min(ORIGIN_CHARS, room))})`;
+}
+
+/** The answer's turn; later clarifications continue the request with this answer folded in. */
+function answered(value: string, question: string, origin: string): Outgoing {
+  return {
+    text: clarificationAnswer(value, question, origin),
+    origin: `${origin.trim()}; answered “${question}”: ${value.trim()}`,
+  };
+}
+
+/** The turn for a clicked clarification option. */
+export function optionAnswer(
+  option: ClarificationOption,
+  question: string,
+  origin: string,
+): Outgoing {
+  return answered(option.value, question, origin);
+}
+
+/**
+ * The turn for text typed into the dock. When the thread's latest result is a clarification it
+ * is still unanswered, so the text answers it exactly as a clicked option would; otherwise the
+ * text is a new request.
+ */
+export function typedMessage(
+  text: string,
+  turns: WorkspaceTurn[],
+  origins: Record<string, string>,
+): Outgoing {
+  const last = turns.at(-1);
+  if (last && "action" in last.result && last.result.action === "clarification")
+    return answered(text, last.result.question, originFor(last, origins));
+  return { text, origin: text };
 }
 
 const guidance: Record<string, string> = {

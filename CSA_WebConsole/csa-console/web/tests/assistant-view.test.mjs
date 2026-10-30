@@ -133,3 +133,70 @@ test("settled proposals summarise their receipts", () => {
   assert.match(view.resultSummary(proposal("p", { status: "cancelled" })), /Nothing was changed/);
   assert.match(view.resultSummary(proposal("p", { status: "expired" })), /expired/);
 });
+
+test("a typed reply to an open clarification carries its question and request", () => {
+  const turn = (id, key, body, result) => ({ id, request_key: key, body, created_at: "x", duplicate: false, result });
+  const asked = { action: "clarification", question: "What subject should the email have?", options: [] };
+  // The server stores redacted bodies; the console keeps what it sent, by request key.
+  const turns = [turn(1, "k1", "send email to [EMAIL_0]", asked)];
+  const origins = { k1: "send email to danial@example.test" };
+  assert.equal(view.originFor(turns[0], origins), "send email to danial@example.test");
+  assert.equal(view.originFor(turns[0], {}), "send email to [EMAIL_0]");
+  const typed = view.typedMessage(" Confirmation ", turns, origins);
+  assert.equal(
+    typed.text,
+    "Confirmation\n(Answer to “What subject should the email have?” for: send email to danial@example.test)",
+  );
+  assert.equal(
+    typed.origin,
+    "send email to danial@example.test; answered “What subject should the email have?”: Confirmation",
+  );
+  // A clicked option and a typed reply produce the same turn.
+  const clicked = view.optionAnswer({ label: "Confirmation", value: "Confirmation" }, asked.question, origins.k1);
+  assert.deepEqual(clicked, typed);
+  // Without an open clarification the text is sent as it is and starts a new request.
+  const answered = [...turns, turn(2, "k2", "x", { action: "answer", markdown: "ok" })];
+  assert.deepEqual(view.typedMessage("what needs my attention", answered, origins), {
+    text: "what needs my attention", origin: "what needs my attention",
+  });
+  assert.deepEqual(view.typedMessage("hello", [], {}), { text: "hello", origin: "hello" });
+});
+
+test("answering a second clarification keeps the first request and folds in earlier answers", () => {
+  const turn = (id, key, body, result) => ({ id, request_key: key, body, created_at: "x", duplicate: false, result });
+  const subject = { action: "clarification", question: "What subject?", options: [] };
+  const address = { action: "clarification", question: "What is Danial's email address?", options: [] };
+  const origins = { k1: "send email to danial" };
+  const first = view.typedMessage("Confirmation", [turn(1, "k1", "send email to danial", subject)], origins);
+  origins.k2 = first.origin;
+  const turns = [
+    turn(1, "k1", "send email to danial", subject),
+    turn(2, "k2", first.text, address),
+  ];
+  const second = view.typedMessage("danial@fourstacks.example", turns, origins);
+  assert.equal(
+    second.text,
+    "danial@fourstacks.example\n(Answer to “What is Danial's email address?” for: send email to danial; answered “What subject?”: Confirmation)",
+  );
+  // Everything the user said for this request is in the last turn's message.
+  for (const said of ["send email to danial", "Confirmation", "danial@fourstacks.example"])
+    assert.ok(second.text.includes(said), said);
+  assert.equal(
+    second.origin,
+    "send email to danial; answered “What subject?”: Confirmation; answered “What is Danial's email address?”: danial@fourstacks.example",
+  );
+  // The repeated request stays bounded, and the turn fits the 4000-character body limit.
+  const long = view.typedMessage("a", [turn(1, "k1", "b", subject)], { k1: "x".repeat(5000) });
+  assert.equal(long.text, `a\n(Answer to “What subject?” for: ${"x".repeat(1000)}…)`);
+  const huge = view.typedMessage("y".repeat(3990), [turn(1, "k1", "b", subject)], { k1: "x".repeat(50) });
+  assert.ok(huge.text.length <= 4000, String(huge.text.length));
+  assert.ok(huge.text.startsWith("y".repeat(3990)));
+});
+
+test("a picked candidate continues the request the console holds", () => {
+  const person = { employee_id: "e1", display_name: "A", job_title: null, work_email: null };
+  assert.deepEqual(view.candidateAnswer(person, "email ali@example.test"), {
+    text: "Use employee e1 for: email ali@example.test",
+    origin: "Use employee e1 for: email ali@example.test",
+  });
+});

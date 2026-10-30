@@ -182,6 +182,30 @@ def test_planner_output_rejects_legacy_actions() -> None:
         )
 
 
+async def test_planner_prompt_writes_email_wording_and_keeps_my_team_to_email_team() -> None:
+    """The rules travel in the system prompt the model receives; model behaviour is not tested."""
+    model = ScriptedCompletion()
+    model.reply({"action": "directory_lookup", "query": "danial"})
+    facts = PlannerFacts(
+        role=Role.TENANT_STAFF, packages=[], page_context=None, record_summary=None, language="en"
+    )
+    planned = await WorkspacePlanner(model).plan("send email to danial", facts)
+    assert planned.action == "directory_lookup"
+    system = " ".join(model.calls[0][1].split())
+    # email_compose, email_reply and email_team: the subject and wording are the planner's job.
+    assert (
+        "For email_compose, email_reply and email_team, write the subject and the wording "
+        "yourself from the request. Never ask a clarification for the subject or the wording."
+    ) in system
+    assert "Ask only for a recipient you cannot resolve" in system
+    # A bare name is looked up before an address is asked for.
+    assert "prefer directory_lookup before asking for an address" in system
+    # my_team ids reach only email_team, which the server enforces on compose and reply.
+    assert "my_manager (my_team only through email_team)" in system
+    assert "my_manager or my_team" not in system
+    assert "Never put my_team ids in recipient_employee_id, cc or bcc." in system
+
+
 @requires_docker
 async def test_answer_navigate_and_clarification_round_trip(planned) -> None:
     w, model = planned
@@ -1027,3 +1051,53 @@ async def test_team_fact_absent_without_approves_switch(planned) -> None:
     model.reply({"action": "answer", "markdown": "Hello."})
     await _turn(w, browser, thread, "Hello there", "email")
     assert model.facts()["my_team"] is None  # only when the message mentions the team
+
+
+@requires_docker
+async def test_typed_answer_carries_the_address_into_a_draft(planned) -> None:
+    """A clarification answered by typing: the console sends the answer with its question and
+    the original request, and an address anywhere in that message is the user's own."""
+    w, model = planned
+    browser = await _mail_ready(w)
+    thread = await _thread(w, browser)
+    question = "What is their email address?"
+    model.reply({"action": "clarification", "question": question, "options": []})
+    asked = await _turn(w, browser, thread, "send email to someone", "email")
+    assert asked.status_code == 201, asked.text
+    assert asked.json()["result"]["action"] == "clarification"
+    model.reply(
+        {
+            "action": "email_compose",
+            "recipient_address": "someone@example.test",
+            "subject": "Hello",
+            "instructions": "Say hello",
+        }
+    )
+    typed = f"someone@example.test\n(Answer to “{question}” for: send email to someone)"
+    answered = await _turn(w, browser, thread, typed, "email")
+    assert answered.status_code == 201, answered.text
+    assert answered.json()["result"]["proposal"]["kind"] == "email_export"
+    assert await _draft_recipients(w) == [["someone@example.test"]]
+    assert len(model.calls) == 2  # no further question
+    # The stored body is redacted, so the address only ever comes from the current message.
+    assert "someone@example.test" not in json.dumps([r["result"] for r in await _turn_rows(w)])
+
+    # An address inside the "(Answer to … for: …)" part is the user's too: the console sent
+    # its own unredacted copy of the request this turn.
+    model.reply({"action": "clarification", "question": "What subject?", "options": []})
+    first = await _turn(w, browser, thread, "send email to dan@example.test", "email")
+    assert first.status_code == 201, first.text
+    model.reply(
+        {
+            "action": "email_compose",
+            "recipient_address": "dan@example.test",
+            "subject": "Confirmation",
+            "instructions": "Confirm",
+        }
+    )
+    folded = "Confirmation\n(Answer to “What subject?” for: send email to dan@example.test)"
+    second = await _turn(w, browser, thread, folded, "email")
+    assert second.status_code == 201, second.text
+    assert await _draft_recipients(w) == [["someone@example.test"], ["dan@example.test"]]
+    # History alone carries the redacted form, so it could never have supplied the address.
+    assert "dan@example.test" not in json.dumps(model.facts()["history"])
