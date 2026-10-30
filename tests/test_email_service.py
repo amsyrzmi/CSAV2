@@ -71,8 +71,10 @@ class FakeGmail:
         self.access_counter = 0
         self.expected_thread_id: str | None = "t1"
         self.expected_to = "aina@example.test"
+        # users.messages.list, newest message first: each entry is one message's threadId.
         self.listed = ["t1", "t2"]
-        # When set, maps the request's pageToken (None for the first page) to (ids, next token).
+        # When set, maps the request's pageToken (None for the first page) to (thread ids of
+        # the page's messages, next token).
         self.pages: dict[str | None, tuple[list[str], str | None]] | None = None
         self.list_params: list[dict[str, str]] = []
         self.extra_threads: dict[str, dict[str, Any]] = {}
@@ -125,13 +127,15 @@ class FakeGmail:
                 return httpx.Response(int(status), json=refusal)
             self.send_counter += 1
             return httpx.Response(200, json={"id": f"gmail-msg-{self.send_counter}"})
-        if path.endswith("/threads"):
+        if path.endswith("/messages") and request.method == "GET":
             params = dict(request.url.params)
             self.list_params.append(params)
             ids, next_token = self.listed, None
             if self.pages is not None:
                 ids, next_token = self.pages[params.get("pageToken")]
-            body: dict[str, Any] = {"threads": [{"id": tid} for tid in ids]}
+            body: dict[str, Any] = {
+                "messages": [{"id": f"m{i}-{tid}", "threadId": tid} for i, tid in enumerate(ids)]
+            }
             if next_token:
                 body["nextPageToken"] = next_token
             return httpx.Response(200, json=body)
@@ -1478,15 +1482,20 @@ async def test_sync_uses_ninety_days_and_stores_page_token(
 ) -> None:
     assert email_service.SYNC_QUERY == "newer_than:90d -in:chats"
     await _enable_and_connect(world, monkeypatch)
+    assert world.app.state.email_service.sync_limit == 20
+    # Sync reads up to three message pages until it has sync_limit threads; a limit matching
+    # the page size keeps one Gmail page per sync or load-more here.
+    monkeypatch.setattr(world.app.state.email_service, "sync_limit", 2)
     world.gmail.pages = {None: (["t1", "t2"], "tok-2")}
     before = await world.call("staff", "GET", "/console/v1/email/context")
     assert before.json()["more_available"] is False and before.json()["last_synced_at"] is None
     synced = await world.call("staff", "POST", SYNC)
     assert synced.status_code == 200, synced.text
     assert synced.json()["detail"] == {"threads": 2}
-    assert world.gmail.list_params == [{"q": "newer_than:90d -in:chats", "maxResults": "20"}]
+    assert world.gmail.list_params == [{"q": "newer_than:90d -in:chats", "maxResults": "2"}]
     mailbox = await _mailbox_row(world)
-    assert mailbox["sync_page_token"] == "tok-2" and mailbox["last_sync_at"] is not None
+    # Stored with "m:": a users.messages.list token, not an older threads.list one.
+    assert mailbox["sync_page_token"] == "m:tok-2" and mailbox["last_sync_at"] is not None
     context = (await world.call("staff", "GET", "/console/v1/email/context")).json()
     assert context["more_available"] is True
     assert context["mailbox"]["last_sync_at"] == context["last_synced_at"] is not None
@@ -1507,6 +1516,9 @@ async def test_sync_more_pages_without_duplicates_and_reports_done(
         "t3": _thread("t3", _msg("c1", "Cara <cara@customer.test>")),
         "t4": _thread("t4", _msg("d1", "Dev <dev@customer.test>")),
     }
+    # Sync reads up to three message pages until it has sync_limit threads; a limit matching
+    # the page size keeps one Gmail page per sync or load-more here.
+    monkeypatch.setattr(world.app.state.email_service, "sync_limit", 2)
     # The second page repeats t2, as it does when new mail shifts the pages.
     world.gmail.pages = {
         None: (["t1", "t2"], "tok-2"),
@@ -1518,9 +1530,11 @@ async def test_sync_more_pages_without_duplicates_and_reports_done(
     key = uuid4()
     first = await world.call("staff", "POST", SYNC_MORE, key=key)
     assert first.status_code == 200, first.text
-    assert first.json()["detail"] == {"threads": 2, "done": False}
+    # t2 is already cached, so it is not fetched again and only t3 counts.
+    assert first.json()["detail"] == {"threads": 1, "done": False}
     assert world.gmail.list_params[-1]["pageToken"] == "tok-2"
-    assert (await _mailbox_row(world))["sync_page_token"] == "tok-3"
+    assert [p for _, p, _ in world.gmail.requests].count("/gmail/v1/users/me/threads/t2") == 1
+    assert (await _mailbox_row(world))["sync_page_token"] == "m:tok-3"
     calls = len(world.gmail.requests)
     again = await world.call("staff", "POST", SYNC_MORE, key=key)
     assert again.json()["duplicate"] is True and len(world.gmail.requests) == calls
@@ -1542,6 +1556,32 @@ async def test_sync_more_pages_without_duplicates_and_reports_done(
     assert (await world.call("admin", "POST", SYNC_MORE)).json()[
         "detail"
     ] == "mailbox_not_connected"
+
+
+async def test_an_older_threads_list_token_is_treated_as_absent(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mailboxes synced before the switch to messages.list hold a threads.list page token."""
+    await _enable_and_connect(world, monkeypatch)
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    mailbox = await _mailbox_row(world)
+    await world.q(
+        "UPDATE email_mailboxes SET sync_page_token='threads-list-token' WHERE id=%s",
+        (mailbox["id"],),
+    )
+    context = (await world.call("staff", "GET", "/console/v1/email/context")).json()
+    assert context["more_available"] is False
+    lists = len(world.gmail.list_params)
+    more = await world.call("staff", "POST", SYNC_MORE)
+    assert more.status_code == 200, more.text
+    assert more.json()["detail"] == {"threads": 0, "done": True}
+    assert len(world.gmail.list_params) == lists  # no Gmail list call
+    assert (await _mailbox_row(world))["sync_page_token"] is None
+    # The next sync stores a new, prefixed token.
+    world.gmail.pages = {None: (["t1"], "tok-9")}
+    monkeypatch.setattr(world.app.state.email_service, "sync_limit", 1)
+    assert (await world.call("staff", "POST", SYNC)).status_code == 200
+    assert (await _mailbox_row(world))["sync_page_token"] == "m:tok-9"
 
 
 async def test_cleanup_caps_at_200_and_90_days(
@@ -1566,7 +1606,8 @@ async def test_cleanup_caps_at_200_and_90_days(
     assert kept == {f"r{index}" for index in range(1, 201)}
     assert await _thread_ids(world, "admin") == {"a-old", "a-ancient"}
     # More: the same cleanup runs after a load-more.
-    world.gmail.pages = {None: ([], "tok-2"), "tok-2": ([], None)}
+    monkeypatch.setattr(world.app.state.email_service, "sync_limit", 1)
+    world.gmail.pages = {None: (["t1"], "tok-2"), "tok-2": ([], None)}
     assert (await world.call("staff", "POST", SYNC)).status_code == 200
     await _put_thread(world, "late-old", days_ago=95)
     assert (await world.call("staff", "POST", SYNC_MORE)).status_code == 200
@@ -1731,6 +1772,91 @@ async def test_attention_skips_a_thread_the_model_cannot_analyse(
     assert failed.status_code == 503 and failed.json()["detail"] == "email_model_unavailable"
 
 
+async def test_attention_accepts_model_output_outside_the_literals(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Staging: the provider's JSON mode has no schema, so every analysis failed validation
+    (groq_invalid_output) and the summary was never available."""
+    caplog.set_level(logging.DEBUG)
+    await _enable_and_connect(world, monkeypatch)
+    for index in (1, 2):
+        await _put_thread(world, f"U{index}", days_ago=0, minutes_ago=index)
+    systems: list[str] = []
+    raw = json.dumps(
+        {
+            "category": "Shipping Inquiry",
+            "priority": "High",
+            "language": "English",
+            "summary": "s" * 700,
+            "action_items": [f"Step {n}" for n in range(1, 8)],
+            "confidence": 0.9,
+        }
+    )
+
+    async def drifting(schema: type[Any], *, system: str, user: str, **kwargs: Any) -> Any:
+        systems.append(system)
+        # Room for a reasoning model's answer, so the JSON is not cut off.
+        assert kwargs["max_tokens"] == 1500
+        try:  # parsed exactly as GroqClient parses the provider's content
+            return schema.model_validate_json(raw)
+        except ValueError as exc:
+            raise CompletionError("groq_invalid_output") from exc
+
+    monkeypatch.setattr(world.model, "json_completion", drifting)
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert page.json()["skipped"] == 0
+    items = page.json()["items"]
+    assert [item["thread_id"] for item in items] == ["U1", "U2"]
+    assert {item["priority"] for item in items} == {"high"}
+    assert len(items[0]["summary"]) == 600
+    assert items[0]["next_steps"] == [f"Step {n}" for n in range(1, 6)]
+    rows = await world.q(
+        "SELECT DISTINCT category FROM email_threads WHERE client_id=%s", (world.tenant,)
+    )
+    assert [row["category"] for row in rows] == ["other"]
+    # The prompt names every allowed value, so the model has them to choose from.
+    for value in (
+        "customer_request",
+        "spam_or_phishing",
+        "other",
+        "low",
+        "normal",
+        "high",
+        "mixed",
+    ):
+        assert f'"{value}"' in systems[0], value
+    assert "groq_invalid_output" not in " ".join(r.getMessage() for r in caplog.records)
+
+
+async def test_attention_leaves_out_phishing_however_the_model_names_it(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _enable_and_connect(world, monkeypatch)
+    names = {"U1": "Phishing", "U2": "Possible phishing", "U3": "Customer Request"}
+    for index in (1, 2, 3):
+        await _put_thread(world, f"U{index}", days_ago=0, minutes_ago=index)
+
+    async def naming(schema: type[Any], *, system: str, user: str, **kwargs: Any) -> Any:
+        thread = next(t for t in names if f"Subject {t}" in user)
+        raw = {"category": names[thread], "priority": "high", "language": "en", "summary": "s"}
+        return schema.model_validate_json(json.dumps(raw))
+
+    monkeypatch.setattr(world.model, "json_completion", naming)
+    page = await world.call("staff", "GET", ATTENTION)
+    assert page.status_code == 200, page.text
+    assert [item["thread_id"] for item in page.json()["items"]] == ["U3"]
+    rows = await world.q(
+        "SELECT thread_id, category FROM email_threads WHERE client_id=%s ORDER BY thread_id",
+        (world.tenant,),
+    )
+    assert [r["category"] for r in rows] == [
+        "spam_or_phishing",
+        "spam_or_phishing",
+        "customer_request",
+    ]
+
+
 async def test_attention_without_a_model_shows_stored_items(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1770,11 +1896,15 @@ async def test_sync_more_stops_at_the_cache_cap(
     world.gmail.extra_threads = {
         "older": _thread("older", _msg("o1", "Old <old@customer.test>", internal_days=30)),
     }
-    world.gmail.pages = {None: ([], "tok-2"), "tok-2": (["older"], "tok-3")}
+    # Sync reads up to three message pages until it has sync_limit threads; a limit matching
+    # the page size keeps one Gmail page per sync or load-more here.
+    monkeypatch.setattr(world.app.state.email_service, "sync_limit", 1)
+    # t1 (two days old) ranks below the newest 200 too, so the cache stays at 200.
+    world.gmail.pages = {None: (["t1"], "tok-2"), "tok-2": (["older"], "tok-3")}
     for index in range(1, 201):
         await _put_thread(world, f"r{index}", days_ago=0, minutes_ago=index)
     assert (await world.call("staff", "POST", SYNC)).status_code == 200
-    assert (await _mailbox_row(world))["sync_page_token"] == "tok-2"
+    assert (await _mailbox_row(world))["sync_page_token"] == "m:tok-2"
     # The older page ranks below the newest 200, so cleanup drops it: load-more is over.
     more = await world.call("staff", "POST", SYNC_MORE)
     assert more.status_code == 200, more.text
@@ -1792,13 +1922,17 @@ async def test_sync_more_stops_when_cleanup_drops_the_whole_page(
     world.gmail.extra_threads = {
         "x1": _thread("x1", _msg("x1m", "X <x@customer.test>", internal_days=95)),
         "x2": _thread("x2", _msg("x2m", "Y <y@customer.test>", internal_days=120)),
+        "t3": _thread("t3", _msg("t3m", "Z <z@customer.test>", internal_days=1)),
     }
-    world.gmail.pages = {None: (["t1"], "tok-2"), "tok-2": (["x1", "x2"], "tok-3")}
+    # Sync reads up to three message pages until it has sync_limit threads; a limit matching
+    # the page size keeps one Gmail page per sync or load-more here.
+    monkeypatch.setattr(world.app.state.email_service, "sync_limit", 2)
+    world.gmail.pages = {None: (["t1", "t3"], "tok-2"), "tok-2": (["x1", "x2"], "tok-3")}
     assert (await world.call("staff", "POST", SYNC)).status_code == 200
     more = await world.call("staff", "POST", SYNC_MORE)
     assert more.json()["detail"] == {"threads": 0, "done": True}
     assert (await _mailbox_row(world))["sync_page_token"] is None
-    assert await _thread_ids(world) == {"t1"}
+    assert await _thread_ids(world) == {"t1", "t3"}
 
 
 async def test_received_time_is_gmail_internal_date_not_the_date_header(
@@ -1832,12 +1966,38 @@ async def test_ninety_day_window_by_internal_date_on_sync_and_more(
         "m89": _thread("m89", _msg("c", "C <c@customer.test>", date_days=200, internal_days=89)),
         "m91": _thread("m91", _msg("d", "D <d@customer.test>", date_days=1, internal_days=91)),
     }
+    # Sync reads up to three message pages until it has sync_limit threads; a limit matching
+    # the page size keeps one Gmail page per sync or load-more here.
+    monkeypatch.setattr(world.app.state.email_service, "sync_limit", 2)
     world.gmail.pages = {None: (["d89", "d91"], "tok-2"), "tok-2": (["m89", "m91"], None)}
     assert (await world.call("staff", "POST", SYNC)).status_code == 200
     assert await _thread_ids(world) == {"d89"}
     more = await world.call("staff", "POST", SYNC_MORE)
     assert more.json()["detail"] == {"threads": 2, "done": True}
     assert await _thread_ids(world) == {"d89", "m89"}
+
+
+async def test_sync_picks_conversations_by_latest_message_not_creation(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old conversation that just got mail is fetched first; repeats are fetched once."""
+    await _enable_and_connect(world, monkeypatch)
+    world.gmail.extra_threads = {
+        # Created long ago (a low Gmail id), with a reply minutes ago.
+        "1a15old": _thread("1a15old", _msg("o9", "Old <old@customer.test>", internal_days=0.001)),
+        # Created more recently, quiet since.
+        "1a18new": _thread("1a18new", _msg("n1", "New <new@customer.test>", internal_days=3)),
+    }
+    # messages.list is newest message first: the old thread's two new messages lead.
+    world.gmail.listed = ["1a15old", "1a15old", "1a18new"]
+    synced = await world.call("staff", "POST", SYNC)
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["detail"] == {"threads": 2}
+    fetched = [path for method, path, _ in world.gmail.requests if "/threads/" in path]
+    assert [path.rsplit("/", 1)[1] for path in fetched] == ["1a15old", "1a18new"]
+    assert world.gmail.list_params == [{"q": "newer_than:90d -in:chats", "maxResults": "20"}]
+    items = (await world.call("staff", "GET", "/console/v1/email/threads")).json()["items"]
+    assert [item["thread_id"] for item in items] == ["1a15old", "1a18new"]
 
 
 async def _change_latest_message(world: World, thread_id: str) -> None:

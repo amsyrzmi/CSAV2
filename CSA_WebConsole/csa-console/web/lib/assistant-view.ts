@@ -95,10 +95,35 @@ export function resumeContext(
 
 /** How much of the originating message a follow-up turn repeats. */
 const ORIGIN_CHARS = 1000;
+/** WorkspaceTurnInput.body max_length on the gateway. */
+const BODY_CHARS = 4000;
 
-function originOf(text: string): string {
+/**
+ * A planner-written question can quote mailbox data, so its addresses never travel in a turn:
+ * the gateway accepts an address the current message carries as one the user wrote.
+ */
+function maskAddresses(text: string): string {
+  return text.replace(/[^\s@<>]+@[^\s@<>]+/g, "[address]");
+}
+
+function originOf(text: string, limit: number = ORIGIN_CHARS): string {
   const trimmed = text.trim();
-  return trimmed.length > ORIGIN_CHARS ? `${trimmed.slice(0, ORIGIN_CHARS)}…` : trimmed;
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
+}
+
+/**
+ * A message for the planner and the request it continues. `origin` is kept in the console's
+ * memory, unredacted: stored turn bodies have addresses masked, so a later follow-up repeats
+ * the console's copy instead.
+ */
+export interface Outgoing {
+  text: string;
+  origin: string;
+}
+
+/** The request a turn's result continues: the console's copy, else the stored (redacted) body. */
+export function originFor(turn: WorkspaceTurn, origins: Record<string, string>): string {
+  return origins[turn.request_key] ?? turn.body;
 }
 
 /** Follow-up turn text when the user picks a directory candidate from `origin`'s result. */
@@ -106,13 +131,84 @@ export function candidateFollowUp(person: PersonOut, origin: string): string {
   return `Use employee ${person.employee_id} for: ${originOf(origin)}`;
 }
 
-/** Follow-up turn text answering a clarification, carrying its question and request. */
+/** A picked candidate's turn; the follow-up itself is the request later turns continue. */
+export function candidateAnswer(person: PersonOut, origin: string): Outgoing {
+  const text = candidateFollowUp(person, origin);
+  return { text, origin: text };
+}
+
+/**
+ * Follow-up turn text answering a clarification (a clicked option or a typed reply), carrying
+ * its question and request. The request is cut to ORIGIN_CHARS, and further when the whole turn
+ * would pass the gateway's body limit; with no room left the answer goes alone.
+ */
 export function clarificationAnswer(
-  option: ClarificationOption,
+  answer: ClarificationOption | string,
   question: string,
   origin: string,
 ): string {
-  return `${option.value}\n(Answer to “${question}” for: ${originOf(origin)})`;
+  const value = typeof answer === "string" ? answer.trim() : answer.value;
+  const head = `${value}\n(Answer to “${maskAddresses(question)}” for: `;
+  const room = BODY_CHARS - head.length - ")".length - "…".length;
+  if (room < 1) return value;
+  return `${head}${originOf(origin, Math.min(ORIGIN_CHARS, room))})`;
+}
+
+const ANSWERED = "; answered “";
+
+/**
+ * The request with one more answer folded in, at most ORIGIN_CHARS where it can be: the first
+ * request is kept, the oldest answers are dropped first, and the first request is shortened
+ * only when the newest answer would not fit beside it.
+ */
+function foldAnswer(origin: string, question: string, answer: string): string {
+  const whole = origin.trim();
+  const cut = whole.indexOf(ANSWERED);
+  let head = cut < 0 ? whole : whole.slice(0, cut);
+  const answers = cut < 0 ? [] : whole.slice(cut + ANSWERED.length).split(ANSWERED);
+  answers.push(`${maskAddresses(question)}”: ${answer.trim()}`);
+  const joined = () => [head, ...answers].join(ANSWERED);
+  while (answers.length > 1 && joined().length > ORIGIN_CHARS) answers.shift();
+  const room = ORIGIN_CHARS - (joined().length - head.length) - "…".length;
+  if (joined().length > ORIGIN_CHARS) head = `${head.slice(0, Math.max(room, 100))}…`;
+  return joined();
+}
+
+/**
+ * The answer's turn; later clarifications continue the request with this answer folded in. A
+ * clicked option's value is planner-written, so its addresses are masked in the fold; a typed
+ * answer is the user's own and stays as typed.
+ */
+function answered(value: string, question: string, origin: string, clicked: boolean): Outgoing {
+  return {
+    text: clarificationAnswer(value, question, origin),
+    origin: foldAnswer(origin, question, clicked ? maskAddresses(value) : value),
+  };
+}
+
+/** The turn for a clicked clarification option. */
+export function optionAnswer(
+  option: ClarificationOption,
+  question: string,
+  origin: string,
+): Outgoing {
+  return answered(option.value, question, origin, true);
+}
+
+/**
+ * The turn for text typed into the dock. When the thread's latest result is a clarification it
+ * is still unanswered, so the text answers it exactly as a clicked option would; otherwise the
+ * text is a new request.
+ */
+export function typedMessage(
+  text: string,
+  turns: WorkspaceTurn[],
+  origins: Record<string, string>,
+): Outgoing {
+  const last = turns.at(-1);
+  if (last && "action" in last.result && last.result.action === "clarification")
+    return answered(text, last.result.question, originFor(last, origins), false);
+  return { text, origin: text };
 }
 
 const guidance: Record<string, string> = {

@@ -143,3 +143,16 @@ test("times read as day, short month, year and 24-hour time; the card names its 
   assert.deepEqual(email.cardFieldsShown({ fields: [...card.fields, { label: "Not included", value: "Ali (no work email)" }] }),
     [{ label: "Not included", value: "Ali (no work email)" }]);
 });
+
+test("after a sync the open thread is read again, and cleared when the sync removed it", async () => {
+  const reads = [];
+  const fresh = await email.rereadThread("t1", async (id) => { reads.push(id); return { thread_id: id, body: "new reply" }; });
+  assert.deepEqual(fresh, { thread_id: "t1", body: "new reply" });
+  assert.deepEqual(reads, ["t1"]);
+  // Nothing open: nothing is read.
+  assert.equal(await email.rereadThread(null, async () => { throw new Error("not called"); }), null);
+  // Gone after cleanup: the gateway answers 404 resource_unavailable, so the view clears.
+  assert.equal(await email.rereadThread("t1", async () => { throw { status: 404, code: "resource_unavailable" }; }), null);
+  // Any other failure is the caller's to show.
+  await assert.rejects(email.rereadThread("t1", async () => { throw { status: 503, code: "provider_unreachable" }; }));
+});

@@ -4,16 +4,19 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
 import {
-  candidateFollowUp,
-  clarificationAnswer,
+  candidateAnswer,
   dockTenant,
   effectiveContext,
   openProposals,
+  optionAnswer,
+  originFor,
   resultView,
   resumeContext,
   tabForPath,
   tabHref,
   tabLabel,
+  typedMessage,
+  type Outgoing,
 } from "@/lib/assistant-view";
 import type { Me } from "@/lib/identity-contracts";
 import { usePageContext } from "@/lib/page-context";
@@ -42,6 +45,8 @@ interface Attempt {
   key: string;
   threadKey: string;
   text: string;
+  /** The request this turn continues, unredacted; kept in memory for the next follow-up. */
+  origin: string;
   context: PageContext | null;
   /** A resumed turn never resumes again, so a navigate loop cannot form. */
   resumed: boolean;
@@ -50,6 +55,7 @@ interface Attempt {
 
 interface Resume {
   text: string;
+  origin: string;
   tab: TabKey;
   section: string | null;
   path: string;
@@ -78,6 +84,8 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
   const [threadId, setThreadId] = useState("");
   const [turns, setTurns] = useState<WorkspaceTurn[]>([]);
   const [outcomes, setOutcomes] = useState<Record<string, ProposalOut>>({});
+  // What this console sent, by request key: stored bodies come back with addresses redacted.
+  const [origins, setOrigins] = useState<Record<string, string>>({});
   const [body, setBody] = useState("");
   const [pending, setPending] = useState<Attempt | null>(null);
   const [resume, setResume] = useState<Resume | null>(null);
@@ -178,6 +186,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     if (result.resume && !attempt.resumed)
       setResume({
         text: attempt.text,
+        origin: attempt.origin,
         tab: result.tab,
         section: result.section,
         path: href.split("?")[0],
@@ -208,6 +217,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         attempt.context,
       );
       if (controller.signal.aborted) return;
+      setOrigins((current) => ({ ...current, [turn.request_key]: attempt.origin }));
       setTurns((current) => mergeTurns(current, [turn]));
       setPending(null);
       if (attempt.fromInput) setBody("");
@@ -222,12 +232,13 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     }
   }
 
-  function ask(text: string, fromInput = false) {
+  function ask({ text, origin }: Outgoing, fromInput = false) {
     if (!text.trim() || busy || resume) return;
     void send({
       key: crypto.randomUUID(),
       threadKey: crypto.randomUUID(),
       text,
+      origin,
       context,
       resumed: false,
       fromInput,
@@ -243,6 +254,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
       key: crypto.randomUUID(),
       threadKey: crypto.randomUUID(),
       text: resume.text,
+      origin: resume.origin,
       context: ready,
       resumed: true,
       fromInput: false,
@@ -276,6 +288,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     mutation.current = null;
     setThreadId("");
     setTurns([]);
+    setOrigins({});
     setPending(null);
     setResume(null);
     setBusy(false);
@@ -354,14 +367,14 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
             <p className="ml-8 whitespace-pre-wrap rounded-md bg-ink-50 p-3 text-sm">{turn.body}</p>
             <TurnResult
               result={turn.result}
-              origin={turn.body}
+              origin={originFor(turn, origins)}
               me={me}
               packages={packages}
               tenant={tenant}
               outcomes={outcomes}
               disabled={busy || resume !== null}
               onSettled={settle}
-              onAsk={(text) => ask(text)}
+              onAsk={(outgoing) => ask(outgoing)}
             />
           </article>
         ))}
@@ -372,7 +385,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         className="space-y-2 border-t border-ink-200 px-4 py-3"
         onSubmit={(event) => {
           event.preventDefault();
-          ask(body, true);
+          if (body.trim()) ask(typedMessage(body, turns, origins), true);
         }}
       >
         <label className="block text-sm">
@@ -388,7 +401,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                ask(body, true);
+                if (body.trim()) ask(typedMessage(body, turns, origins), true);
               }
             }}
           />
@@ -438,7 +451,7 @@ function TurnResult({
   onAsk,
 }: {
   result: WorkspaceResult;
-  /** The message that produced this result; follow-ups repeat it for the planner. */
+  /** The request that produced this result; follow-ups repeat it for the planner. */
   origin: string;
   me: Me;
   packages: PackageState[];
@@ -446,7 +459,7 @@ function TurnResult({
   outcomes: Record<string, ProposalOut>;
   disabled: boolean;
   onSettled: (proposal: ProposalOut) => void;
-  onAsk: (text: string) => void;
+  onAsk: (outgoing: Outgoing) => void;
 }) {
   const view = resultView(result);
   const box = "rounded-md bg-brand-50 p-3 text-sm";
@@ -511,7 +524,7 @@ function TurnResult({
                   data-testid="assistant-candidate"
                   className={`${secondary} w-full justify-start text-left`}
                   disabled={disabled}
-                  onClick={() => onAsk(candidateFollowUp(person, origin))}
+                  onClick={() => onAsk(candidateAnswer(person, origin))}
                 >
                   <span>
                     <span className="font-medium">{person.display_name}</span>
@@ -539,7 +552,7 @@ function TurnResult({
                   type="button"
                   className={secondary}
                   disabled={disabled}
-                  onClick={() => onAsk(clarificationAnswer(option, view.question, origin))}
+                  onClick={() => onAsk(optionAnswer(option, view.question, origin))}
                 >
                   {option.label}
                 </button>

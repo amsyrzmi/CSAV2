@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal
+import re
+from typing import Any, Literal, get_args
 from uuid import UUID
 
 from pydantic import (
@@ -36,6 +37,7 @@ Category = Literal[
     "other",
 ]
 Priority = Literal["low", "normal", "high"]
+AnalysisLanguage = Literal["en", "ms", "mixed", "other"]
 Role = Literal["tenant_admin", "tenant_staff", "read_only"]
 DraftStatus = Literal["draft", "exported", "sending", "sent"]
 MAX_ADDRESSES = 20
@@ -177,23 +179,108 @@ class AttentionPage(EmailModel):
     skipped: int = 0
 
 
+def _choice(
+    value: Any, allowed: tuple[str, ...], fallback: str, synonyms: dict[str, str] | None = None
+) -> Any:
+    """A model's enum string, lowercased with spaces and hyphens as underscores, then mapped
+    through ``synonyms``; unknown values become ``fallback``. A non-string is returned as is, so
+    it still fails validation."""
+    if not isinstance(value, str):
+        return value
+    key = re.sub(r"[\s-]+", "_", value.strip().lower())
+    key = (synonyms or {}).get(key, key)
+    return key if key in allowed else fallback
+
+
+# Keys are in _choice's normalised form (lowercase, underscores).
+_CATEGORY_SYNONYMS = {
+    **dict.fromkeys(("spam", "phishing", "scam", "junk"), "spam_or_phishing"),
+    **dict.fromkeys(
+        ("newsletter", "promotion", "promotional", "marketing", "advertisement"),
+        "newsletter_or_promotion",
+    ),
+    **dict.fromkeys(("order", "delivery", "shipping"), "order_or_delivery"),
+    **dict.fromkeys(("invoice", "payment"), "billing"),
+    **dict.fromkeys(("inquiry", "enquiry", "support"), "customer_request"),
+    **dict.fromkeys(("vendor", "supplier", "partner"), "vendor_or_partner"),
+}
+# Noise must never reach "what needs my attention": any value naming spam, phishing or a scam.
+_SPAM_MARKS = ("spam", "phish", "scam")
+_PRIORITY_SYNONYMS = {
+    "urgent": "high",
+    "critical": "high",
+    "important": "high",
+    "high_priority": "high",
+    "medium": "normal",
+    "normal_priority": "normal",
+    "moderate": "normal",
+    "low_priority": "low",
+    "minor": "low",
+}
+_LANGUAGE_SYNONYMS = {
+    "english": "en",
+    "malay": "ms",
+    "bahasa": "ms",
+    "bahasa_melayu": "ms",
+    "bm": "ms",
+    "mix": "mixed",
+}
+
+
+ANALYSIS_SUMMARY_CHARS = 600
+ANALYSIS_ITEMS = 5
+ANALYSIS_ITEM_CHARS = 200
+
+
 class ThreadAnalysis(EmailModel):
-    """Strict model output for one thread. Free text is bounded; no tool calls exist."""
+    """Model output for one thread. No tool calls exist; free text is bounded.
+
+    The provider's JSON mode carries no schema, so values are normalised rather than refused:
+    enum strings are lowercased, common synonyms are mapped ("urgent" is "high", "malay" is
+    "ms"), and an unknown one falls back (category "other", priority
+    "normal", language "other"), a long summary or action item is cut, and items past five are
+    dropped. Structure stays strict: an object, a non-empty summary, a list of strings. Unknown
+    keys are ignored (dropped, never stored or acted on).
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     category: Category
     priority: Priority
-    language: Literal["en", "ms", "mixed", "other"]
-    summary: str = Field(min_length=1, max_length=600)
-    action_items: list[str] = Field(default_factory=list, max_length=5)
+    language: AnalysisLanguage
+    summary: str = Field(min_length=1, max_length=ANALYSIS_SUMMARY_CHARS)
+    action_items: list[str] = Field(default_factory=list, max_length=ANALYSIS_ITEMS)
     requires_human_decision: bool = False
 
-    @field_validator("action_items")
+    @field_validator("category", mode="before")
     @classmethod
-    def bounded_items(cls, value: list[str]) -> list[str]:
-        cleaned = [item.strip() for item in value if item.strip()]
-        if any(len(item) > 200 for item in cleaned):
-            raise ValueError("action item too long")
-        return cleaned
+    def known_category(cls, value: Any) -> Any:
+        if isinstance(value, str) and any(mark in value.lower() for mark in _SPAM_MARKS):
+            return "spam_or_phishing"
+        return _choice(value, get_args(Category), "other", _CATEGORY_SYNONYMS)
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def known_priority(cls, value: Any) -> Any:
+        return _choice(value, get_args(Priority), "normal", _PRIORITY_SYNONYMS)
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def known_language(cls, value: Any) -> Any:
+        return _choice(value, get_args(AnalysisLanguage), "other", _LANGUAGE_SYNONYMS)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def bounded_summary(cls, value: Any) -> Any:
+        return value.strip()[:ANALYSIS_SUMMARY_CHARS] if isinstance(value, str) else value
+
+    @field_validator("action_items", mode="before")
+    @classmethod
+    def bounded_items(cls, value: Any) -> Any:
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            return value
+        cleaned = [item.strip()[:ANALYSIS_ITEM_CHARS] for item in value if item.strip()]
+        return cleaned[:ANALYSIS_ITEMS]
 
 
 class DraftRequest(EmailModel):

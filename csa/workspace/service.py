@@ -47,6 +47,7 @@ from csa.workspace.contracts import (
     AnswerProposal,
     AnswerResult,
     CardField,
+    ClarificationOption,
     ClarificationProposal,
     ClarificationResult,
     DirectoryLookupProposal,
@@ -709,8 +710,10 @@ def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
             values = [option.value for option in result.options]
             item["question"] = result.question
             item["offered_options"] = values
+            # Stored values have addresses masked (see _clarification), so match masked text.
+            picked = _masked(following)
             item["chosen"] = next(
-                (v for v in values if re.search(rf"(?<!\w){re.escape(v)}(?!\w)", following)),
+                (v for v in values if re.search(rf"(?<!\w){re.escape(v)}(?!\w)", picked)),
                 None,
             )
         history.append(PriorTurn.model_validate(item))
@@ -857,17 +860,128 @@ class _Planned:
     lookup: str | None = None
     answer: AnswerProposal | None = None
     summary: AttentionPage | None = None
+    stored: WorkspaceActionResult | None = None  # the row's copy when it differs from result
 
 
 def _payload(proposal: TrainingSubmitProposal | InboxDecisionProposal) -> dict[str, Any]:
     return proposal.model_dump(mode="json", exclude={"action"}, exclude_none=True)
 
 
+# The console's answer to a clarification: "<typed>\n(Answer to “<question>” for: <request>)",
+# where <request> folds earlier answers in as "; answered “<question>”: <answer>". Planner text
+# is made inert (see _inert), so these markers in a message can only come from the console.
+_ANSWER_MARK = "\n(Answer to “"
+_REQUEST_MARK = "” for: "
+_ANSWERED_MARK = "; answered “"
+_FOLDED_MARK = "”: "
+# The console's address mask (lib/assistant-view.ts maskAddresses), used for stored copies.
+_ADDRESS_RUN = re.compile(r"[^\s@<>]+@[^\s@<>]+")
+
+
+def _addresses(text: str) -> set[str]:
+    return {found.lower() for found in _ADDRESS.findall(text)}
+
+
+def _masked(text: str) -> str:
+    return _ADDRESS_RUN.sub("[address]", text)
+
+
+def _inert(text: str) -> str:
+    """Planner text the console echoes back in a turn, made unable to forge its markers.
+
+    The console repeats a clarification's question and a clicked option's value inside its
+    answer turn, and the turn service reads that turn by the markers above to tell the user's
+    words from the planner's. Curly quotes and whitespace become plain, and the marker phrases are
+    reworded, so a question, label or value can never end one part early or open another.
+    """
+    text = text.replace("“", '"').replace("”", '"')
+    # Every whitespace run, newlines included, is one plain space: Python's \s also matches
+    # \x1c-\x1f and \x85 where JavaScript's does not, and both sides must mask the same text.
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\(\s*answer to", "(reply to", text, flags=re.IGNORECASE)
+    text = re.sub(r";\s*answered", ", answered", text, flags=re.IGNORECASE)
+    return text.replace('" for: ', '" - ')
+
+
+def _clarification(
+    proposal: ClarificationProposal,
+) -> tuple[ClarificationResult, ClarificationResult]:
+    """The clarification the user sees and the copy stored; options never carry an address.
+
+    Everything is inert (see ``_inert``). Option labels and values have addresses masked live
+    too, so a click can never add an address: colleagues are picked by employee id and threads
+    by thread_id, and an outside address is typed by the user. Masking can lengthen a value, so
+    an option past its limit once masked is refused rather than cut (a cut value would no longer
+    be recognised as a click). The stored copy masks the question as well: turn rows hold no
+    address, while the live question may show one the user wrote.
+    """
+    pairs = [(_masked(_inert(o.label)), _masked(_inert(o.value))) for o in proposal.options]
+    if any(len(label) > 100 or len(value) > 200 for label, value in pairs):
+        raise PlannerInvalidOutput()
+    options = [ClarificationOption(label=label, value=value) for label, value in pairs]
+    question = _inert(proposal.question)
+    return (
+        ClarificationResult(action="clarification", question=question, options=options),
+        ClarificationResult(action="clarification", question=_masked(question), options=options),
+    )
+
+
+def _answer_parts(message: str) -> tuple[str, str, list[str]]:
+    """``(typed, first request, folded answers)`` of a console answer turn.
+
+    The question is left out wherever it appears. A plain message is all typed text. The
+    request is what follows the last ``” for: ``, so text before it cannot pose as the request.
+    """
+    typed, marked, rest = message.partition(_ANSWER_MARK)
+    if not marked:
+        return typed, "", []
+    _, found, after = rest.rpartition(_REQUEST_MARK)
+    request = after.strip().removesuffix(")") if found else ""
+    first, _, folded = request.partition(_ANSWERED_MARK)
+    answers = [part.partition(_FOLDED_MARK)[2] for part in folded.split(_ANSWERED_MARK)]
+    return typed, first, answers if folded else []
+
+
+def _picked(text: str, values: list[str]) -> bool:
+    """The text is one of the offered option values: a click, not the user's own words."""
+    key = _masked(_inert(text)).strip().lower()
+    return bool(key) and any(key == _masked(_inert(v)).strip().lower() for v in values)
+
+
+def _sent_before(text: str, facts: PlannerFacts) -> bool:
+    """The text is a message this thread already stored, so the user sent it earlier."""
+    want = " ".join(redact(text).split())
+    return bool(want) and any(want == " ".join(turn.message.split()) for turn in facts.history)
+
+
+def _authored(message: str, facts: PlannerFacts) -> list[str]:
+    """The parts of the current message the user wrote, for addresses and employee ids.
+
+    Counted: the typed text, unless it is just a value the clarification being answered offered
+    (a click); the first request, when it is a message this thread already stored (history is
+    redacted, so it is compared redacted); each folded answer, unless it equals a value any
+    earlier clarification offered. Never counted: a clarification question, wherever the turn
+    repeats it, and a first request the thread never stored. Planner text is inert, so it cannot
+    move itself into a counted part. A typed answer equal to an offered value (for example an
+    address the planner offered as an option) is taken as a click: the user writes it in a new
+    request instead.
+    """
+    typed, first, answers = _answer_parts(message)
+    latest = facts.history[-1].offered_options if facts.history else []
+    offered = [value for turn in facts.history for value in turn.offered_options]
+    parts = [] if _picked(typed, latest) else [typed]
+    if first and _sent_before(first, facts):
+        parts.append(first)
+    parts.extend(answer for answer in answers if not _picked(answer, offered))
+    return parts
+
+
 def _requested_addresses(message: str, facts: PlannerFacts) -> set[str]:
-    """Addresses the user wrote. History is redacted at storage, so only the current message
-    supplies any; earlier messages are read too and add none."""
-    texts = [message, *(turn.message for turn in facts.history)]
-    return {found.lower() for text in texts for found in _ADDRESS.findall(text)}
+    """Addresses the user wrote, from the parts of this message ``_authored`` counts.
+
+    History is redacted at storage and adds none; mailbox facts are never a source.
+    """
+    return {address for part in _authored(message, facts) for address in _addresses(part)}
 
 
 def _offered_employee_ids(message: str, facts: PlannerFacts) -> set[UUID]:
@@ -877,7 +991,9 @@ def _offered_employee_ids(message: str, facts: PlannerFacts) -> set[UUID]:
     offered, and my_manager. my_team ids are not among them: they serve email_team only, whose
     recipients the server adds itself.
     """
-    ids = {UUID(found) for found in _EMPLOYEE_ID.findall(message)}
+    ids = {
+        UUID(found) for part in _authored(message, facts) for found in _EMPLOYEE_ID.findall(part)
+    }
     ids.update(employee for turn in facts.history for employee in turn.offered_employee_ids)
     if facts.my_manager is not None and facts.my_manager.employee_id is not None:
         ids.add(facts.my_manager.employee_id)
@@ -919,9 +1035,13 @@ def _asked_to_send(
     message: str,
     facts: PlannerFacts,
 ) -> bool:
-    """A send card only when the plan says so and the user's own words ask to send."""
-    texts = [message, *(turn.message for turn in facts.history)]
-    return proposal.send and any(_SEND_WORDS.search(text) for text in texts)
+    """A send card only when the plan says so and the user's own words ask to send.
+
+    Only the parts ``_authored`` counts: typed text, the stored first request and typed folded
+    answers. Never a clarification question ("Should I send it?") and never a clicked value
+    ("yes, send it now"): the planner wrote both.
+    """
+    return proposal.send and any(_SEND_WORDS.search(part) for part in _authored(message, facts))
 
 
 async def _draft_card(
@@ -1182,11 +1302,8 @@ async def _resolve(
         throttle_lookup(actor.session_id)
         return _Planned(lookup=query)
     if isinstance(proposal, ClarificationProposal):
-        return _Planned(
-            result=ClarificationResult(
-                action="clarification", question=proposal.question, options=proposal.options
-            )
-        )
+        live, stored = _clarification(proposal)
+        return _Planned(result=live, stored=stored)
     if isinstance(proposal, TrainingSubmitProposal | InboxDecisionProposal):
         prepared = await registry.prepare(
             request, actor, client_id, proposal.action, _payload(proposal), origin="assistant"
@@ -1347,7 +1464,7 @@ async def create_planned_turn(
         result = await _finish(conn, actor, client_id, thread_id, planned, facts, registry)
         # The inbox summary is shown once and stored as counts only; an answer about an open
         # draft is stored without its subject.
-        stored = None
+        stored = planned.stored
         if planned.summary is not None:
             stored = _summary_stored(planned.summary, facts.language)
         elif isinstance(result, AnswerResult):

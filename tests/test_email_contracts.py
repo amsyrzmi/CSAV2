@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from email import message_from_bytes
 from typing import Any
@@ -98,31 +98,23 @@ def test_draft_contract_rejects_header_injection_and_display_names() -> None:
     assert ok.recipient == "aina@example.test"
 
 
-def test_model_outputs_are_strict_and_bounded() -> None:
+def test_model_outputs_are_strict_on_structure() -> None:
+    base = {"category": "complaint", "priority": "high", "language": "en", "summary": "s"}
+    # Structure stays strict: an object, a non-empty summary, a list of string action items.
+    for broken in (
+        [base],
+        "complaint",
+        {**base, "summary": "  "},
+        {k: v for k, v in base.items() if k != "summary"},
+        {**base, "action_items": "call back"},
+        {**base, "action_items": [1]},
+        {**base, "category": None},
+        {**base, "priority": 3},
+    ):
+        with pytest.raises(ValidationError):
+            ThreadAnalysis.model_validate(broken)
     with pytest.raises(ValidationError):
-        ThreadAnalysis.model_validate(
-            {
-                "category": "complaint",
-                "priority": "high",
-                "language": "en",
-                "summary": "s",
-                "tool_call": "x",
-            }
-        )
-    with pytest.raises(ValidationError):
-        ThreadAnalysis.model_validate(
-            {"category": "complaint", "priority": "urgent", "language": "en", "summary": "s"}
-        )
-    with pytest.raises(ValidationError):
-        ThreadAnalysis.model_validate(
-            {
-                "category": "complaint",
-                "priority": "high",
-                "language": "en",
-                "summary": "s",
-                "action_items": ["x" * 201],
-            }
-        )
+        ThreadAnalysis.model_validate_json("[]")
     analysis = ThreadAnalysis.model_validate(
         {
             "category": "complaint",
@@ -133,6 +125,122 @@ def test_model_outputs_are_strict_and_bounded() -> None:
         }
     )
     assert analysis.action_items == ["a"]
+    # Unknown keys from the model are dropped, never stored or acted on.
+    extra = ThreadAnalysis.model_validate({**base, "tool_call": "x", "reason": "y"})
+    assert "tool_call" not in extra.model_dump() and "reason" not in extra.model_dump()
+
+
+def test_model_output_enums_are_normalised_not_rejected() -> None:
+    """The provider's JSON mode carries no schema, so the model drifts from the Literals."""
+    analysis = ThreadAnalysis.model_validate_json(
+        json.dumps(
+            {
+                "category": "Shipping Inquiry",
+                "priority": " High ",
+                "language": "Klingon",
+                "summary": "s",
+            }
+        )
+    )
+    assert (analysis.category, analysis.priority, analysis.language) == ("other", "high", "other")
+    spaced = ThreadAnalysis.model_validate(
+        {"category": "Order or Delivery", "priority": "whenever", "language": "MS", "summary": "s"}
+    )
+    assert (spaced.category, spaced.priority, spaced.language) == (
+        "order_or_delivery",
+        "normal",
+        "ms",
+    )
+    # Common synonyms map before the fallback.
+    base = {"category": "other", "priority": "normal", "language": "en", "summary": "s"}
+    priorities = {
+        "Urgent": "high",
+        "critical": "high",
+        "important": "high",
+        "High Priority": "high",
+        "medium": "normal",
+        "normal priority": "normal",
+        "Moderate": "normal",
+        "low priority": "low",
+        "minor": "low",
+    }
+    for given, expected in priorities.items():
+        assert ThreadAnalysis.model_validate({**base, "priority": given}).priority == expected
+    languages = {
+        "English": "en",
+        "Malay": "ms",
+        "bahasa": "ms",
+        "Bahasa Melayu": "ms",
+        "BM": "ms",
+        "mix": "mixed",
+    }
+    for given, expected in languages.items():
+        assert ThreadAnalysis.model_validate({**base, "language": given}).language == expected
+
+
+def test_model_output_category_synonyms_keep_noise_out() -> None:
+    """Spam or promotion drifting to "other" would put it in "what needs my attention"."""
+    base = {"priority": "normal", "language": "en", "summary": "s"}
+    categories = {
+        "Spam": "spam_or_phishing",
+        "phishing": "spam_or_phishing",
+        "scam": "spam_or_phishing",
+        "Junk": "spam_or_phishing",
+        "newsletter": "newsletter_or_promotion",
+        "Promotion": "newsletter_or_promotion",
+        "promotional": "newsletter_or_promotion",
+        "marketing": "newsletter_or_promotion",
+        "advertisement": "newsletter_or_promotion",
+        "order": "order_or_delivery",
+        "Delivery": "order_or_delivery",
+        "shipping": "order_or_delivery",
+        "invoice": "billing",
+        "payment": "billing",
+        "inquiry": "customer_request",
+        "enquiry": "customer_request",
+        "support": "customer_request",
+        "vendor": "vendor_or_partner",
+        "supplier": "vendor_or_partner",
+        "partner": "vendor_or_partner",
+        # Any value naming spam, phishing or a scam is spam_or_phishing.
+        "Possible phishing": "spam_or_phishing",
+        "likely-spam email": "spam_or_phishing",
+        "Scammer outreach": "spam_or_phishing",
+        "Shipping Inquiry": "other",
+    }
+    for given, expected in categories.items():
+        analysis = ThreadAnalysis.model_validate({**base, "category": given})
+        assert analysis.category == expected, given
+
+
+def test_model_output_text_is_truncated_not_rejected() -> None:
+    analysis = ThreadAnalysis.model_validate(
+        {
+            "category": "complaint",
+            "priority": "high",
+            "language": "en",
+            "summary": " " + "s" * 700,
+            "action_items": ["x" * 201, "b", " ", "c", "d", "e", "f", "g"],
+        }
+    )
+    assert analysis.summary == "s" * 600
+    assert analysis.action_items == ["x" * 200, "b", "c", "d", "e"]
+
+
+def test_analysis_prompt_lists_every_allowed_value() -> None:
+    from typing import get_args
+
+    from csa.email import models, service
+
+    for value in (
+        *get_args(models.Category),
+        *get_args(models.Priority),
+        *get_args(models.AnalysisLanguage),
+    ):
+        assert f'"{value}"' in service.ANALYSIS_SYSTEM, value
+
+
+def test_draft_proposal_is_strict() -> None:
     with pytest.raises(ValidationError):
         DraftProposal.model_validate({"subject": "", "body": "x"})
     with pytest.raises(ValidationError):
@@ -311,33 +419,90 @@ async def test_send_message_5xx_is_ambiguous_not_refused() -> None:
     assert err.value.code == "provider_unreachable"
 
 
-async def test_list_thread_ids_passes_page_token_and_returns_next() -> None:
-    seen: list[httpx.Request] = []
+def _messages_pages(
+    pages: Mapping[Any, tuple[list[str], str | None]], seen: list[httpx.Request]
+) -> Callable[[httpx.Request], httpx.Response]:
+    """users.messages.list, newest message first; each entry is one message's threadId."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(
-            200, json={"threads": [{"id": "a"}, {"id": "b"}], "nextPageToken": "tok-2"}
-        )
+        assert request.method == "GET" and request.url.path.endswith("/users/me/messages")
+        thread_ids, token = pages[request.url.params.get("pageToken")]
+        body: dict[str, Any] = {
+            "messages": [{"id": f"m{i}-{tid}", "threadId": tid} for i, tid in enumerate(thread_ids)]
+        }
+        if token:
+            body["nextPageToken"] = token
+        return httpx.Response(200, json=body)
 
-    ids, next_token = await _client(handler).list_thread_ids(
-        ACCESS, query="newer_than:90d", limit=20, page_token="tok-1"
+    return handler
+
+
+async def test_recent_threads_follow_the_latest_message_not_creation() -> None:
+    """Gmail's threads.list orders by thread creation; messages.list orders by message time."""
+    seen: list[httpx.Request] = []
+    # An old conversation ("old-1a15") just got a reply, so its message is the newest; a
+    # newer-created but quiet conversation ("new-1a18") comes later.
+    pages = {None: (["old-1a15", "new-1a18", "old-1a15"], None)}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="newer_than:90d -in:chats", limit=20
     )
-    assert ids == ["a", "b"] and next_token == "tok-2"
-    assert seen[0].url.params["pageToken"] == "tok-1"
+    assert ids == ["old-1a15", "new-1a18"] and token is None
+    assert seen[0].url.params["q"] == "newer_than:90d -in:chats"
+    assert seen[0].url.params["maxResults"] == "20" and "pageToken" not in seen[0].url.params
+
+
+async def test_recent_threads_collapse_duplicates_and_stop_at_the_limit() -> None:
+    seen: list[httpx.Request] = []
+    # Page sizes follow the threads still needed, so a page never ends past the limit and the
+    # token returned is exactly where the next load starts.
+    first = ["a", "b", "a", "c", "b"]  # three distinct threads in five messages
+    pages = {None: (first, "tok-2"), "tok-2": (["c", "d"], "tok-3"), "tok-3": (["e"], "tok-4")}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="q", limit=5
+    )
+    assert ids == ["a", "b", "c", "d", "e"] and token == "tok-4"
+    assert [r.url.params["maxResults"] for r in seen] == ["5", "2", "1"]
+    assert [r.url.params.get("pageToken") for r in seen] == [None, "tok-2", "tok-3"]
+
+
+async def test_recent_threads_read_at_most_three_pages() -> None:
+    seen: list[httpx.Request] = []
+    pages = {None: (["a"], "tok-2"), "tok-2": (["a"], "tok-3"), "tok-3": (["b"], "tok-4")}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="q", limit=20
+    )
+    assert ids == ["a", "b"] and token == "tok-4" and len(seen) == 3
     assert seen[0].url.params["maxResults"] == "20"
 
 
-async def test_list_thread_ids_last_page_has_no_token() -> None:
+async def test_recent_threads_continue_from_the_page_token() -> None:
+    seen: list[httpx.Request] = []
+    pages = {"tok-4": (["f", "g"], None)}
+    ids, token = await _client(_messages_pages(pages, seen)).list_recent_thread_ids(
+        ACCESS, query="q", limit=20, page_token="tok-4"
+    )
+    assert ids == ["f", "g"] and token is None
+    assert seen[0].url.params["pageToken"] == "tok-4"
+
+
+async def test_recent_threads_empty_result_is_done() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"threads": [{"id": "a"}]})
+        return httpx.Response(200, json={"resultSizeEstimate": 0})
 
-    ids, next_token = await _client(handler).list_thread_ids(ACCESS, query="q", limit=5)
-    assert ids == ["a"] and next_token is None
-    assert "pageToken" not in seen[0].url.params
+    ids, token = await _client(handler).list_recent_thread_ids(ACCESS, query="q", limit=20)
+    assert ids == [] and token is None and len(seen) == 1
+
+
+async def test_recent_threads_reject_a_malformed_list() -> None:
+    with pytest.raises(gmail.GmailError) as err:
+        await _client(lambda r: httpx.Response(200, json={"messages": "x"})).list_recent_thread_ids(
+            ACCESS, query="q", limit=20
+        )
+    assert err.value.code == "provider_invalid_response"
 
 
 def _message(
@@ -433,7 +598,7 @@ async def test_gmail_quota_403_is_a_rate_limit(
     assert sent.value.code == "provider_rate_limited"
     # The shared JSON reader (sync, drafts, tokens) reads it the same way.
     with pytest.raises(gmail.GmailError) as listed:
-        await client.list_thread_ids(ACCESS, query="q", limit=5)
+        await client.list_recent_thread_ids(ACCESS, query="q", limit=5)
     assert listed.value.code == "provider_rate_limited"
     logged = " ".join(record.getMessage() for record in caplog.records)
     assert "Synthetic quota text" not in logged and "customer.test" not in logged
@@ -455,7 +620,7 @@ async def test_other_403s_stay_unauthorized(response: httpx.Response) -> None:
         await client.send_message(ACCESS, thread_id=None, mime=b"x")
     assert sent.value.code == "provider_unauthorized"
     with pytest.raises(gmail.GmailError) as listed:
-        await client.list_thread_ids(ACCESS, query="q", limit=5)
+        await client.list_recent_thread_ids(ACCESS, query="q", limit=5)
     assert listed.value.code == "provider_unauthorized"
 
 

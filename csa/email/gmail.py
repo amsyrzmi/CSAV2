@@ -47,6 +47,9 @@ MAX_REFERENCES_CHARS = 2000
 AMBIGUOUS_SEND_STATUSES = frozenset({408, 409, 499})
 # Gmail answers a quota limit with 403 and one of these reasons: a rate limit, not lost access.
 RATE_LIMIT_REASONS = frozenset({"userRateLimitExceeded", "rateLimitExceeded", "dailyLimitExceeded"})
+# users.messages.list pages walked per sync or load-more, and Gmail's page-size ceiling here.
+MAX_LIST_PAGES = 3
+MAX_LIST_RESULTS = 100
 
 
 class GmailError(Exception):
@@ -401,17 +404,40 @@ class GmailClient:
             raise GmailError("provider_invalid_response")
         return address.lower()
 
-    async def list_thread_ids(
+    async def list_recent_thread_ids(
         self, access: SecretStr, *, query: str, limit: int, page_token: str | None = None
     ) -> tuple[list[str], str | None]:
-        params = {"q": query, "maxResults": str(max(1, min(limit, 50)))}
-        if page_token:
-            params["pageToken"] = page_token
-        data = await self._json(self._api(access, "GET", "threads", params=params))
-        items = data.get("threads", []) or []
-        ids = [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
-        next_token = data.get("nextPageToken")
-        return ids, next_token if isinstance(next_token, str) and next_token else None
+        """Up to ``limit`` thread ids, most recent activity first, and the next page token.
+
+        ``threads.list`` orders by thread creation, so an old conversation with new mail never
+        reached the first page. ``messages.list`` is newest message first: the distinct
+        ``threadId``s in order of first appearance are the conversations by latest message.
+        Each page asks for no more messages than threads still needed, so no page ends past
+        the limit and the token returned is exactly where the next load starts. At most
+        MAX_LIST_PAGES calls; no token means nothing older is left.
+        """
+        ids: list[str] = []
+        seen: set[str] = set()
+        token = page_token
+        for _ in range(MAX_LIST_PAGES):
+            wanted = max(1, min(limit - len(ids), MAX_LIST_RESULTS))
+            params = {"q": query, "maxResults": str(wanted)}
+            if token:
+                params["pageToken"] = token
+            data = await self._json(self._api(access, "GET", "messages", params=params))
+            items = data.get("messages", [])
+            if not isinstance(items, list):
+                raise GmailError("provider_invalid_response")
+            for item in items:
+                thread_id = item.get("threadId") if isinstance(item, dict) else None
+                if isinstance(thread_id, str) and thread_id and thread_id not in seen:
+                    seen.add(thread_id)
+                    ids.append(thread_id)
+            next_token = data.get("nextPageToken")
+            token = next_token if isinstance(next_token, str) and next_token else None
+            if token is None or len(ids) >= limit:
+                break
+        return ids, token
 
     async def fetch_thread(
         self, access: SecretStr, thread_id: str, *, owner_address: str

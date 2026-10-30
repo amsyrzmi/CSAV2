@@ -8,7 +8,7 @@ import {
 } from "@/lib/email-api";
 import {
   addressesLookValid, attentionEmpty, attentionNote, attentionProblem, emailErrorSentence, formatAddresses,
-  formatWhen, isReply, needsSync, parseAddresses,
+  formatWhen, isReply, needsSync, parseAddresses, rereadThread,
 } from "@/lib/email-recipients";
 import { usePublishContext } from "@/lib/page-context";
 import { createProposal, type ProposalOut } from "@/lib/workspace-api";
@@ -59,6 +59,9 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   const [threads, setThreads] = useState<Thread[]>([]);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [selected, setSelected] = useState<ThreadDetail | null>(null);
+  // The open thread for code that runs after a sync, where `selected` may be a stale closure.
+  const openThread = useRef<string | null>(null);
+  useEffect(() => { openThread.current = selected?.thread_id ?? null; }, [selected]);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [tab, setTab] = useState<"inbox" | "drafts">("inbox");
   const [error, setError] = useState(notice && notice !== "connected" ? emailErrorSentence({ code: notice }) ?? "" : "");
@@ -85,7 +88,20 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   async function refreshAll() {
     const ctx = await client.context();
     setContext(ctx); setMore(ctx.more_available); await reloadLists(ctx);
+    await refreshOpen();
     return ctx;
+  }
+  /**
+   * Re-read the open thread so its body is current; a thread the sync removed is closed. Any
+   * other failure keeps the detail already shown, so the sync's own result still reports.
+   */
+  async function refreshOpen() {
+    const id = openThread.current;
+    let detail: ThreadDetail | null;
+    try { detail = await rereadThread(id, threadId => client.thread(threadId)); }
+    catch { return; }
+    // Only replace what is still open: the user may have picked another thread meanwhile.
+    setSelected(current => (current?.thread_id === id ? detail : current));
   }
   function loadAttention(ctx: EmailContext) {
     // The summary is not offered to read-only members; it needs a mailbox to read from.
@@ -136,6 +152,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
     await run(() => client.syncMore(), async receipt => {
       const done = receipt.detail.done === true;
       setThreads((await client.threads()).items);
+      await refreshOpen();
       setMore(!done);
       const count = Number(receipt.detail.threads ?? 0);
       setMessage(count ? `Loaded ${count} older ${count === 1 ? "thread" : "threads"}.` : "");
