@@ -169,7 +169,7 @@ History polls every 2.5 seconds using stable turn IDs and older-page cursors.
 Queued/processing/awaiting-delivery, held, privately available, failed and no-reply states
 are distinct. Held drafts are not falsely displayed as delivered or automatically released.
 HTTP requests time out after 15 seconds; uncertain sends keep the same in-memory key/text
-for explicit retry, while reconnect only checks persisted history. A 90-second turn
+for explicit retry, while Check for new messages only checks persisted history. A 90-second turn
 deadline is a delay warning, not a delivery claim. After reload or leaving the tenant,
 check persisted history before sending again. Archive is confirmed, audited hide and
 does not delete history, uploads or accepted work.
@@ -189,7 +189,7 @@ and order decisions are deferred. Takeover pauses AI until release, human reply 
 takeover, and old turns stay suppressed after release. The queue supports source
 navigation, approve/reject/edit, history pages and stale refresh. Outcomes distinguish
 queued, delivered, suppressed, expired and already handled. Uncertain actions retain the
-same in-memory key and payload for explicit retry; reconnect only refreshes. After
+same in-memory key and payload for explicit retry; the refresh control only refreshes. After
 navigation/reload inspect history before resubmitting. Explicitly approved forward-only
 0300 and coordinated guarded dev replacement are complete; platform-admin UI and
 synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff

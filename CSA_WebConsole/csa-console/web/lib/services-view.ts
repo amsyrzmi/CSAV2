@@ -65,7 +65,7 @@ const SETUP_WORDS: Record<string, string> = {
   reindex_required: "Knowledge base needs re-indexing",
 };
 const CONNECTION_WORDS: Record<string, string> = {
-  closed: "No recent failures",
+  closed: "Not triggered",
   open: "Paused after repeated failures",
   half_open: "Testing again",
 };
