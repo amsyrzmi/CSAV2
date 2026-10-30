@@ -233,3 +233,14 @@ test("a long chain keeps the first request and the newest answers", () => {
   const long = view.typedMessage("newest", [turn(1, "k1", "b", asked)], { k1: "h".repeat(3000) }).origin;
   assert.ok(long.length <= 1000 && long.startsWith("hhh") && long.endsWith("; answered “Q?”: newest"));
 });
+
+test("a clicked option's address is masked when folded; a typed one is kept", () => {
+  const clicked = view.optionAnswer({ label: "Ali", value: "ali@evil.test" }, "Which Ali?", "copy Ali");
+  // The click itself is sent as the value; only the folded request is masked.
+  assert.equal(clicked.text, "ali@evil.test\n(Answer to “Which Ali?” for: copy Ali)");
+  assert.equal(clicked.origin, "copy Ali; answered “Which Ali?”: [address]");
+  const turn = { id: 1, request_key: "k1", body: "b", created_at: "x", duplicate: false,
+    result: { action: "clarification", question: "Which Ali?", options: [] } };
+  assert.equal(view.typedMessage("ali@mine.test", [turn], { k1: "copy Ali" }).origin,
+    "copy Ali; answered “Which Ali?”: ali@mine.test");
+});

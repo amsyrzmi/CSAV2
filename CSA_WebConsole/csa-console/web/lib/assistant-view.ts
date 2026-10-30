@@ -174,11 +174,15 @@ function foldAnswer(origin: string, question: string, answer: string): string {
   return joined();
 }
 
-/** The answer's turn; later clarifications continue the request with this answer folded in. */
-function answered(value: string, question: string, origin: string): Outgoing {
+/**
+ * The answer's turn; later clarifications continue the request with this answer folded in. A
+ * clicked option's value is planner-written, so its addresses are masked in the fold; a typed
+ * answer is the user's own and stays as typed.
+ */
+function answered(value: string, question: string, origin: string, clicked: boolean): Outgoing {
   return {
     text: clarificationAnswer(value, question, origin),
-    origin: foldAnswer(origin, question, value),
+    origin: foldAnswer(origin, question, clicked ? maskAddresses(value) : value),
   };
 }
 
@@ -188,7 +192,7 @@ export function optionAnswer(
   question: string,
   origin: string,
 ): Outgoing {
-  return answered(option.value, question, origin);
+  return answered(option.value, question, origin, true);
 }
 
 /**
@@ -203,7 +207,7 @@ export function typedMessage(
 ): Outgoing {
   const last = turns.at(-1);
   if (last && "action" in last.result && last.result.action === "clarification")
-    return answered(text, last.result.question, originFor(last, origins));
+    return answered(text, last.result.question, originFor(last, origins), false);
   return { text, origin: text };
 }
 
