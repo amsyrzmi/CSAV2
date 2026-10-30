@@ -17,7 +17,7 @@ export function ChatMessages({ turns, now, onReadAloud, readDisabled }: {
   return <div className="space-y-6" role="log" aria-live="polite" aria-label="Sandbox messages">
     {turns.map((turn) => <article key={turn.id} className="space-y-4">
       <div className="flex flex-col items-end gap-1.5 pl-8 sm:pl-16">
-        <p className="max-w-full whitespace-pre-wrap break-words rounded-[1.25rem] rounded-br-md bg-[var(--fs-surface-blue)] px-4 py-2.5 text-[color:var(--fs-text)]">
+        <p className="max-w-full whitespace-pre-wrap break-words rounded-[var(--fs-radius-bubble)] rounded-br-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)] px-4 py-2.5 text-[color:var(--fs-text)]">
           <span className="sr-only">You: </span>{turn.body}</p>
         <p className="text-right text-xs text-[color:var(--fs-text-secondary)]">{sandboxStatus[turn.status]}</p>
       </div>

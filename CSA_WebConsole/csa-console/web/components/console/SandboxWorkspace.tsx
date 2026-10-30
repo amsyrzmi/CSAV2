@@ -1,18 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Archive, History, RefreshCw } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
-import type { Page, PendingSandboxTurn, SandboxThread, SandboxTurn } from "@/lib/sandbox-chat";
-import { chipsFor, disclaimerMode } from "@/lib/sandbox-chat";
+import type { Page, PendingSandboxTurn, SandboxThread, SandboxTurn, ScrollSnapshot } from "@/lib/sandbox-chat";
+import { chipsFor, disclaimerMode, scrollPlan } from "@/lib/sandbox-chat";
 import { VoiceConversation } from "./VoiceConversation";
 import { RecordedVoice } from "./RecordedVoice";
 import { localDictation, speakLocal } from "@/lib/hr-voice";
 import SlideOver from "./fs/SlideOver";
 import { ChatComposer } from "./chat/ChatComposer";
-import { CompactLimits } from "./chat/ChatDisclaimer";
+import { CompactLimits, SandboxLimits } from "./chat/ChatDisclaimer";
 import { AssistantTile, ChatEmptyState } from "./chat/ChatEmptyState";
 import { ChatHistory, threadLabel } from "./chat/ChatHistory";
 import { ChatMessages } from "./chat/ChatMessages";
@@ -71,7 +71,7 @@ export function SandboxWorkspace({ me, chromeless = false, tenant: chosenTenant 
 }
 
 const headerIcon =
-  "inline-grid size-10 shrink-0 place-items-center rounded-full text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)] disabled:hover:bg-transparent pointer-coarse:size-11";
+  "inline-grid size-10 shrink-0 place-items-center rounded-[var(--fs-radius-round)] text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)] disabled:hover:bg-transparent pointer-coarse:size-11";
 
 function Sandbox({ query, canWrite, role, dockClearance }: {
   query: string; canWrite: boolean; role: Me["role"];
@@ -91,6 +91,8 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
   const creationKey = useRef<string | null>(null);
   const observed = useRef(new Set<string>());
   const [creating, setCreating] = useState(false);
+  // A creation failed: its request key is retained and the next try (New chat or Send) reuses it.
+  const [createFailed, setCreateFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
@@ -109,6 +111,12 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
   const composer = useRef<HTMLTextAreaElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const historyButton = useRef<HTMLButtonElement>(null);
+  const composerArea = useRef<HTMLDivElement>(null);
+  // Focus was in the composer when a send started: give it back once the composer is usable.
+  const refocus = useRef(false);
+  const nearBottom = useRef(true);
+  const ownKeys = useRef(new Set<string>());
+  const scrolled = useRef<ScrollSnapshot & { height: number }>({ thread: "", firstId: null, lastKey: null, height: 0 });
   useEffect(() => () => {
     stopDictation.current?.();
     window.speechSynthesis?.cancel();
@@ -187,43 +195,65 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
     return () => { controller.abort(); clearTimeout(timer); };
   }, [thread, query, revision, historyPages]);
 
-  // Follow the conversation: a new question or reply scrolls the log to the end. Polling that
-  // brings nothing new leaves the reader where they are.
-  const replyCount = turns.reduce((count, turn) => count + turn.replies.length, 0);
-  useEffect(() => {
+  // Follow the end only for a conversation's first load, the reader's own question, or a reader
+  // already at the end; keep the view still when older turns arrive above (lib scrollPlan).
+  useLayoutEffect(() => {
     const element = scroller.current;
-    if (element && turns.length) element.scrollTop = element.scrollHeight;
-  }, [thread, turns.length, replyCount]);
+    if (!element) return;
+    const next: ScrollSnapshot = { thread, firstId: turns[0]?.id ?? null, lastKey: turns.at(-1)?.request_key ?? null };
+    const plan = scrollPlan(scrolled.current, next, nearBottom.current, ownKeys.current);
+    if (plan === "bottom") element.scrollTop = element.scrollHeight;
+    else if (plan === "keep-offset") element.scrollTop += element.scrollHeight - scrolled.current.height;
+    scrolled.current = { ...next, height: element.scrollHeight };
+  }, [thread, turns]);
+  function onScroll() {
+    const element = scroller.current;
+    if (!element) return;
+    nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    scrolled.current.height = element.scrollHeight;
+  }
 
-  /** Creates a conversation, selects it and returns its id; null when creation failed. */
+  /**
+   * Creates a conversation, selects it and returns its id; null when creation failed. A failure
+   * leaves the composer usable and the draft in place; the retained key makes the next try (New
+   * chat or Send) the same request. Opened from no conversation, the draft belongs to the new one.
+   */
   async function create(): Promise<string | null> {
     creationKey.current ??= crypto.randomUUID();
+    const keepDraft = !thread;
     setCreating(true); setBusy(true); setError("");
     try {
       const result = await mutate<SandboxThread>("", { request_key: creationKey.current });
       if (!alive.current) return null;
-      creationKey.current = null; setCreating(false);
-      select(result.id); setThreadRevision((value) => value + 1);
+      creationKey.current = null; setCreateFailed(false);
+      select(result.id, keepDraft); setThreadRevision((value) => value + 1);
       return result.id;
     } catch (cause) {
-      if (alive.current) setError(`${(cause as Error).message}. Retry creation keeps the same request key.`);
+      if (alive.current) {
+        setCreateFailed(true);
+        setError(`${(cause as Error).message}. Retry creation keeps the same request key.`);
+      }
       return null;
-    } finally { if (alive.current) setBusy(false); }
+    } finally { if (alive.current) { setCreating(false); setBusy(false); } }
   }
-  function select(id: string) {
+  function select(id: string, keepDraft = false) {
     stopVoice();
     window.speechSynthesis?.cancel();
     observed.current.clear();
     setThread(id); setTurns([]); setLoadedThread(""); setHistoryPages(1); setTurnCursor(null);
-    setPollError(""); setConfirmArchive(false); setText("");
+    setPollError(""); setConfirmArchive(false);
+    if (!keepDraft) setText("");
   }
   async function send() {
     if (pending?.source === "voice") return;
     const draft = pending ?? { source: "text" as const, request_key: crypto.randomUUID(), body: text };
+    const active = document.activeElement;
+    refocus.current = active !== null && composerArea.current?.contains(active) === true;
     // With no conversation open, the first question opens one (as "New chat" does), then sends.
     const target = thread || await create();
     if (!target || !alive.current) return;
     setPending(draft); setText(""); setBusy(true); setError("");
+    ownKeys.current.add(draft.request_key);
     try {
       await mutate(`/${target}/turns`, { request_key: draft.request_key, body: draft.body });
       if (!alive.current) return;
@@ -268,13 +298,21 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
     composer.current?.focus();
   }
   const locked = busy || pending !== null || creating || listening || voiceBusy || conversationVoiceBusy;
+  const textDisabled = !canWrite || locked;
+  useEffect(() => {
+    if (textDisabled || !refocus.current) return;
+    refocus.current = false;
+    // Only if focus did not move elsewhere meanwhile (disabling the text box drops it to body).
+    const active = document.activeElement;
+    if (!active || active === document.body || composerArea.current?.contains(active)) composer.current?.focus();
+  }, [textDisabled]);
   const voiceRunning = voiceBusy || conversationVoiceBusy;
   const current = threads.find((item) => item.id === thread);
   const loaded = !thread || loadedThread === thread;
   const mode = disclaimerMode(turns.length);
   const history = (inPanel: boolean) => <ChatHistory threads={threads} loaded={threadsLoaded} selected={thread}
     showLabel={!inPanel} hasOlder={threadCursor !== null} onOlder={() => void olderThreads()}
-    newLabel={creating ? "Retry conversation creation" : "New chat"}
+    newLabel={createFailed ? "Retry conversation creation" : "New chat"}
     newDisabled={!canWrite || busy || pending !== null || voiceBusy || conversationVoiceBusy || listening}
     selectDisabled={locked}
     onNew={() => { setHistoryOpen(false); void create(); }}
@@ -304,25 +342,28 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
           <button className={secondary} onClick={() => setConfirmArchive(false)}>Cancel</button>
         </div>
       </div>}
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div ref={scroller} data-testid="sandbox-scroll" onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6">
           {pollError && <Notice error>Polling disconnected: {pollError}. History may be stale; reconnect does not resend messages.</Notice>}
           {turnCursor && <div className="text-center">
-            <button className={secondary} onClick={() => setHistoryPages((value) => value + 1)}>Older messages</button></div>}
+            <button className={secondary} onClick={() => {
+              if (scroller.current) scrolled.current.height = scroller.current.scrollHeight;
+              setHistoryPages((value) => value + 1);
+            }}>Older messages</button></div>}
           {!loaded ? (!pollError && <p role="status" className="text-center text-sm text-[color:var(--fs-text-secondary)]">Loading messages</p>)
             : turns.length ? <ChatMessages turns={turns} now={now} onReadAloud={readAloud} readDisabled={conversationVoiceBusy} />
               : <ChatEmptyState chips={chipsFor(role)} disabled={!canWrite || locked} onChip={fillFromChip} />}
         </div>
       </div>
-      <div className={`shrink-0 px-3 pt-2 pb-3 sm:px-6 ${dockClearance ? "pb-[4.5rem]" : "max-lg:pb-[4.5rem]"}`}>
-        <div className="mx-auto w-full max-w-3xl space-y-2">
+      <div className={`shrink-0 px-3 pt-2 sm:px-6 ${dockClearance ? "pb-[4.5rem]" : "pb-3"}`}>
+        <div ref={composerArea} className="mx-auto w-full max-w-3xl space-y-2">
           {error && <Notice error>{error}</Notice>}
           {!canWrite && <Notice>Read-only membership: sending, creating and archiving conversations are disabled.</Notice>}
           {pending && <Notice>{pending.source === "voice"
             ? "Voice request retained. Resume the same request or explicitly discard local recovery. Check history for any accepted message."
             : "Uncertain send retained. Retry uses the original text and request key. Polling can confirm acceptance without resending."}</Notice>}
           <ChatComposer value={pending?.body ?? text} onChange={setText} textareaRef={composer}
-            disabled={!canWrite || locked} onSend={() => void send()} retry={pending?.source === "text"}
+            disabled={textDisabled} onSend={() => void send()} retry={pending?.source === "text"}
             sendDisabled={!canWrite || busy || creating || listening || voiceBusy || conversationVoiceBusy || pending?.source === "voice" || (!pending && !text.trim())}
             listening={listening} onDictate={listening ? stopVoice : dictate}
             dictateDisabled={!canWrite || busy || pending !== null || creating || voiceBusy || conversationVoiceBusy}
@@ -348,7 +389,9 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
                   onText={setText} onBusy={setVoiceBusy} />
               </> : <p className="text-xs text-[color:var(--fs-text-secondary)]">Hands-free voice chat and recorded voice messages open with a conversation: choose one from history or start a new chat.</p>}
             </div>} />
-          {loaded && mode === "compact" && <CompactLimits />}
+          {/* Whenever the composer shows, so do the limits: in full until the conversation is known
+              to have a message (the empty state holds its own full copy), then one line. */}
+          {!loaded ? <SandboxLimits /> : mode === "compact" ? <CompactLimits /> : null}
         </div>
       </div>
     </section>

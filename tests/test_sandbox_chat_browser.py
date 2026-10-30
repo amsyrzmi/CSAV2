@@ -50,16 +50,19 @@ HARNESS = """"use client";
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { SandboxWorkspace } from "@/components/console/SandboxWorkspace";
+import { AssistantDock } from "@/components/console/AssistantDock";
 import type { Me } from "@/lib/identity-contracts";
 function Inner() {
   const params = useSearchParams();
   const role = params.get("role") ?? "tenant_staff";
   const tenant = role === "platform_admin" ? null : "synthetic-tenant";
-  const me = { role, active_client_id: tenant } as Me;
+  const dock = params.get("dock") === "1";
+  const me = { role, active_client_id: tenant, workspace_assistant: dock } as Me;
   const chosen = params.get("tenant") ?? undefined;
   if (params.get("mode") === "chromeless")
     return <div className="h-dvh">
       <SandboxWorkspace me={me} chromeless tenant={chosen} />
+      {dock && <AssistantDock me={me} packages={[]} />}
     </div>;
   return <main className="p-4"><SandboxWorkspace me={me} /></main>;
 }
@@ -91,7 +94,15 @@ class Synthetic:
         self.threads = [thread(n) for n in range(threads, 0, -1)]
         self.turns: dict[str, list[dict[str, Any]]] = {}
         self.requests: list[tuple[str, str]] = []
+        self.bodies: list[tuple[str, Any]] = []
         self.unexpected: list[str] = []
+        # Deliberate failures: answer the next N conversation creations, and every turn read of
+        # these conversations, with 500 (the browser logs those as console errors).
+        self.failed_creations = 0
+        self.failed_reads: set[str] = set()
+        self.deliberate_failures = 0
+        # Turn pages hold this many turns, newest first by id, with `before=` paging.
+        self.page_size = 50
 
     @property
     def posts(self) -> list[str]:
@@ -102,6 +113,8 @@ class Synthetic:
         tail = request.url.split("/console/v1/")[1]
         path = tail.split("?")[0]
         self.requests.append((request.method, tail))
+        if request.method == "POST":
+            self.bodies.append((path, request.post_data_json))
         data: Any
         if path == "auth/csrf":
             data = {"csrf_token": "synthetic-csrf"}
@@ -114,6 +127,11 @@ class Synthetic:
             data = {"enabled": False}
         elif path == "chat/conversations" and request.method == "GET":
             data = {"items": self.threads, "next_cursor": None}
+        elif path == "chat/conversations" and request.method == "POST" and self.failed_creations:
+            self.failed_creations -= 1
+            self.deliberate_failures += 1
+            await route.fulfill(status=500, json={"detail": "synthetic outage"})
+            return
         elif path == "chat/conversations" and request.method == "POST":
             created = thread(len(self.threads) + 1)
             self.threads.insert(0, created)
@@ -122,6 +140,10 @@ class Synthetic:
         elif re.fullmatch(r"chat/conversations/[\w-]+/turns", path):
             conversation = path.split("/")[2]
             items = self.turns.setdefault(conversation, [])
+            if request.method == "GET" and conversation in self.failed_reads:
+                self.deliberate_failures += 1
+                await route.fulfill(status=500, json={"detail": "synthetic outage"})
+                return
             if request.method == "POST":
                 body = request.post_data_json
                 assert body is not None and set(body) == {"request_key", "body"}
@@ -138,7 +160,11 @@ class Synthetic:
                 )
                 data = {"duplicate": False}
             else:
-                data = {"items": items, "next_cursor": None}
+                match = re.search(r"before=(\d+)", tail)
+                older = [t for t in items if not match or t["id"] < int(match.group(1))]
+                page = older[-self.page_size :]
+                more = len(older) > len(page)
+                data = {"items": page, "next_cursor": page[0]["id"] if more else None}
         else:
             self.unexpected.append(f"{request.method} {tail}")
             await route.fulfill(status=500, json={"detail": "unexpected synthetic call"})
@@ -240,6 +266,8 @@ async def open_chat(
         finally:
             await browser.close()
     assert not api.unexpected, api.unexpected
+    if api.deliberate_failures:
+        errors = [e for e in errors if "status of 500" not in e]
     assert not errors, errors
 
 
@@ -383,6 +411,15 @@ async def overflow(page: Page) -> int:
     )
 
 
+def intersects(a: Any, b: Any) -> bool:
+    return not (
+        a["x"] + a["width"] <= b["x"]
+        or b["x"] + b["width"] <= a["x"]
+        or a["y"] + a["height"] <= b["y"]
+        or b["y"] + b["height"] <= a["y"]
+    )
+
+
 async def check_widths(page: Page, label: str) -> None:
     for width in WIDTHS:
         await page.set_viewport_size({"width": width, "height": 800})
@@ -395,23 +432,32 @@ async def check_widths(page: Page, label: str) -> None:
         assert box and send_box
         assert box["width"] >= 150, f"{label}: composer too narrow at {width}px"
         assert send_box["x"] + send_box["width"] <= width, f"{label}: send off screen at {width}px"
-        if width < 1024:
-            # The floating assistant dock button: bottom 1.25rem, right 1.25rem, a 2.5 to 2.75rem
-            # tall pill about 8rem wide. The send button must not sit under it.
-            dock = {"left": width - 20 - 140, "top": 800 - 20 - 44}
-            clear_above = send_box["y"] + send_box["height"] <= dock["top"]
-            clear_left = send_box["x"] + send_box["width"] <= dock["left"]
-            assert clear_above or clear_left, f"{label}: send button under the dock at {width}px"
+        # The real floating assistant dock button (workspace_assistant on) must not cover it.
+        dock_box = await page.get_by_test_id("assistant-open").bounding_box()
+        assert dock_box, f"{label}: the dock button is missing at {width}px"
+        assert not intersects(send_box, dock_box), (
+            f"{label}: send button {send_box} under the dock {dock_box} at {width}px"
+        )
+
+
+async def composer_radius(page: Page) -> str:
+    return await page.get_by_label("Text question", exact=False).evaluate(
+        "element => getComputedStyle(element.parentElement).borderTopLeftRadius"
+    )
 
 
 async def test_chat_fits_five_widths_in_three_themes(server: str) -> None:
     for theme in THEMES:
         api = Synthetic()
-        async with open_chat(server, api, theme=theme, query="?mode=chromeless") as page:
+        query = "?mode=chromeless&dock=1"
+        async with open_chat(server, api, theme=theme, query=query) as page:
             assert await page.evaluate("document.documentElement.dataset.theme") == theme
             await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
                 timeout=WAIT
             )
+            # Bureau is square-cornered; cobalt and night keep the rounded composer.
+            radius = await composer_radius(page)
+            assert (radius == "0px") == (theme == "bureau"), f"{theme} composer radius {radius}"
             await check_widths(page, f"{theme} empty")
             await page.get_by_label("Text question", exact=False).fill("Opening hours?")
             await page.get_by_role("button", name="Send to sandbox", exact=True).click()
@@ -452,3 +498,123 @@ async def test_legacy_mode_keeps_heading_and_tenant_select_for_platform_admin(se
         await expect(history.get_by_text("No conversations yet.")).to_be_visible()
         reads = [path for method, path in api.requests if method == "GET"]
         assert "chat/conversations?client_id=tenant-a" in reads, reads
+
+
+async def test_failed_creation_keeps_the_draft_and_send_retries_it(server: str) -> None:
+    api = Synthetic()
+    api.failed_creations = 1
+    async with open_chat(server, api) as page:
+        composer = page.get_by_label("Text question", exact=False)
+        await composer.fill("Do you open on Sundays?", timeout=WAIT)
+        send = page.get_by_role("button", name="Send to sandbox", exact=True)
+        await send.click()
+        await expect(page.get_by_text("Retry creation keeps the same request key.")).to_be_visible()
+        # Not locked out, and the question is still there.
+        await expect(composer).to_be_enabled()
+        await expect(composer).to_have_value("Do you open on Sundays?")
+        await expect(page.get_by_role("button", name=CHIPS[0], exact=True)).to_be_enabled()
+        await expect(send).to_be_enabled()
+        await send.click()
+        log = page.get_by_role("log", name="Sandbox messages")
+        await expect(log.get_by_text("Do you open on Sundays?")).to_be_visible()
+        await expect(log.get_by_text(REPLY)).to_be_visible()
+        creations = [body for path, body in api.bodies if path == "chat/conversations"]
+        assert len(creations) == 2
+        assert creations[0]["request_key"] == creations[1]["request_key"], "retry keeps the key"
+        sends = [body for path, body in api.bodies if path.endswith("/turns")]
+        assert [body["body"] for body in sends] == ["Do you open on Sundays?"]
+
+
+def numbered_turns(count: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": n,
+            "trace_id": "trace",
+            "request_key": f"key-{n}",
+            "body": f"Question {n}",
+            "created_at": "2026-10-29T00:00:00Z",
+            "status": "available",
+            "replies": [{"id": f"r{n}", "body": f"Answer {n}"}],
+        }
+        for n in range(1, count + 1)
+    ]
+
+
+async def test_scroll_follows_the_reader_not_the_poll(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = numbered_turns(30)
+    api.page_size = 20
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        log = page.get_by_role("log", name="Sandbox messages")
+        await expect(log.get_by_text(re.compile(r"Answer 30$"))).to_be_visible()
+        scroller = page.get_by_test_id("sandbox-scroll")
+        gap = "e => e.scrollHeight - e.scrollTop - e.clientHeight"
+        assert await scroller.evaluate(gap) < 2, "a conversation opens at its end"
+        # Older messages are added above without moving what the reader sees.
+        await scroller.evaluate("e => { e.scrollTop = 0; }")
+        anchor = log.get_by_text(re.compile(r"Question 11$"))
+        before = await anchor.bounding_box()
+        assert before
+        await page.get_by_role("button", name="Older messages").click()
+        await expect(log.get_by_text(re.compile(r"Question 1$"))).to_be_attached()
+        await page.wait_for_timeout(300)
+        after = await anchor.bounding_box()
+        assert after and abs(after["y"] - before["y"]) < 4, (before, after)
+        # A reply landing by polling does not pull a reader who scrolled up.
+        await scroller.evaluate("e => { e.scrollTop = 300; }")
+        await page.wait_for_timeout(200)
+        api.turns["thread-1"].append(numbered_turns(31)[-1])
+        await expect(log.get_by_text(re.compile(r"Answer 31$"))).to_be_attached(timeout=10_000)
+        await page.wait_for_timeout(300)
+        assert abs(await scroller.evaluate("e => e.scrollTop") - 300) < 2
+        # The reader's own question scrolls to the end.
+        await page.get_by_label("Text question", exact=False).fill("One more question")
+        await page.get_by_role("button", name="Send to sandbox", exact=True).click()
+        await expect(log.get_by_text("One more question")).to_be_visible()
+        await page.wait_for_timeout(300)
+        assert await scroller.evaluate(gap) < 2
+
+
+async def test_disclaimer_shows_when_the_first_read_fails(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.failed_reads.add("thread-1")
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        await expect(page.get_by_text("Polling disconnected:", exact=False)).to_be_visible()
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_have_count(0)
+        notice = page.get_by_test_id("sandbox-disclaimer")
+        await expect(notice).to_be_visible()
+        assert squash(await notice.inner_text()) == FULL_NOTICE
+        await expect(page.get_by_label("Text question", exact=False)).to_be_enabled()
+
+
+async def test_enter_sends_and_keeps_focus_but_not_with_shift_or_composition(server: str) -> None:
+    api = Synthetic()
+    async with open_chat(server, api) as page:
+        composer = page.get_by_label("Text question", exact=False)
+        await composer.fill("Hello", timeout=WAIT)
+        await composer.press("Shift+Enter")
+        await expect(composer).to_have_value("Hello\n")
+        # An IME composition commits with Enter: never a send (Chromium isComposing, Safari 229).
+        await composer.evaluate(
+            """element => {
+              element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+              element.dispatchEvent(new KeyboardEvent("keydown",
+                { key: "Enter", bubbles: true, cancelable: true, isComposing: true }));
+              element.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+              const safari = new KeyboardEvent("keydown",
+                { key: "Enter", bubbles: true, cancelable: true });
+              Object.defineProperty(safari, "keyCode", { get: () => 229 });
+              element.dispatchEvent(safari);
+            }"""
+        )
+        await page.wait_for_timeout(500)
+        assert api.posts == []
+        await composer.fill("What are your opening hours?")
+        await composer.press("Enter")
+        log = page.get_by_role("log", name="Sandbox messages")
+        await expect(log.get_by_text(REPLY)).to_be_visible()
+        assert api.posts == ["chat/conversations", "chat/conversations/thread-1/turns"]
+        await expect(composer).to_have_value("")
+        await expect(composer).to_be_focused()

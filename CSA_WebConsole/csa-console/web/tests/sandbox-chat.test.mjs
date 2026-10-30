@@ -62,3 +62,25 @@ test("the compact disclaimer is one line naming the sandbox limits", () => {
   assert.equal(chat.SANDBOX_COMPACT_NOTICE, "Private sandbox: knowledge and product questions only.");
   assert.doesNotMatch(chat.SANDBOX_COMPACT_NOTICE, /\n/);
 });
+
+test("the log follows the end only for its first load, the reader's own question or a reader at the end", () => {
+  const empty = { thread: "a", firstId: null, lastKey: null };
+  const loaded = { thread: "a", firstId: 11, lastKey: "k30" };
+  const own = new Set(["mine"]);
+  // Nothing loaded yet: nothing to do.
+  assert.equal(chat.scrollPlan(empty, empty, false, own), "stay");
+  // First load of a conversation, or another conversation: the end.
+  assert.equal(chat.scrollPlan(empty, loaded, false, own), "bottom");
+  assert.equal(chat.scrollPlan({ ...loaded, thread: "b" }, loaded, false, own), "bottom");
+  // Older turns arrive above: keep what the reader sees, even if they sat at the end.
+  assert.equal(chat.scrollPlan(loaded, { ...loaded, firstId: 1 }, false, own), "keep-offset");
+  assert.equal(chat.scrollPlan(loaded, { ...loaded, firstId: 1 }, true, own), "keep-offset");
+  // A poll with a new turn or reply: only a reader already at the end follows it.
+  assert.equal(chat.scrollPlan(loaded, { ...loaded, lastKey: "k31" }, false, own), "stay");
+  assert.equal(chat.scrollPlan(loaded, { ...loaded, lastKey: "k31" }, true, own), "bottom");
+  assert.equal(chat.scrollPlan(loaded, loaded, false, own), "stay");
+  // The reader's own new question: the end, wherever they were.
+  assert.equal(chat.scrollPlan(loaded, { ...loaded, lastKey: "mine" }, false, own), "bottom");
+  // The same own question seen again by a later poll is not new.
+  assert.equal(chat.scrollPlan({ ...loaded, lastKey: "mine" }, { ...loaded, lastKey: "mine" }, false, own), "stay");
+});

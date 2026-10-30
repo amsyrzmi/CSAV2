@@ -59,3 +59,21 @@ export function chipsFor(role: Me["role"]): string[] {
 export function disclaimerMode(turnCount: number): "full" | "compact" {
   return turnCount > 0 ? "compact" : "full";
 }
+
+/** What the message log shows, as far as scrolling cares: which conversation, its range. */
+export type ScrollSnapshot = { thread: string; firstId: number | null; lastKey: string | null };
+
+/**
+ * How the log scrolls after its turns change. "bottom": the first load of a conversation, the
+ * reader's own new question, or anything new while the reader is already at the end. "keep-offset":
+ * older turns were added above ("Older messages"), so keep what the reader sees. "stay": anything
+ * else, so a poll never pulls a reader away from earlier messages.
+ */
+export function scrollPlan(before: ScrollSnapshot, after: ScrollSnapshot, nearBottom: boolean,
+  ownKeys: ReadonlySet<string>): "bottom" | "keep-offset" | "stay" {
+  if (after.firstId === null) return "stay";
+  if (before.thread !== after.thread || before.firstId === null) return "bottom";
+  if (after.firstId < before.firstId) return "keep-offset";
+  if (after.lastKey !== before.lastKey && after.lastKey !== null && ownKeys.has(after.lastKey)) return "bottom";
+  return nearBottom ? "bottom" : "stay";
+}

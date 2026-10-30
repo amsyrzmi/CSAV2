@@ -95,6 +95,11 @@
   --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7fa6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --color-white: #ffffff;
   --fs-radius-control: 6px;
+  /* The sandbox chat: composer box, message bubbles, tiles and trays, round buttons and chips. */
+  --fs-radius-composer: 1.75rem;
+  --fs-radius-bubble: 1.25rem;
+  --fs-radius-tile: 1rem;
+  --fs-radius-round: 999px;
   --fs-shadow-card: 0 1px 2px #0b1b3f14;
   --fs-shadow-popover: 0 8px 28px #0b1b3f1f;
   --fs-shadow-dialog: 0 24px 64px #0b1b3f2e;
@@ -179,6 +184,11 @@
   --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236f81a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --color-white: #141e33;
   --fs-radius-control: 6px;
+  /* The sandbox chat: composer box, message bubbles, tiles and trays, round buttons and chips. */
+  --fs-radius-composer: 1.75rem;
+  --fs-radius-bubble: 1.25rem;
+  --fs-radius-tile: 1rem;
+  --fs-radius-round: 999px;
   --fs-shadow-card: 0 1px 2px #00000066;
   --fs-shadow-popover: 0 8px 28px #00000066;
   --fs-shadow-dialog: 0 24px 64px #00000099;
@@ -262,6 +272,11 @@
   --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23857a60' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --color-white: #fffdf8;
   --fs-radius-control: 0;
+  /* The sandbox chat: composer box, message bubbles, tiles and trays, round buttons and chips. */
+  --fs-radius-composer: 0;
+  --fs-radius-bubble: 0;
+  --fs-radius-tile: 0;
+  --fs-radius-round: 0;
   --fs-shadow-card: 3px 3px 0 #ddd3be;
   --fs-shadow-popover: 3px 3px 0 #ddd3be;
   --fs-shadow-dialog: 3px 3px 0 #ddd3be;
