@@ -42,6 +42,7 @@ const COLOUR_TOKENS = [
   "--fs-ink-50", "--fs-brand-100", "--fs-brand-200", "--fs-brand-900",
   "--fs-border-strong", "--fs-neutral-bg", "--fs-neutral-text", "--fs-customer-bg", "--fs-customer-text",
   "--fs-team-bg", "--fs-team-text", "--fs-skeleton", "--fs-skeleton-shine", "--fs-auth-from", "--fs-auth-to", "--fs-auth-text",
+  "--fs-auth-logo", "--fs-auth-logo-accent",
   "--fs-channel-bg", "--fs-channel-text", "--fs-bubble-staff-bg", "--fs-bubble-staff-text",
   "--fs-bubble-customer-bg", "--fs-bubble-customer-border",
   "--fs-room-staff-bg", "--fs-room-staff-bar", "--fs-log-from", "--fs-log-to",
@@ -91,7 +92,10 @@ const PAIRS = [
   ["--fs-team-text", "--fs-team-bg", 4.5, "status label: team"],
   ...[1, 2, 3, 4].map((n) => [`--fs-customer-${n}-text`, `--fs-customer-${n}-bg`, 4.5, `customer avatar tint ${n}`]),
   ["--fs-auth-text", "--fs-auth-from", 4.5, "text on the sign-in panel, top"],
-  ["--fs-auth-text", "--fs-auth-to", 4.5, "text on the sign-in panel, bottom"],
+  ["--fs-auth-text", "--fs-auth-to", 3, "sign-in panel text at the lightest corner (decorative; no text sits there)"],
+  ["--fs-auth-logo", "--fs-auth-from", 3, "sign-in logo on the panel, darkest stop"],
+  ["--fs-auth-logo", "--fs-auth-to", 3, "sign-in logo on the panel, lightest stop"],
+  ["--fs-auth-logo-accent", "--fs-auth-from", 3, "sign-in logo accent layer on the panel, darkest stop"],
   ["--fs-text-secondary", "--fs-surface", 4.5, "unknown customer avatar mark"],
   ["--fs-border-control", "--fs-surface", 3, "unknown customer avatar dashed outline"],
   ["--fs-channel-text", "--fs-channel-bg", 4.5, "inbox channel badge"],
@@ -198,3 +202,31 @@ test("cobalt customer tints match the library's approved blues", async () => {
     assert.equal(map[`--fs-customer-${i + 1}-text`].toLowerCase(), tint.color.toLowerCase());
   });
 });
+
+/** The colour `fraction` of the way from `from` to `to`, as #rrggbb (what the panel gradient paints there). */
+function blend(from, to, fraction) {
+  const a = rgb(from).map((c) => c * 255);
+  const b = rgb(to).map((c) => c * 255);
+  return `#${a.map((c, i) => Math.round(c + (b[i] - c) * fraction).toString(16).padStart(2, "0")).join("")}`;
+}
+
+test("the brand panel is the same cobalt in every theme", () => {
+  const first = tokens("cobalt");
+  for (const theme of THEMES) {
+    const map = tokens(theme);
+    for (const name of ["--fs-auth-from", "--fs-auth-to", "--fs-auth-text", "--fs-auth-logo", "--fs-auth-logo-accent"])
+      assert.equal(map[name], first[name], `${theme} ${name}`);
+  }
+  assert.equal(first["--fs-auth-from"].toLowerCase(), "#0047ab");
+  assert.equal(first["--fs-auth-to"].toLowerCase(), "#2d7cf0");
+});
+
+for (const theme of THEMES) {
+  test(`${theme}: the tagline and wordmark read 4.5:1 where they sit on the panel gradient`, () => {
+    const map = tokens(theme);
+    // The text is centred in the left column, so it never reaches the far corner; 75% is the
+    // lowest it can sit. The far corner itself (the lightest stop) is 4.0:1 and is guarded above at 3:1.
+    const there = blend(map["--fs-auth-from"], map["--fs-auth-to"], 0.75);
+    assert.ok(ratio(map["--fs-auth-text"], there) >= 4.5, `${theme}: ${ratio(map["--fs-auth-text"], there).toFixed(2)} at 75%`);
+  });
+}

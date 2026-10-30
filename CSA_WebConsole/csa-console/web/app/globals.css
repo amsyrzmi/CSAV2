@@ -469,13 +469,39 @@
 .cmdk-item[data-active="true"] { background: var(--color-ink-100); color: var(--color-ink-900); }
 .cmdk-item[data-active="true"] .cmdk-enter { opacity: 1; }
 
-/* auth backdrop */
-.auth-aside {
-  background:
-    radial-gradient(80% 60% at 100% 0%, color-mix(in srgb, var(--fs-primary) 40%, transparent), transparent 60%),
-    radial-gradient(60% 50% at 0% 100%, color-mix(in srgb, var(--fs-success) 14%, transparent), transparent 60%),
-    linear-gradient(160deg, var(--fs-auth-from) 0%, var(--fs-auth-to) 100%);
+/* auth brand panel: the same cobalt in every theme, with a faint 16 px pixel grid */
+.auth-brand {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(155deg, var(--fs-auth-from) 0%, var(--fs-auth-to) 100%);
+  color: var(--fs-auth-text);
 }
+.auth-brand::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--fs-auth-text) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--fs-auth-text) 7%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+.auth-brand > * { position: relative; }
+
+/* The four logo layers drop into place once, bottom layer first. The class is only set while
+   motion is allowed; the rules below are a second guard. */
+@keyframes fs-logo-drop {
+  from { opacity: 0; transform: translateY(-26px); }
+  to { opacity: 1; transform: none; }
+}
+.fs-logo-drop path { animation: fs-logo-drop 500ms var(--fs-ease-out) both; }
+.fs-logo-drop path:nth-child(2) { animation-delay: 250ms; }
+.fs-logo-drop path:nth-child(3) { animation-delay: 500ms; }
+.fs-logo-drop path:nth-child(4) { animation-delay: 750ms; }
+@media (prefers-reduced-motion: reduce) {
+  .fs-logo-drop path { animation: none !important; }
+}
+[data-motion="off"].fs-logo-drop path { animation: none !important; }
 
 /* recharts polish */
 .recharts-cartesian-axis-tick-value { fill: var(--fs-text-secondary); font-size: 11px; }
