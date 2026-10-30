@@ -745,9 +745,12 @@ _MAIL_WORDS = re.compile(
 )
 _TEAM_WORDS = re.compile(r"\b(team|my reports|direct reports|pasukan|anak buah)\b", re.IGNORECASE)
 _SEND_WORDS = re.compile(r"\b(send|hantar|hantarkan|kirim|kirimkan)\b", re.IGNORECASE)
-_DRAFT_WORDS = re.compile(r"\b(draft|draf|save|simpan)\b", re.IGNORECASE)
-_EMAIL_VERB = re.compile(r"\b(email|e-?mel|emel)\b", re.IGNORECASE)
-_WRITE_WORD = re.compile(r"\bwrite\b", re.IGNORECASE)
+_DRAFT_WORDS = re.compile(r"\b(drafts?|draf|save|simpan)\b", re.IGNORECASE)
+_NEGATED_SEND = re.compile(
+    r"\b(?:don'?t|do not|never|jangan)\s+(?:send|hantar|kirim)\w*", re.IGNORECASE
+)
+_EMAIL_VERB = re.compile(r"\b(e-?mails?|e-?mel|emel)\b", re.IGNORECASE)
+_WRITE_WORD = re.compile(r"\b(write|tulis|karang)\b", re.IGNORECASE)
 _ADDRESS = re.compile(r"[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _EMPLOYEE_ID = re.compile(
     r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
@@ -928,9 +931,8 @@ _PLACEHOLDER_TOKENS = frozenset(
 _CONTENT_WORDS = re.compile(
     r"\b(subject|body|wording|content|tajuk|isi|kandungan)\b", re.IGNORECASE
 )
-_EMAIL_REQUEST = re.compile(
-    r"\b(email|e-?mel|emel|send|hantar|kirim|reply|balas|mail)\b", re.IGNORECASE
-)
+# Email words only: "send" and "hantar" also send a training request, so they do not count.
+_EMAIL_REQUEST = re.compile(r"\b(e-?mails?|e-?mel|emel|reply|balas|mail)\b", re.IGNORECASE)
 _CONTENT_NOTE = (
     "Do not ask for the subject or the wording. Write them yourself from the request; if the "
     "request says nothing about the content, write a short, neutral email from what it does say."
@@ -960,14 +962,32 @@ def _asks_for_content(proposal: WorkspaceProposal) -> bool:
 
 
 def _about_email(message: str, facts: PlannerFacts) -> bool:
-    """The turn is about email: mailbox facts were loaded, or the user's own words mention it.
+    """The user's own words are about email: an email word ("email", "e-mel", "reply",
+    "balas", "mail") or an address.
 
     Only the parts ``_authored`` counts, so a planner question or a clicked value never makes
-    a turn about email.
+    a turn about email. Loaded mailbox facts do not count either: words anywhere in the turn
+    load them, the folded planner question included. A bare send word ("send", "hantar") is
+    not email.
     """
-    if facts.mailbox_threads is not None:
-        return True
-    return any(_EMAIL_REQUEST.search(part) for part in _authored(message, facts))
+    return any(
+        _EMAIL_REQUEST.search(part) or _addresses(part) for part in _authored(message, facts)
+    )
+
+
+def _picks_thread_or_colleague(proposal: WorkspaceProposal, facts: PlannerFacts) -> bool:
+    """A clarification offering a synced thread (thread_id) or a colleague (employee id).
+
+    Such a question may name a subject ("Which email, 'Invoice March' or 'Invoice April'?")
+    without asking the user to write one. The raw option values are checked.
+    """
+    if not isinstance(proposal, ClarificationProposal):
+        return False
+    threads = {thread.thread_id for thread in facts.mailbox_threads or []}
+    return any(
+        option.value.strip() in threads or is_employee_ref(option.value.strip())
+        for option in proposal.options
+    )
 
 
 async def _plan(planner: WorkspacePlanner, message: str, facts: PlannerFacts) -> WorkspaceProposal:
@@ -975,11 +995,16 @@ async def _plan(planner: WorkspacePlanner, message: str, facts: PlannerFacts) ->
 
     On an email turn (see ``_about_email``), a plan that asks for the subject or wording is
     re-planned once with a fixed server note. If the model asks again, the user gets one plain
-    question with no options. Any other clarification passes through after one call. A planner
-    error on the re-plan is raised as on the first call.
+    question with no options. A question that picks a thread or a colleague (see
+    ``_picks_thread_or_colleague``) and any other clarification pass through after one call. A
+    planner error on the re-plan is raised as on the first call.
     """
     proposal = await planner.plan(message, facts)
-    if not _asks_for_content(proposal) or not _about_email(message, facts):
+    if (
+        not _asks_for_content(proposal)
+        or not _about_email(message, facts)
+        or _picks_thread_or_colleague(proposal, facts)
+    ):
         return proposal
     proposal = await planner.plan(message, facts, note=_CONTENT_NOTE)
     if not _asks_for_content(proposal):
@@ -1125,21 +1150,28 @@ def _asked_to_send(
 ) -> bool:
     """A send card when the user's own words ask to send; the first rule that matches wins.
 
-    1. A draft word ("draft", "save", "simpan") gives a draft card, even next to "send".
-    2. A send word ("send", "hantar", "kirim") gives a send card.
-    3. The plan's ``send`` with an email verb ("email", "e-mel") and no "write" gives a send card.
+    1. A draft word ("draft", "drafts", "save", "simpan") or a negated send ("don't send",
+       "do not send", "never send", "jangan hantar") gives a draft card, even next to "send".
+    2. A send word ("send", "hantar", "kirim") gives a send card, unless a write word ("write",
+       "tulis", "karang") is there too and the plan's ``send`` is false.
+    3. The plan's ``send`` with an email verb ("email", "e-mail", "e-mel") and no write word
+       gives a send card.
     4. Anything else gives a draft card.
 
     Only the parts ``_authored`` counts: typed text, the stored first request and typed folded
     answers. Never a clarification question ("Should I send it?") and never a clicked value
-    ("yes, send it now"): the planner wrote both. The user confirms either card.
+    ("yes, send it now"): the planner wrote both. A part equal to a value any earlier card
+    offered does not count either, so typing an older card's "send it now" fails closed. The
+    user confirms either card.
     """
-    text = "\n".join(_authored(message, facts))
-    if _DRAFT_WORDS.search(text):
+    offered = [value for turn in facts.history for value in turn.offered_options]
+    text = "\n".join(part for part in _authored(message, facts) if not _picked(part, offered))
+    if _DRAFT_WORDS.search(text) or _NEGATED_SEND.search(text):
         return False
-    if _SEND_WORDS.search(text):
+    written = bool(_WRITE_WORD.search(text))
+    if _SEND_WORDS.search(text) and (proposal.send or not written):
         return True
-    return bool(proposal.send and _EMAIL_VERB.search(text) and not _WRITE_WORD.search(text))
+    return bool(proposal.send and _EMAIL_VERB.search(text) and not written)
 
 
 async def _draft_card(

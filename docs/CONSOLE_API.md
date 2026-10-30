@@ -782,10 +782,14 @@ thread, up to 200. A thread's time is Gmail's `internalDate` for its latest mess
 included) counts as the owner's.
 
 `email_send` proposal: the card follows the user's own words, never a planner question or
-a clicked option. A draft word (draft, draf, save, simpan) gives an `email_export` card; a
-send word (send, hantar, kirim) gives a send card; an email verb (email, e-mel) gives a send
-card when the planner also asks to send and the user did not write "write"; anything else is
-an `email_export` card (see [EMAIL_ASSISTANT.md](EMAIL_ASSISTANT.md#workspace-assistant)).
+a clicked option, nor text equal to an option any earlier card offered. The first match wins:
+a draft word (draft, drafts, draf, save, simpan) or a negated send (don't send, do not send,
+never send, jangan hantar) gives an `email_export` card; a send word (send, hantar, kirim)
+gives a send card unless a write word (write, tulis, karang) is there and the planner does not
+ask to send; an email verb (email, e-mail, e-mel) gives a send card when the planner also asks
+to send and the user wrote no write word; anything else is an `email_export` card (see
+[EMAIL_ASSISTANT.md](EMAIL_ASSISTANT.md#workspace-assistant)). In the console only the newest
+assistant card's options and candidates can be clicked; older cards are history.
 Its stored payload is `{draft_id, version}`; the card's title, summary
 and fields hold counts only, and so does the `email_export` card now. `expected_version` is
 the draft version, so an edit after the card was made makes the confirm return 409

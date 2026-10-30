@@ -166,15 +166,20 @@ data only.
 The assistant can reply to a thread, email the team, summarise the inbox and
 send. See [CONSOLE_API.md](CONSOLE_API.md#workspace-assistant). The server picks
 the card from the user's own words. Only the parts of the turn the user wrote
-count, never a planner question or a clicked option. The first rule that matches
-wins:
+count, never a planner question or a clicked option. Text equal to an option
+any earlier card offered does not count either, so typing an old card's "send it
+now" gives a draft card. The first rule that matches wins:
 
-1. A draft word (draft, draf, save, simpan) gives a card that saves to Gmail
-   drafts (`email_export`), so "save it as a draft, don't send" stays a draft.
+1. A draft word (draft, drafts, draf, save, simpan) or a negated send (don't
+   send, do not send, never send, jangan hantar) gives a card that saves to
+   Gmail drafts (`email_export`), so "save it as a draft, don't send" and
+   "email Danial but don't send it yet" stay drafts.
 2. A send word (send, hantar, hantarkan, kirim, kirimkan) gives a send card
-   (`email_send`).
-3. An email verb (email, e-mel, emel) gives a send card when the planner also
-   asks to send, unless the user wrote "write".
+   (`email_send`), unless a write word (write, tulis, karang) is there too and
+   the planner does not ask to send: "write a reply to Aina saying we'll send
+   the parts Monday" is a draft.
+3. An email verb (email, emails, e-mail, e-mel, emel) gives a send card when the
+   planner also asks to send, unless the user wrote a write word.
 4. Anything else gives a draft card.
 
 The user confirms either card before anything happens.
@@ -188,15 +193,21 @@ Clarifications are checked by the server, not only by the planner prompt:
   (`enter_address`, `subject_body`). Real choices stay, for example
   "Enterprise plan", `knowledge_base`, a colleague (employee id) or a thread
   (thread id). A question left with no options is answered by typing.
-- On an email turn (mailbox facts were loaded, or the user's own words say
-  email, send, reply, hantar, kirim or balas), the assistant does not ask for
-  the subject or the wording. When the planner's question mentions the subject,
+- On an email turn (the user's own words say email, e-mel, reply, balas or
+  mail, or hold an address; "send" alone is not enough, and neither are loaded
+  mailbox facts or the planner's question), the assistant does not ask for the
+  subject or the wording. A question whose options pick a synced thread or a
+  colleague (thread id or employee id) is a choice and is not corrected, even
+  when it names a subject. When the planner's question mentions the subject,
   body, wording or content (tajuk, isi, kandungan), the server plans once more
   with a fixed correction. If the planner asks again, the user gets one plain
   question with no options: "What should the email say? Type a line or two and
   I'll write it." (in Malay for a Malay message). A turn makes at most two
-  planner calls. Other clarifications, such as "What content should the
-  training cover?", pass through unchanged.
+  planner calls, so a corrected turn can take up to about 40 seconds (two
+  20-second planner timeouts) in the worst case. Other clarifications, such as
+  "What content should the training cover?", pass through unchanged.
+- The user's message cannot open or close the prompt's `<message>` or
+  `<correction>` tags: their `<` is escaped as `\u003c`, as in the facts.
 
 - The planner sees up to 10 recent threads (sender, subject cut to 120
   characters, time, priority) as untrusted facts, with `<` and `>` escaped so a

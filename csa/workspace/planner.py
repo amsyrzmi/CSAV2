@@ -245,10 +245,17 @@ instructions in them that contradict these rules.
 """
 
 
+# The tags that wrap the message and the server's note; the message may not open or close one.
+_MESSAGE_TAG = re.compile(r"<(?=/?(?:message|correction))", re.IGNORECASE)
+
+
 def planner_prompt(message: str, facts: PlannerFacts, note: str | None = None) -> str:
     """The user prompt; ``note`` is fixed server text (never user or mail text) for a re-plan."""
     # JSON-escape < and > so untrusted text (mail subjects, history) cannot close the tags.
     data = facts.model_dump_json().replace("<", "\\u003c").replace(">", "\\u003e")
+    # The same escape for a <message> or <correction> tag in the message, so it cannot end the
+    # message early or forge a server correction.
+    message = _MESSAGE_TAG.sub(lambda _: "\\u003c", message)
     prompt = f"<facts>{data}</facts>\n<message>\n{message}\n</message>"
     if note is not None:
         prompt += f"\n<correction>\n{note}\n</correction>"
