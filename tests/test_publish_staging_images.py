@@ -40,12 +40,34 @@ def _run_block(step_name: str) -> str:
     return "\n".join(body) + "\n"
 
 
-def test_trigger_is_manual_dispatch_only() -> None:
+RUN_ID_EXPR = "${{ inputs.ci_run_id || github.event.workflow_run.id }}"
+
+
+def test_triggers_are_manual_dispatch_and_completed_main_ci() -> None:
     text = _text()
     on_block = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
     assert "workflow_dispatch:" in on_block
-    for trigger in ("push:", "pull_request", "workflow_run", "schedule:", "release:"):
+    run_block = on_block.split("workflow_run:", 1)[1]
+    assert "workflows: [ci]" in run_block
+    assert "types: [completed]" in run_block
+    assert "branches: [main]" in run_block
+    for trigger in ("push:", "pull_request", "schedule:", "release:"):
         assert trigger not in on_block
+
+
+def test_automatic_runs_publish_only_successful_push_runs() -> None:
+    job = _text().split("\n  publish:\n", 1)[1].split("    steps:", 1)[0]
+    condition = job.split("    if:", 1)[1].split("\n    ", 1)[0]
+    assert "github.event_name == 'workflow_dispatch'" in condition
+    assert "github.event.workflow_run.event == 'push'" in condition
+    assert "github.event.workflow_run.conclusion == 'success'" in condition
+
+
+def test_run_id_comes_from_the_input_or_the_triggering_run() -> None:
+    text = _text()
+    assert f"CI_RUN_ID: {RUN_ID_EXPR}" in text
+    assert f"run-id: {RUN_ID_EXPR}" in text
+    assert "${{ inputs.ci_run_id }}" not in text
 
 
 def test_permissions_are_scoped_and_environment_gated() -> None:
@@ -90,7 +112,6 @@ def test_source_run_identity_is_verified() -> None:
 def test_publishes_exact_archives_by_sha_with_preserved_digest() -> None:
     text = _text()
     assert "name: csa-review-only-${{ steps.run.outputs.head_sha }}" in text
-    assert "run-id: ${{ inputs.ci_run_id }}" in text
     push = _run_block("Push archives with preserved manifest digests")
     assert "skopeo copy --preserve-digests" in push
     assert '"oci-archive:$app.oci.tar"' in push

@@ -1,7 +1,8 @@
 # Publish the exact OCI archives from one successful main CI run to GHCR for
-# isolated staging. Manual dispatch only, gated by the `staging-images`
-# environment. Nothing is rebuilt: the CI archive is checksum-verified and
-# copied with its manifest digest preserved, then the registry digest is
+# isolated staging. Starts on manual dispatch or when a green push-to-main
+# `ci` run completes; the `staging-images` environment approval is still
+# required either way. Nothing is rebuilt: the CI archive is checksum-verified
+# and copied with its manifest digest preserved, then the registry digest is
 # re-read and compared. Tags are the full source SHA only, never `latest`.
 # Publishing does not deploy, start staging or provision secrets.
 name: publish-staging-images
@@ -13,6 +14,10 @@ on:
         description: "ID of a successful push-to-main `ci` run whose archives to publish"
         required: true
         type: string
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
@@ -23,6 +28,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     environment: staging-images
     permissions:
@@ -30,7 +36,7 @@ jobs:
       actions: read
       packages: write
     env:
-      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      CI_RUN_ID: ${{ inputs.ci_run_id || github.event.workflow_run.id }}
       GH_TOKEN: ${{ github.token }}
       REGISTRY_NAMESPACE: ghcr.io/${{ github.repository_owner }}
     steps:
@@ -69,7 +75,7 @@ jobs:
         with:
           name: csa-review-only-${{ steps.run.outputs.head_sha }}
           path: ${{ runner.temp }}/release
-          run-id: ${{ inputs.ci_run_id }}
+          run-id: ${{ inputs.ci_run_id || github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
       - name: Verify archive checksums, revision and single-manifest layout
