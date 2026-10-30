@@ -244,3 +244,12 @@ test("a clicked option's address is masked when folded; a typed one is kept", ()
   assert.equal(view.typedMessage("ali@mine.test", [turn], { k1: "copy Ali" }).origin,
     "copy Ali; answered “Which Ali?”: ali@mine.test");
 });
+
+test("only the newest turn's card can answer", () => {
+  const turn = (id) => ({ id, request_key: `k${id}`, body: "b", created_at: "x", duplicate: false,
+    result: { action: "clarification", question: "Q?", options: [] } });
+  const turns = [turn(1), turn(2), turn(3)];
+  assert.deepEqual(turns.map((t) => view.isAnswerable(turns, t.id)), [false, false, true]);
+  assert.equal(view.isAnswerable([], 1), false);
+  assert.equal(view.isAnswerable(turns, 99), false);
+});

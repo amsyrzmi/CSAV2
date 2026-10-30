@@ -211,6 +211,14 @@ export function typedMessage(
   return { text, origin: text };
 }
 
+/**
+ * Only the newest card answers. An older clarification or candidate list is history: clicking it
+ * would answer a question the conversation has moved past.
+ */
+export function isAnswerable(turns: WorkspaceTurn[], turnId: number): boolean {
+  return turns.at(-1)?.id === turnId;
+}
+
 const guidance: Record<string, string> = {
   workspace_home_help:
     "Use this internal workspace for staff guidance and authorized local business reads. Customer sandbox conversations are separate.",
