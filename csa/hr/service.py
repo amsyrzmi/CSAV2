@@ -508,7 +508,8 @@ class HrService:
                 )
             else:
                 if access.employee is None:
-                    raise HrPolicyError("resource_unavailable")
+                    # The caller's own prerequisite, not a lookup of someone else's record.
+                    raise HrPolicyError("no_employee_link")
                 employee = await self._employee(conn, session, access.employee.employee_id)
                 draft = propose_draft(access, employee.directory(session.tenant_id), content)
                 scope = self._scope(access, HrAction.TRAINING_DRAFT, employee)

@@ -14,6 +14,7 @@ import pytest
 from csa.console.contracts import Role
 from csa.decide.groq import GroqError
 from csa.workspace.planner import (
+    SYSTEM_PROMPT,
     MailboxThreadFact,
     PlannerFacts,
     PlannerOutput,
@@ -2084,3 +2085,44 @@ async def test_attention_on_a_pending_mailbox_asks_to_connect(planned) -> None:
         "action": "answer",
         "markdown": "Connect your Gmail on the Email assistant tab first.",
     }
+
+
+def test_planner_prompt_states_the_my_employee_rule() -> None:
+    assert (
+        "- my_employee: present when the message is about training. If linked or "
+        "can_request_training is false, answer with the reason (training requests need a "
+        "linked employee record with training access) and do not propose training_submit."
+    ) in SYSTEM_PROMPT
+
+
+@requires_docker
+async def test_planner_gets_my_employee_on_training_words(planned) -> None:
+    """The staging failure: a login with no employee record learns why before any card."""
+    w, model = planned
+    browser = await _hr_member(w)
+    thread = await _thread(w, browser)
+    for _ in range(4):
+        model.reply({"action": "answer", "markdown": "Noted."})
+    linked = await _turn(w, browser, thread, "Request first aid training", "hr")
+    assert linked.status_code == 201, linked.text
+    assert model.facts()["my_employee"] == {
+        "linked": True,
+        "can_request_training": True,
+        "reason": None,
+    }
+    await w.q("DELETE FROM hr_employee_accounts WHERE client_id=%s", w.tenants[0])
+    message = "i want to send a request for ComptiaA+ training"
+    unlinked = await _turn(w, browser, thread, message, "hr")
+    assert unlinked.status_code == 201, unlinked.text
+    assert model.facts()["my_employee"] == {
+        "linked": False,
+        "can_request_training": False,
+        "reason": "no_employee_link",
+    }
+    malay = await _turn(w, browser, thread, "Mohon latihan Excel", "hr")
+    assert malay.status_code == 201, malay.text
+    assert model.facts()["my_employee"] is not None
+    other = await _turn(w, browser, thread, "show my orders", "hr")
+    assert other.status_code == 201, other.text
+    assert model.facts()["my_employee"] is None
+    assert await _proposal_count(w) == 0

@@ -954,6 +954,68 @@ async def test_training_submit_new_draft_proposal_creates_and_submits(proposals_
     assert rows[0]["n"] == 1
 
 
+NEW_TRAINING = {"title": "First aid", "learning_objective": "Certify in first aid"}
+
+
+async def _training_rows(w: SessionWorld) -> int:
+    rows = await w.q("SELECT count(*) n FROM hr_training_requests WHERE client_id=%s", w.tenants[0])
+    return rows[0]["n"]
+
+
+async def test_training_card_requires_employee_link(proposals_app) -> None:
+    """A login with no employee record is refused when the card is made, and at confirm."""
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    before = await _training_rows(w)
+    created = await _propose(w, browser, "training_submit", NEW_TRAINING)
+    assert created.status_code == 201, created.text
+    await w.q("DELETE FROM hr_employee_accounts WHERE client_id=%s", w.tenants[0])
+    refused = await _propose(w, browser, "training_submit", NEW_TRAINING)
+    assert refused.status_code == 409 and refused.json()["detail"] == "no_employee_link"
+    confirmed = await _http_confirm(w, browser, created.json()["id"])
+    assert confirmed.status_code == 409 and confirmed.json()["detail"] == "no_employee_link"
+    assert await _training_rows(w) == before == 0
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 1
+
+
+async def test_training_card_requires_training_grant(proposals_app) -> None:
+    """Without the draft and submit grants no card is made, so no draft is left behind."""
+    w, _ = proposals_app
+    browser = await _hr_member(w)
+    await w.q(
+        "DELETE FROM hr_grants WHERE client_id=%s"
+        " AND action IN ('training.draft','training.submit')",
+        w.tenants[0],
+    )
+    refused = await _propose(w, browser, "training_submit", NEW_TRAINING)
+    assert refused.status_code == 403 and refused.json()["detail"] == "hr_training_not_permitted"
+    await w.q(
+        "INSERT INTO hr_grants(client_id,user_id,action,scope,fields)"
+        " SELECT client_id,user_id,'training.draft','self','{}' FROM hr_employee_accounts"
+        " WHERE client_id=%s",
+        w.tenants[0],
+    )
+    # Drafting alone is not enough: the submit after the draft would be refused.
+    refused = await _propose(w, browser, "training_submit", NEW_TRAINING)
+    assert refused.status_code == 403 and refused.json()["detail"] == "hr_training_not_permitted"
+    draft = await browser.post(
+        "/console/v1/hr/training-requests",
+        json=NEW_TRAINING,
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+    assert draft.status_code == 201, draft.text
+    existing = await _propose(
+        w,
+        browser,
+        "training_submit",
+        {"action": "training_submit", "request_id": draft.json()["request"]["request_id"]},
+    )
+    assert existing.status_code == 403
+    assert existing.json()["detail"] == "hr_training_not_permitted"
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 0
+    assert await _training_rows(w) == 1
+
+
 async def test_tab_training_submit_needs_no_hr_assistant_switch(proposals_app) -> None:
     """The switch governs the AI assistant; a human confirming a tab card is not gated by it."""
     w, _ = proposals_app

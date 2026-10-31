@@ -623,6 +623,11 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   own manager (as `GET /workspace/people/me` does) before planning and passes only the
   manager's `employee_id`, or a reason (`no_employee_link`, `no_manager`,
   `package_inactive`).
+- When the message is about training (English or Malay words such as "training",
+  "course", "latihan", "kursus"), the server passes `my_employee`: `{linked,
+  can_request_training, reason}`, with `reason` one of `hr_inactive`, `no_hr_access`,
+  `no_employee_link` or null. When either flag is false the planner answers with the reason
+  instead of proposing `training_submit`.
 - The dock repeats the originating request in follow-up turns: picking a directory
   candidate sends `Use employee <id> for: <original message>`, and a clarification answer
   sends the option value with its question and the original message.
@@ -648,7 +653,10 @@ Every mutation is a proposal the user confirms on a card. The kinds are:
 - `email_export`: freeze a draft and save it to the user's own Gmail drafts;
 - `email_send`: send a draft from the user's own Gmail (see
   [Email management](#email-management));
-- `training_submit`: submit a training request;
+- `training_submit`: submit a training request. When the card is made (and again at
+  confirm) the caller must have their own employee record (409 `no_employee_link`) and the
+  `training.submit` grant, plus `training.draft` for a new request (403
+  `hr_training_not_permitted`), so a refused submit never leaves a draft behind;
 - `inbox_decision`: approve or reject a held customer reply;
 - `subscription_action`: a [subscription state change](#subscriptions), requested from
   the Subscriptions tab.
@@ -692,6 +700,8 @@ version. The package gate is re-run at confirm.
 | `planner_invalid_output` | 502 | The model output failed the strict proposal schema |
 | `email_model_unavailable` | 503 | The email-drafting model failed on a compose, reply or team turn; try again |
 | `mailbox_not_connected` | 409 | An `email_export` or `email_send` card was asked for while the user's mailbox is not connected; checked when the card is made, not only at confirm |
+| `no_employee_link` | 409 | A `training_submit` card was asked for, or a training draft saved, while the caller's login is not linked to an employee record |
+| `hr_training_not_permitted` | 403 | A `training_submit` card was asked for without the training grants it needs (`training.submit`, plus `training.draft` for a new request) |
 
 Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 `workspace.proposal.created`, `workspace.proposal.confirmed`,

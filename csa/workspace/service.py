@@ -81,7 +81,9 @@ from csa.workspace.contracts import (
     validate_workspace_execution,
 )
 from csa.workspace.directory import MyTeam, my_people, my_team, search_people, throttle_lookup
+from csa.workspace.executors import NEW_TRAINING_GRANTS
 from csa.workspace.planner import (
+    EmployeeFact,
     MailboxThreadFact,
     ManagerFact,
     PlannerFacts,
@@ -748,6 +750,12 @@ _MAIL_WORDS = re.compile(
     re.IGNORECASE,
 )
 _TEAM_WORDS = re.compile(r"\b(team|my reports|direct reports|pasukan|anak buah)\b", re.IGNORECASE)
+# The message is about training in English or Malay; resolves the caller's own HR readiness.
+_TRAINING_WORDS = re.compile(
+    r"\b(trainings?|courses?|workshops?|certifications?|seminars?|latihan|kursus|bengkel"
+    r"|pensijilan)\b",
+    re.IGNORECASE,
+)
 _SEND_WORDS = re.compile(r"\b(send|hantar|hantarkan|kirim|kirimkan)\b", re.IGNORECASE)
 _DRAFT_WORDS = re.compile(r"\b(drafts?|draf|save|simpan)\b", re.IGNORECASE)
 _NEGATED_SEND = re.compile(
@@ -820,6 +828,26 @@ def _team_fact(team: MyTeam) -> TeamFact:
     )
 
 
+async def _my_employee(
+    request: Request, actor: ConsoleActor, client_id: UUID, packages: list[PackageState]
+) -> EmployeeFact:
+    """Whether a training card would pass its prerequisites (see TrainingSubmitExecutor)."""
+    service = getattr(request.app.state, "hr_service", None)
+    if not _unlocked(packages, _TAB_GATES["hr"]) or not isinstance(service, HrService):
+        return EmployeeFact(linked=False, can_request_training=False, reason="hr_inactive")
+    session = hr_session_from(request, actor, client_id, mutation=False)
+    try:
+        context = await service.context(session.model_copy(update={"assistant": True}))
+    except HrPolicyError:
+        return EmployeeFact(linked=False, can_request_training=False, reason="no_hr_access")
+    if context.employee is None:
+        return EmployeeFact(linked=False, can_request_training=False, reason="no_employee_link")
+    allowed = NEW_TRAINING_GRANTS <= set(context.actions)
+    return EmployeeFact(
+        linked=True, can_request_training=allowed, reason=None if allowed else "no_hr_access"
+    )
+
+
 async def planner_facts(
     request: Request,
     actor: ConsoleActor,
@@ -851,6 +879,9 @@ async def planner_facts(
     team = None
     if _TEAM_WORDS.search(turn.body):
         team = _team_fact(await _my_team(request, actor, client_id, packages))
+    employee = None
+    if _TRAINING_WORDS.search(turn.body):
+        employee = await _my_employee(request, actor, client_id, packages)
     return PlannerFacts(
         role=actor.role,
         packages=packages,
@@ -861,6 +892,7 @@ async def planner_facts(
         my_manager=manager,
         mailbox_threads=threads,
         my_team=team,
+        my_employee=employee,
     )
 
 

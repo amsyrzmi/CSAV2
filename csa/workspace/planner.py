@@ -109,6 +109,14 @@ class TeamFact(_Contract):
     reason: TeamReason | None
 
 
+class EmployeeFact(_Contract):
+    """The caller's own readiness to request training, resolved when the message is about it."""
+
+    linked: bool
+    can_request_training: bool
+    reason: Literal["hr_inactive", "no_hr_access", "no_employee_link"] | None
+
+
 class PlannerFacts(_Contract):
     role: Role
     packages: list[PackageState]
@@ -119,6 +127,7 @@ class PlannerFacts(_Contract):
     my_manager: ManagerFact | None = None
     mailbox_threads: list[MailboxThreadFact] | None = Field(default=None, max_length=10)
     my_team: TeamFact | None = None
+    my_employee: EmployeeFact | None = None
 
 
 class PlannerOutput(_Contract):
@@ -195,6 +204,9 @@ user means, ask a clarification with those threads as options (value: the thread
 - my_team: present when the message mentions the user's team. reports are the user's own \
 direct reports; skipped have no work email and are left out. When it has a reason instead, \
 answer that emailing the team is unavailable for that reason.
+- my_employee: present when the message is about training. If linked or can_request_training \
+is false, answer with the reason (training requests need a linked employee record with \
+training access) and do not propose training_submit.
 
 Actions:
 - answer: reply in markdown. Add reads only when needed: "read_current_record" (the open \
