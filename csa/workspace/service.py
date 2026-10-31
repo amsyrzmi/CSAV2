@@ -491,6 +491,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_permission_denied": "Your access doesn't include the email summary.",
         "summary_unavailable": "I couldn't summarise your inbox just now. Try again in a few "
         "minutes.",
+        "summary_never_synced": "Your email hasn't been synced yet. Open the Email assistant tab "
+        "and press Sync, then ask again.",
         "content_question": "What should the email say? Type a line or two and I'll write it.",
         "high": "high",
         "normal": "normal",
@@ -538,6 +540,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_permission_denied": "Akses anda tidak termasuk ringkasan e-mel.",
         "summary_unavailable": "Saya tidak dapat meringkaskan peti masuk anda sekarang. Cuba "
         "lagi dalam beberapa minit.",
+        "summary_never_synced": "E-mel anda belum disegerakkan. Buka tab Pembantu E-mel dan "
+        "tekan Segerak, kemudian tanya semula.",
         "content_question": "Apa yang patut e-mel itu katakan? Taip satu atau dua ayat dan saya "
         "akan menulisnya.",
         "high": "tinggi",
@@ -1234,6 +1238,8 @@ async def _compose(
         )
     except EmailPolicyError as exc:
         raise email_http_error(exc) from None
+    except (CompletionError, TimeoutError):
+        raise HTTPException(503, "email_model_unavailable") from None
     return await _draft_card(request, actor, client_id, registry, draft, send=send)
 
 
@@ -1271,6 +1277,8 @@ async def _reply(
         )
     except EmailPolicyError as exc:
         raise email_http_error(exc) from None
+    except (CompletionError, TimeoutError):
+        raise HTTPException(503, "email_model_unavailable") from None
     return await _draft_card(request, actor, client_id, registry, draft, send=send)
 
 
@@ -1304,6 +1312,9 @@ async def _team_email(
         )
     except EmailPolicyError as exc:
         raise email_http_error(exc) from None
+    except (CompletionError, TimeoutError):
+        # The drafting call failed; planning failures stay PlannerUnavailable.
+        raise HTTPException(503, "email_model_unavailable") from None
     send = _asked_to_send(proposal, turn.body, facts)
     prepared = await _draft_card(request, actor, client_id, registry, draft, send=send)
     if team.skipped:
@@ -1341,7 +1352,11 @@ async def _summary(
     except (CompletionError, TimeoutError):
         key = _SUMMARY_ANSWERS["email_model_unavailable"]
     else:
-        return _Planned(summary=page)
+        if page.as_of is None:
+            # The mailbox row's last-sync time: null means it has never synced.
+            key = "summary_never_synced"
+        else:
+            return _Planned(summary=page)
     # Fixed copy, no mail content, so the turn row may store it as it is.
     return _Planned(result=AnswerResult(action="answer", markdown=_TEXT[facts.language][key]))
 

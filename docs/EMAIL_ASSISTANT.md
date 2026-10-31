@@ -160,6 +160,11 @@ data only.
   opens (after sync on open) and after the Sync button, not after load more,
   because each load can spend up to 5 model calls.
 - In the workspace assistant, a failure becomes a plain answer, not an error.
+- In the workspace assistant, a mailbox that has never synced (its last-sync time
+  is null) gets a plain answer instead of an empty summary: "Your email hasn't
+  been synced yet. Open the Email assistant tab and press Sync, then ask again."
+  (in Malay when the user writes in Malay). Zero threads after a sync is the
+  normal "nothing needs your attention" answer.
 
 ## Workspace assistant
 
@@ -183,6 +188,18 @@ now" gives a draft card. The first rule that matches wins:
 4. Anything else gives a draft card.
 
 The user confirms either card before anything happens.
+
+- Both cards check that the user's mailbox is connected when the card is made,
+  so a disconnected mailbox is refused then with 409 `mailbox_not_connected`,
+  not at Confirm.
+- When the drafting model fails (an invalid answer, a provider error or a
+  timeout) on a compose, reply or team email turn, the turn returns 503
+  `email_model_unavailable`, never a 500. Nothing is drafted or stored, and the
+  user can try again. A failure while planning stays 503 `planner_unavailable`.
+- The drafting prompts name the JSON keys (`subject`, `body`,
+  `needs_facts_from_staff`). An extra key in the model's answer, such as `to`,
+  is ignored: recipients never come from the model. A subject over 200
+  characters is cut and facts past 5 are dropped.
 
 Clarifications are checked by the server, not only by the planner prompt:
 

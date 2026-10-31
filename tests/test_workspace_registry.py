@@ -1583,3 +1583,23 @@ async def test_export_card_goes_stale_after_a_cc_edit(proposals_app) -> None:
     stale = await _http_confirm(w, browser, created.json()["id"])
     assert stale.status_code == 409 and stale.json()["detail"] == "proposal_stale", stale.text
     assert not any(m == "POST" and p.endswith("/drafts") for m, p, _ in gmail.requests)
+
+
+async def test_email_cards_need_a_connected_mailbox(proposals_app) -> None:
+    """A disconnected mailbox is refused when the card is made, not at Confirm."""
+    w, gmail = proposals_app
+    browser = await _email_ready(w)
+    assert (await _email_call(w, browser, "POST", "/console/v1/email/sync")).status_code == 200
+    draft = await _new_draft(w, browser)
+    disconnected = await _email_call(w, browser, "POST", "/console/v1/email/mailbox/disconnect")
+    assert disconnected.status_code == 200, disconnected.text
+    export = await _propose(w, browser, "email_export", {"draft_id": str(draft.id)})
+    assert export.status_code == 409, export.text
+    assert export.json()["detail"] == "mailbox_not_connected"
+    send = await _propose(
+        w, browser, "email_send", {"draft_id": str(draft.id), "version": draft_version(draft)}
+    )
+    assert send.status_code == 409, send.text
+    assert send.json()["detail"] == "mailbox_not_connected"
+    assert await w.q("SELECT id FROM console_proposals") == []
+    assert gmail.sends == []

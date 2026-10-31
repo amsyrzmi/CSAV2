@@ -244,7 +244,59 @@ def test_draft_proposal_is_strict() -> None:
     with pytest.raises(ValidationError):
         DraftProposal.model_validate({"subject": "", "body": "x"})
     with pytest.raises(ValidationError):
-        DraftProposal.model_validate({"subject": "s", "body": "x", "send": True})
+        DraftProposal.model_validate({"subject": "s", "body": ""})
+
+
+def test_draft_proposal_ignores_extras_and_trims() -> None:
+    """Recipients are computed server-side, so an extra key (a model's "to") is dropped."""
+    proposal = DraftProposal.model_validate(
+        {"subject": "x" * 250, "body": "b", "needs_facts_from_staff": ["a"] * 7, "to": "Adam"}
+    )
+    assert len(proposal.subject) == 200
+    assert len(proposal.needs_facts_from_staff) == 5
+    assert "to" not in proposal.model_dump()
+
+
+DRAFT_KEYS_LINE = (
+    "Return one JSON object with exactly these keys: subject (string, at most 200 characters), "
+    "body (string), needs_facts_from_staff (list of at most 5 short strings, empty if none). "
+    "No other keys."
+)
+
+
+class CapturePrompts:
+    """Drafting model double that records each system prompt."""
+
+    model = "scripted"
+
+    def __init__(self) -> None:
+        self.systems: list[str] = []
+
+    async def json_completion(
+        self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
+    ) -> Any:
+        self.systems.append(system)
+        return DraftProposal(subject="s", body="b")
+
+
+async def test_draft_prompts_name_the_keys() -> None:
+    from csa.email.models import DraftRequest
+    from csa.email.service import EmailService
+
+    capture = CapturePrompts()
+    service = EmailService(
+        None,  # type: ignore[arg-type]  # the prompt builders never touch the pool
+        gmail=None,
+        model=capture,
+        session_idle_seconds=1800,
+    )
+    await service._compose_with_model("Plan", "Share the plan", "en", "Adam", {})
+    await service._compose_with_model("Plan", "Share the plan", "ms", None, {}, team=True)
+    row = {"subject": "Order", "sender": "Aina <aina@example.test>", "latest_body": "Hi"}
+    await service._draft_with_model(row, DraftRequest(instructions="Thank her"), {})
+    assert len(capture.systems) == 3
+    for system in capture.systems:
+        assert system.endswith(DRAFT_KEYS_LINE), system
 
 
 # --- MIME with cc/bcc/threading ---------------------------------------------

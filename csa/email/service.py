@@ -115,6 +115,12 @@ ANALYSIS_SYSTEM = (
     "when a refund, commitment, legal or payment decision is requested). Do not invent facts "
     "that are not in the email."
 )
+# The last line of every drafting prompt: JSON mode carries no schema, so the keys are named.
+DRAFT_KEYS = (
+    "Return one JSON object with exactly these keys: subject (string, at most 200 characters), "
+    "body (string), needs_facts_from_staff (list of at most 5 short strings, empty if none). "
+    "No other keys."
+)
 SYNC_WINDOW = timedelta(days=90)
 MAX_CACHED_THREADS = 200
 ATTENTION_ITEMS = 10
@@ -1426,7 +1432,7 @@ class EmailService:
             "Use only the staff instructions; never invent facts, dates or commitments, and "
             "where a fact is missing write a bracketed placeholder such as [STAFF: confirm "
             "date] and list it in needs_facts_from_staff. Keep the requested subject unless "
-            "it is clearly unusable. Return JSON only."
+            "it is clearly unusable.\n" + DRAFT_KEYS
         )
         user = json.dumps(
             {"subject": subject, "staff_instructions": instructions},
@@ -1461,7 +1467,7 @@ class EmailService:
             "staff instructions. Never invent prices, dates, order status, policies, refunds "
             "or commitments; where a fact is missing write a bracketed placeholder such as "
             "[STAFF: confirm delivery date] and list it in needs_facts_from_staff. Keep the "
-            f"subject as a reply to the original. Sign off as {persona}. Return JSON only."
+            f"subject as a reply to the original. Sign off as {persona}.\n" + DRAFT_KEYS
         )
         user = json.dumps(
             {

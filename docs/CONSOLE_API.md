@@ -637,6 +637,9 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   `answer` explaining that the package is not active.
 - Planner failures return 503 `planner_unavailable` (provider timeout, transport or HTTP
   error; retryable) or 502 `planner_invalid_output` (output failed the strict schema).
+- A failure of the email-drafting model (invalid output, provider error or timeout) on an
+  `email_compose`, `email_reply` or `email_team` turn returns 503
+  `email_model_unavailable`; nothing is drafted or stored.
 
 ### Proposals and confirmation
 
@@ -687,6 +690,8 @@ version. The package gate is re-run at confirm.
 | `proposal_stale` | 409 | Payload hash or `expected_version` no longer matches |
 | `planner_unavailable` | 503 | No planner configured, or the model provider failed |
 | `planner_invalid_output` | 502 | The model output failed the strict proposal schema |
+| `email_model_unavailable` | 503 | The email-drafting model failed on a compose, reply or team turn; try again |
+| `mailbox_not_connected` | 409 | An `email_export` or `email_send` card was asked for while the user's mailbox is not connected; checked when the card is made, not only at confirm |
 
 Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 `workspace.proposal.created`, `workspace.proposal.confirmed`,

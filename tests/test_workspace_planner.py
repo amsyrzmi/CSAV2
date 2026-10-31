@@ -1975,3 +1975,77 @@ async def test_clarification_options_never_carry_an_address(planned) -> None:
     assert typed.status_code == 201, typed.text
     rows = await w.q("SELECT result FROM console_workspace_turns WHERE action='clarification'")
     assert rows and "@" not in json.dumps([r["result"]["options"] for r in rows])
+
+
+class FailingDraftModel:
+    """Email drafting model double: every draft fails as the real model did on staging."""
+
+    model = "scripted"
+
+    async def json_completion(
+        self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
+    ) -> Any:
+        raise GroqError("groq_invalid_output")
+
+
+@requires_docker
+@pytest.mark.parametrize("kind", ["compose", "reply", "team"])
+async def test_drafting_model_failure_is_503(planned, kind: str) -> None:
+    """Review Focus 3: a drafting model failure is 503 email_model_unavailable, never 500."""
+    w, model = planned
+    if kind == "team":
+        browser = await _mail_ready(w, "hr")
+        await _team_lead(w, browser)
+        await _approves_team(w, browser)
+        plan = {"action": "email_team", "subject": "Friday", "instructions": "The meeting moved"}
+        body = "Email my team about Friday"
+    elif kind == "reply":
+        browser = await _mail_ready(w)
+        await _sync(w, browser)
+        plan = {"action": "email_reply", "thread_id": "t1", "instructions": "Thank her"}
+        body = "Reply to Aina's email and thank her"
+    else:
+        browser = await _mail_ready(w)
+        address = "adam.synthetic@example.test"
+        plan = {
+            "action": "email_compose",
+            "recipient_address": address,
+            "subject": "Plan",
+            "instructions": "Share the plan",
+            "send": True,
+        }
+        body = f"send email to {address} about the plan"
+    w.app.state.email_service.model = FailingDraftModel()
+    thread = await _thread(w, browser)
+    model.reply(plan)
+    turn = await _turn(w, browser, thread, body, "email")
+    assert turn.status_code == 503, turn.text
+    assert turn.json() == {"detail": "email_model_unavailable"}
+    assert await _turn_rows(w) == []
+    assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
+
+
+NEVER_SYNCED = {
+    "en": "Your email hasn't been synced yet. Open the Email assistant tab and press Sync, "
+    "then ask again.",
+    "ms": "E-mel anda belum disegerakkan. Buka tab Pembantu E-mel dan tekan Segerak, "
+    "kemudian tanya semula.",
+}
+
+
+@requires_docker
+async def test_attention_on_never_synced_mailbox(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w)
+    rows = await w.q("SELECT last_sync_at FROM email_mailboxes")
+    assert [r["last_sync_at"] for r in rows] == [None]
+    thread = await _thread(w, browser)
+    model.reply({"action": "inbox_summary"})
+    turn = await _turn(w, browser, thread, "What needs my attention today?", "email")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["result"] == {"action": "answer", "markdown": NEVER_SYNCED["en"]}
+    model.reply({"action": "inbox_summary"})
+    asked = "Apa yang perlu saya beri perhatian dalam e-mel saya hari ini?"
+    turn = await _turn(w, browser, thread, asked, "email")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["result"]["markdown"] == NEVER_SYNCED["ms"]

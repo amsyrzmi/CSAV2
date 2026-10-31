@@ -25,7 +25,7 @@ from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.email.api import email_error_content, email_http_error, email_session_from
 from csa.email.gmail import GmailError
-from csa.email.models import DraftOut, EmailPolicyError, draft_version
+from csa.email.models import DraftOut, EmailPolicyError, EmailSession, draft_version
 from csa.email.service import EmailService
 from csa.hr.api import hr_http_error, hr_session_from
 from csa.hr.models import TrainingAction, TrainingCommandInput, TrainingDraftInput, TrainingStatus
@@ -195,6 +195,20 @@ def _email_refusal(exc: EmailPolicyError | GmailError) -> ProposalActionRefused:
     return ProposalActionRefused(error.status_code, email_error_content(exc), error.headers)
 
 
+async def _connected_draft(
+    service: EmailService, session: EmailSession, draft_id: UUID
+) -> DraftOut:
+    """The caller's draft, refused with ``mailbox_not_connected`` while their mailbox isn't.
+
+    Checked when the card is made, so the user learns it now and not at Confirm.
+    """
+    draft = await service.draft_by_id(session, draft_id)
+    mailbox = (await service.context(session)).mailbox
+    if mailbox is None or mailbox.status != "connected":
+        raise EmailPolicyError("mailbox_not_connected")
+    return draft
+
+
 def _people(count: int) -> str:
     return f"{count} person" if count == 1 else f"{count} people"
 
@@ -268,7 +282,7 @@ class EmailExportExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         session = email_session_from(request, actor, client_id, mutation=True)
         try:
-            draft = await self._service(request).draft_by_id(session, proposal.draft_id)
+            draft = await _connected_draft(self._service(request), session, proposal.draft_id)
         except EmailPolicyError as exc:
             raise email_http_error(exc) from None
         # Bound to the whole draft the user sees (To, CC, BCC, subject, body), as a send card
@@ -349,7 +363,7 @@ class EmailSendExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         session = email_session_from(request, actor, client_id, mutation=True)
         try:
-            draft = await self._service(request).draft_by_id(session, proposal.draft_id)
+            draft = await _connected_draft(self._service(request), session, proposal.draft_id)
             if draft.status != "draft":
                 raise EmailPolicyError(_NOT_A_DRAFT[draft.status])
             version = draft_version(draft)
