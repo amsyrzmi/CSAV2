@@ -6,14 +6,17 @@ case file, the checklist link, the content-free output and the exit codes.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from csa.decide.completion import CompletionError
 from csa.email.models import DraftProposal
 from csa.workspace.planner import PlannerOutput, detect_language
+from csa.workspace.rules import ADDRESS
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from scripts import assistant_smoke as smoke
 
@@ -34,7 +37,7 @@ FEATURES = (
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
 SCRIPTED_BODY = "SCRIPTED-BODY-91c2 the scripted wording"
 SCRIPTED_TEXT = "SCRIPTED-TEXT-55d0"
-SCRIPTED_ADDRESS = "scripted.person@example.com"
+UNREQUESTED_ADDRESS = "scripted.person@example.com"  # in no case message
 
 
 def _feature(case_id: str) -> str:
@@ -83,6 +86,10 @@ def test_every_smoke_case_is_in_the_checklist() -> None:
     checklist = CHECKLIST.read_text(encoding="utf-8")
     missing = [case.id for case in smoke.load_cases() if f"`{case.id}`" not in checklist]
     assert missing == []
+    # And the reverse: every smoke id the checklist cites is a real case.
+    known = {case.id for case in smoke.load_cases()}
+    cited = set(re.findall(r"`([a-z_]+-(?:en|ms)-\d+)`", checklist))
+    assert cited - known == set()
 
 
 class ScriptedModel:
@@ -103,13 +110,21 @@ class ScriptedModel:
         if action == "answer":
             return {"action": "answer", "markdown": SCRIPTED_TEXT}
         if action == "navigate":
-            return {"action": "navigate", "tab": "hr"}
+            # Subscriptions is active in no preset, so it is locked; HR is open in staff_basic.
+            return {"action": "navigate", "tab": "subscriptions" if case.expect.locked else "hr"}
         if action == "directory_lookup":
             return {"action": "directory_lookup", "query": SCRIPTED_TEXT}
         if action == "email_compose":
+            # The recipient the user asked for: the address in the message, else my_manager.
+            found = ADDRESS.search(case.message)
+            if found is not None:
+                recipient: dict[str, Any] = {"recipient_address": found.group(0)}
+            else:
+                assert facts.my_manager is not None and facts.my_manager.employee_id is not None
+                recipient = {"recipient_employee_id": str(facts.my_manager.employee_id)}
             return {
                 "action": "email_compose",
-                "recipient_address": SCRIPTED_ADDRESS,
+                **recipient,
                 "subject": SCRIPTED_SUBJECT,
                 "instructions": SCRIPTED_TEXT,
                 "send": send,
@@ -144,7 +159,8 @@ class ScriptedModel:
         assert schema is PlannerOutput
         message = user.split("<message>\n", 1)[1].rsplit("\n</message>", 1)[0]
         case = self.by_message[message]
-        return PlannerOutput.model_validate({"proposal": self._proposal(case)})
+        # Parsed from JSON text, as GroqClient parses the provider's reply.
+        return PlannerOutput.model_validate_json(json.dumps({"proposal": self._proposal(case)}))
 
 
 def _assert_content_free(out: str) -> None:
@@ -300,3 +316,86 @@ def test_smoke_replans_a_content_question_once(capsys: pytest.CaptureFixture[str
     out = capsys.readouterr().out
     assert f"FAIL {case_id} action=clarification content_question actions replanned" in out
     assert twice.notes == [False, True]
+
+
+class UnrequestedModel(ScriptedModel):
+    """Compose plans to an address the user never wrote, for the first ``bad`` calls."""
+
+    def __init__(self, bad: int) -> None:
+        super().__init__()
+        self.bad = bad
+
+    def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+        proposal = super()._proposal(case)
+        if proposal["action"] == "email_compose" and self.bad > 0:
+            self.bad -= 1
+            return {**proposal, "recipient_address": UNREQUESTED_ADDRESS}
+        return proposal
+
+
+def test_smoke_refuses_an_unrequested_recipient(capsys: pytest.CaptureFixture[str]) -> None:
+    """The turn path's recipient check runs: refused once, the case is re-planned with the note
+    and passes; refused twice, the user gets the fallback and the case fails on ``recipient``."""
+    once = UnrequestedModel(bad=1)
+    assert smoke.main(["--case", "compose-en-1"], client=once) == 0
+    out = capsys.readouterr().out
+    assert "PASS compose-en-1 action=email_compose replanned" in out
+    assert once.calls.count("PlannerOutput") == 2
+
+    twice = UnrequestedModel(bad=2)
+    assert smoke.main(["--case", "compose-en-1"], client=twice) == 1
+    out = capsys.readouterr().out
+    assert "FAIL compose-en-1 action=email_compose recipient replanned" in out
+    assert twice.calls.count("PlannerOutput") == 2
+    assert "DraftProposal" not in twice.calls  # nothing is drafted for a refused plan
+    _assert_content_free(out)
+
+
+def test_smoke_expected_recipient_and_locked_tab(capsys: pytest.CaptureFixture[str]) -> None:
+    """An employee id the user never offered fails ``recipient``; a navigate to an open tab
+    where the case expects the locked answer fails ``locked``, and passes where it does not."""
+
+    class ManagerModel(ScriptedModel):
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            proposal = super()._proposal(case)
+            proposal.pop("recipient_address", None)
+            return {**proposal, "recipient_employee_id": str(smoke.MANAGER_ID)}
+
+    # The message names no manager, so the id was never offered: refused twice, the fallback.
+    assert smoke.main(["--case", "compose-en-3"], client=ManagerModel()) == 1
+    assert "FAIL compose-en-3 action=email_compose recipient replanned" in (capsys.readouterr().out)
+
+    class OpenTabModel(ScriptedModel):
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            return {"action": "navigate", "tab": "overview"}
+
+    assert smoke.main(["--case", "navigate-ms-2"], client=OpenTabModel()) == 1
+    assert "FAIL navigate-ms-2 action=navigate locked" in capsys.readouterr().out
+    assert smoke.main(["--case", "navigate-en-1"], client=OpenTabModel()) == 0
+    capsys.readouterr()
+
+
+def test_smoke_stops_when_the_model_is_unavailable_first(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A provider failure on the first call is a setup error: exit 2, no further calls."""
+
+    class DownModel(ScriptedModel):
+        async def json_completion(
+            self,
+            schema: type[Any],
+            *,
+            system: str,
+            user: str,
+            timeout: float,
+            max_tokens: int = 1500,
+        ) -> Any:
+            self.calls.append(schema.__name__)
+            raise CompletionError("groq_timeout")
+
+    down = DownModel()
+    assert smoke.main([], client=down) == 2
+    captured = capsys.readouterr()
+    assert "model unavailable" in captured.err
+    assert captured.out == ""
+    assert down.calls == ["PlannerOutput"]

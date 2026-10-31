@@ -2,10 +2,14 @@
 
 Runs the real planner (``WorkspacePlanner.plan``) and the real email-drafting call
 (``EmailService._compose_with_model``) on the synthetic cases in
-``csa/workspace/smoke_cases.json``, then checks each output with the same pure server rules the
-turn path uses (``csa/workspace/rules.py``): the content check and its one re-plan, the
-placeholder-option filter and the send rule. No database, Gmail, tenant data, writes or HTTP
-routes are involved; the facts come from the synthetic presets below.
+``csa/workspace/smoke_cases.json``. Each case goes through the turn service's own correction
+loop (``_corrected_plan``: at most two planner calls) with a resolve step that runs every check
+the turn path can make without a connection: the recipient check (``_check_recipients``, through
+``_named_recipient_check``), the reply thread, a blank directory query, clarification option
+limits (``_clarification``) and the tab rule (``rules.tab_available``). Then it checks the
+placeholder options, the send rule (``_asked_to_send``), the expected recipient and the draft.
+No database, Gmail, tenant data, writes or HTTP routes are involved; the facts come from the
+synthetic presets below.
 
 It runs inside the staging gateway container, which has the model key mounted::
 
@@ -15,7 +19,7 @@ Output is content-free: one ``PASS|FAIL <id> action=<action>`` line per sample, 
 field names after a failure, ``RATE <id> k/N`` per case with ``--repeat``, and a last
 ``N passed, M failed`` line. Never a message, model text, subject, body or address; the key is
 never printed. Exit 0 when every sample passes, 1 when any fails, 2 on a setup error (no model
-key, an unknown case id).
+key, the model unavailable on the first call, an unknown case id).
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -40,9 +44,11 @@ from csa.email.models import validated_draft
 from csa.email.service import EmailService
 from csa.workspace.contracts import (
     ClarificationProposal,
+    DirectoryLookupProposal,
     EmailComposeProposal,
     EmailReplyProposal,
     EmailTeamProposal,
+    NavigateProposal,
     PageContext,
     TabKey,
     WorkspaceProposal,
@@ -59,15 +65,25 @@ from csa.workspace.planner import (
     WorkspacePlanner,
 )
 from csa.workspace.rules import (
-    CONTENT_NOTE,
-    CORRECTION_NOTES,
-    about_email,
-    asks_for_content,
-    asks_to_send,
+    BLANK_QUERY,
+    CONTRACT_INVALID,
+    OPTION_TOO_LONG,
+    RECIPIENT_NOT_REQUESTED,
+    UNKNOWN_THREAD,
     is_placeholder,
-    picks_thread_or_colleague,
+    tab_available,
 )
-from csa.workspace.service import _MAIL_WORDS, _MANAGER_WORDS, _TEAM_WORDS, _TRAINING_WORDS
+from csa.workspace.service import (
+    _MAIL_WORDS,
+    _MANAGER_WORDS,
+    _TEAM_WORDS,
+    _TRAINING_WORDS,
+    _asked_to_send,
+    _clarification,
+    _corrected_plan,
+    _named_recipient_check,
+    _Planned,
+)
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 CASES_FILE = Path(__file__).resolve().parent.parent / "csa" / "workspace" / "smoke_cases.json"
@@ -115,6 +131,11 @@ class Expect(_Strict):
     send: bool | None = None
     no_placeholder_options: bool = False
     draft_valid: bool = False
+    # email_compose must go to exactly this address (it is in the message); never printed.
+    recipient: str | None = None
+    # True: a navigate must reach a tab this user cannot open, so the turn answers with the
+    # locked text. False: a navigate to such a tab fails with ``locked``.
+    locked: bool = False
 
 
 class SmokeCase(_Strict):
@@ -229,6 +250,20 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
 
 
 # --- One sample ------------------------------------------------------------------------------
+# A refusal the server names (a second one ends in the M7 fallback) and its failing field.
+REASON_FIELDS = {
+    RECIPIENT_NOT_REQUESTED: "recipient",
+    UNKNOWN_THREAD: "thread",
+    BLANK_QUERY: "query",
+    OPTION_TOO_LONG: "options",
+    CONTRACT_INVALID: "contract",
+}
+
+
+class ModelUnavailable(Exception):
+    """The provider failed on the run's first call: a setup problem, so the run stops."""
+
+
 @dataclass
 class Outcome:
     """One sample's chosen action and failing field names: never any model text."""
@@ -245,40 +280,64 @@ class Outcome:
         return " ".join(parts)
 
 
-def _corrects_content(proposal: WorkspaceProposal, case: SmokeCase, facts: PlannerFacts) -> bool:
-    """The turn path's content check: on an email turn, a question for the subject or wording
-    that does not pick a synced thread or a colleague. The message is all user-typed here."""
-    threads = [thread.thread_id for thread in facts.mailbox_threads or []]
-    return (
-        asks_for_content(proposal)
-        and about_email([case.message])
-        and not picks_thread_or_colleague(proposal, threads)
-    )
+@dataclass
+class _Call:
+    """One planner call of a turn: what the model proposed and how the server took it."""
+
+    proposal: WorkspaceProposal | None = None
+    refusal: str | None = None
+    locked: bool = False
 
 
-async def _plan(
-    planner: WorkspacePlanner, case: SmokeCase, facts: PlannerFacts
-) -> tuple[WorkspaceProposal | None, Outcome]:
-    """At most two planner calls, as on the turn path: a content question or a contract break
-    the planner can name is re-planned once with the fixed server note."""
-    note: str | None = None
-    for final in (False, True):
+class _RecordingPlanner(WorkspacePlanner):
+    """The real planner, recording each call so the outcome can name what happened."""
+
+    def __init__(self, client: JsonCompletionClient) -> None:
+        super().__init__(client)
+        self.calls: list[_Call] = []
+
+    async def plan(
+        self, message: str, facts: PlannerFacts, *, note: str | None = None
+    ) -> WorkspaceProposal:
+        call = _Call()
+        self.calls.append(call)
         try:
-            proposal = await planner.plan(case.message, facts, note=note)
+            call.proposal = await super().plan(message, facts, note=note)
         except PlannerInvalidOutput as exc:
-            if final or exc.reason not in CORRECTION_NOTES:
-                return None, Outcome("invalid_output", ["contract"], note is not None)
-            note = CORRECTION_NOTES[exc.reason]
-            continue
-        except PlannerUnavailable:
-            return None, Outcome("unavailable", ["model"], note is not None)
-        if _corrects_content(proposal, case, facts):
-            if final:
-                return proposal, Outcome(proposal.action, ["content_question"], True)
-            note = CONTENT_NOTE
-            continue
-        return proposal, Outcome(proposal.action, [], note is not None)
-    raise AssertionError("the second plan is always final")
+            call.refusal = exc.reason or CONTRACT_INVALID
+            raise
+        return call.proposal
+
+
+def _resolver(
+    planner: _RecordingPlanner, message: str, facts: PlannerFacts
+) -> Callable[[WorkspaceProposal], Awaitable[_Planned]]:
+    """The turn path's ``_resolve`` checks that need no connection, in the same order."""
+
+    async def resolve(proposal: WorkspaceProposal) -> _Planned:
+        call = planner.calls[-1]
+        try:
+            if isinstance(proposal, NavigateProposal):
+                call.locked = not tab_available(proposal.tab, facts.role, facts.packages)
+            elif isinstance(proposal, DirectoryLookupProposal):
+                if not proposal.query.strip():
+                    raise PlannerInvalidOutput(BLANK_QUERY)
+            elif isinstance(proposal, ClarificationProposal):
+                live, stored = _clarification(proposal)
+                return _Planned(result=live, stored=stored)
+            elif isinstance(proposal, EmailComposeProposal):
+                _named_recipient_check(proposal, message, facts)
+            elif isinstance(proposal, EmailReplyProposal):
+                synced = {thread.thread_id for thread in facts.mailbox_threads or []}
+                if proposal.thread_id not in synced:
+                    raise PlannerInvalidOutput(UNKNOWN_THREAD)
+                _named_recipient_check(proposal, message, facts)
+        except PlannerInvalidOutput as exc:
+            call.refusal = exc.reason or CONTRACT_INVALID
+            raise
+        return _Planned()
+
+    return resolve
 
 
 async def _draft_is_valid(
@@ -302,29 +361,57 @@ async def _draft_is_valid(
     return True
 
 
-async def run_case(planner: WorkspacePlanner, email: EmailService, case: SmokeCase) -> Outcome:
-    """Plan one case and check the plan with the server's pure rules."""
+async def run_case(
+    client: JsonCompletionClient, email: EmailService, case: SmokeCase, *, first: bool = False
+) -> Outcome:
+    """Plan one case through the turn's correction loop and check what the user would get.
+
+    ``first``: the run's first call, where a provider failure stops the run (exit 2)."""
     facts = build_facts(case)
-    proposal, outcome = await _plan(planner, case, facts)
+    planner = _RecordingPlanner(client)
+    try:
+        returned, _ = await _corrected_plan(
+            planner, case.message, facts, _resolver(planner, case.message, facts)
+        )
+    except PlannerUnavailable:
+        if first and len(planner.calls) == 1:
+            raise ModelUnavailable() from None
+        return Outcome("unavailable", ["model"], len(planner.calls) > 1)
+    except PlannerInvalidOutput:  # a refusal with no correction note: a 502 on the turn path
+        return Outcome("invalid_output", ["contract"], len(planner.calls) > 1)
+    last = planner.calls[-1]
+    proposal = last.proposal
+    outcome = Outcome(proposal.action if proposal else "invalid_output", [], len(planner.calls) > 1)
+    failed = outcome.failed
+    if last.refusal is not None:  # refused twice: the user got the M7 fallback
+        failed.append(REASON_FIELDS.get(last.refusal, "contract"))
+    elif returned is not proposal:  # asked for the content twice: the fixed content question
+        failed.append("content_question")
     if proposal is None:
         return outcome
     expect = case.expect
-    failed = outcome.failed
     if proposal.action not in expect.actions:
         failed.append("actions")
     if proposal.action in expect.not_actions:
         failed.append("not_actions")
+    if isinstance(proposal, NavigateProposal) and last.locked != expect.locked:
+        failed.append("locked")
     if isinstance(proposal, ClarificationProposal) and expect.no_placeholder_options:
         # The server drops these options; one offered at all means the prompt drifted.
         if any(is_placeholder(option) for option in proposal.options):
             failed.append("placeholder_options")
     email_plan = (EmailComposeProposal, EmailReplyProposal, EmailTeamProposal)
     if expect.send is not None and isinstance(proposal, email_plan):
-        if asks_to_send(case.message, proposal.send) != expect.send:
+        if _asked_to_send(proposal, case.message, facts) != expect.send:
             failed.append("send")
-    if expect.draft_valid and isinstance(proposal, EmailComposeProposal | EmailTeamProposal):
-        if not await _draft_is_valid(email, proposal):
-            failed.append("draft")
+    if expect.recipient is not None and isinstance(proposal, EmailComposeProposal):
+        address = (proposal.recipient_address or "").strip().lower()
+        if address != expect.recipient.lower() and "recipient" not in failed:
+            failed.append("recipient")
+    if expect.draft_valid and not failed:
+        if isinstance(proposal, EmailComposeProposal | EmailTeamProposal):
+            if not await _draft_is_valid(email, proposal):
+                failed.append("draft")
     return outcome
 
 
@@ -332,7 +419,6 @@ async def run(
     client: JsonCompletionClient, cases: Sequence[SmokeCase], repeat: int, out: Callable[[str], Any]
 ) -> int:
     """Every case ``repeat`` times; prints content-free lines and returns the exit code."""
-    planner = WorkspacePlanner(client)
     # Built without a pool: only the pure drafting call is used, never a database method.
     email = EmailService(
         None,  # type: ignore[arg-type]
@@ -341,10 +427,15 @@ async def run(
         session_idle_seconds=SESSION_IDLE_SECONDS,
     )
     passed = failed = 0
+    first = True
     for case in cases:
         wins = 0
         for _ in range(repeat):
-            outcome = await run_case(planner, email, case)
+            try:
+                outcome = await run_case(client, email, case, first=first)
+            except ModelUnavailable:
+                return _setup_error("model unavailable on the first call; nothing was checked")
+            first = False
             out(outcome.line(case.id))
             wins += not outcome.failed
         if repeat > 1:
@@ -362,7 +453,7 @@ def _model_key() -> tuple[str, str] | None:
         settings = get_settings()
     except ValidationError:
         return None
-    key = settings.GROQ_API_KEY.get_secret_value().strip()
+    key = settings.GROQ_API_KEY.get_secret_value()
     return (key, settings.GROQ_MODEL) if key else None
 
 
