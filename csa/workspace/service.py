@@ -62,6 +62,7 @@ from csa.workspace.contracts import (
     GuidanceResult,
     InboxDecisionProposal,
     InboxSummaryProposal,
+    Language,
     LocalOrderSummary,
     NavigateProposal,
     NavigateResult,
@@ -132,8 +133,15 @@ _GUIDANCE_KEYS: dict[
 }
 
 
-def _stored_result(value: Any) -> WorkspaceActionResult:
-    return _RESULT.validate_json(json.dumps(value, allow_nan=False))
+def _split_stored(value: Any) -> tuple[WorkspaceActionResult, Language]:
+    """A stored ``result`` and the turn's language saved beside it ("en" for an older row).
+
+    The result is a strict union, so ``language`` is taken off before it is validated.
+    """
+    stored = dict(value) if isinstance(value, dict) else value
+    language: Any = stored.pop("language", "en") if isinstance(stored, dict) else "en"
+    result = _RESULT.validate_json(json.dumps(stored, allow_nan=False))
+    return result, language if language in ("en", "ms") else "en"
 
 
 class WorkspaceConflict(ValueError):
@@ -316,7 +324,9 @@ async def _fresh_result(
     )
 
 
-def _replayed(row: dict[str, Any], result: WorkspaceActionResult) -> WorkspaceTurnOut:
+def _replayed(
+    row: dict[str, Any], result: WorkspaceActionResult, language: Language
+) -> WorkspaceTurnOut:
     return WorkspaceTurnOut.model_validate(
         {
             "id": row["id"],
@@ -325,6 +335,7 @@ def _replayed(row: dict[str, Any], result: WorkspaceActionResult) -> WorkspaceTu
             "result": result,
             "created_at": row["created_at"],
             "duplicate": True,
+            "language": language,
         }
     )
 
@@ -356,13 +367,19 @@ async def create_turn(
         conn, actor, client_id, thread, turn, now=timestamp
     )
     if existing is not None:
-        previous = _stored_result(existing["result"])
+        previous, stored_language = _split_stored(existing["result"])
         if isinstance(previous, OrderReadResult):
             if not isinstance(result, OrderReadResult) or (
                 previous.order.updated_at != result.order.updated_at
             ):
                 raise WorkspaceConflict("resource changed; submit a new request")
-        return _replayed(existing, previous)
+        return _replayed(existing, previous, stored_language)
+    last = await db.q.fetch_one(
+        "workspace/turn_last.sql", (client_id, thread_id, actor.user_id), conn=conn
+    )
+    language = turn_language(
+        turn.body, [], _split_stored(last["result"])[1] if last is not None else None
+    )
     resource_id = proposal.resource.order_id if isinstance(proposal, OrderReadProposal) else None
     return await _insert_turn(
         conn,
@@ -375,6 +392,7 @@ async def create_turn(
         page=page,
         resource_id=resource_id,
         result=result,
+        language=language,
     )
 
 
@@ -390,9 +408,13 @@ async def _insert_turn(
     page: str,
     resource_id: str | None,
     result: WorkspaceActionResult,
+    language: Language,
     stored: WorkspaceActionResult | None = None,
 ) -> WorkspaceTurnOut:
-    """Store the turn; ``stored`` replaces ``result`` in the row when the answer is private."""
+    """Store the turn; ``stored`` replaces ``result`` in the row when the answer is private.
+
+    The turn's language is saved beside the result and returned with it.
+    """
     body = redact(turn.body)
     if not body.strip() or len(body) > 8000:
         raise ValueError("workspace text could not be safely persisted")
@@ -409,7 +431,7 @@ async def _insert_turn(
             action,
             page,
             resource_id,
-            Jsonb((stored or result).model_dump(mode="json")),
+            Jsonb({**(stored or result).model_dump(mode="json"), "language": language}),
         ),
         conn=conn,
     )
@@ -427,7 +449,7 @@ async def _insert_turn(
         conn=conn,
     )
     row["result"] = result
-    return WorkspaceTurnOut.model_validate({**row, "duplicate": False})
+    return WorkspaceTurnOut.model_validate({**row, "duplicate": False, "language": language})
 
 
 async def list_turns(
@@ -445,7 +467,7 @@ async def list_turns(
     )
     items = []
     for row in rows[:50]:
-        row["result"] = _stored_result(row["result"])
+        row["result"], row["language"] = _split_stored(row["result"])
         items.append(WorkspaceTurnOut.model_validate(row))
     return items, items[-1].id if len(rows) > 50 and items else None
 
@@ -720,7 +742,7 @@ def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
     rows = list(reversed(rows))
     history: list[PriorTurn] = []
     for index, row in enumerate(rows):
-        result = _stored_result(row["result"])
+        result, _ = _split_stored(row["result"])
         following = rows[index + 1]["body"] if index + 1 < len(rows) else current
         item: dict[str, Any] = {
             "message": row["body"][:HISTORY_CHARS],
@@ -885,6 +907,9 @@ async def planner_facts(
             (client_id, thread_id, actor.user_id, HISTORY_TURNS),
             conn=conn,
         )
+    history = _prior_turns(rows, turn.body)
+    previous = _split_stored(rows[0]["result"])[1] if rows else None
+    offered = history[-1].offered_options if history else []
     manager = None
     if _MANAGER_WORDS.search(turn.body):
         manager = await _my_manager(request, actor, client_id, packages)
@@ -902,8 +927,8 @@ async def planner_facts(
         packages=packages,
         page_context=context,
         record_summary=summary,
-        language=detect_language(turn.body) or "en",
-        history=_prior_turns(rows, turn.body),
+        language=turn_language(turn.body, offered, previous),
+        history=history,
         my_manager=manager,
         mailbox_threads=threads,
         my_team=team,
@@ -1106,6 +1131,26 @@ def _answer_parts(message: str) -> tuple[str, str, list[str]]:
     first, _, folded = request.partition(_ANSWERED_MARK)
     answers = [part.partition(_FOLDED_MARK)[2] for part in folded.split(_ANSWERED_MARK)]
     return typed, first, answers if folded else []
+
+
+_COLLEAGUE_PICK = re.compile(r"^Use employee \S+ for: ")
+
+
+def own_words(body: str, offered: list[str]) -> str:
+    """What the staff member typed, for judging the language of the turn.
+
+    Not the folded question or origin of an answer turn, not a value picked from the options
+    just offered, and nothing for a colleague pick ("Use employee <id> for: ...").
+    """
+    if _COLLEAGUE_PICK.match(body):
+        return ""
+    typed = _answer_parts(body)[0]
+    return "" if _picked(typed, offered) else typed
+
+
+def turn_language(body: str, offered: list[str], previous: Language | None) -> Language:
+    """The turn's language: the clear language of its own words, else the thread's, else English."""
+    return detect_language(own_words(body, offered)) or previous or "en"
 
 
 def _picked(text: str, values: list[str]) -> bool:
@@ -1427,11 +1472,11 @@ def _plain(text: str, limit: int) -> str:
     return " ".join(text.split())[:limit]
 
 
-def _count(count: int, one: str, many: str, language: Literal["en", "ms"]) -> str:
+def _count(count: int, one: str, many: str, language: Language) -> str:
     return f"{count} {_TEXT[language][one if count == 1 else many]}"
 
 
-def _summary_markdown(page: AttentionPage, language: Literal["en", "ms"]) -> str:
+def _summary_markdown(page: AttentionPage, language: Language) -> str:
     """The answer the user sees now; it is not stored (see ``_summary_stored``)."""
     text = _TEXT[language]
     lines: list[str] = []
@@ -1459,7 +1504,7 @@ def _summary_markdown(page: AttentionPage, language: Literal["en", "ms"]) -> str
     return "\n".join(lines)
 
 
-def _summary_stored(page: AttentionPage, language: Literal["en", "ms"]) -> AnswerResult:
+def _summary_stored(page: AttentionPage, language: Language) -> AnswerResult:
     """Counts only: turns are readable tenant-wide, mail content is owner-only."""
     count = _count(len(page.items), "item", "items", language)
     return AnswerResult(
@@ -1657,7 +1702,8 @@ async def _known_turn(
         return None
     if row["fingerprint"] != fingerprint:
         raise WorkspaceConflict("request key was already used for different content")
-    return _replayed(row, _stored_result(row["result"]))
+    result, language = _split_stored(row["result"])
+    return _replayed(row, result, language)
 
 
 async def create_planned_turn(
@@ -1692,10 +1738,10 @@ async def create_planned_turn(
         if known is not None:
             return known
         # Threads are tenant-bound, so a tab change is the only context switch to fence here.
-        previous = await db.q.fetch_one(
+        last = await db.q.fetch_one(
             "workspace/turn_last.sql", (client_id, thread_id, actor.user_id), conn=conn
         )
-        if previous is not None and previous["page_key"] != context.tab:
+        if last is not None and last["page_key"] != context.tab:
             await registry.cancel_thread(conn, actor, client_id, thread_id)
         result = await _finish(conn, actor, client_id, thread_id, planned, facts, registry)
         # The inbox summary is shown once and stored as counts only; an answer about an open
@@ -1716,5 +1762,6 @@ async def create_planned_turn(
             page=context.tab,
             resource_id=None,
             result=result,
+            language=facts.language,
             stored=stored,
         )

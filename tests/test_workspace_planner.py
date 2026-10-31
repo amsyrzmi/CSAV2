@@ -22,6 +22,7 @@ from csa.workspace.planner import (
     detect_language,
     planner_prompt,
 )
+from csa.workspace.service import own_words, turn_language
 from pydantic import BaseModel, ValidationError
 
 from tests.conftest import requires_docker
@@ -185,6 +186,22 @@ def _plain_fell_back(response: httpx.Response, text: str = THREAD_FALLBACK["en"]
     """Refused twice and answered in plain text: an unknown thread, or a non-email turn (M7)."""
     assert response.status_code == 201, response.text
     assert response.json()["result"] == {"action": "answer", "markdown": text}
+
+
+def test_own_words_drops_folds_picks_and_colleague_picks() -> None:
+    uid = "1b9d3c4e-5f60-4a71-8b92-0c1d2e3f4a5b"
+    assert own_words(f"Use employee {uid} for: hantar emel kepada Danial", []) == ""
+    folded = "tolong buka halaman\n(Answer to \u201cWhich tab?\u201d for: show me the tab)"
+    assert own_words(folded, []).strip() == "tolong buka halaman"
+    assert own_words("danial@x.my", ["danial@x.my"]) == ""
+    assert own_words("ya", ["danial@x.my"]) == "ya"
+
+
+def test_turn_language_carries() -> None:
+    assert turn_language("danial@fourstacks.my", [], "ms") == "ms"
+    assert turn_language("ok", [], None) == "en"
+    assert turn_language("send it to danial please", [], "ms") == "en"
+    assert turn_language("danial@x.my", ["danial@x.my"], "ms") == "ms"
 
 
 def test_detect_language_recognises_malay() -> None:
@@ -1716,7 +1733,7 @@ async def test_stored_turns_carry_no_draft_subject(planned) -> None:
         rows = await w.q(
             "SELECT result FROM console_workspace_turns WHERE request_key=%s", UUID(key)
         )
-        assert rows == [{"result": {"action": "answer", "markdown": stored}}]
+        assert rows == [{"result": {"action": "answer", "markdown": stored, "language": "en"}}]
         again = await _turn(
             w, browser, thread, "What is this draft?", "email", record=record, key=key
         )
@@ -2738,3 +2755,48 @@ async def test_my_employee_reason_when_training_is_not_possible(planned, state: 
         "reason": state,
     }
     assert await _proposal_count(w) == 0
+
+
+@requires_docker
+async def test_malay_conversation_stays_malay_after_a_typed_address(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w)
+    thread = await _thread(w, browser)
+    model.reply({"action": "clarification", "question": "Apakah alamat emelnya?", "options": []})
+    asked = await _turn(w, browser, thread, "tolong hantar emel kepada Danial", "email")
+    assert asked.status_code == 201, asked.text
+    model.reply({"action": "answer", "markdown": "Baik."})
+    typed = await _turn(w, browser, thread, "danial@fourstacks.my", "email")
+    assert typed.status_code == 201, typed.text
+    assert asked.json()["language"] == "ms" and typed.json()["language"] == "ms"
+    assert model.facts(0)["language"] == "ms" and model.facts(1)["language"] == "ms"
+    listed = (await browser.get(f"{THREADS}/{thread}/turns")).json()["items"]
+    assert [item["language"] for item in listed] == ["ms", "ms"]
+    stored = await w.q("SELECT result->>'language' AS language FROM console_workspace_turns")
+    assert [row["language"] for row in stored] == ["ms", "ms"]
+
+
+@requires_docker
+async def test_turn_stored_without_language_reads_as_english(planned) -> None:
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    key = str(uuid4())
+    model.reply({"action": "answer", "markdown": "Old answer."})
+    first = await _turn(w, browser, thread, "Take me home", "overview", key=key)
+    assert first.status_code == 201, first.text
+    await w.q("UPDATE console_workspace_turns SET result = result - 'language'")
+    stored = await w.q("SELECT result FROM console_workspace_turns")
+    assert "language" not in stored[0]["result"]
+    listed = (await browser.get(f"{THREADS}/{thread}/turns")).json()["items"]
+    assert [(item["language"], item["result"]["markdown"]) for item in listed] == [
+        ("en", "Old answer.")
+    ]
+    replay = await _turn(w, browser, thread, "Take me home", "overview", key=key)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["duplicate"] is True and replay.json()["language"] == "en"
+    model.reply({"action": "answer", "markdown": "Hello."})
+    following = await _turn(w, browser, thread, "ok", "overview")
+    assert following.status_code == 201, following.text
+    assert following.json()["language"] == "en"
+    assert model.facts()["language"] == "en"

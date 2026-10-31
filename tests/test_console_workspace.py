@@ -467,3 +467,32 @@ async def test_attention_refusals_are_plain_answers(planned) -> None:  # noqa: F
     assert [r["action"] for r in rows] == ["inbox_summary"] * 3
     for row in rows:
         assert "MGL-TEST-005" not in row["t"] and "aina@example.test" not in row["t"]
+
+
+async def test_legacy_turn_carries_thread_language(planned) -> None:  # noqa: F811
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply({"action": "answer", "markdown": "Baik."})
+    first = await _turn(w, browser, thread, "tolong buka halaman pesanan", "overview")
+    assert first.status_code == 201, first.text
+    assert first.json()["language"] == "ms"
+    legacy = await w.mutate(
+        browser,
+        workspace_path(suffix=f"/{thread}/turns"),
+        {"request_key": str(uuid4()), "body": "ok", "page_hint": {"page": "business_orders"}},
+    )
+    assert legacy.status_code == 201, legacy.text
+    assert legacy.json()["language"] == "ms"
+    english = await w.mutate(
+        browser,
+        workspace_path(suffix=f"/{thread}/turns"),
+        {
+            "request_key": str(uuid4()),
+            "body": "show me the page",
+            "page_hint": {"page": "business_orders"},
+        },
+    )
+    assert english.json()["language"] == "en"
+    items = (await browser.get(workspace_path(suffix=f"/{thread}/turns"))).json()["items"]
+    assert [item["language"] for item in items] == ["en", "ms", "ms"]

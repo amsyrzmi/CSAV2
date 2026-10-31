@@ -10479,6 +10479,15 @@
             "title": "Id",
             "type": "integer"
           },
+          "language": {
+            "default": "en",
+            "enum": [
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
           "request_key": {
             "format": "uuid",
             "title": "Request Key",

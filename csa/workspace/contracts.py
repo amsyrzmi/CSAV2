@@ -577,6 +577,7 @@ class WorkspaceTurnOut(_Contract):
     result: WorkspaceActionResult
     created_at: AwareDatetime
     duplicate: bool = False
+    language: Language = "en"
 
 
 class WorkspaceTurnPage(_Contract):
