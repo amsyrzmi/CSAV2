@@ -160,6 +160,14 @@ data only.
   opens (after sync on open) and after the Sync button, not after load more,
   because each load can spend up to 5 model calls.
 - In the workspace assistant, a failure becomes a plain answer, not an error.
+- In the workspace assistant, a connected mailbox that has never synced (its
+  last-sync time is null) gets a plain answer instead of an empty summary: "Your
+  email hasn't been synced yet. Open the Email assistant tab and press Sync, then
+  ask again." (in Malay when the user writes in Malay). A never-synced row that
+  is not connected (a pending connect or a revoked mailbox) gets "Connect your
+  Gmail on the Email assistant tab first." instead, because Sync needs a
+  connected mailbox. Zero threads after a sync is the normal "nothing needs your
+  attention" answer.
 
 ## Workspace assistant
 
@@ -183,6 +191,18 @@ now" gives a draft card. The first rule that matches wins:
 4. Anything else gives a draft card.
 
 The user confirms either card before anything happens.
+
+- Both cards check that the user's mailbox is connected when the card is made,
+  so a disconnected mailbox is refused then with 409 `mailbox_not_connected`,
+  not at Confirm.
+- When the drafting model fails (an invalid answer, a provider error or a
+  timeout) on a compose, reply or team email turn, the turn returns 503
+  `email_model_unavailable`, never a 500. Nothing is drafted or stored, and the
+  user can try again. A failure while planning stays 503 `planner_unavailable`.
+- The drafting prompts name the JSON keys (`subject`, `body`,
+  `needs_facts_from_staff`). An extra key in the model's answer, such as `to`,
+  is ignored: recipients never come from the model. A subject over 200
+  characters is cut and facts past 5 are dropped.
 
 Clarifications are checked by the server, not only by the planner prompt:
 
@@ -217,7 +237,27 @@ Clarifications are checked by the server, not only by the planner prompt:
   in the message (a directory result the user picked), an id an earlier
   directory turn offered, or `my_manager` (present only when the message
   mentions a manager). `my_team` ids serve "email my team" only. Any other id
-  is refused as invented (502 `planner_invalid_output`).
+  is refused as invented.
+- A refused plan the server can name (a recipient the user did not ask for, a
+  thread not in the synced mail, a blank directory search, an over-long option,
+  or JSON that breaks the plan contract) is planned once more with a fixed
+  server note for that rule, and every gate runs again on the new plan. The
+  correction budget is shared with the content correction above: one
+  correction per turn, whatever its kind, so a turn makes at most two planner
+  calls. If the second plan breaks a rule too, nothing is drafted: an unknown
+  thread gets the plain answer "I couldn't find that conversation in your
+  synced email.", and on an email turn every other rule gets the question "I
+  couldn't work out who to send that to. Type their email address." with no
+  options (in Malay for a Malay message). The typed address folds in the first
+  request, so "send" still counts. On any other turn the answer is "I couldn't
+  work that out. Try rephrasing or say what you want to do." Output that is not JSON at all stays 502
+  `planner_invalid_output`.
+- When the directory finds nobody for an email request, or HR is not active,
+  the assistant asks "I couldn't find that person in the directory. Type their
+  email address and I'll continue." with no options. The typed address is
+  folded into the first request, so "send" still counts. Outside email a
+  search with no match answers "No matching colleague was found." (in Malay
+  for a Malay message).
 - The save-to-Gmail-drafts card is bound to the whole draft (To, CC, BCC,
   subject and body, the same `draft_version` as a send card), so any edit makes
   it stale. Cards made before this change go stale once.

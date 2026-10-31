@@ -20,6 +20,8 @@ def materialize(source: Path, destination: Path) -> None:
         Path("uv.lock"),
         Path("db/schema_baseline.sql"),
         Path("csa/evals/data/decision_cases.json"),
+        # Read by the owner's smoke run inside the gateway image (scripts/assistant_smoke.py).
+        Path("csa/workspace/smoke_cases.json"),
     ]
     for directory, suffix in (
         ("apps", ".py"),

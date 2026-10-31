@@ -25,10 +25,16 @@ from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.email.api import email_error_content, email_http_error, email_session_from
 from csa.email.gmail import GmailError
-from csa.email.models import DraftOut, EmailPolicyError, draft_version
+from csa.email.models import DraftOut, EmailPolicyError, EmailSession, draft_version
 from csa.email.service import EmailService
 from csa.hr.api import hr_http_error, hr_session_from
-from csa.hr.models import TrainingAction, TrainingCommandInput, TrainingDraftInput, TrainingStatus
+from csa.hr.models import (
+    HrAction,
+    TrainingAction,
+    TrainingCommandInput,
+    TrainingDraftInput,
+    TrainingStatus,
+)
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import HrSession
 from csa.hr.service import HrService
@@ -51,6 +57,11 @@ from csa.workspace.registry import (
 
 _ACTIVE = frozenset({"active"})
 _ACTIVE_OR_SUSPENDED = frozenset({"active", "suspended"})
+# A new request is saved as a draft and then submitted, so it needs both grants: with only
+# the draft grant the submit would be refused and leave the draft behind. The planner's
+# my_employee fact uses the same set.
+NEW_TRAINING_GRANTS = frozenset({HrAction.TRAINING_DRAFT.value, HrAction.TRAINING_SUBMIT.value})
+_SUBMIT_GRANTS = frozenset({HrAction.TRAINING_SUBMIT.value})
 
 
 def _parse[Model: BaseModel](
@@ -98,6 +109,25 @@ class TrainingSubmitExecutor:
         except HrPolicyError as exc:
             raise hr_http_error(exc) from None
 
+    @staticmethod
+    async def _prerequisites(
+        service: HrService, session: HrSession, needed: frozenset[str]
+    ) -> None:
+        """The caller's own employee link and training grants, checked when the card is made.
+
+        ``context`` enforces the session (and ``hr_assistant`` for assistant proposals).
+        """
+        try:
+            context = await service.context(session)
+        except HrPolicyError as exc:
+            if exc.code == "permission_denied":
+                raise HTTPException(403, "hr_training_not_permitted") from None
+            raise hr_http_error(exc) from None
+        if context.employee is None:
+            raise HTTPException(409, "no_employee_link")
+        if not needed <= set(context.actions):
+            raise HTTPException(403, "hr_training_not_permitted")
+
     async def card(
         self,
         request: Request,
@@ -111,20 +141,22 @@ class TrainingSubmitExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         service = self._service(request)
         session = self._session(request, actor, client_id, origin)
+        new = proposal.request_id is None
+        await self._prerequisites(service, session, NEW_TRAINING_GRANTS if new else _SUBMIT_GRANTS)
+        if proposal.request_id is None:
+            assert proposal.title is not None and proposal.learning_objective is not None
+            return (
+                CardContent(
+                    title="Submit a new training request",
+                    summary=f"Create and submit “{proposal.title}” for approval.",
+                    fields=[
+                        CardField(label="Title", value=proposal.title),
+                        CardField(label="Objective", value=proposal.learning_objective),
+                    ],
+                ),
+                None,
+            )
         try:
-            if proposal.request_id is None:
-                assert proposal.title is not None and proposal.learning_objective is not None
-                return (
-                    CardContent(
-                        title="Submit a new training request",
-                        summary=f"Create and submit “{proposal.title}” for approval.",
-                        fields=[
-                            CardField(label="Title", value=proposal.title),
-                            CardField(label="Objective", value=proposal.learning_objective),
-                        ],
-                    ),
-                    None,
-                )
             projection = await service.training(session, proposal.request_id)
         except HrPolicyError as exc:
             raise hr_http_error(exc) from None
@@ -193,6 +225,20 @@ def _email_refusal(exc: EmailPolicyError | GmailError) -> ProposalActionRefused:
     """The email route's refusal: its status, body (`retry_after`, `message`) and headers."""
     error = email_http_error(exc)
     return ProposalActionRefused(error.status_code, email_error_content(exc), error.headers)
+
+
+async def _connected_draft(
+    service: EmailService, session: EmailSession, draft_id: UUID
+) -> DraftOut:
+    """The caller's draft, refused with ``mailbox_not_connected`` while their mailbox isn't.
+
+    Checked when the card is made, so the user learns it now and not at Confirm.
+    """
+    draft = await service.draft_by_id(session, draft_id)
+    mailbox = (await service.context(session)).mailbox
+    if mailbox is None or mailbox.status != "connected":
+        raise EmailPolicyError("mailbox_not_connected")
+    return draft
 
 
 def _people(count: int) -> str:
@@ -268,7 +314,7 @@ class EmailExportExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         session = email_session_from(request, actor, client_id, mutation=True)
         try:
-            draft = await self._service(request).draft_by_id(session, proposal.draft_id)
+            draft = await _connected_draft(self._service(request), session, proposal.draft_id)
         except EmailPolicyError as exc:
             raise email_http_error(exc) from None
         # Bound to the whole draft the user sees (To, CC, BCC, subject, body), as a send card
@@ -349,7 +395,7 @@ class EmailSendExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         session = email_session_from(request, actor, client_id, mutation=True)
         try:
-            draft = await self._service(request).draft_by_id(session, proposal.draft_id)
+            draft = await _connected_draft(self._service(request), session, proposal.draft_id)
             if draft.status != "draft":
                 raise EmailPolicyError(_NOT_A_DRAFT[draft.status])
             version = draft_version(draft)
@@ -410,7 +456,7 @@ class InboxDecisionExecutor:
                 "inbox/get_approval.sql", (client_id, proposal.approval_id), conn=conn
             )
             if approval is None or approval["conversation_id"] != proposal.conversation_id:
-                raise HTTPException(404, "reply approval not found")
+                raise HTTPException(404, "reply_approval_not_found")
             current = await conversation(conn, client_id, proposal.conversation_id)
         if current.inbox_version != proposal.expected_version:
             raise ProposalError("proposal_stale")

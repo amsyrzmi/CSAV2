@@ -708,9 +708,9 @@ async def test_employee_without_account_and_owner_without_employee_link(world: H
         {"action": "approve", "expected_version": 1},
     )
     assert decision.status_code == 200, decision.text
-    assert (
-        await world.call("owner", "POST", "/console/v1/hr/training-requests", CONTENT)
-    ).status_code == 404
+    # The owner's own missing employee link is a distinct prerequisite code, not a 404.
+    drafted = await world.call("owner", "POST", "/console/v1/hr/training-requests", CONTENT)
+    assert drafted.status_code == 409 and drafted.json()["detail"] == "no_employee_link"
 
 
 async def test_database_field_filtering_and_unsupported_grants(world: HrWorld) -> None:

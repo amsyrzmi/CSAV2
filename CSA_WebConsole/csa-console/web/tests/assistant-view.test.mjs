@@ -253,3 +253,45 @@ test("only the newest turn's card can answer", () => {
   assert.equal(view.isAnswerable([], 1), false);
   assert.equal(view.isAnswerable(turns, 99), false);
 });
+
+test("a navigate to a hidden tab prints only the notice, never Opened", () => {
+  assert.deepEqual(view.navigateText("inbox", false, staff, all), { text: "Opened Customer inbox.", error: false });
+  assert.deepEqual(view.navigateText("inbox", true, staff, all), { text: "Opened Customer inbox and continued there.", error: false });
+  assert.deepEqual(view.navigateText("email", false, staff, []), { text: "Email assistant is not available to you.", error: true });
+  assert.deepEqual(view.navigateText("hr", false, staff, []), { text: "People & HR is not available to you.", error: true });
+  assert.deepEqual(view.navigateText("knowledge_base", false, staff, []), { text: "Knowledge base is not available to you.", error: true });
+});
+
+test("a hidden tab is named as the sidebar names it", async () => {
+  // A platform admin sees every tab, so the sidebar's labels are the reference.
+  const nav = await import(await load("navigation.ts"));
+  const everyTab = nav.navigationFor(admin, all);
+  const tabs = ["overview", "services", "inbox", "knowledge_base", "business", "hr", "email", "subscriptions", "activity", "chat"];
+  for (const tab of tabs) {
+    const link = everyTab.find((item) => item.key === tab);
+    assert.ok(link, tab);
+    assert.equal(view.tabName(tab), link.label, tab);
+  }
+});
+
+// Email refusals a turn can reach that `api.ts` leaves as the bare code.
+const TURN_EMAIL_CODES = [
+  "recipient_unresolved", "assistant_disabled", "permission_denied",
+  "mailbox_reauthorization_required", "provider_unreachable", "model_not_configured",
+];
+
+test("a turn's email refusal shows the email sentence, never the code", () => {
+  const raw = (code, status = 409) => Object.assign(new Error(code), { status, code });
+  for (const code of TURN_EMAIL_CODES) {
+    const text = view.turnErrorText(raw(code));
+    assert.notEqual(text, code, code);
+    assert.match(text, /^[A-Z].*[.]$/, code);
+  }
+  assert.equal(view.turnErrorText(raw("provider_unreachable", 502)), "We couldn't reach Gmail. Wait a minute and try again.");
+  // A message api.ts already explained is kept, even when the code has an email sentence too.
+  const explained = Object.assign(new Error("Connect your Gmail in the Email tab first."), { code: "mailbox_not_connected" });
+  assert.equal(view.turnErrorText(explained), "Connect your Gmail in the Email tab first.");
+  // An unmapped code stays as it is; anything that is not an Error gets the fixed sentence.
+  assert.equal(view.turnErrorText(raw("some_new_code")), "some_new_code");
+  assert.equal(view.turnErrorText("boom"), "The assistant request failed.");
+});

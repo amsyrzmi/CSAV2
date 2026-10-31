@@ -156,3 +156,10 @@ test("after a sync the open thread is read again, and cleared when the sync remo
   // Any other failure is the caller's to show.
   await assert.rejects(email.rereadThread("t1", async () => { throw { status: 503, code: "provider_unreachable" }; }));
 });
+
+test("provider_unreachable, permission_denied and email_model_unavailable have sentences", () => {
+  for (const code of ["provider_unreachable", "permission_denied", "email_model_unavailable"]) {
+    const sentence = email.emailErrorSentence({ code });
+    assert.ok(sentence && sentence !== code && /^[A-Z].*[.]$/.test(sentence), code);
+  }
+});

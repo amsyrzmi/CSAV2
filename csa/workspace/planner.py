@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Annotated, Literal, Union
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from csa.console.contracts import Role
 from csa.console.services import PackageState
@@ -39,6 +39,7 @@ from csa.workspace.contracts import (
     WorkspaceProposal,
     _Contract,
 )
+from csa.workspace.rules import CONTRACT_INVALID
 
 PlannerProposal = Annotated[
     Union[  # noqa: UP007 - Annotated discriminated union of named members
@@ -109,6 +110,14 @@ class TeamFact(_Contract):
     reason: TeamReason | None
 
 
+class EmployeeFact(_Contract):
+    """The caller's own readiness to request training, resolved when the message is about it."""
+
+    linked: bool
+    can_request_training: bool
+    reason: Literal["hr_inactive", "no_hr_access", "no_employee_link", "assistant_off"] | None
+
+
 class PlannerFacts(_Contract):
     role: Role
     packages: list[PackageState]
@@ -119,6 +128,7 @@ class PlannerFacts(_Contract):
     my_manager: ManagerFact | None = None
     mailbox_threads: list[MailboxThreadFact] | None = Field(default=None, max_length=10)
     my_team: TeamFact | None = None
+    my_employee: EmployeeFact | None = None
 
 
 class PlannerOutput(_Contract):
@@ -138,8 +148,13 @@ class PlannerError(Exception):
 
 
 class PlannerInvalidOutput(PlannerError):
-    def __init__(self) -> None:
+    """The plan broke the contract or a server rule; ``reason`` names the rule when the server
+    can (see ``csa/workspace/rules.py``), so the turn can be re-planned once. The code and status
+    stay the same for every reason."""
+
+    def __init__(self, reason: str | None = None) -> None:
         super().__init__("planner_invalid_output")
+        self.reason = reason
 
 
 class PlannerUnavailable(PlannerError):
@@ -195,6 +210,9 @@ user means, ask a clarification with those threads as options (value: the thread
 - my_team: present when the message mentions the user's team. reports are the user's own \
 direct reports; skipped have no work email and are left out. When it has a reason instead, \
 answer that emailing the team is unavailable for that reason.
+- my_employee: present when the message is about training. If linked or can_request_training \
+is false, answer with the reason (training requests need a linked employee record with \
+training access) and do not propose training_submit.
 
 Actions:
 - answer: reply in markdown. Add reads only when needed: "read_current_record" (the open \
@@ -262,6 +280,17 @@ def planner_prompt(message: str, facts: PlannerFacts, note: str | None = None) -
     return prompt
 
 
+def _parse_failure(exc: CompletionError) -> str | None:
+    """``contract_invalid`` when the reply was JSON that broke PlannerOutput (a validator, a
+    missing field, a legacy action); a reply that is not JSON at all names no rule."""
+    cause = exc.__cause__
+    if isinstance(cause, ValidationError) and all(
+        error["type"] != "json_invalid" for error in cause.errors()
+    ):
+        return CONTRACT_INVALID
+    return None
+
+
 class WorkspacePlanner:
     def __init__(self, client: JsonCompletionClient, *, timeout: float = 20.0) -> None:
         self._client = client
@@ -279,7 +308,7 @@ class WorkspacePlanner:
             )
         except CompletionError as exc:
             if exc.code == "groq_invalid_output":
-                raise PlannerInvalidOutput() from None
+                raise PlannerInvalidOutput(_parse_failure(exc)) from None
             raise PlannerUnavailable() from None
         if not isinstance(output, PlannerOutput):
             raise PlannerInvalidOutput()

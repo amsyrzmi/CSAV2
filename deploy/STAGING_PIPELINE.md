@@ -88,6 +88,24 @@ recovery lines are:
 - **A failed check** stops the four services again and they stay stopped until investigated:
   investigate what the check found, then run `plan` and `apply` again.
 
+**After a rollout: retest the assistant.** Once `apply` has finished, work through
+`docs/ASSISTANT_RETEST.md`, the retest checklist with English and Malay rows for every assistant
+feature and failure path. Optionally, first run the model smoke run, which covers the checklist
+rows with a smoke id. It runs inside the gateway container, which already has the model key, and
+uses synthetic facts only (no database, Gmail or tenant data). A run is about 43 model calls (one
+planner call per case plus one drafting call per draft case), up to about 76 with re-plans:
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
+```
+
+(Use `docker --host unix:///var/run/docker.sock exec ...` when the shell's docker context is not
+the host daemon.) Add `--case <id>` for one case or `--repeat N` for a pass rate per case. It
+prints one `PASS|FAIL <id> action=<action>` line per case, with the failing field names, and ends
+with `N passed, M failed`; it never prints a prompt, model text or address. Exit 0 is all passed,
+1 is a failure and 2 is a setup error such as no model key. It is owner-triggered and never runs in
+CI.
+
 **Switches.** The non-secret staging switches live in `deploy/staging-rollout.env`. To change one,
 open a pull request; do not export it by hand. The script never opens the secret files; compose
 reads them.

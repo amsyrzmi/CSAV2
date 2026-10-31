@@ -1,9 +1,13 @@
 """Synthetic proposal semantics; no persistence, HTTP transport or provider calls."""
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import csa.hr.service as hr_service
 import pytest
+from csa.hr.api import hr_http_error
+from csa.hr.assistant import HR_CHAT_SYSTEM
 from csa.hr.models import (
     DirectoryRecord,
     DirectoryValues,
@@ -21,8 +25,10 @@ from csa.hr.models import (
     TrustedAccess,
 )
 from csa.hr.policy import HrPolicyError
+from csa.hr.records import HrSession
+from csa.hr.service import HrService
 from csa.hr.training import project_training, propose_draft, propose_transition
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 TENANT = UUID(int=1)
 EMPLOYEE = EmployeeRef(tenant_id=TENANT, employee_id=UUID(int=10))
@@ -369,3 +375,43 @@ def test_training_view_requires_scoped_read_and_omits_decision_identity(
 def test_training_content_not_returned_without_read_grant() -> None:
     with pytest.raises(HrPolicyError, match="permission_denied"):
         project_training(access(HrAction.TRAINING_SUBMIT), directory(), snapshot())
+
+
+async def test_save_draft_without_link_is_no_employee_link(monkeypatch) -> None:
+    """A caller with no employee record of their own gets a distinct code, not a 404."""
+
+    @asynccontextmanager
+    async def no_db(_pool, _tenant):
+        yield object()
+
+    async def unlinked(_conn, _session):
+        return access(HrAction.TRAINING_DRAFT, employee=None)
+
+    async def no_receipt(_conn, _session, _key):
+        return None
+
+    monkeypatch.setattr(hr_service, "tx", no_db)
+    service = HrService(object(), session_idle_seconds=1800)  # type: ignore[arg-type]
+    monkeypatch.setattr(service, "_access", unlinked)
+    monkeypatch.setattr(service, "_key", no_receipt)
+    session = HrSession(
+        session_id=UUID(int=40),
+        subject_id=UUID(int=20),
+        tenant_id=TENANT,
+        token_hash=SecretStr("synthetic"),
+        csrf_hash=SecretStr("synthetic"),
+    )
+    with pytest.raises(HrPolicyError) as refused:
+        await service.save_draft(session, CONTENT, UUID(int=50))
+    assert refused.value.code == "no_employee_link"
+    error = hr_http_error(refused.value)
+    assert (error.status_code, error.detail) == (409, "no_employee_link")
+
+
+def test_hr_chat_prompt_states_the_wrapper() -> None:
+    wrapper = (
+        'Return one JSON object: {"action": <one tool call object> or null, "clarification": '
+        '"request_details" | "manual_decision_required" | "unsupported_request" or null}; '
+        "exactly one of them is non-null."
+    )
+    assert wrapper in HR_CHAT_SYSTEM

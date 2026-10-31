@@ -332,11 +332,27 @@ class TeamComposeRequest(EmailModel):
 
 
 class DraftProposal(EmailModel):
-    """Strict model output for a reply; validated again as EmailDraftInput before saving."""
+    """Model output for a draft; validated again as EmailDraftInput before saving.
+
+    Unknown keys (a model's "to", say) are ignored: recipients are never taken from the model,
+    they are computed server-side. A long subject is cut and facts past five are dropped.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     subject: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=20000)
     needs_facts_from_staff: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("subject", mode="before")
+    @classmethod
+    def bounded_subject(cls, value: Any) -> Any:
+        return value.strip()[:200] if isinstance(value, str) else value
+
+    @field_validator("needs_facts_from_staff", mode="before")
+    @classmethod
+    def bounded_facts(cls, value: Any) -> Any:
+        return value[:5] if isinstance(value, list) else value
 
 
 class ReplyRequest(EmailModel):

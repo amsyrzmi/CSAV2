@@ -1,6 +1,6 @@
 /** Pure helpers behind the assistant dock and proposal card (no React, no I/O). */
 import type { Me } from "@/lib/identity-contracts";
-import { formatWhen } from "@/lib/email-recipients";
+import { emailErrorSentence, formatWhen } from "@/lib/email-recipients";
 import { navigationFor } from "@/lib/navigation";
 import type { PackageState } from "@/lib/services-api";
 import type {
@@ -67,8 +67,54 @@ export function tabForPath(
   return TABS.find((tab) => tab === key) ?? null;
 }
 
+/** Each tab's sidebar label (lib/navigation.ts), for a tab this user cannot open. */
+const TAB_NAMES: Record<TabKey, string> = {
+  overview: "Overview",
+  services: "Services",
+  inbox: "Customer inbox",
+  knowledge_base: "Knowledge base",
+  business: "Business management",
+  hr: "People & HR",
+  email: "Email assistant",
+  subscriptions: "Subscriptions",
+  activity: "Runtime activity",
+  chat: "Sandbox assistant",
+};
+
+export function tabName(tab: TabKey): string {
+  return TAB_NAMES[tab] ?? tab;
+}
+
 export function tabLabel(tab: TabKey, me: Me, packages: PackageState[]): string {
   return navigationFor(me, packages).find((item) => item.key === tab)?.label ?? tab;
+}
+
+/**
+ * The line shown for a navigate result. A tab this user cannot open (same rule as `tabHref`)
+ * gets only the notice, never "Opened X.".
+ */
+export function navigateText(
+  tab: TabKey,
+  resume: boolean,
+  me: Me,
+  packages: PackageState[],
+): { text: string; error: boolean } {
+  if (!navigationFor(me, packages).some((item) => item.key === tab)) {
+    return { text: `${tabName(tab)} is not available to you.`, error: true };
+  }
+  const label = tabLabel(tab, me, packages);
+  return { text: `Opened ${label}${resume ? " and continued there." : "."}`, error: false };
+}
+
+/**
+ * The dock's line for a failed turn. `api.ts` explains the codes it knows; an email refusal it
+ * leaves as the bare code gets the Email tab's sentence instead.
+ */
+export function turnErrorText(cause: unknown): string {
+  if (!(cause instanceof Error)) return "The assistant request failed.";
+  const code = (cause as { code?: unknown }).code;
+  if (cause.message === code) return emailErrorSentence(cause) ?? cause.message;
+  return cause.message;
 }
 
 /** What the tab published, else the bare tab derived from the route. */

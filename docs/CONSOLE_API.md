@@ -623,6 +623,12 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   own manager (as `GET /workspace/people/me` does) before planning and passes only the
   manager's `employee_id`, or a reason (`no_employee_link`, `no_manager`,
   `package_inactive`).
+- When the message is about training (English or Malay words such as "training",
+  "course", "latihan", "kursus"), the server passes `my_employee`: `{linked,
+  can_request_training, reason}`, with `reason` one of `hr_inactive`, `no_hr_access`,
+  `no_employee_link`, `assistant_off` (the tenant's HR assistant switch is off) or null.
+  When either flag is false the planner answers with the reason instead of proposing
+  `training_submit`.
 - The dock repeats the originating request in follow-up turns: picking a directory
   candidate sends `Use employee <id> for: <original message>`, and a clarification answer
   sends the option value with its question and the original message.
@@ -633,10 +639,18 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   written.
 - The user's own message is sent to the planner unredacted; the stored turn body is
   redacted before it is persisted.
-- A `navigate` to a tab that the role or packages do not unlock is turned into an
-  `answer` explaining that the package is not active.
+- A `navigate` to a tab that the console would not offer (the package and role rule of
+  `navigationFor`, in `csa/workspace/rules.py` `tab_available`) is turned into an `answer`:
+  the package is not active, or the tab is not available to the role.
 - Planner failures return 503 `planner_unavailable` (provider timeout, transport or HTTP
-  error; retryable) or 502 `planner_invalid_output` (output failed the strict schema).
+  error; retryable) or 502 `planner_invalid_output` (output that is not JSON, or a refusal
+  the server cannot name). A plan refused for a named rule is re-planned once (one
+  correction per turn, shared with the content correction) and, if refused again, answered
+  with a no-option question for the address on an email turn, otherwise a plain answer (see
+  `docs/EMAIL_ASSISTANT.md`).
+- A failure of the email-drafting model (invalid output, provider error or timeout) on an
+  `email_compose`, `email_reply` or `email_team` turn returns 503
+  `email_model_unavailable`; nothing is drafted or stored.
 
 ### Proposals and confirmation
 
@@ -645,7 +659,10 @@ Every mutation is a proposal the user confirms on a card. The kinds are:
 - `email_export`: freeze a draft and save it to the user's own Gmail drafts;
 - `email_send`: send a draft from the user's own Gmail (see
   [Email management](#email-management));
-- `training_submit`: submit a training request;
+- `training_submit`: submit a training request. When the card is made (and again at
+  confirm) the caller must have their own employee record (409 `no_employee_link`) and the
+  `training.submit` grant, plus `training.draft` for a new request (403
+  `hr_training_not_permitted`), so a refused submit never leaves a draft behind;
 - `inbox_decision`: approve or reject a held customer reply;
 - `subscription_action`: a [subscription state change](#subscriptions), requested from
   the Subscriptions tab.
@@ -686,7 +703,12 @@ version. The package gate is re-run at confirm.
 | `proposal_consumed` | 409 | Already confirmed or cancelled, or another confirm holds the lease |
 | `proposal_stale` | 409 | Payload hash or `expected_version` no longer matches |
 | `planner_unavailable` | 503 | No planner configured, or the model provider failed |
-| `planner_invalid_output` | 502 | The model output failed the strict proposal schema |
+| `planner_invalid_output` | 502 | Non-JSON output or an unnamed refusal; named schema failures are corrected once |
+| `email_model_unavailable` | 503 | The email-drafting model failed on a compose, reply or team turn; try again |
+| `mailbox_not_connected` | 409 | An `email_export` or `email_send` card was asked for while the user's mailbox is not connected; checked when the card is made, not only at confirm |
+| `no_employee_link` | 409 | A `training_submit` card was asked for, or a training draft saved, while the caller's login is not linked to an employee record |
+| `hr_training_not_permitted` | 403 | A `training_submit` card was asked for without the training grants it needs (`training.submit`, plus `training.draft` for a new request) |
+| `reply_approval_not_found` | 404 | An `inbox_decision` card named a held reply that is gone or belongs to another conversation |
 
 Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 `workspace.proposal.created`, `workspace.proposal.confirmed`,
@@ -808,7 +830,8 @@ answers from `GET /attention`; its failures are also plain answers, and the stor
 says only "Inbox summary: N items." Any address the model proposes must appear in the
 user's own message; an address seen only in the mailbox can never become a recipient. An
 employee id in To, CC or BCC must be in the message, among the ids an earlier directory
-turn offered, or `my_manager`; any other id is refused with 502 `planner_invalid_output`.
+turn offered, or `my_manager`; any other id is refused, corrected once, then met with a
+no-option question asking the user to type the address.
 
 ### HR assistant delegation
 

@@ -42,6 +42,11 @@ export interface PageContext {
   record?: RecordRef | null;
 }
 
+/** A planned turn always names a tab: with no tab context the assistant works from the overview. */
+export function turnPageContext(context: PageContext | null): PageContext {
+  return context ?? { tab: "overview" };
+}
+
 export type ProposalKind =
   | "email_export"
   | "email_send"

@@ -90,6 +90,8 @@ def hr_http_error(exc: HrPolicyError) -> HTTPException:
         "request_employee_mismatch",
     }:
         return HTTPException(404, "resource_unavailable")
+    # Everything else is a 409, including no_employee_link: the caller's own login has no
+    # employee record, which reveals nothing about anyone else's.
     return HTTPException(409, code)
 
 
