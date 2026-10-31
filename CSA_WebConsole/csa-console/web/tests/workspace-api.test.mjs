@@ -103,7 +103,7 @@ const M3_CODES = [
   "planner_invalid_output", "email_model_unavailable", "hr_model_unavailable",
   "email_timeout_check_saved_state", "hr_agent_timeout_check_saved_state", "training_not_draft",
   "stale_version", "invalid_transition", "csrf_required", "no_employee_link",
-  "hr_training_not_permitted",
+  "hr_training_not_permitted", "reply_approval_not_found", "reply approval not found",
 ];
 
 test("every reachable assistant error code shows a plain sentence, not the code", async () => {

@@ -17,6 +17,7 @@ import {
   tabForPath,
   tabHref,
   tabLabel,
+  turnErrorText,
   typedMessage,
   type Outgoing,
 } from "@/lib/assistant-view";
@@ -228,7 +229,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         await navigate(turn.result, attempt);
     } catch (cause) {
       if (!controller.signal.aborted)
-        setError(cause instanceof Error ? cause.message : "The assistant request failed.");
+        setError(turnErrorText(cause));
     } finally {
       if (mutation.current === controller) mutation.current = null;
       if (!controller.signal.aborted) setBusy(false);

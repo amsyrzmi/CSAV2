@@ -47,6 +47,9 @@ const explained: Record<string, string> = {
   draft_rejected: "I couldn't write that email. Try rephrasing.",
   thread_body_unavailable: "I couldn't read that conversation from Gmail. Sync and try again.",
   resource_unavailable: "That item isn't available any more.",
+  // A held reply gone before its card was made (the card's code) or at Confirm (the inbox's).
+  reply_approval_not_found: "That held reply is no longer waiting for a decision. Refresh the conversation.",
+  "reply approval not found": "That held reply is no longer waiting for a decision. Refresh the conversation.",
   whatsapp_number_in_use: "That WhatsApp number is already connected to another company.",
   whatsapp_token_rejected:
     "WhatsApp did not accept that access token for this phone number ID. Check both in your Meta app, then try again.",
