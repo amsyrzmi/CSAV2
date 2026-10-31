@@ -244,11 +244,13 @@ Clarifications are checked by the server, not only by the planner prompt:
   server note for that rule, and every gate runs again on the new plan. The
   correction budget is shared with the content correction above: one
   correction per turn, whatever its kind, so a turn makes at most two planner
-  calls. If the second plan breaks a rule too, the user gets a plain answer:
-  "I couldn't find that conversation in your synced email." for an unknown
-  thread, otherwise "I couldn't work out who to send that to. Type their email
-  address." (in Malay for a Malay message). Nothing is drafted. Output that is
-  not JSON at all stays 502 `planner_invalid_output`.
+  calls. If the second plan breaks a rule too, nothing is drafted: an unknown
+  thread gets the plain answer "I couldn't find that conversation in your
+  synced email.", and every other rule gets the question "I couldn't work out
+  who to send that to. Type their email address." with no options (in Malay
+  for a Malay message). The typed address folds in the first request, so
+  "send" still counts. Output that is not JSON at all stays 502
+  `planner_invalid_output`.
 - When the directory finds nobody for an email request, or HR is not active,
   the assistant asks "I couldn't find that person in the directory. Type their
   email address and I'll continue." with no options. The typed address is

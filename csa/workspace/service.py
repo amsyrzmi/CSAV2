@@ -978,12 +978,22 @@ def _corrects_content(proposal: WorkspaceProposal, message: str, facts: PlannerF
     )
 
 
-def _fallback(reason: str, facts: PlannerFacts) -> tuple[AnswerProposal, _Planned]:
-    """The plain answer after a corrected plan broke a rule again (M7)."""
-    key = "fallback_thread" if reason == UNKNOWN_THREAD else "fallback_recipient"
-    text = _TEXT[facts.language][key]
-    answer = AnswerResult(action="answer", markdown=text)
-    return AnswerProposal(action="answer", markdown=text), _Planned(result=answer)
+def _fallback(
+    reason: str, facts: PlannerFacts
+) -> tuple[AnswerProposal | ClarificationProposal, _Planned]:
+    """What the user gets after a corrected plan broke a rule again (M7).
+
+    An unknown thread is a plain answer. Every other reason asks for the address as a question
+    with no options, so the typed answer folds in the first request and "send" still counts
+    (the same mechanism as the directory dead end, M5).
+    """
+    text = _TEXT[facts.language]
+    if reason == UNKNOWN_THREAD:
+        answer = AnswerResult(action="answer", markdown=text["fallback_thread"])
+        return AnswerProposal(action="answer", markdown=answer.markdown), _Planned(result=answer)
+    question = ClarificationProposal(action="clarification", question=text["fallback_recipient"])
+    live, stored = _clarification(question)
+    return question, _Planned(result=live, stored=stored)
 
 
 async def _corrected_plan(
@@ -999,7 +1009,7 @@ async def _corrected_plan(
     ``PlannerInvalidOutput`` whose reason has a note in ``rules.CORRECTION_NOTES``), the turn is
     planned once more with that fixed server note. The second plan is final and goes through
     ``resolve`` and every gate in it again: a content question gets one plain question with no
-    options, a named violation gets the plain M7 answer (``_fallback``), and anything else
+    options, a named violation gets the M7 fallback (``_fallback``), and anything else
     resolves normally. A refusal with no named reason, and any planner error, is raised as is.
     """
     note: str | None = None

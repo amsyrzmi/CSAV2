@@ -172,7 +172,13 @@ def _twice(model: ScriptedCompletion, proposal: dict[str, Any]) -> None:
 
 
 def _fell_back(response: httpx.Response, text: str = RECIPIENT_FALLBACK["en"]) -> None:
-    """The turn was refused twice and answered in plain text: nothing drafted or proposed."""
+    """The turn was refused twice and asks for the address with no options (M7)."""
+    assert response.status_code == 201, response.text
+    assert response.json()["result"] == {"action": "clarification", "question": text, "options": []}
+
+
+def _thread_fell_back(response: httpx.Response, text: str = THREAD_FALLBACK["en"]) -> None:
+    """A reply refused twice for an unknown thread is answered in plain text (M7)."""
     assert response.status_code == 201, response.text
     assert response.json()["result"] == {"action": "answer", "markdown": text}
 
@@ -1586,7 +1592,7 @@ async def test_mailbox_facts_cannot_supply_new_recipients(planned, proposals_app
     _fell_back(replied)
     assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
     rows = await _turn_rows(w)
-    assert [r["action"] for r in rows] == ["answer", "answer", "answer"]
+    assert [r["action"] for r in rows] == ["clarification", "clarification", "clarification"]
     assert HOSTILE_ADDRESS not in json.dumps([r["result"] for r in rows])
 
     # The same address typed by the user is the user's request, so it is allowed.
@@ -2458,7 +2464,31 @@ async def test_correction_replan_keeps_recipient_gates(planned) -> None:
     _fell_back(malay, RECIPIENT_FALLBACK["ms"])
     assert len(model.calls) == 4
     assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
-    assert [r["action"] for r in await _turn_rows(w)] == ["answer", "answer"]
+    assert [r["action"] for r in await _turn_rows(w)] == ["clarification", "clarification"]
+
+
+@requires_docker
+async def test_recipient_fallback_asks_and_the_typed_address_sends(planned) -> None:
+    """M7 ruling: the recipient fallback is a question with no options, so a typed address
+    folds in the first request and "send" still counts."""
+    w, model = planned
+    browser = await _mail_ready(w)
+    thread = await _thread(w, browser)
+    plan = {"action": "email_compose", "subject": "Monday", "instructions": "About Monday"}
+    model.reply({**plan, "recipient_address": "someone.else@example.test"})
+    model.reply({**plan, "recipient_address": "another@example.test"})
+    asked = await _turn(w, browser, thread, "send email to danial", "email")
+    _fell_back(asked)
+    assert len(model.calls) == 2 and await _draft_count(w) == 0
+    model.reply({**plan, "recipient_address": "danial@example.test"})
+    question = RECIPIENT_FALLBACK["en"]
+    typed = f"danial@example.test\n(Answer to “{question}” for: send email to danial)"
+    answered = await _turn(w, browser, thread, typed, "email")
+    assert answered.status_code == 201, answered.text
+    assert answered.json()["result"]["proposal"]["kind"] == "email_send"
+    assert await _draft_recipients(w) == [["danial@example.test"]]
+    assert len(model.calls) == 3
+    assert model.facts()["history"][-1]["question"] == question
 
 
 @requires_docker
@@ -2501,12 +2531,12 @@ async def test_unknown_thread_fallback(planned) -> None:
     model.reply({"action": "email_reply", "thread_id": "t-not-synced", "instructions": "Hi"})
     model.reply({"action": "email_reply", "thread_id": "t-also-unknown", "instructions": "Hi"})
     unknown = await _turn(w, browser, thread, "Reply to that email", "email")
-    _fell_back(unknown, THREAD_FALLBACK["en"])
+    _thread_fell_back(unknown, THREAD_FALLBACK["en"])
     assert len(model.calls) == 2
     assert CORRECTION_NOTES[UNKNOWN_THREAD] in model.calls[1][2]
     _twice(model, {"action": "email_reply", "thread_id": "t-not-synced", "instructions": "Hi"})
     malay = await _turn(w, browser, thread, "Tolong balas emel itu", "email")
-    _fell_back(malay, THREAD_FALLBACK["ms"])
+    _thread_fell_back(malay, THREAD_FALLBACK["ms"])
     assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
 
 
