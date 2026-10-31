@@ -2240,6 +2240,44 @@ async def test_drafting_model_failure_is_503(planned, kind: str, error: Exceptio
     assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
 
 
+@requires_docker
+@pytest.mark.parametrize("kind", ["compose", "reply", "team"])
+async def test_disconnected_mailbox_drafts_nothing(planned, kind: str) -> None:
+    """A revoked mailbox is refused before the drafting call: no model call, no stray draft."""
+    w, model = planned
+    if kind == "team":
+        browser = await _mail_ready(w, "hr")
+        await _team_lead(w, browser)
+        await _approves_team(w, browser)
+        plan = {"action": "email_team", "subject": "Friday", "instructions": "The meeting moved"}
+        body = "Email my team about Friday"
+    elif kind == "reply":
+        browser = await _mail_ready(w)
+        await _sync(w, browser)
+        plan = {"action": "email_reply", "thread_id": "t1", "instructions": "Thank her"}
+        body = "Reply to Aina's email and thank her"
+    else:
+        browser = await _mail_ready(w)
+        address = "adam.synthetic@example.test"
+        plan = {
+            "action": "email_compose",
+            "recipient_address": address,
+            "subject": "Plan",
+            "instructions": "Share the plan",
+        }
+        body = f"write an email to {address} about the plan"
+    headers = {**w.headers(browser), "Idempotency-Key": str(uuid4())}
+    gone = await browser.post("/console/v1/email/mailbox/disconnect", headers=headers)
+    assert gone.status_code == 200, gone.text
+    w.app.state.email_service.model = FailingDraftModel(AssertionError("drafting was called"))
+    thread = await _thread(w, browser)
+    model.reply(plan)
+    turn = await _turn(w, browser, thread, body, "email")
+    assert turn.status_code == 409, turn.text
+    assert turn.json() == {"detail": "mailbox_not_connected"}
+    assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
+
+
 NEVER_SYNCED = {
     "en": "Your email hasn't been synced yet. Open the Email assistant tab and press Sync, "
     "then ask again.",
