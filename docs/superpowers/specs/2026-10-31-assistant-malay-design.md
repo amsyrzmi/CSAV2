@@ -43,11 +43,10 @@ panel are English only.
    These stay English: "send email to danial", "can you open HR".
 2. **The language carries on.** The rule is in "Language rule" below.
 3. **Server text in the turn's language:**
-   - every fixed answer, including a pass over the existing `_TEXT["ms"]` lines, which still mix
-     in English tab and package names ("halaman Services", "tab Email assistant", "Approves
-     training, leave and attendance for their team"), so all of them use the Malay names;
-   - the locked-tab answers, using Malay tab names and Malay package names (today they use the
-     raw tab key and English package titles);
+   - every fixed answer;
+   - the locked-tab answers in both languages, which today show the raw tab key ("hr"). They
+     name the tab as the console's sidebar shows it ("People & HR") and the package by its title
+     on the Services page;
    - the "Not included … (no work email)" card field;
    - the titles, summaries and field labels of the cards the assistant makes.
 4. **Panel text in the turn's language:**
@@ -59,7 +58,14 @@ panel are English only.
    - "Choose a colleague:", "Loading your conversation…", the "On <tab>" context line;
    - the email preview labels inside an assistant card (To, CC, BCC, Subject, "Outside your
      company");
-   - the tab names the panel shows.
+   - the words around the tab names the panel shows (the names themselves stay as on screen,
+     below).
+
+**On-screen names stay as the console shows them (owner, 2026-10-31).** Tabs, packages,
+switches and pages keep their console names inside Malay sentences, for example "tab Email
+assistant", "halaman Services" and "“Approves training, leave and attendance for their team”".
+The sidebar stays English, so a translated name could not be found on screen. The existing
+Malay lines already do this.
 
 ## Non-goals
 
@@ -178,9 +184,8 @@ panel are English only.
   typecheck. The full suite runs in PR CI.
 - **Overlap with the console redesign (another session).** Its branch
   `feat/console-redesign-phase-2` changes `tabLabel`/`tabHref` in `lib/assistant-view.ts`: the
-  sandbox chat (`chat`) opens and is named as Overview. Keep the Malay tab names keyed by
-  `TabKey` beside `tabLabel`, so whichever branch merges second has a small, obvious rebase.
-  Don't touch `navigation.ts`.
+  sandbox chat (`chat`) opens and is named as Overview. The panel keeps using `tabLabel` for
+  tab names, so it follows that rename by itself. Don't touch `navigation.ts`.
 - **Smoke run and checklist.**
   - Add smoke cases for the new detection examples where they reach the planner (Malay
     messages with an address).
@@ -190,23 +195,11 @@ panel are English only.
 
 ## Left to the builder
 
-- **Malay wording** of every line, in the register above. Tab names (the builder's proposal,
-  for the owner to adjust while reading the PR):
-
-  | Tab | Malay name |
-  |---|---|
-  | Overview | Gambaran keseluruhan |
-  | Services | Perkhidmatan |
-  | Customer inbox | Peti masuk pelanggan |
-  | Knowledge base | Pangkalan pengetahuan |
-  | Business management | Pengurusan perniagaan |
-  | People & HR | Kakitangan & HR |
-  | Email assistant | Pembantu e-mel |
-  | Subscriptions | Langganan |
-  | Runtime activity | Aktiviti sistem |
-  | Sandbox assistant | Pembantu ujian |
-
-  Package titles get Malay names the same way, on the server only, for the locked-tab answer.
+- **Malay wording** of every line, in the register above, with on-screen names kept as the
+  console shows them.
+- **The server's tab names** for the locked-tab answer are a copy of the sidebar labels in
+  `lib/navigation.ts` (for example `hr` is "People & HR"). Keep that copy next to `_TAB_GATES`,
+  with a test that checks it against `navigation.ts`.
 - **Where the tables live.** For example, a `ms` branch next to `_TEXT` on the server and a
   `lib/assistant-copy.ts` (en/ms) in the console. Keep every key present in both languages,
   with a test that checks that.
