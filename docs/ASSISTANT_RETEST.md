@@ -169,7 +169,7 @@ Tick each row when the result matches.
 | Prompt | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
 | Send an email to aina.rahman@example.com saying hello | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with a sentence telling you to connect Gmail; no draft is saved | manual |
-| Send an email to aina.rahman@example.com saying hello | Gmail connection pending or revoked | No card: the turn is refused with the same sentence; a draft is saved first, before the card is refused (expected today) | manual |
+| Send an email to aina.rahman@example.com saying hello | Gmail connection pending or revoked | No card: the turn is refused with the same sentence; no draft is saved | manual |
 | Tolong hantar emel kepada aina.rahman@example.com untuk ucap terima kasih | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with the same English sentence (console error sentences are English only); no draft is saved | manual |
 | What needs my attention in my email? | No mailbox: Gmail not connected | "Connect your Gmail on the Email assistant tab first." | manual |
 | I want to request a fire safety training | No employee link | An answer, no training request | `training-en-2` |

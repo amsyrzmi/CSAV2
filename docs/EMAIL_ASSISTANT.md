@@ -194,7 +194,9 @@ The user confirms either card before anything happens.
 
 - Both cards check that the user's mailbox is connected when the card is made,
   so a disconnected mailbox is refused then with 409 `mailbox_not_connected`,
-  not at Confirm.
+  not at Confirm. Compose, reply and team email turns check it before the
+  drafting call too, so a pending or revoked mailbox makes no model call and
+  saves no draft.
 - When the drafting model fails (an invalid answer, a provider error or a
   timeout) on a compose, reply or team email turn, the turn returns 503
   `email_model_unavailable`, never a 500. Nothing is drafted or stored, and the
