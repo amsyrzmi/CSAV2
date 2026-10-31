@@ -63,6 +63,19 @@ def test_automatic_runs_publish_only_successful_push_runs() -> None:
     assert "github.event.workflow_run.conclusion == 'success'" in condition
 
 
+def test_concurrency_is_job_level_so_skipped_runs_never_queue() -> None:
+    text = _text()
+    head = text.split("\njobs:\n", 1)[0]
+    assert "concurrency:" not in head
+    job = text.split("\n  publish:\n", 1)[1].split("    steps:", 1)[0]
+    block = job.split("    concurrency:\n", 1)[1].split("\n    env:", 1)[0]
+    assert [line.strip() for line in block.splitlines() if line.strip()][:2] == [
+        "group: publish-staging-images",
+        "cancel-in-progress: false",
+    ]
+    assert text.count("concurrency:") == 1
+
+
 def test_run_id_comes_from_the_input_or_the_triggering_run() -> None:
     text = _text()
     assert f"CI_RUN_ID: {RUN_ID_EXPR}" in text

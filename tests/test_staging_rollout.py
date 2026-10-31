@@ -1380,6 +1380,17 @@ def test_apply_refuses_a_sha_other_than_head(rig_factory: Callable[..., ApplyRig
     assert not any(argv[0] == "gh" for argv in rig.runner.argvs)
 
 
+def test_apply_refuses_a_short_sha_by_name(rig_factory: Callable[..., ApplyRig]) -> None:
+    rig = rig_factory()
+    assert rig.apply(sha=SHA[:7]) == 1
+    assert labels(rig.runner) == []
+    assert (
+        "Stopped at confirm: --sha must be the full 40-character SHA that plan printed"
+        in rig.lines
+    )
+    assert "HEAD changed since plan" not in rig.text
+
+
 def test_apply_prints_its_target_before_the_first_change(
     rig_factory: Callable[..., ApplyRig],
 ) -> None:
@@ -1594,3 +1605,21 @@ def test_failed_check_says_investigate_then_rerun(rig_factory: Callable[..., App
     ) in rig.lines
     assert "Rollback images" not in rig.text
     assert "Nothing on staging was changed." not in rig.text
+
+
+
+def test_unreadable_check_file_says_services_are_still_up(
+    tmp_path: Path, rig_factory: Callable[..., ApplyRig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = rig_factory()
+    unreadable = tmp_path / "0486.sql"
+    unreadable.mkdir()  # a directory cannot be read as text
+    monkeypatch.setattr(sr, "check_files", lambda checks_dir: [unreadable])
+    assert rig.apply() == 1
+    assert "Stopped at check 0486.sql: cannot read the check file" in rig.lines
+    assert "stop" not in labels(rig.runner)
+    assert rig.lines[-2:] == [
+        "The check did not run and the services were not stopped; fix the check file.",
+        RERUN,
+    ]
+    assert "Investigate what the check found" not in rig.text
