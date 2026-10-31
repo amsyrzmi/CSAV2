@@ -490,28 +490,16 @@ def test_page_context_and_record_ref() -> None:
 def test_subscriptions_is_a_gated_page_context_tab() -> None:
     from csa.console.contracts import Role
     from csa.console.services import PackageState
-    from csa.workspace.planner import PlannerFacts
-    from csa.workspace.service import _tab_allowed
+    from csa.workspace.rules import tab_available
 
     ctx = PageContext(tab="subscriptions", section="requests")
     assert ctx.tab == "subscriptions" and ctx.record is None
 
-    def facts(role: Role, *packages: PackageState) -> PlannerFacts:
-        return PlannerFacts(
-            role=role,
-            packages=list(packages),
-            page_context=ctx,
-            record_summary=None,
-            language="en",
-        )
-
     active = PackageState(key="subscriptions", status="active")
-    assert _tab_allowed(facts(Role.TENANT_STAFF, active), "subscriptions")
-    assert not _tab_allowed(facts(Role.TENANT_STAFF), "subscriptions")
-    assert not _tab_allowed(
-        facts(Role.TENANT_STAFF, PackageState(key="subscriptions", status="suspended")),
-        "subscriptions",
-    )
+    assert tab_available("subscriptions", Role.TENANT_STAFF, [active])
+    assert not tab_available("subscriptions", Role.TENANT_STAFF, [])
+    suspended = PackageState(key="subscriptions", status="suspended")
+    assert not tab_available("subscriptions", Role.TENANT_STAFF, [suspended])
 
 
 def test_workspace_proposal_discriminator_parses_every_kind() -> None:

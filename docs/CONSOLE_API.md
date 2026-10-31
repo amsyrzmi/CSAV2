@@ -638,10 +638,14 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   written.
 - The user's own message is sent to the planner unredacted; the stored turn body is
   redacted before it is persisted.
-- A `navigate` to a tab that the role or packages do not unlock is turned into an
-  `answer` explaining that the package is not active.
+- A `navigate` to a tab that the console would not offer (the package and role rule of
+  `navigationFor`, in `csa/workspace/rules.py` `tab_available`) is turned into an `answer`:
+  the package is not active, or the tab is not available to the role.
 - Planner failures return 503 `planner_unavailable` (provider timeout, transport or HTTP
-  error; retryable) or 502 `planner_invalid_output` (output failed the strict schema).
+  error; retryable) or 502 `planner_invalid_output` (output that is not JSON, or a refusal
+  the server cannot name). A plan refused for a named rule is re-planned once (one
+  correction per turn, shared with the content correction) and, if refused again, answered
+  in plain text (see `docs/EMAIL_ASSISTANT.md`).
 - A failure of the email-drafting model (invalid output, provider error or timeout) on an
   `email_compose`, `email_reply` or `email_team` turn returns 503
   `email_model_unavailable`; nothing is drafted or stored.
@@ -823,7 +827,8 @@ answers from `GET /attention`; its failures are also plain answers, and the stor
 says only "Inbox summary: N items." Any address the model proposes must appear in the
 user's own message; an address seen only in the mailbox can never become a recipient. An
 employee id in To, CC or BCC must be in the message, among the ids an earlier directory
-turn offered, or `my_manager`; any other id is refused with 502 `planner_invalid_output`.
+turn offered, or `my_manager`; any other id is refused, corrected once, then answered in
+plain text.
 
 ### HR assistant delegation
 

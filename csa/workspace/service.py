@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email.utils import parseaddr
@@ -19,7 +20,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from csa.agents.base import utc_now
 from csa.console.business import BusinessOrder, get_local_order, require_business_read
-from csa.console.contracts import ConsoleActor, Role
+from csa.console.contracts import ConsoleActor
 from csa.console.inbox import conversation
 from csa.console.packages import BY_KEY
 from csa.console.services import PackageState, active_packages, require_package
@@ -95,6 +96,24 @@ from csa.workspace.planner import (
     detect_language,
 )
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
+from csa.workspace.rules import ADDRESS as _ADDRESS
+from csa.workspace.rules import (
+    BLANK_QUERY,
+    CONTENT_NOTE,
+    CORRECTION_NOTES,
+    OPTION_TOO_LONG,
+    RECIPIENT_NOT_REQUESTED,
+    UNKNOWN_THREAD,
+    about_email,
+    asks_for_content,
+    asks_to_send,
+    is_placeholder,
+    picks_thread_or_colleague,
+    role_allows_tab,
+    tab_available,
+)
+from csa.workspace.rules import TAB_GATES as _TAB_GATES
+from csa.workspace.rules import unlocked as _unlocked
 
 _RESULT = TypeAdapter(WorkspaceActionResult)
 _GUIDANCE_KEYS: dict[
@@ -437,16 +456,7 @@ async def list_turns(
 # request lock, re-checks the key, cancels stale proposals on a tab change, runs the typed
 # reads, inserts the proposal and stores the turn. Nothing is written before every gate ran.
 
-_ACTIVE = frozenset({"active"})
-# Tab -> (packages that unlock it, accepted statuses); mirrors web/lib/navigation.ts.
-_TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
-    "inbox": (frozenset({"customer_support"}), frozenset({"active", "suspended"})),
-    "knowledge_base": (frozenset({"customer_support"}), _ACTIVE),
-    "business": (frozenset({"orders_products", "marketplaces"}), _ACTIVE),
-    "hr": (frozenset({"hr"}), _ACTIVE),
-    "email": (frozenset({"staff_email"}), _ACTIVE),
-    "subscriptions": (frozenset({"subscriptions"}), _ACTIVE),
-}
+# Tab gates (packages that unlock a tab) live in csa/workspace/rules.py, with tab_available.
 # Record kind -> the package gate of the service that owns it.
 _RECORD_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "conversation": _TAB_GATES["inbox"],
@@ -459,6 +469,12 @@ _TEXT: dict[str, dict[str, str]] = {
     "en": {
         "locked": "The {tab} tab needs the {packages} service, which is not active for "
         "this workspace. Ask your administrator to activate it on the Services page.",
+        "locked_role": "The {tab} tab is not available to your role.",
+        "ask_address": "I couldn't find that person in the directory. Type their email address "
+        "and I'll continue.",
+        "no_match": "No matching colleague was found.",
+        "fallback_recipient": "I couldn't work out who to send that to. Type their email address.",
+        "fallback_thread": "I couldn't find that conversation in your synced email.",
         "no_record": "No record is open.",
         "hr_inactive": "The HR service is not active, so your manager cannot be looked up.",
         "manager": "Your manager is {name}{title}.",
@@ -507,6 +523,13 @@ _TEXT: dict[str, dict[str, str]] = {
     "ms": {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
         "ruang kerja ini. Minta pentadbir anda mengaktifkannya di halaman Services.",
+        "locked_role": "Tab {tab} tidak tersedia untuk peranan anda.",
+        "ask_address": "Saya tidak menjumpai orang itu dalam direktori. Taip alamat e-mel mereka "
+        "dan saya akan teruskan.",
+        "no_match": "Tiada rakan sekerja yang sepadan ditemui.",
+        "fallback_recipient": "Saya tidak dapat menentukan kepada siapa untuk menghantarnya. "
+        "Taip alamat e-mel mereka.",
+        "fallback_thread": "Saya tidak menjumpai perbualan itu dalam e-mel anda yang disegerakkan.",
         "no_record": "Tiada rekod dibuka.",
         "hr_inactive": "Perkhidmatan HR tidak aktif, jadi pengurus anda tidak dapat dicari.",
         "manager": "Pengurus anda ialah {name}{title}.",
@@ -555,16 +578,6 @@ _TEXT: dict[str, dict[str, str]] = {
         "items": "item",
     },
 }
-
-
-def _unlocked(packages: list[PackageState], gate: tuple[frozenset[str], frozenset[str]]) -> bool:
-    keys, statuses = gate
-    return any(p.key in keys and p.status in statuses for p in packages)
-
-
-def _tab_allowed(facts: PlannerFacts, tab: str) -> bool:
-    gate = _TAB_GATES.get(tab)
-    return facts.role == Role.PLATFORM_ADMIN or gate is None or _unlocked(facts.packages, gate)
 
 
 def _unavailable(kind: str) -> str:
@@ -756,14 +769,6 @@ _TRAINING_WORDS = re.compile(
     r"|pensijilan)\b",
     re.IGNORECASE,
 )
-_SEND_WORDS = re.compile(r"\b(send|hantar|hantarkan|kirim|kirimkan)\b", re.IGNORECASE)
-_DRAFT_WORDS = re.compile(r"\b(drafts?|draf|save|simpan)\b", re.IGNORECASE)
-_NEGATED_SEND = re.compile(
-    r"\b(?:don['’]?t|do not|never|jangan)\s+(?:send|hantar|kirim)\w*", re.IGNORECASE
-)
-_EMAIL_VERB = re.compile(r"\b(e-?mails?|e-?mel|emel)\b", re.IGNORECASE)
-_WRITE_WORD = re.compile(r"\b(write|tulis|karang)\b", re.IGNORECASE)
-_ADDRESS = re.compile(r"[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _EMPLOYEE_ID = re.compile(
     r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
 )
@@ -903,6 +908,7 @@ class _Planned:
     result: WorkspaceActionResult | None = None
     prepared: PreparedProposal | None = None
     lookup: str | None = None
+    email_lookup: bool = False  # the lookup serves an email request (M5: no match asks)
     answer: AnswerProposal | None = None
     summary: AttentionPage | None = None
     stored: WorkspaceActionResult | None = None  # the row's copy when it differs from result
@@ -948,105 +954,94 @@ def _inert(text: str) -> str:
     return text.replace('" for: ', '" - ')
 
 
-# An option that only asks the user to type ("Enter address", "Masukkan alamat") or a code the
-# model made up for one (enter_address, subject_body): clicking it would send the code back.
-_PLACEHOLDER_LABEL = re.compile(
-    r"(?:enter|type|provide|input|write|specify|fill in|masukkan|taip|berikan|isi)\b",
-    re.IGNORECASE,
-)
-_PLACEHOLDER_VALUE = re.compile(r"[a-z]+(?:_[a-z]+)+")
-# A snake_case value is a placeholder only when a token says what to type; real snake_case
-# choices (knowledge_base, first_aid, training_request) stay.
-_PLACEHOLDER_TOKENS = frozenset(
-    {
-        "enter", "type", "provide", "input", "specify", "write", "address", "subject", "body",
-        "email", "details", "message", "content",
-    }
-)  # fmt: skip
-# A clarification that asks for what the planner must write itself; corrected on email turns.
-_CONTENT_WORDS = re.compile(
-    r"\b(subject|body|wording|content|tajuk|isi|kandungan)\b", re.IGNORECASE
-)
-# Email words only: "send" and "hantar" also send a training request, so they do not count.
-_EMAIL_REQUEST = re.compile(r"\b(e-?mails?|e-?mel|emel|reply|balas|mail)\b", re.IGNORECASE)
-_CONTENT_NOTE = (
-    "Do not ask for the subject or the wording. Write them yourself from the request; if the "
-    "request says nothing about the content, write a short, neutral email from what it does say."
-)
-
-
-def _is_placeholder(option: ClarificationOption) -> bool:
-    """The option asks the user to type rather than offering a choice to click.
-
-    A label that starts with a whole word such as "Enter" or "Masukkan", or a snake_case value
-    with a token such as "enter", "address" or "subject" (enter_address, subject_body). Real
-    choices survive: "Enterprise plan", "First aid", knowledge_base, an employee id or a thread id.
-    """
-    if _PLACEHOLDER_LABEL.match(option.label.strip()):
-        return True
-    value = option.value.strip()
-    return bool(_PLACEHOLDER_VALUE.fullmatch(value)) and not _PLACEHOLDER_TOKENS.isdisjoint(
-        value.split("_")
-    )
-
-
-def _asks_for_content(proposal: WorkspaceProposal) -> bool:
-    """A clarification asking for the subject or wording, which the planner writes itself."""
-    return isinstance(proposal, ClarificationProposal) and bool(
-        _CONTENT_WORDS.search(proposal.question)
-    )
-
-
 def _about_email(message: str, facts: PlannerFacts) -> bool:
-    """The user's own words are about email: an email word ("email", "e-mel", "reply",
-    "balas", "mail") or an address.
+    """The user's own words are about email (see ``rules.about_email``).
 
     Only the parts ``_authored`` counts, so a planner question or a clicked value never makes
     a turn about email. Loaded mailbox facts do not count either: words anywhere in the turn
-    load them, the folded planner question included. A bare send word ("send", "hantar") is
-    not email.
+    load them, the folded planner question included.
     """
-    return any(
-        _EMAIL_REQUEST.search(part) or _addresses(part) for part in _authored(message, facts)
+    return about_email(_authored(message, facts))
+
+
+def _corrects_content(proposal: WorkspaceProposal, message: str, facts: PlannerFacts) -> bool:
+    """An email turn's plan asks for the subject or wording, which the planner writes itself.
+
+    A question that picks a synced thread or a colleague may name a subject and is a choice, so
+    it passes through, as does any clarification on a turn that is not about email.
+    """
+    threads = [thread.thread_id for thread in facts.mailbox_threads or []]
+    return (
+        asks_for_content(proposal)
+        and _about_email(message, facts)
+        and not picks_thread_or_colleague(proposal, threads)
     )
 
 
-def _picks_thread_or_colleague(proposal: WorkspaceProposal, facts: PlannerFacts) -> bool:
-    """A clarification offering a synced thread (thread_id) or a colleague (employee id).
+def _fallback(reason: str, facts: PlannerFacts) -> tuple[AnswerProposal, _Planned]:
+    """The plain answer after a corrected plan broke a rule again (M7)."""
+    key = "fallback_thread" if reason == UNKNOWN_THREAD else "fallback_recipient"
+    text = _TEXT[facts.language][key]
+    answer = AnswerResult(action="answer", markdown=text)
+    return AnswerProposal(action="answer", markdown=text), _Planned(result=answer)
 
-    Such a question may name a subject ("Which email, 'Invoice March' or 'Invoice April'?")
-    without asking the user to write one. The raw option values are checked.
+
+async def _corrected_plan(
+    planner: WorkspacePlanner,
+    message: str,
+    facts: PlannerFacts,
+    resolve: Callable[[WorkspaceProposal], Awaitable[_Planned]],
+) -> tuple[WorkspaceProposal, _Planned]:
+    """Plan and resolve the turn with at most two model calls: one correction per turn.
+
+    The first plan is resolved. If it asks for content on an email turn (see
+    ``_corrects_content``) or ``resolve`` refuses it for a reason the server can name (a
+    ``PlannerInvalidOutput`` whose reason has a note in ``rules.CORRECTION_NOTES``), the turn is
+    planned once more with that fixed server note. The second plan is final and goes through
+    ``resolve`` and every gate in it again: a content question gets one plain question with no
+    options, a named violation gets the plain M7 answer (``_fallback``), and anything else
+    resolves normally. A refusal with no named reason, and any planner error, is raised as is.
     """
-    if not isinstance(proposal, ClarificationProposal):
-        return False
-    threads = {thread.thread_id for thread in facts.mailbox_threads or []}
-    return any(
-        option.value.strip() in threads or is_employee_ref(option.value.strip())
-        for option in proposal.options
-    )
+    note: str | None = None
+    for final in (False, True):
+        try:
+            proposal = await planner.plan(message, facts, note=note)
+            if _corrects_content(proposal, message, facts):
+                if not final:
+                    note = CONTENT_NOTE
+                    continue
+                question = _TEXT[facts.language]["content_question"]
+                proposal = ClarificationProposal(action="clarification", question=question)
+            return proposal, await resolve(proposal)
+        except PlannerInvalidOutput as exc:
+            if exc.reason not in CORRECTION_NOTES:
+                raise
+            if final:
+                return _fallback(exc.reason, facts)
+            note = CORRECTION_NOTES[exc.reason]
+    raise AssertionError("the second plan is always final")
 
 
-async def _plan(planner: WorkspacePlanner, message: str, facts: PlannerFacts) -> WorkspaceProposal:
-    """Plan the turn with at most two model calls.
+async def _plan_and_resolve(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    thread_id: UUID,
+    turn: WorkspaceTurnInput,
+    facts: PlannerFacts,
+    planner: WorkspacePlanner,
+    registry: ProposalRegistry,
+) -> tuple[WorkspaceProposal, _Planned]:
+    """The turn's plan and its resolution, corrected at most once (see ``_corrected_plan``).
 
-    On an email turn (see ``_about_email``), a plan that asks for the subject or wording is
-    re-planned once with a fixed server note. If the model asks again, the user gets one plain
-    question with no options. A question that picks a thread or a colleague (see
-    ``_picks_thread_or_colleague``) and any other clarification pass through after one call. A
-    planner error on the re-plan is raised as on the first call.
+    A re-plan repeats ``_resolve``'s directory and thread reads; they are cheap and read-only,
+    and ``_resolve`` refuses a plan before it writes anything.
     """
-    proposal = await planner.plan(message, facts)
-    if (
-        not _asks_for_content(proposal)
-        or not _about_email(message, facts)
-        or _picks_thread_or_colleague(proposal, facts)
-    ):
-        return proposal
-    proposal = await planner.plan(message, facts, note=_CONTENT_NOTE)
-    if not _asks_for_content(proposal):
-        return proposal
-    question = _TEXT[facts.language]["content_question"]
-    return ClarificationProposal(action="clarification", question=question)
+
+    async def resolve(proposal: WorkspaceProposal) -> _Planned:
+        return await _resolve(request, actor, client_id, thread_id, turn, proposal, facts, registry)
+
+    return await _corrected_plan(planner, turn.body, facts, resolve)
 
 
 def _clarification(
@@ -1054,8 +1049,8 @@ def _clarification(
 ) -> tuple[ClarificationResult, ClarificationResult]:
     """The clarification the user sees and the copy stored; options never carry an address.
 
-    Placeholder options (see ``_is_placeholder``) are dropped first: the user types that answer,
-    so a question with none left is a plain question. Everything is inert (see ``_inert``).
+    Placeholder options (see ``rules.is_placeholder``) are dropped first: the user types that
+    answer, so a question with none left is a plain question. Everything is inert (see ``_inert``).
     Option labels and values have addresses masked live too, so a click can never add an
     address: colleagues are picked by employee id and threads by thread_id, and an outside
     address is typed by the user. Masking can lengthen a value, so an option past its limit once
@@ -1063,10 +1058,10 @@ def _clarification(
     stored copy masks the question as well: turn rows hold no address, while the live question
     may show one the user wrote.
     """
-    kept = [o for o in proposal.options if not _is_placeholder(o)]
+    kept = [o for o in proposal.options if not is_placeholder(o)]
     pairs = [(_masked(_inert(o.label)), _masked(_inert(o.value))) for o in kept]
     if any(len(label) > 100 or len(value) > 200 for label, value in pairs):
-        raise PlannerInvalidOutput()
+        raise PlannerInvalidOutput(OPTION_TOO_LONG)
     options = [ClarificationOption(label=label, value=value) for label, value in pairs]
     question = _inert(proposal.question)
     return (
@@ -1184,15 +1179,7 @@ def _asked_to_send(
     message: str,
     facts: PlannerFacts,
 ) -> bool:
-    """A send card when the user's own words ask to send; the first rule that matches wins.
-
-    1. A draft word ("draft", "drafts", "save", "simpan") or a negated send ("don't send",
-       "do not send", "never send", "jangan hantar") gives a draft card, even next to "send".
-    2. A send word ("send", "hantar", "kirim") gives a send card, unless a write word ("write",
-       "tulis", "karang") is there too and the plan's ``send`` is false.
-    3. The plan's ``send`` with an email verb ("email", "e-mail", "e-mel") and no write word
-       gives a send card.
-    4. Anything else gives a draft card.
+    """A send card when the user's own words ask to send (the word rule: ``rules.asks_to_send``).
 
     Only the parts ``_authored`` counts: typed text, the stored first request and typed folded
     answers. Never a clarification question ("Should I send it?") and never a clicked value
@@ -1202,12 +1189,7 @@ def _asked_to_send(
     """
     offered = [value for turn in facts.history for value in turn.offered_options]
     text = "\n".join(part for part in _authored(message, facts) if not _picked(part, offered))
-    if _DRAFT_WORDS.search(text) or _NEGATED_SEND.search(text):
-        return False
-    written = bool(_WRITE_WORD.search(text))
-    if _SEND_WORDS.search(text) and (proposal.send or not written):
-        return True
-    return bool(proposal.send and _EMAIL_VERB.search(text) and not written)
+    return asks_to_send(text, proposal.send)
 
 
 async def _draft_card(
@@ -1442,6 +1424,22 @@ def _summary_stored(page: AttentionPage, language: Literal["en", "ms"]) -> Answe
     )
 
 
+def _ask_address(facts: PlannerFacts) -> ClarificationResult:
+    """M5: the person is not in the directory, so the user types the address (no options)."""
+    question = _TEXT[facts.language]["ask_address"]
+    return ClarificationResult(action="clarification", question=question, options=[])
+
+
+def _named_recipient_check(
+    proposal: EmailComposeProposal | EmailReplyProposal, message: str, facts: PlannerFacts
+) -> None:
+    """``_check_recipients``, unchanged, with its refusal named for the one correction (M7)."""
+    try:
+        _check_recipients(proposal, message, facts)
+    except PlannerInvalidOutput:
+        raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED) from None
+
+
 async def _resolve(
     request: Request,
     actor: ConsoleActor,
@@ -1455,10 +1453,14 @@ async def _resolve(
     if isinstance(proposal, AnswerProposal):
         return _Planned(answer=proposal)
     if isinstance(proposal, NavigateProposal):
-        if not _tab_allowed(facts, proposal.tab):
-            keys = _TAB_GATES[proposal.tab][0]
-            names = " or ".join(sorted(BY_KEY[k].title for k in keys))
-            text = _TEXT[facts.language]["locked"].format(tab=proposal.tab, packages=names)
+        # The console's package and role rule (M8): never "navigate" to a tab it would hide.
+        if not tab_available(proposal.tab, facts.role, facts.packages):
+            if not role_allows_tab(proposal.tab, facts.role):
+                text = _TEXT[facts.language]["locked_role"].format(tab=proposal.tab)
+            else:
+                keys = _TAB_GATES[proposal.tab][0]
+                names = " or ".join(sorted(BY_KEY[k].title for k in keys))
+                text = _TEXT[facts.language]["locked"].format(tab=proposal.tab, packages=names)
             return _Planned(result=AnswerResult(action="answer", markdown=text))
         return _Planned(
             result=NavigateResult(
@@ -1470,15 +1472,19 @@ async def _resolve(
             )
         )
     if isinstance(proposal, DirectoryLookupProposal):
-        # Same gate and throttle as GET /workspace/people; without hr the assistant says so.
+        # Same gate and throttle as GET /workspace/people; without hr the assistant says so,
+        # or, on an email request, asks for the address so the request survives (M5).
+        for_email = _about_email(turn.body, facts)
         if not _unlocked(facts.packages, _TAB_GATES["hr"]):
+            if for_email:
+                return _Planned(result=_ask_address(facts))
             text = _TEXT[facts.language]["people_unavailable"]
             return _Planned(result=AnswerResult(action="answer", markdown=text))
         query = proposal.query.strip()
         if not query:
-            raise PlannerInvalidOutput()  # a blank pattern would list the whole directory
+            raise PlannerInvalidOutput(BLANK_QUERY)  # a blank pattern would list everyone
         throttle_lookup(actor.session_id)
-        return _Planned(lookup=query)
+        return _Planned(lookup=query, email_lookup=for_email)
     if isinstance(proposal, ClarificationProposal):
         live, stored = _clarification(proposal)
         return _Planned(result=live, stored=stored)
@@ -1488,14 +1494,17 @@ async def _resolve(
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailComposeProposal):
-        _check_recipients(proposal, turn.body, facts)
+        _named_recipient_check(proposal, turn.body, facts)
         send = _asked_to_send(proposal, turn.body, facts)
         prepared = await _compose(
             request, actor, client_id, thread_id, turn, proposal, registry, send=send
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailReplyProposal):
-        _check_recipients(proposal, turn.body, facts)
+        synced = {thread.thread_id for thread in facts.mailbox_threads or []}
+        if proposal.thread_id not in synced:
+            raise PlannerInvalidOutput(UNKNOWN_THREAD)
+        _named_recipient_check(proposal, turn.body, facts)
         send = _asked_to_send(proposal, turn.body, facts)
         prepared = await _reply(
             request, actor, client_id, thread_id, turn, proposal, registry, send=send
@@ -1573,6 +1582,11 @@ async def _finish(
             ),
             conn=conn,
         )
+        if not found:
+            # M5: an email request asks for the address; anything else gets plain, local text.
+            if planned.email_lookup:
+                return _ask_address(facts)
+            return AnswerResult(action="answer", markdown=_TEXT[facts.language]["no_match"])
         return DirectoryResult(action="directory_lookup", candidates=found)
     if planned.summary is not None:
         return AnswerResult(
@@ -1625,8 +1639,9 @@ async def create_planned_turn(
     if known is not None:
         return known  # a replay never re-plans or re-prepares
     facts = await planner_facts(request, actor, client_id, thread_id, turn)
-    proposal = await _plan(planner, turn.body, facts)
-    planned = await _resolve(request, actor, client_id, thread_id, turn, proposal, facts, registry)
+    proposal, planned = await _plan_and_resolve(
+        request, actor, client_id, thread_id, turn, facts, planner, registry
+    )
     async with tx(pool, str(client_id)) as conn:
         await lock_request(conn, client_id, actor.user_id, turn.request_key)
         await get_thread(conn, client_id, actor.user_id, thread_id)

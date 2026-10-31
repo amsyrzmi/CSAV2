@@ -237,7 +237,24 @@ Clarifications are checked by the server, not only by the planner prompt:
   in the message (a directory result the user picked), an id an earlier
   directory turn offered, or `my_manager` (present only when the message
   mentions a manager). `my_team` ids serve "email my team" only. Any other id
-  is refused as invented (502 `planner_invalid_output`).
+  is refused as invented.
+- A refused plan the server can name (a recipient the user did not ask for, a
+  thread not in the synced mail, a blank directory search, an over-long option,
+  or JSON that breaks the plan contract) is planned once more with a fixed
+  server note for that rule, and every gate runs again on the new plan. The
+  correction budget is shared with the content correction above: one
+  correction per turn, whatever its kind, so a turn makes at most two planner
+  calls. If the second plan breaks a rule too, the user gets a plain answer:
+  "I couldn't find that conversation in your synced email." for an unknown
+  thread, otherwise "I couldn't work out who to send that to. Type their email
+  address." (in Malay for a Malay message). Nothing is drafted. Output that is
+  not JSON at all stays 502 `planner_invalid_output`.
+- When the directory finds nobody for an email request, or HR is not active,
+  the assistant asks "I couldn't find that person in the directory. Type their
+  email address and I'll continue." with no options. The typed address is
+  folded into the first request, so "send" still counts. Outside email a
+  search with no match answers "No matching colleague was found." (in Malay
+  for a Malay message).
 - The save-to-Gmail-drafts card is bound to the whole draft (To, CC, BCC,
   subject and body, the same `draft_version` as a send card), so any edit makes
   it stale. Cards made before this change go stale once.

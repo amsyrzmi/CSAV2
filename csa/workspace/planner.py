@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Annotated, Literal, Union
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from csa.console.contracts import Role
 from csa.console.services import PackageState
@@ -39,6 +39,7 @@ from csa.workspace.contracts import (
     WorkspaceProposal,
     _Contract,
 )
+from csa.workspace.rules import CONTRACT_INVALID
 
 PlannerProposal = Annotated[
     Union[  # noqa: UP007 - Annotated discriminated union of named members
@@ -147,8 +148,13 @@ class PlannerError(Exception):
 
 
 class PlannerInvalidOutput(PlannerError):
-    def __init__(self) -> None:
+    """The plan broke the contract or a server rule; ``reason`` names the rule when the server
+    can (see ``csa/workspace/rules.py``), so the turn can be re-planned once. The code and status
+    stay the same for every reason."""
+
+    def __init__(self, reason: str | None = None) -> None:
         super().__init__("planner_invalid_output")
+        self.reason = reason
 
 
 class PlannerUnavailable(PlannerError):
@@ -274,6 +280,17 @@ def planner_prompt(message: str, facts: PlannerFacts, note: str | None = None) -
     return prompt
 
 
+def _parse_failure(exc: CompletionError) -> str | None:
+    """``contract_invalid`` when the reply was JSON that broke PlannerOutput (a validator, a
+    missing field, a legacy action); a reply that is not JSON at all names no rule."""
+    cause = exc.__cause__
+    if isinstance(cause, ValidationError) and all(
+        error["type"] != "json_invalid" for error in cause.errors()
+    ):
+        return CONTRACT_INVALID
+    return None
+
+
 class WorkspacePlanner:
     def __init__(self, client: JsonCompletionClient, *, timeout: float = 20.0) -> None:
         self._client = client
@@ -291,7 +308,7 @@ class WorkspacePlanner:
             )
         except CompletionError as exc:
             if exc.code == "groq_invalid_output":
-                raise PlannerInvalidOutput() from None
+                raise PlannerInvalidOutput(_parse_failure(exc)) from None
             raise PlannerUnavailable() from None
         if not isinstance(output, PlannerOutput):
             raise PlannerInvalidOutput()
