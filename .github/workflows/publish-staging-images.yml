@@ -22,15 +22,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: publish-staging-images
-  cancel-in-progress: false
-
 jobs:
   publish:
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     environment: staging-images
+    # Job level, not workflow level: a run whose `if:` skips the job (a failed or
+    # non-push `ci` run) never joins the group, so it cannot displace a green
+    # publish waiting behind another run.
+    concurrency:
+      group: publish-staging-images
+      cancel-in-progress: false
     permissions:
       contents: read
       actions: read

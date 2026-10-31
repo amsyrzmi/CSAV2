@@ -501,6 +501,8 @@ def build_plan(
     checks_dir: Path = CHECKS_DIR,
     expected_sha: str | None = None,
 ) -> Plan:
+    if expected_sha is not None and not SHA_RE.match(expected_sha):
+        raise RolloutError("confirm", "--sha must be the full 40-character SHA that plan printed")
     sha = target_sha(runner, repo)
     if expected_sha is not None and expected_sha != sha:
         raise RolloutError(
@@ -603,7 +605,7 @@ def _verify_pull(runner: Runner, env: Mapping[str, str], ref: str, sha: str) -> 
 class _Progress:
     """How far apply got, so a stop can say what changed and how to recover."""
 
-    phase: str = "unchanged"  # unchanged, stopped, recreating, up or checks
+    phase: str = "unchanged"  # unchanged, stopped, recreating, up, checks or check_unread
     recorded: list[str] | None = field(default_factory=list)  # planned versions recorded
     pending: list[str] = field(default_factory=list)
     rollback: Mapping[str, RunningImage | None] = field(default_factory=dict)
@@ -781,13 +783,18 @@ def _await_ready(runner: Runner, env: Mapping[str, str], sleep: Callable[[float]
 
 
 def _run_checks(
-    runner: Runner, env: Mapping[str, str], checks_dir: Path, out: Callable[[str], None]
+    runner: Runner,
+    env: Mapping[str, str],
+    checks_dir: Path,
+    out: Callable[[str], None],
+    progress: _Progress,
 ) -> None:
     for path in check_files(checks_dir):
         out(f"Running check {path.name}…")
         try:
             sql = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
+            progress.phase = "check_unread"
             raise RolloutError(f"check {path.name}", "cannot read the check file") from error
         result = runner.run(
             [
@@ -861,6 +868,9 @@ def _report_recovery(progress: _Progress, out: Callable[[str], None]) -> None:
     """Recovery lines for how far apply got; never a rollback once a migration is recorded."""
     if progress.phase == "unchanged":
         out("Nothing on staging was changed.")
+        return
+    if progress.phase == "check_unread":
+        out("The check did not run and the services were not stopped; fix the check file.")
         return
     if progress.phase == "checks":
         out(
@@ -944,7 +954,7 @@ def apply(
         out("Checking readiness…")
         _await_ready(runner, env, sleep)
         progress.phase = "checks"
-        _run_checks(runner, env, checks_dir, out)
+        _run_checks(runner, env, checks_dir, out, progress)
         status = runner.run(
             [*compose_base(), "ps", "--format", "{{.Service}} {{.Status}}"], env=env
         )

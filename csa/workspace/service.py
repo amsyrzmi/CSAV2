@@ -35,6 +35,7 @@ from csa.email.models import (
     ComposeRequest,
     DraftOut,
     EmailPolicyError,
+    EmailSession,
     ReplyRequest,
     TeamComposeRequest,
     draft_version,
@@ -1233,6 +1234,19 @@ async def _draft_card(
     )
 
 
+async def _require_connected(service: EmailService, session: EmailSession) -> None:
+    """Refuse a disconnected mailbox before drafting, so no model call or stray draft is made.
+
+    The card check (``_connected_draft``) would refuse it anyway, but only after the draft.
+    """
+    try:
+        mailbox = (await service.context(session)).mailbox
+    except EmailPolicyError as exc:
+        raise email_http_error(exc) from None
+    if mailbox is None or mailbox.status != "connected":
+        raise email_http_error(EmailPolicyError("mailbox_not_connected"))
+
+
 async def _compose(
     request: Request,
     actor: ConsoleActor,
@@ -1265,9 +1279,11 @@ async def _compose(
         )
     except ValidationError:
         raise HTTPException(422, "email_recipient_invalid") from None
+    session = email_session_from(request, actor, client_id, mutation=True)
+    await _require_connected(service, session)
     try:
         draft = await service.compose(
-            email_session_from(request, actor, client_id, mutation=True),
+            session,
             compose,
             uuid5(turn.request_key, f"workspace_compose:{thread_id}"),
         )
@@ -1303,9 +1319,11 @@ async def _reply(
         )
     except ValidationError:
         raise HTTPException(422, "email_recipient_invalid") from None
+    session = email_session_from(request, actor, client_id, mutation=True)
+    await _require_connected(service, session)
     try:
         draft = await service.reply(
-            email_session_from(request, actor, client_id, mutation=True),
+            session,
             proposal.thread_id,
             reply,
             uuid5(turn.request_key, f"workspace_reply:{thread_id}"),
@@ -1335,9 +1353,11 @@ async def _team_email(
     if team.reason is not None:
         text = _TEXT[facts.language][f"team_{team.reason}"]
         return _Planned(result=AnswerResult(action="answer", markdown=text))
+    session = email_session_from(request, actor, client_id, mutation=True)
+    await _require_connected(service, session)
     try:
         draft = await service.compose_team(
-            email_session_from(request, actor, client_id, mutation=True),
+            session,
             TeamComposeRequest(
                 to_employee_ids=[person.employee_id for person in team.reports],
                 subject=proposal.subject,
