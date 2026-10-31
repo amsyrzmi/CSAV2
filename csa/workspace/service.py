@@ -902,7 +902,7 @@ async def planner_facts(
         packages=packages,
         page_context=context,
         record_summary=summary,
-        language=detect_language(turn.body),
+        language=detect_language(turn.body) or "en",
         history=_prior_turns(rows, turn.body),
         my_manager=manager,
         mailbox_threads=threads,
