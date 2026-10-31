@@ -1341,10 +1341,9 @@ async def _summary(
     """Answers "what needs my attention" from synced mail; may analyse five threads first."""
     service = _email_service(request)
     await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
+    session = email_session_from(request, actor, client_id, mutation=False)
     try:
-        page = await service.attention(
-            email_session_from(request, actor, client_id, mutation=False)
-        )
+        page = await service.attention(session)
     except EmailPolicyError as exc:
         key = _SUMMARY_ANSWERS.get(exc.code)
         if key is None:
@@ -1352,11 +1351,13 @@ async def _summary(
     except (CompletionError, TimeoutError):
         key = _SUMMARY_ANSWERS["email_model_unavailable"]
     else:
-        if page.as_of is None:
-            # The mailbox row's last-sync time: null means it has never synced.
-            key = "summary_never_synced"
-        else:
+        if page.as_of is not None:
             return _Planned(summary=page)
+        # Never synced (the mailbox row's last-sync time is null). Sync needs a connected
+        # mailbox, so a pending or revoked row is asked to connect instead.
+        mailbox = (await service.context(session)).mailbox
+        connected = mailbox is not None and mailbox.status == "connected"
+        key = "summary_never_synced" if connected else "summary_mailbox_not_connected"
     # Fixed copy, no mail content, so the turn row may store it as it is.
     return _Planned(result=AnswerResult(action="answer", markdown=_TEXT[facts.language][key]))
 

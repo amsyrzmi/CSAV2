@@ -1978,19 +1978,31 @@ async def test_clarification_options_never_carry_an_address(planned) -> None:
 
 
 class FailingDraftModel:
-    """Email drafting model double: every draft fails as the real model did on staging."""
+    """Email drafting model double: every draft fails, by default as the model did on staging."""
 
     model = "scripted"
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
 
     async def json_completion(
         self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
     ) -> Any:
-        raise GroqError("groq_invalid_output")
+        raise self.error
 
 
 @requires_docker
-@pytest.mark.parametrize("kind", ["compose", "reply", "team"])
-async def test_drafting_model_failure_is_503(planned, kind: str) -> None:
+@pytest.mark.parametrize(
+    ("kind", "error"),
+    [
+        ("compose", GroqError("groq_invalid_output")),
+        ("reply", GroqError("groq_invalid_output")),
+        ("team", GroqError("groq_invalid_output")),
+        ("compose", TimeoutError()),
+    ],
+    ids=["compose", "reply", "team", "compose-timeout"],
+)
+async def test_drafting_model_failure_is_503(planned, kind: str, error: Exception) -> None:
     """Review Focus 3: a drafting model failure is 503 email_model_unavailable, never 500."""
     w, model = planned
     if kind == "team":
@@ -2015,7 +2027,7 @@ async def test_drafting_model_failure_is_503(planned, kind: str) -> None:
             "send": True,
         }
         body = f"send email to {address} about the plan"
-    w.app.state.email_service.model = FailingDraftModel()
+    w.app.state.email_service.model = FailingDraftModel(error)
     thread = await _thread(w, browser)
     model.reply(plan)
     turn = await _turn(w, browser, thread, body, "email")
@@ -2049,3 +2061,26 @@ async def test_attention_on_never_synced_mailbox(planned) -> None:
     turn = await _turn(w, browser, thread, asked, "email")
     assert turn.status_code == 201, turn.text
     assert turn.json()["result"]["markdown"] == NEVER_SYNCED["ms"]
+
+
+@requires_docker
+async def test_attention_on_a_pending_mailbox_asks_to_connect(planned) -> None:
+    """Connect started but Google consent abandoned: a pending, never-synced row can't Sync."""
+    w, model = planned
+    tenant = w.tenants[0]
+    await activate(w, tenant, "staff_email")
+    await w.q("UPDATE email_settings SET enabled=true WHERE client_id=%s", tenant)
+    browser, _ = await w.member(role="tenant_staff")
+    headers = {**w.headers(browser), "Idempotency-Key": str(uuid4())}
+    started = await browser.post("/console/v1/email/mailbox/connect", headers=headers)
+    assert started.status_code == 200, started.text
+    rows = await w.q("SELECT status, last_sync_at FROM email_mailboxes")
+    assert rows == [{"status": "pending", "last_sync_at": None}]
+    thread = await _thread(w, browser)
+    model.reply({"action": "inbox_summary"})
+    turn = await _turn(w, browser, thread, "What needs my attention today?", "email")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["result"] == {
+        "action": "answer",
+        "markdown": "Connect your Gmail on the Email assistant tab first.",
+    }

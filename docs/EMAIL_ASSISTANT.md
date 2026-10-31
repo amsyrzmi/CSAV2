@@ -160,11 +160,14 @@ data only.
   opens (after sync on open) and after the Sync button, not after load more,
   because each load can spend up to 5 model calls.
 - In the workspace assistant, a failure becomes a plain answer, not an error.
-- In the workspace assistant, a mailbox that has never synced (its last-sync time
-  is null) gets a plain answer instead of an empty summary: "Your email hasn't
-  been synced yet. Open the Email assistant tab and press Sync, then ask again."
-  (in Malay when the user writes in Malay). Zero threads after a sync is the
-  normal "nothing needs your attention" answer.
+- In the workspace assistant, a connected mailbox that has never synced (its
+  last-sync time is null) gets a plain answer instead of an empty summary: "Your
+  email hasn't been synced yet. Open the Email assistant tab and press Sync, then
+  ask again." (in Malay when the user writes in Malay). A never-synced row that
+  is not connected (a pending connect or a revoked mailbox) gets "Connect your
+  Gmail on the Email assistant tab first." instead, because Sync needs a
+  connected mailbox. Zero threads after a sync is the normal "nothing needs your
+  attention" answer.
 
 ## Workspace assistant
 
