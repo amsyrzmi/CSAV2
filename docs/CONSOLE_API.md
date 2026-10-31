@@ -645,7 +645,7 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   error; retryable) or 502 `planner_invalid_output` (output that is not JSON, or a refusal
   the server cannot name). A plan refused for a named rule is re-planned once (one
   correction per turn, shared with the content correction) and, if refused again, answered
-  with a no-option question for the address, or a plain answer for an unknown thread (see
+  with a no-option question for the address on an email turn, otherwise a plain answer (see
   `docs/EMAIL_ASSISTANT.md`).
 - A failure of the email-drafting model (invalid output, provider error or timeout) on an
   `email_compose`, `email_reply` or `email_team` turn returns 503

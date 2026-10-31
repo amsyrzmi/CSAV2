@@ -475,6 +475,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_match": "No matching colleague was found.",
         "fallback_recipient": "I couldn't work out who to send that to. Type their email address.",
         "fallback_thread": "I couldn't find that conversation in your synced email.",
+        "fallback_general": "I couldn't work that out. Try rephrasing or say what you want to do.",
         "no_record": "No record is open.",
         "hr_inactive": "The HR service is not active, so your manager cannot be looked up.",
         "manager": "Your manager is {name}{title}.",
@@ -530,6 +531,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "fallback_recipient": "Saya tidak dapat menentukan kepada siapa untuk menghantarnya. "
         "Taip alamat e-mel mereka.",
         "fallback_thread": "Saya tidak menjumpai perbualan itu dalam e-mel anda yang disegerakkan.",
+        "fallback_general": "Saya tidak dapat memahaminya. Cuba nyatakan semula apa yang anda "
+        "mahu lakukan.",
         "no_record": "Tiada rekod dibuka.",
         "hr_inactive": "Perkhidmatan HR tidak aktif, jadi pengurus anda tidak dapat dicari.",
         "manager": "Pengurus anda ialah {name}{title}.",
@@ -979,17 +982,19 @@ def _corrects_content(proposal: WorkspaceProposal, message: str, facts: PlannerF
 
 
 def _fallback(
-    reason: str, facts: PlannerFacts
+    reason: str, message: str, facts: PlannerFacts
 ) -> tuple[AnswerProposal | ClarificationProposal, _Planned]:
     """What the user gets after a corrected plan broke a rule again (M7).
 
-    An unknown thread is a plain answer. Every other reason asks for the address as a question
-    with no options, so the typed answer folds in the first request and "send" still counts
-    (the same mechanism as the directory dead end, M5).
+    An unknown thread is a plain answer. On an email turn (see ``_about_email``) every other
+    reason asks for the address as a question with no options, so the typed answer folds in the
+    first request and "send" still counts (the same mechanism as the directory dead end, M5).
+    On any other turn it is a plain answer asking the user to rephrase.
     """
     text = _TEXT[facts.language]
-    if reason == UNKNOWN_THREAD:
-        answer = AnswerResult(action="answer", markdown=text["fallback_thread"])
+    if reason == UNKNOWN_THREAD or not _about_email(message, facts):
+        key = "fallback_thread" if reason == UNKNOWN_THREAD else "fallback_general"
+        answer = AnswerResult(action="answer", markdown=text[key])
         return AnswerProposal(action="answer", markdown=answer.markdown), _Planned(result=answer)
     question = ClarificationProposal(action="clarification", question=text["fallback_recipient"])
     live, stored = _clarification(question)
@@ -1027,7 +1032,7 @@ async def _corrected_plan(
             if exc.reason not in CORRECTION_NOTES:
                 raise
             if final:
-                return _fallback(exc.reason, facts)
+                return _fallback(exc.reason, message, facts)
             note = CORRECTION_NOTES[exc.reason]
     raise AssertionError("the second plan is always final")
 

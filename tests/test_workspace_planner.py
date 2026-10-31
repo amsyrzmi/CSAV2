@@ -148,6 +148,10 @@ RECIPIENT_FALLBACK = {
     "en": "I couldn't work out who to send that to. Type their email address.",
     "ms": "Saya tidak dapat menentukan kepada siapa untuk menghantarnya. Taip alamat e-mel mereka.",
 }
+GENERAL_FALLBACK = {
+    "en": "I couldn't work that out. Try rephrasing or say what you want to do.",
+    "ms": "Saya tidak dapat memahaminya. Cuba nyatakan semula apa yang anda mahu lakukan.",
+}
 THREAD_FALLBACK = {
     "en": "I couldn't find that conversation in your synced email.",
     "ms": "Saya tidak menjumpai perbualan itu dalam e-mel anda yang disegerakkan.",
@@ -177,8 +181,8 @@ def _fell_back(response: httpx.Response, text: str = RECIPIENT_FALLBACK["en"]) -
     assert response.json()["result"] == {"action": "clarification", "question": text, "options": []}
 
 
-def _thread_fell_back(response: httpx.Response, text: str = THREAD_FALLBACK["en"]) -> None:
-    """A reply refused twice for an unknown thread is answered in plain text (M7)."""
+def _plain_fell_back(response: httpx.Response, text: str = THREAD_FALLBACK["en"]) -> None:
+    """Refused twice and answered in plain text: an unknown thread, or a non-email turn (M7)."""
     assert response.status_code == 201, response.text
     assert response.json()["result"] == {"action": "answer", "markdown": text}
 
@@ -2531,18 +2535,19 @@ async def test_unknown_thread_fallback(planned) -> None:
     model.reply({"action": "email_reply", "thread_id": "t-not-synced", "instructions": "Hi"})
     model.reply({"action": "email_reply", "thread_id": "t-also-unknown", "instructions": "Hi"})
     unknown = await _turn(w, browser, thread, "Reply to that email", "email")
-    _thread_fell_back(unknown, THREAD_FALLBACK["en"])
+    _plain_fell_back(unknown, THREAD_FALLBACK["en"])
     assert len(model.calls) == 2
     assert CORRECTION_NOTES[UNKNOWN_THREAD] in model.calls[1][2]
     _twice(model, {"action": "email_reply", "thread_id": "t-not-synced", "instructions": "Hi"})
     malay = await _turn(w, browser, thread, "Tolong balas emel itu", "email")
-    _thread_fell_back(malay, THREAD_FALLBACK["ms"])
+    _plain_fell_back(malay, THREAD_FALLBACK["ms"])
     assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
 
 
 @requires_docker
 async def test_named_violations_get_the_fallback_after_one_correction(planned) -> None:
-    """A blank directory query and a legacy action are corrected once, then answered."""
+    """A blank directory query and a legacy action are corrected once, then answered. Off an
+    email turn the answer asks to rephrase, never for an email address."""
     from csa.workspace.rules import BLANK_QUERY, CONTRACT_INVALID, CORRECTION_NOTES
 
     w, model = planned
@@ -2550,18 +2555,24 @@ async def test_named_violations_get_the_fallback_after_one_correction(planned) -
     browser, _ = await w.member(role="tenant_staff")
     thread = await _thread(w, browser)
     _twice(model, {"action": "directory_lookup", "query": "   "})
-    _fell_back(await _turn(w, browser, thread, "Everyone", "hr"))
+    _plain_fell_back(await _turn(w, browser, thread, "Everyone", "hr"), GENERAL_FALLBACK["en"])
     assert CORRECTION_NOTES[BLANK_QUERY] in model.calls[1][2]
     _twice(model, {"action": "page_guidance", "page": "workspace_home"})
-    _fell_back(await _turn(w, browser, thread, "Hello", "overview"))
+    _plain_fell_back(await _turn(w, browser, thread, "Hello", "overview"), GENERAL_FALLBACK["en"])
     assert CORRECTION_NOTES[CONTRACT_INVALID] in model.calls[3][2]
+    _twice(model, {"action": "directory_lookup", "query": "   "})
+    malay = await _turn(w, browser, thread, "Tolong cari semua orang", "hr")
+    _plain_fell_back(malay, GENERAL_FALLBACK["ms"])
+    # The same rule broken twice on an email turn asks for the address instead.
+    _twice(model, {"action": "page_guidance", "page": "workspace_home"})
+    _fell_back(await _turn(w, browser, thread, "email the ops team about Monday", "overview"))
     # A corrected plan that is valid resolves normally.
     model.reply({"action": "directory_lookup", "query": "   "})
     model.reply({"action": "answer", "markdown": "Who do you mean?"})
     asked = await _turn(w, browser, thread, "Everyone", "hr")
     assert asked.status_code == 201, asked.text
     assert asked.json()["result"] == {"action": "answer", "markdown": "Who do you mean?"}
-    assert len(model.calls) == 6
+    assert len(model.calls) == 10
     audits = await w.q(
         "SELECT count(*) n FROM console_audit WHERE action='workspace.people.lookup'"
     )
