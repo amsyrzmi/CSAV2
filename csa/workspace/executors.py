@@ -456,7 +456,7 @@ class InboxDecisionExecutor:
                 "inbox/get_approval.sql", (client_id, proposal.approval_id), conn=conn
             )
             if approval is None or approval["conversation_id"] != proposal.conversation_id:
-                raise HTTPException(404, "reply approval not found")
+                raise HTTPException(404, "reply_approval_not_found")
             current = await conversation(conn, client_id, proposal.conversation_id)
         if current.inbox_version != proposal.expected_version:
             raise ProposalError("proposal_stale")

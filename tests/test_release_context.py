@@ -11,12 +11,14 @@ def source_tree(root: Path) -> Path:
     for directory in ("apps", "csa", "scripts", "db/migrations", "db/sql", "deploy"):
         (root / directory).mkdir(parents=True)
     (root / "csa/evals/data").mkdir(parents=True)
+    (root / "csa/workspace").mkdir(parents=True)
     for name in (
         "pyproject.toml",
         "uv.lock",
         "apps/main.py",
         "csa/__init__.py",
         "csa/evals/data/decision_cases.json",
+        "csa/workspace/smoke_cases.json",
         "scripts/__init__.py",
         "db/schema_baseline.sql",
         "db/migrations/0360_identity.sql",
@@ -43,6 +45,8 @@ def test_context_excludes_environment_local_sql_caches_and_reference(tmp_path: P
         "apps/main.py",
         "csa/__init__.py",
         "csa/evals/data/decision_cases.json",
+        # The owner's smoke run (python -m scripts.assistant_smoke) reads it in the image.
+        "csa/workspace/smoke_cases.json",
         "scripts/__init__.py",
         "db/schema_baseline.sql",
         "db/migrations/0360_identity.sql",

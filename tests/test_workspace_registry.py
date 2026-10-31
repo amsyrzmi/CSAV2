@@ -1295,6 +1295,19 @@ async def test_inbox_decision_after_conversation_moved_is_stale(proposals_app) -
     assert mismatch.status_code == 409 and mismatch.json()["detail"] == "proposal_stale"
 
 
+async def test_inbox_decision_for_an_unknown_approval_has_a_stable_code(proposals_app) -> None:
+    """A held reply that is gone (or in another conversation) is 404 with a code, not prose."""
+    w, _ = proposals_app
+    approval, conversation_id, version = await _held_approval(w)
+    browser, _ = await w.member(role="tenant_staff")
+    refused = await _propose(
+        w, browser, "inbox_decision", _decision(approval + 999, conversation_id, version)
+    )
+    assert refused.status_code == 404, refused.text
+    assert refused.json() == {"detail": "reply_approval_not_found"}
+    assert (await w.q("SELECT count(*) n FROM console_proposals"))[0]["n"] == 0
+
+
 async def test_expired_confirm_over_http_persists_expired(proposals_app) -> None:
     w, _ = proposals_app
     approval, conversation_id, version = await _held_approval(w)

@@ -19,7 +19,9 @@ Output is content-free: one ``PASS|FAIL <id> action=<action>`` line per sample, 
 field names after a failure, ``RATE <id> k/N`` per case with ``--repeat``, and a last
 ``N passed, M failed`` line. Never a message, model text, subject, body or address; the key is
 never printed. Exit 0 when every sample passes, 1 when any fails, 2 on a setup error (no model
-key, the model unavailable on the first call, an unknown case id).
+key, the model unavailable on the first call, an unknown case id, a missing or invalid case
+file). A run is about 43 model calls (one planner call per case plus one drafting call per draft
+case), up to about 76 with re-plans.
 """
 
 from __future__ import annotations
@@ -475,7 +477,11 @@ def main(argv: Sequence[str] | None = None, *, client: JsonCompletionClient | No
     args = parser.parse_args(argv)
     if args.repeat < 1:
         return _setup_error("--repeat must be at least 1")
-    cases = load_cases()
+    try:
+        cases = load_cases(CASES_FILE)
+    except (OSError, ValidationError):
+        # Fixed text: a validation error would quote the file, an OSError its path.
+        return _setup_error("the smoke cases file is missing or invalid")
     if args.case:
         known = {case.id for case in cases}
         if unknown := [case_id for case_id in args.case if case_id not in known]:

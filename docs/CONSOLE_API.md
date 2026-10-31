@@ -626,8 +626,9 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
 - When the message is about training (English or Malay words such as "training",
   "course", "latihan", "kursus"), the server passes `my_employee`: `{linked,
   can_request_training, reason}`, with `reason` one of `hr_inactive`, `no_hr_access`,
-  `no_employee_link` or null. When either flag is false the planner answers with the reason
-  instead of proposing `training_submit`.
+  `no_employee_link`, `assistant_off` (the tenant's HR assistant switch is off) or null.
+  When either flag is false the planner answers with the reason instead of proposing
+  `training_submit`.
 - The dock repeats the originating request in follow-up turns: picking a directory
   candidate sends `Use employee <id> for: <original message>`, and a clarification answer
   sends the option value with its question and the original message.
@@ -702,11 +703,12 @@ version. The package gate is re-run at confirm.
 | `proposal_consumed` | 409 | Already confirmed or cancelled, or another confirm holds the lease |
 | `proposal_stale` | 409 | Payload hash or `expected_version` no longer matches |
 | `planner_unavailable` | 503 | No planner configured, or the model provider failed |
-| `planner_invalid_output` | 502 | The model output failed the strict proposal schema |
+| `planner_invalid_output` | 502 | Non-JSON output or an unnamed refusal; named schema failures are corrected once |
 | `email_model_unavailable` | 503 | The email-drafting model failed on a compose, reply or team turn; try again |
 | `mailbox_not_connected` | 409 | An `email_export` or `email_send` card was asked for while the user's mailbox is not connected; checked when the card is made, not only at confirm |
 | `no_employee_link` | 409 | A `training_submit` card was asked for, or a training draft saved, while the caller's login is not linked to an employee record |
 | `hr_training_not_permitted` | 403 | A `training_submit` card was asked for without the training grants it needs (`training.submit`, plus `training.draft` for a new request) |
+| `reply_approval_not_found` | 404 | An `inbox_decision` card named a held reply that is gone or belongs to another conversation |
 
 Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 `workspace.proposal.created`, `workspace.proposal.confirmed`,

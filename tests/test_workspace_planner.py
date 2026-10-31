@@ -2598,3 +2598,82 @@ async def test_navigate_to_locked_tab_answers_locked(planned) -> None:
     opened = await _turn(w, browser, thread, "Take me to email", "overview")
     assert opened.status_code == 201, opened.text
     assert opened.json()["result"]["action"] == "navigate"
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("from_owner", "gmail_thread", "status", "code"),
+    [
+        (None, {"id": "t1", "messages": []}, 409, "thread_empty"),
+        (True, [], 502, "provider_invalid_response"),
+    ],
+    ids=["pre-0484-row", "owner-last"],
+)
+async def test_reply_gmail_failure_is_mapped_not_500(
+    planned,
+    proposals_app,  # noqa: F811
+    from_owner: bool | None,
+    gmail_thread: Any,
+    status: int,
+    code: str,
+) -> None:
+    """A reply that must read the thread from Gmail maps a Gmail failure like the email routes."""
+    w, model = planned
+    _, gmail = proposals_app
+    browser = await _mail_ready(w)
+    await _sync(w, browser)
+    await w.q("UPDATE email_threads SET latest_from_owner=%s WHERE thread_id='t1'", from_owner)
+    gmail.extra_threads["t1"] = gmail_thread
+    thread = await _thread(w, browser)
+    model.reply({"action": "email_reply", "thread_id": "t1", "instructions": "Thank her"})
+    turn = await _turn(w, browser, thread, "Reply to Aina's email and thank her", "email")
+    assert turn.status_code == status, turn.text
+    assert turn.json() == {"detail": code}
+    assert await _turn_rows(w) == []
+    assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
+
+
+@requires_docker
+async def test_attention_session_revoked_between_reads_is_not_500(planned, monkeypatch) -> None:
+    """The never-synced check reads the mailbox again; a refusal there is mapped, never 500."""
+    from csa.email.models import EmailPolicyError
+
+    w, model = planned
+    browser = await _mail_ready(w)
+    thread = await _thread(w, browser)
+
+    async def revoked(session: Any) -> Any:
+        raise EmailPolicyError("session_unavailable")
+
+    monkeypatch.setattr(w.app.state.email_service, "context", revoked)
+    model.reply({"action": "inbox_summary"})
+    turn = await _turn(w, browser, thread, "What needs my attention today?", "email")
+    assert turn.status_code == 401, turn.text
+    assert turn.json() == {"detail": "session_unavailable"}
+    assert await _turn_rows(w) == []
+
+
+@requires_docker
+@pytest.mark.parametrize("state", ["hr_inactive", "no_hr_access", "assistant_off"])
+async def test_my_employee_reason_when_training_is_not_possible(planned, state: str) -> None:
+    """Each reason a training card would fail reaches the planner as my_employee.reason."""
+    w, model = planned
+    linked = False
+    if state == "hr_inactive":
+        browser, _ = await w.member(role="tenant_staff")
+    elif state == "assistant_off":
+        browser = await _hr_member(w, switch=False)
+    else:
+        browser = await _hr_member(w)
+        await w.q("DELETE FROM hr_grants WHERE client_id=%s", w.tenants[0])
+        linked = True
+    thread = await _thread(w, browser)
+    model.reply({"action": "answer", "markdown": "Noted."})
+    turn = await _turn(w, browser, thread, "Request first aid training", "overview")
+    assert turn.status_code == 201, turn.text
+    assert model.facts()["my_employee"] == {
+        "linked": linked,
+        "can_request_training": False,
+        "reason": state,
+    }
+    assert await _proposal_count(w) == 0

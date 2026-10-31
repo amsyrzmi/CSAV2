@@ -115,7 +115,7 @@ class EmployeeFact(_Contract):
 
     linked: bool
     can_request_training: bool
-    reason: Literal["hr_inactive", "no_hr_access", "no_employee_link"] | None
+    reason: Literal["hr_inactive", "no_hr_access", "no_employee_link", "assistant_off"] | None
 
 
 class PlannerFacts(_Contract):

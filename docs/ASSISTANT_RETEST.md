@@ -21,6 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
+- A run is about 43 model calls (one planner call per case plus one drafting call per draft case),
+  up to about 76 when cases are re-planned.
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -62,8 +64,9 @@ Tick each row when the result matches.
 | --- | --- | --- | --- |
 | Open the HR tab | HR active | A navigate to a tab the user can open | `navigate-en-1` |
 | Tolong buka tab HR untuk saya | HR active | A navigate to a tab the user can open | `navigate-ms-1` |
-| Open the email assistant tab | Read-only member | An answer, or a navigate to a tab the role cannot open (answered with "The email tab is not available to your role.") | `navigate-en-2` |
-| Tolong buka tab langganan untuk saya | Subscriptions service not active, HR tab open | An answer, or a navigate to a locked tab (answered with the locked text) | `navigate-ms-2` |
+| Open the email assistant tab | Read-only member | An answer, or a navigate to a tab the role cannot open; PASS checks only that such a navigate is locked, not the wording | `navigate-en-2` |
+| Any prompt | Read-only member | No assistant dock is shown: read-only members cannot post turns, so `navigate-en-2` has no hand retest | manual |
+| Tolong buka tab langganan untuk saya | Subscriptions service not active, HR tab open | An answer, or a navigate to a locked tab; PASS checks only that such a navigate is locked, not the wording (check that by hand with the "Buka tab langganan" row below) | `navigate-ms-2` |
 | Open subscriptions | Subscriptions service not active | No tab opens and there is no "Opened" line; the answer says the tab needs the service and to ask an administrator | manual |
 | Buka tab langganan | Subscriptions service not active | Tiada tab dibuka; jawapan dalam Bahasa Melayu tentang perkhidmatan yang tidak aktif | manual |
 
@@ -143,6 +146,7 @@ Tick each row when the result matches.
 | I want to request a fire safety training | Staff with no employee link | An answer, no training request | `training-en-2` |
 | Saya nak mohon latihan keselamatan kebakaran | HR service not active | An answer, no training request | `training-ms-2` |
 | Saya nak mohon kursus latihan pertolongan cemas | Staff with no employee link | An answer, no training request | `training-ms-3` |
+| i want to send a request for ComptiaA+ training | Staff with no employee link (the owner's staging phrase) | An answer, no training request and no email action | `training-en-3` |
 | I want to request a fire safety training | Staff with no employee link | The answer gives the reason (no linked employee record) | manual |
 
 ## Inbox decision
@@ -164,11 +168,12 @@ Tick each row when the result matches.
 
 | Prompt | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
-| Send an email to aina.rahman@example.com saying hello | No mailbox: Gmail not connected | The card is refused with a sentence telling you to connect Gmail on the Email assistant tab; no draft is saved | manual |
-| Tolong hantar emel kepada aina.rahman@example.com untuk ucap terima kasih | No mailbox: Gmail not connected | Ayat dalam Bahasa Melayu untuk menyambung Gmail; tiada draf | manual |
+| Send an email to aina.rahman@example.com saying hello | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with a sentence telling you to connect Gmail; no draft is saved | manual |
+| Send an email to aina.rahman@example.com saying hello | Gmail connection pending or revoked | No card: the turn is refused with the same sentence; a draft is saved first, before the card is refused (expected today) | manual |
+| Tolong hantar emel kepada aina.rahman@example.com untuk ucap terima kasih | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with the same English sentence (console error sentences are English only); no draft is saved | manual |
 | What needs my attention in my email? | No mailbox: Gmail not connected | "Connect your Gmail on the Email assistant tab first." | manual |
 | I want to request a fire safety training | No employee link | An answer, no training request | `training-en-2` |
-| Request a first aid training course for me | No employee link | An answer with the reason; if a card appears anyway, pressing it is refused with a plain sentence and no training request is created | manual |
+| Request a first aid training course for me | No employee link | An answer with the reason. If the model proposes a training request anyway, no card is created: the turn is refused with a sentence that your login isn't linked to an employee record, and no training request is created | manual |
 | Send an email to Zulaikha Osman about the invoice | No directory match: nobody of that name in HR | "I couldn't find that person in the directory. Type their email address and I'll continue." Typing an address then gives a Send card | manual |
 | Tolong hantar emel kepada Zulaikha Osman tentang invois | No directory match | "Saya tidak menjumpai orang itu dalam direktori. Taip alamat e-mel mereka dan saya akan teruskan." | manual |
 | Send an email to aina.rahman@example.com saying the meeting has moved to 3pm | An address in the request | An email to exactly that address and no other recipient | `compose-en-1` |

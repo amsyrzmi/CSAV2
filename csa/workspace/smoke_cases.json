@@ -469,6 +469,25 @@
     }
   },
   {
+    "id": "training-en-3",
+    "language": "en",
+    "message": "i want to send a request for ComptiaA+ training",
+    "facts": {
+      "preset": "staff_unlinked"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "not_actions": [
+        "training_submit",
+        "email_compose",
+        "email_reply",
+        "email_team"
+      ]
+    }
+  },
+  {
     "id": "dont_send-en-1",
     "language": "en",
     "message": "Write an email to aina.rahman@example.com about Friday's meeting but don't send it yet",

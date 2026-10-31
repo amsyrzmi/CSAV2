@@ -399,3 +399,38 @@ def test_smoke_stops_when_the_model_is_unavailable_first(
     assert "model unavailable" in captured.err
     assert captured.out == ""
     assert down.calls == ["PlannerOutput"]
+
+
+@pytest.mark.parametrize("broken", ["missing", "not_json", "bad_case"])
+def test_smoke_cases_file_problem_is_a_setup_error(
+    broken: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A missing or unreadable case file exits 2 with a fixed line, never the file's content."""
+    marker = "SCRIPTED-FILE-CONTENT-3b8e"
+    path = tmp_path / "smoke_cases.json"
+    if broken == "not_json":
+        path.write_text(f"{{{marker}", encoding="utf-8")
+    elif broken == "bad_case":
+        path.write_text(json.dumps([{"id": marker, "message": marker}]), encoding="utf-8")
+    monkeypatch.setattr(smoke, "CASES_FILE", path)
+    model = ScriptedModel()
+    assert smoke.main([], client=model) == 2
+    captured = capsys.readouterr()
+    assert captured.err == "setup error: the smoke cases file is missing or invalid\n"
+    assert captured.out == ""
+    assert marker not in captured.err and str(tmp_path) not in captured.err
+    assert model.calls == []
+
+
+def test_owner_training_phrase_is_a_smoke_case() -> None:
+    """The staging phrase that drew an email card: an unlinked login gets no email action."""
+    case = next(case for case in smoke.load_cases() if case.id == "training-en-3")
+    assert case.message == "i want to send a request for ComptiaA+ training"
+    assert case.facts.preset == "staff_unlinked"
+    assert {"email_compose", "email_reply", "email_team", "training_submit"} <= set(
+        case.expect.not_actions
+    )
+    assert not set(case.expect.actions) & set(case.expect.not_actions)

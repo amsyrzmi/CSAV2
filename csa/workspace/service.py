@@ -29,6 +29,7 @@ from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError
 from csa.email.api import email_http_error, email_session_from
+from csa.email.gmail import GmailError
 from csa.email.models import (
     AttentionPage,
     ComposeRequest,
@@ -846,8 +847,13 @@ async def _my_employee(
     session = hr_session_from(request, actor, client_id, mutation=False)
     try:
         context = await service.context(session.model_copy(update={"assistant": True}))
-    except HrPolicyError:
-        return EmployeeFact(linked=False, can_request_training=False, reason="no_hr_access")
+    except HrPolicyError as exc:
+        # The tenant's HR assistant switch is off: the card would be refused with agent_disabled.
+        return EmployeeFact(
+            linked=False,
+            can_request_training=False,
+            reason="assistant_off" if exc.code == "agent_disabled" else "no_hr_access",
+        )
     if context.employee is None:
         return EmployeeFact(linked=False, can_request_training=False, reason="no_employee_link")
     allowed = NEW_TRAINING_GRANTS <= set(context.actions)
@@ -1304,7 +1310,8 @@ async def _reply(
             reply,
             uuid5(turn.request_key, f"workspace_reply:{thread_id}"),
         )
-    except EmailPolicyError as exc:
+    except (EmailPolicyError, GmailError) as exc:
+        # A reply may read the thread from Gmail (rows from before 0484, or owner-last).
         raise email_http_error(exc) from None
     except (CompletionError, TimeoutError):
         raise HTTPException(503, "email_model_unavailable") from None
@@ -1373,6 +1380,12 @@ async def _summary(
     session = email_session_from(request, actor, client_id, mutation=False)
     try:
         page = await service.attention(session)
+        if page.as_of is not None:
+            return _Planned(summary=page)
+        # Never synced (the mailbox row's last-sync time is null). Sync needs a connected
+        # mailbox, so a pending or revoked row is asked to connect instead. Read inside the
+        # handler: a session revoked since the first read is refused, never a 500.
+        mailbox = (await service.context(session)).mailbox
     except EmailPolicyError as exc:
         key = _SUMMARY_ANSWERS.get(exc.code)
         if key is None:
@@ -1380,11 +1393,6 @@ async def _summary(
     except (CompletionError, TimeoutError):
         key = _SUMMARY_ANSWERS["email_model_unavailable"]
     else:
-        if page.as_of is not None:
-            return _Planned(summary=page)
-        # Never synced (the mailbox row's last-sync time is null). Sync needs a connected
-        # mailbox, so a pending or revoked row is asked to connect instead.
-        mailbox = (await service.context(session)).mailbox
         connected = mailbox is not None and mailbox.status == "connected"
         key = "summary_never_synced" if connected else "summary_mailbox_not_connected"
     # Fixed copy, no mail content, so the turn row may store it as it is.
