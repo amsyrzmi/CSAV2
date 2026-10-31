@@ -253,3 +253,9 @@ test("only the newest turn's card can answer", () => {
   assert.equal(view.isAnswerable([], 1), false);
   assert.equal(view.isAnswerable(turns, 99), false);
 });
+
+test("a navigate to a hidden tab prints only the notice, never Opened", () => {
+  assert.deepEqual(view.navigateText("inbox", false, staff, all), { text: "Opened Customer inbox.", error: false });
+  assert.deepEqual(view.navigateText("inbox", true, staff, all), { text: "Opened Customer inbox and continued there.", error: false });
+  assert.deepEqual(view.navigateText("email", false, staff, []), { text: "Email is not available to you.", error: true });
+});

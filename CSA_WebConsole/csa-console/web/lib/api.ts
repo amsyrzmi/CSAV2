@@ -23,6 +23,23 @@ const explained: Record<string, string> = {
     "This assistant is switched off for your organisation. An administrator can turn it on in its settings.",
   planner_unavailable: "The assistant is unavailable right now. Try again in a moment.",
   mailbox_not_connected: "Connect your Gmail in the Email tab first.",
+  // Assistant and HR failures that have no card of their own.
+  planner_invalid_output: "The assistant couldn't produce a usable answer. Try again or rephrase.",
+  email_model_unavailable: "The email assistant couldn't write that right now. Try again in a moment.",
+  hr_model_unavailable: "The HR assistant couldn't answer right now. Try again in a moment.",
+  email_timeout_check_saved_state:
+    "The email request took too long. Check your drafts and the Email assistant tab before trying again.",
+  hr_agent_timeout_check_saved_state:
+    "The HR request took too long. Check the HR tab for what was saved before trying again.",
+  training_not_draft:
+    "That training request is no longer a draft, so it can't be submitted again. Open it in HR to see where it stands.",
+  stale_version: "This changed after you opened it. Reload to see the latest, then try again.",
+  invalid_transition: "That change isn't possible from the current status. Reload to see the latest.",
+  csrf_required: "Your session needs a refresh. Reload the page and try again.",
+  no_employee_link:
+    "Your login isn't linked to an employee record, so you can't submit training requests. Ask your HR owner to link it.",
+  hr_training_not_permitted:
+    "You don't have permission to submit training requests. Ask your HR owner to give you access.",
   // Email refusals the assistant dock shows as they are.
   reply_target_unavailable: "I can't tell who to reply to in that conversation.",
   email_recipient_invalid: "Check the email address.",
@@ -76,8 +93,11 @@ const explained: Record<string, string> = {
 
 async function decode<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    let code = message;
+    let message =
+      response.status >= 500
+        ? "Something went wrong on our side. Try again."
+        : `Request failed (${response.status})`;
+    let code = `Request failed (${response.status})`;
     let detail: Record<string, unknown> | undefined;
     try {
       const body: unknown = await response.json();
@@ -92,7 +112,7 @@ async function decode<T>(response: Response): Promise<T> {
         detail = body as Record<string, unknown>;
       }
     } catch {
-      /* Non-JSON gateway failures keep their HTTP status. */
+      /* Non-JSON gateway failures keep their HTTP status, or the plain server-error sentence. */
     }
     throw new ApiError(response.status, message, code, detail);
   }

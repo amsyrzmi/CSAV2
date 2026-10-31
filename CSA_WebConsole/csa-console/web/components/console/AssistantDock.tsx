@@ -8,6 +8,7 @@ import {
   dockTenant,
   effectiveContext,
   isAnswerable,
+  navigateText,
   openProposals,
   optionAnswer,
   originFor,
@@ -28,6 +29,7 @@ import {
   createWorkspaceTurn,
   listWorkspaceThreads,
   listWorkspaceTurns,
+  turnPageContext,
   type PageContext,
   type ProposalOut,
   type TabKey,
@@ -179,7 +181,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
   ) {
     const href = tabHref(result.tab, me, packages, tenant, result.section);
     if (!href) {
-      setError(`${tabLabel(result.tab, me, packages)} is not available to you.`);
+      // The turn itself shows the notice (navigateText); nothing is printed twice.
       return;
     }
     // A requested card must not survive the page it was proposed on; cancel before leaving.
@@ -215,7 +217,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         null,
         attempt.key,
         controller.signal,
-        attempt.context,
+        turnPageContext(attempt.context),
       );
       if (controller.signal.aborted) return;
       setOrigins((current) => ({ ...current, [turn.request_key]: attempt.origin }));
@@ -510,13 +512,14 @@ function TurnResult({
       );
     case "answer":
       return <p className={`${box} whitespace-pre-wrap`}>{view.text}</p>;
-    case "navigate":
-      return (
-        <p className="text-sm text-ink-600">
-          Opened {tabLabel(view.tab, me, packages)}
-          {view.resume ? " and continued there." : "."}
-        </p>
+    case "navigate": {
+      const shown = navigateText(view.tab, view.resume, me, packages);
+      return shown.error ? (
+        <Notice error>{shown.text}</Notice>
+      ) : (
+        <p className="text-sm text-ink-600">{shown.text}</p>
       );
+    }
     case "directory":
       return (
         <div className={box}>

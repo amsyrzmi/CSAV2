@@ -71,6 +71,24 @@ export function tabLabel(tab: TabKey, me: Me, packages: PackageState[]): string 
   return navigationFor(me, packages).find((item) => item.key === tab)?.label ?? tab;
 }
 
+/**
+ * The line shown for a navigate result. A tab this user cannot open (same rule as `tabHref`)
+ * gets only the notice, never "Opened X.".
+ */
+export function navigateText(
+  tab: TabKey,
+  resume: boolean,
+  me: Me,
+  packages: PackageState[],
+): { text: string; error: boolean } {
+  if (!navigationFor(me, packages).some((item) => item.key === tab)) {
+    const name = tab.replace(/_/g, " ");
+    return { text: `${name[0].toUpperCase()}${name.slice(1)} is not available to you.`, error: true };
+  }
+  const label = tabLabel(tab, me, packages);
+  return { text: `Opened ${label}${resume ? " and continued there." : "."}`, error: false };
+}
+
 /** What the tab published, else the bare tab derived from the route. */
 export function effectiveContext(
   published: PageContext | null,
