@@ -33,6 +33,11 @@ refuses when HEAD is not on `origin/main` or the worktree has tracked changes.
    `plan`; then run `plan` again and ask again. Report the result: the final status lines, and
    any check output. If it stops, show its `Stopped at ...` line, the state line and the recovery
    lines verbatim, exactly as printed.
+5. After a successful `apply`, offer the owner the assistant retest: the checklist
+   `docs/ASSISTANT_RETEST.md`, and optionally first the model smoke run (about 30 to 40 model
+   calls, synthetic facts only): `docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke`.
+   Run the smoke run only after the owner says yes, and report its `FAIL` lines and the final
+   `N passed, M failed` line as printed. The checklist rows marked "manual" are for the owner.
 
 ## If something goes wrong
 

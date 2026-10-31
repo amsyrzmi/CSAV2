@@ -1,0 +1,206 @@
+[
+  {
+    "id": "navigate-en-1",
+    "language": "en",
+    "message": "Open the HR tab",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["navigate"]}
+  },
+  {
+    "id": "navigate-ms-1",
+    "language": "ms",
+    "message": "Tolong buka tab HR untuk saya",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["navigate"]}
+  },
+  {
+    "id": "answer-en-1",
+    "language": "en",
+    "message": "What can you help me with in this console?",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["answer"]}
+  },
+  {
+    "id": "answer-ms-1",
+    "language": "ms",
+    "message": "Apa yang awak boleh bantu saya di sini?",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["answer"]}
+  },
+  {
+    "id": "directory-en-1",
+    "language": "en",
+    "message": "Find Danial Hakim in the company directory",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["directory_lookup"], "not_actions": ["answer"]}
+  },
+  {
+    "id": "directory-ms-1",
+    "language": "ms",
+    "message": "Tolong cari Danial Hakim dalam direktori syarikat",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["directory_lookup"], "not_actions": ["answer"]}
+  },
+  {
+    "id": "directory-en-2",
+    "language": "en",
+    "message": "Send an email to Razak about the invoice",
+    "facts": {"preset": "staff_basic"},
+    "expect": {
+      "actions": ["directory_lookup", "clarification"],
+      "not_actions": ["email_compose"],
+      "no_placeholder_options": true
+    }
+  },
+  {
+    "id": "directory-ms-2",
+    "language": "ms",
+    "message": "Tolong hantar emel kepada Razak tentang invois itu",
+    "facts": {"preset": "staff_basic"},
+    "expect": {
+      "actions": ["directory_lookup", "clarification"],
+      "not_actions": ["email_compose"],
+      "no_placeholder_options": true
+    }
+  },
+  {
+    "id": "compose-en-1",
+    "language": "en",
+    "message": "Send an email to aina.rahman@example.com saying the meeting has moved to 3pm",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["email_compose"], "send": true, "draft_valid": true}
+  },
+  {
+    "id": "compose-ms-1",
+    "language": "ms",
+    "message": "Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["email_compose"], "send": true, "draft_valid": true}
+  },
+  {
+    "id": "compose-en-2",
+    "language": "en",
+    "message": "Email my manager that I will be late tomorrow morning",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["email_compose"], "send": true, "draft_valid": true}
+  },
+  {
+    "id": "compose-ms-2",
+    "language": "ms",
+    "message": "Tolong emel pengurus saya bahawa saya cuti esok",
+    "facts": {"preset": "staff_unlinked"},
+    "expect": {"actions": ["answer"], "not_actions": ["email_compose"]}
+  },
+  {
+    "id": "draft-en-1",
+    "language": "en",
+    "message": "Draft an email to aina.rahman@example.com asking for the March sales report",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["email_compose"], "send": false, "draft_valid": true}
+  },
+  {
+    "id": "draft-ms-1",
+    "language": "ms",
+    "message": "Tolong draf emel kepada aina.rahman@example.com untuk minta laporan jualan bulan Mac",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["email_compose"], "send": false, "draft_valid": true}
+  },
+  {
+    "id": "reply-en-1",
+    "language": "en",
+    "message": "Reply to Aina about the invoice and say we will pay on Friday",
+    "facts": {"preset": "staff_with_mailbox"},
+    "expect": {"actions": ["email_reply"], "not_actions": ["email_compose"]}
+  },
+  {
+    "id": "reply-ms-1",
+    "language": "ms",
+    "message": "Tolong balas kepada Aina tentang invois itu dan kata kami akan bayar pada hari Jumaat",
+    "facts": {"preset": "staff_with_mailbox"},
+    "expect": {"actions": ["email_reply"], "not_actions": ["email_compose"]}
+  },
+  {
+    "id": "team-en-1",
+    "language": "en",
+    "message": "Email my team that the office closes at 5pm on Friday",
+    "facts": {"preset": "staff_with_hr_linked"},
+    "expect": {
+      "actions": ["email_team"],
+      "not_actions": ["email_compose"],
+      "draft_valid": true
+    }
+  },
+  {
+    "id": "team-ms-1",
+    "language": "ms",
+    "message": "Tolong emel pasukan saya bahawa pejabat akan tutup pukul 5 petang pada hari Jumaat",
+    "facts": {"preset": "staff_with_hr_linked"},
+    "expect": {
+      "actions": ["email_team"],
+      "not_actions": ["email_compose"],
+      "draft_valid": true
+    }
+  },
+  {
+    "id": "attention-en-1",
+    "language": "en",
+    "message": "What needs my attention in my email today?",
+    "facts": {"preset": "staff_with_mailbox"},
+    "expect": {"actions": ["inbox_summary"]}
+  },
+  {
+    "id": "attention-ms-1",
+    "language": "ms",
+    "message": "Apa emel yang perlu perhatian saya hari ini?",
+    "facts": {"preset": "staff_with_mailbox"},
+    "expect": {"actions": ["inbox_summary"]}
+  },
+  {
+    "id": "training-en-1",
+    "language": "en",
+    "message": "Request a first aid training course for me",
+    "facts": {"preset": "staff_with_hr_linked"},
+    "expect": {
+      "actions": ["training_submit", "clarification"],
+      "no_placeholder_options": true
+    }
+  },
+  {
+    "id": "training-ms-1",
+    "language": "ms",
+    "message": "Tolong mohon kursus latihan pertolongan cemas untuk saya",
+    "facts": {"preset": "staff_with_hr_linked"},
+    "expect": {
+      "actions": ["training_submit", "clarification"],
+      "no_placeholder_options": true
+    }
+  },
+  {
+    "id": "training-en-2",
+    "language": "en",
+    "message": "I want to request a fire safety training",
+    "facts": {"preset": "staff_unlinked"},
+    "expect": {"actions": ["answer"], "not_actions": ["training_submit"]}
+  },
+  {
+    "id": "training-ms-2",
+    "language": "ms",
+    "message": "Saya nak mohon latihan keselamatan kebakaran",
+    "facts": {"preset": "staff_hr_inactive"},
+    "expect": {"actions": ["answer"], "not_actions": ["training_submit"]}
+  },
+  {
+    "id": "dont_send-en-1",
+    "language": "en",
+    "message": "Write an email to aina.rahman@example.com about Friday's meeting but don't send it yet",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["email_compose"], "send": false, "draft_valid": true}
+  },
+  {
+    "id": "dont_send-ms-1",
+    "language": "ms",
+    "message": "Tolong tulis emel kepada aina.rahman@example.com tentang mesyuarat itu dan jangan hantar dulu",
+    "facts": {"preset": "staff_basic"},
+    "expect": {"actions": ["email_compose"], "send": false, "draft_valid": true}
+  }
+]
