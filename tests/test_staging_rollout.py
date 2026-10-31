@@ -1385,8 +1385,7 @@ def test_apply_refuses_a_short_sha_by_name(rig_factory: Callable[..., ApplyRig])
     assert rig.apply(sha=SHA[:7]) == 1
     assert labels(rig.runner) == []
     assert (
-        "Stopped at confirm: --sha must be the full 40-character SHA that plan printed"
-        in rig.lines
+        "Stopped at confirm: --sha must be the full 40-character SHA that plan printed" in rig.lines
     )
     assert "HEAD changed since plan" not in rig.text
 
@@ -1605,7 +1604,6 @@ def test_failed_check_says_investigate_then_rerun(rig_factory: Callable[..., App
     ) in rig.lines
     assert "Rollback images" not in rig.text
     assert "Nothing on staging was changed." not in rig.text
-
 
 
 def test_unreadable_check_file_says_services_are_still_up(
