@@ -1491,3 +1491,37 @@ async def test_write_functions_are_pinned(world: HrWorld) -> None:
         assert row["proconfig"] == ["search_path=pg_catalog, public, pg_temp"], signature
         assert row["csa_app"] is True, signature
         assert not any(row[role] for role in roles[1:]), signature
+
+
+async def test_people_manager_cannot_make_themselves_a_manager(world: HrWorld) -> None:
+    # The holder is the "manager" user, linked to the manager employee.
+    await make_people_manager(world, "manager")
+    me, outsider = world.employees["manager"], world.employees["outsider"]
+    before = await counts(world)
+    await refused(world, "manager", add_body(uuid4(), manager_id=str(me)), 409, "manager_is_you")
+    assert await counts(world) == before
+    update = await update_body(world, outsider, manager_id=str(me))
+    await refused(world, "manager", update, 409, "manager_is_you")
+    assert (await person_row(world, outsider))["manager_id"] is None
+    # Someone else as the manager is fine, on add and on update.
+    other = world.employees["owner"]
+    added = uuid4()
+    await ok(world, "manager", add_body(added, manager_id=str(other)))
+    assert (await person_row(world, added))["manager_id"] == other
+    await ok(world, "manager", await update_body(world, outsider, manager_id=str(other)))
+    assert (await person_row(world, outsider))["manager_id"] == other
+    # A reporting line the owner already set to the holder can be kept while editing.
+    staff = world.employees["staff"]
+    assert (await person_row(world, staff))["manager_id"] == me
+    await ok(world, "manager", await update_body(world, staff, job_title="Senior Trainer"))
+    assert (await person_row(world, staff))["manager_id"] == me
+    # The HR owner may make themselves anyone's manager.
+    mine = world.employees["owner"]
+    owner_added = uuid4()
+    await ok(world, "owner", add_body(owner_added, manager_id=str(mine)))
+    assert (await person_row(world, owner_added))["manager_id"] == mine
+    await ok(world, "owner", await update_body(world, outsider, manager_id=str(mine)))
+    assert (await person_row(world, outsider))["manager_id"] == mine
+    # After the owner's change the holder still cannot move the line back to themselves.
+    back = await update_body(world, outsider, manager_id=str(me))
+    await refused(world, "manager", back, 409, "manager_is_you")

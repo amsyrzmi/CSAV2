@@ -25,7 +25,8 @@
 --   public.hr_people_apply(p_client, p_key, p_fingerprint, p_body): the write path beside
 --     hr_admin_apply for person.add, person.update and department.save, for the HR owner or a
 --     people.manage holder. Records a receipt in hr_operations, no authority event. EXECUTE to
---     csa_app only. It cannot change access, account links or whether a person is active.
+--     csa_app only. It cannot change access, account links or whether a person is active, and a
+--     non-owner cannot newly make their own linked employee anyone's manager.
 --   CREATE OR REPLACE public.hr_admin_apply (0410): the same, plus the owner-only account.link.
 --   CREATE OR REPLACE public.hr_apply_invitation_access (0483): the same, with p_on and p_added
 --     allowed up to 16 switch ids (there are 9 now).
@@ -590,6 +591,13 @@ BEGIN
     WHERE e.client_id=p_client AND e.id=manager FOR SHARE;
    IF NOT FOUND OR (manager_active IS NOT TRUE AND manager IS DISTINCT FROM cur.manager_id) THEN
     RAISE EXCEPTION 'hr_manager_unavailable' USING ERRCODE='23514'; END IF;
+   -- Only the HR owner may make themselves someone's manager: with approves_team that picks
+   -- whose requests they decide, which is changing access by another route. Keeping a reporting
+   -- line the owner already set is not picking it.
+   IF manager IS DISTINCT FROM cur.manager_id AND public.hr_is_owner(p_client) IS NOT TRUE
+    AND EXISTS(SELECT 1 FROM public.hr_employee_accounts a
+               WHERE a.client_id=p_client AND a.user_id=actor AND a.employee_id=manager) THEN
+    RAISE EXCEPTION 'hr_manager_is_you' USING ERRCODE='23514'; END IF;
    IF manager=target OR EXISTS(
      WITH RECURSIVE chain(id, depth) AS (
       SELECT manager, 1
