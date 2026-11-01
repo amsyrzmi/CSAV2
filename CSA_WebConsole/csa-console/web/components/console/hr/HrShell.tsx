@@ -10,6 +10,7 @@ import { field, secondary, Heading, Notice } from "../ui";
 import { HomeTab } from "./HomeTab";
 import { HrTabBar } from "./HrTabBar";
 import { LeaveTab } from "./LeaveTab";
+import { PeopleTab } from "./PeopleTab";
 import { PayrollTab } from "./PayrollTab";
 import { RecruitmentTab } from "./RecruitmentTab";
 import { ALL_DOMAINS, RequestsPanel } from "./RequestsPanel";
@@ -76,8 +77,11 @@ function TenantHr({ me, tenant, route, platform }: { me: Me; tenant: string; rou
 function TabContent({ route, props }: { route: HrRoute; props: HrTabProps }) {
   switch (route.tab) {
     case "home": return <HomeTab {...props} />;
-    // Seam for Task 7: the People list, org chart, departments and profiles replace this placeholder.
-    case "people": return <p>Coming in this release.</p>;
+    // Seam for Task 8: the profile and Add person pages replace the placeholder.
+    case "people":
+      return route.view === "list" || route.view === "org-chart" || route.view === "departments"
+        ? <PeopleTab tenant={props.tenant} context={props.context} readonly={props.readonly} platform={props.platform} view={route.view} />
+        : <p>Coming in this release.</p>;
     case "recruitment": return <RecruitmentTab {...props} />;
     case "leave": return <LeaveTab {...props} />;
     case "payroll": return <PayrollTab {...props} />;

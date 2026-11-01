@@ -13,7 +13,7 @@ const people = await import(moduleUrl(await readFile(new URL("../lib/hr-people.t
 const {
   EMPLOYMENT_TYPES, STATUS_LABELS, NO_MANAGER, NEW_DEPARTMENT, PEOPLE_COPY,
   personBody, employmentProfileIssue, departmentBody, orgTree, homeItems, emptyText, historyText, peopleRefusalText,
-  runsHomeMaintenance,
+  runsHomeMaintenance, peopleFilters,
 } = people;
 
 const ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -287,4 +287,23 @@ test("only a writing HR owner runs local maintenance from Home", () => {
   assert.equal(runsHomeMaintenance({ client_owner: true }, true), false);
   assert.equal(runsHomeMaintenance({ client_owner: false }, false), false);
   assert.equal(runsHomeMaintenance({ client_owner: false }, true), false);
+});
+
+test("peopleFilters drops 'all' and blank values and maps No department to none", () => {
+  assert.deepEqual(peopleFilters({}, { q: "  ", department: "all", manager: "all", status: "all" }), {});
+  assert.deepEqual(peopleFilters({}, { manager: "" }), {});
+  assert.deepEqual(peopleFilters({}, { q: " aina ", department: "none" }), { q: "aina", department: "none" });
+  assert.deepEqual(peopleFilters({}, { department: DEPARTMENT, manager: MANAGER, status: "left" }),
+    { department: DEPARTMENT, manager: MANAGER, status: "left" });
+  assert.deepEqual(peopleFilters({ department: DEPARTMENT, status: "left" }, { department: "all" }), { status: "left" });
+});
+
+test("peopleFilters keeps the cursor only while the filters stay the same", () => {
+  assert.deepEqual(peopleFilters({ q: "aina" }, { cursor: "50" }), { q: "aina", cursor: "50" });
+  assert.deepEqual(peopleFilters({ q: "aina", cursor: "50" }, { cursor: "100" }), { q: "aina", cursor: "100" });
+  assert.deepEqual(peopleFilters({ q: "aina" }, { q: " aina ", cursor: "50" }), { q: "aina", cursor: "50" });
+  assert.deepEqual(peopleFilters({ q: "aina", cursor: "50" }, { status: "left" }), { q: "aina", status: "left" });
+  assert.deepEqual(peopleFilters({ q: "aina", cursor: "50" }, { q: "bala", cursor: "50" }), { q: "bala" });
+  assert.deepEqual(peopleFilters({ department: DEPARTMENT, cursor: "50" }, { department: "all" }), {});
+  assert.deepEqual(peopleFilters({ q: "aina", cursor: "50" }, {}), { q: "aina" });
 });

@@ -1,6 +1,6 @@
 import type { HrRoute } from "./hr-paths";
 import type {
-  EmploymentType, FieldChange, HrHome, Interview, OrgChart, OrgNode, Person, PersonStatus, Region,
+  EmploymentType, FieldChange, HrHome, Interview, OrgChart, OrgNode, PeopleQuery, Person, PersonStatus, Region,
 } from "./hr-people-api";
 
 /** Pure helpers for the People pages: form bodies, the org tree, Home items and plain words. */
@@ -152,6 +152,29 @@ export function departmentBody(input: { departmentId: string; name: string; arch
     name: input.name.trim(),
     archived: input.archived,
   };
+}
+
+/** What the People list's controls hold: "all" or blank means no filter; "none" is the No department option. */
+export type PeopleFilterPatch = Partial<Record<keyof PeopleQuery, string>>;
+
+const FILTER_KEYS = ["q", "department", "manager", "status"] as const;
+
+/**
+ * The People query after the controls change. Blank and "all" values are dropped. The cursor
+ * is kept only when the patch asks for one and leaves every filter as it was: a changed filter
+ * starts again from the first page.
+ */
+export function peopleFilters(previous: PeopleQuery, patch: PeopleFilterPatch): PeopleQuery {
+  const next: Record<string, string> = {};
+  let changed = false;
+  for (const key of FILTER_KEYS) {
+    const raw = Object.hasOwn(patch, key) ? patch[key] : previous[key];
+    const value = (raw ?? "").trim();
+    if (value && value !== "all") next[key] = value;
+    if ((next[key] ?? "") !== (previous[key] ?? "")) changed = true;
+  }
+  if (!changed && patch.cursor) next.cursor = patch.cursor;
+  return next as PeopleQuery;
 }
 
 export interface OrgTreeNode extends OrgNode { children: OrgTreeNode[] }
