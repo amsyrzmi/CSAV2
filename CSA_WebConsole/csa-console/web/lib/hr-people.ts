@@ -36,6 +36,9 @@ export const PEOPLE_COPY = {
     department_name_taken: "A department with that name already exists. Choose a different name.",
     account_taken: "That console account is already linked to another person. Unlink it there first.",
     member_unavailable: "That member is no longer on your team. Choose another member.",
+    employment_profile_must_be_complete: "Fill in all three employment details, or leave all three empty.",
+    // A 422 from the route's input check: the server names no field, so the sentence points at the likely ones.
+    invalid_hr_input: "Check the details you entered. Fill in all three employment details, or leave all three empty.",
   } as Record<string, string>,
   refusalFallback: "We could not save that. Reload the page and try again.",
   empty: {
@@ -92,7 +95,26 @@ export interface PersonOperationBody {
 
 const orNull = (value: string) => value.trim() || null;
 
-/** The `person.add` / `person.update` body for the HR operations route. */
+const PROFILE_FIELDS = ["region", "legal_entity_reference", "employment_category"] as const;
+
+/**
+ * The sentence to show before saving when only some of the three employment details are filled,
+ * else null. The server refuses a partial profile too (a 422 `invalid_hr_input`, no code that names
+ * the cause), so the form should check this first.
+ */
+export function employmentProfileIssue(form: PersonFormValues): string | null {
+  const filled = PROFILE_FIELDS.filter((field) => form[field].trim() !== "").length;
+  return filled === 0 || filled === PROFILE_FIELDS.length ? null : PEOPLE_COPY.refusals.employment_profile_must_be_complete;
+}
+
+/**
+ * The `person.add` / `person.update` body for the HR operations route.
+ *
+ * `person.update` replaces every field in `values` and the employment profile, so callers must
+ * prefill the form with the person's current values. The profile is sent whenever any of its three
+ * fields has text, so the server validates it and refuses a partial one. It is left out only when
+ * all three are blank, and the server then clears the stored profile: that is a deliberate clear.
+ */
 export function personBody(
   mode: "add" | "update", form: PersonFormValues, ids: { employeeId: string; version?: number },
 ): PersonOperationBody {
@@ -114,8 +136,8 @@ export function personBody(
     legal_entity_reference: form.legal_entity_reference.trim(),
     employment_category: form.employment_category.trim(),
   };
-  const complete = profile.region && profile.legal_entity_reference && profile.employment_category;
-  const common = { employee_id: ids.employeeId, values, ...(complete ? { employment_profile: profile } : {}) };
+  const any = profile.region || profile.legal_entity_reference || profile.employment_category;
+  const common = { employee_id: ids.employeeId, values, ...(any ? { employment_profile: profile } : {}) };
   if (mode === "add") return { operation: "person.add", ...common };
   if (ids.version === undefined) throw new Error("A person update needs the record version");
   return { operation: "person.update", employee_id: ids.employeeId, expected_version: ids.version, ...common };

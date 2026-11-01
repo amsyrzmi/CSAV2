@@ -12,7 +12,7 @@ function moduleUrl(source) {
 const people = await import(moduleUrl(await readFile(new URL("../lib/hr-people.ts", import.meta.url), "utf8")));
 const {
   EMPLOYMENT_TYPES, STATUS_LABELS, NO_MANAGER, NEW_DEPARTMENT, PEOPLE_COPY,
-  personBody, departmentBody, orgTree, homeItems, emptyText, historyText, peopleRefusalText,
+  personBody, employmentProfileIssue, departmentBody, orgTree, homeItems, emptyText, historyText, peopleRefusalText,
 } = people;
 
 const ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -83,13 +83,33 @@ test("personBody sends a new department by name and drops the department id", ()
   assert.equal("new_department" in personBody("add", FORM, { employeeId: ID }).values, false);
 });
 
-test("personBody includes the employment profile only when all three fields are filled", () => {
+test("personBody sends the employment profile whenever any of its fields has text", () => {
   const full = { region: "sabah", legal_entity_reference: " ENT-1 ", employment_category: " Permanent " };
-  assert.deepEqual(personBody("add", { ...FORM, ...full }, { employeeId: ID }).employment_profile,
-    { region: "sabah", legal_entity_reference: "ENT-1", employment_category: "Permanent" });
+  // All three filled: sent, trimmed.
+  for (const mode of ["add", "update"])
+    assert.deepEqual(personBody(mode, { ...FORM, ...full }, { employeeId: ID, version: 1 }).employment_profile,
+      { region: "sabah", legal_entity_reference: "ENT-1", employment_category: "Permanent" }, mode);
+  // Partly filled: still sent, so the server refuses it instead of the update wiping the other two.
   for (const missing of ["region", "legal_entity_reference", "employment_category"])
-    assert.equal("employment_profile" in personBody("add", { ...FORM, ...full, [missing]: " " }, { employeeId: ID }), false, missing);
-  assert.equal("employment_profile" in personBody("update", { ...FORM, region: "sabah" }, { employeeId: ID, version: 1 }), false);
+    assert.deepEqual(personBody("update", { ...FORM, ...full, [missing]: " " }, { employeeId: ID, version: 1 }).employment_profile,
+      { region: "sabah", legal_entity_reference: "ENT-1", employment_category: "Permanent", [missing]: "" }, missing);
+  assert.deepEqual(personBody("update", { ...FORM, region: "sabah" }, { employeeId: ID, version: 1 }).employment_profile,
+    { region: "sabah", legal_entity_reference: "", employment_category: "" });
+  // All blank: omitted, which clears the stored profile on update.
+  for (const mode of ["add", "update"])
+    assert.equal("employment_profile" in personBody(mode, FORM, { employeeId: ID, version: 1 }), false, mode);
+  assert.equal("employment_profile" in personBody("update", { ...FORM, region: "  ", legal_entity_reference: " " }, { employeeId: ID, version: 1 }), false);
+});
+
+test("employmentProfileIssue flags only a partly filled profile", () => {
+  const issue = (extra) => employmentProfileIssue({ ...FORM, ...extra });
+  assert.equal(issue({}), null);
+  assert.equal(issue({ region: "sabah", legal_entity_reference: "E", employment_category: "P" }), null);
+  assert.equal(issue({ region: " " }), null);
+  for (const extra of [{ region: "sabah" }, { legal_entity_reference: "E" }, { region: "sabah", employment_category: "P" }])
+    assert.equal(issue(extra), "Fill in all three employment details, or leave all three empty.");
+  assert.equal(peopleRefusalText("employment_profile_must_be_complete"), "Fill in all three employment details, or leave all three empty.");
+  assert.match(peopleRefusalText("invalid_hr_input"), /all three employment details/);
 });
 
 test("departmentBody names the operation, trims and sends the version or null", () => {
