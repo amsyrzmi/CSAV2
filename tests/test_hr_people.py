@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -54,7 +55,9 @@ INTERNAL_FUNCTIONS = (
     "hr_employee_department_sync()",
     "hr_department_renamed()",
     "hr_employee_record_change()",
+    "hr_department_canonical_name()",
 )
+MIGRATION = Path(__file__).resolve().parents[1] / "db/migrations/0520_hr_people.sql"
 
 
 async def read_as(
@@ -122,6 +125,14 @@ async def changes(world: HrWorld, employee_id: UUID) -> list[dict[str, Any]]:
     )
 
 
+async def name_users(world: HrWorld) -> dict[str, str]:
+    """Give every fixture user a distinct name (the fixture calls them all "Synthetic Staff")."""
+    names = {name: f"Synthetic {name.title()} Account" for name in world.users}
+    for name, user in world.users.items():
+        await world.q("UPDATE console_users SET display_name=%s WHERE id=%s", (names[name], user))
+    return names
+
+
 async def change_count(world: HrWorld) -> int:
     rows = await world.q(
         "SELECT count(*) AS n FROM hr_employee_changes WHERE client_id=%s", (world.tenant,)
@@ -135,6 +146,11 @@ async def test_departments_fold_case_and_spaces_on_write(world: HrWorld) -> None
         "  sales ": uuid4(),
         "Sales   Ops": uuid4(),
         "sales ops": uuid4(),
+        "Sales\n": uuid4(),
+        "\tSales": uuid4(),
+        "Sales\r\n": uuid4(),
+        "Sales\tOps\n": uuid4(),
+        "\n": uuid4(),
         None: uuid4(),
     }
     for department, employee_id in written.items():
@@ -150,17 +166,32 @@ async def test_departments_fold_case_and_spaces_on_write(world: HrWorld) -> None
         "  sales ": "Sales",
         "Sales   Ops": "Sales Ops",
         "sales ops": "Sales Ops",
+        "Sales\n": "Sales",
+        "\tSales": "Sales",
+        "Sales\r\n": "Sales",
+        "Sales\tOps\n": "Sales Ops",
     }
     for department, canonical in expected.items():
         row = await employee(world, written[department])
-        assert row["department_id"] == found[canonical] and row["department"] == canonical
-    blank = await employee(world, written[None])
-    assert blank["department_id"] is None and blank["department"] is None
+        assert row["department_id"] == found[canonical] and row["department"] == canonical, (
+            department
+        )
+    for blank_text in ("\n", None):
+        blank = await employee(world, written[blank_text])
+        assert blank["department_id"] is None and blank["department"] is None
     for name in ("staff", "manager", "owner", "outsider"):
         row = await employee(world, world.employees[name])
         assert row["department_id"] == found["Learning"] and row["department"] == "Learning"
 
-    # A legacy text write (department_id unchanged) re-links by name.
+    # A legacy text write that still names the linked department keeps the link.
+    for variant in ("sales\n", "\tSALES", "Sales"):
+        await world.q(
+            "UPDATE hr_employees SET department=%s WHERE client_id=%s AND id=%s",
+            (variant, world.tenant, written["Sales"]),
+        )
+        row = await employee(world, written["Sales"])
+        assert row["department_id"] == found["Sales"] and row["department"] == "Sales", variant
+    # A legacy text write naming another department re-links by name.
     await world.q(
         "UPDATE hr_employees SET department='SALES  OPS' WHERE client_id=%s AND id=%s",
         (world.tenant, written["Sales"]),
@@ -184,6 +215,58 @@ async def test_departments_fold_case_and_spaces_on_write(world: HrWorld) -> None
     assert set(await departments(world)) == {"Learning", "Sales", "Sales Ops"}
 
 
+async def insert_without_triggers(
+    world: HrWorld, rows: list[tuple[str, UUID]], block: str = ""
+) -> None:
+    """Rows as 0380-era code wrote them, with no 0520 trigger firing (as at migration time)."""
+    async with world.owner_pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute("SET LOCAL session_replication_role = replica")
+            for text, employee_id in rows:
+                await conn.execute(
+                    "INSERT INTO hr_employees(client_id,id,display_name,department) "
+                    "VALUES (%s,%s,'Synthetic Legacy',%s)",
+                    (world.tenant, employee_id, text),
+                )
+            if block:
+                await conn.execute(block)  # type: ignore[arg-type]
+
+
+async def test_data_step_links_whitespace_edged_text_and_later_writes_keep_it(
+    world: HrWorld,
+) -> None:
+    # The migration's own data step, run on pre-existing rows with tab and newline edges.
+    block = MIGRATION.read_text().split("-- data step begin\n")[1].split("-- data step end")[0]
+    legacy = {"Field Sales\n": uuid4(), "\tField Sales": uuid4(), "Field\r\nSales": uuid4()}
+    blank = uuid4()
+    await insert_without_triggers(world, [*legacy.items(), ("\n", blank)], block)
+    field_sales = (await departments(world))["Field Sales"]
+    for employee_id in legacy.values():
+        row = await employee(world, employee_id)
+        assert row["department_id"] == field_sales and row["department"] == "Field Sales"
+    blank_row = await employee(world, blank)
+    assert blank_row["department_id"] is None and blank_row["department"] is None
+
+    # A row the step never saw (unlinked text) is linked by its next write, not wiped.
+    unlinked = uuid4()
+    await insert_without_triggers(world, [("Ops\t", unlinked)])
+    # Later unrelated writes keep every link and text.
+    for employee_id in [*legacy.values(), blank, unlinked]:
+        await world.q(
+            "UPDATE hr_employees SET job_title='Synthetic Role' WHERE client_id=%s AND id=%s",
+            (world.tenant, employee_id),
+        )
+    for employee_id in legacy.values():
+        row = await employee(world, employee_id)
+        assert row["department_id"] == field_sales and row["department"] == "Field Sales"
+    blank_row = await employee(world, blank)
+    assert blank_row["department_id"] is None and blank_row["department"] is None
+    healed = await employee(world, unlinked)
+    assert healed["department_id"] == (await departments(world))["Ops"]
+    assert healed["department"] == "Ops"
+    assert set(await departments(world)) == {"Learning", "Field Sales", "Ops"}
+
+
 async def test_department_for_is_stable_and_skips_blank(world: HrWorld) -> None:
     async def department_for(name: str | None) -> UUID | None:
         rows = await world.q("SELECT hr_department_for(%s,%s) AS id", (world.tenant, name))
@@ -193,7 +276,8 @@ async def test_department_for_is_stable_and_skips_blank(world: HrWorld) -> None:
     assert first is not None
     assert await department_for("X") == first
     assert await department_for("  x ") == first
-    for blank in ("", "   ", None):
+    assert await department_for("\tX\r\n") == first
+    for blank in ("", "   ", "\t\n", None):
         assert await department_for(blank) is None
     assert set(await departments(world)) == {"Learning", "X"}
     # An archived name stays taken and keeps its id.
@@ -249,32 +333,62 @@ async def test_department_rename_updates_mirror_without_history_or_version(world
         assert row["version"] == old["version"]
     assert await change_count(world) == before_changes
 
+    await update_as(
+        world,
+        "owner",
+        "UPDATE hr_departments SET name=%s WHERE client_id=%s AND id=%s",
+        ("\tPeople\n  Development\t", world.tenant, learning),
+    )
+    assert (await departments(world)).get("People Development") == learning
+    for name, old in before.items():
+        row = await employee(world, world.employees[name])
+        assert row["department_id"] == learning and row["department"] == "People Development"
+        assert row["version"] == old["version"]
+    assert await change_count(world) == before_changes
+    assert set(await departments(world)) == {"People Development"}
+
 
 async def test_history_records_directory_field_changes_with_old_and_new(world: HrWorld) -> None:
-    staff = world.employees["staff"]
+    names = await name_users(world)
+    mentor, staff = uuid4(), uuid4()
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name) VALUES (%s,%s,'Synthetic Mentor')",
+        (world.tenant, mentor),
+    )
+    await world.q(
+        "UPDATE hr_employees SET display_name='Synthetic Line Manager' "
+        "WHERE client_id=%s AND id=%s",
+        (world.tenant, world.employees["manager"]),
+    )
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,job_title,department,work_email,"
+        "manager_id) VALUES (%s,%s,'Synthetic Subject','Trainer','Learning',"
+        "'subject@example.test',%s)",
+        (world.tenant, staff, mentor),
+    )
     inserted = await changes(world, staff)
-    # The fixture's INSERT recorded every non-null field with no old value, by nobody.
+    # The INSERT recorded every non-null field with no old value, by nobody.
     assert len(inserted) == 1 and inserted[0]["changed_by"] is None
     assert inserted[0]["changes"] == {
-        "display_name": {"old": None, "new": "Synthetic Staff"},
+        "display_name": {"old": None, "new": "Synthetic Subject"},
         "job_title": {"old": None, "new": "Trainer"},
         "department": {"old": None, "new": "Learning"},
-        "manager": {"old": None, "new": "Synthetic Staff"},
-        "work_email": {"old": None, "new": "staff@example.test"},
+        "manager": {"old": None, "new": "Synthetic Mentor"},
+        "work_email": {"old": None, "new": "subject@example.test"},
         "active": {"old": None, "new": "true"},
     }
 
     await update_as(
         world,
         "owner",
-        "UPDATE hr_employees SET job_title='Lead', manager_id=NULL WHERE client_id=%s AND id=%s",
-        (world.tenant, staff),
+        "UPDATE hr_employees SET job_title='Lead', manager_id=%s WHERE client_id=%s AND id=%s",
+        (world.employees["manager"], world.tenant, staff),
     )
     rows = await changes(world, staff)
     assert len(rows) == 2
     assert rows[1]["changes"] == {
         "job_title": {"old": "Trainer", "new": "Lead"},
-        "manager": {"old": "Synthetic Staff", "new": None},
+        "manager": {"old": "Synthetic Mentor", "new": "Synthetic Line Manager"},
     }
     assert rows[1]["changed_by"] == world.users["owner"]
 
@@ -295,13 +409,14 @@ async def test_history_records_directory_field_changes_with_old_and_new(world: H
         "UPDATE hr_employees SET start_date='2026-12-01', employment_type='contract', "
         "work_phone='+60 3-1234 5678', region='sabah', "
         "legal_entity_reference='Synthetic Sdn Bhd', employment_category='permanent', "
-        "is_active=false, department_id=%s WHERE client_id=%s AND id=%s",
+        "is_active=false, manager_id=NULL, department_id=%s WHERE client_id=%s AND id=%s",
         (sales, world.tenant, staff),
     )
     rows = await changes(world, staff)
     assert len(rows) == 3 and rows[2]["changed_by"] == world.users["platform"]
     assert rows[2]["changes"] == {
         "department": {"old": "Learning", "new": "Sales"},
+        "manager": {"old": "Synthetic Line Manager", "new": None},
         "work_phone": {"old": None, "new": "+60 3-1234 5678"},
         "start_date": {"old": None, "new": "2026-12-01"},
         "employment_type": {"old": None, "new": "contract"},
@@ -314,7 +429,7 @@ async def test_history_records_directory_field_changes_with_old_and_new(world: H
     # The HR read: newest first, named actors, a platform admin as "FourStacks admin".
     history = await read_as(world, "owner", "hr/employee_changes.sql", (world.tenant, staff, 10))
     assert [row["changes"] for row in history] == [row["changes"] for row in reversed(rows)]
-    assert [row["actor_name"] for row in history] == ["FourStacks admin", "Synthetic Staff", None]
+    assert [row["actor_name"] for row in history] == ["FourStacks admin", names["owner"], None]
     assert history == sorted(history, key=lambda row: row["changed_at"], reverse=True)
     assert (
         len(await read_as(world, "owner", "hr/employee_changes.sql", (world.tenant, staff, 2))) == 2
@@ -474,12 +589,13 @@ async def test_department_rows_count_active_people_for_hr_and_directory(world: H
 
 
 async def test_people_access_shows_the_linked_accounts_rows_for_hr_only(world: HrWorld) -> None:
+    names = await name_users(world)
     await workflow_grant(world, "staff", "leave", "read", "self")
     staff_params = (world.tenant, world.employees["staff"])
     rows = await read_as(world, "owner", "hr/people_access.sql", staff_params)
     assert len(rows) == 1
     access = rows[0]
-    assert access["user_id"] == world.users["staff"] and access["display_name"] == "Synthetic Staff"
+    assert access["user_id"] == world.users["staff"] and access["display_name"] == names["staff"]
     assert [(g["action"], g["scope"]) for g in access["grants"]] == [
         ("directory.read", "self"),
         ("training.draft", "self"),
@@ -493,7 +609,9 @@ async def test_people_access_shows_the_linked_accounts_rows_for_hr_only(world: H
     owner_rows = await read_as(
         world, "owner", "hr/people_access.sql", (world.tenant, world.employees["owner"])
     )
-    assert [row["is_owner"] for row in owner_rows] == [True]
+    assert [(row["display_name"], row["is_owner"]) for row in owner_rows] == [
+        (names["owner"], True)
+    ]
 
     unlinked = uuid4()
     await world.q(
@@ -529,15 +647,17 @@ async def test_people_reads_refuse_another_tenant(world: HrWorld) -> None:
 
 
 async def test_recruitment_members_need_owner_or_recruitment_area(world: HrWorld) -> None:
+    names = await name_users(world)
     assert await read_as(world, "operator", "hr/recruitment_members.sql") == []
     await world.q(
         "UPDATE console_memberships SET is_enabled=false WHERE client_id=%s AND user_id=%s",
         (world.tenant, world.users["outsider"]),
     )
-    enabled = {user for name, user in world.users.items() if name != "outsider"}
+    enabled = {user: names[name] for name, user in world.users.items() if name != "outsider"}
     owner = await read_as(world, "owner", "hr/recruitment_members.sql")
-    assert {row["user_id"] for row in owner} == enabled and len(owner) == len(enabled)
-    assert all(row["display_name"] == "Synthetic Staff" for row in owner)
+    assert {row["user_id"]: row["display_name"] for row in owner} == enabled
+    assert len(owner) == len(enabled)
+    assert [row["display_name"] for row in owner] == sorted(enabled.values(), key=str.lower)
     await world.q(
         "INSERT INTO hr_private_grants(client_id,user_id,area,approved_by) "
         "VALUES (%s,%s,'recruitment',%s)",

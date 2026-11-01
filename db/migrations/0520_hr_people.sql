@@ -12,7 +12,8 @@
 --     people.manage holder).
 --   public.hr_department_for(p_client, p_name): internal, no EXECUTE for csa_app. Finds or creates the
 --     department for a name.
---   Triggers: hr_employee_department_sync (a legacy department text write links the department row,
+--   Triggers: hr_department_canonical_name (stored names are trimmed, with whitespace runs folded
+--     to one space), hr_employee_department_sync (a legacy department text write links the department row,
 --     and the text always mirrors the linked name), hr_department_renamed (a rename updates the
 --     mirror, never the employee version), hr_employee_record_change (writes the history row).
 --   Read functions, EXECUTE to csa_app only: hr_can_manage_people, hr_people_viewer, hr_people_rows,
@@ -27,6 +28,7 @@
 --   DROP TRIGGER hr_employee_record_change ON public.hr_employees;
 --   DROP TRIGGER hr_employee_department_sync ON public.hr_employees;
 --   DROP TRIGGER hr_department_renamed ON public.hr_departments;
+--   DROP TRIGGER hr_department_canonical_name ON public.hr_departments;
 --   DROP FUNCTION public.hr_recruitment_members(uuid); DROP FUNCTION public.hr_people_access(uuid,uuid);
 --   DROP FUNCTION public.hr_employee_change_rows(uuid,uuid,integer);
 --   DROP FUNCTION public.hr_department_rows(uuid); DROP FUNCTION public.hr_people_rows(uuid);
@@ -36,7 +38,7 @@
 --   DROP FUNCTION public.hr_employee_department_sync();
 --   ALTER TABLE public.hr_employees DROP COLUMN department_id, DROP COLUMN work_phone,
 --     DROP COLUMN start_date, DROP COLUMN employment_type;
---   DROP FUNCTION public.hr_department_for(uuid,text);
+--   DROP FUNCTION public.hr_department_for(uuid,text); DROP FUNCTION public.hr_department_canonical_name();
 --   DROP TABLE public.hr_employee_changes, public.hr_departments;
 --   The department text mirror keeps the (canonical) names.
 
@@ -49,6 +51,17 @@ CREATE TABLE public.hr_departments(
  version integer NOT NULL DEFAULT 0 CHECK(version>=0),
  PRIMARY KEY(client_id,id),
  UNIQUE(client_id,name_key));
+
+-- A stored name is canonical: whitespace runs (tabs and newlines too) become one space, and the
+-- edges are trimmed. So name_key is always lower(name), whichever path wrote the row.
+CREATE FUNCTION public.hr_department_canonical_name() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+BEGIN
+ NEW.name:=btrim(regexp_replace(NEW.name,'\s+',' ','g'));
+ RETURN NEW;
+END $$;
+CREATE TRIGGER hr_department_canonical_name BEFORE INSERT OR UPDATE OF name ON public.hr_departments
+ FOR EACH ROW EXECUTE FUNCTION public.hr_department_canonical_name();
 
 ALTER TABLE public.hr_employees
  ADD COLUMN department_id uuid,
@@ -76,35 +89,42 @@ CREATE TRIGGER hr_employee_changes_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
 -- paths call it.
 CREATE FUNCTION public.hr_department_for(p_client uuid, p_name text) RETURNS uuid
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
-DECLARE found_id uuid;
+DECLARE canonical text:=btrim(regexp_replace(p_name,'\s+',' ','g')); found_id uuid;
 BEGIN
- IF p_client IS NULL OR p_name IS NULL OR regexp_replace(p_name,'\s','','g')='' THEN RETURN NULL; END IF;
- INSERT INTO public.hr_departments(client_id,id,name)
- VALUES(p_client,gen_random_uuid(),regexp_replace(btrim(p_name),'\s+',' ','g'))
+ IF p_client IS NULL OR canonical IS NULL OR canonical='' THEN RETURN NULL; END IF;
+ INSERT INTO public.hr_departments(client_id,id,name) VALUES(p_client,gen_random_uuid(),canonical)
  ON CONFLICT (client_id,name_key) DO NOTHING;
+ -- The generated name_key expression, applied to the canonical name.
  SELECT d.id INTO found_id FROM public.hr_departments d
- WHERE d.client_id=p_client AND d.name_key=lower(regexp_replace(btrim(p_name),'\s+',' ','g'));
+ WHERE d.client_id=p_client AND d.name_key=lower(regexp_replace(btrim(canonical),'\s+',' ','g'));
  RETURN found_id;
 END $$;
 
--- Link the existing department text, then make the text the canonical name. No history yet.
+-- Link the existing department text, then make the text the linked row's name. Text made only of
+-- whitespace names no department and is cleared. Afterwards the text is exactly the name of
+-- department_id (NULL when NULL). No history yet. tests/test_hr_people.py runs this block.
+-- data step begin
 UPDATE public.hr_employees SET department_id=public.hr_department_for(client_id,department)
-WHERE department IS NOT NULL;
+WHERE department IS NOT NULL AND department_id IS NULL;
 UPDATE public.hr_employees e SET department=d.name FROM public.hr_departments d
 WHERE d.client_id=e.client_id AND d.id=e.department_id AND e.department IS DISTINCT FROM d.name;
+UPDATE public.hr_employees SET department=NULL WHERE department IS NOT NULL AND department_id IS NULL;
+-- data step end
 
--- A legacy department text write (hr_admin_apply, fixtures) links the department row by name.
--- The text always mirrors the linked row's name.
+-- A department id write wins. Otherwise (an insert without an id, or an update that keeps the id)
+-- the text decides: text that does not name the linked row, by key, links the department of that
+-- name (hr_admin_apply and fixtures write text). Text that does (the rename mirror, a case or
+-- spacing variant, an unchanged value) keeps the link. Then the text mirrors the linked row's name.
 CREATE FUNCTION public.hr_employee_department_sync() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 BEGIN
- IF TG_OP='INSERT' THEN
-  IF NEW.department_id IS NULL AND NEW.department IS NOT NULL THEN
+ IF (TG_OP='INSERT' AND NEW.department_id IS NULL)
+  OR (TG_OP='UPDATE' AND NEW.department_id IS NOT DISTINCT FROM OLD.department_id) THEN
+  IF NOT EXISTS(SELECT 1 FROM public.hr_departments d
+                WHERE d.client_id=NEW.client_id AND d.id=NEW.department_id
+                AND d.name_key=lower(btrim(regexp_replace(NEW.department,'\s+',' ','g')))) THEN
    NEW.department_id:=public.hr_department_for(NEW.client_id,NEW.department);
   END IF;
- ELSIF NEW.department_id IS NOT DISTINCT FROM OLD.department_id
-  AND NEW.department IS DISTINCT FROM OLD.department THEN
-  NEW.department_id:=public.hr_department_for(NEW.client_id,NEW.department);
  END IF;
  NEW.department:=(SELECT d.name FROM public.hr_departments d
                   WHERE d.client_id=NEW.client_id AND d.id=NEW.department_id);
@@ -304,7 +324,8 @@ CREATE POLICY hr_change_read ON public.hr_employee_changes FOR SELECT TO csa_app
 DO $$ DECLARE f regprocedure; BEGIN
  FOREACH f IN ARRAY ARRAY['public.hr_department_for(uuid,text)'::regprocedure,
   'public.hr_employee_department_sync()'::regprocedure,'public.hr_department_renamed()'::regprocedure,
-  'public.hr_employee_record_change()'::regprocedure] LOOP
+  'public.hr_employee_record_change()'::regprocedure,
+  'public.hr_department_canonical_name()'::regprocedure] LOOP
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,csa_app,csa_ro,csa_identity,csa_hr_maintenance',f);
  END LOOP;
  FOREACH f IN ARRAY ARRAY['public.hr_can_manage_people(uuid)'::regprocedure,
