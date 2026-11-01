@@ -92,8 +92,8 @@ recovery lines are:
 `docs/ASSISTANT_RETEST.md`, the retest checklist with English and Malay rows for every assistant
 feature and failure path. Optionally, first run the model smoke run, which covers the checklist
 rows with a smoke id. It runs inside the gateway container, which already has the model key, and
-uses synthetic facts only (no database, Gmail or tenant data). A run is about 43 model calls (one
-planner call per case plus one drafting call per draft case), up to about 76 with re-plans:
+uses synthetic facts only (no database, Gmail or tenant data). A run is about 46 model calls (one
+planner call per case plus one drafting call per draft case), up to about 81 with re-plans:
 
 ```bash
 docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke

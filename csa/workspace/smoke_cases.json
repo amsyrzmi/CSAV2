@@ -58,6 +58,19 @@
     }
   },
   {
+    "id": "navigate-ms-3",
+    "language": "ms",
+    "message": "buka tab HR",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "navigate"
+      ]
+    }
+  },
+  {
     "id": "answer-en-1",
     "language": "en",
     "message": "What can you help me with in this console?",
@@ -254,6 +267,22 @@
     "id": "compose-en-3",
     "language": "en",
     "message": "send email to danial@fourstacks.my about the meeting",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "email_compose"
+      ],
+      "send": true,
+      "recipient": "danial@fourstacks.my",
+      "draft_valid": true
+    }
+  },
+  {
+    "id": "compose-ms-3",
+    "language": "ms",
+    "message": "hantar emel kat danial@fourstacks.my pasal mesyuarat esok",
     "facts": {
       "preset": "staff_basic"
     },
