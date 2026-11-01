@@ -5,8 +5,8 @@ import type { OrgChart as OrgChartData } from "@/lib/hr-people-api";
 import { Notice } from "../ui";
 
 function Branch({ nodes, hrefFor, root = false }: { nodes: OrgTreeNode[]; hrefFor: (employeeId: string) => string; root?: boolean }) {
-  return <ul role={root ? "tree" : "group"} className={root ? "space-y-2" : "mt-2 space-y-2 border-l border-ink-200 pl-5"}>
-    {nodes.map(node => <li key={node.employee_id} role="treeitem" aria-selected="false">
+  return <ul aria-label={root ? "Org chart" : undefined} className={root ? "space-y-2" : "mt-2 space-y-2 border-l border-ink-200 pl-5"}>
+    {nodes.map(node => <li key={node.employee_id}>
       <Link className="font-medium underline" href={hrefFor(node.employee_id)}>{node.display_name}</Link>
       {node.job_title && <span className="ml-2 text-sm text-ink-500">{node.job_title}</span>}
       {node.children.length > 0 && <Branch nodes={node.children} hrefFor={hrefFor} />}

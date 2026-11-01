@@ -123,7 +123,7 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
       }}>
       <label className="block text-sm sm:col-span-2 lg:col-span-4">Search
         <span className="mt-1 flex gap-2">
-          <input className={field} name="q" type="search" maxLength={200} placeholder="Name, job title or work email" />
+          <input className={field} name="q" type="search" maxLength={120} placeholder="Name, job title or work email" />
           <button className={action}>Search people</button>
         </span></label>
       <label className="block text-sm">Department
