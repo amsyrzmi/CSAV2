@@ -13,6 +13,7 @@ const people = await import(moduleUrl(await readFile(new URL("../lib/hr-people.t
 const {
   EMPLOYMENT_TYPES, STATUS_LABELS, NO_MANAGER, NEW_DEPARTMENT, PEOPLE_COPY,
   personBody, employmentProfileIssue, departmentBody, orgTree, homeItems, emptyText, historyText, peopleRefusalText,
+  runsHomeMaintenance,
 } = people;
 
 const ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -279,4 +280,11 @@ test("peopleRefusalText has one plain sentence per refusal and a fallback", () =
   assert.equal(peopleRefusalText("own_manager_owner_only"), "Only the HR owner can change your own manager.");
   for (const bad of ["__proto__", "constructor", "", "toString"])
     assert.equal(peopleRefusalText(bad), PEOPLE_COPY.refusalFallback, bad);
+});
+
+test("only a writing HR owner runs local maintenance from Home", () => {
+  assert.equal(runsHomeMaintenance({ client_owner: true }, false), true);
+  assert.equal(runsHomeMaintenance({ client_owner: true }, true), false);
+  assert.equal(runsHomeMaintenance({ client_owner: false }, false), false);
+  assert.equal(runsHomeMaintenance({ client_owner: false }, true), false);
 });

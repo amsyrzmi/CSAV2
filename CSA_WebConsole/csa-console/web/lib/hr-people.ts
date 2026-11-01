@@ -140,7 +140,7 @@ export function personBody(
   const common = { employee_id: ids.employeeId, values, ...(any ? { employment_profile: profile } : {}) };
   if (mode === "add") return { operation: "person.add", ...common };
   if (ids.version === undefined) throw new Error("A person update needs the record version");
-  return { operation: "person.update", employee_id: ids.employeeId, expected_version: ids.version, ...common };
+  return { operation: "person.update", expected_version: ids.version, ...common };
 }
 
 /** `version` is null for a new department; `archived` is always the state to save. */
@@ -182,6 +182,15 @@ export function orgTree(chart: OrgChart): OrgTreeNode[] {
   // A loop the server did not report must not make people vanish from the chart.
   for (const item of [...chart.nodes].sort(byName)) if (!placed.has(item.employee_id)) tree.push(build(item));
   return tree;
+}
+
+/**
+ * Whether Home triggers `automation.run` every five minutes. Only a writing HR owner does: Home is
+ * everyone's landing page, the run takes a tenant-wide lock, and the background worker
+ * (scripts/run_hr_maintenance) does the maintenance anyway.
+ */
+export function runsHomeMaintenance(context: { client_owner: boolean }, readonly: boolean): boolean {
+  return context.client_owner && !readonly;
 }
 
 export interface HomeItem {
