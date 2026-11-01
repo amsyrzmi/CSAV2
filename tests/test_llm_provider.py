@@ -461,6 +461,95 @@ async def test_groq_gives_up_after_second_failure() -> None:
     assert err.value.code == "groq_http_503"
 
 
+def _json_validate_failed() -> httpx.Response:
+    """Groq's answer when the model wrote malformed JSON; ``failed_generation`` is model text."""
+    return httpx.Response(
+        400,
+        json={
+            "error": {
+                "message": "Failed to validate JSON. Please adjust your prompt.",
+                "type": "invalid_request_error",
+                "code": "json_validate_failed",
+                "failed_generation": '{"action": "clarification" "question": "SECRET-GENERATION"}',
+            }
+        },
+    )
+
+
+async def _groq_code(replies: list[Callable[[], httpx.Response]], calls: dict[str, int]) -> str:
+    """The GroqError code after the client is served ``replies`` in order."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return replies[calls["n"] - 1]()
+
+    from csa.decide.llm import ComposeOut
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GroqClient("secret-key", "m", http)
+    with pytest.raises(GroqError) as err:
+        await client.json_completion(ComposeOut, system="s", user="u", timeout=1)
+    assert "SECRET-GENERATION" not in str(err.value)
+    assert "SECRET-GENERATION" not in repr(err.value)
+    return err.value.code
+
+
+async def test_groq_json_validate_failed_is_retried_then_succeeds() -> None:
+    calls = {"n": 0}
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _json_validate_failed()
+        return _ok(CLASSIFY)(request)
+
+    signals = await _provider(flaky).classify(make_envelope("hi"), Context())
+    assert calls["n"] == 2
+    assert signals.intent == Intent.ORDER
+
+
+async def test_groq_json_validate_twice_is_invalid_output(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls = {"n": 0}
+    code = await _groq_code([_json_validate_failed, _json_validate_failed], calls)
+    assert calls["n"] == 2
+    assert code == "groq_invalid_output"
+    assert all("SECRET-GENERATION" not in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        lambda: httpx.Response(400, json={"error": {"code": "model_not_found"}}),
+        lambda: httpx.Response(400, content=b"not json"),
+        lambda: httpx.Response(400, json=["json_validate_failed"]),
+        lambda: httpx.Response(400, json={"error": "json_validate_failed"}),
+    ],
+)
+async def test_groq_other_400_is_not_retried(reply: Callable[[], httpx.Response]) -> None:
+    calls = {"n": 0}
+    assert await _groq_code([reply, reply], calls) == "groq_http_400"
+    assert calls["n"] == 1
+
+
+async def test_groq_json_validate_after_timeout_is_final() -> None:
+    def slow() -> httpx.Response:
+        raise httpx.ReadTimeout("slow")
+
+    calls = {"n": 0}
+    code = await _groq_code([slow, _json_validate_failed, _json_validate_failed], calls)
+    assert calls["n"] == 2
+    assert code == "groq_invalid_output"
+
+
+async def test_groq_json_validate_then_503_reports_503() -> None:
+    calls = {"n": 0}
+    code = await _groq_code([_json_validate_failed, lambda: httpx.Response(503)], calls)
+    assert calls["n"] == 2
+    assert code == "groq_http_503"
+
+
 async def test_next_step_keeps_only_valid_read_only_tasks() -> None:
     step = {
         "done": False,
