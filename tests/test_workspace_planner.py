@@ -2340,7 +2340,7 @@ async def test_disconnected_mailbox_drafts_nothing(planned, kind: str) -> None:
 
 
 NEVER_SYNCED = {
-    "en": "Your email hasn't been synced yet. Open the Email assistant tab and press Sync, "
+    "en": "Your email hasn't been synced yet. Open the Email assistant tab and press Sync inbox, "
     "then ask again.",
     "ms": "E-mel anda belum disegerakkan. Buka tab Email assistant dan tekan Sync inbox, "
     "kemudian tanya semula.",
@@ -2700,6 +2700,21 @@ async def test_navigate_to_locked_tab_answers_locked(planned) -> None:
         "markdown": "Tab Email assistant memerlukan perkhidmatan Staff email, yang tidak aktif "
         "untuk ruang kerja ini. Minta pentadbir anda mengaktifkannya di halaman Services.",
     }
+    # A tab gated on two packages names both, joined in the answer's own language.
+    model.reply({"action": "navigate", "tab": "business"})
+    business_en = await _turn(w, browser, thread, "Take me to business management", "overview")
+    assert business_en.status_code == 201, business_en.text
+    english_text = business_en.json()["result"]["markdown"]
+    assert "the Marketplaces or Orders and products service" in english_text
+    model.reply({"action": "navigate", "tab": "business"})
+    asked = "Tolong bawa saya ke halaman perniagaan"
+    business_ms = await _turn(w, browser, thread, asked, "overview")
+    assert business_ms.status_code == 201, business_ms.text
+    business_text = business_ms.json()["result"]["markdown"]
+    assert business_text.startswith(
+        "Tab Business management memerlukan perkhidmatan Marketplaces atau Orders and products, "
+    )
+    assert " or " not in business_text
     await activate(w, w.tenants[0], "staff_email")
     model.reply({"action": "navigate", "tab": "email"})
     opened = await _turn(w, browser, thread, "Take me to email", "overview")
@@ -2975,8 +2990,8 @@ async def test_malay_inbox_decision_card_translates_the_shown_decision_only(plan
     assert turn.status_code == 201, turn.text
     card = turn.json()["result"]["proposal"]["card"]
     assert card["language"] == "ms"
-    assert card["title"] == "Lulus balasan yang ditahan"
-    assert card["summary"] == "Lulus balasan yang ditahan untuk perbualan pelanggan ini."
+    assert card["title"] == "Luluskan balasan yang ditahan"
+    assert card["summary"] == "Luluskan balasan yang ditahan untuk perbualan pelanggan ini."
     labels = {field["label"]: field["value"] for field in card["fields"]}
     draft = (await w.q("SELECT draft FROM approvals WHERE id=%s", approval))[0]["draft"]
     assert labels == {"Keputusan": "Lulus", "Balasan": draft[:500]}  # the reply is not translated

@@ -495,6 +495,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "locked": "The {tab} tab needs the {packages} service, which is not active for "
         "this workspace. Ask your administrator to activate it on the Services page.",
         "locked_role": "The {tab} tab is not available to your role.",
+        "or": "or",
         "ask_address": "I couldn't find that person in the directory. Type their email address "
         "and I'll continue.",
         "no_match": "No matching colleague was found.",
@@ -536,7 +537,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_unavailable": "I couldn't summarise your inbox just now. Try again in a few "
         "minutes.",
         "summary_never_synced": "Your email hasn't been synced yet. Open the Email assistant tab "
-        "and press Sync, then ask again.",
+        "and press Sync inbox, then ask again.",
         "content_question": "What should the email say? Type a line or two and I'll write it.",
         "not_included": "Not included",
         "no_work_email": "no work email",
@@ -552,6 +553,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
         "ruang kerja ini. Minta pentadbir anda mengaktifkannya di halaman Services.",
         "locked_role": "Tab {tab} tidak tersedia untuk peranan anda.",
+        "or": "atau",
         "ask_address": "Saya tidak menjumpai orang itu dalam direktori. Taip alamat e-mel mereka "
         "dan saya akan teruskan.",
         "no_match": "Tiada rakan sekerja yang sepadan ditemui.",
@@ -1569,7 +1571,8 @@ async def _resolve(
                 text = _TEXT[facts.language]["locked_role"].format(tab=tab)
             else:
                 keys = _TAB_GATES[proposal.tab][0]
-                names = " or ".join(sorted(BY_KEY[k].title for k in keys))
+                joiner = f" {_TEXT[facts.language]['or']} "
+                names = joiner.join(sorted(BY_KEY[k].title for k in keys))
                 text = _TEXT[facts.language]["locked"].format(tab=tab, packages=names)
             return _Planned(result=AnswerResult(action="answer", markdown=text))
         return _Planned(
