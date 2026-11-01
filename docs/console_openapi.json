@@ -7133,6 +7133,15 @@
             "title": "Kind",
             "type": "string"
           },
+          "language": {
+            "default": "en",
+            "enum": [
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
           "proposal_id": {
             "format": "uuid",
             "title": "Proposal Id",
@@ -10478,6 +10487,15 @@
           "id": {
             "title": "Id",
             "type": "integer"
+          },
+          "language": {
+            "default": "en",
+            "enum": [
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
           },
           "request_key": {
             "format": "uuid",

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import get_args
 from uuid import uuid4
 
 import pytest
@@ -27,6 +28,7 @@ from csa.workspace.contracts import (
     ProposalCard,
     RecordRef,
     ResolvedWorkspaceAuthority,
+    TabKey,
     TrainingSubmitProposal,
     VerifiedWorkspacePrincipal,
     WorkspaceActionProposal,
@@ -567,3 +569,26 @@ def test_proposal_card_forbids_extra_and_results_join_union() -> None:
     people = adapter.validate_python({"action": "directory_lookup", "candidates": []})
     assert isinstance(people, DirectoryResult)
     assert InboxDecisionProposal and NavigateProposal and DirectoryLookupProposal
+
+
+def test_tab_labels_match_the_console_navigation() -> None:
+    """The assistant names a tab as the sidebar does, for every tab the assistant can open."""
+    import re
+    from pathlib import Path
+
+    from csa.workspace.rules import TAB_LABELS
+
+    source = Path(__file__).parents[1] / "CSA_WebConsole/csa-console/web/lib/navigation.ts"
+    labels = dict(re.findall(r'\{ key: "(\w+)", label: "([^"]+)"', source.read_text()))
+    tab_keys = set(get_args(TabKey))
+    assert tab_keys <= TAB_LABELS.keys()
+    assert tab_keys <= labels.keys()
+    for key, label in TAB_LABELS.items():
+        assert labels[key] == label
+
+
+def test_text_tables_have_the_same_keys() -> None:
+    from csa.workspace.service import _TEXT
+
+    assert _TEXT["en"].keys() == _TEXT["ms"].keys()
+    assert {"not_included", "no_work_email"} <= _TEXT["ms"].keys()

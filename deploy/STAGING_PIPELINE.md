@@ -88,12 +88,24 @@ recovery lines are:
 - **A failed check** stops the four services again and they stay stopped until investigated:
   investigate what the check found, then run `plan` and `apply` again.
 
+**Forward-only data shape (assistant language).** From the rollout that brought the assistant's
+Malay support, new assistant turns store `result.language` and new proposal cards store
+`card.language`. The previous images read both with `extra="forbid"`, so rolling back to them
+after such a turn exists breaks listing the turns, the planner's history and reading proposals.
+Treat a rollback past that rollout as fix-forward. If a rollback is ever needed, the owner runs
+these two statements in `csa_staging` first (they remove only the language fields):
+
+```sql
+UPDATE public.console_workspace_turns SET result = (result - 'language') #- '{proposal,card,language}';
+UPDATE public.console_proposals SET card = card - 'language';
+```
+
 **After a rollout: retest the assistant.** Once `apply` has finished, work through
 `docs/ASSISTANT_RETEST.md`, the retest checklist with English and Malay rows for every assistant
 feature and failure path. Optionally, first run the model smoke run, which covers the checklist
 rows with a smoke id. It runs inside the gateway container, which already has the model key, and
-uses synthetic facts only (no database, Gmail or tenant data). A run is about 43 model calls (one
-planner call per case plus one drafting call per draft case), up to about 76 with re-plans:
+uses synthetic facts only (no database, Gmail or tenant data). A run is about 46 model calls (one
+planner call per case plus one drafting call per draft case), up to about 81 with re-plans:
 
 ```bash
 docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke

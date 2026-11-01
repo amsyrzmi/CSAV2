@@ -1,4 +1,5 @@
 import { api } from "@/lib/api";
+import type { Language } from "@/lib/assistant-copy";
 
 export type WorkspacePageKey =
   | "workspace_home"
@@ -62,6 +63,8 @@ export interface ProposalCard {
   fields: { label: string; value: string }[];
   expires_at: string;
   expected_version: string | null;
+  /** The language the card was written in; absent on cards stored before it existed (English). */
+  language?: Language;
 }
 
 export interface ProposalOut {
@@ -95,7 +98,8 @@ export type WorkspaceErrorCode =
   | "proposal_session_mismatch"
   | "proposal_stale"
   | "planner_unavailable"
-  | "planner_invalid_output";
+  | "planner_invalid_output"
+  | "hr_training_not_permitted";
 
 export interface WorkspaceThread {
   id: string;
@@ -111,6 +115,8 @@ export interface WorkspaceTurn {
   created_at: string;
   duplicate: boolean;
   result: WorkspaceResult;
+  /** The language the turn was answered in; absent on turns stored before it existed (English). */
+  language?: Language;
 }
 
 export interface ClarificationOption {

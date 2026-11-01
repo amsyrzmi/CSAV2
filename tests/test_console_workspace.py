@@ -366,6 +366,40 @@ async def test_workspace_history_pagination_and_database_tenant_boundaries(
 # --------------------------------------------------- assistant email: team send and attention
 
 
+async def test_email_my_team_in_malay_names_who_is_not_included_in_malay(
+    planned,  # noqa: F811
+    proposals_app,  # noqa: F811
+) -> None:
+    from csa.workspace.service import _TEXT
+
+    world, model = planned
+    world.app.state.email_service.model = CleanDraftModel()
+    browser = await _mail_ready(world, "hr")
+    await _team_lead(world, browser)
+    await _approves_team(world, browser)
+    thread = await _thread(world, browser)
+    model.reply(
+        {
+            "action": "email_team",
+            "subject": "Mesyuarat Jumaat",
+            "instructions": "Mesyuarat pada hari Jumaat dialihkan ke pukul 3 petang",
+        }
+    )
+    turn = await _turn(
+        world, browser, thread, "Tolong e-mel pasukan saya tentang mesyuarat Jumaat", "email"
+    )
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["language"] == "ms"
+    fields = turn.json()["result"]["proposal"]["card"]["fields"]
+    names = "Bee Report"
+    skipped = {
+        "label": _TEXT["ms"]["not_included"],
+        "value": f"{names} ({_TEXT['ms']['no_work_email']})",
+    }
+    assert skipped in fields
+    assert skipped == {"label": "Tidak disertakan", "value": "Bee Report (tiada e-mel kerja)"}
+
+
 async def test_email_my_team_and_send_it_drafts_then_sends_once(planned, proposals_app) -> None:  # noqa: F811
     world, model = planned
     _, gmail = proposals_app
@@ -467,3 +501,32 @@ async def test_attention_refusals_are_plain_answers(planned) -> None:  # noqa: F
     assert [r["action"] for r in rows] == ["inbox_summary"] * 3
     for row in rows:
         assert "MGL-TEST-005" not in row["t"] and "aina@example.test" not in row["t"]
+
+
+async def test_legacy_turn_carries_thread_language(planned) -> None:  # noqa: F811
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply({"action": "answer", "markdown": "Baik."})
+    first = await _turn(w, browser, thread, "tolong buka halaman pesanan", "overview")
+    assert first.status_code == 201, first.text
+    assert first.json()["language"] == "ms"
+    legacy = await w.mutate(
+        browser,
+        workspace_path(suffix=f"/{thread}/turns"),
+        {"request_key": str(uuid4()), "body": "ok", "page_hint": {"page": "business_orders"}},
+    )
+    assert legacy.status_code == 201, legacy.text
+    assert legacy.json()["language"] == "ms"
+    english = await w.mutate(
+        browser,
+        workspace_path(suffix=f"/{thread}/turns"),
+        {
+            "request_key": str(uuid4()),
+            "body": "show me the page",
+            "page_hint": {"page": "business_orders"},
+        },
+    )
+    assert english.json()["language"] == "en"
+    items = (await browser.get(workspace_path(suffix=f"/{thread}/turns"))).json()["items"]
+    assert [item["language"] for item in items] == ["en", "ms", "ms"]

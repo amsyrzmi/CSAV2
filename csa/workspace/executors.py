@@ -44,6 +44,7 @@ from csa.workspace.contracts import (
     EmailExportProposal,
     EmailSendProposal,
     InboxDecisionProposal,
+    Language,
     ProposalKind,
     TrainingSubmitProposal,
 )
@@ -62,6 +63,75 @@ _ACTIVE_OR_SUSPENDED = frozenset({"active", "suspended"})
 # my_employee fact uses the same set.
 NEW_TRAINING_GRANTS = frozenset({HrAction.TRAINING_DRAFT.value, HrAction.TRAINING_SUBMIT.value})
 _SUBMIT_GRANTS = frozenset({HrAction.TRAINING_SUBMIT.value})
+
+
+# Every title, summary and visible label the assistant's cards are written from, in the turn's
+# language. Both languages carry the same keys (a test checks it). Standard Malaysian Malay with
+# "anda"; on-screen names ("Gmail") stay as the console shows them. Not here, on purpose: the
+# two hidden email fields ("Subject" = "(shown on open)" and "Draft"), which the console finds
+# by label and migration 0485's check keys on, and the user's own title, objective and reply text.
+_CARD_TEXT: dict[Language, dict[str, str]] = {
+    "en": {
+        "training_new_title": "Submit a new training request",
+        "training_new_summary": "Create and submit “{title}” for approval.",
+        "training_title": "Submit training request",
+        "training_summary": "Submit “{title}” for approval.",
+        "label_title": "Title",
+        "label_objective": "Objective",
+        "person_one": "{count} person",
+        "person_many": "{count} people",
+        "outside": " ({count} outside your company)",
+        "count_in": "{count} in {label}",
+        "to": "To",
+        "cc": "CC",
+        "bcc": "BCC",
+        "what_reply": "reply",
+        "what_email": "email",
+        "send_title": "Send {what} to {audience}",
+        "send_summary": "{counts}. We send it from your Gmail when you select Send.",
+        "staff_input": " Fill in the [STAFF: …] parts before sending.",
+        "export_title": "Save email to Gmail drafts for {audience}",
+        "export_summary": "{counts}. Nothing is sent.",
+        "approve_title": "Approve held reply",
+        "reject_title": "Reject held reply",
+        "approve_summary": "Approve the held reply to this customer conversation.",
+        "reject_summary": "Reject the held reply to this customer conversation.",
+        "label_decision": "Decision",
+        "approve_value": "approve",
+        "reject_value": "reject",
+        "label_reply": "Reply",
+    },
+    "ms": {
+        "training_new_title": "Hantar permohonan latihan baharu",
+        "training_new_summary": "Cipta dan hantar “{title}” untuk kelulusan.",
+        "training_title": "Hantar permohonan latihan",
+        "training_summary": "Hantar “{title}” untuk kelulusan.",
+        "label_title": "Tajuk",
+        "label_objective": "Objektif",
+        "person_one": "{count} orang",
+        "person_many": "{count} orang",
+        "outside": " ({count} di luar syarikat anda)",
+        "count_in": "{count} dalam {label}",
+        "to": "Kepada",
+        "cc": "CC",
+        "bcc": "BCC",
+        "what_reply": "balasan",
+        "what_email": "e-mel",
+        "send_title": "Hantar {what} kepada {audience}",
+        "send_summary": "{counts}. Ia dihantar dari Gmail anda apabila anda memilih Hantar.",
+        "staff_input": " Isi bahagian [STAFF: …] sebelum menghantar.",
+        "export_title": "Simpan e-mel ke draf Gmail untuk {audience}",
+        "export_summary": "{counts}. Tiada apa-apa yang dihantar.",
+        "approve_title": "Luluskan balasan yang ditahan",
+        "reject_title": "Tolak balasan yang ditahan",
+        "approve_summary": "Luluskan balasan yang ditahan untuk perbualan pelanggan ini.",
+        "reject_summary": "Tolak balasan yang ditahan untuk perbualan pelanggan ini.",
+        "label_decision": "Keputusan",
+        "approve_value": "Lulus",
+        "reject_value": "Tolak",
+        "label_reply": "Balasan",
+    },
+}
 
 
 def _parse[Model: BaseModel](
@@ -136,23 +206,26 @@ class TrainingSubmitExecutor:
         payload: dict[str, Any],
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> tuple[CardContent, str | None]:
         proposal = _parse(TrainingSubmitProposal, self.kind, payload)
         await self.gate(request, actor, client_id, origin=origin)
         service = self._service(request)
         session = self._session(request, actor, client_id, origin)
+        text = _CARD_TEXT[language]
         new = proposal.request_id is None
         await self._prerequisites(service, session, NEW_TRAINING_GRANTS if new else _SUBMIT_GRANTS)
         if proposal.request_id is None:
             assert proposal.title is not None and proposal.learning_objective is not None
             return (
                 CardContent(
-                    title="Submit a new training request",
-                    summary=f"Create and submit “{proposal.title}” for approval.",
+                    title=text["training_new_title"],
+                    summary=text["training_new_summary"].format(title=proposal.title),
                     fields=[
-                        CardField(label="Title", value=proposal.title),
-                        CardField(label="Objective", value=proposal.learning_objective),
+                        CardField(label=text["label_title"], value=proposal.title),
+                        CardField(label=text["label_objective"], value=proposal.learning_objective),
                     ],
+                    language=language,
                 ),
                 None,
             )
@@ -164,12 +237,15 @@ class TrainingSubmitExecutor:
             raise HTTPException(409, "training_not_draft")
         return (
             CardContent(
-                title="Submit training request",
-                summary=f"Submit “{projection.content.title}” for approval.",
+                title=text["training_title"],
+                summary=text["training_summary"].format(title=projection.content.title),
                 fields=[
-                    CardField(label="Title", value=projection.content.title),
-                    CardField(label="Objective", value=projection.content.learning_objective),
+                    CardField(label=text["label_title"], value=projection.content.title),
+                    CardField(
+                        label=text["label_objective"], value=projection.content.learning_objective
+                    ),
                 ],
+                language=language,
             ),
             str(projection.version),
         )
@@ -241,46 +317,54 @@ async def _connected_draft(
     return draft
 
 
-def _people(count: int) -> str:
-    return f"{count} person" if count == 1 else f"{count} people"
+def _people(count: int, language: Language) -> str:
+    text = _CARD_TEXT[language]
+    return text["person_one" if count == 1 else "person_many"].format(count=count)
 
 
-def _audience(draft: DraftOut) -> tuple[str, str]:
+def _audience(draft: DraftOut, language: Language) -> tuple[str, str]:
     """("3 people (1 outside your company)", "2 in To, 1 in CC"): counts, never addresses."""
+    text = _CARD_TEXT[language]
     everyone = {r.address.lower() for r in draft.recipients}
     outside = {r.address.lower() for r in draft.recipients if r.outside}
-    audience = _people(len(everyone))
+    audience = _people(len(everyone), language)
     if outside:
-        audience += f" ({len(outside)} outside your company)"
+        audience += text["outside"].format(count=len(outside))
     counts = ", ".join(
-        f"{n} in {label}"
-        for label, n in (("To", len(draft.to)), ("CC", len(draft.cc)), ("BCC", len(draft.bcc)))
+        text["count_in"].format(count=n, label=text[key])
+        for key, n in (("to", len(draft.to)), ("cc", len(draft.cc)), ("bcc", len(draft.bcc)))
         if n
     )
     return audience, counts
 
 
 def _content_fields(draft: DraftOut) -> list[CardField]:
+    """The two hidden fields: English in every language, because the console finds them by label."""
     return [
         CardField(label="Subject", value="(shown on open)"),
         CardField(label="Draft", value=str(draft.id)),
     ]
 
 
-def send_card(draft: DraftOut) -> CardContent:
+def send_card(draft: DraftOut, language: Language = "en") -> CardContent:
     """Counts only: the console reads recipients, subject and body from the draft itself.
 
     ``console_proposals`` rows are readable tenant-wide, so no address, subject or body is
     stored here; the owner's email session renders them when the card is shown.
     """
+    text = _CARD_TEXT[language]
     # A reply whose thread was cleaned up after sync has no thread link: it is a plain email now.
-    what = "reply" if draft.thread_id is not None and draft.reply_to_message_id else "email"
-    audience, counts = _audience(draft)
-    summary = f"{counts}. We send it from your Gmail when you select Send."
+    reply = draft.thread_id is not None and draft.reply_to_message_id
+    what = text["what_reply" if reply else "what_email"]
+    audience, counts = _audience(draft, language)
+    summary = text["send_summary"].format(counts=counts)
     if draft.needs_staff_input:
-        summary += " Fill in the [STAFF: …] parts before sending."
+        summary += text["staff_input"]
     return CardContent(
-        title=f"Send {what} to {audience}", summary=summary, fields=_content_fields(draft)
+        title=text["send_title"].format(what=what, audience=audience),
+        summary=summary,
+        fields=_content_fields(draft),
+        language=language,
     )
 
 
@@ -309,6 +393,7 @@ class EmailExportExecutor:
         payload: dict[str, Any],
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> tuple[CardContent, str | None]:
         proposal = _parse(EmailExportProposal, self.kind, payload)
         await self.gate(request, actor, client_id, origin=origin)
@@ -321,12 +406,14 @@ class EmailExportExecutor:
         # is: any edit makes the card stale, the export does not.
         version = draft_version(draft)
         # Counts only, as on the send card: the console reads the draft itself when it shows it.
-        audience, counts = _audience(draft)
+        text = _CARD_TEXT[language]
+        audience, counts = _audience(draft, language)
         return (
             CardContent(
-                title=f"Save email to Gmail drafts for {audience}",
-                summary=f"{counts}. Nothing is sent.",
+                title=text["export_title"].format(audience=audience),
+                summary=text["export_summary"].format(counts=counts),
                 fields=_content_fields(draft),
+                language=language,
             ),
             version,
         )
@@ -390,6 +477,7 @@ class EmailSendExecutor:
         payload: dict[str, Any],
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> tuple[CardContent, str | None]:
         proposal = _parse(EmailSendProposal, self.kind, payload)
         await self.gate(request, actor, client_id, origin=origin)
@@ -403,7 +491,7 @@ class EmailSendExecutor:
                 raise EmailPolicyError("draft_changed")
         except EmailPolicyError as exc:
             raise _email_refusal(exc) from None
-        return send_card(draft), version
+        return send_card(draft, language), version
 
     async def execute(
         self,
@@ -448,6 +536,7 @@ class InboxDecisionExecutor:
         payload: dict[str, Any],
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> tuple[CardContent, str | None]:
         proposal = _parse(InboxDecisionProposal, self.kind, payload)
         await self.gate(request, actor, client_id, origin=origin)
@@ -460,15 +549,18 @@ class InboxDecisionExecutor:
             current = await conversation(conn, client_id, proposal.conversation_id)
         if current.inbox_version != proposal.expected_version:
             raise ProposalError("proposal_stale")
-        verb = "Approve" if proposal.decision == "approve" else "Reject"
+        text = _CARD_TEXT[language]
+        decision = proposal.decision  # "approve" or "reject"; the payload keeps it in English
         return (
             CardContent(
-                title=f"{verb} held reply",
-                summary=f"{verb} the held reply to this customer conversation.",
+                title=text[f"{decision}_title"],
+                summary=text[f"{decision}_summary"],
                 fields=[
-                    CardField(label="Decision", value=proposal.decision),
-                    CardField(label="Reply", value=redact(approval["draft"])[:500]),
+                    CardField(label=text["label_decision"], value=text[f"{decision}_value"]),
+                    # The customer-facing draft text: not translated.
+                    CardField(label=text["label_reply"], value=redact(approval["draft"])[:500]),
                 ],
+                language=language,
             ),
             str(current.inbox_version),
         )

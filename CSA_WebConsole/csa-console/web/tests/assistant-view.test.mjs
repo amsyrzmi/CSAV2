@@ -11,9 +11,13 @@ async function load(name, replacements = {}) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
+const emailUrl = await load("email-recipients.ts");
 const view = await import(await load("assistant-view.ts", {
   '"@/lib/navigation"': JSON.stringify(await load("navigation.ts")),
-  '"@/lib/email-recipients"': JSON.stringify(await load("email-recipients.ts")),
+  '"@/lib/email-recipients"': JSON.stringify(emailUrl),
+  '"@/lib/assistant-copy"': JSON.stringify(await load("assistant-copy.ts", {
+    '"@/lib/email-recipients"': JSON.stringify(emailUrl),
+  })),
 }));
 
 const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t1", csrf_token: "", workspace_assistant: true };
@@ -294,4 +298,78 @@ test("a turn's email refusal shows the email sentence, never the code", () => {
   // An unmapped code stays as it is; anything that is not an Error gets the fixed sentence.
   assert.equal(view.turnErrorText(raw("some_new_code")), "some_new_code");
   assert.equal(view.turnErrorText("boom"), "The assistant request failed.");
+});
+
+test("navigate lines in Malay name the tab as the console shows it", () => {
+  const opened = view.navigateText("hr", false, staff, all, "ms");
+  assert.ok(opened.text.includes(view.tabLabel("hr", staff, all)), opened.text);
+  assert.doesNotMatch(opened.text, /Opened/);
+  assert.equal(opened.error, false);
+  const resumed = view.navigateText("hr", true, staff, all, "ms");
+  assert.ok(resumed.text.includes("People & HR"));
+  assert.doesNotMatch(resumed.text, /continued/);
+  const locked = view.navigateText("hr", false, staff, [], "ms");
+  assert.equal(locked.error, true);
+  assert.ok(locked.text.includes("People & HR"));
+  assert.doesNotMatch(locked.text, /not available/);
+  // The default stays English.
+  assert.equal(view.navigateText("hr", false, staff, all).text, view.navigateText("hr", false, staff, all, "en").text);
+});
+
+test("settled-card lines in Malay are Malay", () => {
+  const sent = proposal("p", { kind: "email_send", status: "executed", result: { outcome: "sent", sent_at: "2026-10-27T01:15:00Z" } });
+  assert.match(view.resultSummary(sent, "ms"), /^Dihantar pada \d{1,2} Oct 2026, \d{2}:\d{2}\.$/);
+  assert.equal(view.resultSummary(proposal("p", { kind: "email_send", status: "executed", result: null }), "ms"), "Dihantar dari Gmail anda.");
+  assert.equal(view.resultSummary(proposal("p", { status: "executed", result: null }), "ms"), "Disimpan ke draf Gmail anda. Tiada apa-apa yang dihantar.");
+  assert.equal(view.resultSummary(proposal("p", { status: "cancelled" }), "ms"), "Dibatalkan. Tiada apa-apa yang diubah.");
+  assert.equal(view.resultSummary(proposal("p", { status: "requested" }), "ms"), "Menunggu pengesahan anda.");
+  assert.equal(view.resultSummary(proposal("p", { kind: "training_submit", status: "executed", result: { request: { title: "AWS", status: "submitted" } } }), "ms"), "Permohonan “AWS” dihantar (status kini: menunggu kelulusan).");
+  assert.equal(view.resultSummary(proposal("p", { kind: "subscription_action", status: "executed", result: { status: "paused" } }), "ms"), "Langganan dikemas kini. Statusnya kini dijeda.");
+  const expired = view.resultSummary(proposal("p", { kind: "inbox_decision", status: "executed", result: { outcome: "expired", queued: true } }), "ms");
+  assert.doesNotMatch(expired, /expired|queued/);
+  // Every status line differs from its English one.
+  for (const [extra, kind] of [[{ status: "expired" }, "email_export"], [{ status: "confirmed" }, "email_export"],
+    [{ status: "executed", result: { outcome: "already_handled" } }, "inbox_decision"],
+    [{ status: "executed", result: { outcome: "applied", queued: true } }, "inbox_decision"],
+    [{ status: "executed", result: { request: {} } }, "training_submit"],
+    [{ status: "executed", result: null }, "subscription_action"]]) {
+    const p = proposal("p", { kind, ...extra });
+    assert.notEqual(view.resultSummary(p, "ms"), view.resultSummary(p, "en"), JSON.stringify(extra));
+  }
+});
+
+test("result notices and guidance in Malay", () => {
+  assert.deepEqual(view.resultView({ action: "directory_lookup", candidates: [] }, "ms"),
+    { kind: "notice", error: false, text: "Tiada rakan sekerja yang sepadan ditemui." });
+  assert.equal(view.resultView({ action: "directory_lookup", candidates: [] }).text, "No matching colleague was found.");
+  const denied = view.resultView({ status: "denied", code: "resource_unavailable" }, "ms");
+  assert.equal(denied.error, true);
+  assert.doesNotMatch(denied.text, /requested record/);
+  assert.doesNotMatch(view.resultView({ status: "denied", code: "x" }, "ms").text, /authorized/);
+  assert.doesNotMatch(view.resultView({ status: "unavailable", code: "x", retryable: true }, "ms").text, /assistant could not/);
+  for (const key of ["workspace_home_help", "business_orders_help", "business_order_help", "unknown_help"]) {
+    const result = { status: "completed", action: "page_guidance", page: "workspace_home", instruction_key: key, source: "application_guide", as_of: "x" };
+    assert.notEqual(view.resultView(result, "ms").text, view.resultView(result, "en").text, key);
+  }
+});
+
+test("turnErrorText takes the language and defaults to English", () => {
+  const raw = (code, status = 409) => Object.assign(new Error(code), { status, code });
+  assert.equal(view.turnErrorText(raw("provider_unreachable", 502), "ms"), "Kami tidak dapat menghubungi Gmail. Tunggu seminit dan cuba lagi.");
+  assert.equal(view.turnErrorText("boom", "ms"), "Sesuatu tidak kena. Cuba lagi.");
+  assert.equal(view.turnErrorText("boom"), "The assistant request failed.");
+});
+
+test("the follow-up protocol strings stay English whatever the panel language", () => {
+  assert.equal(view.candidateFollowUp({ employee_id: "e1" }, "emel Aina"), "Use employee e1 for: emel Aina");
+  assert.match(view.clarificationAnswer("Danial", "Siapa?", "hantar emel"), /\(Answer to “Siapa\?” for: hantar emel\)$/);
+});
+
+test("latestLanguage is the newest turn's language, English when there is none", () => {
+  assert.equal(view.latestLanguage([]), "en");
+  assert.equal(view.latestLanguage([{ language: "ms" }]), "ms");
+  assert.equal(view.latestLanguage([{ language: "ms" }, { language: "en" }]), "en");
+  assert.equal(view.latestLanguage([{ language: "en" }, { language: "ms" }]), "ms");
+  assert.equal(view.latestLanguage([{ language: "ms" }, {}]), "en");
+  assert.equal(view.latestLanguage([{}]), "en");
 });

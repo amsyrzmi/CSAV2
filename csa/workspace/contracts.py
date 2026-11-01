@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+Language = Literal["en", "ms"]
 PageKey = Literal["workspace_home", "business_orders", "business_order"]
 WorkspaceRole = Literal["platform_admin", "tenant_admin", "tenant_staff", "read_only"]
 BoundedText = Annotated[str, StringConstraints(min_length=1, max_length=100)]
@@ -274,6 +275,7 @@ class ProposalCard(_Contract):
     fields: list[CardField]
     expires_at: AwareDatetime
     expected_version: str | None
+    language: Language = "en"
 
 
 class ProposalOut(_Contract):
@@ -576,6 +578,7 @@ class WorkspaceTurnOut(_Contract):
     result: WorkspaceActionResult
     created_at: AwareDatetime
     duplicate: bool = False
+    language: Language = "en"
 
 
 class WorkspaceTurnPage(_Contract):

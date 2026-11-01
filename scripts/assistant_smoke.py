@@ -20,8 +20,8 @@ field names after a failure, ``RATE <id> k/N`` per case with ``--repeat``, and a
 ``N passed, M failed`` line. Never a message, model text, subject, body or address; the key is
 never printed. Exit 0 when every sample passes, 1 when any fails, 2 on a setup error (no model
 key, the model unavailable on the first call, an unknown case id, a missing or invalid case
-file). A run is about 43 model calls (one planner call per case plus one drafting call per draft
-case), up to about 76 with re-plans.
+file). A run is about 46 model calls (one planner call per case plus one drafting call per draft
+case), up to about 81 with re-plans.
 """
 
 from __future__ import annotations

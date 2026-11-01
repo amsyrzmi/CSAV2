@@ -601,6 +601,23 @@ and an `as_of` timestamp) is unchanged; reusing a request key with different inp
 replaying an order result after its resource version changes, returns 409. A
 missing or foreign order returns only `resource_unavailable`.
 
+### Language
+
+Every planned turn has one language, `"en"` or `"ms"`, returned as `WorkspaceTurnOut.language`
+(default `"en"`) on the 201 response, the 200 replay and `GET .../turns`, and saved in the stored
+turn result (no migration; a turn stored without it reads as English). The server guesses it from
+what the user typed (`detect_language` in `csa/workspace/planner.py`, which ignores email
+addresses, URLs and words both languages share) and decides it once per turn: a clear guess wins,
+and when the message gives no clear guess (a typed address, a name, "ok", a clicked option) the
+turn carries the previous turn's language, or English for the first turn of a thread. The turn's
+answers, questions, locked-tab text and cards are written in that language; a locked tab is named
+as the console's sidebar shows it (for example "People & HR"). The console panel (dock title,
+buttons, card status and error lines, the email preview's labels) follows `language`, from the
+latest turn for panel-wide text and from the turn or card for its own text; text the console
+shows by name (tab names, addresses, subjects, bodies) is never translated. Limits: before any
+turn exists the panel is English, so a first message that fails gets an English error; the HR
+assistant chat and tab-origin cards stay English.
+
 ### Planner
 
 A turn with `page_context` is planned by one model call that returns exactly one typed
@@ -668,7 +685,12 @@ Every mutation is a proposal the user confirms on a card. The kinds are:
   the Subscriptions tab.
 
 `ProposalOut` is `{id, kind, status, card, result, created_at, expires_at}`; the card
-holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
+holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at`, `expected_version`
+and `language` (`"en"` or `"ms"`, default `"en"`): the language the card's title, summary and field
+labels are written in. It is stored with the card, so confirm and cancel responses and a reloaded
+card keep it, and it never enters the proposal payload or its hash. A card made from a tab
+(`POST /workspace/proposals`) and a card stored before the field existed read `"en"`. The email
+cards' hidden `Subject` and `Draft` sentinel fields keep their English labels in both languages.
 
 Statuses are `requested`, then `confirmed`, then `executed`, or `cancelled` / `expired`.
 A proposal lives 15 minutes and is visible only to its owner.

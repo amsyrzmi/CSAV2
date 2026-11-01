@@ -62,6 +62,7 @@ from csa.workspace.contracts import (
     GuidanceResult,
     InboxDecisionProposal,
     InboxSummaryProposal,
+    Language,
     LocalOrderSummary,
     NavigateProposal,
     NavigateResult,
@@ -105,6 +106,7 @@ from csa.workspace.rules import (
     CORRECTION_NOTES,
     OPTION_TOO_LONG,
     RECIPIENT_NOT_REQUESTED,
+    TAB_LABELS,
     UNKNOWN_THREAD,
     about_email,
     asks_for_content,
@@ -132,8 +134,15 @@ _GUIDANCE_KEYS: dict[
 }
 
 
-def _stored_result(value: Any) -> WorkspaceActionResult:
-    return _RESULT.validate_json(json.dumps(value, allow_nan=False))
+def _split_stored(value: Any) -> tuple[WorkspaceActionResult, Language]:
+    """A stored ``result`` and the turn's language saved beside it ("en" for an older row).
+
+    The result is a strict union, so ``language`` is taken off before it is validated.
+    """
+    stored = dict(value) if isinstance(value, dict) else value
+    language: Any = stored.pop("language", "en") if isinstance(stored, dict) else "en"
+    result = _RESULT.validate_json(json.dumps(stored, allow_nan=False))
+    return result, language if language in ("en", "ms") else "en"
 
 
 class WorkspaceConflict(ValueError):
@@ -316,7 +325,9 @@ async def _fresh_result(
     )
 
 
-def _replayed(row: dict[str, Any], result: WorkspaceActionResult) -> WorkspaceTurnOut:
+def _replayed(
+    row: dict[str, Any], result: WorkspaceActionResult, language: Language
+) -> WorkspaceTurnOut:
     return WorkspaceTurnOut.model_validate(
         {
             "id": row["id"],
@@ -325,6 +336,7 @@ def _replayed(row: dict[str, Any], result: WorkspaceActionResult) -> WorkspaceTu
             "result": result,
             "created_at": row["created_at"],
             "duplicate": True,
+            "language": language,
         }
     )
 
@@ -356,13 +368,19 @@ async def create_turn(
         conn, actor, client_id, thread, turn, now=timestamp
     )
     if existing is not None:
-        previous = _stored_result(existing["result"])
+        previous, stored_language = _split_stored(existing["result"])
         if isinstance(previous, OrderReadResult):
             if not isinstance(result, OrderReadResult) or (
                 previous.order.updated_at != result.order.updated_at
             ):
                 raise WorkspaceConflict("resource changed; submit a new request")
-        return _replayed(existing, previous)
+        return _replayed(existing, previous, stored_language)
+    last = await db.q.fetch_one(
+        "workspace/turn_last.sql", (client_id, thread_id, actor.user_id), conn=conn
+    )
+    language = turn_language(
+        turn.body, [], _split_stored(last["result"])[1] if last is not None else None
+    )
     resource_id = proposal.resource.order_id if isinstance(proposal, OrderReadProposal) else None
     return await _insert_turn(
         conn,
@@ -375,6 +393,7 @@ async def create_turn(
         page=page,
         resource_id=resource_id,
         result=result,
+        language=language,
     )
 
 
@@ -390,9 +409,13 @@ async def _insert_turn(
     page: str,
     resource_id: str | None,
     result: WorkspaceActionResult,
+    language: Language,
     stored: WorkspaceActionResult | None = None,
 ) -> WorkspaceTurnOut:
-    """Store the turn; ``stored`` replaces ``result`` in the row when the answer is private."""
+    """Store the turn; ``stored`` replaces ``result`` in the row when the answer is private.
+
+    The turn's language is saved beside the result and returned with it.
+    """
     body = redact(turn.body)
     if not body.strip() or len(body) > 8000:
         raise ValueError("workspace text could not be safely persisted")
@@ -409,7 +432,7 @@ async def _insert_turn(
             action,
             page,
             resource_id,
-            Jsonb((stored or result).model_dump(mode="json")),
+            Jsonb({**(stored or result).model_dump(mode="json"), "language": language}),
         ),
         conn=conn,
     )
@@ -427,7 +450,7 @@ async def _insert_turn(
         conn=conn,
     )
     row["result"] = result
-    return WorkspaceTurnOut.model_validate({**row, "duplicate": False})
+    return WorkspaceTurnOut.model_validate({**row, "duplicate": False, "language": language})
 
 
 async def list_turns(
@@ -445,7 +468,7 @@ async def list_turns(
     )
     items = []
     for row in rows[:50]:
-        row["result"] = _stored_result(row["result"])
+        row["result"], row["language"] = _split_stored(row["result"])
         items.append(WorkspaceTurnOut.model_validate(row))
     return items, items[-1].id if len(rows) > 50 and items else None
 
@@ -472,6 +495,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "locked": "The {tab} tab needs the {packages} service, which is not active for "
         "this workspace. Ask your administrator to activate it on the Services page.",
         "locked_role": "The {tab} tab is not available to your role.",
+        "or": "or",
         "ask_address": "I couldn't find that person in the directory. Type their email address "
         "and I'll continue.",
         "no_match": "No matching colleague was found.",
@@ -513,8 +537,10 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_unavailable": "I couldn't summarise your inbox just now. Try again in a few "
         "minutes.",
         "summary_never_synced": "Your email hasn't been synced yet. Open the Email assistant tab "
-        "and press Sync, then ask again.",
+        "and press Sync inbox, then ask again.",
         "content_question": "What should the email say? Type a line or two and I'll write it.",
+        "not_included": "Not included",
+        "no_work_email": "no work email",
         "high": "high",
         "normal": "normal",
         "low": "low",
@@ -527,6 +553,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
         "ruang kerja ini. Minta pentadbir anda mengaktifkannya di halaman Services.",
         "locked_role": "Tab {tab} tidak tersedia untuk peranan anda.",
+        "or": "atau",
         "ask_address": "Saya tidak menjumpai orang itu dalam direktori. Taip alamat e-mel mereka "
         "dan saya akan teruskan.",
         "no_match": "Tiada rakan sekerja yang sepadan ditemui.",
@@ -570,10 +597,12 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_permission_denied": "Akses anda tidak termasuk ringkasan e-mel.",
         "summary_unavailable": "Saya tidak dapat meringkaskan peti masuk anda sekarang. Cuba "
         "lagi dalam beberapa minit.",
-        "summary_never_synced": "E-mel anda belum disegerakkan. Buka tab Pembantu E-mel dan "
-        "tekan Segerak, kemudian tanya semula.",
+        "summary_never_synced": "E-mel anda belum disegerakkan. Buka tab Email assistant dan "
+        "tekan Sync inbox, kemudian tanya semula.",
         "content_question": "Apa yang patut e-mel itu katakan? Taip satu atau dua ayat dan saya "
         "akan menulisnya.",
+        "not_included": "Tidak disertakan",
+        "no_work_email": "tiada e-mel kerja",
         "high": "tinggi",
         "normal": "biasa",
         "low": "rendah",
@@ -720,7 +749,7 @@ def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
     rows = list(reversed(rows))
     history: list[PriorTurn] = []
     for index, row in enumerate(rows):
-        result = _stored_result(row["result"])
+        result, _ = _split_stored(row["result"])
         following = rows[index + 1]["body"] if index + 1 < len(rows) else current
         item: dict[str, Any] = {
             "message": row["body"][:HISTORY_CHARS],
@@ -885,6 +914,9 @@ async def planner_facts(
             (client_id, thread_id, actor.user_id, HISTORY_TURNS),
             conn=conn,
         )
+    history = _prior_turns(rows, turn.body)
+    previous = _split_stored(rows[0]["result"])[1] if rows else None
+    offered = history[-1].offered_options if history else []
     manager = None
     if _MANAGER_WORDS.search(turn.body):
         manager = await _my_manager(request, actor, client_id, packages)
@@ -902,8 +934,8 @@ async def planner_facts(
         packages=packages,
         page_context=context,
         record_summary=summary,
-        language=detect_language(turn.body),
-        history=_prior_turns(rows, turn.body),
+        language=turn_language(turn.body, offered, previous),
+        history=history,
         my_manager=manager,
         mailbox_threads=threads,
         my_team=team,
@@ -1108,6 +1140,26 @@ def _answer_parts(message: str) -> tuple[str, str, list[str]]:
     return typed, first, answers if folded else []
 
 
+_COLLEAGUE_PICK = re.compile(r"^Use employee \S+ for: ")
+
+
+def own_words(body: str, offered: list[str]) -> str:
+    """What the staff member typed, for judging the language of the turn.
+
+    Not the folded question or origin of an answer turn, not a value picked from the options
+    just offered, and nothing for a colleague pick ("Use employee <id> for: ...").
+    """
+    if _COLLEAGUE_PICK.match(body):
+        return ""
+    typed = _answer_parts(body)[0]
+    return "" if _picked(typed, offered) else typed
+
+
+def turn_language(body: str, offered: list[str], previous: Language | None) -> Language:
+    """The turn's language: the clear language of its own words, else the thread's, else English."""
+    return detect_language(own_words(body, offered)) or previous or "en"
+
+
 def _picked(text: str, values: list[str]) -> bool:
     """The text is one of the offered option values: a click, not the user's own words."""
     key = _masked(_inert(text)).strip().lower()
@@ -1222,15 +1274,22 @@ async def _draft_card(
     draft: DraftOut,
     *,
     send: bool,
+    language: Language,
 ) -> PreparedProposal:
     """A send card bound to the draft's version, or today's save-to-Gmail-drafts card."""
     if send:
         payload: dict[str, Any] = {"draft_id": str(draft.id), "version": draft_version(draft)}
         return await registry.prepare(
-            request, actor, client_id, "email_send", payload, origin="assistant"
+            request, actor, client_id, "email_send", payload, origin="assistant", language=language
         )
     return await registry.prepare(
-        request, actor, client_id, "email_export", {"draft_id": str(draft.id)}, origin="assistant"
+        request,
+        actor,
+        client_id,
+        "email_export",
+        {"draft_id": str(draft.id)},
+        origin="assistant",
+        language=language,
     )
 
 
@@ -1257,6 +1316,7 @@ async def _compose(
     registry: ProposalRegistry,
     *,
     send: bool,
+    language: Language,
 ) -> PreparedProposal:
     """Write the draft (never sent here) and prepare its card; the package gate runs first."""
     service = _email_service(request)
@@ -1291,7 +1351,9 @@ async def _compose(
         raise email_http_error(exc) from None
     except (CompletionError, TimeoutError):
         raise HTTPException(503, "email_model_unavailable") from None
-    return await _draft_card(request, actor, client_id, registry, draft, send=send)
+    return await _draft_card(
+        request, actor, client_id, registry, draft, send=send, language=language
+    )
 
 
 async def _reply(
@@ -1304,6 +1366,7 @@ async def _reply(
     registry: ProposalRegistry,
     *,
     send: bool,
+    language: Language,
 ) -> PreparedProposal:
     """Draft a reply in a synced thread; the email service picks the To from the thread."""
     service = _email_service(request)
@@ -1333,7 +1396,9 @@ async def _reply(
         raise email_http_error(exc) from None
     except (CompletionError, TimeoutError):
         raise HTTPException(503, "email_model_unavailable") from None
-    return await _draft_card(request, actor, client_id, registry, draft, send=send)
+    return await _draft_card(
+        request, actor, client_id, registry, draft, send=send, language=language
+    )
 
 
 async def _team_email(
@@ -1372,10 +1437,13 @@ async def _team_email(
         # The drafting call failed; planning failures stay PlannerUnavailable.
         raise HTTPException(503, "email_model_unavailable") from None
     send = _asked_to_send(proposal, turn.body, facts)
-    prepared = await _draft_card(request, actor, client_id, registry, draft, send=send)
+    prepared = await _draft_card(
+        request, actor, client_id, registry, draft, send=send, language=facts.language
+    )
     if team.skipped:
         names = ", ".join(person.display_name for person in team.skipped)
-        skipped = CardField(label="Not included", value=f"{names} (no work email)")
+        text = _TEXT[facts.language]
+        skipped = CardField(label=text["not_included"], value=f"{names} ({text['no_work_email']})")
         content = replace(prepared.content, fields=[*prepared.content.fields, skipped])
         prepared = replace(prepared, content=content)
     return _Planned(prepared=prepared)
@@ -1427,11 +1495,11 @@ def _plain(text: str, limit: int) -> str:
     return " ".join(text.split())[:limit]
 
 
-def _count(count: int, one: str, many: str, language: Literal["en", "ms"]) -> str:
+def _count(count: int, one: str, many: str, language: Language) -> str:
     return f"{count} {_TEXT[language][one if count == 1 else many]}"
 
 
-def _summary_markdown(page: AttentionPage, language: Literal["en", "ms"]) -> str:
+def _summary_markdown(page: AttentionPage, language: Language) -> str:
     """The answer the user sees now; it is not stored (see ``_summary_stored``)."""
     text = _TEXT[language]
     lines: list[str] = []
@@ -1459,7 +1527,7 @@ def _summary_markdown(page: AttentionPage, language: Literal["en", "ms"]) -> str
     return "\n".join(lines)
 
 
-def _summary_stored(page: AttentionPage, language: Literal["en", "ms"]) -> AnswerResult:
+def _summary_stored(page: AttentionPage, language: Language) -> AnswerResult:
     """Counts only: turns are readable tenant-wide, mail content is owner-only."""
     count = _count(len(page.items), "item", "items", language)
     return AnswerResult(
@@ -1498,12 +1566,14 @@ async def _resolve(
     if isinstance(proposal, NavigateProposal):
         # The console's package and role rule (M8): never "navigate" to a tab it would hide.
         if not tab_available(proposal.tab, facts.role, facts.packages):
+            tab = TAB_LABELS.get(proposal.tab, proposal.tab)  # as the console's sidebar shows it
             if not role_allows_tab(proposal.tab, facts.role):
-                text = _TEXT[facts.language]["locked_role"].format(tab=proposal.tab)
+                text = _TEXT[facts.language]["locked_role"].format(tab=tab)
             else:
                 keys = _TAB_GATES[proposal.tab][0]
-                names = " or ".join(sorted(BY_KEY[k].title for k in keys))
-                text = _TEXT[facts.language]["locked"].format(tab=proposal.tab, packages=names)
+                joiner = f" {_TEXT[facts.language]['or']} "
+                names = joiner.join(sorted(BY_KEY[k].title for k in keys))
+                text = _TEXT[facts.language]["locked"].format(tab=tab, packages=names)
             return _Planned(result=AnswerResult(action="answer", markdown=text))
         return _Planned(
             result=NavigateResult(
@@ -1533,14 +1603,28 @@ async def _resolve(
         return _Planned(result=live, stored=stored)
     if isinstance(proposal, TrainingSubmitProposal | InboxDecisionProposal):
         prepared = await registry.prepare(
-            request, actor, client_id, proposal.action, _payload(proposal), origin="assistant"
+            request,
+            actor,
+            client_id,
+            proposal.action,
+            _payload(proposal),
+            origin="assistant",
+            language=facts.language,
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailComposeProposal):
         _named_recipient_check(proposal, turn.body, facts)
         send = _asked_to_send(proposal, turn.body, facts)
         prepared = await _compose(
-            request, actor, client_id, thread_id, turn, proposal, registry, send=send
+            request,
+            actor,
+            client_id,
+            thread_id,
+            turn,
+            proposal,
+            registry,
+            send=send,
+            language=facts.language,
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailReplyProposal):
@@ -1550,7 +1634,15 @@ async def _resolve(
         _named_recipient_check(proposal, turn.body, facts)
         send = _asked_to_send(proposal, turn.body, facts)
         prepared = await _reply(
-            request, actor, client_id, thread_id, turn, proposal, registry, send=send
+            request,
+            actor,
+            client_id,
+            thread_id,
+            turn,
+            proposal,
+            registry,
+            send=send,
+            language=facts.language,
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailTeamProposal):
@@ -1657,7 +1749,8 @@ async def _known_turn(
         return None
     if row["fingerprint"] != fingerprint:
         raise WorkspaceConflict("request key was already used for different content")
-    return _replayed(row, _stored_result(row["result"]))
+    result, language = _split_stored(row["result"])
+    return _replayed(row, result, language)
 
 
 async def create_planned_turn(
@@ -1692,10 +1785,10 @@ async def create_planned_turn(
         if known is not None:
             return known
         # Threads are tenant-bound, so a tab change is the only context switch to fence here.
-        previous = await db.q.fetch_one(
+        last = await db.q.fetch_one(
             "workspace/turn_last.sql", (client_id, thread_id, actor.user_id), conn=conn
         )
-        if previous is not None and previous["page_key"] != context.tab:
+        if last is not None and last["page_key"] != context.tab:
             await registry.cancel_thread(conn, actor, client_id, thread_id)
         result = await _finish(conn, actor, client_id, thread_id, planned, facts, registry)
         # The inbox summary is shown once and stored as counts only; an answer about an open
@@ -1716,5 +1809,6 @@ async def create_planned_turn(
             page=context.tab,
             resource_id=None,
             result=result,
+            language=facts.language,
             stored=stored,
         )

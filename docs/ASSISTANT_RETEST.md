@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 43 model calls (one planner call per case plus one drafting call per draft case),
-  up to about 76 when cases are re-planned.
+- A run is about 46 model calls (one planner call per case plus one drafting call per draft case),
+  up to about 81 when cases are re-planned.
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -64,6 +64,7 @@ Tick each row when the result matches.
 | --- | --- | --- | --- |
 | Open the HR tab | HR active | A navigate to a tab the user can open | `navigate-en-1` |
 | Tolong buka tab HR untuk saya | HR active | A navigate to a tab the user can open | `navigate-ms-1` |
+| buka tab HR | HR active | A navigate to the HR tab (short Malay sentence with no verb the old guess knew; the answer line after it is Malay) | `navigate-ms-3` |
 | Open the email assistant tab | Read-only member | An answer, or a navigate to a tab the role cannot open; PASS checks only that such a navigate is locked, not the wording | `navigate-en-2` |
 | Any prompt | Read-only member | No assistant dock is shown: read-only members cannot post turns, so `navigate-en-2` has no hand retest | manual |
 | Tolong buka tab langganan untuk saya | Subscriptions service not active, HR tab open | An answer, or a navigate to a locked tab; PASS checks only that such a navigate is locked, not the wording (check that by hand with the "Buka tab langganan" row below) | `navigate-ms-2` |
@@ -97,6 +98,7 @@ Tick each row when the result matches.
 | --- | --- | --- | --- |
 | Send an email to aina.rahman@example.com saying the meeting has moved to 3pm | Gmail connected | An email to exactly that address, a Send card, a valid draft | `compose-en-1` |
 | Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang | Gmail connected | An email to exactly that address, a Send card, a valid draft | `compose-ms-1` |
+| hantar emel kat danial@fourstacks.my pasal mesyuarat esok | Gmail connected | An email to exactly that address, a Send card, a valid draft; the sentence has an address in it and must still read as Malay | `compose-ms-3` |
 | Email my manager that I will be late tomorrow morning | Gmail connected, staff linked with a manager | An email to an offered recipient (the manager), a Send card, a valid draft | `compose-en-2` |
 | Tolong emel pengurus saya bahawa saya cuti esok | Staff with no employee link | An answer, no email card | `compose-ms-2` |
 | send email to danial@fourstacks.my about the meeting | Gmail connected (the owner's 500) | An email to exactly that address, a Send card, a valid draft | `compose-en-3` |
@@ -134,8 +136,8 @@ Tick each row when the result matches.
 | What needs my attention in my email today? | Gmail synced | An inbox summary | `attention-en-1` |
 | Apa emel yang perlu perhatian saya hari ini? | Gmail synced | An inbox summary | `attention-ms-1` |
 | What needs my attention in my email today? | Gmail synced | A list of what needs attention, or "Nothing in your synced email needs your attention right now." | manual |
-| What needs my attention in my email? | Gmail connected, never synced | "Your email hasn't been synced yet. Open the Email assistant tab and press Sync, then ask again." | manual |
-| Apa emel yang perlu perhatian saya? | Gmail connected, never synced | "E-mel anda belum disegerakkan. Buka tab Pembantu E-mel dan tekan Segerak, kemudian tanya semula." | manual |
+| What needs my attention in my email? | Gmail connected, never synced | "Your email hasn't been synced yet. Open the Email assistant tab and press Sync inbox, then ask again." | manual |
+| Apa emel yang perlu perhatian saya? | Gmail connected, never synced | "E-mel anda belum disegerakkan. Buka tab Email assistant dan tekan Sync inbox, kemudian tanya semula." | manual |
 
 ## Training
 
@@ -162,7 +164,7 @@ Tick each row when the result matches.
 | --- | --- | --- | --- |
 | Write an email to aina.rahman@example.com about Friday's meeting but don't send it yet | Gmail connected | An email to exactly that address, a draft card (never Send), a valid draft | `dont_send-en-1` |
 | Tolong tulis emel kepada aina.rahman@example.com tentang mesyuarat itu dan jangan hantar dulu | Gmail connected | An email to exactly that address, a draft card (never Send), a valid draft | `dont_send-ms-1` |
-| Tulis emel kepada aina.rahman@example.com tentang mesyuarat hari Jumaat, jangan hantar lagi | Gmail connected | A draft card, never Send (today the address words make this read as English; the answer may be in English) | manual |
+| Tulis emel kepada aina.rahman@example.com tentang mesyuarat hari Jumaat, jangan hantar lagi | Gmail connected | A draft card, never Send; the card, its buttons and the sentence above it are in Malay | manual |
 
 ## States and failure paths
 
@@ -170,7 +172,8 @@ Tick each row when the result matches.
 | --- | --- | --- | --- |
 | Send an email to aina.rahman@example.com saying hello | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with a sentence telling you to connect Gmail; no draft is saved | manual |
 | Send an email to aina.rahman@example.com saying hello | Gmail connection pending or revoked | No card: the turn is refused with the same sentence; no draft is saved | manual |
-| Tolong hantar emel kepada aina.rahman@example.com untuk ucap terima kasih | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with the same English sentence (console error sentences are English only); no draft is saved | manual |
+| Tolong hantar emel kepada aina.rahman@example.com untuk ucap terima kasih, sent after an earlier Malay message in the same conversation | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with the sentence telling you to connect Gmail, in Malay; no draft is saved | manual |
+| Tolong hantar emel kepada aina.rahman@example.com untuk ucap terima kasih, as the very first message of a new conversation | No mailbox: Gmail never connected (no mailbox row) | No card: the turn is refused with the same sentence in English, because no turn exists yet to give the panel a language (a known limit); no draft is saved | manual |
 | What needs my attention in my email? | No mailbox: Gmail not connected | "Connect your Gmail on the Email assistant tab first." | manual |
 | I want to request a fire safety training | No employee link | An answer, no training request | `training-en-2` |
 | Request a first aid training course for me | No employee link | An answer with the reason. If the model proposes a training request anyway, no card is created: the turn is refused with a sentence that your login isn't linked to an employee record, and no training request is created | manual |
@@ -180,6 +183,20 @@ Tick each row when the result matches.
 | Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang | An address in the request | An email to exactly that address and no other recipient | `compose-ms-1` |
 | Write an email to aina.rahman@example.com about Friday's meeting but don't send it yet | "Don't send" | A draft card, never Send | `dont_send-en-1` |
 | Tolong tulis emel kepada aina.rahman@example.com tentang mesyuarat itu dan jangan hantar dulu | "Don't send" | A draft card, never Send | `dont_send-ms-1` |
+| Tolong hantar emel kepada Danial, then, when asked, type only danial@fourstacks.my | Gmail connected, a new conversation | The question and the reply to the typed address stay Malay: the typed address does not switch the panel to English, and the Send card that follows is Malay | manual |
+| Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang, then press Hantar | Gmail connected | The Send card's title, summary and field labels are Malay (Kepada, Subjek), its buttons and the status line after pressing (sending, sent) are Malay, and the email preview's labels are Malay. The address, the subject and the body are shown exactly as they are | manual |
+| Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang, then press Batal | Gmail connected | The card's status line is Malay and its buttons are disabled | manual |
+| A Malay conversation, then in the same conversation "Open the HR tab" typed in English | Gmail connected | The panel follows the new clear language: the next reply, its card and the dock's title, "New conversation" button and placeholder are English | manual |
+| A Malay conversation, then reload the page | An earlier Malay turn | The reopened panel's title, placeholder and past cards are still Malay (the language is saved with each turn) | manual |
 | Send an email to Razak about the invoice, then ask something else and go back to the first card | An old card's buttons disabled | Only the newest card's options and candidates can be clicked; the older card's are disabled | manual |
 | Tolong hantar emel kepada Razak tentang invois, kemudian tanya soalan lain | An old card's buttons disabled | Hanya kad terbaru boleh diklik | manual |
 | Any prompt while the model provider is down | Model unavailable (simulate only in a local stack) | One plain sentence saying the assistant is unavailable and to try again; no raw error code | manual |
+
+## Forward-only data shape
+
+Turns stored since the Malay rollout carry `result.language` and new cards carry `card.language`;
+the previous images reject both (`extra="forbid"`), so a rollback to them breaks the turn list,
+the planner history and proposal reads. If a rollback is ever needed, the owner first runs
+`UPDATE public.console_workspace_turns SET result = (result - 'language') #- '{proposal,card,language}';`
+and `UPDATE public.console_proposals SET card = card - 'language';`
+(see `deploy/STAGING_PIPELINE.md`, "Forward-only data shape").

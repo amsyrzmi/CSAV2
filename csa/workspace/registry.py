@@ -26,7 +26,7 @@ from psycopg_pool import AsyncConnectionPool
 from csa.console.contracts import ConsoleActor
 from csa.core import db
 from csa.core.tenancy import tx
-from csa.workspace.contracts import CardField, ProposalCard, ProposalKind, ProposalOut
+from csa.workspace.contracts import CardField, Language, ProposalCard, ProposalKind, ProposalOut
 
 ProposalErrorCode = Literal[
     "proposal_session_mismatch",
@@ -84,6 +84,8 @@ class CardContent:
     title: str
     summary: str
     fields: list[CardField]
+    language: Language = "en"
+    """The language the title, summary and labels are written in; an older card reads "en"."""
 
 
 class ProposalExecutor(Protocol):
@@ -109,11 +111,13 @@ class ProposalExecutor(Protocol):
         payload: dict[str, Any],
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> tuple[CardContent, str | None]:
         """Run ``gate``, validate the payload, load the record as the user; return card+version.
 
         ``request`` carries the caller's session cookie and CSRF header, which the owning
-        services need to revalidate the login session.
+        services need to revalidate the login session. ``language`` is the language the card
+        text is written in; it never changes the payload or the version.
         """
         ...
 
@@ -176,10 +180,15 @@ class ProposalRegistry:
         payload: dict[str, Any],
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> PreparedProposal:
-        """Run the executor's gate and card read; call with no connection held."""
+        """Run the executor's gate and card read; call with no connection held.
+
+        ``language`` is the turn's language for the card text only: it is not part of the
+        payload, so the payload hash is the same in every language.
+        """
         content, version = await self._executor(kind).card(
-            request, actor, client_id, payload, origin=origin
+            request, actor, client_id, payload, origin=origin, language=language
         )
         return PreparedProposal(
             kind=kind, payload=payload, content=content, version=version, origin=origin
@@ -208,6 +217,7 @@ class ProposalRegistry:
             "title": prepared.content.title,
             "summary": prepared.content.summary,
             "fields": [f.model_dump(mode="json") for f in prepared.content.fields],
+            "language": prepared.content.language,
             "expected_version": prepared.version,
         }
         row = await db.q.fetch_one(

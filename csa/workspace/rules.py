@@ -156,6 +156,20 @@ TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "email": (frozenset({"staff_email"}), ACTIVE),
     "subscriptions": (frozenset({"subscriptions"}), ACTIVE),
 }
+# Tab -> the label the console's sidebar shows (``lib/navigation.ts``). The assistant names a tab
+# this way in every language; a test keeps the copy in step with the console.
+TAB_LABELS: dict[str, str] = {
+    "overview": "Overview",
+    "services": "Services",
+    "inbox": "Customer inbox",
+    "knowledge_base": "Knowledge base",
+    "business": "Business management",
+    "hr": "People & HR",
+    "email": "Email assistant",
+    "subscriptions": "Subscriptions",
+    "activity": "Runtime activity",
+    "chat": "Sandbox assistant",
+}
 # Tabs the console shows only to members who can write (not read_only).
 WRITER_TABS = frozenset({"inbox", "email", "business"})
 Gate = tuple[frozenset[str], frozenset[str]]

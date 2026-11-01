@@ -32,6 +32,7 @@ from csa.workspace.contracts import (
     EmailTeamProposal,
     InboxDecisionProposal,
     InboxSummaryProposal,
+    Language,
     NavigateProposal,
     PageContext,
     TeamReason,
@@ -123,7 +124,7 @@ class PlannerFacts(_Contract):
     packages: list[PackageState]
     page_context: PageContext | None
     record_summary: str | None
-    language: Literal["en", "ms"]
+    language: Language
     history: list[PriorTurn] = Field(default_factory=list, max_length=6)
     my_manager: ManagerFact | None = None
     mailbox_threads: list[MailboxThreadFact] | None = Field(default=None, max_length=10)
@@ -173,16 +174,39 @@ _MALAY_MARKERS = frozenset(
         "bagaimana", "kenapa", "mengapa", "tak", "tidak", "bukan", "kepada", "daripada",
         "pengurus", "latihan", "emel", "hantar", "mohon", "permohonan", "terima", "kasih",
         "buka", "cari", "bantu", "ada", "sudah", "belum", "akan", "dia", "kami", "kita",
+        "kat", "pasal", "esok", "bos", "tentang", "mesyuarat", "cuti", "nanti", "buat",
+        "hari", "minggu", "bulan", "semua", "berapa", "banyak", "baca", "ya",
     }
 )  # fmt: skip
+_ENGLISH_MARKERS = frozenset(
+    {
+        "to", "the", "an", "my", "me", "please", "can", "you", "for", "about", "open",
+        "send", "what", "how", "show", "find", "need", "and", "of", "is", "are", "in", "on",
+        "with", "who", "when", "where", "why", "do", "does", "it", "this", "that",
+        "want", "would", "could", "have", "from", "them", "their", "yes", "email", "emails",
+    }
+)  # fmt: skip
+# Words both languages use in a console message; they say nothing about the language.
+_SHARED_WORDS = frozenset({"hr", "gmail", "tab", "ok", "okay"})
 _WORD = re.compile(r"[a-zA-Z]+")
+_ADDRESS_OR_URL = re.compile(r"\S+@\S+|(?:https?://|www\.)\S+", re.IGNORECASE)
 
 
-def detect_language(text: str) -> Literal["en", "ms"]:
-    """Cheap Malay detection by function words; English is the default."""
-    words = [w.lower() for w in _WORD.findall(text)]
-    hits = sum(1 for w in words if w in _MALAY_MARKERS)
-    return "ms" if hits >= 2 and hits * 4 >= len(words) else "en"
+def detect_language(text: str) -> Language | None:
+    """Guess "en" or "ms" by function words; None when the message is not clear.
+
+    Addresses, URLs, digits, one-letter words and the words both languages share are ignored.
+    A side wins when it has at least one marker and strictly more than the other.
+    """
+    words = [w.lower() for w in _WORD.findall(_ADDRESS_OR_URL.sub(" ", text))]
+    words = [w for w in words if len(w) >= 2 and w not in _SHARED_WORDS]
+    malay = sum(1 for w in words if w in _MALAY_MARKERS)
+    english = sum(1 for w in words if w in _ENGLISH_MARKERS)
+    if malay > english:
+        return "ms"
+    if english > malay:
+        return "en"
+    return None
 
 
 SYSTEM_PROMPT = f"""\
