@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import httpx
 import psycopg
 import pytest
+from csa.console.security import digest
 from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.hr.automation_models import (
@@ -26,7 +27,15 @@ from psycopg.types.json import Jsonb
 from pydantic import ValidationError
 
 from tests.conftest import requires_docker
-from tests.test_hr_persistence import FIELDS, HrWorld, hr_database, workflow_grant, world
+from tests.test_hr_persistence import (
+    ATTENDANCE,
+    FIELDS,
+    ORIGIN,
+    HrWorld,
+    hr_database,
+    workflow_grant,
+    world,
+)
 
 __all__ = ["hr_database", "world"]
 pytestmark = [requires_docker, pytest.mark.asyncio]
@@ -1554,3 +1563,499 @@ async def test_people_manager_cannot_change_their_own_manager(world: HrWorld) ->
     await make_people_manager(world)
     await ok(world, "operator", await update_body(world, staff, manager_id=str(manager)))
     assert (await person_row(world, staff))["manager_id"] == manager
+
+
+# --- Task 4: the people reads over HTTP --------------------------------------------------------
+
+BASE = "/console/v1/hr"
+PEOPLE = f"{BASE}/people"
+
+
+async def get(world: HrWorld, who: str, path: str) -> httpx.Response:
+    return await world.call(who, "GET", path)
+
+
+async def get_ok(world: HrWorld, who: str, path: str) -> dict[str, Any]:
+    response = await get(world, who, path)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def get_refused(world: HrWorld, who: str, path: str, status: int, detail: str) -> None:
+    response = await get(world, who, path)
+    assert (response.status_code, response.json()["detail"]) == (status, detail), response.text
+
+
+async def deactivate(world: HrWorld, name: str) -> None:
+    await update_as(
+        world,
+        "owner",
+        "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id=%s",
+        (world.tenant, world.employees[name]),
+    )
+
+
+async def test_people_page_search_filters_and_paging(world: HrWorld) -> None:
+    aina = uuid4()
+    await ok(
+        world,
+        "owner",
+        add_body(aina, display_name="Nur Aina binti Rahman", start_date="2035-01-01"),
+    )
+    for number in range(59):
+        name = f"Synthetic Person {number:02d}"
+        await ok(world, "owner", add_body(uuid4(), display_name=name, start_date="2020-01-01"))
+    learning = (await departments(world))["Learning"]
+
+    first = await get_ok(world, "operator", PEOPLE)
+    assert (len(first["items"]), first["next_cursor"], first["total"]) == (50, "50", 64)
+    names = [item["display_name"] for item in first["items"]]
+    assert names == sorted(names, key=str.casefold)
+    second = await get_ok(world, "operator", f"{PEOPLE}?cursor=50")
+    assert (len(second["items"]), second["next_cursor"], second["total"]) == (14, None, 64)
+    seen = {item["employee_id"] for item in first["items"] + second["items"]}
+    assert len(seen) == 64
+    # The operator is a directory viewer: no HR-only fields, though the keys are present.
+    for item in first["items"]:
+        assert item["employment_profile"] is None
+        assert item["version"] is None and item["account_linked"] is None
+        assert item["status"] in {"active", "starting"}
+
+    found = await get_ok(world, "operator", f"{PEOPLE}?q=Rahman%20Aina")
+    assert [(i["employee_id"], i["display_name"]) for i in found["items"]] == [
+        (str(aina), "Nur Aina binti Rahman")
+    ]
+    assert found["total"] == 1 and found["next_cursor"] is None
+    assert (await get_ok(world, "operator", f"{PEOPLE}?q=Nobody%20Here"))["total"] == 0
+
+    in_learning = await get_ok(world, "operator", f"{PEOPLE}?department={learning}")
+    assert in_learning["total"] == 4
+    assert {i["department"] for i in in_learning["items"]} == {"Learning"}
+    assert {i["department_id"] for i in in_learning["items"]} == {str(learning)}
+    none = await get_ok(world, "operator", f"{PEOPLE}?department=none")
+    assert none["total"] == 60 and all(i["department_id"] is None for i in none["items"][:50])
+
+    reports = await get_ok(world, "operator", f"{PEOPLE}?manager={world.employees['manager']}")
+    assert {i["employee_id"] for i in reports["items"]} == {
+        str(world.employees["staff"]),
+        str(world.employees["owner"]),
+    }
+    assert {i["manager_name"] for i in reports["items"]} == {"Synthetic Staff"}
+    # A starter with a future start date shows as starting.
+    starters = await get_ok(world, "operator", f"{PEOPLE}?status=starting&q=Rahman")
+    assert starters["total"] == 1 and starters["items"][0]["status"] == "starting"
+    assert (await get_ok(world, "operator", f"{PEOPLE}?status=active"))["total"] == 63
+
+    # The HR viewer sees the HR-only fields on the same list.
+    owner_first = (await get_ok(world, "owner", f"{PEOPLE}?q=Rahman"))["items"][0]
+    assert owner_first["account_linked"] is False and isinstance(owner_first["version"], int)
+
+
+async def test_left_people_are_hr_only(world: HrWorld) -> None:
+    await deactivate(world, "outsider")
+    outsider = str(world.employees["outsider"])
+    await get_refused(world, "operator", f"{PEOPLE}?status=left", 404, "resource_unavailable")
+    shown = await get_ok(world, "owner", f"{PEOPLE}?status=left")
+    assert [(i["employee_id"], i["status"]) for i in shown["items"]] == [(outsider, "left")]
+    assert shown["total"] == 1
+    for who in ("operator", "owner"):
+        default = await get_ok(world, who, PEOPLE)
+        assert default["total"] == 3, who
+        assert outsider not in {i["employee_id"] for i in default["items"]}, who
+    # The operator is not told a Left person exists, even by id.
+    await get_refused(world, "operator", f"{PEOPLE}/{outsider}", 404, "resource_unavailable")
+    profile = await get_ok(world, "owner", f"{PEOPLE}/{outsider}")
+    assert profile["person"]["status"] == "left"
+    # A people manager holds the HR view.
+    await make_people_manager(world)
+    left = await get_ok(world, "operator", f"{PEOPLE}?status=left")
+    assert [i["employee_id"] for i in left["items"]] == [outsider]
+
+
+async def test_self_viewer_has_no_people_list_but_sees_own_profile(world: HrWorld) -> None:
+    await get_refused(world, "staff", PEOPLE, 404, "resource_unavailable")
+    profile = await get_ok(world, "staff", f"{PEOPLE}/{world.employees['staff']}")
+    assert profile["sections"] == ["overview"] and profile["can_edit"] is False
+    assert profile["person"]["employee_id"] == str(world.employees["staff"])
+    assert profile["person"]["version"] is None and profile["person"]["account_linked"] is None
+    for other in ("manager", "owner", "outsider"):
+        await get_refused(
+            world, "staff", f"{PEOPLE}/{world.employees[other]}", 404, "resource_unavailable"
+        )
+    for path in ("/org-chart", "/departments"):
+        await get_refused(world, "staff", f"{BASE}{path}", 404, "resource_unavailable")
+    await get_refused(
+        world,
+        "staff",
+        f"{PEOPLE}/{world.employees['staff']}/history",
+        404,
+        "resource_unavailable",
+    )
+    # A departed person no longer sees their own profile.
+    await deactivate(world, "staff")
+    await get_refused(
+        world, "staff", f"{PEOPLE}/{world.employees['staff']}", 404, "resource_unavailable"
+    )
+
+
+async def test_profile_sections_and_editing_by_viewer(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    await update_as(
+        world,
+        "owner",
+        "UPDATE hr_employees SET region='sabah', legal_entity_reference='Synthetic Sdn Bhd', "
+        "employment_category='permanent' WHERE client_id=%s AND id=%s",
+        (world.tenant, staff),
+    )
+    owner = await get_ok(world, "owner", f"{PEOPLE}/{staff}")
+    assert owner["sections"] == ["overview", "access", "history"] and owner["can_edit"] is True
+    assert isinstance(owner["person"]["version"], int)
+    assert owner["person"]["employment_profile"] == {
+        "region": "sabah",
+        "legal_entity_reference": "Synthetic Sdn Bhd",
+        "employment_category": "permanent",
+    }
+    assert owner["person"]["account_linked"] is True
+    assert owner["person"]["status"] == "active"
+
+    response = await get(world, "operator", f"{PEOPLE}/{staff}")
+    assert response.status_code == 200, response.text
+    operator = response.json()
+    assert operator["sections"] == ["overview"] and operator["can_edit"] is False
+    assert operator["person"]["employment_profile"] is None
+    assert operator["person"]["version"] is None and operator["person"]["account_linked"] is None
+    assert "Synthetic Sdn Bhd" not in response.text and "sabah" not in response.text
+    assert operator["person"]["manager_name"] == "Synthetic Staff"
+    assert operator["person"]["department"] == "Learning"
+
+    # An id nobody has, and another tenant's employee, are the same answer.
+    foreign = uuid4()
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name) VALUES (%s,%s,'Synthetic Foreign')",
+        (world.other_tenant, foreign),
+    )
+    for who in ("owner", "operator"):
+        for missing in (uuid4(), foreign):
+            await get_refused(world, who, f"{PEOPLE}/{missing}", 404, "resource_unavailable")
+    # A people manager is an HR viewer who can edit.
+    await make_people_manager(world)
+    holder = await get_ok(world, "operator", f"{PEOPLE}/{staff}")
+    assert holder["sections"] == ["overview", "access", "history"] and holder["can_edit"] is True
+
+
+async def test_history_and_access_reads_are_hr_only(world: HrWorld) -> None:
+    names = await name_users(world)
+    staff = world.employees["staff"]
+    await ok(world, "owner", await update_body(world, staff, job_title="Lead Trainer"))
+    history = await get_ok(world, "owner", f"{PEOPLE}/{staff}/history")
+    assert history["truncated"] is False and len(history["items"]) == 2
+    latest, created = history["items"]
+    assert latest["actor_name"] == names["owner"]
+    assert latest["fields"] == [{"field": "job_title", "old": "Trainer", "new": "Lead Trainer"}]
+    assert created["actor_name"] is None
+    assert {f["field"] for f in created["fields"]} >= {"display_name", "job_title", "department"}
+    assert latest["changed_at"] >= created["changed_at"]
+
+    for who in ("operator", "staff", "manager"):
+        for tail in ("history", "access"):
+            await get_refused(world, who, f"{PEOPLE}/{staff}/{tail}", 404, "resource_unavailable")
+    # A people manager is HR, and reads both.
+    await make_people_manager(world)
+    assert (await get_ok(world, "operator", f"{PEOPLE}/{staff}/history"))["truncated"] is False
+    await get_ok(world, "operator", f"{PEOPLE}/{staff}/access")
+
+    access = await get_ok(world, "owner", f"{PEOPLE}/{staff}/access")
+    assert access["account"] == {
+        "user_id": str(world.users["staff"]),
+        "display_name": names["staff"],
+    }
+    assert access["on"] == [] and access["is_owner"] is False
+    assert "Sees their own training requests" in access["custom"]
+    # With the leave and attendance rows added, the staff grants are the own_requests switch.
+    for domain in ("attendance", "leave"):
+        for action in ("read", "prepare"):
+            await workflow_grant(world, "staff", domain, action, "self")
+    access = await get_ok(world, "owner", f"{PEOPLE}/{staff}/access")
+    assert access["on"] == ["own_requests"] and access["custom"] == []
+    mine = await get_ok(world, "owner", f"{PEOPLE}/{world.employees['owner']}/access")
+    assert mine["is_owner"] is True and mine["account"]["display_name"] == names["owner"]
+
+    # No linked account: an empty answer, not an error.
+    unlinked = uuid4()
+    await ok(world, "owner", add_body(unlinked))
+    empty = await get_ok(world, "owner", f"{PEOPLE}/{unlinked}/access")
+    assert empty == {"account": None, "on": [], "custom": [], "is_owner": False}
+    assert (await get_ok(world, "owner", f"{PEOPLE}/{unlinked}/history"))["items"] != []
+    await get_refused(world, "owner", f"{PEOPLE}/{uuid4()}/access", 404, "resource_unavailable")
+
+
+async def test_history_is_cut_at_two_hundred(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+
+    async def retitle(number: int) -> None:
+        await world.q(
+            "UPDATE hr_employees SET job_title=%s WHERE client_id=%s AND id=%s",
+            (f"Title {number}", world.tenant, staff),
+        )
+
+    # The fixture insert is one row; 199 updates make exactly 200.
+    for number in range(199):
+        await retitle(number)
+    exact = await get_ok(world, "owner", f"{PEOPLE}/{staff}/history")
+    assert (len(exact["items"]), exact["truncated"]) == (200, False)
+    await retitle(199)
+    cut = await get_ok(world, "owner", f"{PEOPLE}/{staff}/history")
+    assert (len(cut["items"]), cut["truncated"]) == (200, True)
+    # Newest first: the oldest row (the insert) is the one left out.
+    assert cut["items"][0]["fields"] == [
+        {"field": "job_title", "old": "Title 198", "new": "Title 199"}
+    ]
+    assert cut["items"][-1]["fields"] == [
+        {"field": "job_title", "old": "Trainer", "new": "Title 0"}
+    ]
+
+
+async def test_org_chart_and_departments(world: HrWorld) -> None:
+    await deactivate(world, "outsider")
+    chart = await get_ok(world, "operator", f"{BASE}/org-chart")
+    assert chart["looped"] == []
+    assert {n["employee_id"] for n in chart["nodes"]} == {
+        str(world.employees[n]) for n in ("staff", "manager", "owner")
+    }
+    assert str(world.employees["outsider"]) not in {n["employee_id"] for n in chart["nodes"]}
+    for node in chart["nodes"]:
+        assert set(node) == {"employee_id", "display_name", "job_title", "department", "manager_id"}
+    parents = {n["employee_id"]: n["manager_id"] for n in chart["nodes"]}
+    assert parents[str(world.employees["staff"])] == str(world.employees["manager"])
+    assert parents[str(world.employees["manager"])] is None
+
+    listed = await get_ok(world, "operator", f"{BASE}/departments")
+    assert [(d["name"], d["people"], d["archived"]) for d in listed["items"]] == [
+        ("Learning", 3, False)
+    ]
+    assert isinstance(listed["items"][0]["version"], int)
+    owner = await get_ok(world, "owner", f"{BASE}/departments")
+    assert owner == listed
+    # A loop in the lines is reported, and its members are shown as roots.
+    await world.q(
+        "UPDATE hr_employees SET manager_id=%s WHERE client_id=%s AND id=%s",
+        (world.employees["staff"], world.tenant, world.employees["manager"]),
+    )
+    looped = await get_ok(world, "operator", f"{BASE}/org-chart")
+    assert set(looped["looped"]) == {str(world.employees[n]) for n in ("staff", "manager")}
+    assert {n["employee_id"]: n["manager_id"] for n in looped["nodes"]}[
+        str(world.employees["manager"])
+    ] is None
+
+
+async def test_home_counts_training_and_requests_waiting(world: HrWorld) -> None:
+    zero = {"training_waiting": 0, "requests_waiting": 0}
+    for who in ("manager", "staff", "operator", "owner"):
+        assert await get_ok(world, who, f"{BASE}/home") == zero, who
+    await world.submit("staff")
+    assert await get_ok(world, "manager", f"{BASE}/home") == {**zero, "training_waiting": 1}
+    assert await get_ok(world, "staff", f"{BASE}/home") == zero
+    assert await get_ok(world, "operator", f"{BASE}/home") == zero
+
+    await workflow_grant(world, "staff", "attendance", "prepare", "self")
+    await workflow_grant(world, "staff", "attendance", "read", "self")
+    await workflow_grant(world, "manager", "attendance", "decide", "assigned_manager")
+    prepared = await world.call("staff", "POST", f"{BASE}/workflows", ATTENDANCE)
+    assert prepared.status_code == 201, prepared.text
+    assert await get_ok(world, "manager", f"{BASE}/home") == {
+        "training_waiting": 1,
+        "requests_waiting": 1,
+    }
+    assert await get_ok(world, "staff", f"{BASE}/home") == zero
+    # Decided requests no longer wait.
+    decided = await world.call(
+        "manager",
+        "POST",
+        f"{BASE}/workflows/{prepared.json()['id']}/transitions",
+        {"action": "approve", "expected_version": 0},
+    )
+    assert decided.status_code == 200, decided.text
+    assert (await get_ok(world, "manager", f"{BASE}/home"))["requests_waiting"] == 0
+    # A login with no HR rows at all still gets zeros.
+    assert await get_ok(world, "outsider", f"{BASE}/home") == zero
+
+
+async def test_context_reports_switches_workflows_and_duties(world: HrWorld) -> None:
+    async def context(who: str) -> dict[str, Any]:
+        return await get_ok(world, who, f"{BASE}/context")
+
+    owner = await context("owner")
+    assert (owner["switches"], owner["hr_duties"], owner["client_owner"]) == ([], True, True)
+    staff = await context("staff")
+    assert (staff["switches"], staff["workflows"], staff["hr_duties"]) == ([], [], False)
+    operator = await context("operator")
+    assert (operator["switches"], operator["hr_duties"]) == (["directory"], False)
+    await make_people_manager(world)
+    operator = await context("operator")
+    assert operator["switches"] == ["directory", "manage_people"] and operator["hr_duties"] is True
+
+    await workflow_grant(world, "staff", "leave", "read", "self")
+    await workflow_grant(world, "staff", "attendance", "read", "self")
+    await workflow_grant(world, "staff", "leave", "prepare", "self")
+    staff = await context("staff")
+    assert staff["workflows"] == ["attendance.read", "leave.prepare", "leave.read"]
+    assert staff["switches"] == [] and staff["hr_duties"] is False
+    await workflow_grant(world, "staff", "attendance", "prepare", "self")
+    staff = await context("staff")
+    assert staff["switches"] == ["own_requests"] and staff["hr_duties"] is False
+    # A private area turns its switch on and counts as an HR duty.
+    await world.q(
+        "INSERT INTO hr_private_grants(client_id,user_id,area,approved_by) "
+        "VALUES (%s,%s,'recruitment',%s)",
+        (world.tenant, world.users["staff"], world.users["owner"]),
+    )
+    staff = await context("staff")
+    assert staff["switches"] == ["own_requests", "recruitment"] and staff["hr_duties"] is True
+    assert staff["private_areas"] == ["recruitment"]
+
+
+async def test_records_interviewers_need_recruitment_area_or_owner(world: HrWorld) -> None:
+    names = await name_users(world)
+    path = f"{BASE}/records/interviewers"
+    await get_refused(world, "operator", path, 404, "resource_unavailable")
+    await get_refused(world, "staff", path, 404, "resource_unavailable")
+    await world.q(
+        "UPDATE console_memberships SET is_enabled=false WHERE client_id=%s AND user_id=%s",
+        (world.tenant, world.users["outsider"]),
+    )
+    owner = await get_ok(world, "owner", path)
+    members = {i["user_id"]: i["display_name"] for i in owner["items"]}
+    assert members == {
+        str(user): names[name] for name, user in world.users.items() if name != "outsider"
+    }
+    assert all(set(item) == {"user_id", "display_name"} for item in owner["items"])
+    await world.q(
+        "INSERT INTO hr_private_grants(client_id,user_id,area,approved_by) "
+        "VALUES (%s,%s,'recruitment',%s)",
+        (world.tenant, world.users["operator"], world.users["owner"]),
+    )
+    assert await get_ok(world, "operator", path) == owner
+
+
+async def fresh_tenant(world: HrWorld, *, owner: bool) -> tuple[UUID, httpx.AsyncClient]:
+    """A new tenant with one member (the HR owner, or a plain member) and no employees."""
+    tenant, user, session = uuid4(), uuid4(), uuid4()
+    token, csrf = f"synthetic-session-{uuid4()}", f"synthetic-csrf-{uuid4()}"
+    await world.q(
+        "INSERT INTO clients(id,slug,name,platform_version) VALUES (%s,%s,%s,'test')",
+        (tenant, f"hr-{tenant}", "Synthetic empty tenant"),
+    )
+    await world.q(
+        "INSERT INTO console_service_packages "
+        "(client_id, package, status, activated_at, reference) "
+        "VALUES (%s, 'hr', 'active', now(), 'test-fixture')",
+        (tenant,),
+    )
+    await world.q(
+        "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,'Synthetic Member')",
+        (user, f"synthetic-{user}@example.test"),
+    )
+    await world.q(
+        "INSERT INTO console_memberships(user_id,client_id,role) VALUES (%s,%s,%s)",
+        (user, tenant, "tenant_admin" if owner else "tenant_staff"),
+    )
+    await world.q(
+        "INSERT INTO console_sessions(id,user_id,token_hash,csrf_hash,client_id,expires_at) "
+        "VALUES (%s,%s,%s,%s,%s,now()+interval '1 hour')",
+        (session, user, digest(token), digest(csrf), tenant),
+    )
+    if owner:
+        await world.q(
+            "INSERT INTO hr_client_owners(client_id,user_id,approved_by) VALUES (%s,%s,%s)",
+            (tenant, user, user),
+        )
+    browser = httpx.AsyncClient(transport=httpx.ASGITransport(app=world.app), base_url=ORIGIN)
+    browser.cookies.set("csa_session", token)
+    browser.cookies.set("csa_csrf", csrf)
+    world.browsers[f"fresh-{tenant}"] = browser  # closed with the world
+    return tenant, browser
+
+
+async def fresh_get(browser: httpx.AsyncClient, path: str) -> httpx.Response:
+    return await browser.get(path, headers={"Origin": ORIGIN})
+
+
+async def test_people_reads_on_an_empty_tenant(world: HrWorld) -> None:
+    tenant, owner = await fresh_tenant(world, owner=True)
+
+    async def read(path: str) -> Any:
+        response = await fresh_get(owner, path)
+        assert response.status_code == 200, (path, response.text)
+        return response.json()
+
+    # No employees and no departments, and the owner has no employee link.
+    assert await read(PEOPLE) == {"items": [], "next_cursor": None, "total": 0}
+    assert await read(f"{PEOPLE}?status=left") == {"items": [], "next_cursor": None, "total": 0}
+    assert await read(f"{PEOPLE}?q=anyone&department=none") == {
+        "items": [],
+        "next_cursor": None,
+        "total": 0,
+    }
+    assert await read(f"{BASE}/org-chart") == {"nodes": [], "looped": []}
+    assert await read(f"{BASE}/departments") == {"items": []}
+    assert await read(f"{BASE}/home") == {"training_waiting": 0, "requests_waiting": 0}
+    assert await read(f"{BASE}/records/employees") == {"items": []}
+    context = await read(f"{BASE}/context")
+    assert context["employee"] is None and context["client_owner"] is True
+    assert (context["switches"], context["workflows"], context["hr_duties"]) == ([], [], True)
+    members = await read(f"{BASE}/records/interviewers")
+    assert [i["display_name"] for i in members["items"]] == ["Synthetic Member"]
+    missing = uuid4()
+    for tail in ("", "/history", "/access"):
+        response = await fresh_get(owner, f"{PEOPLE}/{missing}{tail}")
+        assert (response.status_code, response.json()["detail"]) == (404, "resource_unavailable")
+
+    # Employees but no departments: people list without a department, an empty department list.
+    person = uuid4()
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name) VALUES (%s,%s,'Synthetic Solo')",
+        (tenant, person),
+    )
+    solo = await read(f"{PEOPLE}?department=none")
+    assert solo["total"] == 1 and solo["items"][0]["department_id"] is None
+    assert solo["items"][0]["manager_name"] is None
+    assert (await read(f"{BASE}/departments")) == {"items": []}
+    assert [n["employee_id"] for n in (await read(f"{BASE}/org-chart"))["nodes"]] == [str(person)]
+    assert (await read(f"{PEOPLE}/{person}/access"))["account"] is None
+    assert (await read(f"{PEOPLE}/{person}"))["person"]["employee_id"] == str(person)
+
+    # A tenant with no HR owner: a plain member has a context and zero counts, and no HR duties.
+    _, member = await fresh_tenant(world, owner=False)
+    context = (await fresh_get(member, f"{BASE}/context")).json()
+    assert context["client_owner"] is False and context["employee"] is None
+    assert (context["switches"], context["workflows"], context["hr_duties"]) == ([], [], False)
+    assert (await fresh_get(member, f"{BASE}/home")).json() == {
+        "training_waiting": 0,
+        "requests_waiting": 0,
+    }
+    for path in (
+        PEOPLE,
+        f"{BASE}/org-chart",
+        f"{BASE}/departments",
+        f"{BASE}/records/interviewers",
+    ):
+        response = await fresh_get(member, path)
+        assert (response.status_code, response.json()["detail"]) == (404, "resource_unavailable")
+    # The first tenant's person never shows in the second.
+    assert (await fresh_get(member, f"{PEOPLE}/{person}")).status_code == 404
+
+
+async def test_people_query_keys_are_allowlisted(world: HrWorld) -> None:
+    await get_refused(world, "owner", f"{PEOPLE}?x=1", 400, "invalid_hr_query")
+    await get_refused(world, "owner", f"{PEOPLE}?q=a&q=b", 400, "invalid_hr_query")
+    await get_refused(world, "owner", f"{PEOPLE}?limit=5", 400, "invalid_hr_query")
+    await get_refused(world, "owner", f"{BASE}/departments?q=a", 400, "invalid_hr_query")
+    await get_refused(world, "owner", f"{PEOPLE}?department=nope", 409, "invalid_department_filter")
+    await get_refused(world, "owner", f"{PEOPLE}?cursor=abc", 409, "invalid_cursor")
+    for bad in ("status=bogus", f"department={'x' * 37}", "manager=not-a-uuid", f"q={'x' * 121}"):
+        response = await get(world, "owner", f"{PEOPLE}?{bad}")
+        assert response.status_code == 422, bad
+        assert response.json()["detail"] == "invalid_hr_input"
+    # A filter that is allowed goes through, and the cursor passes the end of the list.
+    ok_page = await get_ok(world, "owner", f"{PEOPLE}?department=none&cursor=99")
+    assert ok_page == {"items": [], "next_cursor": None, "total": 0}

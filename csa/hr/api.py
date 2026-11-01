@@ -48,6 +48,17 @@ from csa.hr.models import (
 )
 from csa.hr.operation_records import Records, project_records
 from csa.hr.operations import HrOperations
+from csa.hr.people_contracts import (
+    DepartmentList,
+    HrHome,
+    OrgChart,
+    PeoplePage,
+    PersonAccessOut,
+    PersonHistory,
+    PersonProfile,
+    PersonStatus,
+)
+from csa.hr.people_service import HrPeople
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import (
     AgentSwitch,
@@ -75,6 +86,7 @@ _QUERY_KEYS = {
     "/console/v1/hr/workflows": {"limit", "after"},
     "/console/v1/hr/access/people": {"cursor", "q", "team", "has", "reports_to"},
     "/console/v1/hr/access/recent": {"cursor"},
+    "/console/v1/hr/people": {"q", "department", "manager", "status", "cursor"},
 }
 
 
@@ -327,11 +339,66 @@ def build_hr_router() -> APIRouter:
     async def access_invitation_dismiss(token_id: UUID, session: Session, service: Service) -> None:
         await InvitationAccess(service).dismiss(session, token_id)
 
+    @router.get("/people", response_model=PeoplePage, response_model_exclude_none=False)
+    async def people(
+        session: Session,
+        service: Service,
+        q: Annotated[str | None, Query(max_length=120)] = None,
+        department: Annotated[str | None, Query(max_length=36)] = None,
+        manager: UUID | None = None,
+        status: PersonStatus | None = None,
+        cursor: Annotated[str | None, Query(max_length=16)] = None,
+    ) -> PeoplePage:
+        return await HrPeople(service).page(
+            session, q=q, department=department, manager=manager, status=status, cursor=cursor
+        )
+
+    @router.get(
+        "/people/{employee_id}", response_model=PersonProfile, response_model_exclude_none=False
+    )
+    async def person_profile(
+        employee_id: UUID, session: Session, service: Service
+    ) -> PersonProfile:
+        return await HrPeople(service).profile(session, employee_id)
+
+    @router.get(
+        "/people/{employee_id}/history",
+        response_model=PersonHistory,
+        response_model_exclude_none=False,
+    )
+    async def person_history(
+        employee_id: UUID, session: Session, service: Service
+    ) -> PersonHistory:
+        return await HrPeople(service).history(session, employee_id)
+
+    @router.get(
+        "/people/{employee_id}/access",
+        response_model=PersonAccessOut,
+        response_model_exclude_none=False,
+    )
+    async def person_access(
+        employee_id: UUID, session: Session, service: Service
+    ) -> PersonAccessOut:
+        return await HrPeople(service).access(session, employee_id)
+
+    @router.get("/org-chart", response_model=OrgChart, response_model_exclude_none=False)
+    async def org_chart(session: Session, service: Service) -> OrgChart:
+        return await HrPeople(service).org_chart(session)
+
+    @router.get("/departments", response_model=DepartmentList, response_model_exclude_none=False)
+    async def departments(session: Session, service: Service) -> DepartmentList:
+        return await HrPeople(service).departments(session)
+
+    @router.get("/home", response_model=HrHome, response_model_exclude_none=False)
+    async def home(session: Session, service: Service) -> HrHome:
+        return await HrPeople(service).home(session)
+
     @router.get("/records/{area}", response_model=Records)
     async def records(
         area: Literal[
             "authority_audit",
             "members",
+            "interviewers",
             "employees",
             "candidates",
             "interviews",

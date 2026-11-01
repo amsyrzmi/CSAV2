@@ -1030,6 +1030,13 @@ async def test_api_contract_exposes_only_bounded_hr_operations(world: HrWorld) -
         "/console/v1/hr/access/invitations",
         "/console/v1/hr/access/invitations/{token_id}/apply",
         "/console/v1/hr/access/invitations/{token_id}/dismiss",
+        "/console/v1/hr/people",
+        "/console/v1/hr/people/{employee_id}",
+        "/console/v1/hr/people/{employee_id}/history",
+        "/console/v1/hr/people/{employee_id}/access",
+        "/console/v1/hr/org-chart",
+        "/console/v1/hr/departments",
+        "/console/v1/hr/home",
     }
     assert schema["components"]["schemas"]["TrainingDraftInput"]["additionalProperties"] is False
 

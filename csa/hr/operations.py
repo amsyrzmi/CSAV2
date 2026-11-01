@@ -643,8 +643,9 @@ class HrOperations:
                 rows = await q.fetch_all("hr/admin_employees.sql", (session.tenant_id,), conn=conn)
                 await self.core._session(conn, session)
                 return [r["value"] for r in rows]
-            if area in {"candidates", "interviews"}:
-                await self.private(conn, session, "recruitment")
+            if area in {"candidates", "interviews", "interviewers"}:
+                if area != "interviewers" or not access.client_owner:
+                    await self.private(conn, session, "recruitment")
             if area in {"payroll_rules", "payroll_snapshot"}:
                 await self.private(conn, session, "payroll")
                 from csa.hr.cases import HrWorkflowService
@@ -680,6 +681,7 @@ class HrOperations:
                 "shifts": "shift_page",
                 "payroll_rules": "rule_page",
                 "notifications": "notification_page",
+                "interviewers": "recruitment_members",
             }
             if area not in names:
                 raise HrPolicyError("unsupported_operation")
