@@ -31,7 +31,7 @@ __all__ = [
     "PersonAccessOut",
     "PersonChange",
     "PersonHistory",
-    "PersonOut",
+    "HrPersonOut",
     "PersonProfile",
     "PersonStatus",
     "ProfileSection",
@@ -55,7 +55,7 @@ HistoryField = Literal[
 ]
 
 
-class PersonOut(HrModel):
+class HrPersonOut(HrModel):
     employee_id: UUID
     display_name: str
     job_title: str | None = None
@@ -75,13 +75,13 @@ class PersonOut(HrModel):
 
 
 class PeoplePage(HrModel):
-    items: list[PersonOut] = Field(max_length=50)
+    items: list[HrPersonOut] = Field(max_length=50)
     next_cursor: str | None
     total: int = Field(ge=0)
 
 
 class PersonProfile(HrModel):
-    person: PersonOut
+    person: HrPersonOut
     sections: list[ProfileSection]
     can_edit: bool
 

@@ -21,13 +21,13 @@ from csa.hr.people_contracts import (
     DepartmentList,
     DepartmentOut,
     HrHome,
+    HrPersonOut,
     LinkedAccount,
     OrgChart,
     PeoplePage,
     PersonAccessOut,
     PersonChange,
     PersonHistory,
-    PersonOut,
     PersonProfile,
     PersonStatus,
 )
@@ -70,7 +70,7 @@ class HrPeople:
 
     async def _load(
         self, conn: AsyncConnection, session: HrSession
-    ) -> tuple[Viewer, list[PersonOut]]:
+    ) -> tuple[Viewer, list[HrPersonOut]]:
         viewer = await self._viewer(conn, session)
         rows = await sql.fetch_all("hr/people_rows.sql", (session.tenant_id,), conn=conn)
         today = kl_today(self.core.now())
@@ -78,7 +78,7 @@ class HrPeople:
         return viewer, [person_from_row(row, today, names) for row in rows]
 
     @staticmethod
-    def _person(people: list[PersonOut], employee_id: UUID) -> PersonOut:
+    def _person(people: list[HrPersonOut], employee_id: UUID) -> HrPersonOut:
         for person in people:
             if person.employee_id == employee_id:
                 return person

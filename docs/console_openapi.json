@@ -2922,7 +2922,7 @@
           },
           "candidates": {
             "items": {
-              "$ref": "#/components/schemas/csa__workspace__contracts__PersonOut"
+              "$ref": "#/components/schemas/PersonOut"
             },
             "title": "Candidates",
             "type": "array"
@@ -4054,6 +4054,178 @@
           "requests_waiting"
         ],
         "title": "HrHome",
+        "type": "object"
+      },
+      "HrPersonOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_linked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Linked"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "employment_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full_time",
+                  "part_time",
+                  "contract",
+                  "intern"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employment Type"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Id"
+          },
+          "manager_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Name"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "starting",
+              "left"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          },
+          "work_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Phone"
+          }
+        },
+        "required": [
+          "employee_id",
+          "display_name",
+          "status"
+        ],
+        "title": "HrPersonOut",
         "type": "object"
       },
       "HumanReply": {
@@ -6054,7 +6226,7 @@
           "manager": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/csa__workspace__contracts__PersonOut"
+                "$ref": "#/components/schemas/PersonOut"
               },
               {
                 "type": "null"
@@ -7172,7 +7344,7 @@
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/csa__hr__people_contracts__PersonOut"
+              "$ref": "#/components/schemas/HrPersonOut"
             },
             "maxItems": 50,
             "title": "Items",
@@ -7349,6 +7521,50 @@
         "title": "PersonHistory",
         "type": "object"
       },
+      "PersonOut": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          }
+        },
+        "required": [
+          "employee_id",
+          "display_name",
+          "job_title",
+          "work_email"
+        ],
+        "title": "PersonOut",
+        "type": "object"
+      },
       "PersonProfile": {
         "additionalProperties": false,
         "properties": {
@@ -7357,7 +7573,7 @@
             "type": "boolean"
           },
           "person": {
-            "$ref": "#/components/schemas/csa__hr__people_contracts__PersonOut"
+            "$ref": "#/components/schemas/HrPersonOut"
           },
           "sections": {
             "items": {
@@ -11562,222 +11778,6 @@
           "last_sync_at"
         ],
         "title": "ThreadPage",
-        "type": "object"
-      },
-      "csa__hr__people_contracts__PersonOut": {
-        "additionalProperties": false,
-        "properties": {
-          "account_linked": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Account Linked"
-          },
-          "department": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Department"
-          },
-          "department_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Department Id"
-          },
-          "display_name": {
-            "title": "Display Name",
-            "type": "string"
-          },
-          "employee_id": {
-            "format": "uuid",
-            "title": "Employee Id",
-            "type": "string"
-          },
-          "employment_profile": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/EmploymentProfile"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "employment_type": {
-            "anyOf": [
-              {
-                "enum": [
-                  "full_time",
-                  "part_time",
-                  "contract",
-                  "intern"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Employment Type"
-          },
-          "job_title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Job Title"
-          },
-          "manager_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Manager Id"
-          },
-          "manager_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Manager Name"
-          },
-          "start_date": {
-            "anyOf": [
-              {
-                "format": "date",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Start Date"
-          },
-          "status": {
-            "enum": [
-              "active",
-              "starting",
-              "left"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "version": {
-            "anyOf": [
-              {
-                "maximum": 2147483647.0,
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Version"
-          },
-          "work_email": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Work Email"
-          },
-          "work_phone": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Work Phone"
-          }
-        },
-        "required": [
-          "employee_id",
-          "display_name",
-          "status"
-        ],
-        "title": "PersonOut",
-        "type": "object"
-      },
-      "csa__workspace__contracts__PersonOut": {
-        "additionalProperties": false,
-        "properties": {
-          "display_name": {
-            "title": "Display Name",
-            "type": "string"
-          },
-          "employee_id": {
-            "format": "uuid",
-            "title": "Employee Id",
-            "type": "string"
-          },
-          "job_title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Job Title"
-          },
-          "work_email": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Work Email"
-          }
-        },
-        "required": [
-          "employee_id",
-          "display_name",
-          "job_title",
-          "work_email"
-        ],
-        "title": "PersonOut",
         "type": "object"
       }
     }
@@ -23134,7 +23134,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/csa__workspace__contracts__PersonOut"
+                    "$ref": "#/components/schemas/PersonOut"
                   },
                   "title": "Response People Console V1 Workspace People Get",
                   "type": "array"

@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from csa.hr.people_contracts import PersonOut
+from csa.hr.people_contracts import HrPersonOut
 from csa.hr.people_rules import (
     history_fields,
     kl_today,
@@ -25,9 +25,9 @@ from pydantic import ValidationError
 D = date(2026, 11, 1)
 
 
-def person(**kw: Any) -> PersonOut:
+def person(**kw: Any) -> HrPersonOut:
     base: dict[str, Any] = {"employee_id": uuid4(), "display_name": "Person", "status": "active"}
-    return PersonOut(**{**base, **kw})
+    return HrPersonOut(**{**base, **kw})
 
 
 def test_status_active_starting_left():
@@ -85,7 +85,7 @@ def test_select_department_manager_status():
     left = person(display_name="E", status="left", department_id=dept, manager_id=boss)
     everyone = [a, b, c, starting, left]
 
-    def pick(**kw: Any) -> list[PersonOut]:
+    def pick(**kw: Any) -> list[HrPersonOut]:
         return select(everyone, **{"department": None, "manager": None, "status": None, **kw})
 
     # status None keeps active and starting only
@@ -229,4 +229,4 @@ def test_person_from_row_hr_view_profile_and_account_flag():
 
 def test_contracts_forbid_extra_fields():
     with pytest.raises(ValidationError):
-        PersonOut.model_validate({**person().model_dump(), "ic_number": "x"})
+        HrPersonOut.model_validate({**person().model_dump(), "ic_number": "x"})

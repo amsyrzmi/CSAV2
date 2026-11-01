@@ -12,10 +12,10 @@ from zoneinfo import ZoneInfo
 from csa.hr.people_contracts import (
     FieldChange,
     HistoryField,
+    HrPersonOut,
     OrgChart,
     OrgNode,
     PeoplePage,
-    PersonOut,
     PersonStatus,
     ProfileSection,
 )
@@ -44,7 +44,7 @@ def person_status(active: bool, start_date: date | None, today: date) -> PersonS
     return "active"
 
 
-def person_from_row(row: Mapping[str, Any], today: date, names: Mapping[UUID, str]) -> PersonOut:
+def person_from_row(row: Mapping[str, Any], today: date, names: Mapping[UUID, str]) -> HrPersonOut:
     """One `hr_people_rows` row as a person. The HR-only columns are absent for other viewers."""
     manager_id = row["manager_id"]
     profile = None
@@ -58,7 +58,7 @@ def person_from_row(row: Mapping[str, Any], today: date, names: Mapping[UUID, st
             employment_category=row["employment_category"],
         )
     version = row.get("version")
-    return PersonOut(
+    return HrPersonOut(
         employee_id=row["employee_id"],
         display_name=row["display_name"],
         job_title=row["job_title"],
@@ -77,11 +77,11 @@ def person_from_row(row: Mapping[str, Any], today: date, names: Mapping[UUID, st
     )
 
 
-def _name_order(person: PersonOut) -> tuple[str, str]:
+def _name_order(person: HrPersonOut) -> tuple[str, str]:
     return (person.display_name.casefold(), str(person.employee_id))
 
 
-def search(people: Sequence[PersonOut], query: str) -> list[PersonOut]:
+def search(people: Sequence[HrPersonOut], query: str) -> list[HrPersonOut]:
     """Every word, in any order: in the name or work email, or starting a word of the job title.
     People whose name or email holds every word come first."""
     words = search_words(query)
@@ -89,7 +89,7 @@ def search(people: Sequence[PersonOut], query: str) -> list[PersonOut]:
         return []
     title_starts = [re.compile(r"(?<!\w)(?=\w)" + re.escape(word), re.IGNORECASE) for word in words]
     folded = [word.casefold() for word in words]
-    ranked: list[tuple[int, tuple[str, str], PersonOut]] = []
+    ranked: list[tuple[int, tuple[str, str], HrPersonOut]] = []
     for person in people:
         haystack = f"{person.display_name}\n{person.work_email or ''}".casefold()
         by_name = all(word in haystack for word in folded)
@@ -104,12 +104,12 @@ def search(people: Sequence[PersonOut], query: str) -> list[PersonOut]:
 
 
 def select(
-    people: Sequence[PersonOut],
+    people: Sequence[HrPersonOut],
     *,
     department: UUID | Literal["none"] | None,
     manager: UUID | None,
     status: PersonStatus | None,
-) -> list[PersonOut]:
+) -> list[HrPersonOut]:
     """Filter by department ("none" = no department), manager and status.
     No status keeps active and starting people."""
     kept = []
@@ -130,7 +130,7 @@ def select(
     return kept
 
 
-def page(items: Sequence[PersonOut], cursor: str | None) -> PeoplePage:
+def page(items: Sequence[HrPersonOut], cursor: str | None) -> PeoplePage:
     """One page of ``PAGE_SIZE``; the cursor is a decimal offset."""
     if cursor is None:
         offset = 0
@@ -146,7 +146,7 @@ def page(items: Sequence[PersonOut], cursor: str | None) -> PeoplePage:
     )
 
 
-def org_chart(people: Sequence[PersonOut]) -> OrgChart:
+def org_chart(people: Sequence[HrPersonOut]) -> OrgChart:
     """Nodes for everyone who has not left. A manager outside the set makes a root; people on a
     management loop are listed in ``looped`` and shown as roots."""
     present = sorted((p for p in people if p.status != "left"), key=_name_order)
