@@ -1,6 +1,13 @@
 /** Pure helpers behind the assistant dock and proposal card (no React, no I/O). */
+import {
+  errorLine,
+  panelText,
+  statusText,
+  type Language,
+  type PanelKey,
+} from "@/lib/assistant-copy";
 import type { Me } from "@/lib/identity-contracts";
-import { emailErrorSentence, formatWhen } from "@/lib/email-recipients";
+import { formatWhen } from "@/lib/email-recipients";
 import { navigationFor } from "@/lib/navigation";
 import type { PackageState } from "@/lib/services-api";
 import type {
@@ -90,31 +97,30 @@ export function tabLabel(tab: TabKey, me: Me, packages: PackageState[]): string 
 }
 
 /**
- * The line shown for a navigate result. A tab this user cannot open (same rule as `tabHref`)
- * gets only the notice, never "Opened X.".
+ * The line shown for a navigate result, in the turn's language. A tab this user cannot open (same
+ * rule as `tabHref`) gets only the notice, never "Opened X.". The tab keeps the name the console
+ * shows.
  */
 export function navigateText(
   tab: TabKey,
   resume: boolean,
   me: Me,
   packages: PackageState[],
+  language: Language = "en",
 ): { text: string; error: boolean } {
   if (!navigationFor(me, packages).some((item) => item.key === tab)) {
-    return { text: `${tabName(tab)} is not available to you.`, error: true };
+    return { text: panelText(language, "navigate_unavailable", { tab: tabName(tab) }), error: true };
   }
-  const label = tabLabel(tab, me, packages);
-  return { text: `Opened ${label}${resume ? " and continued there." : "."}`, error: false };
+  const key = resume ? "navigate_opened_resume" : "navigate_opened";
+  return { text: panelText(language, key, { tab: tabLabel(tab, me, packages) }), error: false };
 }
 
 /**
- * The dock's line for a failed turn. `api.ts` explains the codes it knows; an email refusal it
- * leaves as the bare code gets the Email tab's sentence instead.
+ * The dock's line for a failed turn, in the given language: `api.ts` explains the codes it knows
+ * in English, and an email refusal it leaves as the bare code gets the Email tab's sentence.
  */
-export function turnErrorText(cause: unknown): string {
-  if (!(cause instanceof Error)) return "The assistant request failed.";
-  const code = (cause as { code?: unknown }).code;
-  if (cause.message === code) return emailErrorSentence(cause) ?? cause.message;
-  return cause.message;
+export function turnErrorText(cause: unknown, language: Language = "en"): string {
+  return errorLine(cause, language);
 }
 
 /** What the tab published, else the bare tab derived from the route. */
@@ -265,13 +271,10 @@ export function isAnswerable(turns: WorkspaceTurn[], turnId: number): boolean {
   return turns.at(-1)?.id === turnId;
 }
 
-const guidance: Record<string, string> = {
-  workspace_home_help:
-    "Use this internal workspace for staff guidance and authorized local business reads. Customer sandbox conversations are separate.",
-  business_orders_help:
-    "Business order views read tenant-scoped local records only. They do not query a marketplace or change an order.",
-  business_order_help:
-    "This order lookup reads one tenant-scoped local record. Confirm its source and local update time before relying on it.",
+const guidance: Record<string, PanelKey> = {
+  workspace_home_help: "guidance_workspace_home_help",
+  business_orders_help: "guidance_business_orders_help",
+  business_order_help: "guidance_business_order_help",
 };
 
 type OrderRead = Extract<WorkspaceResult, { action: "local_order_read" }>;
@@ -286,23 +289,20 @@ export type ResultView =
   | { kind: "directory"; candidates: PersonOut[] }
   | { kind: "clarification"; question: string; options: ClarificationOption[] };
 
-export function resultView(result: WorkspaceResult): ResultView {
+export function resultView(result: WorkspaceResult, language: Language = "en"): ResultView {
   if ("status" in result && result.status === "denied")
     return {
       kind: "notice",
       error: true,
-      text:
-        result.code === "resource_unavailable"
-          ? "The requested record is unavailable in this tenant."
-          : "This request could not be authorized.",
+      text: panelText(language, result.code === "resource_unavailable" ? "denied_unavailable" : "denied"),
     };
   if ("status" in result && result.status === "unavailable")
-    return { kind: "notice", error: true, text: "The assistant could not complete this request." };
+    return { kind: "notice", error: true, text: panelText(language, "unavailable") };
   switch (result.action) {
     case "page_guidance":
       return {
         kind: "guidance",
-        text: guidance[result.instruction_key] ?? "No guidance is available for this page.",
+        text: panelText(language, guidance[result.instruction_key] ?? "guidance_none"),
         source: result.source,
         asOf: result.as_of,
       };
@@ -317,7 +317,7 @@ export function resultView(result: WorkspaceResult): ResultView {
     case "directory_lookup":
       return result.candidates.length
         ? { kind: "directory", candidates: result.candidates }
-        : { kind: "notice", error: false, text: "No matching colleague was found." };
+        : { kind: "notice", error: false, text: panelText(language, "no_colleague") };
     case "clarification":
       return { kind: "clarification", question: result.question, options: result.options };
   }
@@ -350,47 +350,51 @@ function field(record: unknown, key: string): unknown {
 }
 
 /** One line describing a settled proposal, from the executor's receipt where possible. */
-export function resultSummary(proposal: ProposalOut): string {
-  if (proposal.status === "cancelled") return "Cancelled. Nothing was changed.";
-  if (proposal.status === "expired") return "This proposal expired. Nothing was changed.";
-  if (proposal.status === "requested") return "Waiting for your confirmation.";
-  if (proposal.status === "confirmed") return "Confirmed. The action is being completed.";
+export function resultSummary(proposal: ProposalOut, language: Language = "en"): string {
+  const say = (key: PanelKey, vars?: Record<string, string | number>) => panelText(language, key, vars);
+  if (proposal.status === "cancelled") return say("summary_cancelled");
+  if (proposal.status === "expired") return say("summary_expired");
+  if (proposal.status === "requested") return say("summary_requested");
+  if (proposal.status === "confirmed") return say("summary_confirmed");
   const result = proposal.result;
   switch (proposal.kind) {
     case "email_export":
       // The receipt is {draft_id, status, gmail_draft_id}: no subject or address is stored.
-      return "Saved to your Gmail drafts. Nothing was sent.";
+      return say("summary_export");
     case "email_send": {
       // csa/workspace/executors.py EmailSendExecutor: outcome, time and Gmail's id only.
       const sentAt = text(field(result, "sent_at"));
       return field(result, "outcome") === "sent" && sentAt
-        ? `Sent at ${formatWhen(sentAt)}.`
-        : "Sent from your Gmail.";
+        ? say("summary_sent_at", { when: formatWhen(sentAt) })
+        : say("summary_sent");
     }
     case "training_submit": {
       const request = field(result, "request");
       const title = text(field(request, "title"));
       const status = text(field(request, "status"));
-      return title
-        ? `Submitted “${title}”${status ? ` (now ${status.replaceAll("_", " ")})` : ""}.`
-        : "Training request submitted.";
+      if (!title) return say("summary_training");
+      return status
+        ? say("summary_training_status", { title, status: statusText(status, language) })
+        : say("summary_training_title", { title });
     }
     case "inbox_decision": {
       // csa/console/inbox.py InboxResult: an expired or already-handled approval is not an error.
       const queued = field(result, "queued") === true;
       switch (field(result, "outcome")) {
         case "expired":
-          return `Approval expired.${queued ? " Follow-up reply queued." : " No reply queued."}`;
+          return `${say("summary_approval_expired")} ${say(queued ? "summary_followup_queued" : "summary_no_reply_queued")}`;
         case "already_handled":
-          return "Already handled. Nothing was changed.";
+          return say("summary_already_handled");
         default:
-          return `Your decision on the held reply was recorded.${queued ? " Reply queued for delivery." : ""}`;
+          return queued ? `${say("summary_decision")} ${say("summary_reply_queued")}` : say("summary_decision");
       }
     }
     case "subscription_action": {
       // csa/subscriptions/executor.py receipt: subscription_id, status, version, event_id.
       const status = text(field(result, "status"));
-      return status ? `Subscription updated. It is now ${status}.` : "Subscription updated.";
+      return status
+        ? say("summary_subscription_status", { status: statusText(status, language) })
+        : say("summary_subscription");
     }
   }
 }

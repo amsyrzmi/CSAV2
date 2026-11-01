@@ -163,3 +163,39 @@ test("provider_unreachable, permission_denied and email_model_unavailable have s
     assert.ok(sentence && sentence !== code && /^[A-Z].*[.]$/.test(sentence), code);
   }
 });
+
+test("recipient labels and the outside label are Malay in a Malay card", () => {
+  const groups = email.recipientGroups(draft(), "ms");
+  assert.deepEqual(groups.map((g) => g.label), ["Kepada", "CC", "BCC"]);
+  assert.deepEqual(groups[1].people, [{ address: "vendor@outside.test", outside: true }]);
+  assert.equal(email.OUTSIDE_LABELS.ms, "Di luar syarikat anda");
+  assert.equal(email.OUTSIDE_LABELS.en, email.OUTSIDE_LABEL);
+  assert.deepEqual(email.recipientGroups(draft()).map((g) => g.label), ["To", "CC", "BCC"]);
+  assert.equal(email.outsideCount(draft()), 1);
+});
+
+test("email sentences have a Malay side and send_limit_reached counts minutes in Malay", () => {
+  assert.equal(email.emailErrorSentence({ code: "draft_already_sent" }, "ms"), "E-mel ini sudah dihantar.");
+  assert.equal(email.emailErrorSentence({ code: "draft_already_sent" }), "This email was already sent.");
+  assert.equal(email.emailErrorSentence({ code: "nope" }, "ms"), null);
+  assert.equal(email.emailErrorSentence({ code: "send_limit_reached" }, "ms"), "Anda telah menghantar 20 e-mel dalam sejam yang lalu. Cuba lagi dalam 1 minit.");
+  assert.equal(email.emailErrorSentence({ code: "send_limit_reached", body: { retry_after: 600 } }, "ms"),
+    "Anda telah menghantar 20 e-mel dalam sejam yang lalu. Cuba lagi dalam 10 minit.");
+  assert.equal(email.EMAIL_ERROR_CODES.length, new Set(email.EMAIL_ERROR_CODES).size);
+  for (const code of email.EMAIL_ERROR_CODES) {
+    assert.ok(email.emailErrorSentence({ code }, "ms"), code);
+    assert.notEqual(email.emailErrorSentence({ code }, "ms"), email.emailErrorSentence({ code }, "en"), code);
+  }
+});
+
+test("a Malay card is found and shown exactly like an English one", () => {
+  const sentinels = [{ label: "Subject", value: "(shown on open)" }, { label: "Draft", value: "d-42" }];
+  const english = { fields: [...sentinels, { label: "To", value: "1 person" }, { label: "CC", value: "1 person" }] };
+  const malay = { fields: [...sentinels, { label: "Kepada", value: "1 orang" }, { label: "CC", value: "1 orang" }] };
+  assert.equal(email.draftIdFromCard(malay), "d-42");
+  assert.equal(email.draftIdFromCard(english), email.draftIdFromCard(malay));
+  assert.deepEqual(email.cardFieldsShown(malay), malay.fields.slice(2));
+  assert.deepEqual(email.cardFieldsShown(english), english.fields.slice(2));
+  // A card's block is a language-free code, whatever language the card is in.
+  assert.equal(email.emailCardBlock({ kind: "email_send", expected_version: "v1" }, { status: "sent", version: "v1", needs_staff_input: false }), "draft_already_sent");
+});
