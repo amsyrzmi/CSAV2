@@ -491,7 +491,7 @@ function TurnResult({
         <div className={box}>
           <p>{view.text}</p>
           <p className="mt-2 text-xs text-ink-500">
-            {text.order_source}: {view.source} · As of {new Date(view.asOf).toLocaleString()}
+            {text.order_source}: {view.source} · {text.order_as_of} {new Date(view.asOf).toLocaleString()}
           </p>
         </div>
       );
@@ -499,9 +499,11 @@ function TurnResult({
       const { order } = view.result;
       return (
         <div className={box}>
-          <p className="font-semibold">Local order {order.resource.order_id}</p>
+          <p className="font-semibold">
+            {panelText(language, "order_local", { id: order.resource.order_id })}
+          </p>
           <p>
-            {order.status} · Payment: {order.payment_status} · {order.currency} {order.total}
+            {order.status} · {text.order_payment}: {order.payment_status} · {order.currency} {order.total}
           </p>
           <p>
             {text.order_source}: {order.channel} · {text.order_tracking}:{" "}
@@ -509,8 +511,9 @@ function TurnResult({
             {order.carrier ?? text.order_not_recorded}
           </p>
           <p className="mt-2 text-xs text-ink-500">
-            {text.order_source}: {view.result.source} · Marketplace sync: {view.result.marketplace_sync} · As
-            of {new Date(view.result.as_of).toLocaleString()}
+            {text.order_source}: {view.result.source} · {text.order_marketplace_sync}:{" "}
+            {view.result.marketplace_sync} · {text.order_as_of}{" "}
+            {new Date(view.result.as_of).toLocaleString()}
           </p>
         </div>
       );

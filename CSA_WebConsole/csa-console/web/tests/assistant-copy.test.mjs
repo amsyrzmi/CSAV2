@@ -147,6 +147,7 @@ test("the dock chrome has English as it was and a Malay line", () => {
   const english = {
     dock_title: "Assistant", new_conversation: "New conversation", close_assistant: "Close assistant",
     message_label: "Message", retry_same: "Retry same request", start_new: "Start a new request",
+    order_local: "Local order {id}", order_payment: "Payment", order_marketplace_sync: "Marketplace sync", order_as_of: "As of",
     order_source: "Source", order_tracking: "Tracking", order_carrier: "Carrier", order_not_recorded: "Not recorded",
     empty_hint: "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you confirm it.",
   };
