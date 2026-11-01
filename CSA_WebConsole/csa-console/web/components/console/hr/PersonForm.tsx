@@ -7,13 +7,12 @@ import { hrClient, type HrContext } from "@/lib/hr-api";
 import { hrHref } from "@/lib/hr-paths";
 import {
   departmentChoices, EMPLOYMENT_TYPES, managerChoices, NEW_DEPARTMENT, PEOPLE_COPY, personBody, personFormIssue,
-  personFormValues, type PersonFormValues,
+  personFormValues, personSaveError, type PersonFormValues,
 } from "@/lib/hr-people";
 import { peopleClient, type Department, type Person } from "@/lib/hr-people-api";
 import { action, field, secondary, Notice, Panel } from "../ui";
 import { regions } from "./HrForm";
 import { PersonSelect, usePeopleOptions } from "./Pickers";
-import { peopleWriteError } from "./refusal";
 
 type Problem = { text: string; code: string };
 
@@ -76,7 +75,8 @@ export function PersonForm({ tenant, context, platform, mode, person, department
     try {
       await client.operation(personBody(mode, values, { employeeId, version: person?.version ?? undefined }));
     } catch (cause) {
-      setProblem({ text: peopleWriteError(cause), code: cause instanceof ApiError ? cause.code : "" });
+      const failure = cause instanceof ApiError ? { status: cause.status, code: cause.code } : null;
+      setProblem({ text: personSaveError(mode, failure), code: failure?.code ?? "" });
       return;
     } finally { submitting.current = false; setBusy(false); }
     if (mode === "add") router.push(hrHref({ tab: "people", view: "profile", employeeId }, platform, tenant));
@@ -111,7 +111,7 @@ export function PersonForm({ tenant, context, platform, mode, person, department
         <label className="block text-sm">Work email (optional)
           <input className={`${field} mt-1`} name="work_email" type="email" maxLength={254} defaultValue={initial.work_email} /></label>
         <label className="block text-sm">Work phone (optional)
-          <input className={`${field} mt-1`} name="work_phone" type="tel" maxLength={40} pattern="[0-9+() \-]{3,40}"
+          <input className={`${field} mt-1`} name="work_phone" type="tel" maxLength={40} pattern="[0-9+\(\) \-]{3,40}"
             title="Use digits, spaces and + ( ) -" defaultValue={initial.work_phone} /></label>
         <label className="block text-sm">Employment type (optional)
           <select className={`${field} mt-1`} name="employment_type" defaultValue={initial.employment_type}>

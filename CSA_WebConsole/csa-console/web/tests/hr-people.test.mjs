@@ -14,7 +14,7 @@ const {
   EMPLOYMENT_TYPES, STATUS_LABELS, NO_MANAGER, NEW_DEPARTMENT, PEOPLE_COPY,
   personBody, employmentProfileIssue, departmentBody, orgTree, homeItems, emptyText, historyText, peopleRefusalText,
   runsHomeMaintenance, peopleFilters, profileTabs, personFormValues, personFormIssue, managerChoices,
-  departmentChoices, overviewRows, homeQuickActions, myBalanceLines, myTrainingLines,
+  departmentChoices, overviewRows, homeQuickActions, myBalanceLines, myTrainingLines, personSaveError,
 } = people;
 
 const ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -111,7 +111,8 @@ test("employmentProfileIssue flags only a partly filled profile", () => {
   for (const extra of [{ region: "sabah" }, { legal_entity_reference: "E" }, { region: "sabah", employment_category: "P" }])
     assert.equal(issue(extra), "Fill in all three employment details, or leave all three empty.");
   assert.equal(peopleRefusalText("employment_profile_must_be_complete"), "Fill in all three employment details, or leave all three empty.");
-  assert.match(peopleRefusalText("invalid_hr_input"), /all three employment details/);
+  assert.equal(peopleRefusalText("invalid_hr_input"),
+    "Check the details you entered. Work phone takes digits, spaces and + ( ) -. Employment details need all three or none.");
 });
 
 test("departmentBody names the operation, trims and sends the version or null", () => {
@@ -242,7 +243,9 @@ test("emptyText has an editor and a non-editor variant (Review Focus 5)", () => 
   assert.equal(emptyText("home"), "Nothing needs you today.");
   assert.equal(emptyText("home", true), "Nothing needs you today.");
   assert.match(emptyText("unlinked"), /isn't linked to an employee record/);
-  assert.match(emptyText("unlinked"), /HR owner/);
+  assert.equal(emptyText("unlinked"),
+    "Your login isn't linked to an employee record yet. The HR owner links it from your profile's Access section. "
+    + "If your company has no HR owner yet, ask your administrator to set one up.");
 });
 
 test("historyText says what changed in plain words", () => {
@@ -488,4 +491,43 @@ test("myTrainingLines keeps the viewer's own training requests with plain status
     { key: "r3", title: "Driving", status: "Withdrawn" },
   ]);
   assert.deepEqual(myTrainingLines([request("r1", ID, "First aid", "draft")], null), []);
+});
+
+test("an uncertain save never tells the person to reload; a definite refusal keeps its own sentence", () => {
+  const uncertain = /couldn't confirm the save/;
+  // Add: a network error (no ApiError) and a 5xx both leave the outcome unknown, so the retry is safe and says so.
+  for (const failure of [null, { status: 500, code: "Something went wrong on our side. Try again." }, { status: 503, code: "x" }]) {
+    const text = personSaveError("add", failure);
+    assert.equal(text, "We couldn't confirm the save. Choose Add person again; it won't add them twice.");
+    assert.doesNotMatch(text, /[Rr]eload/);
+  }
+  // Edit is equally accurate and never says reload either.
+  for (const failure of [null, { status: 502, code: "x" }]) {
+    const text = personSaveError("update", failure);
+    assert.match(text, uncertain);
+    assert.match(text, /Save changes again/);
+    assert.doesNotMatch(text, /[Rr]eload/);
+  }
+  // A 4xx is a definite answer: the server's code picks the sentence in both modes.
+  for (const mode of ["add", "update"]) {
+    assert.equal(personSaveError(mode, { status: 409, code: "manager_unavailable" }), peopleRefusalText("manager_unavailable"));
+    assert.equal(personSaveError(mode, { status: 409, code: "employee_exists" }), peopleRefusalText("employee_exists"));
+    assert.equal(personSaveError(mode, { status: 422, code: "invalid_hr_input" }), peopleRefusalText("invalid_hr_input"));
+    assert.equal(personSaveError(mode, { status: 400, code: "unknown_code" }), PEOPLE_COPY.refusalFallback);
+  }
+});
+
+test("the work phone pattern compiles in u and v mode and matches the server rule", async () => {
+  const source = await readFile(new URL("../components/console/hr/PersonForm.tsx", import.meta.url), "utf8");
+  const match = /name="work_phone"[^>]*?pattern="([^"]+)"/s.exec(source);
+  assert.ok(match, "the work phone input has a pattern");
+  const pattern = match[1];
+  for (const flags of ["u", "v"]) {
+    // Browsers anchor the pattern to the whole value.
+    const re = new RegExp(`^(?:${pattern})$`, flags);
+    for (const good of ["+60 12-345 6789", "(03) 1234 5678", "012", "0".repeat(40)])
+      assert.ok(re.test(good), `${flags} accepts ${good}`);
+    for (const bad of ["012.345", "03 1234 ext 5", "12", "0".repeat(41), "abc", "a@b"])
+      assert.ok(!re.test(bad), `${flags} rejects ${bad}`);
+  }
 });

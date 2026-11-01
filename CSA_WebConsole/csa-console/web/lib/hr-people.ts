@@ -40,10 +40,15 @@ export const PEOPLE_COPY = {
     account_taken: "That console account is already linked to another person. Unlink it there first.",
     member_unavailable: "That member is no longer on your team. Choose another member.",
     employment_profile_must_be_complete: "Fill in all three employment details, or leave all three empty.",
-    // A 422 from the route's input check: the server names no field, so the sentence points at the likely ones.
-    invalid_hr_input: "Check the details you entered. Fill in all three employment details, or leave all three empty.",
+    // A 422 from the route's input check: the server names no field, so the sentence covers every rule it checks.
+    invalid_hr_input: "Check the details you entered. Work phone takes digits, spaces and + ( ) -. Employment details need all three or none.",
   } as Record<string, string>,
   refusalFallback: "We could not save that. Reload the page and try again.",
+  /** When a save may or may not have landed. Reloading could lose the typed values or, on Add, add the person twice. */
+  uncertainSave: {
+    add: "We couldn't confirm the save. Choose Add person again; it won't add them twice.",
+    update: "We couldn't confirm the save. Choose Save changes again; it won't save twice.",
+  },
   /** What the person form checks before it saves. */
   form: {
     name: "Enter the person's name.",
@@ -66,13 +71,25 @@ export const PEOPLE_COPY = {
       view: "The org chart shows up once the HR owner adds people.",
     },
     home: "Nothing needs you today.",
-    unlinked: "Your login isn't linked to an employee record yet. Ask your HR owner to link it from your profile's Access section.",
+    // Works whether or not the company has an HR owner yet: the HR owner is recorded once, outside the console.
+    unlinked: "Your login isn't linked to an employee record yet. The HR owner links it from your profile's Access section. "
+      + "If your company has no HR owner yet, ask your administrator to set one up.",
   },
 };
 
 /** The sentence for a 409 detail code from a people operation. Unknown codes get the fallback. */
 export function peopleRefusalText(code: string): string {
   return Object.hasOwn(PEOPLE_COPY.refusals, code) ? PEOPLE_COPY.refusals[code] : PEOPLE_COPY.refusalFallback;
+}
+
+/**
+ * The sentence for a failed Add person or Edit save. A 4xx is a definite answer, so its code picks the
+ * sentence. A network error (`failure` null) or a 5xx leaves the outcome unknown: the form keeps its
+ * employee id and idempotency key, so choosing the button again is safe and the sentence says so.
+ */
+export function personSaveError(mode: "add" | "update", failure: { status: number; code: string } | null): string {
+  if (failure && failure.status >= 400 && failure.status < 500) return peopleRefusalText(failure.code);
+  return PEOPLE_COPY.uncertainSave[mode];
 }
 
 export function emptyText(kind: "people" | "departments" | "org" | "home" | "unlinked", canEdit = false): string {
