@@ -12,6 +12,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -19,7 +20,7 @@
               ],
               "type": "string"
             },
-            "maxItems": 8,
+            "maxItems": 16,
             "title": "Base",
             "type": "array"
           },
@@ -30,6 +31,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -37,7 +39,7 @@
               ],
               "type": "string"
             },
-            "maxItems": 8,
+            "maxItems": 16,
             "title": "On",
             "type": "array"
           },
@@ -219,6 +221,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -236,6 +239,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -305,6 +309,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -405,6 +410,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -418,6 +424,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -450,6 +457,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -643,6 +651,41 @@
           "manager_name"
         ],
         "title": "AccessWarningOut",
+        "type": "object"
+      },
+      "AccountLink": {
+        "additionalProperties": false,
+        "description": "Link a person to a member's console account, or unlink (None). HR owner only.",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "operation": {
+            "const": "account.link",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "account_id"
+        ],
+        "title": "AccountLink",
         "type": "object"
       },
       "ActionIn": {
@@ -2687,6 +2730,53 @@
         "title": "DecideIn",
         "type": "object"
       },
+      "DepartmentSave": {
+        "additionalProperties": false,
+        "description": "Create (no expected_version), rename, archive or restore a department.",
+        "properties": {
+          "archived": {
+            "default": false,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "department_id": {
+            "format": "uuid",
+            "title": "Department Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "operation": {
+            "const": "department.save",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "department_id",
+          "name"
+        ],
+        "title": "DepartmentSave",
+        "type": "object"
+      },
       "DirectoryField": {
         "enum": [
           "display_name",
@@ -3323,6 +3413,39 @@
         "title": "EmployeeSave",
         "type": "object"
       },
+      "EmploymentProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "employment_category": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Employment Category",
+            "type": "string"
+          },
+          "legal_entity_reference": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Legal Entity Reference",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region",
+          "legal_entity_reference",
+          "employment_category"
+        ],
+        "title": "EmploymentProfile",
+        "type": "object"
+      },
       "EventOut": {
         "properties": {
           "agent": {
@@ -3525,7 +3648,8 @@
           "training.draft",
           "training.submit",
           "training.withdraw",
-          "training.decide"
+          "training.decide",
+          "people.manage"
         ],
         "title": "HrAction",
         "type": "string"
@@ -6771,6 +6895,42 @@
         "title": "PendingInvitationPage",
         "type": "object"
       },
+      "PersonAdd": {
+        "additionalProperties": false,
+        "description": "A new active person. Owner or Manage people; never changes access or account links.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "const": "person.add",
+            "title": "Operation",
+            "type": "string"
+          },
+          "values": {
+            "$ref": "#/components/schemas/PersonValues"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "values"
+        ],
+        "title": "PersonAdd",
+        "type": "object"
+      },
       "PersonOut": {
         "additionalProperties": false,
         "properties": {
@@ -6813,6 +6973,170 @@
           "work_email"
         ],
         "title": "PersonOut",
+        "type": "object"
+      },
+      "PersonUpdate": {
+        "additionalProperties": false,
+        "description": "Every editable field at once. Never changes whether the person is active (1b).",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "person.update",
+            "title": "Operation",
+            "type": "string"
+          },
+          "values": {
+            "$ref": "#/components/schemas/PersonValues"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version",
+          "values"
+        ],
+        "title": "PersonUpdate",
+        "type": "object"
+      },
+      "PersonValues": {
+        "additionalProperties": false,
+        "description": "A person's editable Overview fields, for person.add and person.update.\n\nThe department is an existing one (`department_id`) or a name typed in the form\n(`new_department`, matched like department names are, or created), never both.",
+        "properties": {
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "display_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employment_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full_time",
+                  "part_time",
+                  "contract",
+                  "intern"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employment Type"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Id"
+          },
+          "new_department": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Department"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          },
+          "work_phone": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9+() -]{3,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Phone"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "PersonValues",
         "type": "object"
       },
       "PlanIn": {
@@ -15404,6 +15728,7 @@
                     "own_requests",
                     "approves_team",
                     "hr_team",
+                    "manage_people",
                     "recruitment",
                     "attendance",
                     "payroll_prepare",
@@ -16293,6 +16618,7 @@
                 "discriminator": {
                   "mapping": {
                     "access.save": "#/components/schemas/AccessSave",
+                    "account.link": "#/components/schemas/AccountLink",
                     "attendance.import": "#/components/schemas/AttendanceImport",
                     "automation.configure": "#/components/schemas/AutomationConfigure",
                     "automation.run": "#/components/schemas/AutomationRun",
@@ -16300,6 +16626,7 @@
                     "candidate.erase": "#/components/schemas/CandidateErase",
                     "candidate.intake": "#/components/schemas/CandidateIntake",
                     "candidate.note": "#/components/schemas/CandidateNote",
+                    "department.save": "#/components/schemas/DepartmentSave",
                     "employee.save": "#/components/schemas/EmployeeSave",
                     "interview.cancel": "#/components/schemas/ScheduleCancel",
                     "interview.schedule": "#/components/schemas/InterviewSchedule",
@@ -16308,6 +16635,8 @@
                     "payroll.reverse": "#/components/schemas/PayrollReverse",
                     "payroll.rules": "#/components/schemas/PayrollRules-Input",
                     "payroll.snapshot": "#/components/schemas/PayrollSnapshot",
+                    "person.add": "#/components/schemas/PersonAdd",
+                    "person.update": "#/components/schemas/PersonUpdate",
                     "private_access.save": "#/components/schemas/PrivateAccessSave",
                     "shift.cancel": "#/components/schemas/ScheduleCancel",
                     "shift.schedule": "#/components/schemas/ShiftSchedule"
@@ -16368,6 +16697,18 @@
                   },
                   {
                     "$ref": "#/components/schemas/AutomationConfigure"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonAdd"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonUpdate"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DepartmentSave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AccountLink"
                   }
                 ],
                 "title": "Body"

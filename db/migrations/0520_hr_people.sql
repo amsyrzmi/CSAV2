@@ -20,11 +20,27 @@
 --     hr_department_rows, hr_employee_change_rows, hr_people_access, hr_recruitment_members.
 --   The existing department text is linked to department rows before the triggers exist, so the
 --   migration itself writes no history.
+--   The Manage people switch: the hr_grants scope/action CHECK of 0380 becomes
+--     hr_grants_scope_action, which also lets the hr_operator scope hold people.manage (no fields).
+--   public.hr_people_apply(p_client, p_key, p_fingerprint, p_body): the write path beside
+--     hr_admin_apply for person.add, person.update and department.save, for the HR owner or a
+--     people.manage holder. Records a receipt in hr_operations, no authority event. EXECUTE to
+--     csa_app only. It cannot change access, account links or whether a person is active.
+--   CREATE OR REPLACE public.hr_admin_apply (0410): the same, plus the owner-only account.link.
+--   CREATE OR REPLACE public.hr_apply_invitation_access (0483): the same, with p_on and p_added
+--     allowed up to 16 switch ids (there are 9 now).
 -- No new roles and no FORCE ROW LEVEL SECURITY. Every function is SECURITY DEFINER and pinned to
 -- search_path.
 -- Pre-check: 0410 (hr_is_owner, hr_private_access, hr_admin_apply), 0482 (the hr_owner_access_summary
 --   JSON shapes) and 0483 (hr_apply_invitation_access) applied.
 -- Rollback (in this order):
+--   DROP FUNCTION public.hr_people_apply(uuid,uuid,text,jsonb);
+--   Recreate public.hr_admin_apply(uuid,uuid,text,jsonb) from 0410 (CREATE OR REPLACE with the 0410
+--     body) and public.hr_apply_invitation_access(uuid,uuid,jsonb,text[],text[],boolean) from 0483.
+--   DELETE FROM public.hr_grants WHERE action='people.manage';
+--   ALTER TABLE public.hr_grants DROP CONSTRAINT hr_grants_scope_action, ADD CONSTRAINT
+--     hr_grants_check CHECK (the 0380 scope/action check: hr_operator with directory.read and
+--     training.read only);
 --   DROP TRIGGER hr_employee_record_change ON public.hr_employees;
 --   DROP TRIGGER hr_employee_department_sync ON public.hr_employees;
 --   DROP TRIGGER hr_department_renamed ON public.hr_departments;
@@ -337,3 +353,309 @@ DO $$ DECLARE f regprocedure; BEGIN
   EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO csa_app',f);
  END LOOP;
 END $$;
+
+-- ---- The Manage people switch and the write paths ----------------------------------------------
+
+-- hr_grants: the 0380 scope/action CHECK, widened so the hr_operator scope may hold people.manage.
+-- Found by its definition (the only CHECK naming client_owner); the fields CHECK, which names
+-- assigned_manager too, is left alone. Skipped once hr_grants_scope_action exists.
+DO $$ DECLARE found_name name; matches integer; BEGIN
+ IF EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.hr_grants'::regclass
+           AND conname='hr_grants_scope_action') THEN RETURN; END IF;
+ SELECT count(*), min(conname::text) INTO matches, found_name FROM pg_constraint
+  WHERE conrelid='public.hr_grants'::regclass AND contype='c'
+  AND pg_get_constraintdef(oid) LIKE '%client_owner%';
+ IF matches<>1 THEN
+  RAISE EXCEPTION 'hr_grants scope/action check: expected 1 match, found %', matches; END IF;
+ EXECUTE format('ALTER TABLE public.hr_grants DROP CONSTRAINT %I', found_name);
+ ALTER TABLE public.hr_grants ADD CONSTRAINT hr_grants_scope_action CHECK (
+  (scope='self' AND action IN ('directory.read','training.read','training.draft',
+                               'training.submit','training.withdraw'))
+  OR (scope='assigned_manager' AND action IN ('directory.read','training.read','training.decide'))
+  OR (scope='hr_operator' AND action IN ('directory.read','training.read','people.manage'))
+  OR (scope='client_owner' AND action='training.decide'));
+END $$;
+
+-- The invitation apply, as 0483, with room for 16 switch ids (the Manage people switch made 9).
+CREATE OR REPLACE FUNCTION public.hr_apply_invitation_access(
+    p_client uuid, p_token uuid, p_rows jsonb, p_on text[], p_added text[], p_owner_override boolean)
+    RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE
+ -- The Staff preset's (action, scope) grant pairs and (domain, action, scope) workflow rows: the only
+ -- SQL copy of rows(PRESETS["staff"], EMPTY) in csa/hr/access_switches.py. Staff has no areas.
+ -- tests/test_hr_invitation_access.py compares the two.
+ staff constant jsonb := '{"grants":[["directory.read","hr_operator"],["directory.read","self"],["training.draft","self"],["training.read","self"],["training.submit","self"],["training.withdraw","self"]],"workflows":[["attendance","prepare","self"],["attendance","read","self"],["leave","prepare","self"],["leave","read","self"]]}';
+ actor uuid := nullif(current_setting('app.hr_user_id',true),'')::uuid;
+ tok record; owner_chooser boolean; approver uuid; item jsonb; result jsonb;
+BEGIN
+ -- Every guard is written so a NULL argument can never skip it (three-valued logic).
+ IF p_client IS NULL OR p_token IS NULL
+  OR p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN
+  RAISE EXCEPTION 'hr_invitation_unavailable' USING ERRCODE='23514'; END IF;
+ IF p_owner_override IS NULL OR jsonb_typeof(p_rows) IS DISTINCT FROM 'object'
+  OR jsonb_typeof(p_rows->'grants') IS DISTINCT FROM 'array'
+  OR jsonb_typeof(p_rows->'workflows') IS DISTINCT FROM 'array'
+  OR jsonb_typeof(p_rows->'areas') IS DISTINCT FROM 'array'
+  OR p_on IS NULL OR p_added IS NULL OR cardinality(p_on)>16 OR cardinality(p_added)>16 THEN
+  RAISE EXCEPTION 'hr_invitation_arguments_invalid' USING ERRCODE='23514'; END IF;
+ IF p_owner_override IS TRUE AND public.hr_is_owner(p_client) IS NOT TRUE THEN
+  RAISE EXCEPTION 'hr_owner_required' USING ERRCODE='42501'; END IF;
+ -- The token row lock serialises apply and dismiss for one invitation.
+ SELECT t.user_id, t.hr_preset, t.hr_preset_chosen_by INTO tok FROM public.console_tokens t
+  WHERE t.id=p_token AND t.kind='invite' AND t.client_id=p_client
+  AND t.consumed_at IS NOT NULL AND t.revoked_at IS NULL AND t.hr_preset IS NOT NULL FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'hr_invitation_unavailable' USING ERRCODE='23514'; END IF;
+ PERFORM 1 FROM public.console_memberships m JOIN public.console_users u ON u.id=m.user_id
+  WHERE m.client_id=p_client AND m.user_id=tok.user_id AND m.is_enabled AND u.is_enabled FOR SHARE OF m;
+ IF NOT FOUND THEN RAISE EXCEPTION 'hr_invitation_unavailable' USING ERRCODE='23514'; END IF;
+ IF EXISTS(SELECT 1 FROM public.hr_operations op WHERE op.client_id=p_client AND op.request_key=p_token
+           AND op.operation IN ('invitation_access','invitation_access.dismiss')) THEN
+  RAISE EXCEPTION 'hr_invitation_applied' USING ERRCODE='23514'; END IF;
+ -- The chooser counts as the HR owner only while still an enabled user with an enabled membership.
+ owner_chooser := EXISTS(SELECT 1 FROM public.hr_client_owners o JOIN public.console_users c ON c.id=o.user_id
+  JOIN public.console_memberships cm ON cm.user_id=o.user_id AND cm.client_id=p_client
+  WHERE o.client_id=p_client AND o.user_id=tok.hr_preset_chosen_by AND NOT c.is_platform_admin
+  AND c.is_enabled AND cm.is_enabled FOR SHARE OF o, cm);
+ IF owner_chooser IS NOT TRUE AND p_owner_override IS NOT TRUE THEN
+  IF tok.hr_preset IS DISTINCT FROM 'staff' THEN
+   RAISE EXCEPTION 'hr_invitation_owner_required' USING ERRCODE='42501'; END IF;
+  IF EXISTS(SELECT 1 FROM jsonb_array_elements(p_rows->'grants') g
+            WHERE NOT staff->'grants' @> jsonb_build_array(jsonb_build_array(g->>'action',g->>'scope')))
+   OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_rows->'workflows') w
+            WHERE NOT staff->'workflows' @> jsonb_build_array(
+             jsonb_build_array(w->>'domain',w->>'action',w->>'scope')))
+   OR jsonb_array_length(p_rows->'areas')>0 THEN
+   RAISE EXCEPTION 'hr_invitation_rows_refused' USING ERRCODE='42501'; END IF;
+ END IF;
+ -- Add, never remove: the result is the union of the member's rows and p_rows, so access the HR
+ -- owner already gave is kept. A grant for the same (action, scope) keeps the union of its fields.
+ FOR item IN SELECT * FROM jsonb_array_elements(p_rows->'grants') LOOP
+  INSERT INTO public.hr_grants AS h(client_id,user_id,action,scope,fields)
+  VALUES(p_client,tok.user_id,item->>'action',item->>'scope',
+         ARRAY(SELECT jsonb_array_elements_text(COALESCE(item->'fields','[]'::jsonb))))
+  ON CONFLICT (client_id,user_id,action,scope) DO UPDATE
+  SET fields=ARRAY(SELECT DISTINCT f FROM unnest(h.fields||EXCLUDED.fields) AS f ORDER BY f);
+ END LOOP;
+ FOR item IN SELECT * FROM jsonb_array_elements(p_rows->'workflows') LOOP
+  INSERT INTO public.hr_workflow_grants(client_id,user_id,domain,action,scope)
+  VALUES(p_client,tok.user_id,item->>'domain',item->>'action',item->>'scope') ON CONFLICT DO NOTHING;
+ END LOOP;
+ -- Areas reach this point only for an owner chooser or an owner override, both members.
+ approver := CASE WHEN p_owner_override THEN actor ELSE tok.hr_preset_chosen_by END;
+ FOR item IN SELECT * FROM jsonb_array_elements(p_rows->'areas') LOOP
+  INSERT INTO public.hr_private_grants(client_id,user_id,area,approved_by)
+  VALUES(p_client,tok.user_id,item#>>'{}',approver) ON CONFLICT DO NOTHING;
+ END LOOP;
+ result := jsonb_build_object('operation','invitation_access','resource_id',tok.user_id,'version',0,
+  'status','saved','duplicate',false,'preset',tok.hr_preset,
+  'applied_by',CASE WHEN p_owner_override THEN actor END);
+ INSERT INTO public.hr_operations(client_id,subject_id,request_key,operation,fingerprint,receipt)
+ VALUES(p_client,tok.user_id,p_token,'invitation_access',
+        encode(sha256(convert_to(p_rows::text,'UTF8')),'hex'),result);
+ INSERT INTO public.hr_authority_events(client_id,subject_id,request_key,operation,details)
+ VALUES(p_client,tok.user_id,p_token,'invitation_access',jsonb_build_object(
+  'user_id',tok.user_id,'preset',tok.hr_preset,'on',to_jsonb(p_on),'added',to_jsonb(p_added),
+  'chosen_by',tok.hr_preset_chosen_by));
+ RETURN result;
+END $$;
+
+
+-- hr_admin_apply, as 0410, plus the owner-only account.link (the access page's Recent changes
+-- leaves it out: it lists access operations only).
+CREATE OR REPLACE FUNCTION public.hr_admin_apply(p_client uuid,p_key uuid,p_fingerprint text,p_body jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE actor uuid; target uuid; manager uuid; result jsonb; v integer; item jsonb; op text;
+BEGIN
+ actor:=nullif(current_setting('app.hr_user_id',true),'')::uuid;
+ IF NOT public.hr_is_owner(p_client) THEN RAISE EXCEPTION 'hr_owner_required' USING ERRCODE='42501'; END IF;
+ op:=p_body->>'operation';
+ IF op='employee.save' THEN
+  target:=(p_body->>'employee_id')::uuid;
+  manager:=(p_body->'values'->'assigned_manager'->>'employee_id')::uuid;
+  IF manager IS NOT NULL AND (p_body->'values'->'assigned_manager'->>'tenant_id')::uuid IS DISTINCT FROM p_client
+   THEN RAISE EXCEPTION 'hr_cross_tenant' USING ERRCODE='23514'; END IF;
+  IF p_body->>'account_id' IS NOT NULL THEN
+   PERFORM 1 FROM public.console_memberships WHERE client_id=p_client AND user_id=(p_body->>'account_id')::uuid AND is_enabled FOR SHARE;
+   IF NOT FOUND THEN RAISE EXCEPTION 'hr_member_unavailable' USING ERRCODE='23514'; END IF;
+  END IF;
+  IF p_body->>'expected_version' IS NULL THEN
+   INSERT INTO public.hr_employees(client_id,id,display_name,job_title,department,work_email,manager_id,is_active,region,legal_entity_reference,employment_category)
+   VALUES(p_client,target,p_body->'values'->>'display_name',p_body->'values'->>'job_title',p_body->'values'->>'department',p_body->'values'->>'work_email',manager,(p_body->>'active')::boolean,p_body->>'region',p_body->>'legal_entity_reference',p_body->>'employment_category') RETURNING version INTO v;
+  ELSE
+   UPDATE public.hr_employees SET display_name=p_body->'values'->>'display_name',job_title=p_body->'values'->>'job_title',department=p_body->'values'->>'department',work_email=p_body->'values'->>'work_email',manager_id=manager,is_active=(p_body->>'active')::boolean,version=version+1,region=p_body->>'region',legal_entity_reference=p_body->>'legal_entity_reference',employment_category=p_body->>'employment_category'
+    WHERE client_id=p_client AND id=target AND version=(p_body->>'expected_version')::integer RETURNING version INTO v;
+   IF NOT FOUND THEN RAISE EXCEPTION 'hr_stale_employee' USING ERRCODE='40001'; END IF;
+  END IF;
+  DELETE FROM public.hr_employee_accounts WHERE client_id=p_client AND employee_id=target;
+  IF p_body->>'account_id' IS NOT NULL THEN
+   INSERT INTO public.hr_employee_accounts(client_id,user_id,employee_id) VALUES(p_client,(p_body->>'account_id')::uuid,target);
+  END IF;
+ ELSIF op='account.link' THEN
+  -- 0520: link a person to an enabled member's account (or unlink with a null account_id).
+  -- An account belongs to one person at most. The receipt version is the person's version.
+  target:=(p_body->>'employee_id')::uuid;
+  SELECT e.version INTO v FROM public.hr_employees e WHERE e.client_id=p_client AND e.id=target FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'hr_employee_unavailable' USING ERRCODE='23514'; END IF;
+  IF p_body->>'account_id' IS NOT NULL THEN
+   PERFORM 1 FROM public.console_memberships WHERE client_id=p_client AND user_id=(p_body->>'account_id')::uuid AND is_enabled FOR SHARE;
+   IF NOT FOUND THEN RAISE EXCEPTION 'hr_member_unavailable' USING ERRCODE='23514'; END IF;
+   PERFORM 1 FROM public.hr_employee_accounts WHERE client_id=p_client AND user_id=(p_body->>'account_id')::uuid
+    AND employee_id IS DISTINCT FROM target FOR UPDATE;
+   IF FOUND THEN RAISE EXCEPTION 'hr_account_taken' USING ERRCODE='23514'; END IF;
+  END IF;
+  DELETE FROM public.hr_employee_accounts WHERE client_id=p_client AND employee_id=target;
+  IF p_body->>'account_id' IS NOT NULL THEN
+   INSERT INTO public.hr_employee_accounts(client_id,user_id,employee_id) VALUES(p_client,(p_body->>'account_id')::uuid,target);
+  END IF;
+ ELSE
+  target:=(p_body->>'user_id')::uuid;
+  PERFORM 1 FROM public.console_memberships WHERE client_id=p_client AND user_id=target AND is_enabled FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'hr_member_unavailable' USING ERRCODE='23514'; END IF;
+  IF op='access.save' THEN
+   DELETE FROM public.hr_grants WHERE client_id=p_client AND user_id=target;
+   DELETE FROM public.hr_workflow_grants WHERE client_id=p_client AND user_id=target;
+   FOR item IN SELECT * FROM jsonb_array_elements(p_body->'grants') LOOP
+    INSERT INTO public.hr_grants(client_id,user_id,action,scope,fields) VALUES(p_client,target,item->>'action',item->>'scope',ARRAY(SELECT jsonb_array_elements_text(item->'fields')));
+   END LOOP;
+   FOR item IN SELECT * FROM jsonb_array_elements(p_body->'workflows') LOOP
+    INSERT INTO public.hr_workflow_grants(client_id,user_id,domain,action,scope) VALUES(p_client,target,item->>'domain',item->>'action',item->>'scope');
+   END LOOP;
+  ELSIF op='private_access.save' THEN
+   IF (p_body->>'enabled')::boolean THEN
+    INSERT INTO public.hr_private_grants VALUES(p_client,target,p_body->>'area',actor) ON CONFLICT DO NOTHING;
+   ELSE DELETE FROM public.hr_private_grants WHERE client_id=p_client AND user_id=target AND area=p_body->>'area'; END IF;
+  ELSE RAISE EXCEPTION 'hr_operation_unsupported' USING ERRCODE='23514'; END IF;
+  v:=0;
+ END IF;
+ result:=jsonb_build_object('operation',op,'resource_id',target,'version',v,'status','saved','duplicate',false);
+ INSERT INTO public.hr_operations(client_id,subject_id,request_key,operation,fingerprint,receipt) VALUES(p_client,actor,p_key,op,p_fingerprint,result);
+ INSERT INTO public.hr_authority_events(client_id,subject_id,request_key,operation,details)
+ VALUES(p_client,actor,p_key,op,CASE WHEN op='employee.save' THEN jsonb_build_object(
+  'employee_id',target,'manager_id',manager,'account_id',p_body->'account_id','active',p_body->'active','version',v)
+ WHEN op='account.link' THEN jsonb_build_object('employee_id',target,'account_id',p_body->'account_id')
+ ELSE p_body END);
+ RETURN result;
+END $$;
+
+-- The people write path beside hr_admin_apply: person.add, person.update and department.save, for
+-- the HR owner or a people.manage holder. It never touches access, account links or is_active
+-- of an existing person, and records a receipt but no authority event.
+CREATE FUNCTION public.hr_people_apply(p_client uuid, p_key uuid, p_fingerprint text, p_body jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE
+ actor uuid:=nullif(current_setting('app.hr_user_id',true),'')::uuid;
+ op text:=p_body->>'operation'; vals jsonb:=p_body->'values'; prof jsonb:=p_body->'employment_profile';
+ cur public.hr_employees%ROWTYPE; target uuid; dept uuid; manager uuid; manager_active boolean;
+ dept_archived timestamptz; dept_version integer; v integer; result jsonb;
+BEGIN
+ -- Written so a NULL can never skip a guard (three-valued logic).
+ IF public.hr_is_owner(p_client) IS NOT TRUE AND public.hr_can_manage_people(p_client) IS NOT TRUE THEN
+  RAISE EXCEPTION 'hr_people_manager_required' USING ERRCODE='42501'; END IF;
+ IF op IN ('person.add','person.update') THEN
+  target:=(p_body->>'employee_id')::uuid;
+  IF target IS NULL OR jsonb_typeof(vals) IS DISTINCT FROM 'object' THEN
+   RAISE EXCEPTION 'hr_employee_unavailable' USING ERRCODE='23514'; END IF;
+  IF op='person.update' THEN
+   SELECT * INTO cur FROM public.hr_employees e WHERE e.client_id=p_client AND e.id=target FOR UPDATE;
+   IF NOT FOUND THEN RAISE EXCEPTION 'hr_employee_unavailable' USING ERRCODE='23514'; END IF;
+   IF cur.version IS DISTINCT FROM (p_body->>'expected_version')::integer THEN
+    RAISE EXCEPTION 'hr_person_changed' USING ERRCODE='23514'; END IF;
+  ELSE
+   PERFORM 1 FROM public.hr_employees e WHERE e.client_id=p_client AND e.id=target;
+   IF FOUND THEN RAISE EXCEPTION 'hr_employee_exists' USING ERRCODE='23514'; END IF;
+  END IF;
+  -- Department: an existing one of this tenant, or a typed name (found the way department names
+  -- fold, or created). An archived one is refused unless it is the person's current department.
+  dept:=(vals->>'department_id')::uuid;
+  IF dept IS NOT NULL AND vals->>'new_department' IS NOT NULL THEN
+   RAISE EXCEPTION 'hr_department_unavailable' USING ERRCODE='23514'; END IF;
+  IF dept IS NOT NULL THEN
+   SELECT d.archived_at INTO dept_archived FROM public.hr_departments d
+    WHERE d.client_id=p_client AND d.id=dept FOR SHARE;
+   IF NOT FOUND THEN RAISE EXCEPTION 'hr_department_unavailable' USING ERRCODE='23514'; END IF;
+  ELSIF vals->>'new_department' IS NOT NULL THEN
+   dept:=public.hr_department_for(p_client,vals->>'new_department');
+   SELECT d.archived_at INTO dept_archived FROM public.hr_departments d
+    WHERE d.client_id=p_client AND d.id=dept FOR SHARE;
+  END IF;
+  IF dept IS NOT NULL AND dept_archived IS NOT NULL AND dept IS DISTINCT FROM cur.department_id THEN
+   RAISE EXCEPTION 'hr_department_archived' USING ERRCODE='23514'; END IF;
+  -- Manager: none (top of company), or an employee of this tenant who is active, unless they are
+  -- the person's current manager. Never the person, nor anyone who reports up to the person.
+  manager:=(vals->>'manager_id')::uuid;
+  IF manager IS NOT NULL THEN
+   SELECT e.is_active INTO manager_active FROM public.hr_employees e
+    WHERE e.client_id=p_client AND e.id=manager FOR SHARE;
+   IF NOT FOUND OR (manager_active IS NOT TRUE AND manager IS DISTINCT FROM cur.manager_id) THEN
+    RAISE EXCEPTION 'hr_manager_unavailable' USING ERRCODE='23514'; END IF;
+   IF manager=target OR EXISTS(
+     WITH RECURSIVE chain(id, depth) AS (
+      SELECT manager, 1
+      UNION ALL
+      SELECT e.manager_id, c.depth+1 FROM chain c
+      JOIN public.hr_employees e ON e.client_id=p_client AND e.id=c.id
+      WHERE e.manager_id IS NOT NULL AND c.depth<500)
+     SELECT 1 FROM chain WHERE chain.id=target) THEN
+    RAISE EXCEPTION 'hr_manager_loop' USING ERRCODE='23514'; END IF;
+  END IF;
+  -- A null (or absent) employment profile clears all three columns.
+  IF jsonb_typeof(prof) IS DISTINCT FROM 'object' THEN prof:='{}'::jsonb; END IF;
+  IF op='person.add' THEN
+   INSERT INTO public.hr_employees(client_id,id,display_name,job_title,department_id,manager_id,
+    work_email,work_phone,start_date,employment_type,is_active,region,legal_entity_reference,
+    employment_category)
+   VALUES(p_client,target,vals->>'display_name',vals->>'job_title',dept,manager,vals->>'work_email',
+    vals->>'work_phone',(vals->>'start_date')::date,vals->>'employment_type',true,prof->>'region',
+    prof->>'legal_entity_reference',prof->>'employment_category')
+   RETURNING version INTO v;
+  ELSE
+   UPDATE public.hr_employees e SET display_name=vals->>'display_name',job_title=vals->>'job_title',
+    department_id=dept,manager_id=manager,work_email=vals->>'work_email',work_phone=vals->>'work_phone',
+    start_date=(vals->>'start_date')::date,employment_type=vals->>'employment_type',
+    region=prof->>'region',legal_entity_reference=prof->>'legal_entity_reference',
+    employment_category=prof->>'employment_category',version=e.version+1
+   WHERE e.client_id=p_client AND e.id=target RETURNING e.version INTO v;
+  END IF;
+ ELSIF op='department.save' THEN
+  target:=(p_body->>'department_id')::uuid;
+  IF target IS NULL THEN RAISE EXCEPTION 'hr_department_unavailable' USING ERRCODE='23514'; END IF;
+  IF p_body->>'expected_version' IS NULL THEN
+   -- A create. The id already in use means someone else saved it first.
+   PERFORM 1 FROM public.hr_departments d WHERE d.client_id=p_client AND d.id=target;
+   IF FOUND THEN RAISE EXCEPTION 'hr_department_changed' USING ERRCODE='23514'; END IF;
+  ELSE
+   SELECT d.version INTO dept_version FROM public.hr_departments d
+    WHERE d.client_id=p_client AND d.id=target FOR UPDATE;
+   IF NOT FOUND THEN RAISE EXCEPTION 'hr_department_unavailable' USING ERRCODE='23514'; END IF;
+   IF dept_version IS DISTINCT FROM (p_body->>'expected_version')::integer THEN
+    RAISE EXCEPTION 'hr_department_changed' USING ERRCODE='23514'; END IF;
+  END IF;
+  -- The name is canonicalised by hr_department_canonical_name; the unique name_key (archived
+  -- names stay taken) decides whether another department already has it.
+  BEGIN
+   IF p_body->>'expected_version' IS NULL THEN
+    INSERT INTO public.hr_departments(client_id,id,name,archived_at)
+    VALUES(p_client,target,p_body->>'name',
+     CASE WHEN coalesce((p_body->>'archived')::boolean,false) THEN clock_timestamp() END)
+    RETURNING version INTO v;
+   ELSE
+    UPDATE public.hr_departments d SET name=p_body->>'name',
+     archived_at=CASE WHEN coalesce((p_body->>'archived')::boolean,false)
+                      THEN coalesce(d.archived_at,clock_timestamp()) END,
+     version=d.version+1
+    WHERE d.client_id=p_client AND d.id=target RETURNING d.version INTO v;
+   END IF;
+  EXCEPTION WHEN unique_violation THEN
+   RAISE EXCEPTION 'hr_department_name_taken' USING ERRCODE='23514';
+  END;
+ ELSE RAISE EXCEPTION 'hr_operation_unsupported' USING ERRCODE='23514'; END IF;
+ result:=jsonb_build_object('operation',op,'resource_id',target,'version',v,'status','saved','duplicate',false);
+ INSERT INTO public.hr_operations(client_id,subject_id,request_key,operation,fingerprint,receipt)
+ VALUES(p_client,actor,p_key,op,p_fingerprint,result);
+ RETURN result;
+END $$;
+REVOKE ALL ON FUNCTION public.hr_people_apply(uuid,uuid,text,jsonb)
+ FROM PUBLIC,csa_ro,csa_identity,csa_hr_maintenance;
+GRANT EXECUTE ON FUNCTION public.hr_people_apply(uuid,uuid,text,jsonb) TO csa_app;
