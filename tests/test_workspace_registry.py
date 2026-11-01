@@ -26,8 +26,8 @@ from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.workspace import registry as registry_module
-from csa.workspace.contracts import CardField, ProposalKind
-from csa.workspace.executors import build_proposal_registry
+from csa.workspace.contracts import CardField, Language, ProposalKind
+from csa.workspace.executors import _CARD_TEXT, build_proposal_registry
 from csa.workspace.planner import WorkspacePlanner
 from csa.workspace.registry import (
     CLAIM_LEASE,
@@ -187,6 +187,7 @@ class FakeTrainingExecutor:
         self.gated = 0
         self.gate_error: Exception | None = None
         self.origins: list[tuple[str, str]] = []  # (gate|card|execute, origin) per call
+        self.languages: list[str] = []  # the language each card() call was asked for
         self.plan: list[tuple[asyncio.Event, bool]] = []  # per execute: (release, fail)
         self.entered: asyncio.Queue[int] = asyncio.Queue()
 
@@ -211,13 +212,16 @@ class FakeTrainingExecutor:
         payload: dict,
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> tuple[CardContent, str | None]:
         self.origins.append(("card", origin))
+        self.languages.append(language)
         await self.gate(request, actor, client_id, origin=origin)
         content = CardContent(
             title="Submit training request",
             summary=f"Submit {payload['title']}",
             fields=[CardField(label="Title", value=str(payload["title"]))],
+            language=language,
         )
         self._note_held()
         return content, self.version
@@ -1678,3 +1682,73 @@ async def test_email_cards_need_a_connected_mailbox(proposals_app) -> None:
     assert send.json()["detail"] == "mailbox_not_connected"
     assert await w.q("SELECT id FROM console_proposals") == []
     assert gmail.sends == []
+
+
+async def test_card_language_not_in_payload_hash(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    fake, registry = _world()
+    tenant = UUID(sessions.tenants[0])
+    payload = {"title": "Forklift safety"}
+    made = {}
+    for language in ("en", "ms"):
+        prepared = await registry.prepare(
+            _request(), actor, tenant, "training_submit", dict(payload), origin="assistant",
+            language=language,
+        )  # fmt: skip
+        assert prepared.content.language == language
+        async with tx(sessions.pool, str(tenant)) as conn:
+            made[language] = await registry.insert(
+                conn, actor, tenant, prepared, thread_id=None, origin="assistant"
+            )
+    assert fake.languages == ["en", "ms"]
+    assert made["en"].card.language == "en" and made["ms"].card.language == "ms"
+    rows = {lang: await _row(sessions, made[lang].id) for lang in made}
+    assert rows["en"]["payload"] == rows["ms"]["payload"] == payload
+    assert rows["en"]["payload_sha256"] == rows["ms"]["payload_sha256"]
+    assert rows["en"]["payload_sha256"] == registry_module.payload_sha256(payload)
+    assert (rows["en"]["card"]["language"], rows["ms"]["card"]["language"]) == ("en", "ms")
+    # Confirming re-checks with the default language and throws that content away.
+    done = await _confirm(sessions, registry, actor, made["ms"].id)
+    assert fake.languages[-1] == "en"
+    assert done.card.language == "ms" and done.card == made["ms"].card
+
+
+async def test_card_from_before_language_existed_reads_as_english(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    _, registry = _world()
+    out = await _create(sessions, registry, actor)
+    await sessions.q("UPDATE console_proposals SET card = card - 'language' WHERE id=%s", out.id)
+    tenant = sessions.tenants[0]
+    async with tx(sessions.pool, tenant) as conn:
+        again = await registry.get(conn, actor, UUID(tenant), out.id)
+    assert again.card.language == "en"
+
+
+def test_card_text_has_the_same_keys_in_both_languages() -> None:
+    assert set(_CARD_TEXT) == {"en", "ms"}
+    assert set(_CARD_TEXT["en"]) == set(_CARD_TEXT["ms"])
+    for language, text in _CARD_TEXT.items():
+        assert all(value.strip() for value in text.values()), language
+    for key, english in _CARD_TEXT["en"].items():
+        # Same placeholders in both, so a format() call works in either language.
+        placeholders = {part.split("}")[0] for part in english.split("{")[1:]}
+        malay = _CARD_TEXT["ms"][key]
+        assert {part.split("}")[0] for part in malay.split("{")[1:]} == placeholders, key
+
+
+async def test_tab_origin_card_is_english(proposals_app) -> None:
+    w, _ = proposals_app
+    approval, conversation_id, version = await _held_approval(w)
+    browser, _ = await w.member(role="tenant_staff")
+    created = await _propose(
+        w, browser, "inbox_decision", _decision(approval, conversation_id, version)
+    )
+    assert created.status_code == 201, created.text
+    card = created.json()["card"]
+    assert card["language"] == "en"
+    assert card["title"] == "Approve held reply"
+    assert card["summary"] == "Approve the held reply to this customer conversation."
+    assert [f["label"] for f in card["fields"]] == ["Decision", "Reply"]
+    assert card["fields"][0]["value"] == "approve"
+    stored = await _row(w, UUID(created.json()["id"]))
+    assert stored["card"]["language"] == "en"

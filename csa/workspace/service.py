@@ -1272,15 +1272,22 @@ async def _draft_card(
     draft: DraftOut,
     *,
     send: bool,
+    language: Language,
 ) -> PreparedProposal:
     """A send card bound to the draft's version, or today's save-to-Gmail-drafts card."""
     if send:
         payload: dict[str, Any] = {"draft_id": str(draft.id), "version": draft_version(draft)}
         return await registry.prepare(
-            request, actor, client_id, "email_send", payload, origin="assistant"
+            request, actor, client_id, "email_send", payload, origin="assistant", language=language
         )
     return await registry.prepare(
-        request, actor, client_id, "email_export", {"draft_id": str(draft.id)}, origin="assistant"
+        request,
+        actor,
+        client_id,
+        "email_export",
+        {"draft_id": str(draft.id)},
+        origin="assistant",
+        language=language,
     )
 
 
@@ -1307,6 +1314,7 @@ async def _compose(
     registry: ProposalRegistry,
     *,
     send: bool,
+    language: Language,
 ) -> PreparedProposal:
     """Write the draft (never sent here) and prepare its card; the package gate runs first."""
     service = _email_service(request)
@@ -1341,7 +1349,9 @@ async def _compose(
         raise email_http_error(exc) from None
     except (CompletionError, TimeoutError):
         raise HTTPException(503, "email_model_unavailable") from None
-    return await _draft_card(request, actor, client_id, registry, draft, send=send)
+    return await _draft_card(
+        request, actor, client_id, registry, draft, send=send, language=language
+    )
 
 
 async def _reply(
@@ -1354,6 +1364,7 @@ async def _reply(
     registry: ProposalRegistry,
     *,
     send: bool,
+    language: Language,
 ) -> PreparedProposal:
     """Draft a reply in a synced thread; the email service picks the To from the thread."""
     service = _email_service(request)
@@ -1383,7 +1394,9 @@ async def _reply(
         raise email_http_error(exc) from None
     except (CompletionError, TimeoutError):
         raise HTTPException(503, "email_model_unavailable") from None
-    return await _draft_card(request, actor, client_id, registry, draft, send=send)
+    return await _draft_card(
+        request, actor, client_id, registry, draft, send=send, language=language
+    )
 
 
 async def _team_email(
@@ -1422,7 +1435,9 @@ async def _team_email(
         # The drafting call failed; planning failures stay PlannerUnavailable.
         raise HTTPException(503, "email_model_unavailable") from None
     send = _asked_to_send(proposal, turn.body, facts)
-    prepared = await _draft_card(request, actor, client_id, registry, draft, send=send)
+    prepared = await _draft_card(
+        request, actor, client_id, registry, draft, send=send, language=facts.language
+    )
     if team.skipped:
         names = ", ".join(person.display_name for person in team.skipped)
         text = _TEXT[facts.language]
@@ -1585,14 +1600,28 @@ async def _resolve(
         return _Planned(result=live, stored=stored)
     if isinstance(proposal, TrainingSubmitProposal | InboxDecisionProposal):
         prepared = await registry.prepare(
-            request, actor, client_id, proposal.action, _payload(proposal), origin="assistant"
+            request,
+            actor,
+            client_id,
+            proposal.action,
+            _payload(proposal),
+            origin="assistant",
+            language=facts.language,
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailComposeProposal):
         _named_recipient_check(proposal, turn.body, facts)
         send = _asked_to_send(proposal, turn.body, facts)
         prepared = await _compose(
-            request, actor, client_id, thread_id, turn, proposal, registry, send=send
+            request,
+            actor,
+            client_id,
+            thread_id,
+            turn,
+            proposal,
+            registry,
+            send=send,
+            language=facts.language,
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailReplyProposal):
@@ -1602,7 +1631,15 @@ async def _resolve(
         _named_recipient_check(proposal, turn.body, facts)
         send = _asked_to_send(proposal, turn.body, facts)
         prepared = await _reply(
-            request, actor, client_id, thread_id, turn, proposal, registry, send=send
+            request,
+            actor,
+            client_id,
+            thread_id,
+            turn,
+            proposal,
+            registry,
+            send=send,
+            language=facts.language,
         )
         return _Planned(prepared=prepared)
     if isinstance(proposal, EmailTeamProposal):

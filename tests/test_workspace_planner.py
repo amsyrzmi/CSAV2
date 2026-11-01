@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, LiteralString, cast
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
@@ -28,6 +28,7 @@ from pydantic import BaseModel, ValidationError
 from tests.conftest import requires_docker
 from tests.test_console_services import activate
 from tests.test_console_sessions import SessionWorld
+from tests.test_email_scrub import CHECK_QUERY
 from tests.test_workspace_registry import (  # noqa: F401 - fixture import
     _held_approval,
     _hr_member,
@@ -2828,3 +2829,156 @@ async def test_turn_stored_without_language_reads_as_english(planned) -> None:
     assert following.status_code == 201, following.text
     assert following.json()["language"] == "en"
     assert model.facts()["language"] == "en"
+
+
+HIDDEN_FIELDS = [{"label": "Subject", "value": "(shown on open)"}]  # plus {"label": "Draft", ...}
+ENGLISH_CARD_WORDS = ("Send", "We send it", "Nothing is sent", "Save email", "Gmail drafts for")
+
+
+async def _scrub_check(w: SessionWorld) -> int:
+    """deploy/rollout_checks/0485.sql, verbatim (as tests/test_email_scrub.py runs it)."""
+    rows = await w.q(cast(LiteralString, CHECK_QUERY))
+    return rows[0]["old_rows"]
+
+
+async def _malay_email_card(
+    w: SessionWorld, model: ScriptedCompletion, message: str
+) -> tuple[dict[str, Any], str]:
+    """A Malay compose turn to ops@example.test; returns the card and the draft's id."""
+    browser = await _mail_ready(w)
+    thread = await _thread(w, browser)
+    model.reply(
+        {
+            "action": "email_compose",
+            "recipient_address": "ops@example.test",
+            "subject": "Pesanan",
+            "instructions": "Tanya tentang pesanan",
+        }
+    )
+    turn = await _turn(w, browser, thread, message, "email")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["language"] == "ms"
+    card = turn.json()["result"]["proposal"]["card"]
+    draft_id = str((await w.q("SELECT id FROM email_drafts"))[0]["id"])
+    return card, draft_id
+
+
+def _assert_malay_email_card(card: dict[str, Any], draft_id: str) -> None:
+    assert card["language"] == "ms"
+    assert card["fields"] == [*HIDDEN_FIELDS, {"label": "Draft", "value": draft_id}]
+    assert "@" not in json.dumps(card)
+    for word in ENGLISH_CARD_WORDS:
+        assert word not in card["title"] and word not in card["summary"]
+
+
+@requires_docker
+async def test_malay_send_card_is_malay_and_keeps_the_sentinels(planned) -> None:
+    w, model = planned
+    message = "Tolong hantar emel kepada ops@example.test tentang pesanan"
+    card, draft_id = await _malay_email_card(w, model, message)
+    assert card["kind"] == "email_send"
+    assert card["title"] == "Hantar e-mel kepada 1 orang"
+    # The scripted drafting model leaves a [STAFF: …] part, so the second sentence shows too.
+    assert card["summary"] == (
+        "1 dalam Kepada. Ia dihantar dari Gmail anda apabila anda memilih Hantar."
+        " Isi bahagian [STAFF: …] sebelum menghantar."
+    )
+    _assert_malay_email_card(card, draft_id)
+    stored = await w.q("SELECT card FROM console_proposals")
+    assert stored[0]["card"]["language"] == "ms"
+    assert await _scrub_check(w) == 0
+
+
+@requires_docker
+async def test_malay_export_card(planned) -> None:
+    w, model = planned
+    message = "Tolong simpan emel kepada ops@example.test tentang pesanan"
+    card, draft_id = await _malay_email_card(w, model, message)
+    assert card["kind"] == "email_export"
+    assert card["title"] == "Simpan e-mel ke draf Gmail untuk 1 orang"
+    assert card["summary"] == "1 dalam Kepada. Tiada apa-apa yang dihantar."
+    _assert_malay_email_card(card, draft_id)
+    assert await _scrub_check(w) == 0
+
+
+@requires_docker
+async def test_english_cards_are_unchanged_and_say_en(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w)
+    thread = await _thread(w, browser)
+    model.reply(
+        {
+            "action": "email_compose",
+            "recipient_address": "ops@example.test",
+            "subject": "Order",
+            "instructions": "Ask about the order",
+        }
+    )
+    message = "Send email to ops@example.test about the order"
+    turn = await _turn(w, browser, thread, message, "email")
+    assert turn.status_code == 201, turn.text
+    card = turn.json()["result"]["proposal"]["card"]
+    assert card["language"] == "en"
+    assert card["title"] == "Send email to 1 person"
+    assert card["summary"] == (
+        "1 in To. We send it from your Gmail when you select Send."
+        " Fill in the [STAFF: …] parts before sending."
+    )
+
+
+@requires_docker
+async def test_malay_training_card(planned) -> None:
+    w, model = planned
+    browser = await _hr_member(w)
+    thread = await _thread(w, browser)
+    model.reply(
+        {
+            "action": "training_submit",
+            "title": "First aid",
+            "learning_objective": "Certify in first aid",
+        }
+    )
+    turn = await _turn(w, browser, thread, "Saya nak mohon latihan pertolongan cemas", "hr")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["language"] == "ms"
+    card = turn.json()["result"]["proposal"]["card"]
+    assert card["language"] == "ms"
+    assert card["title"] == "Hantar permohonan latihan baharu"
+    assert card["summary"] == "Cipta dan hantar “First aid” untuk kelulusan."
+    # Labels are Malay; the user's own values are untouched.
+    assert card["fields"] == [
+        {"label": "Tajuk", "value": "First aid"},
+        {"label": "Objektif", "value": "Certify in first aid"},
+    ]
+    stored = await w.q("SELECT payload FROM console_proposals")
+    assert "language" not in stored[0]["payload"]
+
+
+@requires_docker
+async def test_malay_inbox_decision_card_translates_the_shown_decision_only(planned) -> None:
+    w, model = planned
+    approval, conversation_id, version = await _held_approval(w)
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply(
+        {
+            "action": "inbox_decision",
+            "approval_id": approval,
+            "conversation_id": conversation_id,
+            "decision": "approve",
+            "expected_version": version,
+        }
+    )
+    record = {"kind": "approval", "id": str(approval)}
+    message = "Tolong lulus balasan yang ditahan itu"
+    turn = await _turn(w, browser, thread, message, "inbox", record=record)
+    assert turn.status_code == 201, turn.text
+    card = turn.json()["result"]["proposal"]["card"]
+    assert card["language"] == "ms"
+    assert card["title"] == "Lulus balasan yang ditahan"
+    assert card["summary"] == "Lulus balasan yang ditahan untuk perbualan pelanggan ini."
+    labels = {field["label"]: field["value"] for field in card["fields"]}
+    draft = (await w.q("SELECT draft FROM approvals WHERE id=%s", approval))[0]["draft"]
+    assert labels == {"Keputusan": "Lulus", "Balasan": draft[:500]}  # the reply is not translated
+    stored = await w.q("SELECT payload FROM console_proposals")
+    assert stored[0]["payload"]["decision"] == "approve"

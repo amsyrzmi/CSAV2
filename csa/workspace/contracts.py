@@ -275,6 +275,7 @@ class ProposalCard(_Contract):
     fields: list[CardField]
     expires_at: AwareDatetime
     expected_version: str | None
+    language: Language = "en"
 
 
 class ProposalOut(_Contract):

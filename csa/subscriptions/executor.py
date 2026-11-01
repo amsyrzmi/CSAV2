@@ -27,7 +27,7 @@ from csa.core.tenancy import tx
 from csa.subscriptions.api import require_subscriptions_write
 from csa.subscriptions.contracts import Action, ActionIn
 from csa.subscriptions.service import Conn, get_request_row, get_subscription_out, record_event
-from csa.workspace.contracts import CardField, ProposalKind
+from csa.workspace.contracts import CardField, Language, ProposalKind
 from csa.workspace.registry import CardContent, ProposalError, ProposalOrigin
 
 # Which statuses each action may start from; the card refuses anything else.
@@ -295,7 +295,10 @@ class SubscriptionActionExecutor:
         payload: dict[str, Any],
         *,
         origin: ProposalOrigin,
+        language: Language = "en",
     ) -> tuple[CardContent, str | None]:
+        # The card stays English whatever ``language`` says: the assistant never proposes this
+        # kind, so no turn has a language to write it in (and the card says "en", truthfully).
         action = _parse(payload)
         await self.gate(request, actor, client_id, origin=origin)
         now = datetime.now(UTC)
