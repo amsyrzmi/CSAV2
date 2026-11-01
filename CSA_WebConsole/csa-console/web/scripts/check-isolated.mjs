@@ -78,6 +78,7 @@ try {
     "components/ui/auth-card.tsx",
     "components/ui/password-input.tsx",
     "components/ui/input.ts",
+    "components/ui/kit.tsx",
     "public/brand/fourstacks-mark.svg",
     "public/fourstacks/agents/support.svg",
     "public/fourstacks/agents/knowledge.svg",

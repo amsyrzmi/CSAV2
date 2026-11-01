@@ -13,7 +13,8 @@ const people = await import(moduleUrl(await readFile(new URL("../lib/hr-people.t
 const {
   EMPLOYMENT_TYPES, STATUS_LABELS, NO_MANAGER, NEW_DEPARTMENT, PEOPLE_COPY,
   personBody, employmentProfileIssue, departmentBody, orgTree, homeItems, emptyText, historyText, peopleRefusalText,
-  runsHomeMaintenance, peopleFilters,
+  runsHomeMaintenance, peopleFilters, profileTabs, personFormValues, personFormIssue, managerChoices,
+  departmentChoices, overviewRows, homeQuickActions, myBalanceLines, myTrainingLines,
 } = people;
 
 const ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -306,4 +307,185 @@ test("peopleFilters keeps the cursor only while the filters stay the same", () =
   assert.deepEqual(peopleFilters({ q: "aina", cursor: "50" }, { q: "bala", cursor: "50" }), { q: "bala" });
   assert.deepEqual(peopleFilters({ department: DEPARTMENT, cursor: "50" }, { department: "all" }), {});
   assert.deepEqual(peopleFilters({ q: "aina", cursor: "50" }, {}), { q: "aina" });
+});
+
+const PERSON = {
+  employee_id: ID, display_name: "Aina Rahman", job_title: "Designer", department_id: DEPARTMENT, department: "Design",
+  manager_id: MANAGER, manager_name: "Bala", work_email: "aina@example.test", work_phone: "+60 12-345 6789",
+  start_date: "2026-11-03", employment_type: "part_time", status: "active",
+  employment_profile: { region: "sabah", legal_entity_reference: "ENT-1", employment_category: "Permanent" },
+  version: 4, account_linked: true,
+};
+const BLANK_PERSON = {
+  ...PERSON, job_title: null, department_id: null, department: null, manager_id: null, manager_name: null,
+  work_email: null, work_phone: null, start_date: null, employment_type: null, employment_profile: null,
+  version: null, account_linked: null,
+};
+
+test("profileTabs labels the server's sections in the server's order", () => {
+  assert.deepEqual(profileTabs(["overview", "access", "history"]), [
+    { value: "overview", label: "Overview" }, { value: "access", label: "Access" }, { value: "history", label: "History" },
+  ]);
+  assert.deepEqual(profileTabs(["overview"]), [{ value: "overview", label: "Overview" }]);
+  assert.deepEqual(profileTabs(["history", "overview"]).map((tab) => tab.value), ["history", "overview"]);
+  assert.deepEqual(profileTabs(["overview", "personal"]), [{ value: "overview", label: "Overview" }]);
+});
+
+test("personFormValues prefills every field and the employment profile from the person (full replace)", () => {
+  const form = personFormValues(PERSON);
+  assert.deepEqual(form, {
+    display_name: "Aina Rahman", job_title: "Designer", start_date: "2026-11-03", manager_id: MANAGER,
+    department_id: DEPARTMENT, new_department: "", work_email: "aina@example.test", work_phone: "+60 12-345 6789",
+    employment_type: "part_time", region: "sabah", legal_entity_reference: "ENT-1", employment_category: "Permanent",
+  });
+  // An untouched prefilled form saves exactly what is stored: no field is lost.
+  const body = personBody("update", form, { employeeId: ID, version: PERSON.version });
+  assert.deepEqual(body.values, {
+    display_name: "Aina Rahman", job_title: "Designer", start_date: "2026-11-03", manager_id: MANAGER,
+    department_id: DEPARTMENT, work_email: "aina@example.test", work_phone: "+60 12-345 6789", employment_type: "part_time",
+  });
+  assert.deepEqual(body.employment_profile, PERSON.employment_profile);
+  assert.equal(body.expected_version, 4);
+});
+
+test("personFormValues turns missing values into empty fields, and no person into an empty form", () => {
+  const blank = personFormValues(BLANK_PERSON);
+  assert.equal(blank.manager_id, NO_MANAGER);
+  assert.equal(blank.department_id, "");
+  for (const key of ["job_title", "start_date", "work_email", "work_phone", "employment_type", "region",
+    "legal_entity_reference", "employment_category", "new_department"]) assert.equal(blank[key], "", key);
+  const empty = personFormValues();
+  assert.deepEqual(Object.values(empty), Object.values(empty).map(() => ""));
+  assert.deepEqual(Object.keys(empty).sort(), Object.keys(FORM).sort());
+});
+
+test("personFormIssue blocks a missing name, an add without title or start, a blank new department and a partial profile", () => {
+  assert.equal(personFormIssue("add", FORM), null);
+  assert.equal(personFormIssue("update", FORM), null);
+  assert.equal(personFormIssue("add", { ...FORM, display_name: "  " }), "Enter the person's name.");
+  assert.equal(personFormIssue("update", { ...FORM, display_name: "" }), "Enter the person's name.");
+  assert.equal(personFormIssue("add", { ...FORM, job_title: " " }), "Enter a job title.");
+  assert.equal(personFormIssue("add", { ...FORM, start_date: "" }), "Choose a start date.");
+  // Editing keeps job title and start date optional, as the server does.
+  assert.equal(personFormIssue("update", { ...FORM, job_title: "", start_date: "" }), null);
+  for (const mode of ["add", "update"]) {
+    assert.equal(personFormIssue(mode, { ...FORM, department_id: NEW_DEPARTMENT, new_department: "  " }),
+      "Type a name for the new department, or choose another department.", mode);
+    assert.equal(personFormIssue(mode, { ...FORM, department_id: NEW_DEPARTMENT, new_department: "Care" }), null, mode);
+    assert.equal(personFormIssue(mode, { ...FORM, region: "sabah" }),
+      "Fill in all three employment details, or leave all three empty.", mode);
+  }
+});
+
+const VIEWER = "55555555-5555-4555-8555-555555555555";
+const OPTIONS = [[ID, "Aina Rahman · Designer"], [MANAGER, "Bala"], [VIEWER, "Me · HR"], ["x", "Xin"]];
+
+test("managerChoices never offers the person as their own manager", () => {
+  const { options, locked } = managerChoices({ options: OPTIONS, person: PERSON, viewer: { owner: true, employeeId: VIEWER } });
+  assert.deepEqual(options, [[MANAGER, "Bala"], [VIEWER, "Me · HR"], ["x", "Xin"]]);
+  assert.equal(locked, false);
+});
+
+test("managerChoices keeps a current manager who has left, marked (left) (F5)", () => {
+  const { options } = managerChoices({
+    options: OPTIONS.filter(([id]) => id !== MANAGER), person: PERSON, viewer: { owner: true, employeeId: null },
+  });
+  assert.deepEqual(options.at(-1), [MANAGER, "Bala (left)"]);
+  assert.equal(options.filter(([id]) => id === MANAGER).length, 1);
+  const unnamed = managerChoices({ options: [], person: { ...PERSON, manager_name: null }, viewer: { owner: true, employeeId: null } });
+  assert.deepEqual(unnamed.options, [[MANAGER, "Current manager (left)"]]);
+  assert.deepEqual(managerChoices({ options: [], person: BLANK_PERSON, viewer: { owner: true, employeeId: null } }).options, []);
+});
+
+test("managerChoices hides the viewer from a non-owner's choices, unless they already are the manager", () => {
+  const add = managerChoices({ options: OPTIONS, viewer: { owner: false, employeeId: VIEWER } });
+  assert.deepEqual(add.options.map(([id]) => id), [ID, MANAGER, "x"]);
+  assert.equal(add.locked, false);
+  const owner = managerChoices({ options: OPTIONS, viewer: { owner: true, employeeId: VIEWER } });
+  assert.deepEqual(owner.options.map(([id]) => id), [ID, MANAGER, VIEWER, "x"]);
+  const kept = managerChoices({ options: OPTIONS, person: { ...PERSON, manager_id: VIEWER, manager_name: "Me" },
+    viewer: { owner: false, employeeId: VIEWER } });
+  assert.deepEqual(kept.options.map(([id]) => id), [MANAGER, VIEWER, "x"]);
+});
+
+test("managerChoices locks a non-owner's own manager", () => {
+  const self = { ...PERSON, employee_id: VIEWER };
+  assert.equal(managerChoices({ options: OPTIONS, person: self, viewer: { owner: false, employeeId: VIEWER } }).locked, true);
+  assert.equal(managerChoices({ options: OPTIONS, person: self, viewer: { owner: true, employeeId: VIEWER } }).locked, false);
+  assert.equal(managerChoices({ options: OPTIONS, person: PERSON, viewer: { owner: false, employeeId: VIEWER } }).locked, false);
+  assert.equal(managerChoices({ options: OPTIONS, person: PERSON, viewer: { owner: false, employeeId: null } }).locked, false);
+});
+
+const dept = (id, name, archived = false) => ({ department_id: id, name, archived, version: 1, people: 0 });
+
+test("departmentChoices offers active departments and keeps the current one, marked (archived) (F5)", () => {
+  const list = [dept("a", "Design"), dept(DEPARTMENT, "Old team", true), dept("c", "Finance", true), dept("d", "Sales")];
+  assert.deepEqual(departmentChoices(list), [["a", "Design"], ["d", "Sales"]]);
+  assert.deepEqual(departmentChoices(list, PERSON), [["a", "Design"], [DEPARTMENT, "Old team (archived)"], ["d", "Sales"]]);
+  assert.deepEqual(departmentChoices([dept(DEPARTMENT, "Design")], PERSON), [[DEPARTMENT, "Design"]]);
+  // The list could not be read: the person's department is still offered, so saving never clears it.
+  assert.deepEqual(departmentChoices([], PERSON), [[DEPARTMENT, "Design"]]);
+  assert.deepEqual(departmentChoices([], BLANK_PERSON), []);
+});
+
+test("overviewRows shows plain labels, a dash for missing values, and HR-only rows only when present", () => {
+  assert.deepEqual(overviewRows(PERSON), [
+    ["Name", "Aina Rahman"], ["Job title", "Designer"], ["Department", "Design"], ["Manager", "Bala"],
+    ["Work email", "aina@example.test"], ["Work phone", "+60 12-345 6789"], ["Start date", "3 Nov 2026"],
+    ["Employment type", "Part-time"], ["Status", "Active"],
+    ["Region", "Sabah"], ["Legal entity", "ENT-1"], ["Employment category", "Permanent"],
+    ["Console account", "Linked"],
+  ]);
+  assert.deepEqual(overviewRows(BLANK_PERSON), [
+    ["Name", "Aina Rahman"], ["Job title", "—"], ["Department", "—"], ["Manager", "—"],
+    ["Work email", "—"], ["Work phone", "—"], ["Start date", "—"], ["Employment type", "—"], ["Status", "Active"],
+  ]);
+  assert.deepEqual(overviewRows({ ...BLANK_PERSON, status: "starting", account_linked: false }).slice(-2),
+    [["Status", "Starting"], ["Console account", "Not linked"]]);
+});
+
+const CONTEXT = { client_owner: false, switches: [], actions: [] };
+
+test("homeQuickActions offers only what the viewer may do", () => {
+  const labels = (context, readonly = false) => homeQuickActions(context, readonly).map((item) => item.label);
+  assert.deepEqual(labels(CONTEXT), []);
+  assert.deepEqual(homeQuickActions({ ...CONTEXT, switches: ["manage_people"] }, false), [
+    { key: "add-person", label: "Add person", href: { tab: "people", view: "new" } },
+  ]);
+  assert.deepEqual(homeQuickActions({ ...CONTEXT, actions: ["training.draft"] }, false), [
+    { key: "request-training", label: "Request training", href: { tab: "training" } },
+  ]);
+  assert.deepEqual(labels({ ...CONTEXT, client_owner: true, actions: ["training.draft"] }),
+    ["Add person", "Request training", "Open the access page"]);
+  assert.deepEqual(homeQuickActions({ ...CONTEXT, client_owner: true }, false).at(-1).href, { tab: "settings" });
+  // A read-only login cannot write, but the owner may still open the access page.
+  assert.deepEqual(labels({ ...CONTEXT, client_owner: true, switches: ["manage_people"], actions: ["training.draft"] }, true),
+    ["Open the access page"]);
+});
+
+test("myBalanceLines keeps the viewer's own balances, newest year first, in plain words", () => {
+  const balance = (employee, year, type, remaining, days) => ({ employee_id: employee, year, leave_type: type, remaining, days });
+  const lines = myBalanceLines([
+    balance(ID, 2025, "annual", "2", "14"), balance("other", 2026, "annual", "9", "14"),
+    balance(ID, 2026, "sick", "14", "14"), balance(ID, 2026, "annual", "12.5", "14"), balance(ID, 2026, "carer", "1", "1"),
+  ], ID);
+  assert.deepEqual(lines.map((line) => line.text), [
+    "2026 · Annual leave: 12.5 of 14 days left",
+    "2026 · Sick leave: 14 of 14 days left",
+    "2026 · Carer: 1 of 1 day left",
+    "2025 · Annual leave: 2 of 14 days left",
+  ]);
+  assert.equal(new Set(lines.map((line) => line.key)).size, 4);
+  assert.deepEqual(myBalanceLines([balance(ID, 2026, "annual", "1", "1")], null), []);
+});
+
+test("myTrainingLines keeps the viewer's own training requests with plain statuses", () => {
+  const request = (id, employee, title, status) => ({ request_id: id, employee: { employee_id: employee }, content: { title }, status });
+  assert.deepEqual(myTrainingLines([
+    request("r1", ID, "First aid", "submitted"), request("r2", "other", "Excel", "draft"), request("r3", ID, "Driving", "withdrawn"),
+  ], ID), [
+    { key: "r1", title: "First aid", status: "Waiting for a decision" },
+    { key: "r3", title: "Driving", status: "Withdrawn" },
+  ]);
+  assert.deepEqual(myTrainingLines([request("r1", ID, "First aid", "draft")], null), []);
 });

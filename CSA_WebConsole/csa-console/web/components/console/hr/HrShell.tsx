@@ -12,6 +12,8 @@ import { HrTabBar } from "./HrTabBar";
 import { LeaveTab } from "./LeaveTab";
 import { PeopleTab } from "./PeopleTab";
 import { PayrollTab } from "./PayrollTab";
+import { NewPerson } from "./PersonForm";
+import { PersonProfile } from "./PersonProfile";
 import { RecruitmentTab } from "./RecruitmentTab";
 import { ALL_DOMAINS, RequestsPanel } from "./RequestsPanel";
 import { SettingsTab } from "./SettingsTab";
@@ -36,7 +38,12 @@ export function HrShell({ me, route, initialTenant }: { me: Me; route: HrRoute; 
   const platform = me.role === "platform_admin";
   const tenant = platform ? initialTenant : me.active_client_id ?? "";
   const [selection, setSelection] = useState(initialTenant || me.active_client_id || "");
-  usePublishContext({ tab: "hr", section: route.tab, record: null });
+  // On a profile the assistant gets the employee record, so "her" means this person. Published here,
+  // not in the profile, so it changes with the route and is never overwritten by this shell.
+  usePublishContext({
+    tab: "hr", section: route.tab,
+    record: route.tab === "people" && route.view === "profile" ? { kind: "employee", id: route.employeeId } : null,
+  });
   return <div className="space-y-6">
     <Heading title="People & HR" description="Training, recruitment, attendance, leave and payroll preparation." />
     {platform && <form className="flex flex-wrap items-end gap-3" onSubmit={event => {
@@ -77,11 +84,14 @@ function TenantHr({ me, tenant, route, platform }: { me: Me; tenant: string; rou
 function TabContent({ route, props }: { route: HrRoute; props: HrTabProps }) {
   switch (route.tab) {
     case "home": return <HomeTab {...props} />;
-    // Seam for Task 8: the profile and Add person pages replace the placeholder.
-    case "people":
-      return route.view === "list" || route.view === "org-chart" || route.view === "departments"
-        ? <PeopleTab tenant={props.tenant} context={props.context} readonly={props.readonly} platform={props.platform} view={route.view} />
-        : <p>Coming in this release.</p>;
+    case "people": {
+      const { tenant, context, readonly, platform } = props;
+      if (route.view === "profile")
+        return <PersonProfile key={route.employeeId} tenant={tenant} context={context} readonly={readonly} platform={platform}
+          employeeId={route.employeeId} />;
+      if (route.view === "new") return <NewPerson tenant={tenant} context={context} readonly={readonly} platform={platform} />;
+      return <PeopleTab tenant={tenant} context={context} readonly={readonly} platform={platform} view={route.view} />;
+    }
     case "recruitment": return <RecruitmentTab {...props} />;
     case "leave": return <LeaveTab {...props} />;
     case "payroll": return <PayrollTab {...props} />;

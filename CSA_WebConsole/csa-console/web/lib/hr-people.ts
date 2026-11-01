@@ -1,7 +1,10 @@
+import type { HrContext, Training } from "./hr-api";
 import type { HrRoute } from "./hr-paths";
 import type {
-  EmploymentType, FieldChange, HrHome, Interview, OrgChart, OrgNode, PeopleQuery, Person, PersonStatus, Region,
+  Department, EmploymentType, FieldChange, HrHome, Interview, OrgChart, OrgNode, PeopleQuery, Person, PersonStatus,
+  ProfileSection, Region,
 } from "./hr-people-api";
+import type { Option } from "./hr-pickers";
 
 /** Pure helpers for the People pages: form bodies, the org tree, Home items and plain words. */
 
@@ -41,6 +44,14 @@ export const PEOPLE_COPY = {
     invalid_hr_input: "Check the details you entered. Fill in all three employment details, or leave all three empty.",
   } as Record<string, string>,
   refusalFallback: "We could not save that. Reload the page and try again.",
+  /** What the person form checks before it saves. */
+  form: {
+    name: "Enter the person's name.",
+    jobTitle: "Enter a job title.",
+    startDate: "Choose a start date.",
+    newDepartment: "Type a name for the new department, or choose another department.",
+  },
+  profileUnavailable: "This person isn't available. They may have left, or you may not have access.",
   empty: {
     people: {
       edit: "No one has been added yet. Choose Add person to add the first one.",
@@ -306,4 +317,167 @@ export function historyText(change: FieldChange): string {
   if (after) return `${label} set to ${after}`;
   if (before) return `${label} cleared (was ${before})`;
   return `${label} changed`;
+}
+
+const SECTION_LABELS: Record<ProfileSection, string> = { overview: "Overview", access: "Access", history: "History" };
+
+/** The profile's tabs, in the order the server lists the sections. Sections this release does not show are dropped. */
+export function profileTabs(sections: readonly string[]): { value: ProfileSection; label: string }[] {
+  return sections
+    .filter((section): section is ProfileSection => Object.hasOwn(SECTION_LABELS, section))
+    .map((section) => ({ value: section, label: SECTION_LABELS[section] }));
+}
+
+/**
+ * The person form's starting values: every field from the person, or an empty form for Add person.
+ * `person.update` replaces every field, so an edit must start from all of them.
+ */
+export function personFormValues(person?: Person | null): PersonFormValues {
+  const text = (value: string | null | undefined) => value ?? "";
+  return {
+    display_name: text(person?.display_name),
+    job_title: text(person?.job_title),
+    start_date: text(person?.start_date),
+    manager_id: person?.manager_id ?? NO_MANAGER,
+    department_id: text(person?.department_id),
+    new_department: "",
+    work_email: text(person?.work_email),
+    work_phone: text(person?.work_phone),
+    employment_type: text(person?.employment_type),
+    region: text(person?.employment_profile?.region),
+    legal_entity_reference: text(person?.employment_profile?.legal_entity_reference),
+    employment_category: text(person?.employment_profile?.employment_category),
+  };
+}
+
+/**
+ * The sentence that stops a save before it is sent, else null. A blank "New department…" name
+ * must be stopped here: the body would carry no department and the person would silently lose it.
+ */
+export function personFormIssue(mode: "add" | "update", form: PersonFormValues): string | null {
+  if (!form.display_name.trim()) return PEOPLE_COPY.form.name;
+  if (mode === "add" && !form.job_title.trim()) return PEOPLE_COPY.form.jobTitle;
+  if (mode === "add" && !form.start_date.trim()) return PEOPLE_COPY.form.startDate;
+  if (form.department_id === NEW_DEPARTMENT && !form.new_department.trim()) return PEOPLE_COPY.form.newDepartment;
+  return employmentProfileIssue(form);
+}
+
+/**
+ * The manager picker's people. Never the person themself. A viewer who is not the HR owner is not
+ * offered as anyone's manager (the server refuses it), unless they already are this person's
+ * manager. The current manager is always offered, marked "(left)" when they are no longer in the
+ * list, so an unchanged manager is sent back unchanged. `locked`: the viewer is not the HR owner and
+ * this is their own record, so they may not change their own manager.
+ */
+export function managerChoices(input: {
+  options: readonly Option[];
+  person?: Pick<Person, "employee_id" | "manager_id" | "manager_name"> | null;
+  viewer: { owner: boolean; employeeId: string | null };
+}): { options: Option[]; locked: boolean } {
+  const { person, viewer } = input;
+  const current = person?.manager_id ?? null;
+  const hidden = (id: string) => id === person?.employee_id
+    || (!viewer.owner && viewer.employeeId !== null && id === viewer.employeeId && id !== current);
+  const options = input.options.filter(([id]) => !hidden(id));
+  if (current && current !== person?.employee_id && !options.some(([id]) => id === current))
+    options.push([current, `${person?.manager_name ?? "Current manager"} (left)`]);
+  const locked = !viewer.owner && viewer.employeeId !== null && person?.employee_id === viewer.employeeId;
+  return { options, locked };
+}
+
+/**
+ * The department picker: active departments, plus the person's current department even when it is
+ * archived ("(archived)") or missing from the list, so an unchanged department is never cleared.
+ */
+export function departmentChoices(
+  departments: readonly Department[], person?: Pick<Person, "department_id" | "department"> | null,
+): Option[] {
+  const current = person?.department_id ?? null;
+  const options: Option[] = departments
+    .filter((item) => !item.archived || item.department_id === current)
+    .map((item) => [item.department_id, item.archived ? `${item.name} (archived)` : item.name]);
+  if (current && !options.some(([id]) => id === current)) options.push([current, person?.department ?? "Current department"]);
+  return options;
+}
+
+const MISSING = "—";
+
+/** The Overview's label and value pairs. The employment profile and the account flag only show when the server sent them. */
+export function overviewRows(person: Person): [label: string, value: string][] {
+  const text = (value: string | null) => value?.trim() ? value : MISSING;
+  const rows: [string, string][] = [
+    ["Name", person.display_name],
+    ["Job title", text(person.job_title)],
+    ["Department", text(person.department)],
+    ["Manager", text(person.manager_name)],
+    ["Work email", text(person.work_email)],
+    ["Work phone", text(person.work_phone)],
+    ["Start date", person.start_date ? dateText(person.start_date) : MISSING],
+    ["Employment type", person.employment_type ? EMPLOYMENT_TYPES.find(([id]) => id === person.employment_type)?.[1] ?? MISSING : MISSING],
+    ["Status", STATUS_LABELS[person.status]],
+  ];
+  const profile = person.employment_profile;
+  if (profile) rows.push(
+    ["Region", Object.hasOwn(REGION_LABELS, profile.region) ? REGION_LABELS[profile.region] : profile.region],
+    ["Legal entity", profile.legal_entity_reference],
+    ["Employment category", profile.employment_category],
+  );
+  if (person.account_linked !== null) rows.push(["Console account", person.account_linked ? "Linked" : "Not linked"]);
+  return rows;
+}
+
+/** Home's quick actions, by what the viewer may do. Writing actions need a login that can write. */
+export function homeQuickActions(
+  context: Pick<HrContext, "client_owner" | "switches" | "actions">, readonly: boolean,
+): { key: string; label: string; href: HrRoute }[] {
+  const items: { key: string; label: string; href: HrRoute }[] = [];
+  if (!readonly && (context.client_owner || context.switches.includes("manage_people")))
+    items.push({ key: "add-person", label: "Add person", href: { tab: "people", view: "new" } });
+  if (!readonly && context.actions.includes("training.draft"))
+    items.push({ key: "request-training", label: "Request training", href: { tab: "training" } });
+  if (context.client_owner) items.push({ key: "access", label: "Open the access page", href: { tab: "settings" } });
+  return items;
+}
+
+const LEAVE_TYPES: [string, string][] = [
+  ["annual", "Annual leave"], ["sick", "Sick leave"], ["unpaid", "Unpaid leave"], ["other", "Other leave"],
+];
+function leaveLabel(type: string): string {
+  const known = LEAVE_TYPES.find(([id]) => id === type)?.[1];
+  if (known) return known;
+  const words = type.replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+function leaveRank(type: string): number {
+  const index = LEAVE_TYPES.findIndex(([id]) => id === type);
+  return index === -1 ? LEAVE_TYPES.length : index;
+}
+
+/** My HR's leave balances: the viewer's own only, newest year first, then by leave type. */
+export function myBalanceLines(
+  balances: readonly { employee_id: string; year: number; leave_type: string; remaining: string | number; days: string | number }[],
+  employeeId: string | null,
+): { key: string; text: string }[] {
+  if (!employeeId) return [];
+  return balances
+    .filter((item) => item.employee_id === employeeId)
+    .sort((a, b) => b.year - a.year || leaveRank(a.leave_type) - leaveRank(b.leave_type) || a.leave_type.localeCompare(b.leave_type))
+    .map((item) => ({
+      key: `${item.year}:${item.leave_type}`,
+      text: `${item.year} · ${leaveLabel(item.leave_type)}: ${item.remaining} of ${item.days} ${Number(item.days) === 1 ? "day" : "days"} left`,
+    }));
+}
+
+const TRAINING_STATUS: Record<Training["status"], string> = {
+  draft: "Draft", submitted: "Waiting for a decision", approved: "Approved", rejected: "Not approved", withdrawn: "Withdrawn",
+};
+
+/** My HR's training requests: the viewer's own only, with plain statuses. */
+export function myTrainingLines(
+  items: readonly Pick<Training, "request_id" | "employee" | "content" | "status">[], employeeId: string | null,
+): { key: string; title: string; status: string }[] {
+  if (!employeeId) return [];
+  return items
+    .filter((item) => item.employee.employee_id === employeeId)
+    .map((item) => ({ key: item.request_id, title: item.content.title, status: TRAINING_STATUS[item.status] ?? item.status }));
 }
