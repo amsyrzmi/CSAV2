@@ -9,7 +9,7 @@ function moduleUrl(source) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
-const { HR_TABS, parseHrPath, hrHref, legacyHrRoute, isHrPagePath, visibleTabs } =
+const { HR_TABS, parseHrPath, hrHref, legacyHrRoute, isHrPagePath, visibleTabs, navigateLandingPath } =
   await import(moduleUrl(await readFile(new URL("../lib/hr-paths.ts", import.meta.url), "utf8")));
 
 const UUID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -126,4 +126,26 @@ test("visibleTabs follows the switches and workflows", () => {
   assert.deepEqual(visibleTabs({ ...bare, workflows: ["payroll.prepare"] }), ["home", "requests"]);
   assert.deepEqual(visibleTabs({ ...bare, actions: ["training.decide"] }), ["home", "training"]);
   assert.deepEqual(visibleTabs({ ...bare, actions: ["directory.read"] }), ["home"]);
+});
+
+test("navigateLandingPath is where an HR navigate lands after the legacy redirect", () => {
+  assert.equal(navigateLandingPath("/portal/hr?section=training"), "/portal/hr/training");
+  assert.equal(navigateLandingPath("/portal/hr?section=directory"), "/portal/hr/people");
+  assert.equal(navigateLandingPath("/portal/hr?section=workflows"), "/portal/hr/requests");
+  assert.equal(navigateLandingPath("/hr?section=training&client_id=tenant-1"), "/hr/training");
+  assert.equal(navigateLandingPath("/hr?client_id=tenant-1&section=attendance"), "/hr/leave");
+});
+
+test("navigateLandingPath keeps the HR home for no section or a section with no legacy mapping", () => {
+  assert.equal(navigateLandingPath("/portal/hr"), "/portal/hr");
+  assert.equal(navigateLandingPath("/portal/hr?section=agents"), "/portal/hr");
+  assert.equal(navigateLandingPath("/hr?section=tools&client_id=t"), "/hr");
+  assert.equal(navigateLandingPath("/hr?client_id=t"), "/hr");
+});
+
+test("navigateLandingPath leaves every other navigate as its path without the query", () => {
+  assert.equal(navigateLandingPath("/portal/services?section=training"), "/portal/services");
+  assert.equal(navigateLandingPath("/email?client_id=t"), "/email");
+  assert.equal(navigateLandingPath("/portal"), "/portal");
+  assert.equal(navigateLandingPath("/portal/hrx?section=training"), "/portal/hrx");
 });

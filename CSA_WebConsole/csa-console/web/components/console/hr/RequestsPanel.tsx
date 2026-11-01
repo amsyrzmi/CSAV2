@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { hrClient, type Domain, type Page, type Workflow } from "@/lib/hr-api";
+import { requestActions } from "@/lib/hr-requests";
 import { action, field, secondary, Notice, Panel } from "../ui";
 import { Input } from "./HrForm";
 import type { HrTabProps } from "./HrShell";
@@ -12,15 +13,22 @@ const DOMAIN_LABELS: Record<Domain, string> = {
   leave: "Leave request", payroll: "Payroll preparation (MYR)",
 };
 
-/** "HR requests": prepare a request, then withdraw, approve or reject it through review. */
-export function RequestsPanel({ tenant, readonly, userId, refreshContext, domains }: HrTabProps & { domains: Domain[] }) {
+/**
+ * "HR requests": prepare a request, then withdraw, approve or reject it through review. Prepare and
+ * approve/reject are offered only for the domains the viewer's workflow grants allow.
+ */
+export function RequestsPanel({ tenant, context, readonly, userId, refreshContext, domains }: HrTabProps & { domains: Domain[] }) {
   const client = useMemo(() => hrClient(tenant), [tenant]);
   const { busy, error, message, setMessage, setError, run } = useHrRunner();
   const [workflows, setWorkflows] = useState<Page<Workflow>>({ items: [], next_cursor: null });
   const [automatic, setAutomatic] = useState(false);
   const [review, setReview] = useState<{ id: string; title: string; version: number; action: string } | null>(null);
-  const [domain, setDomain] = useState<Domain>(domains[0]);
   const writable = !readonly;
+  const actions = requestActions(context.workflows, domains);
+  const preparable = writable ? actions.prepare : [];
+  const [chosen, setDomain] = useState<Domain | null>(null);
+  // A refreshed context can take a grant away; fall back to the first domain still allowed.
+  const domain = chosen !== null && preparable.includes(chosen) ? chosen : preparable[0];
   async function refresh(after?: string) {
     await refreshContext();
     const page = await client.workflows(after);
@@ -69,7 +77,7 @@ export function RequestsPanel({ tenant, readonly, userId, refreshContext, domain
     </div>
     {error && <Notice error>{error}. Refresh to check saved state before retrying. An identical retry keeps its request key.</Notice>}
     {message && <Notice>{message}</Notice>}
-    {writable && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={automatic}
+    {preparable.length > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={automatic}
       onChange={e => setAutomatic(e.target.checked)} />Use enabled staff agents for preparation. Human decisions still require review.</label>}
     {review && <Panel title={`Review: ${review.title}`}><form onSubmit={decide} className="space-y-3">
       <p>Action: {review.action}. Current version: {review.version}.</p>
@@ -77,9 +85,9 @@ export function RequestsPanel({ tenant, readonly, userId, refreshContext, domain
       <button className={action} disabled={busy}>Continue with {review.action}</button>
       <button className={`${secondary} ml-2`} type="button" disabled={busy} onClick={() => setReview(null)}>Cancel</button>
     </form></Panel>}
-    {writable && <Panel title="Prepare an HR request"><form onSubmit={workflowPrepare} className="space-y-4">
+    {preparable.length > 0 && <Panel title="Prepare an HR request"><form onSubmit={workflowPrepare} className="space-y-4">
       <label className="block text-sm">Workflow<select className={`${field} mt-1`} value={domain} onChange={e => setDomain(e.target.value as Domain)}>
-        {domains.map(item => <option key={item} value={item}>{DOMAIN_LABELS[item]}</option>)}</select></label>
+        {preparable.map(item => <option key={item} value={item}>{DOMAIN_LABELS[item]}</option>)}</select></label>
       <label className="block text-sm">Workforce region<select name="region" className={`${field} mt-1`} required>
         <option value="peninsular_labuan">Peninsular Malaysia / Labuan</option><option value="sabah">Sabah</option><option value="sarawak">Sarawak</option></select></label>
       {domain === "recruitment" && <><Input name="role_title" label="Role title" /><Input name="competencies" label="Job competencies, separated by commas (up to eight)" maxLength={968} /></>}
@@ -106,7 +114,7 @@ export function RequestsPanel({ tenant, readonly, userId, refreshContext, domain
         {item.interview_guide.length > 0 && <ol className="my-3 list-decimal space-y-2 pl-5 text-sm">{item.interview_guide.map((question, index) => <li key={index}>{question}</li>)}</ol>}
         {item.decision_reason && <p className="text-sm">Decision reason: {item.decision_reason}</p>}
         {writable && item.status === "pending" && <div className="flex flex-wrap gap-2">{[
-          ...(item.created_by === userId ? ["withdraw"] : []), "approve", "reject",
+          ...(item.created_by === userId ? ["withdraw"] : []), ...(actions.decides(item.domain) ? ["approve", "reject"] : []),
         ].map(verb => <button className={secondary} disabled={busy} key={verb} onClick={() => setReview({ id: item.id,
           title: `${item.domain} request ${item.id}`, version: item.version, action: verb })}>{verb}</button>)}</div>}
       </article>)}</div></Panel>

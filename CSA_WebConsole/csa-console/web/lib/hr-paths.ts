@@ -77,6 +77,18 @@ export function legacyHrRoute(section: string | null): HrRoute | null {
   return route ? { ...route } : null;
 }
 
+/**
+ * The pathname a navigate to `href` lands on. A bare HR tab link with a legacy `?section=`
+ * (what the assistant's navigate builds) is redirected by the HR pages to that section's own
+ * path; any other href lands on its own path.
+ */
+export function navigateLandingPath(href: string): string {
+  const [path, query = ""] = href.split("?", 2);
+  if (path !== "/portal/hr" && path !== "/hr") return path;
+  const legacy = legacyHrRoute(new URLSearchParams(query).get("section"));
+  return legacy ? hrHref(legacy, path === "/hr", null) : path;
+}
+
 /** Exactly the paths `parseHrPath` accepts, under `/hr` or `/portal/hr`. */
 export function isHrPagePath(pathname: string): boolean {
   for (const base of ["/portal/hr", "/hr"]) {
