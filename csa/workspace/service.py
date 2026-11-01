@@ -106,6 +106,7 @@ from csa.workspace.rules import (
     CORRECTION_NOTES,
     OPTION_TOO_LONG,
     RECIPIENT_NOT_REQUESTED,
+    TAB_LABELS,
     UNKNOWN_THREAD,
     about_email,
     asks_for_content,
@@ -537,6 +538,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_never_synced": "Your email hasn't been synced yet. Open the Email assistant tab "
         "and press Sync, then ask again.",
         "content_question": "What should the email say? Type a line or two and I'll write it.",
+        "not_included": "Not included",
+        "no_work_email": "no work email",
         "high": "high",
         "normal": "normal",
         "low": "low",
@@ -592,10 +595,12 @@ _TEXT: dict[str, dict[str, str]] = {
         "summary_permission_denied": "Akses anda tidak termasuk ringkasan e-mel.",
         "summary_unavailable": "Saya tidak dapat meringkaskan peti masuk anda sekarang. Cuba "
         "lagi dalam beberapa minit.",
-        "summary_never_synced": "E-mel anda belum disegerakkan. Buka tab Pembantu E-mel dan "
-        "tekan Segerak, kemudian tanya semula.",
+        "summary_never_synced": "E-mel anda belum disegerakkan. Buka tab Email assistant dan "
+        "tekan Sync inbox, kemudian tanya semula.",
         "content_question": "Apa yang patut e-mel itu katakan? Taip satu atau dua ayat dan saya "
         "akan menulisnya.",
+        "not_included": "Tidak disertakan",
+        "no_work_email": "tiada e-mel kerja",
         "high": "tinggi",
         "normal": "biasa",
         "low": "rendah",
@@ -1420,7 +1425,8 @@ async def _team_email(
     prepared = await _draft_card(request, actor, client_id, registry, draft, send=send)
     if team.skipped:
         names = ", ".join(person.display_name for person in team.skipped)
-        skipped = CardField(label="Not included", value=f"{names} (no work email)")
+        text = _TEXT[facts.language]
+        skipped = CardField(label=text["not_included"], value=f"{names} ({text['no_work_email']})")
         content = replace(prepared.content, fields=[*prepared.content.fields, skipped])
         prepared = replace(prepared, content=content)
     return _Planned(prepared=prepared)
@@ -1543,12 +1549,13 @@ async def _resolve(
     if isinstance(proposal, NavigateProposal):
         # The console's package and role rule (M8): never "navigate" to a tab it would hide.
         if not tab_available(proposal.tab, facts.role, facts.packages):
+            tab = TAB_LABELS.get(proposal.tab, proposal.tab)  # as the console's sidebar shows it
             if not role_allows_tab(proposal.tab, facts.role):
-                text = _TEXT[facts.language]["locked_role"].format(tab=proposal.tab)
+                text = _TEXT[facts.language]["locked_role"].format(tab=tab)
             else:
                 keys = _TAB_GATES[proposal.tab][0]
                 names = " or ".join(sorted(BY_KEY[k].title for k in keys))
-                text = _TEXT[facts.language]["locked"].format(tab=proposal.tab, packages=names)
+                text = _TEXT[facts.language]["locked"].format(tab=tab, packages=names)
             return _Planned(result=AnswerResult(action="answer", markdown=text))
         return _Planned(
             result=NavigateResult(

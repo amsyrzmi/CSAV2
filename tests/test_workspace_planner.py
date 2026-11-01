@@ -1016,6 +1016,26 @@ async def test_navigate_to_locked_tab_is_answered_not_refused(planned) -> None:
     result = turn.json()["result"]
     assert result["action"] == "answer"
     assert "not active" in result["markdown"] and "Staff email" in result["markdown"]
+    assert result["markdown"].startswith("The Email assistant tab")
+
+
+@requires_docker
+async def test_locked_tab_is_named_as_the_console_shows_it_in_both_languages(planned) -> None:
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply({"action": "navigate", "tab": "hr"})
+    english = await _turn(w, browser, thread, "Take me to the people page", "overview")
+    assert english.status_code == 201, english.text
+    assert english.json()["result"]["markdown"].startswith("The People & HR tab needs the ")
+    assert "hr tab" not in english.json()["result"]["markdown"]
+    model.reply({"action": "navigate", "tab": "hr"})
+    malay = await _turn(w, browser, thread, "Tolong bawa saya ke halaman pekerja", "overview")
+    assert malay.status_code == 201, malay.text
+    assert malay.json()["language"] == "ms"
+    text = malay.json()["result"]["markdown"]
+    assert text.startswith("Tab People & HR memerlukan perkhidmatan ")
+    assert "Tab hr" not in text and "halaman Services" in text
 
 
 @requires_docker
@@ -2321,7 +2341,7 @@ async def test_disconnected_mailbox_drafts_nothing(planned, kind: str) -> None:
 NEVER_SYNCED = {
     "en": "Your email hasn't been synced yet. Open the Email assistant tab and press Sync, "
     "then ask again.",
-    "ms": "E-mel anda belum disegerakkan. Buka tab Pembantu E-mel dan tekan Segerak, "
+    "ms": "E-mel anda belum disegerakkan. Buka tab Email assistant dan tekan Sync inbox, "
     "kemudian tanya semula.",
 }
 
@@ -2668,8 +2688,16 @@ async def test_navigate_to_locked_tab_answers_locked(planned) -> None:
     assert turn.status_code == 201, turn.text
     assert turn.json()["result"] == {
         "action": "answer",
-        "markdown": "The email tab needs the Staff email service, which is not active for this "
-        "workspace. Ask your administrator to activate it on the Services page.",
+        "markdown": "The Email assistant tab needs the Staff email service, which is not active "
+        "for this workspace. Ask your administrator to activate it on the Services page.",
+    }
+    model.reply({"action": "navigate", "tab": "email"})
+    malay = await _turn(w, browser, thread, "Tolong bawa saya ke halaman e-mel", "overview")
+    assert malay.status_code == 201, malay.text
+    assert malay.json()["result"] == {
+        "action": "answer",
+        "markdown": "Tab Email assistant memerlukan perkhidmatan Staff email, yang tidak aktif "
+        "untuk ruang kerja ini. Minta pentadbir anda mengaktifkannya di halaman Services.",
     }
     await activate(w, w.tenants[0], "staff_email")
     model.reply({"action": "navigate", "tab": "email"})
