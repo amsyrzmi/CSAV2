@@ -136,8 +136,8 @@ Tick each row when the result matches.
 | What needs my attention in my email today? | Gmail synced | An inbox summary | `attention-en-1` |
 | Apa emel yang perlu perhatian saya hari ini? | Gmail synced | An inbox summary | `attention-ms-1` |
 | What needs my attention in my email today? | Gmail synced | A list of what needs attention, or "Nothing in your synced email needs your attention right now." | manual |
-| What needs my attention in my email? | Gmail connected, never synced | "Your email hasn't been synced yet. Open the Email assistant tab and press Sync, then ask again." | manual |
-| Apa emel yang perlu perhatian saya? | Gmail connected, never synced | "E-mel anda belum disegerakkan. Buka tab Pembantu E-mel dan tekan Segerak, kemudian tanya semula." | manual |
+| What needs my attention in my email? | Gmail connected, never synced | "Your email hasn't been synced yet. Open the Email assistant tab and press Sync inbox, then ask again." | manual |
+| Apa emel yang perlu perhatian saya? | Gmail connected, never synced | "E-mel anda belum disegerakkan. Buka tab Email assistant dan tekan Sync inbox, kemudian tanya semula." | manual |
 
 ## Training
 
@@ -191,3 +191,12 @@ Tick each row when the result matches.
 | Send an email to Razak about the invoice, then ask something else and go back to the first card | An old card's buttons disabled | Only the newest card's options and candidates can be clicked; the older card's are disabled | manual |
 | Tolong hantar emel kepada Razak tentang invois, kemudian tanya soalan lain | An old card's buttons disabled | Hanya kad terbaru boleh diklik | manual |
 | Any prompt while the model provider is down | Model unavailable (simulate only in a local stack) | One plain sentence saying the assistant is unavailable and to try again; no raw error code | manual |
+
+## Forward-only data shape
+
+Turns stored since the Malay rollout carry `result.language` and new cards carry `card.language`;
+the previous images reject both (`extra="forbid"`), so a rollback to them breaks the turn list,
+the planner history and proposal reads. If a rollback is ever needed, the owner first runs
+`UPDATE public.console_workspace_turns SET result = (result - 'language') #- '{proposal,card,language}';`
+and `UPDATE public.console_proposals SET card = card - 'language';`
+(see `deploy/STAGING_PIPELINE.md`, "Forward-only data shape").
