@@ -27,7 +27,8 @@ export interface DraftRecipients extends DraftContent {
   recipients: RecipientFlag[];
   reply_to_message_id: string | null;
 }
-export interface RecipientGroup { label: string; people: RecipientFlag[] }
+/** `key` is stable across languages; `label` is the shown text. */
+export interface RecipientGroup { key: "to" | "cc" | "bcc"; label: string; people: RecipientFlag[] }
 
 /** The shown label of each group; the server's Malay card text says "Kepada" for To. */
 const GROUP_LABELS: Record<Language, { to: string; cc: string; bcc: string }> = {
@@ -37,7 +38,7 @@ const GROUP_LABELS: Record<Language, { to: string; cc: string; bcc: string }> = 
 
 /**
  * To, CC and BCC with the server's outside flag; an address the server did not mark is outside.
- * `label` is the shown text, so it is "Kepada" (not "To") in Malay; To is always the first group.
+ * `label` is the shown text, so it is "Kepada" (not "To") in Malay; compare `key`, not `label`.
  */
 export function recipientGroups(draft: DraftRecipients, language: Language = "en"): RecipientGroup[] {
   const labels = GROUP_LABELS[language];
@@ -53,9 +54,9 @@ export function recipientGroups(draft: DraftRecipients, language: Language = "en
     return { address, outside };
   };
   const groups: RecipientGroup[] = [
-    { label: labels.to, people: draft.to.map(flag) },
-    { label: labels.cc, people: draft.cc.map(flag) },
-    { label: labels.bcc, people: draft.bcc.map(flag) },
+    { key: "to", label: labels.to, people: draft.to.map(flag) },
+    { key: "cc", label: labels.cc, people: draft.cc.map(flag) },
+    { key: "bcc", label: labels.bcc, people: draft.bcc.map(flag) },
   ];
   return groups.filter(group => group.people.length > 0);
 }

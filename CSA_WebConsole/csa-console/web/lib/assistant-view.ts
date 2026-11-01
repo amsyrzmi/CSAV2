@@ -1,6 +1,7 @@
 /** Pure helpers behind the assistant dock and proposal card (no React, no I/O). */
 import {
   errorLine,
+  languageOf,
   panelText,
   statusText,
   type Language,
@@ -261,6 +262,11 @@ export function typedMessage(
   if (last && "action" in last.result && last.result.action === "clarification")
     return answered(text, last.result.question, originFor(last, origins), false);
   return { text, origin: text };
+}
+
+/** The newest turn's language, for the lines that belong to the whole panel; English before any turn. */
+export function latestLanguage(turns: WorkspaceTurn[]): Language {
+  return languageOf(turns.at(-1));
 }
 
 /**

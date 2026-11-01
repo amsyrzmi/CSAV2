@@ -67,11 +67,27 @@ const LISTED = [
   // Subscription card refusals at Confirm: retrying cannot help, so they must not fall back.
   "action_not_allowed", "resume_at_not_after_today", "plan_unavailable", "plan_unchanged",
   "price_override_requires_immediate_change", "renews_at_not_after_current", "request_decided",
-  "request_subscription_mismatch",
+  "request_subscription_mismatch", "request_action_mismatch", "subscription_not_found",
 ];
+// One home per sentence: these three live in the email table, so MS_ERRORS must not copy them.
+const EMAIL_OWNED = ["mailbox_not_connected", "email_model_unavailable", "recipients_invalid"];
+// What a listed code reads as in Malay: its MS_ERRORS line, else the email table's.
+const malayLine = (code) => copy.MS_ERRORS[code] ?? email.emailErrorSentence({ code }, "ms");
 
-test("MS_ERRORS covers every api.ts code the dock can reach", () => {
-  for (const code of LISTED) assert.ok(copy.MS_ERRORS[code]?.trim(), code);
+test("every listed code gets a Malay line through errorLine, from one home", () => {
+  for (const code of LISTED) {
+    const line = copy.errorLine(apiError(code, 409, "English sentence"), "ms");
+    assert.ok(line.trim(), code);
+    assert.notEqual(line, FALLBACK, code);
+    assert.equal(line, malayLine(code), code);
+  }
+  for (const code of EMAIL_OWNED) {
+    assert.equal(copy.MS_ERRORS[code], undefined, `${code} is duplicated in MS_ERRORS`);
+    assert.equal(copy.errorLine(apiError(code), "ms"), email.emailErrorSentence({ code }, "ms"), code);
+  }
+  // draft_rejected and thread_body_unavailable are different on purpose.
+  for (const code of ["draft_rejected", "thread_body_unavailable"])
+    assert.notEqual(copy.MS_ERRORS[code], email.emailErrorSentence({ code }, "ms"), code);
 });
 
 test("a known code in Malay gives its Malay line, whatever the English message", () => {
@@ -80,7 +96,7 @@ test("a known code in Malay gives its Malay line, whatever the English message",
   assert.doesNotMatch(line, /unavailable/);
   for (const code of LISTED) {
     const text = copy.errorLine(apiError(code, 409, "English sentence"), "ms");
-    assert.equal(text, copy.MS_ERRORS[code], code);
+    assert.equal(text, malayLine(code), code);
     assert.notEqual(text, FALLBACK, code);
   }
 });
@@ -125,4 +141,18 @@ test("English error lines are exactly what the panel showed before", () => {
   assert.equal(copy.errorLine("boom", "en"), "The assistant request failed.");
   const explained = apiError("mailbox_not_connected", 409, "Connect your Gmail in the Email tab first.");
   assert.equal(copy.errorLine(explained, "en"), "Connect your Gmail in the Email tab first.");
+});
+
+test("the dock chrome has English as it was and a Malay line", () => {
+  const english = {
+    dock_title: "Assistant", new_conversation: "New conversation", close_assistant: "Close assistant",
+    message_label: "Message", retry_same: "Retry same request", start_new: "Start a new request",
+    order_source: "Source", order_tracking: "Tracking", order_carrier: "Carrier", order_not_recorded: "Not recorded",
+    empty_hint: "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you confirm it.",
+  };
+  for (const [key, text] of Object.entries(english)) {
+    assert.equal(copy.PANEL.en[key], text, key);
+    assert.ok(copy.PANEL.ms[key]?.trim(), key);
+    assert.notEqual(copy.PANEL.ms[key], text, key);
+  }
 });

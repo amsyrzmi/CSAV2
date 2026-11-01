@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { errorLine, languageOf, panelText } from "@/lib/assistant-copy";
 import { resultSummary } from "@/lib/assistant-view";
 import { emailClient, type Draft } from "@/lib/email-api";
 import { cardFieldsShown, draftIdFromCard, emailCardBlock, emailErrorSentence } from "@/lib/email-recipients";
@@ -39,6 +40,7 @@ export function ProposalCard({
   const [blocked, setBlocked] = useState(false);
   const current = settled ?? proposal;
   const { card } = current;
+  const language = languageOf(card);
   const isEmail = proposal.kind === "email_send" || proposal.kind === "email_export";
   // Email cards store counts only: the content is read from the person's own draft on open.
   const draftId = isEmail && proposal.status === "requested" ? draftIdFromCard(proposal.card) : null;
@@ -52,11 +54,11 @@ export function ProposalCard({
       (value) => { if (live) setDraft(value); },
       (cause: unknown) => {
         if (live)
-          setDraftError(emailErrorSentence(cause) ?? "We couldn't open this email. Refresh the page and try again.");
+          setDraftError(emailErrorSentence(cause, language) ?? panelText(language, "email_open_failed"));
       },
     );
     return () => { live = false; };
-  }, [draftId, tenantId]);
+  }, [draftId, tenantId, language]);
 
   // Already sent, sending or exported says so on both email cards. A send card also says when
   // [STAFF: …] parts are left to fill in, or when the draft was edited since the card was made.
@@ -72,10 +74,13 @@ export function ProposalCard({
       setSettled(next);
       onSettled?.(next);
     } catch (cause) {
-      const sentence = isEmail ? emailErrorSentence(cause) : null;
+      const sentence = isEmail ? emailErrorSentence(cause, language) : null;
       if (sentence && FINAL_EMAIL_CODES.has((cause as { code?: string }).code ?? "")) setBlocked(true);
       // Server details are written as user-facing copy; show them verbatim.
-      setError(sentence ?? (cause instanceof Error ? cause.message : "The request failed."));
+      setError(
+        sentence ??
+          (language === "ms" ? errorLine(cause, "ms") : cause instanceof Error ? cause.message : "The request failed."),
+      );
     } finally {
       setBusy(null);
     }
@@ -92,7 +97,12 @@ export function ProposalCard({
       <p className="mt-1">{card.summary}</p>
       {draft && (
         <div className="mt-3">
-          <EmailPreview draft={draft} recipientsTestId="proposal-email-recipients" bodyTestId="proposal-email-body" />
+          <EmailPreview
+            draft={draft}
+            recipientsTestId="proposal-email-recipients"
+            bodyTestId="proposal-email-body"
+            language={language}
+          />
         </div>
       )}
       {draftError && (
@@ -111,11 +121,11 @@ export function ProposalCard({
         </dl>
       )}
       <p className="mt-3 text-xs text-ink-500">
-        Expires {new Date(card.expires_at).toLocaleString()}
+        {panelText(language, "expires", { when: new Date(card.expires_at).toLocaleString() })}
       </p>
       {(error || (staleCode && current.status === "requested")) && (
         <div className="mt-3">
-          <Notice error>{error || emailErrorSentence({ code: staleCode })}</Notice>
+          <Notice error>{error || emailErrorSentence({ code: staleCode }, language)}</Notice>
         </div>
       )}
       {current.status === "requested" ? (
@@ -128,9 +138,12 @@ export function ProposalCard({
               disabled={busy !== null || waitingForDraft || draftError !== ""}
               onClick={() => decide("confirm")}
             >
-              {proposal.kind === "email_send"
-                ? busy === "confirm" ? "Sending…" : "Send"
-                : busy === "confirm" ? "Confirming…" : "Confirm"}
+              {panelText(
+                language,
+                proposal.kind === "email_send"
+                  ? busy === "confirm" ? "button_sending" : "button_send"
+                  : busy === "confirm" ? "button_confirming" : "button_confirm",
+              )}
             </button>
           )}
           <button
@@ -140,12 +153,12 @@ export function ProposalCard({
             disabled={busy !== null}
             onClick={() => decide("cancel")}
           >
-            {busy === "cancel" ? "Cancelling…" : "Cancel"}
+            {panelText(language, busy === "cancel" ? "button_cancelling" : "button_cancel")}
           </button>
         </div>
       ) : (
         <p role="status" data-testid="proposal-outcome" className="mt-3 font-medium">
-          {resultSummary(current)}
+          {resultSummary(current, language)}
         </p>
       )}
     </article>

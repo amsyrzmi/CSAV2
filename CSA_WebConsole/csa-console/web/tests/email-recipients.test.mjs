@@ -24,6 +24,7 @@ const draft = (extra = {}) => ({
 test("recipients are grouped To, CC, BCC and outside addresses carry the flag", () => {
   const groups = email.recipientGroups(draft());
   assert.deepEqual(groups.map((g) => g.label), ["To", "CC", "BCC"]);
+  assert.deepEqual(groups.map((g) => g.key), ["to", "cc", "bcc"]);
   assert.deepEqual(groups[0].people, [{ address: "siti@company.test", outside: false }]);
   assert.deepEqual(groups[1].people, [{ address: "vendor@outside.test", outside: true }]);
   assert.deepEqual(groups[2].people, [{ address: "Boss@Company.test", outside: false }]);
@@ -31,7 +32,7 @@ test("recipients are grouped To, CC, BCC and outside addresses carry the flag", 
   assert.equal(email.outsideCount(draft()), 1);
   // Empty groups are left out; an address missing from recipients[] is treated as outside.
   const lonely = email.recipientGroups(draft({ cc: [], bcc: [], to: ["new@x.test"], recipients: [] }));
-  assert.deepEqual(lonely, [{ label: "To", people: [{ address: "new@x.test", outside: true }] }]);
+  assert.deepEqual(lonely, [{ key: "to", label: "To", people: [{ address: "new@x.test", outside: true }] }]);
 });
 
 test("a draft with no thread is a new email, never a reply", () => {
@@ -167,6 +168,7 @@ test("provider_unreachable, permission_denied and email_model_unavailable have s
 test("recipient labels and the outside label are Malay in a Malay card", () => {
   const groups = email.recipientGroups(draft(), "ms");
   assert.deepEqual(groups.map((g) => g.label), ["Kepada", "CC", "BCC"]);
+  assert.deepEqual(groups.map((g) => g.key), ["to", "cc", "bcc"], "the key does not change with the language");
   assert.deepEqual(groups[1].people, [{ address: "vendor@outside.test", outside: true }]);
   assert.equal(email.OUTSIDE_LABELS.ms, "Di luar syarikat anda");
   assert.equal(email.OUTSIDE_LABELS.en, email.OUTSIDE_LABEL);

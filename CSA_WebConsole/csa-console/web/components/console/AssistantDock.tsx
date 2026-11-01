@@ -3,11 +3,13 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
+import { languageOf, panelText, PANEL, type Language } from "@/lib/assistant-copy";
 import {
   candidateAnswer,
   dockTenant,
   effectiveContext,
   isAnswerable,
+  latestLanguage,
   navigateText,
   openProposals,
   optionAnswer,
@@ -229,7 +231,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         await navigate(turn.result, attempt);
     } catch (cause) {
       if (!controller.signal.aborted)
-        setError(turnErrorText(cause));
+        setError(turnErrorText(cause, latestLanguage(latest.current.turns)));
     } finally {
       if (mutation.current === controller) mutation.current = null;
       if (!controller.signal.aborted) setBusy(false);
@@ -281,7 +283,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     if (!waitingForRoute) return;
     const timer = setTimeout(() => {
       setResume(null);
-      setError("The tab did not open, so the request was not continued. Send it again.");
+      setError(panelText(latestLanguage(latest.current.turns), "resume_timeout"));
     }, RESUME_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [waitingForRoute]);
@@ -304,6 +306,10 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     setOpen(false);
   }
 
+  // Panel-wide lines follow the newest turn; each turn's own lines follow that turn.
+  const language = latestLanguage(turns);
+  const text = PANEL[language];
+
   if (!open)
     return (
       <button
@@ -316,7 +322,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         className={`${action} fixed bottom-5 right-5 z-40 rounded-full shadow-lg`}
       >
         <MessageSquare size={18} aria-hidden />
-        Assistant
+        {text.dock_title}
       </button>
     );
 
@@ -333,13 +339,15 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     >
       <header className="flex items-center gap-2 border-b border-ink-200 px-4 py-3">
         <h2 id={`${panelId}-title`} className="text-base font-semibold">
-          Assistant
+          {text.dock_title}
         </h2>
         <span
           data-testid="assistant-tab"
           className="rounded-full bg-brand-50 px-2 py-0.5 text-xs text-ink-700"
         >
-          {context ? `On ${tabLabel(context.tab, me, packages)}` : "No tab context"}
+          {context
+            ? panelText(language, "on_tab", { tab: tabLabel(context.tab, me, packages) })
+            : text.no_tab_context}
         </span>
         <button
           type="button"
@@ -347,11 +355,11 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
           disabled={busy}
           onClick={newConversation}
         >
-          New conversation
+          {text.new_conversation}
         </button>
         <button
           type="button"
-          aria-label="Close assistant"
+          aria-label={text.close_assistant}
           onClick={close}
           className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md hover:bg-ink-50"
         >
@@ -359,18 +367,16 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         </button>
       </header>
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3" aria-live="polite">
-        {!loaded && <p className="text-sm text-ink-500">Loading your conversation…</p>}
+        {!loaded && <p className="text-sm text-ink-500">{PANEL.en.loading}</p>}
         {loaded && turns.length === 0 && (
-          <p className="text-sm text-ink-500">
-            Ask about this tab, find a colleague, or prepare an action. Nothing changes until
-            you confirm it.
-          </p>
+          <p className="text-sm text-ink-500">{text.empty_hint}</p>
         )}
         {turns.map((turn) => (
           <article key={turn.id} data-testid="assistant-turn" className="space-y-2">
             <p className="ml-8 whitespace-pre-wrap rounded-md bg-ink-50 p-3 text-sm">{turn.body}</p>
             <TurnResult
               result={turn.result}
+              language={languageOf(turn)}
               origin={originFor(turn, origins)}
               me={me}
               packages={packages}
@@ -383,7 +389,9 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
             />
           </article>
         ))}
-        {resume && <Notice>Opening {tabLabel(resume.tab, me, packages)} and continuing…</Notice>}
+        {resume && (
+          <Notice>{panelText(language, "resume_opening", { tab: tabLabel(resume.tab, me, packages) })}</Notice>
+        )}
         {error && <Notice error>{error}</Notice>}
       </div>
       <form
@@ -394,7 +402,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         }}
       >
         <label className="block text-sm">
-          Message
+          {text.message_label}
           <textarea
             ref={input}
             data-testid="assistant-input"
@@ -415,7 +423,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
           {retry ? (
             <>
               <button type="button" className={action} onClick={() => pending && send(pending)}>
-                Retry same request
+                {text.retry_same}
               </button>
               <button
                 type="button"
@@ -425,7 +433,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
                   setError("");
                 }}
               >
-                Start a new request
+                {text.start_new}
               </button>
             </>
           ) : (
@@ -435,7 +443,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
               className={action}
               disabled={busy || resume !== null || !body.trim() || !loaded}
             >
-              {busy ? "Sending…" : "Send"}
+              {busy ? text.button_sending : text.button_send}
             </button>
           )}
         </div>
@@ -446,6 +454,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
 
 function TurnResult({
   result,
+  language,
   origin,
   me,
   packages,
@@ -457,6 +466,8 @@ function TurnResult({
   onAsk,
 }: {
   result: WorkspaceResult;
+  /** The turn's language: every line written around its result follows it. */
+  language: Language;
   /** The request that produced this result; follow-ups repeat it for the planner. */
   origin: string;
   me: Me;
@@ -469,7 +480,8 @@ function TurnResult({
   onSettled: (proposal: ProposalOut) => void;
   onAsk: (outgoing: Outgoing) => void;
 }) {
-  const view = resultView(result);
+  const view = resultView(result, language);
+  const text = PANEL[language];
   const box = "rounded-md bg-brand-50 p-3 text-sm";
   switch (view.kind) {
     case "notice":
@@ -479,7 +491,7 @@ function TurnResult({
         <div className={box}>
           <p>{view.text}</p>
           <p className="mt-2 text-xs text-ink-500">
-            Source: {view.source} · As of {new Date(view.asOf).toLocaleString()}
+            {text.order_source}: {view.source} · As of {new Date(view.asOf).toLocaleString()}
           </p>
         </div>
       );
@@ -492,11 +504,12 @@ function TurnResult({
             {order.status} · Payment: {order.payment_status} · {order.currency} {order.total}
           </p>
           <p>
-            Source: {order.channel} · Tracking: {order.tracking_no ?? "Not recorded"} · Carrier:{" "}
-            {order.carrier ?? "Not recorded"}
+            {text.order_source}: {order.channel} · {text.order_tracking}:{" "}
+            {order.tracking_no ?? text.order_not_recorded} · {text.order_carrier}:{" "}
+            {order.carrier ?? text.order_not_recorded}
           </p>
           <p className="mt-2 text-xs text-ink-500">
-            Source: {view.result.source} · Marketplace sync: {view.result.marketplace_sync} · As
+            {text.order_source}: {view.result.source} · Marketplace sync: {view.result.marketplace_sync} · As
             of {new Date(view.result.as_of).toLocaleString()}
           </p>
         </div>
@@ -514,7 +527,7 @@ function TurnResult({
     case "answer":
       return <p className={`${box} whitespace-pre-wrap`}>{view.text}</p>;
     case "navigate": {
-      const shown = navigateText(view.tab, view.resume, me, packages);
+      const shown = navigateText(view.tab, view.resume, me, packages, language);
       return shown.error ? (
         <Notice error>{shown.text}</Notice>
       ) : (
@@ -524,7 +537,7 @@ function TurnResult({
     case "directory":
       return (
         <div className={box}>
-          <p className="mb-2">Choose a colleague:</p>
+          <p className="mb-2">{text.choose_colleague}</p>
           <ul className="space-y-2">
             {view.candidates.map((person) => (
               <li key={person.employee_id}>

@@ -364,3 +364,12 @@ test("the follow-up protocol strings stay English whatever the panel language", 
   assert.equal(view.candidateFollowUp({ employee_id: "e1" }, "emel Aina"), "Use employee e1 for: emel Aina");
   assert.match(view.clarificationAnswer("Danial", "Siapa?", "hantar emel"), /\(Answer to “Siapa\?” for: hantar emel\)$/);
 });
+
+test("latestLanguage is the newest turn's language, English when there is none", () => {
+  assert.equal(view.latestLanguage([]), "en");
+  assert.equal(view.latestLanguage([{ language: "ms" }]), "ms");
+  assert.equal(view.latestLanguage([{ language: "ms" }, { language: "en" }]), "en");
+  assert.equal(view.latestLanguage([{ language: "en" }, { language: "ms" }]), "ms");
+  assert.equal(view.latestLanguage([{ language: "ms" }, {}]), "en");
+  assert.equal(view.latestLanguage([{}]), "en");
+});

@@ -16,6 +16,20 @@ export function languageOf(x: { language?: Language } | null | undefined): Langu
 }
 
 const en = {
+  // Dock chrome.
+  dock_title: "Assistant",
+  new_conversation: "New conversation",
+  close_assistant: "Close assistant",
+  message_label: "Message",
+  empty_hint:
+    "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you confirm it.",
+  retry_same: "Retry same request",
+  start_new: "Start a new request",
+  // Order card labels.
+  order_source: "Source",
+  order_tracking: "Tracking",
+  order_carrier: "Carrier",
+  order_not_recorded: "Not recorded",
   // Dock: context line, loading, notices.
   on_tab: "On {tab}",
   no_tab_context: "No tab context",
@@ -81,6 +95,18 @@ const en = {
 export type PanelKey = keyof typeof en;
 
 const ms: Record<PanelKey, string> = {
+  dock_title: "Pembantu",
+  new_conversation: "Perbualan baharu",
+  close_assistant: "Tutup pembantu",
+  message_label: "Mesej",
+  empty_hint:
+    "Tanya tentang tab ini, cari rakan sekerja, atau sediakan satu tindakan. Tiada apa-apa yang berubah sehingga anda mengesahkannya.",
+  retry_same: "Cuba semula permintaan yang sama",
+  start_new: "Mulakan permintaan baharu",
+  order_source: "Sumber",
+  order_tracking: "Penjejakan",
+  order_carrier: "Kurier",
+  order_not_recorded: "Tidak direkodkan",
   on_tab: "Pada tab {tab}",
   no_tab_context: "Tiada konteks tab",
   loading: "Memuatkan perbualan anda…",
@@ -172,7 +198,8 @@ export function statusText(status: string, language: Language): string {
 /**
  * `ApiError.code` to a Malay line, for the codes an assistant turn or a card Confirm/Cancel can
  * return (lib/api.ts has the English). Email refusals not listed here are in
- * lib/email-recipients.ts, which holds the Malay email sentences once.
+ * lib/email-recipients.ts, which holds the Malay email sentences once (so a code listed there,
+ * such as mailbox_not_connected, is not repeated here).
  */
 export const MS_ERRORS: Record<string, string> = {
   package_inactive:
@@ -187,10 +214,8 @@ export const MS_ERRORS: Record<string, string> = {
   agent_disabled:
     "Pembantu ini dimatikan untuk organisasi anda. Pentadbir boleh menghidupkannya dalam tetapannya.",
   planner_unavailable: "Pembantu tidak tersedia sekarang. Cuba lagi sebentar lagi.",
-  mailbox_not_connected: "Sambungkan Gmail anda di tab Email assistant dahulu.",
   planner_invalid_output:
     "Pembantu tidak dapat menghasilkan jawapan yang boleh digunakan. Cuba lagi atau nyatakan dengan cara lain.",
-  email_model_unavailable: "Email assistant tidak dapat menulisnya sekarang. Cuba lagi sebentar lagi.",
   hr_model_unavailable: "Pembantu HR tidak dapat menjawab sekarang. Cuba lagi sebentar lagi.",
   email_timeout_check_saved_state:
     "Permintaan e-mel mengambil masa terlalu lama. Semak draf anda dan tab Email assistant sebelum mencuba lagi.",
@@ -209,7 +234,6 @@ export const MS_ERRORS: Record<string, string> = {
     "Anda tiada kebenaran menghantar permohonan latihan. Minta pemilik HR anda memberi anda akses.",
   reply_target_unavailable: "Saya tidak dapat menentukan kepada siapa untuk membalas dalam perbualan itu.",
   email_recipient_invalid: "Semak alamat e-mel.",
-  recipients_invalid: "Semak alamat e-mel.",
   draft_rejected: "Saya tidak dapat menulis e-mel itu. Cuba nyatakan dengan cara lain.",
   thread_body_unavailable: "Saya tidak dapat membaca perbualan itu daripada Gmail. Segerakkan dan cuba lagi.",
   resource_unavailable: "Item itu tidak tersedia lagi.",
@@ -227,6 +251,9 @@ export const MS_ERRORS: Record<string, string> = {
   request_decided: "Seseorang sudah membuat keputusan tentang permintaan ini.",
   request_subscription_mismatch:
     "Permintaan ini tidak sepadan dengan langganan pelanggan. Tolak permintaan itu, kemudian semak langganan.",
+  request_action_mismatch:
+    "Perubahan ini bukan yang diminta oleh pelanggan. Luluskan permintaan itu daripada tab Requests.",
+  subscription_not_found: "Langganan itu tidak wujud lagi. Muat semula halaman.",
   // The inbox's own spelling of the same refusal, which api.ts also explains.
   "reply approval not found":
     "Balasan yang ditahan itu tidak lagi menunggu keputusan. Segarkan perbualan.",
