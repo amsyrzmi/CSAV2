@@ -784,7 +784,7 @@ async def test_rls_and_role_privileges_fail_closed(world: HrWorld) -> None:
         "SELECT relrowsecurity,relforcerowsecurity FROM pg_class "
         "WHERE relname LIKE 'hr_%' AND relkind='r'"
     )
-    assert len(staged) == 27 and all(
+    assert len(staged) == 29 and all(
         r["relrowsecurity"] and not r["relforcerowsecurity"] for r in staged
     )
 
