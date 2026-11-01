@@ -49,19 +49,26 @@ MAX_WORDS = 5  # bounds the SQL; later words are ignored, so a long query still 
 _WORD_SPLIT = re.compile(r"[\s,]+")
 
 
-def _word_patterns(query: str) -> list[str]:
-    """The escaped ``%word%`` patterns of the first words, split on whitespace and commas."""
-    words = [word for word in _WORD_SPLIT.split(query.strip()) if word]
-    return [_like(word) for word in words[:MAX_WORDS]]
+def _words(query: str) -> list[str]:
+    """The first words of the query, split on whitespace and commas."""
+    return [word for word in _WORD_SPLIT.split(query.strip()) if word][:MAX_WORDS]
+
+
+def _title_start(word: str) -> str:
+    """A Postgres regex for ``word`` at the start of a word (``\\m``), the word taken literally."""
+    return r"\m" + re.escape(word)
 
 
 async def search_people(conn: AsyncConnection[Any], client_id: UUID, query: str) -> list[PersonOut]:
-    """Every word, in any order, in the name, job title or work email; name matches first."""
-    patterns = _word_patterns(query)
-    if not patterns:
+    """Every word, in any order: in the name or work email, or starting a word of the job title.
+    Name and email matches come first."""
+    words = _words(query)
+    if not words:
         return []
+    patterns = [_like(word) for word in words]
+    titles = [_title_start(word) for word in words]
     rows = await db.q.fetch_all(
-        "workspace/people_search.sql", (client_id, patterns, patterns), conn=conn
+        "workspace/people_search.sql", (client_id, patterns, titles, patterns), conn=conn
     )
     return [PersonOut.model_validate(row) for row in rows]
 

@@ -392,6 +392,10 @@ def test_smoke_checks_the_lookup_query_words(capsys: pytest.CaptureFixture[str])
     out = capsys.readouterr().out
     assert "FAIL directory-ms-4 action=directory_lookup query_words" in out
     assert "pengurus" not in out and "kewangan" not in out
+    # Both titles in one query finds nobody (every word must match), so it fails too.
+    mixed = QueryModel("pengurus kewangan finance manager")
+    assert smoke.main(["--case", "directory-ms-4"], client=mixed) == 1
+    assert "FAIL directory-ms-4 action=directory_lookup query_words" in capsys.readouterr().out
     assert smoke.main(["--case", "directory-ms-4"], client=QueryModel("Finance Manager")) == 0
     out = capsys.readouterr().out
     assert "PASS directory-ms-4" in out

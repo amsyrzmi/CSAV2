@@ -161,6 +161,22 @@ async def test_search_ranks_name_matches_before_title_matches(sessions: SessionW
     assert await _names(browser, t0, "sales") == ["Mia Tan", "Zara Sales", "Aaron Lim"]
 
 
+async def test_search_matches_a_title_only_at_word_starts(sessions: SessionWorld) -> None:
+    """A surname is not found inside a title ("Tan" in "Assistant"); a title word or start is."""
+    w = sessions
+    t0 = w.tenants[0]
+    await activate(w, t0, "hr")
+    browser, _ = await staff(w)
+    await employee(w, t0, "Mia Tan")
+    await employee(w, t0, "Siti Aminah", job_title="Admin Assistant")
+    await employee(w, t0, "Raj Kumar", job_title="R&D Executive")
+    assert await _names(browser, t0, "tan") == ["Mia Tan"]
+    assert await _names(browser, t0, "assist") == ["Siti Aminah"]
+    assert await _names(browser, t0, "exec") == ["Raj Kumar"]
+    assert await _names(browser, t0, "r&d") == ["Raj Kumar"]
+    assert await _names(browser, t0, "sistant") == []
+
+
 async def test_search_gate_roles_tenant_and_audit(sessions: SessionWorld) -> None:
     w = sessions
     t0, t1 = w.tenants

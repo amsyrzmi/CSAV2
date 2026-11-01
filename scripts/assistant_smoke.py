@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -138,7 +139,7 @@ class Expect(_Strict):
     # True: a navigate must reach a tab this user cannot open, so the turn answers with the
     # locked text. False: a navigate to such a tab fails with ``locked``.
     locked: bool = False
-    # A directory_lookup's query must hold each of these words (case-insensitive); never printed.
+    # A directory_lookup's query must be exactly these words (any order or case); never printed.
     query_words: list[str] = Field(default_factory=list)
 
 
@@ -399,8 +400,10 @@ async def run_case(
     if proposal.action in expect.not_actions:
         failed.append("not_actions")
     if expect.query_words and isinstance(proposal, DirectoryLookupProposal):
-        query = proposal.query.lower()
-        if any(word.lower() not in query for word in expect.query_words):
+        # The search needs every word to match, so an extra word (a Malay title next to the
+        # English one) finds nobody: the query's words must be exactly the expected ones.
+        planned = {word.lower() for word in re.split(r"[\s,]+", proposal.query) if word}
+        if planned != {word.lower() for word in expect.query_words}:
             failed.append("query_words")
     if isinstance(proposal, NavigateProposal) and last.locked != expect.locked:
         failed.append("locked")
