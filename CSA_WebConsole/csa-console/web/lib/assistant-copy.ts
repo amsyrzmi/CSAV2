@@ -215,6 +215,18 @@ export const MS_ERRORS: Record<string, string> = {
   resource_unavailable: "Item itu tidak tersedia lagi.",
   reply_approval_not_found:
     "Balasan yang ditahan itu tidak lagi menunggu keputusan. Segarkan perbualan.",
+  // Subscription card refusals at Confirm (csa/subscriptions/executor.py); retrying cannot help.
+  action_not_allowed: "Perubahan ini tidak boleh dilakukan daripada keadaan langganan semasa.",
+  resume_at_not_after_today: "Pilih tarikh sambung semula selepas hari ini.",
+  plan_unavailable: "Pelan itu tidak tersedia untuk syarikat ini.",
+  plan_unchanged:
+    "Langganan sudah berada pada pelan itu. Pilih pelan yang berbeza atau tetapkan harga istimewa.",
+  price_override_requires_immediate_change:
+    "Harga istimewa hanya boleh bermula serta-merta. Kosongkan tarikh mula atau harga istimewa.",
+  renews_at_not_after_current: "Pilih tarikh pembaharuan selepas tarikh yang semasa.",
+  request_decided: "Seseorang sudah membuat keputusan tentang permintaan ini.",
+  request_subscription_mismatch:
+    "Permintaan ini tidak sepadan dengan langganan pelanggan. Tolak permintaan itu, kemudian semak langganan.",
   // The inbox's own spelling of the same refusal, which api.ts also explains.
   "reply approval not found":
     "Balasan yang ditahan itu tidak lagi menunggu keputusan. Segarkan perbualan.",

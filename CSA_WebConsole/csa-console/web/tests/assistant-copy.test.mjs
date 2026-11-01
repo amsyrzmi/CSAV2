@@ -64,6 +64,10 @@ const LISTED = [
   "hr_training_not_permitted", "reply_target_unavailable", "email_recipient_invalid",
   "recipients_invalid", "draft_rejected", "thread_body_unavailable", "resource_unavailable",
   "reply_approval_not_found",
+  // Subscription card refusals at Confirm: retrying cannot help, so they must not fall back.
+  "action_not_allowed", "resume_at_not_after_today", "plan_unavailable", "plan_unchanged",
+  "price_override_requires_immediate_change", "renews_at_not_after_current", "request_decided",
+  "request_subscription_mismatch",
 ];
 
 test("MS_ERRORS covers every api.ts code the dock can reach", () => {
