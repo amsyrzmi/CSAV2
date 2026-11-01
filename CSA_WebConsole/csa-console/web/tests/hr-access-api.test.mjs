@@ -112,6 +112,7 @@ test("every switch has the agreed label, an explanation and a group", () => {
     own_requests: "Can request their own training, leave and attendance",
     approves_team: "Approves training, leave and attendance for their team",
     hr_team: "HR team member",
+    manage_people: "Manage people",
     recruitment: "Works on recruitment",
     attendance: "Works on attendance",
     payroll_prepare: "Prepares payroll",
@@ -124,11 +125,28 @@ test("every switch has the agreed label, an explanation and a group", () => {
   assert.deepEqual(Object.keys(copy.PRESET_COPY), ["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"]);
 });
 
+test("manage_people is the ninth switch, right after hr_team", () => {
+  assert.equal(access.SWITCH_IDS.length, 9);
+  assert.deepEqual(access.SWITCH_IDS.slice(3, 6), ["hr_team", "manage_people", "recruitment"]);
+  assert.equal(copy.SWITCH_COPY.manage_people.tag, "Manage people");
+  assert.equal(copy.SWITCH_COPY.manage_people.group, "Responsibilities");
+  assert.equal(copy.SWITCH_COPY.manage_people.explanation,
+    "Adds people and edits their profiles and departments. Sees people who have left and employment profiles.");
+  assert.equal(copy.PRESET_COPY.hr_team.description,
+    "Staff, plus HR team member, manage people, recruitment and attendance.");
+  assert.deepEqual(Object.keys(copy.SWITCH_COPY).sort(), [...access.SWITCH_IDS].sort());
+  assert.deepEqual(access.setSwitch(["directory"], "manage_people", true, ["directory"]), ["directory", "manage_people"]);
+  assert.deepEqual(access.setSwitch(["directory", "manage_people"], "manage_people", false, ["directory", "manage_people"]), ["directory"]);
+});
+
 test("desired sets keep included switches and presets only add", () => {
   assert.deepEqual(access.withIncluded(["hr_team"]), ["directory", "hr_team"]);
   assert.deepEqual(access.withIncluded(["payroll_review", "directory"]), ["directory", "payroll_review"]);
   assert.deepEqual(access.applyPreset(["payroll_review"], "hr_team"),
-    ["directory", "own_requests", "hr_team", "recruitment", "attendance", "payroll_review"]);
+    ["directory", "own_requests", "hr_team", "manage_people", "recruitment", "attendance", "payroll_review"]);
+  assert.ok(access.applyPreset([], "hr_team").includes("manage_people"));
+  for (const preset of ["staff", "manager", "payroll_preparer", "payroll_reviewer"])
+    assert.equal(access.applyPreset([], preset).includes("manage_people"), false, preset);
   assert.equal(access.includedWith(["hr_team", "directory"], "directory"), "hr_team");
   assert.equal(access.includedWith(["directory"], "directory"), null);
   assert.equal(access.changeCount(["directory"], ["directory", "own_requests", "approves_team"]), 2);
