@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { errorLine, languageOf, panelText } from "@/lib/assistant-copy";
 import { resultSummary } from "@/lib/assistant-view";
 import { emailClient, type Draft } from "@/lib/email-api";
-import { cardFieldsShown, draftIdFromCard, emailCardBlock, emailErrorSentence } from "@/lib/email-recipients";
+import { cardFieldsFor, draftIdFromCard, emailCardBlock, emailErrorSentence } from "@/lib/email-recipients";
 import {
   cancelProposal,
   confirmProposal,
@@ -86,7 +86,7 @@ export function ProposalCard({
     }
   }
 
-  const fields = isEmail && draft ? cardFieldsShown(card) : card.fields;
+  const fields = cardFieldsFor(card, isEmail);
   return (
     <article
       data-testid="proposal-card"

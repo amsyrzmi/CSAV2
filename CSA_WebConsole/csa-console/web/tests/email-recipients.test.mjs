@@ -201,3 +201,13 @@ test("a Malay card is found and shown exactly like an English one", () => {
   // A card's block is a language-free code, whatever language the card is in.
   assert.equal(email.emailCardBlock({ kind: "email_send", expected_version: "v1" }, { status: "sent", version: "v1", needs_staff_input: false }), "draft_already_sent");
 });
+
+test("an email card never shows the Subject and Draft placeholders, with or without a loaded draft", () => {
+  const sentinels = [{ label: "Subject", value: "(shown on open)" }, { label: "Draft", value: "d-42" }];
+  const rest = { label: "To", value: "1 person" };
+  const card = { fields: [...sentinels, rest] };
+  // A settled or reloaded email card has no draft loaded: the placeholders are still hidden.
+  assert.deepEqual(email.cardFieldsFor(card, true), [rest]);
+  // Other cards keep every field, even one that happens to be labelled Subject.
+  assert.deepEqual(email.cardFieldsFor(card, false), card.fields);
+});

@@ -324,7 +324,7 @@ test("settled-card lines in Malay are Malay", () => {
   assert.equal(view.resultSummary(proposal("p", { status: "cancelled" }), "ms"), "Dibatalkan. Tiada apa-apa yang diubah.");
   assert.equal(view.resultSummary(proposal("p", { status: "requested" }), "ms"), "Menunggu pengesahan anda.");
   assert.equal(view.resultSummary(proposal("p", { kind: "training_submit", status: "executed", result: { request: { title: "AWS", status: "submitted" } } }), "ms"), "Permohonan “AWS” dihantar (status kini: menunggu kelulusan).");
-  assert.equal(view.resultSummary(proposal("p", { kind: "subscription_action", status: "executed", result: { status: "paused" } }), "ms"), "Langganan dikemas kini. Kini dijeda.");
+  assert.equal(view.resultSummary(proposal("p", { kind: "subscription_action", status: "executed", result: { status: "paused" } }), "ms"), "Langganan dikemas kini. Statusnya kini dijeda.");
   const expired = view.resultSummary(proposal("p", { kind: "inbox_decision", status: "executed", result: { outcome: "expired", queued: true } }), "ms");
   assert.doesNotMatch(expired, /expired|queued/);
   // Every status line differs from its English one.

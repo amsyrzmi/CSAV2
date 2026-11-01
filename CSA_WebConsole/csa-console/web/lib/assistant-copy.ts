@@ -108,7 +108,7 @@ const ms: Record<PanelKey, string> = {
   retry_same: "Cuba semula permintaan yang sama",
   start_new: "Mulakan permintaan baharu",
   order_source: "Sumber",
-  order_tracking: "Penjejakan",
+  order_tracking: "No. penjejakan",
   order_carrier: "Kurier",
   order_not_recorded: "Tidak direkodkan",
   order_local: "Pesanan tempatan {id}",
@@ -119,11 +119,11 @@ const ms: Record<PanelKey, string> = {
   no_tab_context: "Tiada konteks tab",
   loading: "Memuatkan perbualan anda…",
   resume_opening: "Membuka tab {tab} dan meneruskan…",
-  resume_timeout: "Tab tidak dibuka, jadi permintaan tidak diteruskan. Hantar semula.",
+  resume_timeout: "Tab tidak terbuka, jadi permintaan tidak diteruskan. Hantar semula.",
   choose_colleague: "Pilih rakan sekerja:",
   no_colleague: "Tiada rakan sekerja yang sepadan ditemui.",
   navigate_opened: "Tab {tab} dibuka.",
-  navigate_opened_resume: "Tab {tab} dibuka dan diteruskan di sana.",
+  navigate_opened_resume: "Tab {tab} dibuka dan permintaan diteruskan di sana.",
   navigate_unavailable: "Tab {tab} tidak tersedia untuk anda.",
   button_confirm: "Sahkan",
   button_confirming: "Mengesahkan…",
@@ -143,12 +143,12 @@ const ms: Record<PanelKey, string> = {
   summary_training_title: "Permohonan “{title}” dihantar.",
   summary_training: "Permohonan latihan dihantar.",
   summary_approval_expired: "Kelulusan telah tamat tempoh.",
-  summary_followup_queued: "Balasan susulan dimasukkan dalam baris gilir.",
-  summary_no_reply_queued: "Tiada balasan dimasukkan dalam baris gilir.",
+  summary_followup_queued: "Balasan susulan dijadualkan untuk dihantar.",
+  summary_no_reply_queued: "Tiada balasan dijadualkan untuk dihantar.",
   summary_already_handled: "Sudah dikendalikan. Tiada apa-apa yang diubah.",
   summary_decision: "Keputusan anda tentang balasan yang ditahan telah direkodkan.",
-  summary_reply_queued: "Balasan dimasukkan dalam baris gilir untuk dihantar.",
-  summary_subscription_status: "Langganan dikemas kini. Kini {status}.",
+  summary_reply_queued: "Balasan dijadualkan untuk dihantar.",
+  summary_subscription_status: "Langganan dikemas kini. Statusnya kini {status}.",
   summary_subscription: "Langganan dikemas kini.",
   denied_unavailable: "Rekod yang diminta tidak tersedia dalam ruang kerja ini.",
   denied: "Permintaan ini tidak dapat dibenarkan.",
@@ -211,7 +211,7 @@ export function statusText(status: string, language: Language): string {
  */
 export const MS_ERRORS: Record<string, string> = {
   package_inactive:
-    "Kawasan ini bukan sebahagian daripada pakej perkhidmatan aktif organisasi anda. Minta pentadbir anda mengaktifkannya di halaman Services.",
+    "Bahagian ini bukan sebahagian daripada pakej perkhidmatan aktif organisasi anda. Minta pentadbir anda mengaktifkannya di halaman Services.",
   proposal_stale:
     "Rekod berubah selepas ini dicadangkan. Tiada apa-apa yang diubah; semak dan minta semula.",
   proposal_consumed: "Cadangan ini sudah diputuskan. Tiada apa-apa lagi yang diubah.",
@@ -230,12 +230,12 @@ export const MS_ERRORS: Record<string, string> = {
   hr_agent_timeout_check_saved_state:
     "Permintaan HR mengambil masa terlalu lama. Semak tab People & HR untuk apa yang telah disimpan sebelum mencuba lagi.",
   training_not_draft:
-    "Permohonan latihan itu bukan lagi draf, jadi ia tidak boleh dihantar semula. Bukanya dalam HR untuk melihat statusnya.",
+    "Permohonan latihan itu bukan lagi draf, jadi ia tidak boleh dihantar semula. Buka tab People & HR untuk melihat statusnya.",
   stale_version:
     "Ini telah berubah selepas anda membukanya. Muat semula untuk melihat yang terkini, kemudian cuba lagi.",
   invalid_transition:
     "Perubahan itu tidak boleh dilakukan daripada status semasa. Muat semula untuk melihat yang terkini.",
-  csrf_required: "Sesi anda perlu disegarkan. Muat semula halaman dan cuba lagi.",
+  csrf_required: "Sesi anda perlu dimuat semula. Muat semula halaman dan cuba lagi.",
   no_employee_link:
     "Log masuk anda tidak dipautkan kepada rekod pekerja, jadi anda tidak boleh menghantar permohonan latihan. Minta pemilik HR anda memautkannya.",
   hr_training_not_permitted:
@@ -243,16 +243,16 @@ export const MS_ERRORS: Record<string, string> = {
   reply_target_unavailable: "Saya tidak dapat menentukan kepada siapa untuk membalas dalam perbualan itu.",
   email_recipient_invalid: "Semak alamat e-mel.",
   draft_rejected: "Saya tidak dapat menulis e-mel itu. Cuba nyatakan dengan cara lain.",
-  thread_body_unavailable: "Saya tidak dapat membaca perbualan itu daripada Gmail. Segerakkan dan cuba lagi.",
+  thread_body_unavailable: "Saya tidak dapat membaca perbualan itu daripada Gmail. Tekan Sync inbox di tab Email assistant, kemudian cuba lagi.",
   resource_unavailable: "Item itu tidak tersedia lagi.",
   reply_approval_not_found:
-    "Balasan yang ditahan itu tidak lagi menunggu keputusan. Segarkan perbualan.",
+    "Balasan yang ditahan itu tidak lagi menunggu keputusan. Muat semula perbualan.",
   // Subscription card refusals at Confirm (csa/subscriptions/executor.py); retrying cannot help.
   action_not_allowed: "Perubahan ini tidak boleh dilakukan daripada keadaan langganan semasa.",
   resume_at_not_after_today: "Pilih tarikh sambung semula selepas hari ini.",
   plan_unavailable: "Pelan itu tidak tersedia untuk syarikat ini.",
   plan_unchanged:
-    "Langganan sudah berada pada pelan itu. Pilih pelan yang berbeza atau tetapkan harga istimewa.",
+    "Langganan sudah berada pada pelan itu. Pilih pelan lain atau tetapkan harga istimewa.",
   price_override_requires_immediate_change:
     "Harga istimewa hanya boleh bermula serta-merta. Kosongkan tarikh mula atau harga istimewa.",
   renews_at_not_after_current: "Pilih tarikh pembaharuan selepas tarikh yang semasa.",
@@ -260,11 +260,11 @@ export const MS_ERRORS: Record<string, string> = {
   request_subscription_mismatch:
     "Permintaan ini tidak sepadan dengan langganan pelanggan. Tolak permintaan itu, kemudian semak langganan.",
   request_action_mismatch:
-    "Perubahan ini bukan yang diminta oleh pelanggan. Luluskan permintaan itu daripada tab Requests.",
+    "Perubahan ini bukan yang diminta oleh pelanggan. Sebaliknya, luluskan permintaan itu melalui tab Requests.",
   subscription_not_found: "Langganan itu tidak wujud lagi. Muat semula halaman.",
   // The inbox's own spelling of the same refusal, which api.ts also explains.
   "reply approval not found":
-    "Balasan yang ditahan itu tidak lagi menunggu keputusan. Segarkan perbualan.",
+    "Balasan yang ditahan itu tidak lagi menunggu keputusan. Muat semula perbualan.",
 };
 
 /**

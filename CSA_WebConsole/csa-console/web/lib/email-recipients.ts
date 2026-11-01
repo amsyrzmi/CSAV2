@@ -107,6 +107,13 @@ export function cardFieldsShown(card: { fields: { label: string; value: string }
   return card.fields.filter(field => field.label !== "Subject" && field.label !== "Draft");
 }
 
+/** The fields an email card lists: the placeholders are hidden whether or not a draft is loaded. */
+export function cardFieldsFor(
+  card: { fields: { label: string; value: string }[] }, isEmail: boolean,
+): { label: string; value: string }[] {
+  return isEmail ? cardFieldsShown(card) : card.fields;
+}
+
 /**
  * A send card is bound to the draft's version when it was made. If the draft read now has a
  * different version it was edited since: say so and do not send (the server re-checks anyway).
@@ -198,14 +205,14 @@ const sentences: Record<Language, Record<string, string>> = {
     assistant_disabled: "Email assistant dimatikan untuk ruang kerja anda.",
     mailbox_not_connected: "Sambungkan Gmail anda di tab Email assistant dahulu.",
     model_not_configured: "Tiada model dikonfigurasikan untuk analisis.",
-    provider_not_configured: "Google OAuth tidak dikonfigurasikan pada pelaksanaan ini.",
+    provider_not_configured: "Google OAuth tidak dikonfigurasikan untuk sistem ini.",
     provider_unreachable: "Kami tidak dapat menghubungi Gmail. Tunggu seminit dan cuba lagi.",
     permission_denied: "Anda tiada akses e-mel di sini. Minta pentadbir memberi anda akses.",
     email_model_unavailable: "Email assistant tidak dapat menulisnya sekarang. Cuba lagi sebentar lagi.",
     draft_rejected: "Draf ditolak: semak penerima dan buang pemisah baris daripada subjek.",
     draft_already_exported: "Draf ini sudah disimpan ke Gmail dan tidak boleh disunting lagi di sini.",
     thread_body_unavailable: "Perbualan ini tiada teks yang boleh dibaca untuk dianalisis.",
-    idempotency_conflict: "Permintaan lain yang berbeza sudah menggunakan kunci ini. Muat semula dan cuba lagi.",
+    idempotency_conflict: "Permintaan lain sudah menggunakan kunci ini. Muat semula dan cuba lagi.",
   },
 };
 
