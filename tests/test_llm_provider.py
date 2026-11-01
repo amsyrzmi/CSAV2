@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +23,7 @@ from csa.decide.llm import WHATSAPP_PLANNER_NOTE
 from csa.graph.policy.plan_rules import validate_plan
 from csa.graph.policy.routing import route_turn
 from csa.turn.deps import CAPABILITIES, build_llm_provider
+from structlog.testing import capture_logs
 
 from tests.test_coordinator import make_envelope, make_signals
 
@@ -511,10 +513,13 @@ async def test_groq_json_validate_failed_is_retried_then_succeeds() -> None:
 async def test_groq_json_validate_twice_is_invalid_output(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.DEBUG)
     calls = {"n": 0}
-    code = await _groq_code([_json_validate_failed, _json_validate_failed], calls)
+    with capture_logs() as events:
+        code = await _groq_code([_json_validate_failed, _json_validate_failed], calls)
     assert calls["n"] == 2
     assert code == "groq_invalid_output"
+    assert all("SECRET-GENERATION" not in repr(event) for event in events)
     assert all("SECRET-GENERATION" not in r.getMessage() for r in caplog.records)
 
 
