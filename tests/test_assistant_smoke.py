@@ -113,7 +113,8 @@ class ScriptedModel:
             # Subscriptions is active in no preset, so it is locked; HR is open in staff_basic.
             return {"action": "navigate", "tab": "subscriptions" if case.expect.locked else "hr"}
         if action == "directory_lookup":
-            return {"action": "directory_lookup", "query": SCRIPTED_TEXT}
+            query = " ".join(case.expect.query_words) or SCRIPTED_TEXT
+            return {"action": "directory_lookup", "query": query}
         if action == "email_compose":
             # The recipient the user asked for: the address in the message, else my_manager.
             found = ADDRESS.search(case.message)
@@ -373,6 +374,28 @@ def test_smoke_expected_recipient_and_locked_tab(capsys: pytest.CaptureFixture[s
     assert "FAIL navigate-ms-2 action=navigate locked" in capsys.readouterr().out
     assert smoke.main(["--case", "navigate-en-1"], client=OpenTabModel()) == 0
     capsys.readouterr()
+
+
+def test_smoke_checks_the_lookup_query_words(capsys: pytest.CaptureFixture[str]) -> None:
+    """A Malay title searched in Malay fails ``query_words``; the English title passes. The
+    query itself is never printed."""
+
+    class QueryModel(ScriptedModel):
+        def __init__(self, query: str) -> None:
+            super().__init__()
+            self.query = query
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            return {"action": "directory_lookup", "query": self.query}
+
+    assert smoke.main(["--case", "directory-ms-4"], client=QueryModel("pengurus kewangan")) == 1
+    out = capsys.readouterr().out
+    assert "FAIL directory-ms-4 action=directory_lookup query_words" in out
+    assert "pengurus" not in out and "kewangan" not in out
+    assert smoke.main(["--case", "directory-ms-4"], client=QueryModel("Finance Manager")) == 0
+    out = capsys.readouterr().out
+    assert "PASS directory-ms-4" in out
+    assert "Finance" not in out
 
 
 def test_smoke_stops_when_the_model_is_unavailable_first(

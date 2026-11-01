@@ -50,7 +50,8 @@ the expected address), `thread` (a reply to an unsynced thread, twice), `query` 
 query, twice), `options` (an over-long option, twice), `contract` (invalid output twice, or with no
 correction), `content_question` (asked for the content twice), `locked` (a navigate to the wrong
 side of the tab rule), `placeholder_options` (a type-it-yourself option was offered; the server
-drops these, so this is prompt drift), `send` (Send where a draft was expected, or the reverse),
+drops these, so this is prompt drift), `query_words` (the directory query missed a word the case
+expects, such as a job title searched in Malay instead of English; the query is never printed), `send` (Send where a draft was expected, or the reverse),
 `draft` (the drafting call failed or its draft broke the contract) or `model` (the provider failed
 after the first call). `replanned` means the one correction was used. The action is the model's own
 plan (`invalid_output` when there was none).
@@ -90,7 +91,11 @@ Tick each row when the result matches.
 | Tolong hantar emel kepada Razak tentang invois itu | HR active | A directory lookup or a question, no type-it-yourself option, no email card | `directory-ms-2` |
 | send email to danial | HR active (the owner's original failure) | A directory lookup or a question, no type-it-yourself option, no email card | `directory-en-3` |
 | hantar emel kepada danial | HR active | A directory lookup or a question, no type-it-yourself option, no email card | `directory-ms-3` |
+| Email the finance manager about the budget | HR active | A directory lookup that searched for the finance manager in English, or a question; no email card | `directory-en-4` |
+| Tolong emel pengurus kewangan tentang bajet | HR active | A directory lookup that searched for the finance manager in English ("Finance Manager", not "pengurus kewangan"), or a question; no email card | `directory-ms-4` |
 | Send an email to Razak about the invoice | HR active, a Razak in the directory | Candidates to pick; picking one continues the email | manual |
+| Find Aina Rahman | HR active, an employee named Nur Aina binti Rahman | Nur Aina binti Rahman is listed (words in any order, parts of the name are enough) | manual |
+| Emel pengurus kewangan | HR active, an employee whose job title is Finance Manager | That employee is listed to pick | manual |
 
 ## Compose and send
 
