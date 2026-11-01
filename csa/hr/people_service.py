@@ -183,7 +183,9 @@ class HrPeople:
     async def home(self, session: HrSession) -> HrHome:
         async with tx(self.core.pool, str(session.tenant_id)) as conn:
             await self.core._access(conn, session)
-            training = await sql.fetch_one("hr/home_training.sql", (session.tenant_id,), conn=conn)
+            training = await sql.fetch_one(
+                "hr/home_training.sql", (session.tenant_id, session.tenant_id), conn=conn
+            )
             requests = await sql.fetch_one("hr/home_requests.sql", (session.tenant_id,), conn=conn)
             await self.core._session(conn, session)
         return HrHome(training_waiting=training["n"], requests_waiting=requests["n"])

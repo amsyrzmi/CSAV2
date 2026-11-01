@@ -4,6 +4,7 @@ Manage people switch and the people write paths (disposable database).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -1878,6 +1879,38 @@ async def test_home_counts_training_and_requests_waiting(world: HrWorld) -> None
     assert (await get_ok(world, "manager", f"{BASE}/home"))["requests_waiting"] == 0
     # A login with no HR rows at all still gets zeros.
     assert await get_ok(world, "outsider", f"{BASE}/home") == zero
+
+
+async def test_home_training_counts_for_the_owner_and_takes_no_row_locks(
+    world: HrWorld,
+) -> None:
+    await world.submit("staff")
+    # The owner decides for the whole company (client_owner scope), though they do not manage staff.
+    assert (await get_ok(world, "owner", f"{BASE}/home"))["training_waiting"] == 1
+    # A person without a decide grant counts nothing.
+    assert (await get_ok(world, "operator", f"{BASE}/home"))["training_waiting"] == 0
+    # A manager who has left no longer counts the request, for either decider.
+    await world.q(
+        "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id=%s",
+        (world.tenant, world.employees["manager"]),
+    )
+    for who in ("manager", "owner"):
+        assert (await get_ok(world, who, f"{BASE}/home"))["training_waiting"] == 0, who
+    await world.q(
+        "UPDATE hr_employees SET is_active=true WHERE client_id=%s AND id=%s",
+        (world.tenant, world.employees["manager"]),
+    )
+    assert (await get_ok(world, "manager", f"{BASE}/home"))["training_waiting"] == 1
+    # Row locks held by a writer do not make Home wait: the count takes none of its own.
+    async with world.owner_pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE hr_employees SET job_title='Locked' WHERE client_id=%s AND id = ANY(%s)",
+                (world.tenant, [world.employees["staff"], world.employees["manager"]]),
+            )
+            for who in ("manager", "owner"):
+                home = await asyncio.wait_for(get(world, who, f"{BASE}/home"), timeout=10)
+                assert home.status_code == 200 and home.json()["training_waiting"] == 1, who
 
 
 async def test_context_reports_switches_workflows_and_duties(world: HrWorld) -> None:
