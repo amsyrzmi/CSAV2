@@ -169,7 +169,7 @@ changes, resumes and renewals in that order on the tenant's calendar; nothing is
   inspect the schema and tests rather than assuming every table has `client_id`.
 - All SQL is in `db/sql/` and parameterised. Migrations are ordered and additive (`db/migrations/`).
   Gateway refuses to start if the schema version differs from `EXPECTED_SCHEMA_VERSION`.
-- Secrets are never logged; Groq error codes are secret-free (`groq_timeout`, `groq_http_<status>`…).
+- Secrets are never logged; Groq error codes are secret-free (`groq_timeout`, `groq_transport_error`, `groq_http_<status>`, `groq_invalid_output`). A 400 `json_validate_failed` (the model wrote malformed JSON) gets the client's one retry, like a timeout or a 429/5xx, and is reported as `groq_invalid_output` when the last attempt still ends that way; its `failed_generation` text is never logged or kept.
 - Only `csa/graph/` imports LangGraph (import-linter enforced).
 - Gateway startup pre-opens its existing eight-connection pool before accepting requests;
   pool-open failures propagate and cleanup runs. Worker/delivery pool defaults are unchanged.
