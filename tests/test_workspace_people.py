@@ -36,12 +36,13 @@ async def employee(
     manager: UUID | None = None,
     active: bool = True,
     user: str | None = None,
+    job_title: str = "Analyst",
 ) -> UUID:
     eid = uuid4()
     await w.q(
         "INSERT INTO hr_employees(client_id,id,display_name,job_title,department,work_email,"
-        "manager_id,is_active) VALUES (%s,%s,%s,'Analyst','Secret Dept',%s,%s,%s)",
-        tenant, eid, name, email, manager, active,
+        "manager_id,is_active) VALUES (%s,%s,%s,%s,'Secret Dept',%s,%s,%s)",
+        tenant, eid, name, job_title, email, manager, active,
     )  # fmt: skip
     if user:
         await w.q(
@@ -103,6 +104,61 @@ async def test_search_limit_wildcards_and_bounds(sessions: SessionWorld) -> None
     assert (await search(browser, t0, "   ")).status_code == 422
     assert (await search(browser, t0, "x" * 81)).status_code == 422
     assert (await search(browser, t0, "x" * 80)).status_code == 200
+
+
+async def _names(browser: httpx.AsyncClient, tenant: str, q: str) -> list[str]:
+    r = await search(browser, tenant, q)
+    assert r.status_code == 200, r.text
+    return [p["display_name"] for p in r.json()]
+
+
+async def test_search_finds_a_job_title(sessions: SessionWorld) -> None:
+    w = sessions
+    t0 = w.tenants[0]
+    await activate(w, t0, "hr")
+    browser, _ = await staff(w)
+    await employee(w, t0, "Siti Aminah", job_title="Finance Manager")
+    await employee(w, t0, "Bo Other")
+    assert await _names(browser, t0, "finance manager") == ["Siti Aminah"]
+    assert await _names(browser, t0, "FINANCE") == ["Siti Aminah"]
+
+
+async def test_search_matches_every_word_in_any_order(sessions: SessionWorld) -> None:
+    w = sessions
+    t0 = w.tenants[0]
+    await activate(w, t0, "hr")
+    browser, _ = await staff(w)
+    await employee(w, t0, "Nur Aina binti Rahman")
+    await employee(w, t0, "Danial Hakim")
+    assert await _names(browser, t0, "Aina Rahman") == ["Nur Aina binti Rahman"]
+    assert await _names(browser, t0, "Hakim Danial") == ["Danial Hakim"]
+    assert await _names(browser, t0, "Aina,  Rahman") == ["Nur Aina binti Rahman"]
+    assert await _names(browser, t0, "Aina Zulkifli") == []
+    # Only the first 5 words count: "x" is the fifth and matches nobody; "zzz" is the sixth.
+    assert await _names(browser, t0, "nur aina binti rahman x y") == []
+    assert await _names(browser, t0, "nur aina binti rahman nur zzz") == ["Nur Aina binti Rahman"]
+
+
+async def test_search_mixes_a_name_word_and_a_title_word(sessions: SessionWorld) -> None:
+    w = sessions
+    t0 = w.tenants[0]
+    await activate(w, t0, "hr")
+    browser, _ = await staff(w)
+    await employee(w, t0, "Danial Hakim", job_title="Finance Executive")
+    await employee(w, t0, "Danial Other", job_title="Sales Executive")
+    assert await _names(browser, t0, "danial finance") == ["Danial Hakim"]
+
+
+async def test_search_ranks_name_matches_before_title_matches(sessions: SessionWorld) -> None:
+    w = sessions
+    t0 = w.tenants[0]
+    await activate(w, t0, "hr")
+    browser, _ = await staff(w)
+    await employee(w, t0, "Aaron Lim", job_title="Sales Manager")
+    await employee(w, t0, "Zara Sales")
+    await employee(w, t0, "Mia Tan", email="sales.mia@example.test")
+    # Name or email matches first (by name), then the title-only match.
+    assert await _names(browser, t0, "sales") == ["Mia Tan", "Zara Sales", "Aaron Lim"]
 
 
 async def test_search_gate_roles_tenant_and_audit(sessions: SessionWorld) -> None:
