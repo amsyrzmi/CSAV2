@@ -26,7 +26,8 @@
 --     hr_admin_apply for person.add, person.update and department.save, for the HR owner or a
 --     people.manage holder. Records a receipt in hr_operations, no authority event. EXECUTE to
 --     csa_app only. It cannot change access, account links or whether a person is active, and a
---     non-owner cannot newly make their own linked employee anyone's manager.
+--     non-owner cannot newly make their own linked employee anyone's manager, nor change their
+--     own linked employee's manager.
 --   CREATE OR REPLACE public.hr_admin_apply (0410): the same, plus the owner-only account.link.
 --   CREATE OR REPLACE public.hr_apply_invitation_access (0483): the same, with p_on and p_added
 --     allowed up to 16 switch ids (there are 9 now).
@@ -586,6 +587,13 @@ BEGIN
   -- Manager: none (top of company), or an employee of this tenant who is active, unless they are
   -- the person's current manager. Never the person, nor anyone who reports up to the person.
   manager:=(vals->>'manager_id')::uuid;
+  -- Only the HR owner may change the manager of the actor's own linked employee: the direct
+  -- manager decides that person's team-scope training, leave and attendance requests.
+  IF op='person.update' AND manager IS DISTINCT FROM cur.manager_id
+   AND public.hr_is_owner(p_client) IS NOT TRUE
+   AND EXISTS(SELECT 1 FROM public.hr_employee_accounts a
+              WHERE a.client_id=p_client AND a.user_id=actor AND a.employee_id=target) THEN
+   RAISE EXCEPTION 'hr_own_manager_owner_only' USING ERRCODE='23514'; END IF;
   IF manager IS NOT NULL THEN
    SELECT e.is_active INTO manager_active FROM public.hr_employees e
     WHERE e.client_id=p_client AND e.id=manager FOR SHARE;

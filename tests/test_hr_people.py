@@ -1525,3 +1525,32 @@ async def test_people_manager_cannot_make_themselves_a_manager(world: HrWorld) -
     # After the owner's change the holder still cannot move the line back to themselves.
     back = await update_body(world, outsider, manager_id=str(me))
     await refused(world, "manager", back, 409, "manager_is_you")
+
+
+async def test_people_manager_cannot_change_their_own_manager(world: HrWorld) -> None:
+    # The holder is the "staff" user, linked to the staff employee, who reports to manager.
+    await make_people_manager(world, "staff")
+    staff, manager = world.employees["staff"], world.employees["manager"]
+    for chosen in (world.employees["owner"], None):
+        body = await update_body(world, staff, manager_id=str(chosen) if chosen else None)
+        await refused(world, "staff", body, 409, "own_manager_owner_only")
+    assert (await person_row(world, staff))["manager_id"] == manager
+    # Their own title, with the manager unchanged, saves.
+    await ok(world, "staff", await update_body(world, staff, job_title="Senior Trainer"))
+    row = await person_row(world, staff)
+    assert row["job_title"] == "Senior Trainer" and row["manager_id"] == manager
+    # They may still change someone else's manager.
+    outsider = world.employees["outsider"]
+    await ok(world, "staff", await update_body(world, outsider, manager_id=str(manager)))
+    assert (await person_row(world, outsider))["manager_id"] == manager
+    # The HR owner changes the holder's manager, and clears it.
+    await ok(
+        world, "owner", await update_body(world, staff, manager_id=str(world.employees["owner"]))
+    )
+    assert (await person_row(world, staff))["manager_id"] == world.employees["owner"]
+    await ok(world, "owner", await update_body(world, staff, manager_id=None))
+    assert (await person_row(world, staff))["manager_id"] is None
+    # A holder with no linked employee is not limited by this rule.
+    await make_people_manager(world)
+    await ok(world, "operator", await update_body(world, staff, manager_id=str(manager)))
+    assert (await person_row(world, staff))["manager_id"] == manager

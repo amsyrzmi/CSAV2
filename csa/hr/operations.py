@@ -59,6 +59,7 @@ _PEOPLE_REFUSALS = {
     "hr_manager_unavailable": "manager_unavailable",
     "hr_manager_loop": "manager_loop",
     "hr_manager_is_you": "manager_is_you",
+    "hr_own_manager_owner_only": "own_manager_owner_only",
     "hr_department_unavailable": "department_unavailable",
     "hr_department_archived": "department_archived",
     "hr_department_changed": "department_changed",
