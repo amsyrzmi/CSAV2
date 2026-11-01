@@ -20,14 +20,15 @@ field names after a failure, ``RATE <id> k/N`` per case with ``--repeat``, and a
 ``N passed, M failed`` line. Never a message, model text, subject, body or address; the key is
 never printed. Exit 0 when every sample passes, 1 when any fails, 2 on a setup error (no model
 key, the model unavailable on the first call, an unknown case id, a missing or invalid case
-file). A run is about 46 model calls (one planner call per case plus one drafting call per draft
-case), up to about 81 with re-plans.
+file). A run is about 48 model calls (one planner call per case plus one drafting call per draft
+case), up to about 85 with re-plans.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -138,6 +139,8 @@ class Expect(_Strict):
     # True: a navigate must reach a tab this user cannot open, so the turn answers with the
     # locked text. False: a navigate to such a tab fails with ``locked``.
     locked: bool = False
+    # A directory_lookup's query must be exactly these words (any order or case); never printed.
+    query_words: list[str] = Field(default_factory=list)
 
 
 class SmokeCase(_Strict):
@@ -396,6 +399,12 @@ async def run_case(
         failed.append("actions")
     if proposal.action in expect.not_actions:
         failed.append("not_actions")
+    if expect.query_words and isinstance(proposal, DirectoryLookupProposal):
+        # The search needs every word to match, so an extra word (a Malay title next to the
+        # English one) finds nobody: the query's words must be exactly the expected ones.
+        planned = {word.lower() for word in re.split(r"[\s,]+", proposal.query) if word}
+        if planned != {word.lower() for word in expect.query_words}:
+            failed.append("query_words")
     if isinstance(proposal, NavigateProposal) and last.locked != expect.locked:
         failed.append("locked")
     if isinstance(proposal, ClarificationProposal) and expect.no_placeholder_options:

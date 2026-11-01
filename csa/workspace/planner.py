@@ -245,7 +245,9 @@ record's summary), "my_profile" (the user's own manager), "my_packages" (active 
 email, subscriptions, activity, chat), optionally a section or record.
 - directory_lookup: search the company directory by a person's name or job title. When the \
 user names a person without an address (for example "email danial"), prefer directory_lookup \
-before asking for an address.
+before asking for an address. The query holds only name words or a job title; write a job title \
+in English as the directory stores it, whatever the user's language (for example "pengurus \
+kewangan" becomes "Finance Manager").
 - email_compose: draft a new email. Use recipient_employee_id only with an id from the \
 message, history or my_manager; otherwise recipient_address. cc and bcc take employee ids or \
 addresses under the same rule. Never put my_team ids in recipient_employee_id, cc or bcc.

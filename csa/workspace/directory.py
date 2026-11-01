@@ -5,6 +5,7 @@ Only name, job title and work email are ever returned; HR grants govern everythi
 
 from __future__ import annotations
 
+import re
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -44,10 +45,30 @@ def _like(text: str) -> str:
     return f"%{escaped}%"
 
 
+MAX_WORDS = 5  # bounds the SQL; later words are ignored, so a long query still only narrows
+_WORD_SPLIT = re.compile(r"[\s,]+")
+
+
+def _words(query: str) -> list[str]:
+    """The first words of the query, split on whitespace and commas."""
+    return [word for word in _WORD_SPLIT.split(query.strip()) if word][:MAX_WORDS]
+
+
+def _title_start(word: str) -> str:
+    """A Postgres regex for ``word`` at the start of a word (``\\m``), the word taken literally."""
+    return r"\m" + re.escape(word)
+
+
 async def search_people(conn: AsyncConnection[Any], client_id: UUID, query: str) -> list[PersonOut]:
-    pattern = _like(query.strip())
+    """Every word, in any order: in the name or work email, or starting a word of the job title.
+    Name and email matches come first."""
+    words = _words(query)
+    if not words:
+        return []
+    patterns = [_like(word) for word in words]
+    titles = [_title_start(word) for word in words]
     rows = await db.q.fetch_all(
-        "workspace/people_search.sql", (client_id, pattern, pattern), conn=conn
+        "workspace/people_search.sql", (client_id, patterns, titles, patterns), conn=conn
     )
     return [PersonOut.model_validate(row) for row in rows]
 

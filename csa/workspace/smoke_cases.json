@@ -201,6 +201,48 @@
     }
   },
   {
+    "id": "directory-en-4",
+    "language": "en",
+    "message": "Email the finance manager about the budget",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "directory_lookup",
+        "clarification"
+      ],
+      "not_actions": [
+        "email_compose"
+      ],
+      "query_words": [
+        "finance",
+        "manager"
+      ]
+    }
+  },
+  {
+    "id": "directory-ms-4",
+    "language": "ms",
+    "message": "Tolong emel pengurus kewangan tentang bajet",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "directory_lookup",
+        "clarification"
+      ],
+      "not_actions": [
+        "email_compose"
+      ],
+      "query_words": [
+        "finance",
+        "manager"
+      ]
+    }
+  },
+  {
     "id": "compose-en-1",
     "language": "en",
     "message": "Send an email to aina.rahman@example.com saying the meeting has moved to 3pm",

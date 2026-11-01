@@ -2388,6 +2388,14 @@ async def test_attention_on_a_pending_mailbox_asks_to_connect(planned) -> None:
     }
 
 
+def test_planner_prompt_states_the_english_job_title_rule() -> None:
+    assert (
+        "The query holds only name words or a job title; write a job title in English as the "
+        'directory stores it, whatever the user\'s language (for example "pengurus kewangan" '
+        'becomes "Finance Manager").'
+    ) in SYSTEM_PROMPT
+
+
 def test_planner_prompt_states_the_my_employee_rule() -> None:
     assert (
         "- my_employee: present when the message is about training. If linked or "
