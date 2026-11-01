@@ -48,7 +48,8 @@ persistent migration, deployment, live-provider or payroll-compliance acceptance
   No employee references, private areas, records or model input are returned.
   The staff workspace renders fixed guidance and same-origin links to the existing
   HR pages; this is separate from persisted workspace turns and their action union.
-  HR navigation accepts only `section=directory|training`; platform links retain the
+  HR navigation accepts only `section=directory|training` (since project 1a the HR pages
+  redirect these to `/people` and `/training`); platform links retain the
   explicitly selected `client_id`. URL hints never establish authority. Opening a
   page rechecks resource eligibility, and read-only sessions still cannot mutate.
 - `/operations` handles explicitly granted administration and private operations;
@@ -72,10 +73,13 @@ PCB calculation are not implemented by these local receipts.
 ### HR access page
 
 The "Who can do what" page (People & HR) reads and changes each member's HR access as
-eight switches. The server works out the switches, the "Custom access" rows, the
+nine switches. The server works out the switches, the "Custom access" rows, the
 warnings and the version; the page shows what it returns. Switch ids:
-`directory`, `own_requests`, `approves_team`, `hr_team`, `recruitment`,
-`attendance`, `payroll_prepare`, `payroll_review`.
+`directory`, `own_requests`, `approves_team`, `hr_team`, `manage_people`, `recruitment`,
+`attendance`, `payroll_prepare`, `payroll_review`. `manage_people` ("Manage people", migration
+0520) is the grant row `people.manage` on the `hr_operator` scope with no fields; the
+`hr_team` preset turns it on and no other preset does. Neither it nor its grant can change
+access.
 
 - **Owner only.** All three routes need the HR client owner. Anyone else, including
   another tenant's owner, gets 404 `resource_unavailable`, as for
@@ -94,7 +98,8 @@ warnings and the version; the page shows what it returns. Switch ids:
 - `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
   page showed, `dry_run` and 1–50 `changes`, each `{user_id, on, base}`: the
   member's full desired switch set (`on`) and the `on` set the page loaded them
-  with (`base`), both at most 8 unique switch ids; user ids are unique. The body
+  with (`base`), both at most 16 unique switch ids (9 exist; the headroom keeps the next switch from needing
+  another function rewrite); user ids are unique. The body
   cap is 65536 bytes.
   - A `version` that no longer matches gives 409 `access_changed` and writes
     nothing (a dry run too). The page reloads, keeps its own edits over each
@@ -164,6 +169,99 @@ warnings and the version; the page shows what it returns. Switch ids:
 - The company features ("What the HR assistant can help with") stay on
   `PUT /agents`. They control only the HR assistant and agents; they never limit
   what staff can do in the console, and no switch or warning depends on them.
+
+### People, departments and Manage people (project 1a, migration 0520)
+
+The People & HR pages are `/portal/hr/…` for staff and `/hr/…` for a platform admin (who keeps
+`client_id` on every link): Home (`/portal/hr`), `people`, `people/org-chart`,
+`people/departments`, `people/new`, `people/<employee_id>`, `recruitment`, `leave`, `payroll`,
+`training`, `requests` and `settings`. An old `?section=` link redirects to its tab
+(`directory` and `people` to People, `attendance` and `leave` to Leave & attendance, `workflows`
+and `requests` to Requests; `training`, `recruitment`, `payroll` and `settings` to their own).
+The new routes below are GET only, return no-store, and take only `client_id` and the query keys
+named here (`/people` is the only one with any; another key is 400 `invalid_hr_query`). A person
+the caller may not see, and any caller the route does not serve, gets 404 `resource_unavailable`.
+
+**Who sees what.** The server decides the viewer: `hr` (the HR owner or a holder of Manage
+people), `directory` (the complete directory switch: `directory.read` on `hr_operator` with all
+five basic fields) or `self` (any other HR session of the tenant). A hand-made partial directory
+grant is `self`, not `directory`. A `self` viewer can open only their own linked person's profile;
+the list, org chart and departments are 404 for them. A `directory` viewer sees active and starting
+people with basic fields only. The HR-only fields (`employment_profile`, `version`,
+`account_linked`, and Left people) are present for `hr` and `null` or absent for everyone else.
+
+- `GET /people?q=&department=&manager=&status=&cursor=` returns `PeoplePage`: up to 50 `items`
+  (`HrPersonOut`: `employee_id`, `display_name`, `job_title`, `department_id`, `department`,
+  `manager_id`, `manager_name`, `work_email`, `work_phone`, `start_date`, `employment_type`,
+  `status`, and the HR-only three), an opaque `next_cursor` and the `total` that matches.
+  `q` (at most 120 characters) uses the directory's word-by-word rule (the first 5 words, each in
+  the name or work email or starting a word of the job title). `department` is a department id,
+  `none` or `all`; `manager` an employee id; `status` is `active`, `starting` or `left`. With no
+  `status` the list shows Active and Starting; `left` is for `hr` only and is 404 for the others.
+  `starting` means the start date is after today in Asia/Kuala_Lumpur. `cursor` is a number the
+  API returned. A `department` that is neither `none` nor an id is 409 `invalid_department_filter`.
+- `GET /people/{employee_id}` returns `PersonProfile`: the `person`, the `sections` the viewer may
+  open (`overview` for everyone; `access` and `history` for `hr`) and `can_edit`.
+- `GET /people/{employee_id}/history` returns `PersonHistory` (`hr` only): up to 200 changes,
+  newest first, each `{changed_at, actor_name, fields:[{field, old, new}]}`, and `truncated`.
+  A database trigger writes one row per change from any path, so changes made through
+  `employee.save` appear too.
+- `GET /people/{employee_id}/access` returns `PersonAccessOut` (`hr` only): the linked
+  `account` (`{user_id, display_name}` or `null`), the `on` switches, the `custom` rows and
+  `is_owner`.
+- `GET /org-chart` returns `OrgChart`: `nodes` (up to 5000) and `looped`, the ids that sit in a
+  manager loop (shown flat). `directory` viewers see active and starting people.
+- `GET /departments` returns `DepartmentList`: each `{department_id, name, archived, version,
+  people}`. `hr` and `directory` viewers only.
+- `GET /home` returns `HrHome` (`training_waiting`, `requests_waiting`): counts of what waits for
+  the caller, from the caller's own grants.
+
+**Departments** are rows (`hr_departments`). The old free-text `department` was folded into rows by
+the migration (names that differ only in case or spacing become one department), and the text
+column stays as a mirror of the linked department's name, kept by triggers. So `employee.save`, the
+directory and every existing reader keep working. A department name stays taken while archived.
+
+**New operations** on `POST /operations` (CSRF and `Idempotency-Key`, as for the others):
+
+- `person.add` `{employee_id, values, employment_profile?}`: a new active person. `employee_id`
+  is chosen by the client, so a retry is safe. `values` is `{display_name, job_title, start_date,
+  manager_id?, department_id? | new_department?, work_email?, work_phone?, employment_type?}`
+  (`employment_type` is `full_time`, `part_time`, `contract` or `intern`; `job_title` and
+  `start_date` are required here; giving both `department_id` and `new_department` is 422).
+- `person.update` `{employee_id, expected_version, values, employment_profile?}`: every editable
+  field at once. It never changes whether the person is active (leaving and rehire are 1b), and
+  a `manager_id` equal to `employee_id` is 422. A stale `expected_version` is 409 `person_changed`.
+  The `employment_profile` (`region`, `legal_entity_reference`, `employment_category`) is
+  all-three-or-none.
+- `department.save` `{department_id, expected_version?, name, archived}`: create (no
+  `expected_version`), rename, archive or restore. A stale version is 409 `department_changed`.
+- `account.link` `{employee_id, account_id | null}`: link a person to a tenant member's console
+  account, or unlink. HR owner only.
+
+`person.add`, `person.update` and `department.save` are for the HR owner or a Manage people
+holder; the database checks again. They write a receipt but no authority event, and cannot change
+access, account links or whether a person is active. `employee.save` stays in the API for
+the HR owner (it is the only way to change `is_active` until 1b; the console no longer has a form
+for it).
+
+Refusals are 409 with the code as `detail`, except `permission_denied` and `resource_unavailable`
+(404 `resource_unavailable`): `employee_exists`, `person_changed`, `manager_unavailable`,
+`manager_loop` (the new manager reports, directly or not, to this person), `manager_is_you` (a
+non-owner cannot newly make their own linked person anyone's manager), `own_manager_owner_only` (a
+non-owner cannot change their own linked person's manager), `department_unavailable`,
+`department_archived`, `department_changed`, `department_name_taken`, `account_taken` (the
+account is linked to another person) and `member_unavailable` (not an active member of the tenant).
+Validation failures are 422 `invalid_hr_input` with no field named.
+
+**`GET /records/interviewers`** (a new `records` area) returns `{user_id, display_name}` for every
+enabled console member of the tenant, for the HR owner or anyone with private recruitment
+access (everyone else gets 404). The Recruitment tab uses it to choose an interviewer.
+
+**`GET /context` (`HrContext`) gained three fields:** `switches` (the access switches that are on
+for the caller, in switch order), `workflows` (the caller's `domain.action` workflow grants, sorted
+and unique) and `hr_duties` (true for the HR owner and for anyone holding a switch beyond
+directory and own requests). The console uses them to hide tabs the caller cannot use; they
+never grant anything.
 
 ## Authentication, tenancy and settings
 

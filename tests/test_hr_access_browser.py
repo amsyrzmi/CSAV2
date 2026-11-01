@@ -51,6 +51,7 @@ SWITCHES = [
     "own_requests",
     "approves_team",
     "hr_team",
+    "manage_people",
     "recruitment",
     "attendance",
     "payroll_prepare",
@@ -184,22 +185,40 @@ class World:
                 "client_owner": owner,
                 "private_areas": [],
                 "actions": ["directory.read", "training.read"] if owner else actions,
+                "switches": [s for s in SWITCHES if self.has(caller, s)],
+                "workflows": [],
+                "hr_duties": owner,
             }
         if path == "hr/training-requests" and method == "GET":
             return 200, {"items": [], "next_cursor": None}
-        if path == "hr/employees" and method == "GET" and (owner or self.has(caller, "directory")):
+        if path == "hr/people" and method == "GET" and (owner or self.has(caller, "directory")):
             items = [
                 {
-                    "employee": {"tenant_id": TENANT, "employee_id": EMPLOYEE[user]},
-                    "values": {
-                        "display_name": row["name"],
-                        "job_title": row["title"],
-                        "department": row["department"],
-                    },
+                    "employee_id": EMPLOYEE[user],
+                    "display_name": row["name"],
+                    "job_title": row["title"],
+                    "department_id": None,
+                    "department": row["department"],
+                    "manager_id": row["manager"],
+                    "manager_name": None,
+                    "work_email": None,
+                    "work_phone": None,
+                    "start_date": None,
+                    "employment_type": None,
+                    "status": "active",
+                    "employment_profile": None,
+                    "version": None,
+                    "account_linked": None,
                 }
                 for user, row in self.people.items()
             ]
-            return 200, {"items": items, "next_cursor": None}
+            return 200, {"items": items, "next_cursor": None, "total": len(items)}
+        if (
+            path == "hr/departments"
+            and method == "GET"
+            and (owner or self.has(caller, "directory"))
+        ):
+            return 200, {"items": []}
         if path == "hr/operations" and method == "POST" and owner:
             return 200, {
                 "operation": "automation.run",
@@ -226,6 +245,8 @@ class World:
                     for user, row in self.people.items()
                 ]
             }
+        if path == "hr/records/calendars" and method == "GET" and owner:
+            return 200, {"items": []}
         if path == "hr/records/members" and method == "GET" and owner:
             return 200, {
                 "items": [
@@ -331,14 +352,8 @@ async def test_hr_access_owner_changes_two_people_and_staff_sees_it(tmp_path: Pa
 
 
 async def open_access_page(page: Page, base: str) -> None:
-    """People & HR, then More HR tools, then People & access."""
-    await page.goto(f"{base}/portal/hr")
-    await page.get_by_role("button", name="More HR tools", exact=True).click()
-    await (
-        page.get_by_role("navigation", name="HR tools")
-        .get_by_role("button", name="People & access")
-        .click()
-    )
+    """People & HR › Settings, which holds People & access."""
+    await page.goto(f"{base}/portal/hr/settings")
     await expect(page.get_by_test_id(f"hr-access-row-{STAFF}")).to_be_visible(timeout=WAIT)
 
 
@@ -376,14 +391,15 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         staff_me["user"]["id"] = STAFF
         staff_me["user"]["display_name"] = "Lina Wong"
         upstream.me = staff_me
-        await staff_page.goto(f"{base}/portal/hr?section=directory")
-        await expect(staff_page.get_by_text("Authorized employee directory")).to_be_visible(
-            timeout=WAIT
-        )
+        await staff_page.goto(f"{base}/portal/hr/people")
+        await expect(
+            staff_page.get_by_text("You don't have access to this part of People & HR.")
+        ).to_be_visible(timeout=WAIT)
+        await expect(staff_page.get_by_role("link", name="People", exact=True)).to_have_count(0)
         await expect(staff_page.get_by_text(TITLE)).to_have_count(0)
-        assert not [
-            c for c in world.calls if c["caller"] == STAFF and c["path"] == "hr/employees"
-        ], world.calls
+        assert not [c for c in world.calls if c["caller"] == STAFF and c["path"] == "hr/people"], (
+            world.calls
+        )
 
         # (c) The owner searches for the staff member and turns on the directory switch.
         row = lambda user: page.get_by_test_id(f"hr-access-row-{user}")  # noqa: E731
@@ -449,8 +465,11 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         )
 
         # (g) The staff member now sees a colleague's job title in the HR directory.
-        await staff_page.goto(f"{base}/portal/hr?section=directory")
+        await staff_page.goto(f"{base}/portal/hr/people")
         await expect(staff_page.get_by_role("cell", name=TITLE)).to_be_visible(timeout=WAIT)
+        assert [c for c in world.calls if c["caller"] == STAFF and c["path"] == "hr/people"], (
+            world.calls
+        )
 
         # (h) The stale tab, opened before the save, is told access changed and keeps its change.
         await stale.get_by_test_id(f"hr-access-row-{STAFF}").get_by_role("button").click()

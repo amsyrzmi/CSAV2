@@ -15,11 +15,15 @@ are implemented; no persistent rollout or service activation was performed.
    `HR_BOOTSTRAP_DATABASE_URL`, an active member who has changed their password,
    and a nonempty business approval reference. It cannot replace an existing owner.
    Database ownership is the bootstrap authority; console roles are not ownership.
-3. In **People & HR → More HR tools → People & access**, create manager and employee
-   records, link actual tenant members and assign managers explicitly. An employee
-   can exist without a console account. Complete region/entity/employment category
-   together when preparing that employee for payroll.
-4. Select the action profiles the client approves. They replace the target member’s
+3. In **People & HR → People → Add person**, create the manager and employee records and
+   choose each manager explicitly. Then link actual tenant members from the person’s
+   **Access** section (HR owner only). An employee can exist without a console account.
+   Complete region/entity/employment category together (the “Employment details for
+   payroll” group of the person form) when preparing that employee for payroll. See
+   “People, departments and Manage people” below.
+4. In **People & HR → Settings**, use **People & access** (“Who can do what”) to give each
+   member the switches the client approves, and the raw **Advanced → Access profile** form only
+   when a switch cannot say it. The action profiles there replace the target member’s
    current HR action grants; multiple profiles can be selected. Separately grant
    private recruitment, attendance or payroll access. Payroll reviewers also need
    the financial review action; private access alone does not grant it.
@@ -36,6 +40,44 @@ NO_LOCAL_ENV=1 ENV=dev uv run python -m scripts.bootstrap_hr_owner \
   --client-id "$HR_CLIENT_ID" --owner-id "$HR_OWNER_ID" \
   --approval-reference "$HR_OWNER_APPROVAL_REFERENCE" --client-approved-assignment
 ```
+
+## People, departments and Manage people
+
+Migration `0520` (project 1a) adds departments, a change history per person and the Manage people
+switch. Apply it through `scripts/staging_rollout.py`, which stops the gateway, worker, delivery
+and frontend for the migrate step.
+
+- **The switch.** `manage_people` (“Manage people”) lets someone add and edit people and
+  departments, and see Left people and each person’s History. It does not let them change access:
+  that stays with the HR owner. The `hr_team` preset turns it on; no other preset does, and the
+  HR owner can turn it on for one member on the access page. A holder cannot newly make their own
+  person anyone’s manager, and cannot change their own manager (only the HR owner can).
+- **Who sees the People list.** The HR owner and Manage people holders see everyone, including
+  Left people, with every field. A member with the complete directory switch (“See everyone’s basic
+  details”, part of the Staff preset) sees the active and starting people with name, job
+  title, department, manager, work email, work phone, start date and employment type, and the org
+  chart. A member whose directory access was set by hand to only some of those fields is not
+  “directory”: they get no People tab. Anyone else with HR access sees only their own profile,
+  under Home.
+- **The Left filter.** People who have left are hidden by default. The HR owner and Manage people
+  holders choose **Left** in the status filter to see them. Leaving and rehire themselves come in
+  project 1b; until then there is no screen that makes someone inactive. The API call
+  `employee.save` (HR owner) still can.
+- **Departments.** Each department is a row, and a person points at one. The free-text department
+  already on each person was turned into departments by the migration (names that differ only in
+  case or spacing became one). The old text column is kept as a mirror of the department’s name so
+  that older readers keep working. A department name stays taken after it is archived; restoring
+  it brings it back. In **People → Departments** the HR owner and Manage people holders create,
+  rename, archive and restore departments, and see how many people each has. The Add person
+  form can also create one with **New department…**.
+- **History.** A person’s **History** section (HR owner and Manage people holders) lists each
+  change with who made it and when, field by field, old to new, up to the latest 200. It is
+  written by the database for every change, including the `employee.save` call. Saving the person
+  form uses the version it loaded: if someone else saved first, nothing is saved and the form says
+  “Someone changed this person since you opened it. Reload to see their change.”
+- **Linking a console account.** In a person’s **Access** section the HR owner picks a tenant
+  member to link, or unlinks the current one. A member can be linked to one person only.
+  Changing what the member can do stays on the access page (**Settings → People & access**).
 
 ## Private recruitment and scheduling
 
@@ -125,7 +167,7 @@ browser; typed chat remains available.
 
 ## Acceptance before rollout
 
-The bounded directory/training browser scenario is maintained in
+The bounded People/training browser scenario is maintained in
 [`test_packaged_hr_browser_acceptance`](../../tests/test_packaged_console.py).
 Run it with synthetic packaged services and disposable PostgreSQL only:
 

@@ -399,9 +399,37 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 "client_owner": False,
                 "private_areas": [],
                 "actions": ["training.read"],
+                "switches": ["own_requests"],
+                "workflows": [],
+                "hr_duties": False,
             }
         elif path == "hr/training-requests":
             data = EMPTY_PAGE
+        elif path == f"hr/people/{ALI_B}":
+            # HR Home for a member without HR duties shows their own profile and balances.
+            data = {
+                "person": {
+                    "employee_id": str(ALI_B),
+                    "display_name": "Ali Bakar",
+                    "job_title": "Driver",
+                    "department_id": None,
+                    "department": None,
+                    "manager_id": None,
+                    "manager_name": None,
+                    "work_email": None,
+                    "work_phone": None,
+                    "start_date": None,
+                    "employment_type": None,
+                    "status": "active",
+                    "employment_profile": None,
+                    "version": None,
+                    "account_linked": None,
+                },
+                "sections": ["overview"],
+                "can_edit": False,
+            }
+        elif path == "hr/records/balances":
+            data = {"items": []}
         elif path == f"email/drafts/{EMAIL_DRAFT}" and request.method == "GET":
             data = email_draft()
         elif path == "workspace/conversations" and request.method == "GET":
@@ -495,6 +523,10 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         ]
 
         # (d) A navigate-with-resume opens HR and re-posts the message once, from HR.
+        # `next dev` compiles the HR route (now every People & HR tab) on first request, which
+        # can take longer than the dock's 10 s resume wait. Request it once so the navigate
+        # below only routes.
+        await page.request.get(f"{base}/portal/hr", timeout=60_000)
         await say(page, "submit my training request")
         await expect(page).to_have_url(f"{base}/portal/hr", timeout=WAIT)
         training = card.filter(has_text="Forklift safety")

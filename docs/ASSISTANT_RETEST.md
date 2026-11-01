@@ -69,6 +69,7 @@ Tick each row when the result matches.
 | Open the email assistant tab | Read-only member | An answer, or a navigate to a tab the role cannot open; PASS checks only that such a navigate is locked, not the wording | `navigate-en-2` |
 | Any prompt | Read-only member | No assistant dock is shown: read-only members cannot post turns, so `navigate-en-2` has no hand retest | manual |
 | Tolong buka tab langganan untuk saya | Subscriptions service not active, HR tab open | An answer, or a navigate to a locked tab; PASS checks only that such a navigate is locked, not the wording (check that by hand with the "Buka tab langganan" row below) | `navigate-ms-2` |
+| Open HR directory | HR active, the member has the directory switch | The dock says it opened People & HR, and the browser lands on People (`/portal/hr/people`) through the old `?section=directory` redirect. A member without the directory switch lands there too and sees the no-access notice | manual |
 | Open subscriptions | Subscriptions service not active | No tab opens and there is no "Opened" line; the answer says the tab needs the service and to ask an administrator | manual |
 | Buka tab langganan | Subscriptions service not active | Tiada tab dibuka; jawapan dalam Bahasa Melayu tentang perkhidmatan yang tidak aktif | manual |
 
@@ -96,6 +97,23 @@ Tick each row when the result matches.
 | Send an email to Razak about the invoice | HR active, a Razak in the directory | Candidates to pick; picking one continues the email | manual |
 | Find Aina Rahman | HR active, an employee named Nur Aina binti Rahman | Nur Aina binti Rahman is listed (words in any order, parts of the name are enough) | manual |
 | Emel pengurus kewangan | HR active, an employee whose job title is Finance Manager | That employee is listed to pick | manual |
+
+## People & HR screens
+
+The 1a screens have browser scenarios for the access page and the training flow, not for every row below, so a person checks them on staging. Sign in as the HR owner unless the setup says otherwise.
+
+| Check | Setup | Expected | Smoke id |
+| --- | --- | --- | --- |
+| Open People & HR | HR owner | Tabs for what the owner may use (Home, People, Leave & attendance and Settings always; Recruitment, Payroll, Training and Requests when granted), each with its own address. The old "More HR tools" button is gone | manual |
+| Open `/portal/hr?section=training`, `?section=attendance` and `?section=workflows` | HR owner | Each lands on Training, Leave & attendance and Requests | manual |
+| Open People, search "finance" and filter by department | At least 3 people, one with the job title Finance Manager | The list narrows; "Clear search and filters" restores it; 50 rows a page with "Load more" | manual |
+| Add a person with a new department | Holder of Manage people, or the HR owner | The person appears under People, the department is in the filter and on Departments | manual |
+| Edit a person in two tabs, save in the first, then the second | HR owner | The second shows "Someone changed this person since you opened it. Reload to see their change." and keeps nothing | manual |
+| Open a person's History | After an edit | The edit is listed with who made it and each changed field, old to new | manual |
+| Link a console account on a person's Access section | HR owner, a member without a person record | The account shows on the profile; linking the same account to a second person is refused | manual |
+| Open People | Member with only the staff defaults | People shows the colleagues' basic details; no Left filter, no Add person, no Access or History sections | manual |
+| Open People | Member whose directory access is a hand-made partial grant | No People tab; opening `/portal/hr/people` shows the no-access notice | manual |
+| Open People & HR | Member with no HR duties | Home is My HR: their own profile, leave balances and training requests | manual |
 
 ## Compose and send
 
