@@ -59,6 +59,7 @@ from csa.hr.people_contracts import (
     PersonStatus,
 )
 from csa.hr.people_service import HrPeople
+from csa.hr.personal import HrPersonal, PersonalOut, PersonalReveal, PersonalRevealIn
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import (
     AgentSwitch,
@@ -380,6 +381,25 @@ def build_hr_router() -> APIRouter:
         employee_id: UUID, session: Session, service: Service
     ) -> PersonAccessOut:
         return await HrPeople(service).access(session, employee_id)
+
+    @router.get(
+        "/people/{employee_id}/personal",
+        response_model=PersonalOut,
+        response_model_exclude_none=False,
+    )
+    async def person_personal(employee_id: UUID, session: Session, service: Service) -> PersonalOut:
+        return await HrPersonal(service).get(session, employee_id)
+
+    @router.post(
+        "/people/{employee_id}/personal/reveal",
+        response_model=PersonalReveal,
+        response_model_exclude_none=False,
+    )
+    async def person_personal_reveal(
+        employee_id: UUID, body: PersonalRevealIn, session: Session, service: Service
+    ) -> PersonalReveal:
+        value = await HrPersonal(service).reveal(session, employee_id, body.field)
+        return PersonalReveal(value=value)
 
     @router.get("/org-chart", response_model=OrgChart, response_model_exclude_none=False)
     async def org_chart(session: Session, service: Service) -> OrgChart:

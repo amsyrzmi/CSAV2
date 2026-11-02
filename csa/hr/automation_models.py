@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import re
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal, Self
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime, Field, StrictBool, field_validator, model_validator
+from pydantic import AwareDatetime, Field, SecretStr, StrictBool, field_validator, model_validator
 
 from csa.hr.models import DirectoryValues, HrModel, ResolvedGrant, Version
 
 # From the leaf module, not people_contracts: people_contracts imports access_switches, which
 # imports this module.
-from csa.hr.people_types import EmploymentProfile, EmploymentType
+from csa.hr.people_types import EmploymentProfile, EmploymentType, EncryptedField
 from csa.hr.workflows import AttendanceInput, Money, Region, ReviewedPayrollAmounts, WorkflowGrant
 
 PrivateArea = Literal["recruitment", "attendance", "payroll"]
@@ -106,6 +108,70 @@ class PersonUpdate(HrModel):
         if self.values.manager_id == self.employee_id:
             raise ValueError("manager_self")
         return self
+
+
+_KUALA_LUMPUR = ZoneInfo("Asia/Kuala_Lumpur")
+
+
+class PersonalValues(HrModel):
+    """The plain personal fields. A key that is absent keeps the stored value and null clears it,
+    so read `model_fields_set` (or dump with `exclude_unset`), never the defaults."""
+
+    date_of_birth: date | None = None
+    home_address: str | None = Field(default=None, min_length=1, max_length=500)
+    personal_phone: str | None = Field(default=None, pattern=r"^[0-9+() -]{3,40}$")
+    emergency_name: str | None = Field(default=None, min_length=1, max_length=120)
+    emergency_relationship: str | None = Field(default=None, min_length=1, max_length=60)
+    emergency_phone: str | None = Field(default=None, pattern=r"^[0-9+() -]{3,40}$")
+    bank_name: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def not_in_the_future(cls, value: date | None) -> date | None:
+        if value is not None and value > datetime.now(UTC).astimezone(_KUALA_LUMPUR).date():
+            raise ValueError("date_of_birth_in_the_future")
+        return value
+
+
+# What each number may look like after trimming (the IC or passport is also uppercased).
+_NUMBER_SHAPES: dict[str, re.Pattern[str]] = {
+    "ic_or_passport": re.compile(r"[A-Z0-9-]{5,20}"),
+    "bank_account": re.compile(r"[0-9 -]{5,34}"),
+    "tax_number": re.compile(r"[A-Z0-9 ]{5,20}"),
+    "epf_number": re.compile(r"[0-9]{5,20}"),
+    "socso_number": re.compile(r"[A-Z0-9-]{5,20}"),
+}
+
+
+class PersonalSave(HrModel):
+    """Save a person's personal details. The numbers arrive as secrets: the service encrypts them,
+    and nothing logs, stores or returns them. An absent key keeps the stored value; null clears it.
+    The database decides who may save which field."""
+
+    operation: Literal["personal.save"]
+    employee_id: UUID
+    expected_version: Version | None = None
+    values: PersonalValues
+    encrypted: dict[EncryptedField, SecretStr | None] = Field(default_factory=dict)
+
+    @field_validator("encrypted")
+    @classmethod
+    def numbers_are_well_formed(
+        cls, value: dict[str, SecretStr | None]
+    ) -> dict[str, SecretStr | None]:
+        # The refusal names no value: the model hides input and the message is fixed.
+        out: dict[str, SecretStr | None] = {}
+        for field, secret in value.items():
+            if secret is None:
+                out[field] = None
+                continue
+            text = secret.get_secret_value().strip()
+            if field == "ic_or_passport":
+                text = text.upper()
+            if not _NUMBER_SHAPES[field].fullmatch(text):
+                raise ValueError("invalid_personal_number")
+            out[field] = SecretStr(text)
+        return out
 
 
 class DepartmentSave(HrModel):
@@ -373,7 +439,8 @@ HrOperation = Annotated[
     | PersonAdd
     | PersonUpdate
     | DepartmentSave
-    | AccountLink,
+    | AccountLink
+    | PersonalSave,
     Field(discriminator="operation"),
 ]
 

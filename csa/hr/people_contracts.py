@@ -38,7 +38,7 @@ __all__ = [
 ]
 
 PersonStatus = Literal["active", "starting", "left"]  # 1b adds "leaving"
-ProfileSection = Literal["overview", "access", "history"]  # 1b adds "personal", "documents"
+ProfileSection = Literal["overview", "personal", "documents", "access", "history"]
 HistoryField = Literal[
     "display_name",
     "job_title",
@@ -52,6 +52,18 @@ HistoryField = Literal[
     "region",
     "legal_entity_reference",
     "employment_category",
+    "date_of_birth",
+    "home_address",
+    "personal_phone",
+    "emergency_name",
+    "emergency_relationship",
+    "emergency_phone",
+    "bank_name",
+    "ic_or_passport",
+    "bank_account",
+    "tax_number",
+    "epf_number",
+    "socso_number",
 ]
 
 

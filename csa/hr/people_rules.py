@@ -190,5 +190,14 @@ def history_fields(changes: Mapping[str, Mapping[str, str | None]]) -> list[Fiel
     ]
 
 
-def sections_for(viewer: Viewer) -> list[ProfileSection]:
-    return ["overview", "access", "history"] if viewer == "hr" else ["overview"]
+def sections_for(viewer: Viewer, *, personal: bool, documents: bool) -> list[ProfileSection]:
+    """The profile's sections in display order. `personal` and `documents` say whether the caller
+    may open them (decided by the caller from the personal-details access class)."""
+    sections: list[ProfileSection] = ["overview"]
+    if personal:
+        sections.append("personal")
+    if documents:
+        sections.append("documents")
+    if viewer == "hr":
+        sections.extend(("access", "history"))
+    return sections

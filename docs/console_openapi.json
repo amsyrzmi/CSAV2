@@ -3597,7 +3597,19 @@
               "active",
               "region",
               "legal_entity_reference",
-              "employment_category"
+              "employment_category",
+              "date_of_birth",
+              "home_address",
+              "personal_phone",
+              "emergency_name",
+              "emergency_relationship",
+              "emergency_phone",
+              "bank_name",
+              "ic_or_passport",
+              "bank_account",
+              "tax_number",
+              "epf_number",
+              "socso_number"
             ],
             "title": "Field",
             "type": "string"
@@ -7590,6 +7602,8 @@
             "items": {
               "enum": [
                 "overview",
+                "personal",
+                "documents",
                 "access",
                 "history"
               ],
@@ -7769,6 +7783,385 @@
           "display_name"
         ],
         "title": "PersonValues",
+        "type": "object"
+      },
+      "PersonalOut": {
+        "additionalProperties": false,
+        "properties": {
+          "bank_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account"
+          },
+          "bank_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Name"
+          },
+          "can_edit": {
+            "enum": [
+              "all",
+              "contact"
+            ],
+            "title": "Can Edit",
+            "type": "string"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "emergency_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Name"
+          },
+          "emergency_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Phone"
+          },
+          "emergency_relationship": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Relationship"
+          },
+          "epf_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epf Number"
+          },
+          "home_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Address"
+          },
+          "ic_or_passport": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ic Or Passport"
+          },
+          "personal_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Phone"
+          },
+          "socso_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Socso Number"
+          },
+          "tax_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Number"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "date_of_birth",
+          "home_address",
+          "personal_phone",
+          "emergency_name",
+          "emergency_relationship",
+          "emergency_phone",
+          "bank_name",
+          "ic_or_passport",
+          "bank_account",
+          "tax_number",
+          "epf_number",
+          "socso_number",
+          "version",
+          "can_edit"
+        ],
+        "title": "PersonalOut",
+        "type": "object"
+      },
+      "PersonalReveal": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "PersonalReveal",
+        "type": "object"
+      },
+      "PersonalRevealIn": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "enum": [
+              "ic_or_passport",
+              "bank_account",
+              "tax_number",
+              "epf_number",
+              "socso_number"
+            ],
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "PersonalRevealIn",
+        "type": "object"
+      },
+      "PersonalSave": {
+        "additionalProperties": false,
+        "description": "Save a person's personal details. The numbers arrive as secrets: the service encrypts them,\nand nothing logs, stores or returns them. An absent key keeps the stored value; null clears it.\nThe database decides who may save which field.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "encrypted": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "format": "password",
+                  "type": "string",
+                  "writeOnly": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "propertyNames": {
+              "enum": [
+                "ic_or_passport",
+                "bank_account",
+                "tax_number",
+                "epf_number",
+                "socso_number"
+              ]
+            },
+            "title": "Encrypted",
+            "type": "object"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "operation": {
+            "const": "personal.save",
+            "title": "Operation",
+            "type": "string"
+          },
+          "values": {
+            "$ref": "#/components/schemas/PersonalValues"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "values"
+        ],
+        "title": "PersonalSave",
+        "type": "object"
+      },
+      "PersonalValues": {
+        "additionalProperties": false,
+        "description": "The plain personal fields. A key that is absent keeps the stored value and null clears it,\nso read `model_fields_set` (or dump with `exclude_unset`), never the defaults.",
+        "properties": {
+          "bank_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Name"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "emergency_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Name"
+          },
+          "emergency_phone": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9+() -]{3,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Phone"
+          },
+          "emergency_relationship": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Relationship"
+          },
+          "home_address": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Address"
+          },
+          "personal_phone": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9+() -]{3,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Phone"
+          }
+        },
+        "title": "PersonalValues",
         "type": "object"
       },
       "PlanIn": {
@@ -17370,6 +17763,7 @@
                     "payroll.snapshot": "#/components/schemas/PayrollSnapshot",
                     "person.add": "#/components/schemas/PersonAdd",
                     "person.update": "#/components/schemas/PersonUpdate",
+                    "personal.save": "#/components/schemas/PersonalSave",
                     "private_access.save": "#/components/schemas/PrivateAccessSave",
                     "shift.cancel": "#/components/schemas/ScheduleCancel",
                     "shift.schedule": "#/components/schemas/ShiftSchedule"
@@ -17442,6 +17836,9 @@
                   },
                   {
                     "$ref": "#/components/schemas/AccountLink"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonalSave"
                   }
                 ],
                 "title": "Body"
@@ -17842,6 +18239,136 @@
           }
         },
         "summary": "Person History",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people/{employee_id}/personal": {
+      "get": {
+        "operationId": "person_personal_console_v1_hr_people__employee_id__personal_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Personal",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people/{employee_id}/personal/reveal": {
+      "post": {
+        "operationId": "person_personal_reveal_console_v1_hr_people__employee_id__personal_reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalRevealIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalReveal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Personal Reveal",
         "tags": [
           "HR"
         ]

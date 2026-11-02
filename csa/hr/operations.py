@@ -35,6 +35,7 @@ from csa.hr.automation_models import (
     PayrollRules,
     PayrollSnapshot,
     PersonAdd,
+    PersonalSave,
     PersonUpdate,
     PrivateAccessSave,
     ScheduleCancel,
@@ -66,6 +67,11 @@ _PEOPLE_REFUSALS = {
     "hr_department_name_taken": "department_name_taken",
     "hr_account_taken": "account_taken",
     "hr_member_unavailable": "member_unavailable",
+    # Personal details (hr_personal_apply and hr_personal_reveal).
+    "hr_personal_access_required": "permission_denied",
+    "hr_personal_field_refused": "personal_field_refused",
+    "hr_idempotency_conflict": "idempotency_conflict",
+    "hr_operation_unsupported": "unsupported_operation",
 }
 
 
@@ -75,6 +81,10 @@ class HrOperations:
 
     @staticmethod
     def fingerprint(body: HrOperation) -> str:
+        if isinstance(body, PersonalSave):
+            # Its numbers are secrets, so a plain hash of the body is wrong (it would also lose
+            # them). HrPersonal computes a keyed fingerprint instead.
+            raise TypeError("personal.save has a keyed fingerprint, see csa.hr.personal")
         payload = body.model_dump(mode="json")
         if isinstance(body, CalendarSave):
             payload["working_weekdays"] = sorted(payload["working_weekdays"])
@@ -153,6 +163,11 @@ class HrOperations:
             and not (session.capability == "hr_recruitment" and isinstance(body, InterviewSchedule))
         ):
             raise HrPolicyError("human_operation_required")
+        if isinstance(body, PersonalSave):
+            # The database decides who may save which field; HrPersonal encrypts and fingerprints.
+            from csa.hr.personal import HrPersonal
+
+            return await HrPersonal(self.core).save(session, body, key)
         fingerprint = self.fingerprint(body)
         async with tx(self.core.pool, str(session.tenant_id)) as conn:
             access = await self.core._access(conn, session)
