@@ -35,6 +35,12 @@ export const SWITCH_COPY: Record<SwitchId, { label: string; tag: string; explana
     explanation: "Adds people and edits their profiles and departments. Sees people who have left and employment profiles.",
     group: "Responsibilities",
   },
+  sensitive_details: {
+    label: "Sensitive details",
+    tag: "Sensitive details",
+    explanation: "See and edit IC or passport, bank, tax, EPF and SOCSO numbers, home address, personal phone and emergency contact.",
+    group: "Responsibilities",
+  },
   payroll_prepare: {
     label: "Prepares payroll",
     tag: "Prepares payroll",

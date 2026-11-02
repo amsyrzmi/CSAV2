@@ -21,6 +21,33 @@ guards, the deferred items and the 1b seams are in the top entry of
 The directory/training browser scenario below now opens `/portal/hr/people` and
 `/portal/hr/training`.
 
+## People & HR 1b (2026-11-02)
+
+Branch `feat/hr-people-1b`, migration `0521`. A person's profile gains **Personal** (the personal
+details, with the IC or passport, bank account, tax, EPF and SOCSO numbers encrypted, masked and
+shown one at a time with an audited Show) and **Documents** (upload, list, download and remove),
+and the Overview gains **Mark as leaving**, **Undo leaving** and **Rehire**. A new access switch,
+`sensitive_details` ("Sensitive details", in no preset), lets a member see and edit personal
+details. A leaver's reports move on their last day and the leaver is finished the day after by the
+worker's `hr_leavers_round` (every 900 seconds) or HR Home's maintenance (the HR owner's open Home). My HR shows the person's
+own personal details and documents. The full entry is the top entry of
+[../PROGRESS.md](../PROGRESS.md); the operating notes are in
+[SETUP.md](./SETUP.md#personal-details-and-sensitive-details) (and the documents and leaving
+sections after it) and the API in
+[../CONSOLE_API.md](../CONSOLE_API.md#personal-details-documents-and-leaving-project-1b-migration-0521).
+The browser scenario `test_hr_owner_personal_documents_and_leaving` in
+[`test_hr_access_browser.py`](../../tests/test_hr_access_browser.py) covers Personal, Documents,
+Mark as leaving and Undo.
+
+## HR chat retired (project 1b)
+
+The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace
+assistant dock is the only assistant and now handles the HR actions (add or update a person,
+mark someone as leaving, who reports to whom). `POST /console/v1/hr/assistant` and
+`csa/hr/assistant.py` stay for one release, marked deprecated in
+[../CONSOLE_API.md](../CONSOLE_API.md), and are removed in a cleanup PR. Entries below that
+mention the HR chat or its UI describe the earlier state.
+
 ## Workspace HR guidance
 
 The staff workspace now has a separate deterministic People & HR guide. Its
@@ -217,7 +244,8 @@ stable path above. No environment file was read or copied.
   [parameterized SQL](../../db/sql/hr/), [OpenAPI](../console_openapi.json).
 - [HR shell and tabs](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
   (replaced the single HR workspace and its remaining-tools panel in project 1a),
-  [assistant UI](../../CSA_WebConsole/csa-console/web/components/console/HrAssistant.tsx),
+  [assistant dock](../../CSA_WebConsole/csa-console/web/components/console/AssistantDock.tsx)
+  (the separate HR chat was retired in 1b; the dock is the only assistant),
   [local voice](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts).
 - [Owner bootstrap](../../scripts/bootstrap_hr_owner.py),
   [maintenance worker](../../scripts/run_hr_maintenance.py).

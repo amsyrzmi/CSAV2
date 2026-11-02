@@ -60,9 +60,10 @@ and frontend for the migrate step.
   “directory”: they get no People tab. Anyone else with HR access sees only their own profile,
   under Home.
 - **The Left filter.** People who have left are hidden by default. The HR owner and Manage people
-  holders choose **Left** in the status filter to see them. Leaving and rehire themselves come in
-  project 1b; until then there is no screen that makes someone inactive. The API call
-  `employee.save` (HR owner) still can.
+  holders choose **Left** in the status filter to see them. People who are leaving stay in the
+  default list, marked Leaving. Marking someone as leaving and rehiring them are on the profile
+  (project 1b, see “Leaving and rehire” below). The API call `employee.save` (HR owner) can still
+  make someone inactive directly.
 - **Departments.** Each department is a row, and a person points at one. The free-text department
   already on each person was turned into departments by the migration (names that differ only in
   case or spacing became one). The old text column is kept as a mirror of the department’s name so
@@ -78,6 +79,87 @@ and frontend for the migrate step.
 - **Linking a console account.** In a person’s **Access** section the HR owner picks a tenant
   member to link, or unlinks the current one. A member can be linked to one person only.
   Changing what the member can do stays on the access page (**Settings → People & access**).
+
+## Personal details and Sensitive details
+
+Migration `0521` (project 1b) adds a **Personal** section to a person's profile: IC or passport
+number, date of birth, home address, personal phone, emergency contact (name, relationship and
+phone), bank, bank account number, income tax number, EPF number and SOCSO number.
+
+- **The switch.** `sensitive_details` (“Sensitive details”) lets a member see and edit every
+  person's personal details. No preset turns it on; the HR owner turns it on for one member on the
+  access page. It does not let them change access. Manage people alone does not show personal
+  details.
+- **Who sees the section.** The HR owner and Sensitive details holders see and edit it for anyone.
+  The person sees their own and edits only their home address, personal phone and emergency
+  contact; HR keeps the rest. Managers and colleagues never see it, and it never appears in the
+  People list, the directory, search or the assistant.
+- **Give Sensitive details with the directory switch.** A holder of Sensitive details who does not
+  also have the directory switch (“See everyone's basic details”, part of the Staff preset) or
+  Manage people cannot open other people's profiles, so cannot reach their Personal section. The
+  staff defaults include the directory switch, so this only happens when it was turned off by hand.
+- **Numbers.** The IC or passport, bank account, tax, EPF and SOCSO numbers are encrypted in the
+  database with the gateway's `CREDENTIALS_KEY`, so keep that key with the backups. They are shown
+  masked, as `•••• ` and the last 4 characters (`••••` for 4 characters or fewer). **Show** reveals
+  one number until **Hide**, Edit or a reload, and every Show is recorded (who, whose, which
+  number, when). In the edit form a number box starts empty: leave it blank to keep the stored
+  number, type to replace it, or tick **Clear** to remove it.
+- **History.** A change is listed in the person's History by field name only (“Changed Bank
+  account number”), never with its value.
+
+## Employee documents
+
+Migration `0521` (project 1b) adds documents on a person's profile: a contract, an identity file, a
+certificate or another file. The HR owner and Manage people holders add, see and remove them, for
+any person including those who have left. The person sees their own contract, identity and
+certificate files, not the ones filed as Other, and cannot add or remove anything. A manager or a
+colleague sees none. Removing a document hides it and deletes its file; the record and its
+history entry are kept.
+
+- **Files.** PDF, JPG, PNG or DOCX, at most 10 MB each, one per upload. The file's content must
+  match its extension; a renamed file is refused. Names are kept as given (up to 255 characters).
+- **Storage.** Files live under `HR_UPLOAD_ROOT/<client id>/` with a generated name, on a volume
+  that only the gateway mounts (`staging-hr-uploads` in `deploy/compose.staging-pipeline.yml`,
+  mounted at `/var/lib/csa/hr-uploads`). Leave `HR_UPLOAD_ROOT` unset and the document routes answer
+  503 `hr_documents_unavailable`. It must not be, contain or sit inside `KB_UPLOAD_ROOT`; settings
+  refuse that at startup, since each side's cleanup would delete the other's files. Include the
+  volume in backups: the database holds only the record.
+- **Not covered.** Files are **not scanned for viruses** and are **not encrypted on disk**; the
+  volume and its backups need the access control and disk encryption of the host. The document
+  list, download and History show the file name, so names should not carry identity numbers.
+
+## Leaving and rehire
+
+Migration `0521` (project 1b) adds leaving to the profile. The HR owner and Manage people holders
+use **Mark as leaving** on a person's Overview.
+
+- **Mark as leaving.** Choose the last day (today or later, Kuala Lumpur time) and the reason:
+  Resigned, Contract ended, Dismissed, Retired or Other (Other needs a short reason, at most 200
+  characters). When the person has reports, choose who they move to; the default is the leaver's
+  own manager. The person shows as **Leaving** until the last day has passed. The reason is for
+  HR viewers only; the person and their direct manager see the last day.
+- **Who can be marked.** The HR owner cannot be marked as leaving while they are the owner: “The HR
+  owner can't be marked as leaving. Contact support to move HR ownership to someone else first.”
+  (a company has one HR owner, and the console has no way to change it yet).
+  Only the HR owner can mark someone who holds HR access beyond the staff switches, or who is a
+  tenant admin of the company, as leaving (“Only the HR owner can mark someone with HR access as
+  leaving.”), because finishing them removes that access and disables their membership. A Manage
+  people holder can still mark themself.
+- **Undo leaving** is on the profile until the end of the last day. If the reports have already
+  moved, they stay with their new manager.
+- **On the last day** the person keeps their access all day, and their reports move to the chosen
+  manager (or to no manager, when that person has since left).
+- **The day after the last day** the person is finished: they become Left, their HR access in this
+  company (switches, workflow rows, private areas and the HR owner row) is deleted, their console
+  membership of the company is disabled and their sessions there are revoked. The link between
+  the person and the console account is kept. History shows these changes by “System”, and one
+  `hr.leaver_finished` row goes to the console audit log. The main worker (`apps/worker`) runs
+  this every 15 minutes (`hr_leavers_round`, 900 seconds), and People & HR Home runs it too for
+  that company while the HR owner has it open (its maintenance, every five minutes), so a stopped
+  worker only delays it. Running it twice finishes a person once.
+- **Rehire** is on the profile of someone who has left: choose a new start date. They come back as
+  an active person with no manager if their old manager has left. No access comes back: invite
+  them again from **Settings** to give console access.
 
 ## Private recruitment and scheduling
 
@@ -144,28 +226,44 @@ background worker when users close their browsers.
 
 ## Staff chat and browser voice
 
+> **Moved (project 1b).** The separate HR chat on People & HR Home is retired; HR actions are
+> now asked of the workspace assistant dock, which is the only assistant. The notes below
+> describe the deprecated `POST /console/v1/hr/assistant` route, which stays for one release
+> and is then removed in a cleanup PR. `lib/hr-voice.ts` stays for the sandbox workspace.
+
+Everything in this section up to the dictation paragraph applies only to the deprecated
+`POST /console/v1/hr/assistant` route. No console screen calls it any more, so there is no
+chat UI and no provider notice of its own.
+
 Set `HR_ASSISTANT_ENABLED=true` in the authorized gateway configuration, using the
 existing configured Groq client. A client owner must also enable `hr_assistant` and
-any actual HR tool it will use. Submitted messages and the caller’s employee
+any actual HR tool it will use. Messages submitted to the route and the caller’s employee
 reference go to the configured model provider; persisted private CV/payroll stores
-are never supplied. The UI discloses the provider use before submission.
+are never supplied.
 
-The planner may request one typed permitted action or return a fixed clarification.
+The route's planner may request one typed permitted action or return a fixed clarification.
 Its schema rejects approval/rejection and payroll preparation. All executions use
 the same freshly verified services as manual forms. Session-bound persisted plans
 and operation receipts handle explicit retries after uncertain responses. Changing
 an input with the same key conflicts; an acknowledged operation can begin a new
 request. Permission/calendar set order is canonicalized across app processes.
 
-Dictation fills an editable text box; it does not submit automatically. Recognition
+Dictation (`lib/hr-voice.ts`, now used only by the Sandbox assistant; the workspace
+assistant dock has none) fills an editable text box; it does not submit automatically. Recognition
 requires [on-device processing support](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition/processLocally)
 and an installed English Malaysia language pack. Speech playback selects only a
 [local voice](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesisVoice/localService).
 No cloud speech fallback or automatic language-pack download is attempted. Browser
 support and actual microphone acceptance must still be verified on the client’s
-browser; typed chat remains available.
+browser; typed input remains available.
 
 ## Acceptance before rollout
+
+The access page and the People profile have browser scenarios in
+[`test_hr_access_browser.py`](../../tests/test_hr_access_browser.py) against a synthetic API:
+the owner changing two members' switches, and the HR owner using a profile's Personal (masked
+number and Show) and Documents (upload, list, download) sections, marking the person as leaving
+and undoing it. CI runs them.
 
 The bounded People/training browser scenario is maintained in
 [`test_packaged_hr_browser_acceptance`](../../tests/test_packaged_console.py).

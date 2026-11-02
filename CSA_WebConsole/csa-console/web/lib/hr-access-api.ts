@@ -7,6 +7,7 @@ export type SwitchId =
   | "approves_team"
   | "hr_team"
   | "manage_people"
+  | "sensitive_details"
   | "recruitment"
   | "attendance"
   | "payroll_prepare"
@@ -21,7 +22,7 @@ export type WarningKind =
 
 export const SWITCH_IDS: readonly SwitchId[] = [
   "directory", "own_requests", "approves_team", "hr_team", "manage_people",
-  "recruitment", "attendance", "payroll_prepare", "payroll_review",
+  "sensitive_details", "recruitment", "attendance", "payroll_prepare", "payroll_review",
 ];
 
 export interface AccessPerson {

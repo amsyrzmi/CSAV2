@@ -20,8 +20,8 @@ field names after a failure, ``RATE <id> k/N`` per case with ``--repeat``, and a
 ``N passed, M failed`` line. Never a message, model text, subject, body or address; the key is
 never printed. Exit 0 when every sample passes, 1 when any fails, 2 on a setup error (no model
 key, the model unavailable on the first call, an unknown case id, a missing or invalid case
-file). A run is about 48 model calls (one planner call per case plus one drafting call per draft
-case), up to about 85 with re-plans.
+file). A run is about 59 model calls (one planner call per case plus one drafting call per draft
+case), up to about 107 with re-plans.
 """
 
 from __future__ import annotations
@@ -79,6 +79,7 @@ from csa.workspace.rules import (
 from csa.workspace.service import (
     _MAIL_WORDS,
     _MANAGER_WORDS,
+    _PEOPLE_WORDS,
     _TEAM_WORDS,
     _TRAINING_WORDS,
     _asked_to_send,
@@ -104,9 +105,15 @@ ActionName = Literal[
     "training_submit",
     "inbox_decision",
     "clarification",
+    "hr_person_add",
+    "hr_person_update",
+    "hr_person_leave",
+    "people_query",
+    "hr_person_open",
 ]
 Preset = Literal[
     "staff_basic",
+    "hr_people_manager",
     "staff_with_hr_linked",
     "staff_unlinked",
     "staff_with_mailbox",
@@ -141,6 +148,8 @@ class Expect(_Strict):
     locked: bool = False
     # A directory_lookup's query must be exactly these words (any order or case); never printed.
     query_words: list[str] = Field(default_factory=list)
+    # Each named attribute of the proposal must equal this text (case-insensitive); never printed.
+    fields: dict[str, str] = Field(default_factory=dict)
 
 
 class SmokeCase(_Strict):
@@ -202,13 +211,15 @@ class _Preset:
     threads: list[MailboxThreadFact] | None  # None: no mailbox connected (unreadable)
     team: TeamFact
     employee: EmployeeFact
+    people_access: Literal["hr", "directory", "self"] | None = None
 
 
 _MANAGER = ManagerFact(employee_id=MANAGER_ID, reason=None)
 _NOT_APPROVER = TeamFact(reports=[], skipped=[], reason="not_team_approver")
 _LINKED = EmployeeFact(linked=True, can_request_training=True, reason=None)
 PRESETS: dict[str, _Preset] = {
-    "staff_basic": _Preset("active", _MANAGER, None, _NOT_APPROVER, _LINKED),
+    "staff_basic": _Preset("active", _MANAGER, None, _NOT_APPROVER, _LINKED, "directory"),
+    "hr_people_manager": _Preset("active", _MANAGER, None, _NOT_APPROVER, _LINKED, "hr"),
     "staff_with_hr_linked": _Preset(
         "active", _MANAGER, None, TeamFact(reports=REPORTS, skipped=SKIPPED, reason=None), _LINKED
     ),
@@ -251,6 +262,7 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
         mailbox_threads=preset.threads if _MAIL_WORDS.search(message) else None,
         my_team=preset.team if _TEAM_WORDS.search(message) else None,
         my_employee=preset.employee if _TRAINING_WORDS.search(message) else None,
+        people_access=preset.people_access if _PEOPLE_WORDS.search(message) else None,
     )
 
 
@@ -405,6 +417,11 @@ async def run_case(
         planned = {word.lower() for word in re.split(r"[\s,]+", proposal.query) if word}
         if planned != {word.lower() for word in expect.query_words}:
             failed.append("query_words")
+    if expect.fields and any(
+        str(getattr(proposal, name, None) or "").casefold() != value.casefold()
+        for name, value in expect.fields.items()
+    ):
+        failed.append("fields")
     if isinstance(proposal, NavigateProposal) and last.locked != expect.locked:
         failed.append("locked")
     if isinstance(proposal, ClarificationProposal) and expect.no_placeholder_options:

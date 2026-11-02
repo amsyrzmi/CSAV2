@@ -981,6 +981,7 @@ async def test_answer_navigate_and_clarification_round_trip(planned) -> None:
     assert moved.status_code == 201, moved.text
     assert moved.json()["result"] == {
         "action": "navigate", "tab": "hr", "section": "training", "record": None, "resume": False,
+        "path": None,
     }  # fmt: skip
     model.reply(
         {

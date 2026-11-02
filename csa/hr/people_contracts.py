@@ -14,7 +14,7 @@ from pydantic import AwareDatetime, Field
 
 from csa.hr.access_switches import SwitchId
 from csa.hr.models import HrModel, Version
-from csa.hr.people_types import EmploymentProfile, EmploymentType
+from csa.hr.people_types import EmploymentProfile, EmploymentType, LeavingReason
 
 __all__ = [
     "DepartmentList",
@@ -24,6 +24,8 @@ __all__ = [
     "FieldChange",
     "HistoryField",
     "HrHome",
+    "LeavingOut",
+    "LeavingReason",
     "LinkedAccount",
     "OrgChart",
     "OrgNode",
@@ -37,8 +39,8 @@ __all__ = [
     "ProfileSection",
 ]
 
-PersonStatus = Literal["active", "starting", "left"]  # 1b adds "leaving"
-ProfileSection = Literal["overview", "access", "history"]  # 1b adds "personal", "documents"
+PersonStatus = Literal["active", "starting", "leaving", "left"]
+ProfileSection = Literal["overview", "personal", "documents", "access", "history"]
 HistoryField = Literal[
     "display_name",
     "job_title",
@@ -49,10 +51,32 @@ HistoryField = Literal[
     "start_date",
     "employment_type",
     "active",
+    "last_day",
+    "leaving_reason",
     "region",
     "legal_entity_reference",
     "employment_category",
+    "date_of_birth",
+    "home_address",
+    "personal_phone",
+    "emergency_name",
+    "emergency_relationship",
+    "emergency_phone",
+    "bank_name",
+    "ic_or_passport",
+    "bank_account",
+    "tax_number",
+    "epf_number",
+    "socso_number",
+    "document",
 ]
+
+
+class LeavingOut(HrModel):
+    """Why a person is leaving. HR viewers only."""
+
+    reason: LeavingReason
+    note: str | None = None
 
 
 class HrPersonOut(HrModel):
@@ -68,7 +92,10 @@ class HrPersonOut(HrModel):
     start_date: date | None = None
     employment_type: EmploymentType | None = None
     status: PersonStatus
+    # Set for HR viewers, the person themself and their direct manager.
+    last_day: date | None = None
     # Set only for the `hr` viewer.
+    leaving: LeavingOut | None = None
     employment_profile: EmploymentProfile | None = None
     version: Version | None = None
     account_linked: bool | None = None

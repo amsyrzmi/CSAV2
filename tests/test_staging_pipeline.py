@@ -415,6 +415,17 @@ def test_gateway_workspace_assistant_is_opt_in(tmp_path: Path) -> None:
     assert worker_sources["GROQ_API_KEY"] == "staging_model_key"
 
 
+def test_hr_documents_volume_and_root_belong_to_the_gateway_only(tmp_path: Path) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    gateway = services["gateway"]
+    assert gateway["environment"]["HR_UPLOAD_ROOT"] == "/var/lib/csa/hr-uploads"
+    mounts = {v["target"]: v["source"] for v in gateway["volumes"]}
+    assert mounts["/var/lib/csa/hr-uploads"] == "staging-hr-uploads"
+    for name in ("worker", "delivery"):
+        assert "HR_UPLOAD_ROOT" not in services[name]["environment"]
+        assert "staging-hr-uploads" not in {v["source"] for v in services[name].get("volumes", [])}
+
+
 def test_gateway_and_delivery_carry_both_whatsapp_secrets(tmp_path: Path) -> None:
     services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
     for name in ("gateway", "delivery"):

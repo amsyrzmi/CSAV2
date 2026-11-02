@@ -5,6 +5,7 @@ import { errorLine, languageOf, panelText } from "@/lib/assistant-copy";
 import { resultSummary } from "@/lib/assistant-view";
 import { emailClient, type Draft } from "@/lib/email-api";
 import { cardFieldsFor, draftIdFromCard, emailCardBlock, emailErrorSentence } from "@/lib/email-recipients";
+import { hrPersonRefusal } from "@/lib/hr-person-card";
 import {
   cancelProposal,
   confirmProposal,
@@ -74,7 +75,12 @@ export function ProposalCard({
       setSettled(next);
       onSettled?.(next);
     } catch (cause) {
-      const sentence = isEmail ? emailErrorSentence(cause, language) : null;
+      // A person card's HR refusal reads as the profile's sentence, in the card's language.
+      const sentence = isEmail
+        ? emailErrorSentence(cause, language)
+        : proposal.kind === "hr_person"
+          ? hrPersonRefusal(cause, language)
+          : null;
       if (sentence && FINAL_EMAIL_CODES.has((cause as { code?: string }).code ?? "")) setBlocked(true);
       // Server details are written as user-facing copy; show them verbatim.
       setError(

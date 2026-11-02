@@ -120,6 +120,7 @@ test("visibleTabs follows the switches and workflows", () => {
   const bare = { ...STAFF, actions: [], workflows: [], switches: [] };
   assert.deepEqual(visibleTabs(bare), ["home"]);
   assert.deepEqual(visibleTabs({ ...bare, switches: ["manage_people"] }), ["home", "people"]);
+  assert.deepEqual(visibleTabs({ ...bare, switches: ["sensitive_details"] }), ["home", "people"]);
   assert.deepEqual(visibleTabs({ ...bare, client_owner: true }), ["home", "people", "leave", "settings"]);
   assert.deepEqual(visibleTabs({ ...bare, workflows: ["recruitment.read"] }), ["home", "recruitment", "requests"]);
   assert.deepEqual(visibleTabs({ ...bare, workflows: ["attendance.prepare"] }), ["home", "leave", "requests"]);

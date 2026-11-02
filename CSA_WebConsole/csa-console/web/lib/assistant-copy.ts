@@ -72,6 +72,7 @@ const en = {
   summary_reply_queued: "Reply queued for delivery.",
   summary_subscription_status: "Subscription updated. It is now {status}.",
   summary_subscription: "Subscription updated.",
+  summary_hr_person: "Done: {title}.",
   // Result notices and page guidance.
   denied_unavailable: "The requested record is unavailable in this tenant.",
   denied: "This request could not be authorized.",
@@ -150,6 +151,7 @@ const ms: Record<PanelKey, string> = {
   summary_reply_queued: "Balasan dijadualkan untuk dihantar.",
   summary_subscription_status: "Langganan dikemas kini. Statusnya kini {status}.",
   summary_subscription: "Langganan dikemas kini.",
+  summary_hr_person: "Selesai: {title}.",
   denied_unavailable: "Rekod yang diminta tidak tersedia dalam ruang kerja ini.",
   denied: "Permintaan ini tidak dapat dibenarkan.",
   unavailable: "Pembantu tidak dapat menyelesaikan permintaan ini.",

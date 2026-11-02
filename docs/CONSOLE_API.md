@@ -263,6 +263,96 @@ and unique) and `hr_duties` (true for the HR owner and for anyone holding a swit
 directory and own requests). The console uses them to hide tabs the caller cannot use; they
 never grant anything.
 
+### Personal details, documents and leaving (project 1b, migration 0521)
+
+Every route below takes only `client_id` (the upload also takes `kind`) and answers no-store. A
+caller the route does not serve gets 404 `resource_unavailable`, never 403. Writes need CSRF; the
+upload, the removal and the operations also need an `Idempotency-Key`.
+
+**The Sensitive details switch.** `sensitive_details` is a new access switch (`people.sensitive`
+on the `hr_operator` scope, in no preset). It appears in `SwitchId`, in `HrContext.switches` and on
+the access page like the others, counts as an HR duty, and changes no access: only the HR owner
+changes access.
+
+**People and profiles.** `HrPersonOut.status` gains `leaving` (active with a last day that has not
+passed in Asia/Kuala_Lumpur), and `HrPersonOut` gains `last_day` (HR viewers, the person and their
+direct manager; `null` for everyone else) and `leaving` (`{reason, note}`, HR viewers only).
+`GET /people?status=leaving` lists them; with no `status` the list shows Active, Starting and
+Leaving people. `PersonProfile.sections` is now, in this order, `overview`; `personal` (the HR
+owner, Sensitive details holders and the person themself); `documents` (the HR owner, Manage people
+holders and the person themself); then `access` and `history` for `hr` viewers. History fields gain
+`last_day`, `leaving_reason`, the twelve personal field names (with `old` and `new` always `null`)
+and `document` (`old` or `new` reads like `Contract: offer.pdf`). A history row with no actor (the
+leaver finish) has `actor_name` `System`.
+
+**Personal details.**
+
+- `GET /people/{employee_id}/personal` returns `PersonalOut`: `ic_or_passport`, `date_of_birth`,
+  `home_address`, `personal_phone`, `emergency_name`, `emergency_relationship`, `emergency_phone`,
+  `bank_name`, `bank_account`, `tax_number`, `epf_number`, `socso_number`, `version` (`null` until
+  the first save) and `can_edit` (`all` for the HR owner and Sensitive details holders, `contact`
+  for the person). The five numbers are masked: `•••• ` and the last 4 characters, or `••••` for 4
+  characters or fewer.
+- `POST /people/{employee_id}/personal/reveal` `{field}` (one of `ic_or_passport`, `bank_account`,
+  `tax_number`, `epf_number`, `socso_number`) returns `{value}` in full, or `null` when none is
+  stored. Every call is recorded in `hr_personal_reveals` (who, whose, which, when).
+- `personal.save` on `POST /operations` `{employee_id, expected_version, values, encrypted}`.
+  `values` holds the plain fields and `encrypted` the numbers; a key that is absent keeps the
+  stored value and `null` clears it. The person may send only `home_address`, `personal_phone` and
+  the three emergency fields (anything else is 409 `personal_field_refused`). A stale version is
+  409 `person_changed`. A number equal to the stored one is not a change. The receipt's
+  `version` is 0 when nothing was saved and no record exists. A same-key retry returns the first
+  receipt. The numbers are encrypted with `CREDENTIALS_KEY`, and the request fingerprint is an
+  HMAC keyed from it, so it never holds a plain hash of a number. A 422 is `invalid_hr_input` and
+  never repeats a submitted value.
+
+**Documents.** The gateway needs `HR_UPLOAD_ROOT`; without it these routes answer 503
+`hr_documents_unavailable`.
+
+- `GET /people/{employee_id}/documents` returns `DocumentList`: `items` of `DocumentOut`
+  (`document_id`, `kind`, `file_name`, `media_type`, `byte_size`, `uploaded_at`,
+  `uploaded_by_name`), newest first. The HR owner and Manage people holders see every document;
+  the person sees their own `contract`, `identity` and `certificate` documents, not `other`. A
+  person outside the tenant is 404.
+- `POST /people/{employee_id}/documents?kind=` (`contract`, `identity`, `certificate` or `other`)
+  takes one multipart field `file`: PDF, JPG, PNG or DOCX, at most 10 MB (413 `file exceeds 10
+  MB`; more than one file is 422 `upload one file`). It returns 201 `DocumentOut`; a retry with the
+  same `Idempotency-Key` returns the first document and stores one file. The content must match
+  the extension (409 `hr_document_type_unsupported`); an empty file is 409 `hr_document_empty` and
+  an unusable name 409 `hr_document_name_invalid`. HR owner and Manage people holders only.
+- `GET /documents/{document_id}/download` streams the file with a safe `Content-Disposition`
+  name. A file missing from the volume is 503 `hr_document_file_unavailable`.
+- `POST /documents/{document_id}/remove` (`{}`) answers 204. Removal is soft: the record and its
+  History entry stay and the file is deleted. Removing twice is harmless. HR owner and Manage
+  people holders only.
+
+**Leaving and rehire** on `POST /operations` (the HR owner or a Manage people holder):
+
+- `person.leave` `{employee_id, expected_version, last_day, reason, note?, reports_new_manager}`:
+  `reason` is `resigned`, `contract_ended`, `dismissed`, `retired` or `other` (`other` needs a
+  `note`, at most 200 characters); `reports_new_manager` is an employee id or `null` (no manager).
+  Marking again replaces the plan.
+- `person.leave_undo` `{employee_id, expected_version}`: until the end of the last day.
+- `person.rehire` `{employee_id, expected_version, start_date}`: someone who has left becomes
+  active again. A manager who has left is dropped. No access comes back.
+
+New refusals (409 with the code as `detail`): `last_owner_leaving` (the HR owner cannot be marked
+as leaving; a company has one HR owner, so ownership must move first), `leaver_has_access` (only
+the HR owner marks someone whose account holds HR duties beyond the staff switches or an enabled
+`tenant_admin` membership of the company; marking yourself is allowed), `last_day_past`,
+`leaving_final` (already left, or nothing to undo),
+`not_left` (rehire of someone who has not left), `person_not_active`, and, as for `person.update`,
+`person_changed`, `manager_unavailable` and `manager_loop` (the new manager is the leaver or sits
+under them).
+
+**The finish.** The worker's `hr_leavers_round` (every 900 seconds) and HR Home's `automation.run`
+call `hr_finish_leaver` for each due person. On the last day it moves the direct reports to
+`reports_new_manager` (or to no manager when that person has left or now reports to the leaver).
+The day after, the person becomes inactive, the linked account's HR grants, workflow rows, private
+areas and HR owner row for the tenant are deleted, its membership is disabled and its sessions
+revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
+Each step happens once, whoever runs it.
+
 ## Authentication, tenancy and settings
 
 Development reset safety: `make db-reset` is destructive. Its default target is loopback
@@ -840,7 +930,7 @@ Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 | Action | Requires |
 |---|---|
 | Inbox decision | `customer_support` package `active` or `suspended` |
-| Training submit | `hr` package active; training proposals created by the assistant (planner or HR chat) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
+| Training submit | `hr` package active; training proposals created by an assistant (the workspace planner, or the deprecated `POST /console/v1/hr/assistant` route) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
 | People search and `people/me` | `hr` package active (`people/me` reports `package_inactive` as a `reason`, not an error) |
 | Email export, compose and send | `staff_email` package active and `email_settings.enabled` |
 | Email my team | The above, the `hr` package, and the HR access switch "approves team" |
@@ -954,6 +1044,10 @@ turn offered, or `my_manager`; any other id is refused, corrected once, then met
 no-option question asking the user to type the address.
 
 ### HR assistant delegation
+
+**Deprecated.** `POST /console/v1/hr/assistant` is kept for one release, removed in a cleanup
+PR. The console no longer calls it: the separate HR chat left People & HR Home in project 1b,
+and the workspace assistant dock is the only assistant.
 
 `POST /console/v1/hr/assistant` keeps its HR planner and plan replay (`hr_chat_plans` is
 still written). A training submit no longer executes: it returns a `ProposalOut` with 201

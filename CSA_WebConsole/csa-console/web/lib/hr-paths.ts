@@ -105,7 +105,7 @@ export function visibleTabs(ctx: HrContext): HrTab[] {
   const workflow = (...domains: string[]) => ctx.workflows.some((item) => domains.some((domain) => item.startsWith(`${domain}.`)));
   const show: Record<HrTab, boolean> = {
     home: true,
-    people: owner || ctx.switches.includes("manage_people") || ctx.switches.includes("directory"),
+    people: owner || ctx.switches.includes("manage_people") || ctx.switches.includes("sensitive_details") || ctx.switches.includes("directory"),
     recruitment: area("recruitment") || workflow("recruitment"),
     leave: owner || area("attendance") || workflow("leave", "attendance"),
     payroll: area("payroll"),

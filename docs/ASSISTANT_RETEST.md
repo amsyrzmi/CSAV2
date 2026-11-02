@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 46 model calls (one planner call per case plus one drafting call per draft case),
-  up to about 81 when cases are re-planned.
+- A run is about 59 model calls (one planner call per case plus one drafting call per draft case),
+  up to about 107 when cases are re-planned.
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -51,7 +51,7 @@ query, twice), `options` (an over-long option, twice), `contract` (invalid outpu
 correction), `content_question` (asked for the content twice), `locked` (a navigate to the wrong
 side of the tab rule), `placeholder_options` (a type-it-yourself option was offered; the server
 drops these, so this is prompt drift), `query_words` (the directory query missed a word the case
-expects, such as a job title searched in Malay instead of English; the query is never printed), `send` (Send where a draft was expected, or the reverse),
+expects, such as a job title searched in Malay instead of English; the query is never printed), `fields` (a people action's field is not the case's value; never printed), `send` (Send where a draft was expected, or the reverse),
 `draft` (the drafting call failed or its draft broke the contract) or `model` (the provider failed
 after the first call). `replanned` means the one correction was used. The action is the model's own
 plan (`invalid_output` when there was none).
@@ -100,7 +100,7 @@ Tick each row when the result matches.
 
 ## People & HR screens
 
-The 1a screens have browser scenarios for the access page and the training flow, not for every row below, so a person checks them on staging. Sign in as the HR owner unless the setup says otherwise.
+The 1a screens have browser scenarios for the access page and the training flow, and 1b one for a profile's Personal and Documents sections with Mark as leaving and Undo (`tests/test_hr_access_browser.py`), not for every row below, so a person checks them on staging. Sign in as the HR owner unless the setup says otherwise.
 
 | Check | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
@@ -114,6 +114,49 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Open People | Member with only the staff defaults | People shows the colleagues' basic details; no Left filter, no Add person, no Access or History sections | manual |
 | Open People | Member whose directory access is a hand-made partial grant | No People tab; opening `/portal/hr/people` shows the no-access notice | manual |
 | Open People & HR | Member with no HR duties | Home is My HR: their own profile, leave balances and training requests | manual |
+| Turn on Sensitive details for a member on Settings → People & access | HR owner, a member with the Staff preset | "Sensitive details" is a switch under Responsibilities and no preset turns it on; after saving, the member sees a Personal section on other people's profiles | manual |
+| Open a person's Personal section | HR owner, a person with an IC number and a bank account number saved | Each number shows as `•••• ` and its last 4 characters; Show reveals that one number and Hide masks it again; reloading the page masks it | manual |
+| Open a person's profile | Member with Manage people but not Sensitive details | No Personal section; Documents is there | manual |
+| Open My HR and edit my personal details | Member linked to a person, no HR duties | Only home address, personal phone and emergency contact can be changed ("HR keeps the rest"); the saved change shows in that person's History as "Changed Home address" with no value | manual |
+| Upload a PDF on a person's Documents, then download it | HR owner | "Document uploaded."; the list shows Contract, the file name, its size and the date; Download gives the same file | manual |
+| Upload a file renamed from `.png` to `.pdf` | HR owner | Refused with "Choose a PDF, JPG, PNG or Word (.docx) file."; nothing is listed | manual |
+| Open Documents as each viewer | A person with a Contract and an Other document | The HR owner and Manage people holders see both; the person (My HR → My documents) sees the Contract only, with no Upload; their manager and colleagues have no Documents section | manual |
+| Mark a person as leaving with a last day a week ahead, then Undo leaving | HR owner | The profile says "Leaving on <date> (Resigned)" and People lists them as Leaving; Undo leaving says "Leaving undone. They stay on." and they are Active again | manual |
+| Mark a person with a report and a linked console account as leaving, last day today; check again the next day | HR owner | Today: still Leaving and can still sign in; the report now has the chosen manager. The next day: Left (under the Left filter), History shows the change by "System", the member's HR access switches are gone and they can no longer open the company | manual |
+| Mark yourself as leaving | HR owner, on their own profile | "The HR owner can't be marked as leaving. Contact support to move HR ownership to someone else first." and nothing changes | manual |
+| Mark a colleague who has Approves (or any HR access) as leaving | Member with Manage people | "Only the HR owner can mark someone with HR access as leaving." and nothing changes | manual |
+| Rehire a person who has left | HR owner, a Left person | Rehire with a start date says "Rehired. Invite them again from Settings to give console access."; the person is Active with no access switches | manual |
+| Open People & HR Home | HR owner | No "HR chat (assistant & voice)" block; the assistant dock is the only assistant | manual |
+
+## People actions
+
+The dock adds, updates and marks people as leaving through a card (nothing changes until
+Confirm), answers who reports to someone or who is in a department, and opens a profile. Only the
+HR owner and Manage people holders get the changing cards. A PASS checks the action and, where the
+row names them, the fields the model wrote (compared without case), never the server's resolution.
+
+| Prompt | Setup | Expected | Smoke id |
+| --- | --- | --- | --- |
+| Add Danial Hakim as Sales Executive in Sales starting 1 December 2026 under Razak | HR owner | An add with display_name Danial Hakim, job_title Sales Executive, department Sales, manager Razak | `hr_add-en-1` |
+| Tolong tambah Danial Hakim sebagai Sales Executive dalam jabatan Sales bermula 1 Disember 2026 di bawah Razak | HR owner | The same add, from Malay | `hr_add-ms-1` |
+| Add Danial as Sales Executive | Member with only the directory view | An answer, no add (the server refuses the card anyway) | `hr_add-en-2` |
+| Change Siti's manager to Razak | HR owner | An update with person Siti and manager Razak | `hr_update-en-1` |
+| Tukar pengurus Siti kepada Razak | HR owner | The same update, from Malay | `hr_update-ms-1` |
+| Mark Aina as leaving, last day 30 November 2026, she resigned | HR owner | A leave with reason resigned | `hr_leave-en-1` |
+| Tandakan Aina akan berhenti, hari terakhir 30 November 2026, dia letak jawatan | HR owner | The same leave, from Malay | `hr_leave-ms-1` |
+| Who reports to Razak? | Any People viewer | A people query with reports_to Razak | `people_query-en-1` |
+| Siapa yang melapor kepada Razak? | Any People viewer | The same query, from Malay | `people_query-ms-1` |
+| Open Siti's profile | Any People viewer | An open with person Siti | `hr_open-en-1` |
+| Buka profil Siti | Any People viewer | The same open, from Malay | `hr_open-ms-1` |
+| Add Danial Hakim as Sales Executive in Sales starting 1 December 2026 under Razak | HR owner, a Razak and a Sales department in People | An "Add Danial Hakim to People" card listing name, job title, department, manager (Razak's full name) and start date; Confirm adds him, with a History entry; confirming again changes nothing | manual |
+| Add Danial Hakim as Sales Executive | HR owner | One question: when do they start; answering it gives the card | manual |
+| Change her manager to Razak | HR owner, on Siti's profile | An "Update Siti …" card with "Manager: <old> → Razak …" | manual |
+| Change Siti's manager to Razak | HR owner, two people named Siti | A question with both, each as "name — title"; picking one gives the card | manual |
+| Change Siti's title to Senior Clerk, then edit Siti on her profile before pressing Confirm | HR owner | Confirm says the card is out of date; nothing changes | manual |
+| Mark Aina as leaving on 30 November 2026 | HR owner | A question for the reason with five choices; the card shows last day, reason and "Reports' new manager" (Aina's own manager) | manual |
+| Add Danial as Sales Executive | Member without Manage people | An answer that changing people needs the HR owner or Manage people; no card | manual |
+| Who reports to Razak? | Member with no People access | An answer that the access doesn't include the People list; no names | manual |
+| Open Siti's profile | Any People viewer | The browser opens Siti's profile (`/portal/hr/people/<id>`; platform admins `/hr/people/<id>?client_id=…`) | manual |
 
 ## Compose and send
 

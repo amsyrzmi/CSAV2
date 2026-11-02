@@ -23,7 +23,7 @@ import {
   typedMessage,
   type Outgoing,
 } from "@/lib/assistant-view";
-import { navigateLandingPath } from "@/lib/hr-paths";
+import { isHrPagePath, navigateLandingPath } from "@/lib/hr-paths";
 import type { Me } from "@/lib/identity-contracts";
 import { usePageContext } from "@/lib/page-context";
 import type { PackageState } from "@/lib/services-api";
@@ -183,11 +183,13 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     result: Extract<WorkspaceResult, { action: "navigate" }>,
     attempt: Attempt,
   ) {
-    const href = tabHref(result.tab, me, packages, tenant, result.section);
-    if (!href) {
+    const tabPage = tabHref(result.tab, me, packages, tenant, result.section);
+    if (!tabPage) {
       // The turn itself shows the notice (navigateText); nothing is printed twice.
       return;
     }
+    // A person's profile: the server builds the path; only an HR page path is ever opened.
+    const href = result.path && isHrPagePath(result.path.split("?", 1)[0]) ? result.path : tabPage;
     // A requested card must not survive the page it was proposed on; cancel before leaving.
     await withdrawOpen();
     if (result.resume && !attempt.resumed)

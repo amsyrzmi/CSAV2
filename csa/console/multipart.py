@@ -16,16 +16,19 @@ MAX_BODY_BYTES = 3 * MAX_FILE_BYTES + 1024 * 1024
 
 
 class BoundedParser(MultiPartParser):
-    def __init__(self, request: Request) -> None:
+    def __init__(self, request: Request, *, max_files: int, max_body: int, field: str) -> None:
         async def stream() -> AsyncGenerator[bytes, None]:
             total = 0
             async for chunk in request.stream():
                 total += len(chunk)
-                if total > MAX_BODY_BYTES:
-                    raise HTTPException(413, "upload request exceeds 31 MB")
+                if total > max_body:
+                    raise HTTPException(413, f"upload request exceeds {-(-max_body // 2**20)} MB")
                 yield chunk
 
-        super().__init__(request.headers, stream(), max_files=3, max_fields=0, max_part_size=1024)
+        super().__init__(
+            request.headers, stream(), max_files=max_files, max_fields=0, max_part_size=1024
+        )
+        self.field = field
         self.complete = False
         self.part_bytes = 0
         self.header_bytes = 0
@@ -69,13 +72,29 @@ class BoundedParser(MultiPartParser):
         if "/" in original or "\\" in original:
             raise HTTPException(422, "invalid original filename")
         super().on_headers_finished()
+        if self._current_part.field_name != self.field:
+            raise HTTPException(422, f"only multipart {self.field} fields are accepted")
 
 
 @asynccontextmanager
-async def upload_form(request: Request) -> AsyncIterator[FormData]:
+async def upload_form(
+    request: Request,
+    *,
+    max_files: int = 3,
+    max_body: int | None = None,
+    field: str = "files",
+) -> AsyncIterator[FormData]:
+    """Parse a bounded multipart upload of at most `max_files` files in the `field` part.
+
+    `max_body` defaults to MAX_BODY_BYTES, read when called."""
     if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
         raise HTTPException(415, "multipart/form-data required")
-    parser = BoundedParser(request)
+    parser = BoundedParser(
+        request,
+        max_files=max_files,
+        max_body=MAX_BODY_BYTES if max_body is None else max_body,
+        field=field,
+    )
     try:
         try:
             form = await parser.parse()

@@ -113,6 +113,7 @@ test("every switch has the agreed label, an explanation and a group", () => {
     approves_team: "Approves training, leave and attendance for their team",
     hr_team: "HR team member",
     manage_people: "Manage people",
+    sensitive_details: "Sensitive details",
     recruitment: "Works on recruitment",
     attendance: "Works on attendance",
     payroll_prepare: "Prepares payroll",
@@ -125,9 +126,21 @@ test("every switch has the agreed label, an explanation and a group", () => {
   assert.deepEqual(Object.keys(copy.PRESET_COPY), ["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"]);
 });
 
-test("manage_people is the ninth switch, right after hr_team", () => {
-  assert.equal(access.SWITCH_IDS.length, 9);
-  assert.deepEqual(access.SWITCH_IDS.slice(3, 6), ["hr_team", "manage_people", "recruitment"]);
+test("sensitive_details follows manage_people and is in no preset", () => {
+  assert.equal(access.SWITCH_IDS.indexOf("sensitive_details"), access.SWITCH_IDS.indexOf("manage_people") + 1);
+  assert.equal(copy.SWITCH_COPY.sensitive_details.label, "Sensitive details");
+  assert.equal(copy.SWITCH_COPY.sensitive_details.tag, "Sensitive details");
+  assert.equal(copy.SWITCH_COPY.sensitive_details.group, "Responsibilities");
+  assert.equal(copy.SWITCH_COPY.sensitive_details.explanation,
+    "See and edit IC or passport, bank, tax, EPF and SOCSO numbers, home address, personal phone and emergency contact.");
+  for (const preset of ["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"])
+    assert.equal(access.applyPreset([], preset).includes("sensitive_details"), false, preset);
+  assert.deepEqual(access.setSwitch(["directory"], "sensitive_details", true, ["directory"]), ["directory", "sensitive_details"]);
+});
+
+test("manage_people is right after hr_team", () => {
+  assert.equal(access.SWITCH_IDS.length, 10);
+  assert.deepEqual(access.SWITCH_IDS.slice(3, 6), ["hr_team", "manage_people", "sensitive_details"]);
   assert.equal(copy.SWITCH_COPY.manage_people.tag, "Manage people");
   assert.equal(copy.SWITCH_COPY.manage_people.group, "Responsibilities");
   assert.equal(copy.SWITCH_COPY.manage_people.explanation,

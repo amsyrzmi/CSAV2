@@ -44,6 +44,9 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     NO_LOCAL_ENV=1
 
+# Mount point of the HR documents volume; a new named volume takes this owner.
+RUN mkdir -p /var/lib/csa/hr-uploads && chown 1000:1000 /var/lib/csa/hr-uploads
+
 USER 1000:1000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).close()"]
