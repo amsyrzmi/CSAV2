@@ -1,0 +1,83 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
+import { withCursor } from "@/lib/business";
+import { mergeRows, parseOrderCounts, type OrderCounts } from "@/lib/business-view";
+
+export type Records<T> = {
+  source: string;
+  marketplace_sync: string;
+  items: T[];
+  next_cursor: string | null;
+};
+
+/**
+ * One keyset-paged read. "Older" adds the next page to the rows already shown (a row never
+ * appears twice); "Refresh newest" starts again from the first page and swaps the rows when
+ * the answer arrives, so the screen never flashes empty. A failed page keeps what is shown.
+ * Callers remount (with a `key`) when the path changes, which starts a clean read.
+ */
+export function useRecords<T extends { id: string }>(path: string) {
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [items, setItems] = useState<T[] | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<Records<T>>(withCursor(path, cursor), {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+    }).then((result) => {
+      if (controller.signal.aborted) return;
+      setItems((current) => (cursor && current ? mergeRows(current, result.items) : result.items));
+      setNext(result.next_cursor);
+    }).catch((cause: Error) => {
+      if (!controller.signal.aborted) setError(cause.message);
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [path, cursor, revision]);
+  return {
+    items, next, error, loading,
+    older: () => {
+      if (!next) return;
+      setLoading(true);
+      setError("");
+      setCursor(next);
+    },
+    newest: () => {
+      setLoading(true);
+      setError("");
+      setCursor(null);
+      setRevision((value) => value + 1);
+    },
+  };
+}
+
+type CountsState = { path: string; counts: OrderCounts | null };
+
+/**
+ * The per-status counts for the order filters. It runs beside the list and is aborted when
+ * the path changes. `failed` is true only after a read that failed or came back malformed:
+ * until then (and for a path nobody has read yet) there are simply no figures, never zeros.
+ * `revision` re-reads the same path; the old figures stay until the new answer replaces them.
+ */
+export function useOrderCounts(path: string, revision: number) {
+  const [state, setState] = useState<CountsState | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    const done = (counts: OrderCounts | null) => {
+      if (!controller.signal.aborted) setState({ path, counts });
+    };
+    // An unwindowed read can be slow on a busy shop, so it gets longer than a list page.
+    api<unknown>(path, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]) })
+      .then((raw) => done(parseOrderCounts(raw)))
+      .catch(() => done(null));
+    return () => controller.abort();
+  }, [path, revision]);
+  const current = state && state.path === path ? state : null;
+  return { counts: current?.counts ?? null, failed: current !== null && current.counts === null };
+}

@@ -1182,6 +1182,16 @@ scope, aborting obsolete requests and starting from newest. Tenant changes reset
 drafts and all record state. Draft filter edits do not change applied results until Apply.
 The applied scope remains visible; inventory is explicitly labelled unaffected.
 
+The order date range, the status chips and the payment-status select act at once (only the
+source and store ID wait for Apply). The page builds every query with `URLSearchParams` and
+sends the chosen days as UTC instants from `toISOString()`, never a local offset, and leaves
+empty parameters out. The counts read starts beside the list and is aborted when its filters
+change; a status chip changes only the list. With no dates chosen the page asks for the counts
+over the last 30 days (the unwindowed read scans the whole tenant and can be slow); "Count all
+time" is an explicit choice that sends no window. A failed or malformed counts read removes the
+numbers from the chips and never shows them as zero. "Older orders" adds the next page to the
+rows on screen.
+
 Store records contain `id`, `platform`, `shop_id`, recorded `expires_at`/`updated_at`,
 derived `expiry` (`unknown`, `expired`, `not_expired`), and constant
 `authorization:"unverified"`, `permissions:"unknown"`, `provider_reads:"unavailable"`.

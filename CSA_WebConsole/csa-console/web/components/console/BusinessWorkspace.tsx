@@ -6,60 +6,26 @@ import {
   appendDemoListing,
   connectionLabels,
   demoListings,
-  localOrderPath,
+  orderCountsPath,
+  orderListPath,
   type ConnectionStatus,
   type DemoListing,
 } from "@/lib/business";
+import { effectiveCountsRange, orderChipOptions, paymentOptions } from "@/lib/business-view";
+import { toInstants, type DayRange } from "@/lib/date-range";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
+import { OrderCard, ProductCard, StoreCard, type Order, type Product } from "./business/cards";
+import { useOrderCounts, useRecords } from "./business/useRecords";
+import { DateRangeFilter, StatusChips } from "./kit";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
-type Order = {
-  id: string; status: string; payment_status: string; total: string; currency: string;
-  channel: string; external_order_id: string | null; external_shop_id: string | null;
-  tracking_no: string | null; carrier: string | null; updated_at: string;
-};
-type Product = {
-  id: string; sku: string; name: string; price: string; currency: string;
-  stock_qty: number; reserved_qty: number; available_qty: number;
-  is_active: boolean; updated_at: string;
-};
 type Store = {
   id: string; platform: string; shop_id: string | null; expires_at: string | null;
   updated_at: string; expiry: "unknown" | "expired" | "not_expired";
   authorization: "unverified"; permissions: "unknown"; provider_reads: "unavailable";
   connection: { status: ConnectionStatus; live_integration: "unavailable" };
 };
-type Records<T> = {
-  source: string; marketplace_sync: string; items: T[]; next_cursor: string | null;
-};
-
-function useRecords<T>(path: string) {
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [data, setData] = useState<Records<T> | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [revision, setRevision] = useState(0);
-  useEffect(() => {
-    const controller = new AbortController();
-    api<Records<T>>(`${path}${cursor ? `&before=${encodeURIComponent(cursor)}` : ""}`, {
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
-    }).then((result) => {
-      if (!controller.signal.aborted) setData(result);
-    }).catch((cause: Error) => {
-      if (!controller.signal.aborted) setError(cause.message);
-    }).finally(() => {
-      if (!controller.signal.aborted) setLoading(false);
-    });
-    return () => controller.abort();
-  }, [path, cursor, revision]);
-  function reset() { setLoading(true); setData(null); setError(""); }
-  return {
-    data, error, loading,
-    older: () => { const next = data?.next_cursor; if (next) { reset(); setCursor(next); } },
-    newest: () => { reset(); setCursor(null); setRevision((value) => value + 1); },
-  };
-}
 
 export function BusinessWorkspace({ me }: { me: Me }) {
   usePublishContext({ tab: "business" });
@@ -156,8 +122,23 @@ function DemoBusinessWorkspace() {
 function BusinessRecords({ query }: { query: string }) {
   const [channel, setChannel] = useState("");
   const [shopId, setShopId] = useState("");
-  const [orderPath, setOrderPath] = useState(() => localOrderPath(query, "", ""));
+  const [applied, setApplied] = useState({ channel: "", shopId: "" });
+  const [range, setRange] = useState<DayRange>({ from: null, to: null });
+  const [allTime, setAllTime] = useState(false);
+  const [status, setStatus] = useState("all");
+  const [payment, setPayment] = useState("");
+  // "Today" for the default counts window; read again on every explicit refresh.
+  const [today, setToday] = useState(() => new Date());
+  const [refresh, setRefresh] = useState(0);
   const products = useRecords<Product>(`/console/v1/business/products?${query}`);
+  const created = toInstants(range);
+  const scope = effectiveCountsRange(range, allTime, today);
+  const counted = toInstants(scope.range);
+  const narrowed = { ...applied, paymentStatus: payment };
+  const listPath = orderListPath(query, {
+    ...narrowed, ...created, status: status === "all" ? "" : status,
+  });
+  const { counts, failed } = useOrderCounts(orderCountsPath(query, { ...narrowed, ...counted }), refresh);
   return <div className="mt-5 space-y-5">
     <Panel title="Local store records (not verified connections)">
       <StoreRecords key={query} query={query} />
@@ -165,7 +146,7 @@ function BusinessRecords({ query }: { query: string }) {
     <Panel title="Orders and tracking references">
       <form className="mb-4 space-y-3" onSubmit={(event) => {
         event.preventDefault();
-        setOrderPath(localOrderPath(query, channel, shopId));
+        setApplied({ channel, shopId });
       }}>
         <label className="block">Source/platform (local orders)
           <select className={field} value={channel} onChange={(event) => {
@@ -188,24 +169,53 @@ function BusinessRecords({ query }: { query: string }) {
         <p className="text-sm">Filters match persisted source and store IDs exactly. Options do not
           indicate connected stores. Apply filters to restart at the newest matching orders.</p>
       </form>
-      <OrderRecords key={orderPath} path={orderPath} />
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <div>
+          <p aria-hidden="true" className="mb-1 text-sm">Order date</p>
+          <DateRangeFilter testId="business-date" label="Order date" value={range}
+            onChange={(next) => { setRange(next); setAllTime(false); }} />
+        </div>
+        <div className="w-full sm:w-64">
+          <label htmlFor="business-payment" className="mb-1 block text-sm">Payment status</label>
+          <select id="business-payment" data-testid="business-payment" className={field} value={payment}
+            onChange={(event) => setPayment(event.target.value)}>
+            <option value="">Any payment status</option>
+            {paymentOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+      </div>
+      <StatusChips mode="single" testId="business-status" ariaLabel="Order status"
+        options={orderChipOptions(counts)} value={status}
+        onChange={(next) => setStatus(next as string)} />
+      <div data-testid="business-counts-note"
+        className="my-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[color:var(--fs-text-secondary)]">
+        {failed
+          ? <span data-testid="business-counts-failed" role="status">The order numbers could not be
+              loaded just now. The list below still works.</span>
+          : <span>{scope.kind === "chosen" ? "The numbers cover the dates you chose."
+              : scope.kind === "all" ? "The numbers cover all time. This can be slow for a busy shop."
+              : "The numbers cover the last 30 days."}</span>}
+        {scope.kind === "default" && <button type="button" className={secondary}
+          data-testid="business-counts-all-time" onClick={() => setAllTime(true)}>Count all time</button>}
+        {scope.kind === "all" && <button type="button" className={secondary}
+          data-testid="business-counts-default" onClick={() => setAllTime(false)}>Use the last 30 days</button>}
+      </div>
+      <OrderRecords key={listPath} path={listPath} applied={applied}
+        onRefresh={() => { setToday(new Date()); setRefresh((value) => value + 1); }} />
     </Panel>
     <Panel title="Local catalogue and inventory">
       <p className="mb-4 text-sm">Tenant-wide local stock. Order source/store filters do not filter
         these products; verified store listing mappings are not available in this slice.</p>
       <div className="mb-4 flex gap-3">
         <button className={secondary} disabled={products.loading} onClick={products.newest}>Refresh newest products</button>
-        {products.data?.next_cursor && <button className={secondary} disabled={products.loading} onClick={products.older}>Older products</button>}
+        {products.next && <button className={secondary} disabled={products.loading} onClick={products.older}>Older products</button>}
       </div>
       {products.error && <Notice error>{products.error}</Notice>}
       {products.loading && <p>Loading local products...</p>}
-      {products.data?.items.length === 0 && <p>No local products found. Marketplace listings are not imported by this view.</p>}
-      <ul className="space-y-3">{products.data?.items.map((product) => <li key={product.id} className="rounded-md border border-ink-200 p-3 text-sm">
-        <h3 className="break-words font-semibold">{product.sku} · {product.name}</h3>
-        <p>{product.currency} {product.price} · Local status: {product.is_active ? "Active" : "Inactive"}</p>
-        <p>Stock: {product.stock_qty} · Reserved: {product.reserved_qty} · Available: {product.available_qty}</p>
-        <p>Local update: {new Date(product.updated_at).toLocaleString()} — not a marketplace sync timestamp</p>
-      </li>)}</ul>
+      {products.items?.length === 0 && !products.loading && <p>No local products found. Marketplace listings are not imported by this view.</p>}
+      <ul data-testid="business-products-list" className="space-y-3">
+        {products.items?.map((product) => <ProductCard key={product.id} product={product} />)}
+      </ul>
     </Panel>
   </div>;
 }
@@ -245,13 +255,13 @@ function StorePage({ path }: { path: string }) {
   return <>
     <div className="mb-4 flex gap-3">
       <button className={secondary} disabled={stores.loading} onClick={stores.newest}>Refresh local store records</button>
-      {stores.data?.next_cursor && <button className={secondary} disabled={stores.loading} onClick={stores.older}>Next store records</button>}
+      {stores.next && <button className={secondary} disabled={stores.loading} onClick={stores.older}>Next store records</button>}
     </div>
     <p className="mb-3 text-sm">Pages follow stable local record IDs, not connection or update recency.</p>
     {stores.error && <Notice error>{stores.error}</Notice>}
     {stores.loading && <p>Loading local store records...</p>}
-    {stores.data?.items.length === 0 && <p>No matching local store records. This does not prove the marketplace has no authorized stores.</p>}
-    <ul className="space-y-3">{stores.data?.items.map((store) => <li key={store.id} className="rounded-md border border-ink-200 p-3 text-sm">
+    {stores.items?.length === 0 && !stores.loading && <p>No matching local store records. This does not prove the marketplace has no authorized stores.</p>}
+    <ul data-testid="business-stores-list" className="space-y-3">{stores.items?.map((store) => <StoreCard key={store.id} id={store.id} store={store}>
       <h3 className="break-all font-semibold">{store.platform} · {store.shop_id ?? "Store ID not recorded"}</h3>
       <p className="break-all">Local record: {store.id}</p>
       <p>Stored lifecycle: {connectionLabels[store.connection.status]}</p>
@@ -260,30 +270,29 @@ function StorePage({ path }: { path: string }) {
       <p>Recorded expiry: {store.expires_at ? new Date(store.expires_at).toLocaleString() : "Unknown"}
         {" · "}{store.expiry === "not_expired" ? "Not expired by recorded timestamp only" : store.expiry === "expired" ? "Expired by recorded timestamp" : "Expiry unknown"}</p>
       <p>Local update: {new Date(store.updated_at).toLocaleString()} — not a provider verification timestamp</p>
-    </li>)}</ul>
+    </StoreCard>)}</ul>
   </>;
 }
 
-function OrderRecords({ path }: { path: string }) {
+function OrderRecords({ path, applied, onRefresh }: {
+  path: string;
+  applied: { channel: string; shopId: string };
+  onRefresh: () => void;
+}) {
   const orders = useRecords<Order>(path);
-  const active = new URL(path, "http://local.invalid").searchParams;
   return <>
-    <p className="mb-3 text-sm">Applied source: {active.get("channel") ?? "All local sources"}
-      {" · "}Applied store ID: {active.get("shop_id") ?? "All stores / not recorded"}</p>
+    <p className="mb-3 text-sm">Applied source: {applied.channel || "All local sources"}
+      {" · "}Applied store ID: {applied.shopId || "All stores / not recorded"}</p>
     <div className="mb-4 flex gap-3">
-      <button className={secondary} disabled={orders.loading} onClick={orders.newest}>Refresh newest orders</button>
-      {orders.data?.next_cursor && <button className={secondary} disabled={orders.loading} onClick={orders.older}>Older orders</button>}
+      <button className={secondary} disabled={orders.loading}
+        onClick={() => { orders.newest(); onRefresh(); }}>Refresh newest orders</button>
+      {orders.next && <button className={secondary} disabled={orders.loading} onClick={orders.older}>Older orders</button>}
     </div>
     {orders.error && <Notice error>{orders.error}</Notice>}
     {orders.loading && <p>Loading local orders...</p>}
-    {orders.data?.items.length === 0 && <p>No local orders match these filters. This does not mean your marketplace has no orders.</p>}
-    <ul className="space-y-3">{orders.data?.items.map((order) => <li key={order.id} className="rounded-md border border-ink-200 p-3 text-sm">
-      <h3 className="break-all font-semibold">{order.id}</h3>
-      <p>{order.status} · Payment: {order.payment_status} · {order.currency} {order.total}</p>
-      <p>Source: {order.channel} · Store: {order.external_shop_id ?? "Not recorded"}</p>
-      <p>Platform order: {order.external_order_id ?? "Not recorded"}</p>
-      <p>Tracking: {order.tracking_no ?? "Not recorded"} · Carrier: {order.carrier ?? "Not recorded"}</p>
-      <p>Local update: {new Date(order.updated_at).toLocaleString()} — not a marketplace sync timestamp</p>
-    </li>)}</ul>
+    {orders.items?.length === 0 && !orders.loading && <p>No local orders match these filters. This does not mean your marketplace has no orders.</p>}
+    <ul data-testid="business-orders-list" className="space-y-3">
+      {orders.items?.map((order) => <OrderCard key={order.id} order={order} />)}
+    </ul>
   </>;
 }
