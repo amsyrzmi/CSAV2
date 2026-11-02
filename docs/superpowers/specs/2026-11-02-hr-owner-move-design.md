@@ -130,7 +130,7 @@ Shared `TeamManagement.tsx`, so both Team pages get it. English only, like the r
 
 - A new owner who held no HR switches can, through the screens and without signing in again: open HR Home, People and the access page; list, open and decide a training request; and see recruitment candidates and attendance records. They can't open payroll until it's turned on.
 - The old owner can no longer open the access page or decide as owner, in their very next request.
-- A test compares the `client_owner` rows in the standard owner set with every `client_owner` combination the `hr_grants` and `hr_workflow_grants` checks allow (11 today), so a new owner-only power can't be silently missed.
+- A test compares the `client_owner` rows in the standard owner set with every `client_owner` combination the `hr_grants` and `hr_workflow_grants` checks allow (10 today), so a new owner-only power can't be silently missed.
 - The old owner keeps their rows outside `client_owner` after the move, and a move never adds or removes payroll rows.
 - A staff member, a read-only member and a tenant admin of another company are all refused, at both the route and the function.
 - Two admins moving at once: one wins, the other gets `owner_changed`. A retry with the same key returns the first result and sends no second round of emails.
