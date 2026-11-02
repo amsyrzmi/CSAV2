@@ -27,6 +27,8 @@ const OWNED = [
   "components/console/kit/",
   "lib/chips.ts",
   "lib/date-range.ts",
+  "components/console/activity/",
+  "lib/activity-view.ts",
   "app/globals.css",
   "app/layout.tsx",
   "app/(admin)/layout.tsx",

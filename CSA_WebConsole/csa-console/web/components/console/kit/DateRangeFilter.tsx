@@ -129,12 +129,20 @@ export default function DateRangeFilter({
     let left = align === "end" ? rect.right - width : rect.left;
     if (align === undefined && rect.left + width > window.innerWidth - EDGE) left = rect.right - width;
     left = Math.max(EDGE, Math.min(left, window.innerWidth - width - EDGE));
+    // Below the button when it fits, else above when it fits; when neither side holds the whole
+    // calendar, the roomier side, with the popover scrolling inside it (`--fs-date-max`).
+    const natural = Math.max(height, popover.scrollHeight);
+    const below = window.innerHeight - EDGE - (rect.bottom + EDGE);
+    const above = rect.top - 2 * EDGE;
     let top = rect.bottom + EDGE;
-    if (top + height > window.innerHeight - EDGE && rect.top - EDGE - height >= EDGE) {
-      top = rect.top - EDGE - height; // no room below, room above
+    let room = below;
+    if (natural > below && (natural <= above || above > below)) {
+      room = above;
+      top = rect.top - EDGE - Math.min(natural, above);
     }
     popover.style.setProperty("--fs-date-left", `${left}px`);
     popover.style.setProperty("--fs-date-top", `${top}px`);
+    popover.style.setProperty("--fs-date-max", `${Math.max(room, 0)}px`);
   }, [align]);
 
   // Before paint, and again after every render while open (a six-week month is taller).
@@ -327,7 +335,7 @@ export default function DateRangeFilter({
               "border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] " +
               "text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)] " +
               "sm:inset-x-auto sm:bottom-auto sm:left-(--fs-date-left) sm:top-(--fs-date-top) sm:w-80 " +
-              "sm:max-h-[calc(100dvh-1rem)] sm:rounded-[var(--fs-radius-panel)]"
+              "sm:max-h-(--fs-date-max) sm:rounded-[var(--fs-radius-panel)]"
             }
           >
             <div className="flex items-center justify-between gap-2">

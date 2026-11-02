@@ -1261,21 +1261,17 @@ async def test_packaged_m2_browser_acceptance(
 
             await admin_page.goto(f"{w.origin}/activity")
             await admin_page.get_by_label("Tenant").select_option(tenants[0])
-            await admin_page.get_by_label("Agent name (optional)").fill("invoice_agent")
-            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
             invoice_run = run_ids[(tenants[0], "invoice_agent")]
-            invoice_row = admin_page.get_by_role(
-                "button", name=re.compile(rf"#{invoice_run}\s+invoice_agent")
-            )
-            await invoice_row.wait_for()
             booking_run = run_ids[(tenants[0], "booking_agent")]
-            assert (
-                await admin_page.get_by_role(
-                    "button", name=re.compile(rf"#{booking_run}\s+booking_agent")
-                ).count()
-                == 0
-            )
-            await invoice_row.click()
+            invoice_row = admin_page.get_by_test_id(f"activity-run-{invoice_run}")
+            booking_row = admin_page.get_by_test_id(f"activity-run-{booking_run}")
+            await invoice_row.wait_for()
+            await booking_row.wait_for()
+            await admin_page.get_by_test_id("activity-agent").select_option("invoice_agent")
+            await booking_row.wait_for(state="detached")
+            await invoice_row.wait_for()
+            # The technical lines sit behind the arrow: open the invoice run first.
+            await admin_page.get_by_test_id(f"activity-run-{invoice_run}-toggle").click()
             await admin_page.get_by_role(
                 "heading", name=f"Run #{invoice_run}", exact=True
             ).wait_for()
@@ -1299,17 +1295,17 @@ async def test_packaged_m2_browser_acceptance(
                 "browser_poll_followup / invoice_agent / ok / 23 ms"
             ).wait_for(timeout=12_000)
 
+            # The list refreshes itself every 5 seconds on the newest page: a failed read shows
+            # the error and recovers on a later refresh (there is no refresh button any more).
             fail_run_list = True
-            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
             await (
                 admin_page.get_by_role("alert")
                 .filter(has_text="synthetic transient failure")
-                .wait_for()
+                .wait_for(timeout=15_000)
             )
             await admin_page.get_by_text("Runtime data unavailable.", exact=True).wait_for()
             fail_run_list = False
-            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
-            await invoice_row.wait_for()
+            await invoice_row.wait_for(timeout=15_000)
             await (
                 admin_page.get_by_role("alert")
                 .filter(has_text="synthetic transient failure")
@@ -1336,27 +1332,13 @@ async def test_packaged_m2_browser_acceptance(
             assert forbidden_runs == 403
             await reader_page.goto(f"{w.origin}/portal/activity")
             beta_run = run_ids[(tenants[1], "invoice_agent")]
-            beta_row = reader_page.get_by_role(
-                "button", name=re.compile(rf"#{beta_run}\s+invoice_agent")
-            )
+            beta_row = reader_page.get_by_test_id(f"activity-run-{beta_run}")
             await beta_row.wait_for()
-            assert (
-                await reader_page.get_by_role(
-                    "button", name=re.compile(rf"#{invoice_run}\s+invoice_agent")
-                ).count()
-                == 0
-            )
+            assert await reader_page.get_by_test_id(f"activity-run-{invoice_run}").count() == 0
             await tenant_page.goto(f"{w.origin}/portal/activity")
             tenant_invoice_run = run_ids[(tenants[0], "invoice_agent")]
-            await tenant_page.get_by_role(
-                "button", name=re.compile(rf"#{tenant_invoice_run}\s+invoice_agent")
-            ).wait_for()
-            assert (
-                await tenant_page.get_by_role(
-                    "button", name=re.compile(rf"#{beta_run}\s+invoice_agent")
-                ).count()
-                == 0
-            )
+            await tenant_page.get_by_test_id(f"activity-run-{tenant_invoice_run}").wait_for()
+            assert await tenant_page.get_by_test_id(f"activity-run-{beta_run}").count() == 0
 
             session_cookie = next(
                 cookie
