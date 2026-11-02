@@ -285,6 +285,7 @@ async def open_activity(
     height: int = 1000,
     theme: str | None = None,
     wait_for_rows: bool = True,
+    init_script: str | None = None,
     **options: Any,
 ) -> tuple[Any, Page, list[str]]:
     site.upstream.me = make_me("tenant_admin")
@@ -296,6 +297,8 @@ async def open_activity(
     if theme:
         cookies.append({"name": "fs-theme", "value": theme, "url": site.base})
     await context.add_cookies(cookies)
+    if init_script:
+        await context.add_init_script(init_script)
     page = await context.new_page()
     diagnostics: list[str] = []
     page.on("pageerror", lambda error: diagnostics.append(str(error)))
@@ -744,22 +747,37 @@ async def test_activity_at_five_widths_in_three_themes_without_overflow(site: Si
     assert not stub.unexpected, stub.unexpected
 
 
+# Records "state|frames|animation" of the invoices card's avatar on every change of the page.
+WATCH_AVATAR = """
+window.__avatarSeen = new Set();
+const record = () => {
+  const el = document.querySelector('[data-testid="activity-card-invoices"] [data-agent]');
+  if (!el) return;
+  const list = el.querySelectorAll('svg g.fs-px-frame');
+  const name = list.length ? getComputedStyle(list[0]).animationName : 'none';
+  window.__avatarSeen.add(el.dataset.state + '|' + list.length + '|' + name);
+};
+new MutationObserver(record).observe(document, {
+  subtree: true, childList: true, attributes: true,
+  attributeFilter: ['data-state', 'class', 'style'],
+});
+"""
+
+
 async def test_reduced_motion_shows_rest_pose_in_strip(site: Site) -> None:
     stub = Stub()
 
     async def body(browser: Any) -> None:
         # Control: with motion allowed a finished assistant wakes (eight frames, played once),
-        # then rests, so the reduced-motion checks below can fail.
-        context, page, _ = await open_activity(browser, site, Stub())
+        # then rests, so the reduced-motion checks below can fail. A MutationObserver installed
+        # before the page loads records every (state, frames, animation) the avatar goes through,
+        # so the check does not depend on how fast this test polls on a loaded host.
+        context, page, _ = await open_activity(browser, site, Stub(), init_script=WATCH_AVATAR)
         avatar = page.get_by_test_id("activity-card-invoices").locator("[data-agent]")
-        await expect(avatar).to_have_attribute("data-state", "wake")
-        for _ in range(30):  # motion is switched on a moment after mount
-            if (await frames(avatar))[0] == 8:
-                break
-            await page.wait_for_timeout(50)
-        assert await frames(avatar) == (8, "fs-px-show8")
-        await expect(avatar).to_have_attribute("data-state", "rest", timeout=6_000)
+        await expect(avatar).to_have_attribute("data-state", "rest", timeout=30_000)
         assert await frames(avatar) == (1, "none")
+        seen = await page.evaluate("[...window.__avatarSeen]")
+        assert "wake|8|fs-px-show8" in seen, seen
         await context.close()
 
         context, page, diagnostics = await open_activity(
@@ -997,6 +1015,37 @@ async def test_an_opened_row_is_still_open_when_its_page_comes_back(site: Site) 
         await expect(page.get_by_test_id("activity-run-11-toggle")).to_have_attribute(
             "aria-expanded", "true"
         )
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_a_filtered_or_older_view_does_not_refresh_every_five_seconds(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_activity(browser, site, stub)
+        await expect(page.get_by_test_id("activity-overview")).to_be_visible()
+        notice = page.get_by_text("This list refreshes every 5 seconds.", exact=False)
+        await expect(notice).to_contain_text("newest page with no filter")
+        # With a filter on, nothing is read again by the timer (counts, over more than one tick).
+        await page.get_by_test_id("activity-status-error").click()
+        await expect(page.get_by_text("Loading runs...")).to_have_count(0)
+        await expect(run_row(page, 10)).to_be_visible()
+        counts = (len(stub.list_requests), len(stub.strip_requests), len(stub.overview_requests))
+        await page.wait_for_timeout(6500)
+        assert (
+            len(stub.list_requests),
+            len(stub.strip_requests),
+            len(stub.overview_requests),
+        ) == counts
+        # Clearing the filter brings the timer back: the list is read again by itself.
+        await page.get_by_test_id("activity-status-all").click()
+        await expect(run_row(page, 12)).to_be_visible()
+        seen = len(stub.list_requests)
+        await wait_requests(stub, seen + 1, timeout=15)
         assert not diagnostics, diagnostics
         await context.close()
 

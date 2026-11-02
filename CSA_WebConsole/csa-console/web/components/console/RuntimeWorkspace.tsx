@@ -216,11 +216,12 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
   const options = agentOptions();
   const known = options.some((option) => option.value === initialAgent);
 
-  // The list: refreshed every 5 seconds on the newest page only. A filter or page change
+  // The list: refreshed every 5 seconds on the newest page only, and only with no filter on. A filter or page change
   // restarts it, which also drops any read still in flight for the old choice.
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    const unfiltered = !agent && status === "all" && instants.from === null && instants.to === null;
     async function refresh() {
       try {
         const params = runsQuery(query, {
@@ -231,7 +232,7 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
       } catch (cause) {
         if (!controller.signal.aborted) { setError((cause as Error).message); setPage(null); }
       } finally {
-        if (!controller.signal.aborted && before === null) timer = setTimeout(refresh, 5000);
+        if (!controller.signal.aborted && before === null && unfiltered) timer = setTimeout(refresh, 5000);
       }
     }
     void refresh();
@@ -239,16 +240,16 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
   }, [query, before, agent, status, instants.from, instants.to]);
 
   // The last-assistants strip and the 24-hour line do not depend on the filters or on the page.
-  // They load once and then refresh on the newest page only. Paging does not read them again: the
-  // timer keeps ticking, and a tick on an older page just does nothing. (Back on the newest page
-  // the next tick, at most 5 seconds away, refreshes them.)
-  const newestRef = useRef(newest);
-  useEffect(() => { newestRef.current = newest; }, [newest]);
+  // They load once and then refresh on the newest page with no filter only. Paging or filtering does
+  // not read them again: the timer keeps ticking, and a tick on an older or filtered view does
+  // nothing. (Back on the newest unfiltered view the next tick, at most 5 seconds away, refreshes them.)
+  const liveRef = useRef(newest && !filtered);
+  useEffect(() => { liveRef.current = newest && !filtered; }, [newest, filtered]);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function load() {
-      if (newestRef.current) {
+      if (liveRef.current) {
         const [runs, summary] = await Promise.allSettled([
           api<RunPage>(`/console/v1/runs?${runsQuery(query, { limit: 100 })}`, { signal: controller.signal }),
           api<RuntimeOverview>(`/console/v1/overview?${query}`, { signal: controller.signal }),
@@ -300,7 +301,8 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
           value={status} onChange={(next) => change(next !== status, () => setStatus(next as StatusFilter))} />
       </div>
       <Notice>This list refreshes every 5 seconds. It shows when each run happened, not what was said.
-        An empty list only means nothing has run yet; it does not mean everything is healthy.</Notice>
+        An empty list only means nothing has run yet; it does not mean everything is healthy.
+        It only refreshes by itself on the newest page with no filter on.</Notice>
       <Panel title="Recorded runs">
         {!page ? <p>{error ? "Runtime data unavailable." : "Loading runs..."}</p> :
           page.items.length === 0 ? <p>{filtered ? "Nothing has been recorded for this selection." : "Nothing has run yet. Runs appear here as your assistants work."}</p> :
