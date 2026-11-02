@@ -79,6 +79,9 @@ class InviteWorld(World):
             return 200, TENANT_PROFILE
         if path == "team" and method == "GET" and params.get("client_id") == TENANT:
             return 200, []
+        if path == "team/hr-owner" and method == "GET" and params.get("client_id") == TENANT:
+            owner = {"user_id": OWNER, "display_name": "Omar Lee", "usable": True}
+            return 200, {"available": True, "owner": owner}
         if path == "admin/invites" and method == "GET" and params.get("client_id") == TENANT:
             return 200, list(self.invites)
         if path == "team/invites" and method == "POST" and body["client_id"] == TENANT:
@@ -225,6 +228,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(select.locator("option")).to_have_count(6, timeout=WAIT)
         assert await option_values(page) == PRESET_VALUES
         await expect(select).to_have_value("staff")
+        await expect(page.get_by_test_id("hr-owner-name")).to_have_text(
+            "HR owner: Omar Lee", timeout=WAIT
+        )
 
         # (b) Choosing Manager emails the invitation: no link or copy box is shown.
         await select.select_option("manager")
