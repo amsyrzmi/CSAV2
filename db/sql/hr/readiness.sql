@@ -1,5 +1,5 @@
 SELECT current_user = 'csa_app' AND NOT rolsuper AND NOT rolbypassrls AS safe_role,
-    (SELECT count(*) = 31 AND bool_and(c.relrowsecurity AND NOT c.relforcerowsecurity)
+    (SELECT count(*) = 32 AND bool_and(c.relrowsecurity AND NOT c.relforcerowsecurity)
      FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
      WHERE n.nspname='public' AND c.relkind='r' AND c.relname = ANY(ARRAY[
          'hr_employees','hr_employee_accounts','hr_client_owners','hr_grants',
@@ -7,7 +7,7 @@ SELECT current_user = 'csa_app' AND NOT rolsuper AND NOT rolbypassrls AS safe_ro
          'hr_agent_settings','hr_agent_confirmations','hr_workflow_grants','hr_cases','hr_case_events','hr_private_grants','hr_operations','hr_candidates','hr_interviews',
          'hr_calendars','hr_leave_balances','hr_leave_usage','hr_shifts','hr_payroll_rules',
          'hr_payroll_snapshots','hr_notifications','hr_chat_plans','hr_automation_settings','hr_maintenance_runs','hr_authority_events',
-         'hr_departments','hr_employee_changes','hr_employee_personal','hr_personal_reveals']))
+         'hr_departments','hr_employee_changes','hr_employee_personal','hr_personal_reveals','hr_employee_documents']))
     AND to_regprocedure('public.hr_lock_session(uuid,uuid,uuid,text,integer,text)') IS NOT NULL
     AND to_regprocedure('public.hr_lock_authority(uuid,uuid)') IS NOT NULL
     AND to_regprocedure('public.hr_lock_employee(uuid,uuid)') IS NOT NULL
@@ -26,5 +26,11 @@ SELECT current_user = 'csa_app' AND NOT rolsuper AND NOT rolbypassrls AS safe_ro
     AND to_regprocedure('public.hr_can_manage_people(uuid)') IS NOT NULL
     AND to_regprocedure('public.hr_can_see_sensitive(uuid)') IS NOT NULL
     AND to_regprocedure('public.hr_personal_apply(uuid,uuid,text,jsonb)') IS NOT NULL
+    AND to_regprocedure('public.hr_document_access(uuid,uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_document_rows(uuid,uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_document_get(uuid,uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_document_add(uuid,uuid,uuid,uuid,text,text,text,text,integer,text)') IS NOT NULL
+    AND to_regprocedure('public.hr_document_remove(uuid,uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_document_storage_names(uuid)') IS NOT NULL
     AS schema_ready
 FROM pg_roles WHERE rolname=current_user;

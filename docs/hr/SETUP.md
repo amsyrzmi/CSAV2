@@ -79,6 +79,25 @@ and frontend for the migrate step.
   member to link, or unlinks the current one. A member can be linked to one person only.
   Changing what the member can do stays on the access page (**Settings → People & access**).
 
+## Employee documents
+
+Migration `0521` (project 1b) adds documents on a person's profile: a contract, an identity file, a
+certificate or another file. The HR owner and Manage people holders add, see and remove them, for
+any person including those who have left. The person sees their own contract, identity and
+certificate files, not the ones filed as Other, and cannot add or remove anything. A manager or a
+colleague sees none. Removing a document hides it and deletes its file; the record and its
+history entry are kept.
+
+- **Files.** PDF, JPG, PNG or DOCX, at most 10 MB each, one per upload. The file's content must
+  match its extension; a renamed file is refused. Names are kept as given (up to 255 characters).
+- **Storage.** Files live under `HR_UPLOAD_ROOT/<client id>/` with a generated name, on a volume
+  that only the gateway mounts (`staging-hr-uploads` in `deploy/compose.staging-pipeline.yml`,
+  mounted at `/var/lib/csa/hr-uploads`). Leave `HR_UPLOAD_ROOT` unset and the document routes answer
+  503 `hr_documents_unavailable`. Include the volume in backups: the database holds only the record.
+- **Not covered.** Files are **not scanned for viruses** and are **not encrypted on disk**; the
+  volume and its backups need the access control and disk encryption of the host. The document
+  list, download and History show the file name, so names should not carry identity numbers.
+
 ## Private recruitment and scheduling
 
 Intake records the authorized operator’s consent evidence and a retention deadline

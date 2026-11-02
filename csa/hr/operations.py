@@ -72,6 +72,9 @@ _PEOPLE_REFUSALS = {
     "hr_personal_field_refused": "personal_field_refused",
     "hr_idempotency_conflict": "idempotency_conflict",
     "hr_operation_unsupported": "unsupported_operation",
+    # Documents (hr_document_add and hr_document_remove).
+    "hr_document_access_required": "permission_denied",
+    "hr_document_unavailable": "resource_unavailable",
 }
 
 

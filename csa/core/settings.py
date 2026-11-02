@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     TEI_PASSAGE_PREFIX: str = "passage: "
     # Console uploads land in KB_UPLOAD_ROOT/<client_id>/ and are queued in kb_ingest_jobs.
     KB_UPLOAD_ROOT: Path | None = None
+    # HR document files land in HR_UPLOAD_ROOT/<client_id>/; without it the routes answer 503.
+    HR_UPLOAD_ROOT: Path | None = None
     KB_INGEST_ENABLED: bool = False
     KB_INGEST_POLL_SECONDS: float = Field(default=10.0, gt=0)
     KB_MAX_FILES_PER_JOB: int = Field(default=3, ge=1, le=20)

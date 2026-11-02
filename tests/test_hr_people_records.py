@@ -6,18 +6,27 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
+import re
+import zipfile
 from collections.abc import Iterator, Mapping
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
 import psycopg
 import pytest
+from csa.console.auth import build_identity_router
 from csa.core import crypto, settings
 from csa.core.db import q
 from csa.core.tenancy import tx
+from csa.hr import documents
+from csa.hr.api import build_hr_router
 from csa.hr.automation_models import PersonalSave
+from csa.hr.operations import HrOperations
 from csa.hr.personal import fingerprint_payload, personal_fingerprint
+from fastapi import FastAPI
 from psycopg.types.json import Jsonb
 from structlog.testing import capture_logs
 
@@ -991,3 +1000,470 @@ async def test_personal_resending_an_unchanged_number_writes_no_history(world: H
     refused_self = await api_save(world, "staff", staff, 4, {}, {"bank_account": "999 888 777"})
     assert refused_self.status_code == 409
     assert refused_self.json() == {"detail": "personal_field_refused"}
+
+
+# ---- Documents (Task 4) ------------------------------------------------------------------------
+
+PDF = b"%PDF-1.4\n% synthetic contract\n%%EOF\n"
+PNG = b"\x89PNG\r\n\x1a\n" + b"synthetic image"
+JPG = b"\xff\xd8\xff\xe0synthetic image"
+DOCUMENT_FUNCTIONS = (
+    "hr_document_access(uuid,uuid)",
+    "hr_document_rows(uuid,uuid)",
+    "hr_document_get(uuid,uuid)",
+    "hr_document_add(uuid,uuid,uuid,uuid,text,text,text,text,integer,text)",
+    "hr_document_remove(uuid,uuid)",
+    "hr_document_storage_names(uuid)",
+)
+
+
+def docx_bytes(*names: str) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        for name in names:
+            archive.writestr(name, "<w:document/>")
+    return out.getvalue()
+
+
+DOCX = docx_bytes("[Content_Types].xml", "word/document.xml")
+
+
+@pytest.fixture
+def hr_root(world: HrWorld, tmp_path: Path) -> Path:
+    """The same world, with the HR document routes mounted on a temporary storage root."""
+    root = tmp_path / "hr-uploads"
+    app = FastAPI()
+    for name in ("identity_service", "hr_service", "pool"):
+        setattr(app.state, name, getattr(world.app.state, name))
+    app.include_router(build_identity_router())
+    app.include_router(build_hr_router(hr_upload_root=root))
+    assert not world.browsers  # browsers bind to the app of their first call
+    world.app = app
+    return root
+
+
+async def browser(world: HrWorld, who: str) -> httpx.AsyncClient:
+    if who not in world.browsers:
+        await world.call(who, "GET", "/console/v1/hr/context")
+    return world.browsers[who]
+
+
+async def upload(
+    world: HrWorld,
+    who: str,
+    employee: UUID,
+    name: str,
+    data: bytes,
+    *,
+    kind: str = "contract",
+    key: UUID | None = None,
+    field: str = "file",
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
+    client = await browser(world, who)
+    supplied = {
+        "Origin": "https://hr.example.test",
+        "X-CSRF-Token": world.csrf[who],
+        "Idempotency-Key": str(key or uuid4()),
+        **(headers or {}),
+    }
+    return await client.post(
+        f"{PEOPLE}/{employee}/documents",
+        params={"kind": kind},
+        files={field: (name, data, "application/octet-stream")},
+        headers=supplied,
+    )
+
+
+async def raw_upload(
+    world: HrWorld, who: str, employee: UUID, quoted_name: str, data: bytes
+) -> dict[str, Any]:
+    """An upload with a hand-written filename in Content-Disposition (httpx escapes quotes)."""
+    client = await browser(world, who)
+    body = (
+        b'--x\r\nContent-Disposition: form-data; name="file"; filename="'
+        + quoted_name.encode()
+        + b'"\r\n\r\n'
+        + data
+        + b"\r\n--x--\r\n"
+    )
+    response = await client.post(
+        f"{PEOPLE}/{employee}/documents",
+        params={"kind": "contract"},
+        content=body,
+        headers={
+            "Origin": "https://hr.example.test",
+            "X-CSRF-Token": world.csrf[who],
+            "Idempotency-Key": str(uuid4()),
+            "Content-Type": "multipart/form-data; boundary=x",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def uploaded(world: HrWorld, who: str, employee: UUID, name: str, data: bytes, **kw: Any):
+    response = await upload(world, who, employee, name, data, **kw)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def listed(world: HrWorld, who: str, employee: UUID) -> httpx.Response:
+    return await world.call(who, "GET", f"{PEOPLE}/{employee}/documents")
+
+
+async def download(world: HrWorld, who: str, document: str) -> httpx.Response:
+    return await world.call(who, "GET", f"/console/v1/hr/documents/{document}/download")
+
+
+async def remove(
+    world: HrWorld, who: str, document: str, *, key: UUID | None = None
+) -> httpx.Response:
+    return await world.call(who, "POST", f"/console/v1/hr/documents/{document}/remove", key=key)
+
+
+async def documents_rows(world: HrWorld) -> list[dict[str, Any]]:
+    return await world.q(
+        "SELECT id, employee_id, storage_name FROM hr_employee_documents WHERE client_id=%s",
+        (world.tenant,),
+    )
+
+
+def stored_files(root: Path, tenant: UUID) -> list[str]:
+    directory = root / str(tenant)
+    return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
+
+
+async def document_history(world: HrWorld, employee: UUID) -> list[dict[str, Any]]:
+    rows = await world.q(
+        "SELECT changes->'document' AS document, changed_by FROM hr_employee_changes "
+        "WHERE client_id=%s AND employee_id=%s AND changes ? 'document' ORDER BY changed_at, id",
+        (world.tenant, employee),
+    )
+    return rows
+
+
+async def test_document_upload_list_download_and_remove_round_trip(
+    world: HrWorld, hr_root: Path
+) -> None:
+    staff = world.employees["staff"]
+    made = await uploaded(world, "owner", staff, "Offer letter.pdf", PDF, kind="contract")
+    assert set(made) == {
+        "document_id",
+        "kind",
+        "file_name",
+        "media_type",
+        "byte_size",
+        "uploaded_at",
+        "uploaded_by_name",
+    }
+    assert made["kind"] == "contract" and made["file_name"] == "Offer letter.pdf"
+    assert made["media_type"] == "application/pdf" and made["byte_size"] == len(PDF)
+    assert made["uploaded_by_name"] == "Synthetic Staff"
+    assert len(stored_files(hr_root, world.tenant)) == 1
+
+    page = await listed(world, "owner", staff)
+    assert page.status_code == 200 and page.json() == {"items": [made]}
+
+    got = await download(world, "owner", made["document_id"])
+    assert got.status_code == 200 and got.content == PDF
+    assert got.headers["content-type"] == "application/pdf"
+    assert got.headers["content-disposition"] == "attachment; filename*=utf-8''Offer%20letter.pdf"
+    assert got.headers["cache-control"] == "no-store"
+    assert got.headers["x-content-type-options"] == "nosniff"
+    assert got.headers["content-length"] == str(len(PDF))
+
+    # History: one row for the add.
+    history = await world.call("owner", "GET", f"{PEOPLE}/{staff}/history")
+    fields = [f for item in history.json()["items"] for f in item["fields"]]
+    assert {"field": "document", "old": None, "new": "Contract: Offer letter.pdf"} in fields
+
+    gone = await remove(world, "owner", made["document_id"])
+    assert gone.status_code == 204 and gone.content == b""
+    assert (await listed(world, "owner", staff)).json() == {"items": []}
+    assert (await download(world, "owner", made["document_id"])).status_code == 404
+    # The file is unlinked once the removal commits; the row is kept (soft).
+    assert stored_files(hr_root, world.tenant) == []
+    kept = await world.q(
+        "SELECT removed_at IS NOT NULL AS removed, removed_by FROM hr_employee_documents "
+        "WHERE client_id=%s",
+        (world.tenant,),
+    )
+    assert kept == [{"removed": True, "removed_by": world.users["owner"]}]
+    assert await document_history(world, staff) == [
+        {
+            "document": {"old": None, "new": "Contract: Offer letter.pdf"},
+            "changed_by": world.users["owner"],
+        },
+        {
+            "document": {"old": "Contract: Offer letter.pdf", "new": None},
+            "changed_by": world.users["owner"],
+        },
+    ]
+    # Removing again (a retry after a lost response) succeeds and writes nothing more.
+    again = await remove(world, "owner", made["document_id"])
+    assert again.status_code == 204 and len(await document_history(world, staff)) == 2
+
+
+async def test_document_visibility_by_viewer(world: HrWorld, hr_root: Path) -> None:
+    staff = world.employees["staff"]
+    await make_people_manager(world, "operator")
+    made = {
+        kind: await uploaded(world, "owner", staff, f"{kind}.pdf", PDF, kind=kind)
+        for kind in ("contract", "identity", "certificate", "other")
+    }
+    ids = {kind: row["document_id"] for kind, row in made.items()}
+
+    async def seen(who: str) -> list[str] | int:
+        response = await listed(world, who, staff)
+        return (
+            sorted(item["kind"] for item in response.json()["items"])
+            if response.status_code == 200
+            else response.status_code
+        )
+
+    everything = ["certificate", "contract", "identity", "other"]
+    assert await seen("owner") == everything
+    assert await seen("operator") == everything  # a Manage people holder sees all
+    assert await seen("staff") == ["certificate", "contract", "identity"]  # the person: not other
+    # Their manager, a colleague and a Sensitive details holder are refused. The API turns
+    # permission_denied into its content-free 404 (not 403).
+    await make_sensitive_holder(world, "admin")
+    for who in ("manager", "outsider", "admin"):
+        response = await listed(world, who, staff)
+        assert (response.status_code, response.json()) == (404, {"detail": "resource_unavailable"})
+        assert (await download(world, who, ids["contract"])).status_code == 404, who
+    # Downloads follow the same rule: the person gets theirs, not "other".
+    assert (await download(world, "staff", ids["contract"])).content == PDF
+    assert (await download(world, "staff", ids["other"])).status_code == 404
+    assert (await download(world, "operator", ids["other"])).content == PDF
+    # The person sees nothing of someone else's, and has no way to remove their own.
+    assert (await listed(world, "staff", world.employees["manager"])).status_code == 404
+    assert (await remove(world, "staff", ids["contract"])).status_code == 404
+    # Profile sections agree with the list: documents for HR viewers and the person themself.
+    for who in ("owner", "operator", "staff"):
+        profile = await world.call(who, "GET", f"{PEOPLE}/{staff}")
+        assert "documents" in profile.json()["sections"], who
+    # (A directory viewer with Sensitive details only gets no documents section: see
+    # test_profile_lists_personal_section_for_owner_sensitive_and_self_only.)
+    await world.grant("admin", "directory.read", "hr_operator")
+    profile = await world.call("admin", "GET", f"{PEOPLE}/{staff}")
+    assert profile.json()["sections"] == ["overview", "personal"]
+    # Another tenant: its owner gets no row, no list and no removal, for the same ids.
+    assert (
+        await read_as_other_tenant_owner(
+            world, "hr/document_get.sql", (world.tenant, UUID(ids["contract"]))
+        )
+        == []
+    )
+    for statement, params in (
+        ("hr/document_rows.sql", (world.tenant, staff)),
+        ("hr/document_remove.sql", (world.tenant, UUID(ids["contract"]))),
+        ("hr/document_names.sql", (world.tenant,)),
+    ):
+        with pytest.raises((psycopg.errors.InsufficientPrivilege, psycopg.errors.CheckViolation)):
+            await read_as_other_tenant_owner(world, statement, params)
+    # Left people keep their documents for HR.
+    await world.q(
+        "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id=%s",
+        (world.tenant, staff),
+    )
+    assert await seen("owner") == everything
+
+
+async def test_document_upload_needs_owner_or_people_manager(world: HrWorld, hr_root: Path) -> None:
+    staff = world.employees["staff"]
+    for who in ("staff", "manager", "operator", "outsider"):
+        response = await upload(world, who, staff, "mine.pdf", PDF)
+        assert (response.status_code, response.json()) == (
+            404,
+            {"detail": "resource_unavailable"},
+        ), who
+    reader = await upload(world, "reader", staff, "mine.pdf", PDF)
+    assert (reader.status_code, reader.json()) == (403, {"detail": "read_only_session"})
+    bad_csrf = await upload(
+        world, "owner", staff, "mine.pdf", PDF, headers={"X-CSRF-Token": "wrong"}
+    )
+    assert bad_csrf.status_code == 403
+    # Nothing was stored for any of them.
+    assert stored_files(hr_root, world.tenant) == []
+    assert await documents_rows(world) == []
+    # A Manage people holder may.
+    await make_people_manager(world, "operator")
+    assert (await upload(world, "operator", staff, "ok.pdf", PDF)).status_code == 201
+    # A person that does not exist in the tenant is not found.
+    missing = await upload(world, "owner", uuid4(), "ok.pdf", PDF)
+    assert missing.status_code == 404
+    assert len(stored_files(hr_root, world.tenant)) == 1  # the unreferenced copy was swept
+
+
+async def test_document_upload_checks_content_not_just_extension(
+    world: HrWorld, hr_root: Path
+) -> None:
+    staff = world.employees["staff"]
+    refusals = [
+        ("x.pdf", PNG, "hr_document_type_unsupported"),  # a PNG named .pdf
+        ("x.pdf", b"MZ\x90\x00synthetic", "hr_document_type_unsupported"),  # an executable
+        ("x.docx", docx_bytes("a.txt"), "hr_document_type_unsupported"),  # a ZIP, not a DOCX
+        ("x.docx", b"not a zip at all", "hr_document_type_unsupported"),
+        ("x.png", PDF, "hr_document_type_unsupported"),
+        ("x.jpg", PNG, "hr_document_type_unsupported"),
+        ("x.exe", b"MZ\x90\x00synthetic", "hr_document_type_unsupported"),
+        ("x", PDF, "hr_document_type_unsupported"),
+        ("x.pdf", b"", "hr_document_empty"),
+    ]
+    for name, data, detail in refusals:
+        response = await upload(world, "owner", staff, name, data)
+        assert (response.status_code, response.json()) == (409, {"detail": detail}), name
+    assert stored_files(hr_root, world.tenant) == []
+    assert await documents_rows(world) == []
+
+    # Each supported type is stored, extensions in any case.
+    for name, data, media in (
+        ("scan.JPG", JPG, "image/jpeg"),
+        ("scan.jpeg", JPG, "image/jpeg"),
+        ("scan.png", PNG, "image/png"),
+        ("letter.docx", DOCX, DOCX_MEDIA),
+        ("contract.PDF", PDF, "application/pdf"),
+    ):
+        made = await uploaded(world, "owner", staff, name, data)
+        assert made["media_type"] == media and made["file_name"] == name
+    # A name with quotes and Unicode is stored as given and downloaded with an encoded header.
+    odd = 'naïve "q".pdf'
+    made = await raw_upload(world, "owner", staff, 'naïve \\"q\\".pdf', PDF)
+    assert made["file_name"] == odd
+    got = await download(world, "owner", made["document_id"])
+    assert got.headers["content-disposition"] == (
+        "attachment; filename*=utf-8''na%C3%AFve%20%22q%22.pdf"
+    )
+    assert got.content == PDF
+    # Path characters are refused by the shared multipart parser, as for the knowledge base.
+    for bad in ("a/b.pdf", "..\\x.pdf"):
+        response = await upload(world, "owner", staff, bad, PDF)
+        assert response.status_code == 422, bad
+    # The wrong part name, no kind and a kind that is not one are refused.
+    assert (await upload(world, "owner", staff, "x.pdf", PDF, field="files")).status_code == 422
+    assert (await upload(world, "owner", staff, "x.pdf", PDF, kind="payslip")).status_code == 422
+    # Storage names are generated and carry only the detected extension.
+    names = stored_files(hr_root, world.tenant)
+    assert len(names) == 6
+    assert all(re.fullmatch(r"[a-f0-9-]{36}\.(pdf|jpg|png|docx)", n) for n in names)
+
+
+DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+async def test_document_upload_size_limit(world: HrWorld, hr_root: Path) -> None:
+    staff = world.employees["staff"]
+    ten_mb = 10 * 1024 * 1024
+    exact = PDF + b"\x00" * (ten_mb - len(PDF))
+    made = await uploaded(world, "owner", staff, "big.pdf", exact)
+    assert made["byte_size"] == ten_mb
+    assert len((await download(world, "owner", made["document_id"])).content) == ten_mb
+    over = await upload(world, "owner", staff, "bigger.pdf", exact + b"\x00")
+    assert over.status_code == 413
+    assert len(stored_files(hr_root, world.tenant)) == 1
+
+
+async def test_document_upload_retry_with_same_key_stores_one_file(
+    world: HrWorld, hr_root: Path
+) -> None:
+    staff = world.employees["staff"]
+    key = uuid4()
+    first = await upload(world, "owner", staff, "a.pdf", PDF, key=key)
+    again = await upload(world, "owner", staff, "a.pdf", PDF, key=key)
+    assert first.status_code == again.status_code == 201
+    assert first.json() == again.json()
+    assert len(await documents_rows(world)) == 1
+    files = stored_files(hr_root, world.tenant)
+    assert len(files) == 1
+    got = await download(world, "owner", first.json()["document_id"])
+    assert got.content == PDF
+    assert len(await document_history(world, staff)) == 1
+    # The same key for another file or person is a conflict, never a second document.
+    other = await upload(world, "owner", staff, "a.pdf", PDF + b"x", key=key)
+    assert (other.status_code, other.json()) == (409, {"detail": "idempotency_conflict"})
+    assert stored_files(hr_root, world.tenant) == files
+
+
+async def test_document_upload_failure_leaves_no_file(
+    world: HrWorld, hr_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staff = world.employees["staff"]
+    keep = await uploaded(world, "owner", staff, "keep.pdf", PDF)
+    real = HrOperations._people_apply
+
+    async def failing(conn: Any, path: str, params: tuple[Any, ...]) -> dict[str, Any]:
+        if path == "hr/document_add.sql":
+            raise psycopg.errors.OperationalError("synthetic")
+        return await real(conn, path, params)
+
+    monkeypatch.setattr(HrOperations, "_people_apply", staticmethod(failing))
+    response = await upload(world, "owner", staff, "lost.pdf", PDF)
+    assert (response.status_code, response.json()) == (503, {"detail": "hr_database_unavailable"})
+    monkeypatch.undo()
+    # The file published before the failed insert is gone; the committed document's file stays.
+    assert len(stored_files(hr_root, world.tenant)) == 1
+    assert (await download(world, "owner", keep["document_id"])).content == PDF
+
+
+async def test_document_cleanup_removes_only_unreferenced_stored_files(
+    world: HrWorld, hr_root: Path
+) -> None:
+    staff = world.employees["staff"]
+    made = await uploaded(world, "owner", staff, "keep.pdf", PDF)
+    directory = hr_root / str(world.tenant)
+    orphan = directory / f"{uuid4()}.pdf"
+    half = directory / f".{uuid4()}.docx.part"
+    stray = directory / "notes.txt"
+    for path in (orphan, half, stray):
+        path.write_bytes(b"x")
+    removed = await documents.cleanup(world.service.pool, hr_root, world.tenant)
+    assert removed == 2
+    assert not orphan.exists() and not half.exists() and stray.exists()
+    assert (await download(world, "owner", made["document_id"])).content == PDF
+
+
+async def test_document_routes_unavailable_without_root(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    unavailable = (503, {"detail": "hr_documents_unavailable"})
+    for response in (
+        await upload(world, "owner", staff, "a.pdf", PDF),
+        await listed(world, "owner", staff),
+        await download(world, "owner", str(uuid4())),
+        await remove(world, "owner", str(uuid4())),
+    ):
+        assert (response.status_code, response.json()) == unavailable
+
+
+async def test_document_table_and_functions_are_closed_to_other_roles(world: HrWorld) -> None:
+    async with tx(world.service.pool, str(world.tenant)) as conn:
+        await world.service._session(conn, world.proof("owner"))
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            await conn.execute("SELECT * FROM hr_employee_documents")
+    roles = ("csa_app", "csa_ro", "csa_identity", "csa_hr_maintenance", "public")
+    for signature in DOCUMENT_FUNCTIONS:
+        rows = await world.q(
+            "SELECT p.prosecdef, p.proconfig, "
+            + ", ".join(
+                f"has_function_privilege('{role}', p.oid, 'EXECUTE') AS {role}" for role in roles
+            )
+            + " FROM pg_proc p WHERE p.oid = to_regprocedure(%s)",
+            (f"public.{signature}",),
+        )
+        assert len(rows) == 1, signature
+        assert rows[0]["prosecdef"] is True, signature
+        assert rows[0]["proconfig"] == ["search_path=pg_catalog, public, pg_temp"], signature
+        assert rows[0]["csa_app"] is True, signature
+        assert not any(rows[0][role] for role in roles[1:]), signature
+    rows = await world.q(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+        "WHERE oid='public.hr_employee_documents'::regclass"
+    )
+    assert rows == [{"relrowsecurity": True, "relforcerowsecurity": False}]
+    privileges = await world.q(
+        "SELECT grantee FROM information_schema.role_table_grants "
+        "WHERE table_name='hr_employee_documents' AND grantee IN "
+        "('csa_app','csa_ro','csa_identity','csa_hr_maintenance','PUBLIC')"
+    )
+    assert privileges == []

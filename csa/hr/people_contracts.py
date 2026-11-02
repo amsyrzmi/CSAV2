@@ -64,6 +64,7 @@ HistoryField = Literal[
     "tax_number",
     "epf_number",
     "socso_number",
+    "document",
 ]
 
 

@@ -16,10 +16,30 @@
 --     p_fingerprint,p_body): personal.save with a version check, a receipt in hr_operations and a
 --     value-free history row. hr_personal_reveal(p_client,p_employee,p_field): audits and returns
 --     one ciphertext. EXECUTE to csa_app only.
+--   public.hr_employee_documents: one row per uploaded document (kind contract, identity,
+--     certificate or other; the file itself lives in HR_UPLOAD_ROOT under storage_name). Removal is
+--     soft (removed_at, removed_by). request_key is unique per tenant so a retried upload finds its
+--     first row. No grant to csa_app; reached only through the definer functions below.
+--   public.hr_document_access(p_client,p_employee): 'manage' (HR owner or people.manage holder),
+--     'self' (the caller's linked employee), else NULL. hr_document_rows(p_client,p_employee),
+--     hr_document_get(p_client,p_document): what the caller may see or download (the person: their
+--     contract, identity and certificate files, not other). hr_document_add(...) and
+--     hr_document_remove(p_client,p_document): HR owner and people.manage holders only; each writes
+--     one value-bearing hr_employee_changes row {"document": {"old","new"}}.
+--     hr_document_storage_names(p_client): the storage names still referenced, for cleanup.
+--     EXECUTE to csa_app only.
 -- No new roles and no FORCE ROW LEVEL SECURITY. Every function is SECURITY DEFINER and pinned to
 -- search_path.
 -- Pre-check: 0520 applied (hr_grants_scope_action, hr_can_manage_people).
 -- Rollback (in this order; later tasks add their steps at the top, newest first):
+--   DROP FUNCTION public.hr_document_storage_names(uuid);
+--   DROP FUNCTION public.hr_document_remove(uuid,uuid);
+--   DROP FUNCTION public.hr_document_add(uuid,uuid,uuid,uuid,text,text,text,text,integer,text);
+--   DROP FUNCTION public.hr_document_get(uuid,uuid);
+--   DROP FUNCTION public.hr_document_rows(uuid,uuid);
+--   DROP FUNCTION public.hr_document_access(uuid,uuid);
+--   DROP TABLE public.hr_employee_documents;  (the document records are lost; the files under
+--     HR_UPLOAD_ROOT stay on disk, so keep a dump and the volume)
 --   DROP FUNCTION public.hr_personal_reveal(uuid,uuid,text);
 --   DROP FUNCTION public.hr_personal_apply(uuid,uuid,text,jsonb);
 --   DROP FUNCTION public.hr_personal_row(uuid,uuid);
@@ -300,6 +320,192 @@ DO $$ DECLARE f regprocedure; BEGIN
   'public.hr_personal_row(uuid,uuid)'::regprocedure,
   'public.hr_personal_apply(uuid,uuid,text,jsonb)'::regprocedure,
   'public.hr_personal_reveal(uuid,uuid,text)'::regprocedure] LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,csa_ro,csa_identity,csa_hr_maintenance',f);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO csa_app',f);
+ END LOOP;
+END $$;
+
+-- ---- Documents ---------------------------------------------------------------------------------
+
+CREATE TABLE public.hr_employee_documents(
+ client_id uuid NOT NULL,
+ id uuid NOT NULL,
+ employee_id uuid NOT NULL,
+ kind text NOT NULL CHECK(kind IN ('contract','identity','certificate','other')),
+ file_name text NOT NULL CHECK(char_length(file_name) BETWEEN 1 AND 255),
+ storage_name text NOT NULL UNIQUE
+  CHECK(storage_name ~ '^[a-f0-9-]{36}\.(pdf|jpg|png|docx)$'),
+ media_type text NOT NULL CHECK(media_type IN ('application/pdf','image/jpeg','image/png',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document')),
+ byte_size integer NOT NULL CHECK(byte_size BETWEEN 1 AND 10485760),
+ sha256 text NOT NULL CHECK(sha256 ~ '^[a-f0-9]{64}$'),
+ uploaded_by uuid NOT NULL REFERENCES public.console_users(id),
+ uploaded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ removed_at timestamptz,
+ removed_by uuid REFERENCES public.console_users(id),
+ request_key uuid NOT NULL,
+ PRIMARY KEY(client_id,id),
+ UNIQUE(client_id,request_key),
+ CHECK((removed_at IS NULL) = (removed_by IS NULL)),
+ FOREIGN KEY(client_id,employee_id) REFERENCES public.hr_employees(client_id,id));
+CREATE INDEX hr_employee_documents_by_employee
+ ON public.hr_employee_documents(client_id,employee_id,uploaded_at DESC);
+
+ALTER TABLE public.hr_employee_documents ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.hr_employee_documents FROM PUBLIC,csa_app,csa_ro,csa_identity,csa_hr_maintenance;
+
+-- manage: the HR owner or a people.manage holder (any employee of the tenant). self: the caller's
+-- linked employee is p_employee. NULL: anyone else, no HR session, or another tenant.
+CREATE FUNCTION public.hr_document_access(p_client uuid, p_employee uuid) RETURNS text
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE me uuid:=nullif(current_setting('app.hr_user_id',true),'')::uuid;
+BEGIN
+ -- Written so a NULL can never skip a guard (three-valued logic).
+ IF me IS NULL OR p_client IS NULL OR p_employee IS NULL
+  OR p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN RETURN NULL; END IF;
+ IF public.hr_is_owner(p_client) IS TRUE OR public.hr_can_manage_people(p_client) IS TRUE THEN
+  RETURN 'manage'; END IF;
+ PERFORM 1 FROM public.hr_employee_accounts a
+  WHERE a.client_id=p_client AND a.user_id=me AND a.employee_id=p_employee;
+ IF FOUND THEN RETURN 'self'; END IF;
+ RETURN NULL;
+END $$;
+
+-- The documents the caller may see, newest first, without removed ones. Raises when the caller has
+-- no access at all, so "no access" is never mistaken for "no documents".
+CREATE FUNCTION public.hr_document_rows(p_client uuid, p_employee uuid) RETURNS TABLE(
+    id uuid, employee_id uuid, kind text, file_name text, media_type text, byte_size integer,
+    uploaded_at timestamptz, uploaded_by_name text)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE access text:=public.hr_document_access(p_client,p_employee);
+BEGIN
+ IF access IS NULL THEN RAISE EXCEPTION 'hr_document_access_required' USING ERRCODE='42501'; END IF;
+ RETURN QUERY
+ SELECT d.id, d.employee_id, d.kind, d.file_name, d.media_type, d.byte_size, d.uploaded_at,
+  CASE WHEN u.is_platform_admin THEN 'FourStacks admin'
+       WHEN m.is_enabled AND u.is_enabled THEN u.display_name END
+ FROM public.hr_employee_documents d
+ LEFT JOIN public.console_users u ON u.id=d.uploaded_by
+ LEFT JOIN public.console_memberships m ON m.user_id=d.uploaded_by AND m.client_id=d.client_id
+ WHERE d.client_id=p_client AND d.employee_id=p_employee AND d.removed_at IS NULL
+  AND (access='manage' OR d.kind IN ('contract','identity','certificate'))
+ ORDER BY d.uploaded_at DESC, d.id DESC
+ LIMIT 500;
+END $$;
+
+-- One document the caller may download, with its storage name: no row when it is removed, does not
+-- exist, or the caller may not see it.
+CREATE FUNCTION public.hr_document_get(p_client uuid, p_document uuid) RETURNS TABLE(
+    id uuid, employee_id uuid, kind text, file_name text, storage_name text, media_type text,
+    byte_size integer, sha256 text, uploaded_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE d public.hr_employee_documents%ROWTYPE; access text;
+BEGIN
+ IF p_client IS NULL OR p_document IS NULL THEN RETURN; END IF;
+ SELECT * INTO d FROM public.hr_employee_documents x
+  WHERE x.client_id=p_client AND x.id=p_document AND x.removed_at IS NULL;
+ IF NOT FOUND THEN RETURN; END IF;
+ access:=public.hr_document_access(p_client,d.employee_id);
+ IF access IS NULL OR (access='self' AND d.kind NOT IN ('contract','identity','certificate')) THEN
+  RETURN; END IF;
+ RETURN QUERY SELECT d.id, d.employee_id, d.kind, d.file_name, d.storage_name, d.media_type,
+  d.byte_size, d.sha256, d.uploaded_at;
+END $$;
+
+-- Add a document record, after the application stored the file. A repeated p_key returns the first
+-- row with duplicate=true (the same key for another file or person is hr_idempotency_conflict).
+-- HR owner and people.manage holders only.
+CREATE FUNCTION public.hr_document_add(p_client uuid, p_key uuid, p_employee uuid, p_id uuid,
+    p_kind text, p_file_name text, p_storage_name text, p_media_type text, p_size integer,
+    p_sha256 text) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE
+ actor uuid:=nullif(current_setting('app.hr_user_id',true),'')::uuid;
+ doc public.hr_employee_documents%ROWTYPE; made_by text;
+BEGIN
+ IF public.hr_document_access(p_client,p_employee) IS DISTINCT FROM 'manage' THEN
+  RAISE EXCEPTION 'hr_document_access_required' USING ERRCODE='42501'; END IF;
+ IF p_key IS NULL OR p_id IS NULL THEN
+  RAISE EXCEPTION 'hr_document_unavailable' USING ERRCODE='23514'; END IF;
+ -- One document write at a time per tenant, the lock the application takes before it stores a file.
+ PERFORM pg_advisory_xact_lock(hashtextextended(p_client::text||':hr-documents',0));
+ SELECT * INTO doc FROM public.hr_employee_documents x
+  WHERE x.client_id=p_client AND x.request_key=p_key;
+ IF FOUND THEN
+  IF doc.employee_id IS DISTINCT FROM p_employee OR doc.kind IS DISTINCT FROM p_kind
+   OR doc.file_name IS DISTINCT FROM p_file_name OR doc.sha256 IS DISTINCT FROM p_sha256 THEN
+   RAISE EXCEPTION 'hr_idempotency_conflict' USING ERRCODE='23514'; END IF;
+ ELSE
+  PERFORM 1 FROM public.hr_employees e WHERE e.client_id=p_client AND e.id=p_employee FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'hr_employee_unavailable' USING ERRCODE='23514'; END IF;
+  INSERT INTO public.hr_employee_documents(client_id,id,employee_id,kind,file_name,storage_name,
+   media_type,byte_size,sha256,uploaded_by,request_key)
+  VALUES(p_client,p_id,p_employee,p_kind,p_file_name,p_storage_name,p_media_type,p_size,p_sha256,
+   actor,p_key)
+  RETURNING * INTO doc;
+  INSERT INTO public.hr_employee_changes(client_id,employee_id,changed_by,changes)
+  VALUES(p_client,p_employee,actor,jsonb_build_object('document',
+   jsonb_build_object('old',NULL,'new',initcap(doc.kind)||': '||doc.file_name)));
+ END IF;
+ SELECT CASE WHEN u.is_platform_admin THEN 'FourStacks admin'
+             WHEN m.is_enabled AND u.is_enabled THEN u.display_name END INTO made_by
+  FROM public.console_users u
+  LEFT JOIN public.console_memberships m ON m.user_id=u.id AND m.client_id=p_client
+  WHERE u.id=doc.uploaded_by;
+ RETURN jsonb_build_object('document_id',doc.id,'employee_id',doc.employee_id,'kind',doc.kind,
+  'file_name',doc.file_name,'media_type',doc.media_type,'byte_size',doc.byte_size,
+  'uploaded_at',doc.uploaded_at,'uploaded_by_name',made_by,'duplicate',(doc.id IS DISTINCT FROM p_id));
+END $$;
+
+-- Remove (soft) and return the storage name, for the file cleanup. A document that is already
+-- removed returns its storage name again and writes nothing, so a retry after a lost response
+-- succeeds. HR owner and people.manage holders only.
+CREATE FUNCTION public.hr_document_remove(p_client uuid, p_document uuid) RETURNS text
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE
+ actor uuid:=nullif(current_setting('app.hr_user_id',true),'')::uuid;
+ d public.hr_employee_documents%ROWTYPE;
+BEGIN
+ IF p_client IS NULL OR p_document IS NULL THEN
+  RAISE EXCEPTION 'hr_document_unavailable' USING ERRCODE='23514'; END IF;
+ SELECT * INTO d FROM public.hr_employee_documents x
+  WHERE x.client_id=p_client AND x.id=p_document;
+ IF NOT FOUND THEN
+  -- The same answer for a document of another tenant.
+  RAISE EXCEPTION 'hr_document_unavailable' USING ERRCODE='23514'; END IF;
+ IF public.hr_document_access(p_client,d.employee_id) IS DISTINCT FROM 'manage' THEN
+  RAISE EXCEPTION 'hr_document_access_required' USING ERRCODE='42501'; END IF;
+ PERFORM pg_advisory_xact_lock(hashtextextended(p_client::text||':hr-documents',0));
+ SELECT * INTO d FROM public.hr_employee_documents x
+  WHERE x.client_id=p_client AND x.id=p_document FOR UPDATE;
+ IF d.removed_at IS NULL THEN
+  UPDATE public.hr_employee_documents x SET removed_at=clock_timestamp(), removed_by=actor
+   WHERE x.client_id=p_client AND x.id=p_document;
+  INSERT INTO public.hr_employee_changes(client_id,employee_id,changed_by,changes)
+  VALUES(p_client,d.employee_id,actor,jsonb_build_object('document',
+   jsonb_build_object('old',initcap(d.kind)||': '||d.file_name,'new',NULL)));
+ END IF;
+ RETURN d.storage_name;
+END $$;
+
+-- The storage names a tenant's files may keep: those of documents not removed. Raises for another
+-- tenant, so an empty answer can never come from a mismatch and make the cleanup delete everything.
+CREATE FUNCTION public.hr_document_storage_names(p_client uuid) RETURNS SETOF text
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+BEGIN
+ IF p_client IS NULL OR p_client IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN
+  RAISE EXCEPTION 'hr_document_access_required' USING ERRCODE='42501'; END IF;
+ RETURN QUERY SELECT d.storage_name FROM public.hr_employee_documents d
+  WHERE d.client_id=p_client AND d.removed_at IS NULL;
+END $$;
+
+DO $$ DECLARE f regprocedure; BEGIN
+ FOREACH f IN ARRAY ARRAY['public.hr_document_access(uuid,uuid)'::regprocedure,
+  'public.hr_document_rows(uuid,uuid)'::regprocedure,
+  'public.hr_document_get(uuid,uuid)'::regprocedure,
+  'public.hr_document_add(uuid,uuid,uuid,uuid,text,text,text,text,integer,text)'::regprocedure,
+  'public.hr_document_remove(uuid,uuid)'::regprocedure,
+  'public.hr_document_storage_names(uuid)'::regprocedure] LOOP
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,csa_ro,csa_identity,csa_hr_maintenance',f);
   EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO csa_app',f);
  END LOOP;

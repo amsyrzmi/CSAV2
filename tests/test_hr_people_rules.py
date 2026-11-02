@@ -416,3 +416,48 @@ def test_person_from_row_hr_view_profile_and_account_flag():
 def test_contracts_forbid_extra_fields():
     with pytest.raises(ValidationError):
         HrPersonOut.model_validate({**person().model_dump(), "ic_number": "x"})
+
+
+def test_history_fields_carry_a_document_change_in_its_place() -> None:
+    changes = {
+        "document": {"old": None, "new": "Contract: offer.pdf"},
+        "job_title": {"old": "A", "new": "B"},
+    }
+    assert [(f.field, f.old, f.new) for f in history_fields(changes)] == [
+        ("job_title", "A", "B"),
+        ("document", None, "Contract: offer.pdf"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "expected"),
+    [
+        ("a.pdf", b"%PDF-1.7 x", "pdf"),
+        ("A.JPEG", b"\xff\xd8\xff\xe0x", "jpg"),
+        ("a.jpg", b"\xff\xd8\xffx", "jpg"),
+        ("a.png", b"\x89PNG\r\n\x1a\nx", "png"),
+    ],
+)
+def test_sniff_accepts_content_that_matches_the_extension(
+    name: str, data: bytes, expected: str
+) -> None:
+    from csa.hr.documents import sniff
+
+    assert sniff(data, name) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "code"),
+    [
+        ("a.pdf", b"\x89PNG\r\n\x1a\nx", "hr_document_type_unsupported"),
+        ("a.pdf", b"", "hr_document_empty"),
+        ("a.gif", b"GIF89a", "hr_document_type_unsupported"),
+        ("a.docx", b"PK\x03\x04 truncated", "hr_document_type_unsupported"),
+        ("pdf", b"%PDF-", "hr_document_type_unsupported"),
+    ],
+)
+def test_sniff_refuses_content_that_lies_or_is_empty(name: str, data: bytes, code: str) -> None:
+    from csa.hr.documents import sniff
+
+    with pytest.raises(HrPolicyError, match=code):
+        sniff(data, name)

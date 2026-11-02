@@ -15,6 +15,7 @@ x-runtime: &runtime
     CHANNEL_MODE: webhook
     PUBLIC_BASE_URL: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging origin required}
     KB_UPLOAD_ROOT: /var/lib/csa/uploads
+    HR_UPLOAD_ROOT: /var/lib/csa/hr-uploads
     TEI_ENDPOINT: http://staging-embeddings:8080
     KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
     TEI_QUERY_PREFIX: "query: "
@@ -55,6 +56,8 @@ services:
     # 18081 belongs to the development gateway; never reuse it here.
     ports:
       - "127.0.0.1:18031:8080"
+    # HR documents live on the gateway only; the worker and delivery never mount them.
+    volumes: ["staging-hr-uploads:/var/lib/csa/hr-uploads"]
 
   worker:
     restart: unless-stopped
@@ -193,6 +196,7 @@ networks:
 
 volumes:
   staging-embeddings:
+  staging-hr-uploads:
 
 secrets:
   staging_model_key:
