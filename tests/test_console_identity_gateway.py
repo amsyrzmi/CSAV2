@@ -62,6 +62,7 @@ def application(
         TEI_ENDPOINT=None,
         KB_EMBED_MODEL_LABEL="synthetic-384",
         KB_UPLOAD_ROOT=None,
+        HR_UPLOAD_ROOT=None,
         INVITE_MAIL_ENABLED=False,
         INVITE_MAIL_FROM="FourStacks <no-reply@fourstacks.my>",
         SMTP_HOST="smtp-relay.example.test",
