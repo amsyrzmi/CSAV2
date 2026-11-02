@@ -34,7 +34,8 @@ WEB = ROOT / "CSA_WebConsole/csa-console/web"
 TENANT = "11111111-1111-4111-8111-111111111111"
 WAIT = 60_000  # First visit to each route compiles it in `next dev`.
 REPLY = "Our opening hours are nine to six on weekdays."
-SANDBOX_LABEL = "Private chat: ask about your knowledge base and products"
+# The old header sentence; the honesty line under the composer replaced it.
+REMOVED_LABEL = "Private chat: ask about your knowledge base and products"
 MEMBERSHIP = "Your account has no active company. Ask your administrator to check your access."
 WIDTHS = (320, 390, 768, 1024, 1440)
 THEMES = ("cobalt", "night", "bureau")
@@ -359,7 +360,8 @@ async def test_overview_is_the_assistant_home_for_a_tenant_member(console: Conso
     async with open_overview(console, api, "/portal") as page:
         await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible()
         await expect(composer(page)).to_be_enabled()
-        await expect(page.get_by_text(SANDBOX_LABEL, exact=True)).to_be_visible()
+        await expect(page.get_by_text(REMOVED_LABEL, exact=True)).to_have_count(0)
+        await expect(page.get_by_test_id("chat-honesty-line")).to_have_count(1)
         await expect(page.get_by_test_id("overview-strip-review")).to_have_text(
             re.compile(r"^\s*3\s*Replies to check\s*$")
         )
@@ -424,7 +426,7 @@ async def test_member_without_active_tenant_sees_the_membership_message(console:
         console, api, "/portal", me=make_me("tenant_staff", tenant=False)
     ) as page:
         await expect(page.get_by_text(MEMBERSHIP, exact=True)).to_be_visible()
-        await expect(page.get_by_text(SANDBOX_LABEL, exact=True)).to_have_count(0)
+        await expect(page.get_by_text(REMOVED_LABEL, exact=True)).to_have_count(0)
         await expect(composer(page)).to_have_count(0)
         await expect(page.get_by_test_id("overview-strip")).to_have_count(0)
         await page.wait_for_timeout(500)

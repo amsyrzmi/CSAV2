@@ -251,13 +251,17 @@ async def open_chat(
     width: int = 1440,
     theme: str = "cobalt",
     init_script: str | None = None,
+    reduced_motion: bool = False,
 ) -> AsyncIterator[Page]:
     """A fresh browser on the harness; fails on unexpected API calls, page or console errors."""
     errors: list[str] = []
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
-            context = await browser.new_context(viewport={"width": width, "height": 900})
+            context = await browser.new_context(
+                viewport={"width": width, "height": 900},
+                reduced_motion="reduce" if reduced_motion else "no-preference",
+            )
             context.set_default_timeout(WAIT)
             await context.add_cookies([{"name": "fs-theme", "value": theme, "url": server}])
             page = await context.new_page()
@@ -769,3 +773,304 @@ async def test_microphone_opens_the_voice_tray_with_consent_inside(server: str) 
         await expect(tray.get_by_text("Maximum 60 seconds / 8 MB.", exact=False)).to_be_visible()
         await mic.click()
         await expect(tray).to_be_hidden()
+
+
+FOLLOW_UPS = ["Tell me more about…", "Say that in a shorter way", "Give me an example"]
+FOLLOW_UP_VALUES = ["Tell me more about ", "Say that in a shorter way", "Give me an example"]
+
+
+async def test_working_row_shows_the_working_pose_only_while_processing(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1), seeded_turn(2, status="processing")]
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        row = page.get_by_test_id("chat-working")
+        await expect(row).to_be_visible()
+        await expect(row).to_contain_text("Working on it")
+        avatar = row.locator("[data-agent='assistant']")
+        await expect(avatar).to_have_attribute("data-state", "working")
+        box = await avatar.bounding_box()
+        assert box and round(box["width"]) == 48 and round(box["height"]) == 48, box
+        # One row, inside the log, and the status words still say what the server says.
+        await expect(page.get_by_test_id("chat-working")).to_have_count(1)
+        await expect(
+            page.get_by_role("log", name="Chat messages").get_by_test_id("chat-working")
+        ).to_be_visible()
+        await expect(page.get_by_text("Processing", exact=True)).to_be_visible()
+        # No follow-up starters while a turn is being worked on.
+        await expect(page.get_by_test_id("chat-followups")).to_have_count(0)
+        # The reply lands: the row goes away and the starters appear.
+        api.turns["thread-1"][1] = seeded_turn(2)
+        await expect(row).to_have_count(0, timeout=10_000)
+        await expect(page.get_by_test_id("chat-followups")).to_be_visible()
+
+
+async def test_queued_turn_shows_no_working_row(server: str) -> None:
+    api = Synthetic(threads=3)
+    api.turns["thread-1"] = [seeded_turn(1, status="queued")]
+    api.turns["thread-2"] = [seeded_turn(1, status="awaiting_delivery")]
+    api.turns["thread-3"] = [seeded_turn(1, status="held")]
+    labels = {
+        1: "Queued - not delivered",
+        2: "Reply queued - not available yet",
+        3: "Held by tenant policy",
+    }
+    async with open_chat(server, api) as page:
+        for number, label in labels.items():
+            await page.get_by_role("button", name=f"Conversation {number}", exact=True).click(
+                timeout=WAIT
+            )
+            await expect(page.get_by_text(label, exact=False)).to_be_visible()
+            await page.wait_for_timeout(300)
+            await expect(page.get_by_test_id("chat-working")).to_have_count(0)
+            await expect(page.get_by_test_id("chat-followups")).to_have_count(0)
+
+
+async def test_composer_grows_and_shift_enter_adds_a_line(server: str) -> None:
+    api = Synthetic()
+    async with open_chat(server, api) as page:
+        composer = page.get_by_label("Your question", exact=False)
+        await composer.fill("One line", timeout=WAIT)
+        height = "e => e.getBoundingClientRect().height"
+        one = await composer.evaluate(height)
+        await composer.press("Shift+Enter")
+        await composer.type("two")
+        await composer.press("Shift+Enter")
+        await composer.type("three")
+        await expect(composer).to_have_value("One line\ntwo\nthree")
+        three = await composer.evaluate(height)
+        line = await composer.evaluate("e => parseFloat(getComputedStyle(e).lineHeight)")
+        assert three > one + line, (one, three, line)
+        assert api.posts == []
+        # Long text stops growing at about eight lines and scrolls instead.
+        await composer.fill("\n".join(f"line {n}" for n in range(1, 21)))
+        tall = await composer.evaluate(height)
+        padding = await composer.evaluate(
+            "e => { const c = getComputedStyle(e);"
+            " return parseFloat(c.paddingTop) + parseFloat(c.paddingBottom); }"
+        )
+        assert 7 * line < tall <= 8 * line + padding + 1, (tall, line, padding)
+        assert await composer.evaluate("e => e.scrollHeight > e.clientHeight")
+        # Shorter text shrinks it back.
+        await composer.fill("short")
+        assert await composer.evaluate(height) <= one + 1
+
+
+async def test_jump_to_latest_pill_appears_when_scrolled_up(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = numbered_turns(30)
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        log = page.get_by_role("log", name="Chat messages")
+        await expect(log.get_by_text(re.compile(r"Answer 30$"))).to_be_visible()
+        scroller = page.get_by_test_id("sandbox-scroll")
+        pill = page.get_by_test_id("chat-jump-latest")
+        await expect(pill).to_have_count(0)
+        # Less than a screen from the end: no pill.
+        await scroller.evaluate("e => { e.scrollTop = e.scrollHeight - e.clientHeight - 200; }")
+        await page.wait_for_timeout(300)
+        await expect(pill).to_have_count(0)
+        # More than a screen from the end: the pill shows and takes the reader to the end.
+        await scroller.evaluate("e => { e.scrollTop = 0; }")
+        await expect(pill).to_be_visible()
+        await expect(pill).to_have_text("Jump to latest")
+        await pill.click()
+        gap = "e => e.scrollHeight - e.scrollTop - e.clientHeight"
+        await expect(pill).to_have_count(0)
+        await page.wait_for_timeout(300)
+        assert await scroller.evaluate(gap) < 2
+        # Focus is not lost to the page when the pill goes away.
+        assert await page.evaluate("document.activeElement !== document.body")
+
+
+CLIPBOARD_STUB = """
+window.copied = [];
+Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+  writeText: async (text) => { window.copied.push(text); },
+} });
+"""
+
+
+async def test_copy_reply_puts_the_text_on_the_clipboard(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api, init_script=CLIPBOARD_STUB) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        copy = page.get_by_role("button", name="Copy reply")
+        await expect(copy).to_have_count(1)
+        await expect(page.get_by_text("Copied", exact=True)).to_have_count(0)
+        await copy.click()
+        await expect(page.get_by_text("Copied", exact=True)).to_be_visible()
+        # The plain reply text only: no "Assistant:" prefix, no question, no status line.
+        assert await page.evaluate("window.copied") == [REPLY]
+        # The confirmation goes away by itself after about two seconds.
+        await page.wait_for_timeout(1200)
+        await expect(page.get_by_text("Copied", exact=True)).to_be_visible()
+        await expect(page.get_by_text("Copied", exact=True)).to_have_count(0, timeout=3000)
+        # A turn without a reply has nothing to copy.
+        api.turns["thread-1"].append(seeded_turn(2, status="held"))
+        await expect(page.get_by_text("Seeded question 2")).to_be_visible(timeout=10_000)
+        await expect(page.get_by_role("button", name="Copy reply")).to_have_count(1)
+
+
+async def test_followups_only_prefill_and_never_send(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1), seeded_turn(2)]
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        starters = page.get_by_test_id("chat-followups")
+        await expect(starters).to_be_visible()
+        # One set, after the latest reply only.
+        await expect(starters).to_have_count(1)
+        await expect(starters.get_by_role("button")).to_have_text(FOLLOW_UPS)
+        composer = page.get_by_label("Your question", exact=False)
+        for label, value in zip(FOLLOW_UPS, FOLLOW_UP_VALUES, strict=True):
+            await starters.get_by_role("button", name=label, exact=True).click()
+            await expect(composer).to_have_value(value)
+            await expect(composer).to_be_focused()
+        await page.wait_for_timeout(800)
+        assert api.posts == []
+        await expect(starters).to_be_visible()
+        body = await page.locator("body").inner_text()
+        assert "Seeded question 2" in body and body.count(FOLLOW_UPS[2]) == 1
+
+
+async def test_followups_are_absent_for_read_only_and_for_an_empty_chat(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api, query="?role=read_only") as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        await expect(page.get_by_text(REPLY)).to_be_visible()
+        await expect(page.get_by_test_id("chat-followups")).to_have_count(0)
+        # The reader can still copy what they are allowed to read.
+        await expect(page.get_by_role("button", name="Copy reply")).to_be_enabled()
+    api = Synthetic()
+    async with open_chat(server, api) as page:
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
+            timeout=WAIT
+        )
+        await expect(page.get_by_test_id("chat-followups")).to_have_count(0)
+
+
+async def arrive(page: Page, api: Synthetic) -> None:
+    """Open the one seeded conversation, then let a second turn arrive by polling."""
+    await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+    log = page.get_by_role("log", name="Chat messages")
+    await expect(log.get_by_text("Seeded question 1")).to_be_visible()
+    api.turns["thread-1"].append(seeded_turn(2))
+    await expect(log.get_by_text("Seeded question 2")).to_be_visible(timeout=10_000)
+
+
+async def test_reduced_motion_disables_message_easing(server: str) -> None:
+    arrived = "article[data-arrived='true']"
+    # Normal motion: the turn that arrived after the first load eases in; the first load does not.
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api) as page:
+        await arrive(page, api)
+        await expect(page.locator(arrived)).to_have_count(1)
+        await expect(page.locator(arrived)).to_have_class(re.compile(r"\bfs-message-in\b"))
+        await expect(page.locator("article.fs-message-in")).to_have_count(1)
+    # The reader asks for reduced motion: the same turn just appears.
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api, reduced_motion=True) as page:
+        await arrive(page, api)
+        await expect(page.locator(arrived)).to_have_count(1)
+        await expect(page.locator("article.fs-message-in")).to_have_count(0)
+    # The product's "Reduce animations" preference does the same.
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    pause = 'window.localStorage.setItem("fs-motion-paused", "1");'
+    async with open_chat(server, api, init_script=pause) as page:
+        await arrive(page, api)
+        await expect(page.locator(arrived)).to_have_count(1)
+        await expect(page.locator("article.fs-message-in")).to_have_count(0)
+
+
+async def test_stop_reading_aloud_hands_focus_to_the_microphone(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api, init_script=SPEECH_STUB) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        await page.get_by_role("button", name="Read reply aloud").click()
+        stop = page.get_by_role("button", name="Stop reading aloud")
+        await expect(stop).to_be_visible()
+        await stop.focus()
+        await page.keyboard.press("Enter")
+        await expect(stop).to_have_count(0)
+        await expect(page.get_by_role("button", name="Voice options", exact=True)).to_be_focused()
+
+
+async def test_voice_tray_moves_focus_in_and_back_and_is_keyboard_reachable(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.voice_enabled = True
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        mic = page.get_by_role("button", name="Voice options", exact=True)
+        tray = page.get_by_role("group", name="Voice controls")
+        # aria-controls names the tray.
+        controls = await mic.get_attribute("aria-controls")
+        assert controls
+        # (A hidden group is out of the role tree, so find it by its id.)
+        assert (
+            await page.locator(f'[id="{controls}"]').get_attribute("aria-label") == "Voice controls"
+        )
+        # Open with the keyboard: focus lands on the first control.
+        await mic.focus()
+        await page.keyboard.press("Enter")
+        await expect(tray).to_be_visible()
+        dictate = tray.get_by_role("button", name="Dictate a message")
+        await expect(dictate).to_be_focused()
+        # The tray's controls are reachable with Tab, in order.
+        await page.keyboard.press("Tab")
+        await expect(tray.get_by_label("Dictation language")).to_be_focused()
+        await page.keyboard.press("Tab")
+        await expect(tray.get_by_label("Playback language")).to_be_focused()
+        # Close with the keyboard from the microphone: focus stays on it.
+        await mic.focus()
+        await page.keyboard.press("Enter")
+        await expect(tray).to_be_hidden()
+        await expect(mic).to_be_focused()
+        # Closing with a click from inside the tray hands focus back too.
+        await mic.click()
+        await expect(dictate).to_be_focused()
+        await mic.click()
+        await expect(tray).to_be_hidden()
+        await expect(mic).to_be_focused()
+
+
+async def test_read_only_member_keeps_the_honesty_line_and_a_working_microphone(
+    server: str,
+) -> None:
+    api = Synthetic()
+    async with open_chat(server, api, query="?role=read_only") as page:
+        await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY, timeout=WAIT)
+        await expect(page.get_by_test_id("chat-honesty-line")).to_have_count(1)
+        mic = page.get_by_role("button", name="Voice options", exact=True)
+        # The tray itself opens (it explains itself) but nothing in it can start a recording.
+        await expect(mic).to_be_enabled()
+        await mic.click()
+        tray = page.get_by_role("group", name="Voice controls")
+        await expect(tray).to_be_visible()
+        await expect(tray.get_by_role("button", name="Dictate a message")).to_be_disabled()
+        await expect(tray.get_by_label("Dictation language")).to_be_disabled()
+        await expect(page.get_by_role("button", name="Send message", exact=True)).to_be_disabled()
+        assert api.posts == []
+
+
+async def test_open_voice_tray_text_has_no_limits_copy(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.voice_enabled = True
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        await page.get_by_role("button", name="Voice options", exact=True).click()
+        tray = page.get_by_role("group", name="Voice controls")
+        await expect(tray).to_be_visible()
+        text = await tray.inner_text()
+        assert text.strip()
+        for removed in [*REMOVED_TEXT, "It cannot", "cannot confirm business", "attachments"]:
+            assert removed not in text, removed
+        # The honesty line stays outside the tray, once.
+        assert HONESTY not in text
+        assert (await page.locator("body").inner_text()).count(HONESTY) == 1

@@ -6,7 +6,7 @@ import { Archive, History, Mic, MicOff, RefreshCw } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import type { Page, PendingSandboxTurn, SandboxThread, SandboxTurn, ScrollSnapshot } from "@/lib/sandbox-chat";
-import { chipsFor, needsManualCheck, scrollPlan } from "@/lib/sandbox-chat";
+import { chipsFor, farFromEnd, followUpsFor, followUpsReady, needsManualCheck, scrollPlan } from "@/lib/sandbox-chat";
 import { VoiceConversation } from "./VoiceConversation";
 import { RecordedVoice } from "./RecordedVoice";
 import { localDictation, speakLocal } from "@/lib/hr-voice";
@@ -16,6 +16,7 @@ import { ChatHonestyLine } from "./chat/ChatDisclaimer";
 import { ChatEmptyState } from "./chat/ChatEmptyState";
 import { ChatHistory, threadLabel } from "./chat/ChatHistory";
 import { ChatMessages } from "./chat/ChatMessages";
+import { JumpToLatest } from "./chat/JumpToLatest";
 import { useSpeaking } from "./chat/useSpeaking";
 import { field, Heading, Notice, secondary } from "./ui";
 
@@ -115,6 +116,8 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
   // Focus was in the composer when a send started: give it back once the composer is usable.
   const refocus = useRef(false);
   const nearBottom = useRef(true);
+  // The reader is more than a screen above the end of the log: the "Jump to latest" pill shows.
+  const [awayFromEnd, setAwayFromEnd] = useState(false);
   const ownKeys = useRef(new Set<string>());
   const scrolled = useRef<ScrollSnapshot & { height: number }>({ thread: "", firstId: null, lastKey: null, height: 0 });
   useEffect(() => () => {
@@ -205,12 +208,23 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
     if (plan === "bottom") element.scrollTop = element.scrollHeight;
     else if (plan === "keep-offset") element.scrollTop += element.scrollHeight - scrolled.current.height;
     scrolled.current = { ...next, height: element.scrollHeight };
+    setAwayFromEnd(farFromEnd(element));
   }, [thread, turns]);
   function onScroll() {
     const element = scroller.current;
     if (!element) return;
     nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     scrolled.current.height = element.scrollHeight;
+    setAwayFromEnd(farFromEnd(element));
+  }
+  function jumpToLatest() {
+    const element = scroller.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+    nearBottom.current = true;
+    setAwayFromEnd(false);
+    // The pill goes away: keep the reader's place in the log.
+    element.focus({ preventScroll: true });
   }
 
   /**
@@ -348,7 +362,8 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
       </div>}
       {/* `relative`: the sr-only "You:" prefixes are absolutely positioned; without it they
           escape the scroller's clip and stretch the page (Overview must not scroll). */}
-      <div ref={scroller} data-testid="sandbox-scroll" onScroll={onScroll} className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={scroller} data-testid="sandbox-scroll" tabIndex={-1} onScroll={onScroll} className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)]">
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6">
           {pollError && <Notice error>We lost touch with the chat: {pollError}. Use Check for new messages; it never sends anything again.</Notice>}
           {turnCursor && <div className="text-center">
@@ -357,9 +372,12 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
               setHistoryPages((value) => value + 1);
             }}>Older messages</button></div>}
           {!loaded ? (!pollError && <p role="status" className="text-center text-sm text-[color:var(--fs-text-secondary)]">Loading messages</p>)
-            : turns.length ? <ChatMessages turns={turns} now={now} onReadAloud={readAloud} readDisabled={conversationVoiceBusy} />
+            : turns.length ? <ChatMessages turns={turns} now={now} onReadAloud={readAloud} readDisabled={conversationVoiceBusy}
+              followUps={canWrite && !locked && followUpsReady(turns) ? followUpsFor() : null} onFollowUp={fillFromChip} />
               : <ChatEmptyState chips={chipsFor(role)} disabled={!canWrite || locked} onChip={fillFromChip} />}
         </div>
+      </div>
+      {awayFromEnd && <JumpToLatest onJump={jumpToLatest} />}
       </div>
       <div className={`shrink-0 px-3 pt-2 sm:px-6 ${dockClearance ? "pb-[4.5rem]" : "pb-3"}`}>
         <div ref={composerArea} className="mx-auto w-full max-w-3xl space-y-2">

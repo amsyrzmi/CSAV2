@@ -58,6 +58,51 @@ export function chipsFor(role: Me["role"]): string[] {
 }
 
 /**
+ * Whether the server is working on a turn right now: only `processing`. Every other status is a
+ * different truth and must not look like activity: `queued` (accepted, not started or delivered),
+ * `awaiting_delivery` (a reply exists, it is not available yet), `held` (stopped by tenant policy)
+ * and the finished states `available`, `failed`, `no_reply`. A status this build does not know is
+ * not working either, so an animation never stands for a state nobody confirmed.
+ */
+export function isWorking(status: string): boolean {
+  return status === "processing";
+}
+
+/**
+ * Follow-up starters under the latest reply. Like the chips they only fill the composer (nothing is
+ * sent by a click) and stay inside what the sandbox answers: they ask about the answer just given
+ * or about knowledge and products. A starter ending in a space leaves the sentence for the reader
+ * to finish.
+ */
+export const FOLLOW_UPS: readonly string[] = ["Tell me more about ", "Say that in a shorter way", "Give me an example"];
+
+/** The follow-up starters, a fresh copy. */
+export function followUpsFor(): string[] {
+  return [...FOLLOW_UPS];
+}
+
+/** The label on a follow-up button: an ellipsis only where the reader finishes the sentence. */
+export function followUpLabel(starter: string): string {
+  return starter.endsWith(" ") ? chipLabel(starter) : starter;
+}
+
+/**
+ * Whether the follow-up starters show: the latest turn has a reply and no turn is still on its
+ * way (queued, being worked on, or waiting to be delivered). The caller adds its own lock and
+ * role checks.
+ */
+export function followUpsReady(turns: readonly Pick<SandboxTurn, "status" | "replies">[]): boolean {
+  const last = turns.at(-1);
+  if (!last || last.replies.length === 0) return false;
+  return !turns.some((turn) => ["queued", "processing", "awaiting_delivery"].includes(turn.status));
+}
+
+/** Whether the reader is more than one screen away from the end of the log (the pill shows). */
+export function farFromEnd(box: { scrollHeight: number; scrollTop: number; clientHeight: number }): boolean {
+  return box.scrollHeight - box.scrollTop - box.clientHeight > box.clientHeight;
+}
+
+/**
  * Whether "Check for new messages" shows. The screen refreshes itself every few seconds, so the
  * button is only for when that failed (the lost-touch notice is up) or while the 90-second delay
  * notice is up; both notices tell the reader to use it.

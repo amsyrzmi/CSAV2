@@ -101,3 +101,49 @@ test("the log follows the end only for its first load, the reader's own question
   // The same own question seen again by a later poll is not new.
   assert.equal(chat.scrollPlan({ ...loaded, lastKey: "mine" }, { ...loaded, lastKey: "mine" }, false, own), "stay");
 });
+
+test("only a turn the server is processing counts as being worked on", () => {
+  // Every status name the file knows, so a new status cannot slip in unclassified.
+  const names = Object.keys(chat.sandboxStatus);
+  assert.deepEqual([...names].sort(),
+    ["available", "awaiting_delivery", "failed", "held", "no_reply", "processing", "queued"]);
+  const working = names.filter((status) => chat.isWorking(status));
+  assert.deepEqual(working, ["processing"]);
+  // Not delivered yet, waiting for delivery, and every finished state are not "being worked on".
+  for (const status of ["queued", "awaiting_delivery", "held", "available", "failed", "no_reply"])
+    assert.equal(chat.isWorking(status), false, status);
+  // A status this build does not know never animates.
+  assert.equal(chat.isWorking("pending"), false);
+  assert.equal(chat.isWorking(""), false);
+});
+
+test("follow-up starters only prefill, stay inside the sandbox limits and are a fresh copy", () => {
+  const expected = ["Tell me more about ", "Say that in a shorter way", "Give me an example"];
+  assert.deepEqual(chat.followUpsFor(), expected);
+  for (const starter of chat.followUpsFor()) assert.doesNotMatch(starter, FORBIDDEN, starter);
+  // The button shows an ellipsis only where the reader is meant to finish the sentence.
+  assert.deepEqual(expected.map(chat.followUpLabel),
+    ["Tell me more about…", "Say that in a shorter way", "Give me an example"]);
+  chat.followUpsFor().push("Approve a refund");
+  assert.deepEqual(chat.followUpsFor(), expected);
+});
+
+test("follow-ups are offered only after an answered, settled conversation", () => {
+  const turn = (status, replies = 0) => ({ status, replies: Array.from({ length: replies }, (_, id) => ({ id: String(id), body: "x" })) });
+  assert.equal(chat.followUpsReady([]), false);
+  assert.equal(chat.followUpsReady([turn("available", 1)]), true);
+  assert.equal(chat.followUpsReady([turn("failed"), turn("available", 2)]), true);
+  // The latest turn has no reply (held, failed, no reply) or one is still on its way.
+  for (const status of ["held", "failed", "no_reply", "queued", "processing", "awaiting_delivery"])
+    assert.equal(chat.followUpsReady([turn("available", 1), turn(status)]), false, status);
+  // An answered turn followed by an unfinished one.
+  assert.equal(chat.followUpsReady([turn("processing"), turn("available", 1)]), false);
+  assert.equal(chat.followUpsReady([turn("available", 0)]), false);
+});
+
+test("the jump-to-latest pill shows only when the reader is more than a screen from the end", () => {
+  assert.equal(chat.farFromEnd({ scrollHeight: 3000, scrollTop: 2100, clientHeight: 900 }), false);
+  assert.equal(chat.farFromEnd({ scrollHeight: 3000, scrollTop: 1200, clientHeight: 900 }), false);
+  assert.equal(chat.farFromEnd({ scrollHeight: 3000, scrollTop: 1199, clientHeight: 900 }), true);
+  assert.equal(chat.farFromEnd({ scrollHeight: 800, scrollTop: 0, clientHeight: 900 }), false);
+});

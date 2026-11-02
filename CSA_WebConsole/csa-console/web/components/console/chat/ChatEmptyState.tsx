@@ -1,6 +1,10 @@
 import AgentAvatar from "../fs/AgentAvatar";
 import { chipLabel } from "@/lib/sandbox-chat";
 
+/** The look of a starter button: a prompt chip on the empty chat, a follow-up under a reply. */
+export const starterLook =
+  "min-h-10 rounded-[var(--fs-radius-round)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] px-4 py-2 text-sm text-[color:var(--fs-text)] transition-colors duration-150 hover:border-[color:var(--fs-primary)] hover:bg-[var(--fs-surface-blue)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:border-[color:var(--fs-border)] disabled:bg-[var(--fs-disabled-bg)] disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:min-h-11";
+
 /** The assistant, drawn straight onto the page with no box, above a line of copy (and, inside a tenant, more below). */
 export function AssistantTile() {
   return <span className="inline-flex shrink-0"><AgentAvatar agentId="assistant" size={48} label="" /></span>;
@@ -22,7 +26,7 @@ export function ChatEmptyState({ chips, disabled, onChip }: {
     <ul data-testid="sandbox-chips" aria-label="Suggested questions" className="flex flex-wrap justify-center gap-2">
       {chips.map((chip) => <li key={chip}>
         <button type="button" disabled={disabled} onClick={() => onChip(chip)}
-          className="min-h-10 rounded-[var(--fs-radius-round)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] px-4 py-2 text-sm text-[color:var(--fs-text)] transition-colors duration-150 hover:border-[color:var(--fs-primary)] hover:bg-[var(--fs-surface-blue)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:border-[color:var(--fs-border)] disabled:bg-[var(--fs-disabled-bg)] disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:min-h-11">
+          className={starterLook}>
           {chipLabel(chip)}</button>
       </li>)}
     </ul>

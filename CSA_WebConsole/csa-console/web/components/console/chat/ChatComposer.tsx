@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { ArrowUp, Mic, VolumeX } from "lucide-react";
 
 const iconButton =
@@ -8,12 +8,18 @@ const iconButton =
 const sendLook =
   "inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-2 rounded-[var(--fs-radius-round)] bg-[var(--fs-primary)] text-sm font-medium text-[color:var(--fs-on-primary)] transition-colors duration-150 hover:bg-[var(--fs-primary-hover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-[var(--fs-disabled-bg)] disabled:text-[color:var(--fs-disabled-text)] disabled:active:scale-100 pointer-coarse:h-11 pointer-coarse:min-w-11";
 
+/** What the first control in the tray can be: anything the reader can operate. */
+const TRAY_CONTROLS = "button:not(:disabled), select:not(:disabled), input:not(:disabled)";
+
 /**
  * The composer: a large rounded text box that grows to about eight lines, one microphone button
  * that opens the voice tray (closed by default; dictation, hands-free voice and recorded voice
  * all live inside it), "Stop reading aloud" (only while speech is playing) and a round send
  * button. Enter sends and Shift+Enter starts a new line with a keyboard; on a touch screen Enter
  * is a new line. The send button is named "Send message" (or reads "Send the same message again").
+ * Focus follows the tray: opening it with the microphone button moves focus to its first control,
+ * closing it returns focus to the button; "Stop reading aloud" hands focus to the microphone
+ * button when it is pressed (it unmounts once speech stops).
  */
 export function ChatComposer({ value, onChange, textareaRef, disabled, onSend, sendDisabled, retry,
   speaking, onStopSpeech, voiceOpen, onVoiceToggle, voiceToggleDisabled, voice }: {
@@ -35,8 +41,37 @@ export function ChatComposer({ value, onChange, textareaRef, disabled, onSend, s
   voice: ReactNode;
 }) {
   const trayId = useId();
+  const micRef = useRef<HTMLButtonElement>(null);
+  const trayRef = useRef<HTMLDivElement>(null);
+  // The microphone button just toggled the tray (as opposed to a voice session forcing it open).
+  const toggledByButton = useRef(false);
+  const wasOpen = useRef(voiceOpen);
+  useLayoutEffect(() => {
+    const before = wasOpen.current;
+    wasOpen.current = voiceOpen;
+    if (before === voiceOpen) return;
+    const tray = trayRef.current;
+    if (voiceOpen) {
+      if (toggledByButton.current) tray?.querySelector<HTMLElement>(TRAY_CONTROLS)?.focus();
+    } else if (toggledByButton.current || tray?.contains(document.activeElement)) {
+      micRef.current?.focus();
+    }
+    toggledByButton.current = false;
+  }, [voiceOpen]);
+  // The box is one line tall and grows with its text; past about eight lines it scrolls instead.
+  const fit = useCallback(() => {
+    const box = textareaRef.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${box.scrollHeight}px`;
+  }, [textareaRef]);
+  useLayoutEffect(fit, [fit, value]);
+  useEffect(() => {
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [fit]);
   return <div className="space-y-2">
-    <div id={trayId} hidden={!voiceOpen} aria-label="Voice controls" role="group"
+    <div ref={trayRef} id={trayId} hidden={!voiceOpen} aria-label="Voice controls" role="group"
       className="max-h-[40dvh] overflow-y-auto rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 text-sm text-[color:var(--fs-text)]">
       {voice}
     </div>
@@ -51,13 +86,20 @@ export function ChatComposer({ value, onChange, textareaRef, disabled, onSend, s
           event.preventDefault();
           if (!sendDisabled) onSend();
         }}
-        className="block max-h-[13.5rem] min-h-[3.25rem] w-full resize-none bg-transparent px-5 pt-3.5 pb-1 text-base leading-6 text-[color:var(--fs-text)] outline-none [field-sizing:content] focus-visible:shadow-none focus-visible:outline-none! placeholder:text-[color:var(--fs-text-secondary)] disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)]" />
+        className="block max-h-[calc(8lh+1.125rem)] min-h-[3.25rem] w-full resize-none overflow-y-auto bg-transparent px-5 pt-3.5 pb-1 text-base leading-6 text-[color:var(--fs-text)] outline-none focus-visible:shadow-none focus-visible:outline-none! placeholder:text-[color:var(--fs-text-secondary)] disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)]" />
       <div className="flex items-center gap-1 px-2.5 pb-2.5">
-        <button type="button" aria-expanded={voiceOpen} aria-controls={trayId} disabled={voiceToggleDisabled} onClick={onVoiceToggle}
+        <button ref={micRef} type="button" aria-expanded={voiceOpen} aria-controls={trayId} disabled={voiceToggleDisabled}
+          onClick={() => { toggledByButton.current = true; onVoiceToggle(); }}
           aria-label="Voice options" title="Voice options"
           className={`${iconButton} ${voiceOpen ? "bg-[var(--fs-surface-blue)] text-[color:var(--fs-primary-hover)]" : ""}`}>
           <Mic size={18} aria-hidden /></button>
-        {speaking && <button type="button" className={iconButton} onClick={onStopSpeech}
+        {speaking && <button type="button" className={iconButton}
+          onClick={() => {
+            onStopSpeech();
+            // This button goes away once speech stops: keep the reader's place.
+            const next = micRef.current && !micRef.current.disabled ? micRef.current : textareaRef.current;
+            next?.focus();
+          }}
           aria-label="Stop reading aloud" title="Stop reading aloud"><VolumeX size={18} aria-hidden /></button>}
         <span className="flex-1" />
         <button type="button" className={`${sendLook} ${retry ? "px-4" : ""}`} disabled={sendDisabled} onClick={onSend}
