@@ -947,6 +947,8 @@ async def test_date_filter_sheet_fits_at_320_in_three_themes(console: Console, t
         # On the sheet, a tap on the dimmed page behind it closes it.
         await page.get_by_test_id("demo-date-scrim").click(position={"x": 160, "y": 20})
         await expect(page.get_by_test_id("demo-date-popover")).to_have_count(0)
+        # ...and focus goes back to the button that opened it, not to the page body.
+        await expect(page.get_by_test_id("demo-date")).to_be_focused()
     finally:
         await close_demo(playwright, browser)
 
@@ -1197,7 +1199,12 @@ async def test_date_popover_tab_order_across_the_portal(console: Console) -> Non
 
 @pytest.mark.parametrize(
     ("case", "width", "height", "trigger_top"),
-    [("below", 1024, 900, 100), ("above", 1024, 900, 700), ("inside", 640, 500, 250)],
+    [
+        ("below", 1024, 900, 100),
+        ("above", 1024, 900, 700),
+        ("inside", 640, 500, 250),
+        ("short", 740, 340, 160),  # a landscape phone: neither side holds a usable calendar
+    ],
 )
 async def test_date_popover_vertical_placement(
     console: Console, case: str, width: int, height: int, trigger_top: int
@@ -1242,6 +1249,10 @@ async def test_date_popover_vertical_placement(
             assert not measured["scrolls"], measured
         else:
             assert measured["scrolls"], measured
+            if case == "short":
+                # Not a sliver beside the button: the calendar takes the viewport, top to bottom.
+                assert measured["height"] >= height - 2 * 8 - 1, measured
+                assert measured["top"] >= 0, measured
             # Every control stays reachable: the last one scrolls into view and works.
             await page.get_by_test_id("demo-date-done").click()
             await expect(popover).to_have_count(0)

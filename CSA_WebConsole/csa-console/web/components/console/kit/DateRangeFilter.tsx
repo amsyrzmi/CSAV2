@@ -37,6 +37,8 @@ const sizeSm = "text-[length:var(--fs-text-sm)] font-medium";
 const EDGE = 8;
 /** Room under the button that is enough to open the calendar below it and scroll inside. */
 const ROOM_BELOW = 320;
+/** Less than this on the roomier side (a short landscape phone) and the calendar takes the viewport instead. */
+const MIN_ROOM = 160;
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
@@ -143,6 +145,13 @@ export default function DateRangeFilter({
       room = above;
       top = rect.top - EDGE - Math.min(natural, above);
     }
+    // Neither side holds a usable part of it: cover the button and use the whole height rather than
+    // a sliver. Either way the top stays inside the viewport (a button scrolled mostly out of view).
+    if (room < MIN_ROOM) {
+      top = EDGE;
+      room = window.innerHeight - 2 * EDGE;
+    }
+    top = Math.max(EDGE, Math.min(top, window.innerHeight - EDGE - Math.min(natural, room)));
     popover.style.setProperty("--fs-date-left", `${left}px`);
     popover.style.setProperty("--fs-date-top", `${top}px`);
     popover.style.setProperty("--fs-date-max", `${Math.max(room, 0)}px`);
@@ -324,7 +333,7 @@ export default function DateRangeFilter({
             ref={scrimRef}
             aria-hidden="true"
             data-testid={id("scrim")}
-            onClick={() => close(false)}
+            onClick={() => close(true)}
             className="fixed inset-0 z-50 bg-[var(--fs-scrim)] sm:hidden"
           />
           <div
