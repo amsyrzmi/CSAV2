@@ -178,7 +178,7 @@ Same as Task 6 for the chat: restart the preview, screenshot and look at the Ove
 
 **Interfaces (Produces, `lib/activity-view.ts`):**
 - `lastAssistants(runs: AgentRun[], limit?: number): { avatarId: AgentId; title: string; finishedAt: string; outcome: "worked" | "needs_attention"; runId: number }[]`: newest first, de-duplicated by avatar id (`avatarForCapability` from `lib/agent-avatars.ts`), at most `limit` (default 5), unknown capabilities skipped, never padded.
-- `outcomeOf(run: AgentRun): "worked" | "needs_attention"` (`ok` true = worked; anything else needs attention).
+- `outcomeOf(run: AgentRun): "worked" | "needs_attention" | "partial"`: `status === "ok"` = worked, `status === "error"` = needs attention, any other status (the contract allows `partial` though nothing produces it today) = `partial`, shown as a neutral "Partly finished" badge that no status chip selects (the server filter accepts only `ok` and `error`, so the labels must match it exactly; ruling from the Task 10 review). Query strings are built with `URLSearchParams`, `toISOString()` instants only, and `status` is omitted for "All" (an empty `status=` is a 422).
 - `plainSummary(run: AgentRun, now: Date): string` ("Customer support agent finished 3 minutes ago") using `AGENT_TITLES`, relative time under an hour and a date after.
 - `pageStack`: pure helpers `pushCursor(stack: number[], cursor: number): number[]`, `popCursor(stack): number[]` for Newer/Older.
 - `agentOptions(): { value: string; label: string }[]` lists the nine capabilities; where two share a title the label adds the capability's short name ("Ticketing & handoff agent: escalation").
