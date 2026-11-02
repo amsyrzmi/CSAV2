@@ -43,7 +43,7 @@ export default function DetailsRow({
   return (
     <div data-testid={testId} data-open={isOpen ? "true" : "false"} className="min-w-0">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <div className="min-w-0 flex-1 basis-48 [overflow-wrap:anywhere]">{summary}</div>
+        <div className="min-w-0 flex-1 basis-56 [overflow-wrap:anywhere]">{summary}</div>
         <button
           type="button"
           aria-expanded={isOpen}
