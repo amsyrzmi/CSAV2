@@ -12,6 +12,7 @@ from csa.core import db
 from csa.core.tenancy import tx
 
 MAX_RUN_ID = 2**63 - 1
+RUN_STATUS_FILTERS = frozenset({"ok", "error"})
 
 
 class RunOut(BaseModel):
@@ -48,12 +49,28 @@ async def list_runs(
     *,
     before_id: int | None,
     agent: str | None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    status: str | None = None,
     limit: int,
 ) -> RunPage:
     async with tx(pool, str(client_id)) as conn:
         rows = await db.q.fetch_all(
             "console/list_runs.sql",
-            (client_id, before_id, before_id, agent, agent, limit + 1),
+            (
+                client_id,
+                before_id,
+                before_id,
+                agent,
+                agent,
+                created_from,
+                created_from,
+                created_to,
+                created_to,
+                status,
+                status,
+                limit + 1,
+            ),
             conn=conn,
         )
     items = [RunOut.model_validate(row) for row in rows[:limit]]

@@ -1426,8 +1426,15 @@ The separate machine principal remains read-only and tenant-allowlisted.
   `last_run_at` and `window_hours=24`. Counts describe recorded attempts, not provider
   health, revenue or complete historical workflow usage. Query failures propagate rather
   than being replaced by zero.
-- `GET /console/v1/runs?limit=50&before_id=<id>&agent=<optional exact name>`:
+- `GET /console/v1/runs?limit=50&before_id=<id>&agent=<optional exact name>&from=<ts>&to=<ts>&status=<ok|error>`:
   `{items, next_before_id}`; limit 1–200, descending unique run ID keyset pagination.
+  `from` and `to` are optional ISO 8601 timestamps with an offset (for example
+  `2026-03-10T00:00:00+08:00`) on `created_at`: `from` is inclusive, `to` is exclusive.
+  `status` is optional, `ok` or `error` (the stored run status; `partial` runs match
+  neither). The filters combine with `agent` and `before_id` and stay tenant-scoped; with
+  none of them the response and ordering are unchanged. `from` at or after `to` is
+  rejected with 422 `invalid_range`, any other `status` with 422 `invalid_status`; a
+  timestamp without an offset is rejected with the standard 422 validation error.
   Run IDs/cursors must be positive PostgreSQL bigint values (maximum `2^63 - 1`);
   out-of-range values are rejected with 422 before querying run data.
   Pass `next_before_id` unchanged for the next page; null means no older page.
