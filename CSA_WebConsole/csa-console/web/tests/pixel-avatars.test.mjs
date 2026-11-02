@@ -259,6 +259,7 @@ function ratio(a, b) {
 }
 
 // The surfaces an avatar is drawn on: the page, the card, the raised card and the blue tint.
+const THEME_NAMES = ["cobalt", "night", "bureau"];
 const SURFACES = ["--fs-bg", "--fs-surface", "--fs-surface-raised", "--fs-surface-blue"];
 
 /** [palette index at the silhouette edge] per frame: non-transparent cells 4-adjacent to a transparent one (or the border). */
@@ -283,11 +284,11 @@ function edgeColours(data) {
   return colours;
 }
 
-/** Edge cells under 3:1 against some surface of the theme, counting the halo when it is opaque. */
+/** Edge cells under 3:1 against some surface of the theme, counting the halo when asked. */
 function uncovered(theme, data, withHalo) {
   const halo = tokenOf(theme, "--fs-sprite-halo");
   const surfaces = SURFACES.map((name) => tokenOf(theme, name));
-  const drawn = withHalo && /^#[0-9a-f]{6}$/i.test(halo);
+  const drawn = withHalo;
   const colours = edgeColours(data);
   let failing = 0;
   for (const colour of colours) {
@@ -313,33 +314,33 @@ test("night: without the halo the dark tones of support, hr and assistant would 
   }
 });
 
-// Known limitation, reported to the owner (task 3 report): on the two light themes the sprite
-// stands alone (the halo is transparent) and the pale bodies (yellow, lime, mint, orange) sit
-// under 3:1 against white or cream. The tile that used to be drawn behind them was only about
-// 1.1:1 off the surface, so removing it changes nothing there. These ceilings hold the line: the
-// share of edge cells under 3:1 may not grow when sprite art or tokens change, and the numbers
-// should come down, not go up.
-const LIGHT_CEILING = {
-  support: 0.25, knowledge: 0.65, orders: 0.5, tickets: 0.85, ecommerce: 0.85, invoices: 0.65,
-  assistant: 0.3, hr: 0.3, email: 0.3, subscriptions: 0.8, bookings: 0.55,
-};
-
-test("cobalt and bureau: the share of edge cells under 3:1 stays inside the recorded ceiling", () => {
-  assert.deepEqual(Object.keys(LIGHT_CEILING).sort(), [...AGENT_IDS].sort());
+test("cobalt and bureau: with the navy halo counted, no avatar has an edge cell under 3:1", () => {
   for (const theme of ["cobalt", "bureau"]) {
     for (const id of AGENT_IDS) {
       const { failing, edges } = uncovered(theme, PIXEL_DATA[id], true);
-      assert.ok(failing / edges <= LIGHT_CEILING[id], `${theme} ${id}: ${((failing / edges) * 100).toFixed(1)}% under 3:1`);
+      assert.equal(failing, 0, `${theme} ${id}: ${failing} of ${edges} edge cells under 3:1`);
     }
   }
 });
 
-test("the halo is the former tile colour on night and transparent on cobalt and bureau", () => {
+test("cobalt and bureau: without the halo the pale bodies would be under 3:1 (the halo is doing the work)", () => {
+  for (const theme of ["cobalt", "bureau"]) {
+    for (const id of ["tickets", "ecommerce", "subscriptions", "knowledge"]) {
+      assert.ok(uncovered(theme, PIXEL_DATA[id], false).failing > 0, `${theme} ${id}`);
+    }
+  }
+});
+
+test("the halo is the former tile colour on night and the sprites' own navy on cobalt and bureau", () => {
   assert.equal(tokenOf("night", "--fs-sprite-halo").toLowerCase(), "#dbe6fb");
-  assert.equal(tokenOf("cobalt", "--fs-sprite-halo"), "transparent");
-  assert.equal(tokenOf("bureau", "--fs-sprite-halo"), "transparent");
-  // The night halo itself stands out from every night surface.
-  for (const name of SURFACES) assert.ok(ratio(tokenOf("night", "--fs-sprite-halo"), tokenOf("night", name)) >= 3, name);
+  assert.equal(tokenOf("cobalt", "--fs-sprite-halo").toLowerCase(), "#15203a");
+  assert.equal(tokenOf("bureau", "--fs-sprite-halo").toLowerCase(), "#15203a");
+  // The halo itself stands out from every surface of its theme.
+  for (const theme of THEME_NAMES) {
+    for (const name of SURFACES) {
+      assert.ok(ratio(tokenOf(theme, "--fs-sprite-halo"), tokenOf(theme, name)) >= 3, `${theme} ${name}`);
+    }
+  }
 });
 
 test("haloFilter draws four crisp one-cell drop-shadows and none in the dim state", () => {

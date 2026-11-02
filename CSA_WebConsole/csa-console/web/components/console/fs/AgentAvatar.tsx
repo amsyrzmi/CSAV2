@@ -54,8 +54,9 @@ const MOTION_CLASS: Record<AvatarMotion, string> = {
 /**
  * An agent is a pixel creature drawn straight onto the surface, with no tile, chip or box around
  * it, and never a circle, so it cannot be mistaken for a customer's round initials. Sizes are
- * whole-number multiples of the grid. On the night theme a one-cell light outline (the halo token)
- * keeps the darker body tones readable; it is transparent elsewhere and absent while dimmed. The server render, and every moment motion is not allowed (reduced motion, the pause
+ * whole-number multiples of the grid. A one-cell sticker outline (the halo token: light on night,
+ * the sprites' own navy on the light themes) keeps every body tone readable; it is absent while
+ * dimmed. The server render, and every moment motion is not allowed (reduced motion, the pause
  * preference, a hidden tab, an offscreen avatar), is idle frame 0 alone: the rest pose.
  * `working` loops the eight working frames (48 grid sizes only); `wake` plays them once and holds
  * the last until the parent sets the state back to `idle`. On 32 grid sizes both play the idle loop.

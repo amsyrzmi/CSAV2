@@ -546,7 +546,7 @@ async def test_agent_activation_under_reduced_motion_never_animates(site: Site) 
 
 
 THEMES = ("cobalt", "night", "bureau")
-NIGHT_HALO = "rgb(219, 230, 251)"
+HALO = {"night": "rgb(219, 230, 251)", "cobalt": "rgb(21, 32, 58)", "bureau": "rgb(21, 32, 58)"}
 TRANSPARENT = "rgba(0, 0, 0, 0)"
 
 
@@ -597,8 +597,9 @@ async def test_no_avatar_has_a_background_or_radius(site: Site) -> None:
     assert not stub.unexpected, stub.unexpected
 
 
-async def test_avatar_halo_present_on_night_only(site: Site) -> None:
-    """Night outlines the sprite with four one-cell light drop-shadows; the dim state has none."""
+async def test_avatar_halo_present_on_every_theme_but_not_when_dim(site: Site) -> None:
+    """Every theme outlines the sprite with four one-cell drop-shadows (light on night, navy on
+    cobalt and bureau); the dim state has none."""
     stub = Stub(default_agents())
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -619,8 +620,7 @@ async def test_avatar_halo_present_on_night_only(site: Site) -> None:
                     ["1px 0px", "-1px 0px", "0px 1px", "0px -1px"]
                 ), (theme, halo)
                 assert {blur for *_, blur in shadows} == {"0px"}, (theme, halo)
-                colour = NIGHT_HALO if theme == "night" else TRANSPARENT
-                assert {c for c, *_ in shadows} == {colour}, (theme, halo)
+                assert {c for c, *_ in shadows} == {HALO[theme]}, (theme, halo)
                 # Dimmed (not active): no halo at all on any theme.
                 assert await dim.evaluate("el => getComputedStyle(el).filter") == "none", theme
                 assert not diagnostics, diagnostics

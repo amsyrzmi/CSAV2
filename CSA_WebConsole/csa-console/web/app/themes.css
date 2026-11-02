@@ -22,8 +22,8 @@
   --fs-surface-raised: #fbfdff;
   --fs-surface-blue: #e7efff;
   --fs-tile: #f3f7ff;
-  /* Sticker outline drawn around an avatar (AgentAvatar): the sprite already stands on this theme. */
-  --fs-sprite-halo: transparent;
+  /* One-cell sticker outline around an avatar (AgentAvatar): the sprites' own navy, so pale bodies keep a 3:1 edge on light surfaces. */
+  --fs-sprite-halo: #15203a;
   --fs-text: #0b1b3f;
   --fs-text-secondary: #53648b;
   --fs-primary: #0047ab;
@@ -201,7 +201,7 @@
   --fs-surface-raised: #fffefb;
   --fs-surface-blue: #e8eefc;
   --fs-tile: #f8f3e8;
-  --fs-sprite-halo: transparent;
+  --fs-sprite-halo: #15203a;
   --fs-text: #14213d;
   --fs-text-secondary: #5c6272;
   --fs-primary: #1f4fd8;

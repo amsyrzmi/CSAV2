@@ -230,16 +230,16 @@ for (const theme of THEMES) {
   });
 }
 
-test("--fs-sprite-halo is defined in all three themes: light on night, transparent on cobalt and bureau", () => {
+test("--fs-sprite-halo is defined in all three themes: light on night, the sprites' navy on cobalt and bureau", () => {
   for (const theme of THEMES) {
     const value = tokens(theme)["--fs-sprite-halo"];
     assert.ok(value, `${theme} is missing --fs-sprite-halo`);
-    assert.match(value, theme === "night" ? /^#[0-9a-f]{6}$/i : /^transparent$/, `${theme} --fs-sprite-halo = ${value}`);
-  }
-  // Night's outline stands out from the card, the page and the blue tint it can sit on.
-  const night = tokens("night");
-  for (const surface of ["--fs-surface", "--fs-surface-raised", "--fs-surface-blue", "--fs-bg"]) {
-    assert.ok(ratio(night["--fs-sprite-halo"], night[surface]) >= 3, `night halo on ${surface}`);
+    assert.match(value, /^#[0-9a-f]{6}$/i, `${theme} --fs-sprite-halo = ${value}`);
+    // The outline stands out from the card, the page and the blue tint it can sit on.
+    const map = tokens(theme);
+    for (const surface of ["--fs-surface", "--fs-surface-raised", "--fs-surface-blue", "--fs-bg"]) {
+      assert.ok(ratio(value, map[surface]) >= 3, `${theme} halo on ${surface}`);
+    }
   }
 });
 
