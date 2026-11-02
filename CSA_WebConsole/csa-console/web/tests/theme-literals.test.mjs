@@ -15,6 +15,8 @@ import test from "node:test";
 const OWNED = [
   "components/console/ui.tsx",
   "components/console/fs/",
+  "components/console/SubscriptionsWorkspace.tsx",
+  "lib/subscriptions-view.ts",
   "components/console/inbox/",
   "components/AppShell.tsx",
   "components/console/shell/",
