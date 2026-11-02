@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import {
@@ -255,14 +255,17 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
       </div>
 
       {tab === "inbox" && <FilterBar threads={threads} filters={filters} onChange={setFilters} unreadCount={unreadCount}
-        draftCount={draftCount} shown={visible.length} />}
+        draftCount={draftCount} draftsLoaded={drafts.length} shown={visible.length} />}
 
       {tab === "inbox" && <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Panel title={`Threads${lastSync ? ` · synced ${new Date(lastSync).toLocaleString()}` : ""}`}>
           <div className="space-y-4">
             {threads.length === 0 && <p className="text-sm">No threads cached yet. Sync the inbox.</p>}
-            {threads.length > 0 && visible.length === 0 && <p data-testid="email-no-match" className="text-sm">
-              No emails match these filters. Clear the filters to see them all.</p>}
+            {threads.length > 0 && visible.length === 0 && <div data-testid="email-no-match" className="flex flex-wrap items-center gap-3 text-sm">
+              <p>No emails match these filters. Clear the filters to see them all.</p>
+              <button type="button" data-testid="email-no-match-clear" className={secondary}
+                onClick={() => setFilters(noFilters())}>Clear filters</button>
+            </div>}
             <ul data-testid="email-thread-list" className="max-h-[28rem] divide-y divide-[color:var(--fs-border)] overflow-y-auto lg:max-h-[70vh]">
               {visible.map(thread => <li key={thread.thread_id}>
                 <ThreadRow thread={thread} current={selected?.thread_id === thread.thread_id} hasDraft={draftIds.has(thread.thread_id)}
@@ -324,19 +327,26 @@ function ThreadRow({ thread, current, hasDraft, onOpen }: {
   </button>;
 }
 
+const PHONE_ITEMS = 2;
+
 function AttentionPanel({ attention, busy, onOpen }: {
   attention: Exclude<AttentionState, { state: "off" }>; busy: boolean; onOpen: (threadId: string) => void;
 }) {
   const page = attention.state === "ready" ? attention.page : null;
   const note = page ? attentionNote(page) : null;
+  // On a phone only the first items show; the rest stay in the page behind "Show N more".
+  const [expanded, setExpanded] = useState(false);
+  const listId = useId();
+  const extra = page ? Math.max(0, page.items.length - PHONE_ITEMS) : 0;
   return <div data-testid="email-attention">
     <Panel title="What needs my attention">
       {page?.as_of && <p className="-mt-3 mb-3 text-xs text-ink-500">as of {formatWhen(page.as_of)}</p>}
       {attention.state === "loading" && <p className="text-sm">Loading…</p>}
       {attention.state === "error" && <p className="text-sm">{attention.text}</p>}
       {page && page.items.length === 0 && <p className="text-sm">{attentionEmpty(page)}</p>}
-      {page && page.items.length > 0 && <ul className="divide-y">
-        {page.items.map(item => <li key={item.thread_id} className="py-2 text-sm">
+      {page && page.items.length > 0 && <ul id={listId} className="divide-y">
+        {page.items.map((item, index) => <li key={item.thread_id}
+          className={`py-2 text-sm ${index >= PHONE_ITEMS && !expanded ? "max-lg:hidden" : ""}`}>
           <button type="button" className="w-full text-left hover:bg-brand-50" disabled={busy} onClick={() => onOpen(item.thread_id)}>
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium">{item.subject || "(no subject)"}</span>
@@ -348,6 +358,11 @@ function AttentionPanel({ attention, busy, onOpen }: {
           {item.next_steps.length > 0 && <ul className="mt-1 list-disc pl-5 text-xs">{item.next_steps.map(step => <li key={step}>{step}</li>)}</ul>}
         </li>)}
       </ul>}
+      {extra > 0 && <button type="button" data-testid="email-attention-more" aria-expanded={expanded} aria-controls={listId}
+        className="mt-1 inline-flex min-h-10 items-center rounded-[var(--fs-radius-control)] px-2 text-[color:var(--fs-primary)] hover:bg-[var(--fs-surface-blue)] pointer-coarse:min-h-11 lg:hidden"
+        onClick={() => setExpanded(open => !open)}>
+        <span className="text-[length:var(--fs-text-sm)] font-medium">{expanded ? "Show fewer" : `Show ${extra} more`}</span>
+      </button>}
       {note && <p className="mt-2 text-xs text-ink-500">{note}</p>}
     </Panel>
   </div>;

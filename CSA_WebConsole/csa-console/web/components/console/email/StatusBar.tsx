@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import type { EmailContext } from "@/lib/email-api";
 import { formatWhen } from "@/lib/email-recipients";
 import StatusLabel from "../fs/StatusLabel";
@@ -36,6 +37,20 @@ export default function StatusBar({
   wide: boolean;
 }) {
   const { mailbox } = context;
+  const root = useRef<HTMLElement>(null);
+  const switchOn = useRef<HTMLButtonElement>(null);
+  const connect = useRef<HTMLButtonElement>(null);
+  // After Switch off or Disconnect the button that was pressed is gone and focus would fall to the
+  // page. Once the request has finished, move it to the control that replaced it.
+  const refocus = useRef<"switch-on" | "disconnected" | null>(null);
+  useEffect(() => {
+    if (!refocus.current || busy) return;
+    const target = refocus.current === "switch-on"
+      ? switchOn.current
+      : connect.current ?? root.current?.querySelector<HTMLElement>('[data-testid="email-mailbox-toggle"]');
+    refocus.current = null;
+    target?.focus();
+  }, [busy, context.enabled, context.mailbox?.status]);
   const connected = mailbox?.status === "connected";
   const synced = mailbox?.last_sync_at ?? lastSync;
   let tone: "success" | "neutral" | "attention" | "error" = "neutral";
@@ -45,7 +60,7 @@ export default function StatusBar({
   else if (mailbox?.status === "pending") { tone = "attention"; word = "Not finished"; }
   else if (mailbox?.status === "revoked") { tone = "error"; word = "Access removed"; }
   return (
-    <section data-testid="email-status" className={`card space-y-3 rounded-[14px] p-4 sm:p-5 ${wide ? "lg:col-span-2" : ""}`}>
+    <section ref={root} data-testid="email-status" className={`card space-y-3 rounded-[14px] p-4 sm:p-5 ${wide ? "lg:col-span-2" : ""}`}>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 space-y-1">
           <h2 className="font-(family-name:--fs-font-heading) text-base font-semibold">Mailbox</h2>
@@ -58,12 +73,12 @@ export default function StatusBar({
         </div>
         <div className="flex flex-wrap gap-2">
           {context.can_manage && !context.enabled && (
-            <button type="button" data-testid="email-switch-on" className={action} disabled={busy} onClick={() => onSetEnabled(true)}>
+            <button ref={switchOn} type="button" data-testid="email-switch-on" className={action} disabled={busy} onClick={() => onSetEnabled(true)}>
               Switch on for tenant
             </button>
           )}
           {context.can_connect && !connected && (
-            <button type="button" className={action} disabled={busy} onClick={onConnect}>Connect Gmail</button>
+            <button ref={connect} type="button" data-testid="email-connect" className={action} disabled={busy} onClick={onConnect}>Connect Gmail</button>
           )}
           {context.enabled && connected && writable && (
             <button type="button" className={action} disabled={busy} onClick={onSync}>Sync inbox</button>
@@ -100,7 +115,7 @@ export default function StatusBar({
                 label="Switch off for tenant"
                 question="Switch the email assistant off for this company? Nobody here can use it until someone switches it on again."
                 disabled={busy}
-                onConfirm={() => onSetEnabled(false)}
+                onConfirm={() => { refocus.current = "switch-on"; onSetEnabled(false); }}
               />
             )}
             {context.enabled && connected && writable && (
@@ -109,7 +124,7 @@ export default function StatusBar({
                 label="Disconnect"
                 question="Disconnect Gmail? Emails already loaded stay readable. Connect Gmail again to sync or send."
                 disabled={busy}
-                onConfirm={onDisconnect}
+                onConfirm={() => { refocus.current = "disconnected"; onDisconnect(); }}
               />
             )}
           </div>

@@ -15,7 +15,7 @@ async function load(name, replacements = {}) {
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
 const {
-  filterThreads, cacheNote, anyFilterOn, noFilters, presentValues, draftThreadIds, listDate,
+  filterThreads, cacheNote, anyFilterOn, noFilters, presentValues, draftThreadIds, listDate, draftsNote, keepActive,
 } = await import(await load("email-view.ts", {
   '"@/lib/date-range"': JSON.stringify(await load("date-range.ts")),
 }));
@@ -91,8 +91,32 @@ test("anyFilterOn, presentValues and draftThreadIds", () => {
     thread("c", { category: "billing", priority: null }), thread("d")];
   assert.deepEqual(presentValues(threads, "category"), ["complaint", "billing"], "categories keep the order of the page's labels");
   assert.deepEqual(presentValues(threads, "priority"), ["high", "low"], "priorities keep their order of importance");
-  const ids = draftThreadIds([{ thread_id: "a" }, { thread_id: null }, { thread_id: "a" }, { thread_id: "c" }]);
+  const ids = draftThreadIds([
+    { thread_id: "a", status: "draft" }, { thread_id: null, status: "draft" },
+    { thread_id: "a", status: "draft" }, { thread_id: "c", status: "sending" },
+  ]);
   assert.deepEqual([...ids].sort(), ["a", "c"]);
+});
+
+test("draftThreadIds ignores drafts that were sent or saved to Gmail", () => {
+  const ids = draftThreadIds([
+    { thread_id: "sent", status: "sent" }, { thread_id: "saved", status: "exported" },
+    { thread_id: "open", status: "draft" }, { thread_id: "stuck", status: "sending" },
+    { thread_id: "both", status: "sent" }, { thread_id: "both", status: "draft" },
+  ]);
+  assert.deepEqual([...ids].sort(), ["both", "open", "stuck"]);
+});
+
+test("draftsNote only speaks when the draft list may be cut short", () => {
+  assert.equal(draftsNote(0), "");
+  assert.equal(draftsNote(99), "");
+  assert.equal(draftsNote(100), "Drafts beyond the first 100 are not counted.");
+});
+
+test("keepActive keeps a chosen value that left the loaded data", () => {
+  assert.deepEqual(keepActive(["a", "b"], null), ["a", "b"]);
+  assert.deepEqual(keepActive(["a", "b"], "b"), ["a", "b"]);
+  assert.deepEqual(keepActive(["a", "b"], "gone"), ["a", "b", "gone"]);
 });
 
 test("listDate shows the time today, the day this year and the year before that", () => {

@@ -20,13 +20,12 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
-from csa.email.models import DraftOut, RecipientOut, draft_version
+from csa.email.models import AttentionItem, AttentionPage, DraftOut, RecipientOut, draft_version
 from playwright.async_api import Page, expect
 
 from tests import test_services_redesign_browser as services
 from tests.test_email_management_browser import (
     CARD_DRAFT,
-    MAILBOX,
     OWNER,
     REPLY_DRAFT,
     STUCK_DRAFT,
@@ -110,6 +109,7 @@ class World(MailWorld):
         self.threads = [dict(item) for item in THREADS]
         self.more_pages = 0
         self.enabled = True
+        self.attention_items = 1
         self.mailbox_status = "connected"
         self.companies: list[dict[str, Any]] = [
             {
@@ -202,6 +202,23 @@ class World(MailWorld):
                 **found,
                 "body": f"Hello, this is the full message for {found['subject']}.",
             }
+        if path == "email/attention" and method == "GET":
+            page = AttentionPage(
+                items=[
+                    AttentionItem(
+                        thread_id=f"thread-{n}",
+                        sender=f"Customer {n} <customer{n}@example.test>",
+                        subject=f"Attention item {n}",
+                        priority="high" if n == 1 else "normal",
+                        summary=f"Summary of item {n}.",
+                        next_steps=[f"Next step {n}"],
+                    )
+                    for n in range(1, self.attention_items + 1)
+                ],
+                as_of=datetime.now(UTC),
+                skipped=0,
+            )
+            return 200, page.model_dump(mode="json")
         if path == "email/drafts" and method == "GET":
             return 200, {"items": list(self.drafts.values())}
         deleted = re.fullmatch(r"email/drafts/([0-9a-f-]+)/delete", path)
@@ -329,6 +346,11 @@ async def test_chips_filter_loaded_threads_without_new_requests(site: Site) -> N
             await page.get_by_test_id("email-category").select_option("billing")
             await expect(page.get_by_test_id("email-no-match")).to_be_visible()
             assert await listed(page) == []
+            # The empty message has its own button next to the text; the one in the bar stays.
+            await page.get_by_test_id("email-no-match-clear").click()
+            assert await listed(page) == ALL
+            await expect(page.get_by_test_id("email-no-match")).to_have_count(0)
+            await page.get_by_test_id("email-priority").select_option("high")
             await page.get_by_test_id("email-clear-filters").click()
             assert await listed(page) == ALL
             await expect(page.get_by_test_id("email-date")).to_contain_text("Any date")
@@ -466,6 +488,8 @@ async def test_disconnect_and_switch_off_ask_first(site: Site) -> None:
             ).to_be_visible(timeout=WAIT)
             assert world.count("POST", "email/mailbox/disconnect") == 1
             await expect(status).to_contain_text("Access removed")
+            # The Disconnect button is gone: focus moved to the control that replaced Sync inbox.
+            await expect(page.get_by_test_id("email-connect")).to_be_focused()
 
             await off.click()
             await page.get_by_test_id("email-switch-off-confirm").dblclick()
@@ -475,6 +499,7 @@ async def test_disconnect_and_switch_off_ask_first(site: Site) -> None:
             await expect(status).to_contain_text(
                 "The email assistant is switched off for this tenant."
             )
+            await expect(page.get_by_test_id("email-switch-on")).to_be_focused()
 
             # Switching on needs no confirmation.
             await page.get_by_test_id("email-switch-on").click()
@@ -575,7 +600,110 @@ async def test_only_one_dialog_when_sending_from_a_draft(site: Site) -> None:
                 and send["key"]
             )
             await expect(page.get_by_role("dialog")).to_have_count(0)
-            assert MAILBOX
+
+    await with_browser(body)
+
+
+async def test_sent_drafts_do_not_count_as_drafts(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World()
+        sent = {**world.drafts[CARD_DRAFT], "status": "sent", "sent_at": days_ago(0)}
+        world.drafts[CARD_DRAFT] = sent
+        async with email_page(browser, site, world) as page:
+            await expect(page.get_by_test_id("email-chips-hasDraft")).to_contain_text("1")
+            await expect(page.get_by_test_id("email-thread-draft")).to_have_count(1)
+            await page.get_by_test_id("email-chips-hasDraft").click()
+            assert await listed(page) == ["thread-1"]
+            # Its record stays on the thread: only the tag and the chip stop counting it.
+            await page.get_by_test_id("email-chips-hasDraft").click()
+            await page.get_by_test_id("email-thread").nth(2).click()
+            await expect(page.get_by_test_id("email-thread-drafts")).to_contain_text("Sent")
+
+    await with_browser(body)
+
+
+async def test_note_says_when_drafts_may_be_cut_short(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        clause = "Drafts beyond the first 100 are not counted."
+        world = World()
+        async with email_page(browser, site, world) as page:
+            await expect(page.get_by_test_id("email-drafts-note")).to_have_count(0)
+            await expect(page.get_by_test_id("email-cache-note")).to_have_text(NOTE)
+
+        full = World()
+        for n in range(97):  # three drafts exist already: the server stops at 100
+            draft_id = UUID(int=0x7000 + n)
+            full.drafts[draft_id] = full.draft(
+                draft_id, to=["old@kedai.test"], subject=f"Old {n}", body="Done.", status="sent"
+            )
+        assert len(full.drafts) == 100
+        async with email_page(browser, site, full) as page:
+            note = page.get_by_test_id("email-cache-note")
+            await expect(note).to_have_text(f"{NOTE} {clause}")
+            await page.get_by_test_id("email-chips-unread").click()
+            await expect(note).to_contain_text(NOTE)
+            await expect(note).to_contain_text(clause)
+            await expect(note).to_have_attribute("data-filtered", "true")
+
+    await with_browser(body)
+
+
+async def test_chosen_category_stays_in_the_list_after_a_sync_removes_it(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World()
+        async with email_page(browser, site, world) as page:
+            category = page.get_by_test_id("email-category")
+            await category.select_option("billing")
+            assert await listed(page) == ["thread-2"]
+            # A sync brings a list without the only billing email.
+            world.threads = [t for t in world.threads if t["thread_id"] != "thread-2"]
+            await page.get_by_role("button", name="Sync inbox").click()
+            await expect(page.get_by_text("Synced 1 threads.")).to_be_visible(timeout=WAIT)
+            await expect(category).to_have_value("billing")
+            options = await category.locator("option").all_inner_texts()
+            assert "Billing" in options and options[0] == "All categories"
+            await expect(page.get_by_test_id("email-no-match")).to_be_visible()
+            note = page.get_by_test_id("email-cache-note")
+            await expect(note).to_have_attribute("data-filtered", "true")
+            await page.get_by_test_id("email-no-match-clear").click()
+            assert await listed(page) == ["thread-1", "thread-3", "thread-4", "thread-5"]
+            await expect(category).to_have_value("")
+            assert "Billing" not in await category.locator("option").all_inner_texts()
+
+    await with_browser(body)
+
+
+async def test_phone_attention_shows_two_items_and_folds_the_rest(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World()
+        world.attention_items = 4
+        async with email_page(browser, site, world, width=390, height=844) as page:
+            panel = page.get_by_test_id("email-attention")
+            items = panel.locator("ul.divide-y > li")
+            more = page.get_by_test_id("email-attention-more")
+            await expect(items).to_have_count(4)  # all four stay in the page
+            await expect(items.locator("visible=true")).to_have_count(2)
+            await expect(panel).to_contain_text("Attention item 4")
+            await expect(more).to_have_text("Show 2 more")
+            await expect(more).to_have_attribute("aria-expanded", "false")
+            await more.click()
+            await expect(items.locator("visible=true")).to_have_count(4)
+            await expect(more).to_have_text("Show fewer")
+            await expect(more).to_have_attribute("aria-expanded", "true")
+            await more.click()
+            await expect(items.locator("visible=true")).to_have_count(2)
+            assert world.count("GET", "email/attention") == 1  # folding asks the server for nothing
+
+            # From a laptop width up nothing is folded and the button is not shown.
+            await page.set_viewport_size({"width": 1280, "height": 900})
+            await expect(items.locator("visible=true")).to_have_count(4)
+            await expect(more).to_be_hidden()
+            assert world.count("GET", "email/attention") == 1
+
+        short = World()
+        short.attention_items = 2
+        async with email_page(browser, site, short, width=390, height=844) as page:
+            await expect(page.get_by_test_id("email-attention-more")).to_have_count(0)
 
     await with_browser(body)
 

@@ -87,11 +87,27 @@ export function presentValues(threads: FilterableThread[], key: "category" | "pr
   return [...known, ...unknown];
 }
 
-/** The threads that have at least one draft, from the loaded drafts. */
-export function draftThreadIds(drafts: { thread_id: string | null }[]): Set<string> {
+/** Draft statuses that are still to be sent: a sent or saved-to-Gmail draft is done with. */
+const OPEN_DRAFT = new Set(["draft", "sending"]);
+
+/** The threads that have at least one draft still to be sent, from the loaded drafts. */
+export function draftThreadIds(drafts: { thread_id: string | null; status: string }[]): Set<string> {
   const ids = new Set<string>();
-  for (const draft of drafts) if (draft.thread_id) ids.add(draft.thread_id);
+  for (const draft of drafts) if (draft.thread_id && OPEN_DRAFT.has(draft.status)) ids.add(draft.thread_id);
   return ids;
+}
+
+/** The server returns at most this many drafts. */
+export const DRAFT_LIMIT = 100;
+
+/** The clause to add to the note when the loaded drafts may be a part of all of them, else "". */
+export function draftsNote(loadedDrafts: number): string {
+  return loadedDrafts >= DRAFT_LIMIT ? "Drafts beyond the first 100 are not counted." : "";
+}
+
+/** The options for a list, with the active value kept in it when the loaded data no longer has it. */
+export function keepActive(values: string[], active: string | null): string[] {
+  return active === null || values.includes(active) ? values : [...values, active];
 }
 
 /**

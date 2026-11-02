@@ -1,6 +1,6 @@
 "use client";
 
-import { anyFilterOn, cacheNote, categoryLabel, noFilters, presentValues, type EmailFilters, type FilterableThread } from "@/lib/email-view";
+import { anyFilterOn, cacheNote, categoryLabel, draftsNote, keepActive, noFilters, presentValues, type EmailFilters, type FilterableThread } from "@/lib/email-view";
 import { DateRangeFilter, StatusChips } from "../kit";
 import { field, secondary } from "../ui";
 
@@ -18,6 +18,7 @@ export default function FilterBar({
   onChange,
   unreadCount,
   draftCount,
+  draftsLoaded,
   shown,
 }: {
   threads: FilterableThread[];
@@ -25,12 +26,15 @@ export default function FilterBar({
   onChange: (next: EmailFilters) => void;
   unreadCount: number;
   draftCount: number;
+  /** How many drafts the server returned (it stops at 100). */
+  draftsLoaded: number;
   shown: number;
 }) {
   const on = anyFilterOn(filters);
   const pressed: Chip[] = [...(filters.unread ? ["unread" as const] : []), ...(filters.hasDraft ? ["hasDraft" as const] : [])];
-  const categories = presentValues(threads, "category");
-  const priorities = presentValues(threads, "priority");
+  // A chosen value stays in its list even when a later sync removes its last email.
+  const categories = keepActive(presentValues(threads, "category"), filters.category);
+  const priorities = keepActive(presentValues(threads, "priority"), filters.priority);
   return (
     <div data-testid="email-filters" className="card space-y-3 rounded-[14px] p-4">
       <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
@@ -96,6 +100,7 @@ export default function FilterBar({
       >
         {on && <span data-testid="email-match-count" className="mr-2 font-medium">{shown} of {threads.length} emails match.</span>}
         {cacheNote(threads.length)}
+        {draftsNote(draftsLoaded) && <span data-testid="email-drafts-note"> {draftsNote(draftsLoaded)}</span>}
       </p>
     </div>
   );
