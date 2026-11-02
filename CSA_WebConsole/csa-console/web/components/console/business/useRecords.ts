@@ -16,7 +16,7 @@ export type Records<T> = {
  * One keyset-paged read. "Older" adds the next page to the rows already shown (a row never
  * appears twice); "Refresh newest" starts again from the first page and swaps the rows when
  * the answer arrives, so the screen never flashes empty. A failed page keeps what is shown.
- * Callers remount (with a `key`) when the path changes, which starts a clean read.
+ * A changed path starts a clean read; a slower answer for the old path is aborted and ignored.
  */
 export function useRecords<T extends { id: string }>(path: string) {
   const [cursor, setCursor] = useState<string | null>(null);
@@ -25,6 +25,16 @@ export function useRecords<T extends { id: string }>(path: string) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
+  // A new path is a new read: start clean in the same render (nothing of the old path shows).
+  const [seenPath, setSeenPath] = useState(path);
+  if (seenPath !== path) {
+    setSeenPath(path);
+    setCursor(null);
+    setItems(null);
+    setNext(null);
+    setError("");
+    setLoading(true);
+  }
   useEffect(() => {
     const controller = new AbortController();
     api<Records<T>>(withCursor(path, cursor), {
@@ -42,6 +52,8 @@ export function useRecords<T extends { id: string }>(path: string) {
   }, [path, cursor, revision]);
   return {
     items, next, error, loading,
+    /** True while an "Older" page is loading (not the first page or a refresh). */
+    loadingMore: loading && cursor !== null,
     older: () => {
       if (!next) return;
       setLoading(true);

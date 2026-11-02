@@ -11,8 +11,10 @@ import {
   type ConnectionStatus,
   type DemoListing,
 } from "@/lib/business";
-import { effectiveCountsRange, orderChipOptions, paymentOptions } from "@/lib/business-view";
-import { toInstants, type DayRange } from "@/lib/date-range";
+import {
+  channelLabel, chipGroupLabel, effectiveCountsRange, orderChipOptions, paymentOptions,
+} from "@/lib/business-view";
+import { todayLocal, toInstants, type DayRange } from "@/lib/date-range";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
 import { Fold, OrderCard, ProductCard, StoreCard, type Order, type Product } from "./business/cards";
@@ -135,6 +137,15 @@ function BusinessRecords({ query }: { query: string }) {
   const [today, setToday] = useState(() => new Date());
   const [refresh, setRefresh] = useState(0);
   const products = useRecords<Product>(`/console/v1/business/products?${query}`);
+  // The default window follows the calendar: when the tab comes back on a new day, move it on.
+  useEffect(() => {
+    const onShow = () => {
+      if (document.visibilityState !== "visible") return;
+      setToday((current) => (todayLocal(current) === todayLocal() ? current : new Date()));
+    };
+    document.addEventListener("visibilitychange", onShow);
+    return () => document.removeEventListener("visibilitychange", onShow);
+  }, []);
   const created = toInstants(range);
   const scope = effectiveCountsRange(range, allTime, today);
   const counted = toInstants(scope.range);
@@ -142,6 +153,8 @@ function BusinessRecords({ query }: { query: string }) {
   const listPath = orderListPath(query, {
     ...narrowed, ...created, status: status === "all" ? "" : status,
   });
+  const orders = useRecords<Order>(listPath);
+  const refreshOrders = () => { orders.newest(); setToday(new Date()); setRefresh((value) => value + 1); };
   const { counts, failed } = useOrderCounts(orderCountsPath(query, { ...narrowed, ...counted }), refresh);
   return <div className="mt-5 space-y-5">
     <section className="card rounded-[14px] p-3 sm:p-6">
@@ -161,26 +174,41 @@ function BusinessRecords({ query }: { query: string }) {
           </select>
         </div>
       </div>
-      <StatusChips mode="single" testId="business-status" ariaLabel="Order status"
-        options={orderChipOptions(counts)} value={status}
-        onChange={(next) => setStatus(next as string)} />
+      {/* One scrolling row on phones (a part of the next chip shows as the hint), wrapping from 640 px. */}
+      <div className="min-w-0 max-sm:[&>[role=group]]:flex-nowrap max-sm:[&>[role=group]]:overflow-x-auto max-sm:[&>[role=group]]:overscroll-x-contain max-sm:[&>[role=group]]:py-1 max-sm:[&>[role=group]]:[scroll-snap-type:x_mandatory] max-sm:[&>[role=group]>button]:shrink-0 max-sm:[&>[role=group]>button]:[scroll-snap-align:start]">
+        <StatusChips mode="single" testId="business-status" ariaLabel={chipGroupLabel(scope.kind)}
+          options={orderChipOptions(counts)} value={status}
+          onChange={(next) => setStatus(next as string)} />
+      </div>
       <div data-testid="business-counts-note"
         className="my-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[color:var(--fs-text-secondary)]">
         {failed
           ? <span data-testid="business-counts-failed" role="status">The order numbers could not be
               loaded just now. The list below still works.</span>
-          : <span>{scope.kind === "chosen" ? "The numbers cover the dates you chose."
-              : scope.kind === "all" ? "The numbers cover all time. This can be slow for a busy shop."
-              : "The numbers cover the last 30 days. The list shows every date until you choose dates."}</span>}
+          : <>
+              <span>{scope.kind === "chosen" ? "The numbers cover the dates you chose."
+                : scope.kind === "all" ? "The numbers cover all time. This can be slow for a busy shop."
+                : "The numbers cover the last 30 days."}</span>
+              {scope.kind !== "chosen" && <span>The list shows every date until you choose dates.</span>}
+            </>}
         {scope.kind === "default" && <button type="button" className={secondary}
           data-testid="business-counts-all-time" onClick={() => setAllTime(true)}>Count all time</button>}
         {scope.kind === "all" && <button type="button" className={secondary}
           data-testid="business-counts-default" onClick={() => setAllTime(false)}>Use the last 30 days</button>}
+        <button type="button" className={secondary} disabled={orders.loading}
+          data-testid="business-orders-refresh-top" onClick={refreshOrders}>Refresh newest orders</button>
       </div>
-      <OrderRecords key={listPath} path={listPath}
-        onRefresh={() => { setToday(new Date()); setRefresh((value) => value + 1); }} />
+      {(applied.channel || applied.shopId) && <div data-testid="business-source-filter"
+        className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        <span>Showing orders from {channelLabel(applied.channel)} only{applied.shopId ? `, store ${applied.shopId}` : ""}</span>
+        <button type="button" className={secondary} data-testid="business-source-clear" onClick={() => {
+          setChannel(""); setShopId(""); setApplied({ channel: "", shopId: "" });
+        }}>Show all sources</button>
+      </div>}
+      <OrderRecords orders={orders} onRefresh={refreshOrders} />
       <div className="mt-4">
-        <Fold testId="business-more-filters" title="More filters">
+        <Fold testId="business-more-filters" title="More filters"
+          hint={applied.channel ? `Source: ${channelLabel(applied.channel)}` : undefined}>
           <form className="space-y-3" onSubmit={(event) => {
             event.preventDefault();
             setApplied({ channel, shopId });
@@ -290,8 +318,9 @@ function StorePage({ path }: { path: string }) {
   </>;
 }
 
-function OrderRecords({ path, onRefresh }: { path: string; onRefresh: () => void }) {
-  const orders = useRecords<Order>(path);
+type OrdersState = ReturnType<typeof useRecords<Order>>;
+
+function OrderRecords({ orders, onRefresh }: { orders: OrdersState; onRefresh: () => void }) {
   return <>
     {orders.error && <Notice error>{orders.error}</Notice>}
     {orders.loading && <p>Loading local orders...</p>}
@@ -300,9 +329,10 @@ function OrderRecords({ path, onRefresh }: { path: string; onRefresh: () => void
       {orders.items?.map((order) => <OrderCard key={order.id} order={order} />)}
     </ul>
     <div className="mt-4 flex flex-wrap gap-3">
-      <button className={secondary} disabled={orders.loading}
-        onClick={() => { orders.newest(); onRefresh(); }}>Refresh newest orders</button>
-      {orders.next && <button className={secondary} disabled={orders.loading} onClick={orders.older}>Older orders</button>}
+      <button className={secondary} disabled={orders.loading} data-testid="business-orders-refresh"
+        onClick={onRefresh}>Refresh newest orders</button>
+      {orders.next && <button className={secondary} disabled={orders.loading} onClick={orders.older}>
+        {orders.loadingMore ? "Loading..." : "Older orders"}</button>}
     </div>
   </>;
 }

@@ -131,6 +131,9 @@ class Stub:
     )
     counts_fail: bool = False
     counts_gate: asyncio.Event = field(default_factory=open_event)
+    list_gate: asyncio.Event = field(default_factory=open_event)
+    older_gate: asyncio.Event = field(default_factory=open_event)
+    hold_unfiltered: bool = False
     order_queries: list[dict[str, list[str]]] = field(default_factory=list)
     counts_queries: list[dict[str, list[str]]] = field(default_factory=list)
     other_calls: list[str] = field(default_factory=list)
@@ -168,6 +171,10 @@ class Stub:
                 data = self.counts(query)
         elif path == "business/orders" and request.method == "GET":
             self.order_queries.append(query)
+            if self.hold_unfiltered and not query.get("status") and not query.get("before"):
+                await self.list_gate.wait()
+            if query.get("before"):
+                await self.older_gate.wait()
             rows = self.filtered(query, with_status=True)
             if query.get("before"):
                 ids = [row["id"] for row in rows]
@@ -372,7 +379,13 @@ async def test_date_range_status_and_payment_filters_send_the_right_query(site: 
                 stub.counts_queries
             )
             await expect(page.get_by_test_id("business-counts-note")).to_contain_text(
-                "last 30 days"
+                "The numbers cover the last 30 days."
+            )
+            await expect(page.get_by_test_id("business-counts-note")).to_contain_text(
+                "The list shows every date until you choose dates."
+            )
+            await expect(page.get_by_test_id("business-status")).to_have_attribute(
+                "aria-label", "Orders, last 30 days"
             )
             await expect(page.get_by_test_id("business-status-all")).to_have_text(
                 f"All orders ({ORDERS_TOTAL})"
@@ -400,6 +413,9 @@ async def test_date_range_status_and_payment_filters_send_the_right_query(site: 
             await page.get_by_test_id("business-date-preset-last7").click()
             await page.get_by_test_id("business-date-done").click()
             await until(lambda: last_order().get("from") == [week_from])
+            await expect(page.get_by_test_id("business-status")).to_have_attribute(
+                "aria-label", "Orders, dates you chose"
+            )
             assert last_order() == {
                 "status": ["shipped"],
                 "payment_status": ["refunded"],
@@ -440,6 +456,9 @@ async def test_date_range_status_and_payment_filters_send_the_right_query(site: 
             await page.get_by_test_id("business-counts-all-time").click()
             await until(lambda: last_counts() == {})
             await expect(page.get_by_test_id("business-counts-note")).to_contain_text("all time")
+            await expect(page.get_by_test_id("business-status")).to_have_attribute(
+                "aria-label", "Orders, all dates"
+            )
             # Source filters still apply with the existing button and ride on both reads.
             await open_fold(page, "more-filters")
             await page.get_by_label("Source/platform (local orders)").select_option("shopee")
@@ -494,7 +513,7 @@ async def test_status_counts_show_and_hide_when_the_counts_read_fails(site: Site
 
             # The next counts read fails: the numbers go, no zero takes their place, the list stays.
             stub.counts_fail = True
-            await page.get_by_role("button", name="Refresh newest orders").click()
+            await page.get_by_test_id("business-orders-refresh").click()
             await expect(page.get_by_test_id("business-counts-failed")).to_be_visible()
             for status in ("all", "draft", "pending_confirmation", "shipped"):
                 text = await page.get_by_test_id(f"business-status-{status}").inner_text()
@@ -507,7 +526,7 @@ async def test_status_counts_show_and_hide_when_the_counts_read_fails(site: Site
 
             # And back again when the read recovers.
             stub.counts_fail = False
-            await page.get_by_role("button", name="Refresh newest orders").click()
+            await page.get_by_test_id("business-orders-refresh").click()
             await expect(page.get_by_test_id("business-status-shipped")).to_have_text("Shipped (3)")
             await expect(page.get_by_test_id("business-counts-failed")).to_have_count(0)
 
@@ -521,7 +540,14 @@ async def test_older_accumulates_rows(site: Site) -> None:
             await expect(cards(page)).to_have_count(PAGE_SIZE)
             await order_card(page, 1).get_by_role("button", name="Show details").click()
             older = page.get_by_role("button", name="Older orders")
+            stub.older_gate.clear()
             await older.click()
+            # While the older page loads the button says so, the first page stays on screen.
+            loading = page.get_by_role("button", name="Loading...", exact=True)
+            await expect(loading).to_be_disabled()
+            await expect(page.get_by_text("Loading local orders...")).to_be_visible()
+            await expect(cards(page)).to_have_count(PAGE_SIZE)
+            stub.older_gate.set()
             await expect(cards(page)).to_have_count(ORDERS_TOTAL)
             assert stub.order_queries[-1] == {"before": [oid(PAGE_SIZE)]}
             # The first page is still there, and its opened row stayed open.
@@ -539,7 +565,7 @@ async def test_older_accumulates_rows(site: Site) -> None:
             )
             assert len(ids) == len(set(ids)) == ORDERS_TOTAL
             # Refresh newest starts again from the first page.
-            await page.get_by_role("button", name="Refresh newest orders").click()
+            await page.get_by_test_id("business-orders-refresh").click()
             await expect(cards(page)).to_have_count(PAGE_SIZE)
             assert stub.order_queries[-1] == {}
             await expect(page.get_by_role("button", name="Older orders")).to_be_visible()
@@ -585,7 +611,12 @@ async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -
                 outside = await page.evaluate(
                     """() => [...document.querySelectorAll(
                         '[data-testid^="business-"]')].filter(
-                        e => e.getBoundingClientRect().right > window.innerWidth + 0.5
+                        e => {
+                            const clipped = e.parentElement?.getAttribute('role') === 'group'
+                                && getComputedStyle(e.parentElement).overflowX === 'auto';
+                            const right = e.getBoundingClientRect().right;
+                            return !clipped && right > window.innerWidth + 0.5;
+                        }
                     ).map(e => e.dataset.testid)"""
                 )
                 assert not outside, (theme, width, outside)
@@ -658,13 +689,122 @@ async def test_first_screen_at_390_shows_filters_and_the_first_orders(site: Site
             ).to_be_in_viewport()
             for testid in ("business-date", "business-payment", "business-status-all"):
                 await expect(page.get_by_test_id(testid)).to_be_in_viewport()
-            # The first order's summary is on the first screen, with no technical paragraph above.
-            await expect(page.get_by_test_id(f"business-order-{oid(1)}-title")).to_be_in_viewport()
-            top = await page.get_by_test_id("business-orders-list").evaluate(
-                "el => el.getBoundingClientRect().top"
+            # The whole first order card is on the first screen, with no technical paragraph above.
+            bottom = await order_card(page, 1).evaluate(
+                "el => el.closest('li').getBoundingClientRect().bottom"
             )
-            assert top < 844, top
+            assert bottom <= 844, bottom
             for text in ("Local records only", "Connect unavailable", "Exact store ID"):
                 await expect(page.get_by_text(text, exact=False).first).to_be_hidden()
+            # Phones get one scrolling row of chips with the next chip partly showing.
+            measure = """el => {
+                const box = el.getBoundingClientRect();
+                const chips = [...el.children].map(b => b.getBoundingClientRect());
+                return {
+                    overflowX: getComputedStyle(el).overflowX,
+                    scrolls: el.scrollWidth > el.clientWidth,
+                    tops: [...new Set(chips.map(c => Math.round(c.top)))].length,
+                    cut: chips.some(c => c.left < box.right - 8 && c.right > box.right + 8),
+                    page: document.documentElement.scrollWidth <= window.innerWidth,
+                };
+            }"""
+            row = await page.get_by_test_id("business-status").evaluate(measure)
+            assert row == {
+                "overflowX": "auto",
+                "scrolls": True,
+                "tops": 1,
+                "cut": True,
+                "page": True,
+            }, row
+            await page.get_by_test_id("business-status-shipped").focus()
+            await page.get_by_test_id("business-status-refunded").focus()
+            assert await page.get_by_test_id("business-status-refunded").evaluate(
+                "el => el.getBoundingClientRect().right <= window.innerWidth"
+            )
+            # From 640 px up the chips wrap and nothing scrolls.
+            await page.set_viewport_size({"width": 700, "height": 900})
+            row = await page.get_by_test_id("business-status").evaluate(measure)
+            assert row["overflowX"] == "visible" and not row["scrolls"] and row["page"], row
+
+    await with_browser(body)
+
+
+async def test_active_source_filter_shows_outside_the_closed_fold(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            default_counts = {
+                "from": [instant(TODAY - timedelta(days=29))],
+                "to": [instant(TODAY + timedelta(days=1))],
+            }
+            await expect(page.get_by_test_id("business-source-filter")).to_have_count(0)
+            await open_fold(page, "more-filters")
+            await page.get_by_label("Source/platform (local orders)").select_option("shopee")
+            await page.get_by_role("button", name="Apply order filters").click()
+            await until(lambda: stub.order_queries[-1] == {"channel": ["shopee"]})
+            # Close the fold again: the narrowing is still said in words, outside it.
+            await page.get_by_test_id("business-more-filters-toggle").click()
+            await expect(page.get_by_test_id("business-more-filters-details")).to_be_hidden()
+            line = page.get_by_test_id("business-source-filter")
+            await expect(line).to_be_visible()
+            await expect(line).to_contain_text("Showing orders from Shopee only")
+            await expect(page.get_by_test_id("business-more-filters-hint")).to_have_text(
+                "· Source: Shopee"
+            )
+            await expect(page.get_by_test_id("business-more-filters-toggle")).to_be_visible()
+            # "Show all sources" clears it for the list and the counts, fold still closed.
+            await page.get_by_test_id("business-source-clear").click()
+            await until(lambda: stub.order_queries[-1] == {})
+            await until(lambda: stub.counts_queries[-1] == default_counts)
+            await expect(line).to_have_count(0)
+            await expect(page.get_by_test_id("business-more-filters-hint")).to_have_count(0)
+            await expect(page.get_by_test_id("business-more-filters-details")).to_be_hidden()
+            await open_fold(page, "more-filters")
+            await expect(page.get_by_test_id("business-more-filters-details")).to_contain_text(
+                "Applied source: All local sources"
+            )
+            await expect(page.get_by_label("Source/platform (local orders)")).to_have_value("")
+
+    await with_browser(body)
+
+
+async def test_a_slow_earlier_list_response_never_replaces_the_newer_list(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        stub.hold_unfiltered = True
+        stub.list_gate.clear()
+        async with business_page(browser, site, stub, wait_for_rows=False) as page:
+            # The unfiltered list is still on its way when a newer filter is chosen.
+            await expect(page.get_by_text("Loading local orders...")).to_be_visible()
+            await page.get_by_test_id("business-status-shipped").click()
+            await wait_for_orders(page, 3)
+            stub.list_gate.set()
+            await asyncio.sleep(1.5)
+            await wait_for_orders(page, 3)
+            await expect(page.get_by_test_id("business-status-shipped")).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            ids = await cards(page).evaluate_all("els => els.length")
+            assert ids == 3
+
+    await with_browser(body)
+
+
+async def test_the_default_window_moves_on_when_the_tab_returns_on_a_new_day(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            first = instant(TODAY - timedelta(days=29))
+            assert stub.counts_queries[-1]["from"] == [first]
+            tomorrow = TODAY + timedelta(days=1)
+            await page.context.clock.set_fixed_time(NOW + timedelta(days=1))
+            await page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
+            await until(
+                lambda: (
+                    stub.counts_queries[-1].get("from") == [instant(tomorrow - timedelta(days=29))]
+                ),
+                "the counts window did not move to the new day",
+            )
+            assert stub.counts_queries[-1]["to"] == [instant(tomorrow + timedelta(days=1))]
 
     await with_browser(body)

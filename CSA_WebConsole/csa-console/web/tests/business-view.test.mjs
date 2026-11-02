@@ -18,7 +18,7 @@ const {
   ORDER_STATUSES, PAYMENT_STATUSES, orderStatusChips, orderStatusLabel, orderStatusTone,
   paymentLabel, paymentTone, paymentOptions, formatRm, orderSummary, channelLabel, whenText,
   parseOrderCounts, orderChipOptions, effectiveCountsRange, productSummary, storeSummary,
-  storeStatusTone, mergeRows,
+  storeStatusTone, mergeRows, chipGroupLabel,
 } = await import(await load("business-view.ts", {
   '"@/lib/date-range"': JSON.stringify(await load("date-range.ts")),
 }));
@@ -89,7 +89,7 @@ test("orderSummary", () => {
   });
   // No platform reference: the first block of the id, never the whole id.
   const local = orderSummary({ ...order, external_order_id: null, channel: "web", currency: "USD" });
-  assert.equal(local.title, "Order 9F1C2D3E");
+  assert.equal(local.title, "Order 9f1c2d3e", "matches the id in the details");
   assert.equal(local.subtitle, "Web · USD 1,234.50 · 2 Nov 2026, 09:15");
   assert.equal(orderSummary({ ...order, created_at: "nope" }).subtitle, "TikTok Shop · RM 1,234.50");
   assert.equal(channelLabel("manual"), "Manual");
@@ -207,4 +207,10 @@ test("older rows join the rows on screen and a row never shows twice", () => {
   assert.deepEqual(mergeRows([], []), []);
   assert.equal(storeStatusTone("authorization_recorded"), "info");
   assert.equal(storeStatusTone("whatever"), "neutral");
+});
+
+test("the chip group names the window its numbers cover", () => {
+  assert.equal(chipGroupLabel("default"), "Orders, last 30 days");
+  assert.equal(chipGroupLabel("all"), "Orders, all dates");
+  assert.equal(chipGroupLabel("chosen"), "Orders, dates you chose");
 });

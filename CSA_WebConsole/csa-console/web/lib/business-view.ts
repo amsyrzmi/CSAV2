@@ -120,7 +120,7 @@ type OrderLike = {
  * one, else the first block of the local id; the whole id stays in the opened details.
  */
 export function orderSummary(order: OrderLike): { title: string; subtitle: string } {
-  const reference = order.external_order_id?.trim() || order.id.slice(0, 8).toUpperCase();
+  const reference = order.external_order_id?.trim() || order.id.slice(0, 8);
   const parts = [
     channelLabel(order.channel),
     formatRm(order.total, order.currency),
@@ -210,6 +210,11 @@ export function effectiveCountsRange(
   if (allTime) return { kind: "all", range: { from: null, to: null } };
   const last30 = presets(todayLocal(now)).find((preset) => preset.key === "last30");
   return { kind: "default", range: last30 ? last30.range : { from: null, to: null } };
+}
+
+/** The chip group's spoken name says which orders the numbers are about. */
+export function chipGroupLabel(kind: CountsScope["kind"]): string {
+  return kind === "default" ? "Orders, last 30 days" : kind === "all" ? "Orders, all dates" : "Orders, dates you chose";
 }
 
 /** Rows loaded by "Older" join the rows already shown; a row never appears twice. */

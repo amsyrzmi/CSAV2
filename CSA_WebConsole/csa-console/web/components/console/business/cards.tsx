@@ -33,13 +33,16 @@ const card =
   "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 
 /** A closed-by-default fold for long technical text: a plain title and the usual arrow. */
-export function Fold({ testId, title, children }: { testId: string; title: string; children: ReactNode }) {
+export function Fold({ testId, title, hint, children }: {
+  testId: string; title: string; hint?: string; children: ReactNode;
+}) {
   return (
     <div className={card}>
       <DetailsRow
         testId={testId}
         toggleLabel={title}
-        summary={<p className="font-medium">{title}</p>}
+        summary={<p className="font-medium">{title}{hint && <span
+          data-testid={`${testId}-hint`} className="ml-2 font-normal text-[color:var(--fs-text-secondary)]">· {hint}</span>}</p>}
       >
         {children}
       </DetailsRow>
