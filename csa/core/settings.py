@@ -277,6 +277,12 @@ class Settings(BaseSettings):
             raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
         return self
 
+    @field_validator("KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT", mode="before")
+    @classmethod
+    def _blank_upload_root_is_unset(cls, value: object) -> object:
+        # .env.example leaves these empty; Path("") would be the current folder.
+        return None if isinstance(value, str) and not value.strip() else value
+
     @model_validator(mode="after")
     def _validate_upload_roots(self) -> Settings:
         # KB and HR both store <root>/<client_id>/<uuid>.<ext>, and each cleanup deletes the

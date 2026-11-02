@@ -145,3 +145,11 @@ def test_hr_upload_root_apart_from_kb_upload_root_is_accepted() -> None:
     s = _settings(KB_UPLOAD_ROOT="/srv/kb-uploads", HR_UPLOAD_ROOT="/srv/hr-uploads")
     assert str(s.HR_UPLOAD_ROOT) == "/srv/hr-uploads"
     assert _settings(HR_UPLOAD_ROOT="/srv/hr-uploads").KB_UPLOAD_ROOT is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_upload_roots_are_unset(blank: str) -> None:
+    # .env.example leaves both empty. A blank path would otherwise be the current folder for both.
+    s = _settings(KB_UPLOAD_ROOT=blank, HR_UPLOAD_ROOT=blank)
+    assert s.KB_UPLOAD_ROOT is None
+    assert s.HR_UPLOAD_ROOT is None
