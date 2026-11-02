@@ -690,7 +690,7 @@ async def test_marking_the_new_owner_as_leaving_waits_for_the_move_and_is_refuse
         late = asyncio.create_task(op(world, "operator", body))
         await wait_for_a_blocked_lock(world)
     response = await late
-    assert response.status_code != 200, response.text
+    assert (response.status_code, response.json()["detail"]) == (409, "last_owner_leaving")
     rows = await world.q(
         "SELECT last_day FROM hr_employees WHERE client_id=%s AND id=%s",
         (world.tenant, employee),
