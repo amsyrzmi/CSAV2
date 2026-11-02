@@ -35,6 +35,8 @@ const smallButton =
 const sizeSm = "text-[length:var(--fs-text-sm)] font-medium";
 /** Space kept between the popover and the viewport edge, and between it and the button. */
 const EDGE = 8;
+/** Room under the button that is enough to open the calendar below it and scroll inside. */
+const ROOM_BELOW = 320;
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
@@ -129,14 +131,15 @@ export default function DateRangeFilter({
     let left = align === "end" ? rect.right - width : rect.left;
     if (align === undefined && rect.left + width > window.innerWidth - EDGE) left = rect.right - width;
     left = Math.max(EDGE, Math.min(left, window.innerWidth - width - EDGE));
-    // Below the button when it fits, else above when it fits; when neither side holds the whole
-    // calendar, the roomier side, with the popover scrolling inside it (`--fs-date-max`).
+    // Below the button (the way a menu opens, and it leaves the page title in view) when the
+    // whole calendar fits or at least ROOM_BELOW of it shows, scrolling inside the rest
+    // (`--fs-date-max`); else above when it fits whole; else the roomier side.
     const natural = Math.max(height, popover.scrollHeight);
     const below = window.innerHeight - EDGE - (rect.bottom + EDGE);
     const above = rect.top - 2 * EDGE;
     let top = rect.bottom + EDGE;
     let room = below;
-    if (natural > below && (natural <= above || above > below)) {
+    if (natural > below && below < ROOM_BELOW && (natural <= above || above > below)) {
       room = above;
       top = rect.top - EDGE - Math.min(natural, above);
     }
@@ -403,7 +406,7 @@ export default function DateRangeFilter({
                             data-testid={id(`day-${day}`)}
                             aria-label={isToday ? `${dayLabel(day)}, today` : dayLabel(day)}
                             onClick={() => pick(day)}
-                            className={`flex h-10 w-full items-center justify-center rounded-[var(--fs-radius-control)] border-2 pointer-coarse:h-11 ${tone}`}
+                            className={`flex h-10 w-full items-center justify-center rounded-[var(--fs-radius-control)] border-2 pointer-coarse:h-11 sm:pointer-fine:h-9 ${tone}`}
                           >
                             <span
                               className={`text-[length:var(--fs-text-md)] tabular-nums ${end ? "font-bold" : "font-medium"} ${isToday ? "underline decoration-2 underline-offset-4" : ""}`}
@@ -443,15 +446,12 @@ export default function DateRangeFilter({
                   <span className={sizeSm}>{preset.label}</span>
                 </button>
               ))}
-            </div>
-
-            <div className="mt-3 flex justify-end">
               <button
                 type="button"
                 data-testid={id("done")}
                 onClick={() => close(true)}
                 className={
-                  "inline-flex min-h-10 items-center justify-center rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] " +
+                  "ml-auto inline-flex min-h-10 items-center justify-center rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] " +
                   "bg-[var(--fs-primary)] px-4 text-[color:var(--fs-on-primary)] pointer-coarse:min-h-11"
                 }
               >
