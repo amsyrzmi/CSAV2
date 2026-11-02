@@ -196,6 +196,12 @@ async def option_values(page: Page) -> list[str]:
     )
 
 
+async def open_invite(page: Page) -> None:
+    """The invite form lives in a drawer that "Invite someone" opens."""
+    await page.get_by_role("button", name="Invite someone").click()
+    await expect(page.get_by_role("dialog", name="Invite a member")).to_be_visible(timeout=WAIT)
+
+
 async def invite(page: Page, name: str, email: str) -> None:
     await page.get_by_label("Display name").fill(name)
     await page.get_by_label("Email", exact=True).fill(email)
@@ -222,6 +228,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (a) The HR owner is offered all six choices; Staff is the default.
         await page.goto(f"{base}/portal/team")
+        await open_invite(page)
         await expect(select.locator("option")).to_have_count(6, timeout=WAIT)
         assert await option_values(page) == PRESET_VALUES
         await expect(select).to_have_value("staff")
@@ -240,6 +247,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         # (c) A tenant admin who is not the HR owner can choose only none or Staff.
         world.client_owner, world.delivery = False, "send_failed"
         await page.goto(f"{base}/portal/team")
+        await open_invite(page)
         await expect(select.locator("option")).to_have_count(2, timeout=WAIT)
         assert await option_values(page) == ["none", "staff"]
         await expect(select).to_have_value("staff")

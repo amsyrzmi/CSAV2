@@ -4,6 +4,9 @@ import { api, del, post } from "@/lib/api";
 import type { IssuedInvitation } from "@/lib/identity-contracts";
 import type { PresetId } from "@/lib/hr-access-api";
 import { invitationHrAccess } from "@/lib/invite-access";
+import { invitationChip } from "@/lib/team-view";
+import StatusLabel from "./fs/StatusLabel";
+import { DetailsRow } from "./kit";
 import { Notice, Panel, secondary } from "./ui";
 
 interface Invitation {
@@ -82,7 +85,7 @@ export function InvitationList({
       ) : rows.length === 0 ? (
         <p className="text-sm text-ink-500">No invitations issued.</p>
       ) : (
-        <ul className="divide-y divide-ink-100">
+        <ul data-testid="team-invitations" className="divide-y divide-[color:var(--fs-border)]">
           {rows.map((row) => {
             const expired = new Date(row.expires_at).getTime() <= observedAt;
             const status = row.consumed_at
@@ -94,43 +97,56 @@ export function InvitationList({
                   : "Pending";
             const hrAccess =
               row.kind === "invite" ? invitationHrAccess(row.hr_preset, hasHrPackage) : null;
+            const chip = invitationChip(status);
+            const testId = `team-invitation-${row.id}`;
             return (
-              <li
-                key={row.id}
-                className="flex flex-wrap items-center justify-between gap-3 py-4"
-              >
-                <div className="min-w-0">
-                  <p className="break-all text-sm font-medium">{row.email}</p>
-                  <p className="mt-1 text-xs text-ink-500">
-                    {row.kind === "reset" ? "Password reset" : "Invitation"} ·{" "}
-                    {status}
+              <li key={row.id} className="py-2.5">
+                <DetailsRow
+                  testId={testId}
+                  toggleLabel={row.email}
+                  summary={
+                    <div className="min-w-0">
+                      <p className="break-all text-sm font-medium">{row.email}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span data-testid={`${testId}-chip`}>
+                          <StatusLabel tone={chip.tone}>{chip.label}</StatusLabel>
+                        </span>
+                        <span className="text-xs text-[color:var(--fs-text-secondary)]">
+                          {row.display_name} · {row.kind === "reset" ? "Password reset" : "Invitation"}
+                        </span>
+                      </div>
+                    </div>
+                  }
+                >
+                  <p className="text-xs text-ink-500">
+                    {row.kind === "reset" ? "Password reset" : "Invitation"} · {status}
                   </p>
                   {hrAccess && <p className="mt-1 text-xs text-ink-500">{hrAccess}</p>}
-                </div>
-                {!row.consumed_at && (
-                  <div className="flex flex-wrap gap-2">
-                    {row.kind === "invite" && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        className={secondary}
-                        onClick={() => void change(row, true)}
-                      >
-                        Renew invitation
-                      </button>
-                    )}
-                    {!row.revoked_at && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        className={secondary}
-                        onClick={() => void change(row, false)}
-                      >
-                        Revoke link
-                      </button>
-                    )}
-                  </div>
-                )}
+                  {!row.consumed_at && (
+                    <div className="mt-3 flex flex-wrap justify-start gap-2">
+                      {row.kind === "invite" && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          className={secondary}
+                          onClick={() => void change(row, true)}
+                        >
+                          Renew invitation
+                        </button>
+                      )}
+                      {!row.revoked_at && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          className={secondary}
+                          onClick={() => void change(row, false)}
+                        >
+                          Revoke link
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </DetailsRow>
               </li>
             );
           })}

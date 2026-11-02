@@ -19,7 +19,9 @@ import {
 import { servicesClient } from "@/lib/services-api";
 import { formatDateTime } from "@/lib/subscriptions-api";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
+import SlideOver from "./fs/SlideOver";
 import { InvitationList } from "./InvitationList";
+import MemberCard from "./team/MemberCard";
 
 const roles: TenantRole[] = ["tenant_admin", "tenant_staff", "read_only"];
 const MALAYSIA = "Asia/Kuala_Lumpur";
@@ -56,6 +58,21 @@ export function TeamManagement({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  // One change at a time, even if a second click lands before the page has re-rendered.
+  const acting = useRef(false);
+  const linkPanel = useRef<HTMLDivElement>(null);
+  const inviteButton = useRef<HTMLButtonElement>(null);
+  const errorBox = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // A link or message that just appeared may be far above the button that made it.
+    if (!shown) return;
+    linkPanel.current?.focus({ preventScroll: true });
+    linkPanel.current?.scrollIntoView({ block: "nearest" });
+  }, [shown]);
+  useEffect(() => {
+    if (error && !inviteOpen) errorBox.current?.scrollIntoView({ block: "nearest" });
+  }, [error, inviteOpen]);
   useEffect(() => {
     if (!platform) return;
     let live = true;
@@ -160,16 +177,20 @@ export function TeamManagement({
       );
       setEmail("");
       setName("");
+      setInviteOpen(false);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  /** Sends a member change. Resolves to the server's refusal, shown by the card, or null. */
   async function update(
     member: Member,
     change: { role?: TenantRole; is_enabled?: boolean },
-  ) {
+  ): Promise<string | null> {
+    if (acting.current) return null;
+    acting.current = true;
     setBusy(true);
     setError("");
     try {
@@ -178,9 +199,11 @@ export function TeamManagement({
         change,
       );
       await reload();
+      return null;
     } catch (cause) {
-      setError((cause as Error).message);
+      return (cause as Error).message;
     } finally {
+      acting.current = false;
       setBusy(false);
     }
   }
@@ -201,14 +224,19 @@ export function TeamManagement({
       setBusy(false);
     }
   }
-  async function revokeSessions(member: Member) {
+  /** Ends every session the person has. Resolves to the server's refusal, or null. */
+  async function revokeSessions(member: Member): Promise<string | null> {
+    if (acting.current) return null;
+    acting.current = true;
     setBusy(true);
     setError("");
     try {
       await post(`/console/v1/admin/users/${member.user_id}/revoke-sessions`);
+      return null;
     } catch (cause) {
-      setError((cause as Error).message);
+      return (cause as Error).message;
     } finally {
+      acting.current = false;
       setBusy(false);
     }
   }
@@ -226,19 +254,104 @@ export function TeamManagement({
       setBusy(false);
     }
   }
+  const inviteForm = (
+    <form onSubmit={invite} className="grid gap-4">
+      <p className="text-sm text-[color:var(--fs-text-secondary)]">
+        They will get a link to join this company. You can change their role later.
+      </p>
+      <div>
+        <label htmlFor="member-name" className="mb-2 block text-sm">
+          Display name
+        </label>
+        <input
+          id="member-name"
+          className={field}
+          maxLength={120}
+          required
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+      <div>
+        <label htmlFor="member-email" className="mb-2 block text-sm">
+          Email
+        </label>
+        <input
+          id="member-email"
+          type="email"
+          className={field}
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+      </div>
+      <div>
+        <label htmlFor="member-role" className="mb-2 block text-sm">
+          Tenant role
+        </label>
+        <select
+          id="member-role"
+          className={field}
+          value={role}
+          onChange={(e) => {
+            const next = e.target.value as TenantRole;
+            setRole(next);
+            setHrAccess(defaultHrAccess(next));
+          }}
+        >
+          {roles.map((value) => (
+            <option key={value} value={value}>
+              {roleLabels[value]}
+            </option>
+          ))}
+        </select>
+      </div>
+      {options.length > 0 && (
+        <div>
+          <label htmlFor="member-hr-access" className="mb-2 block text-sm">
+            HR access
+          </label>
+          <select
+            id="member-hr-access"
+            data-testid="invite-hr-access"
+            className={field}
+            value={hrAccess}
+            onChange={(e) => setHrAccess(e.target.value as HrAccessValue)}
+          >
+            {options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-xs text-ink-600">
+            {options.find((option) => option.value === hrAccess)?.explanation}
+            {facts?.isHrOwner
+              ? ""
+              : " Only the HR owner can give more than Staff."}
+          </p>
+        </div>
+      )}
+      <div className="flex items-end">
+        <button className={action} disabled={busy}>
+          {busy ? "Saving…" : "Create invitation"}
+        </button>
+      </div>
+    </form>
+  );
   return (
     <>
       <Heading
         title={platform ? "Tenant members" : "Your team"}
         description="Invite people and manage their access to the selected tenant."
       />
-      {error && (
-        <div className="mb-5">
+      {error && !inviteOpen && (
+        <div ref={errorBox} className="mb-5">
           <Notice error>{error}</Notice>
         </div>
       )}
       {platform && (
-        <div className="mb-5">
+        <div className="mb-5 max-w-3xl">
           <label htmlFor="selected-tenant" className="mb-2 block text-sm">
             Selected tenant
           </label>
@@ -271,147 +384,94 @@ export function TeamManagement({
       {!selected ? (
         <Notice>Select a tenant to manage its members.</Notice>
       ) : (
-        <div className="space-y-5">
+        // One calm column: an opened card pushes the next one down instead of leaving a gap beside it.
+        // The bottom padding keeps the last row clear of the floating assistant button on phones.
+        <div className="max-w-3xl space-y-5 pb-20 md:pb-0">
           {shown && (
-            <Panel
-              title={
-                shown.issued.delivery === "email"
-                  ? "Link emailed"
-                  : "Share the secure link"
-              }
+            <div
+              ref={linkPanel}
+              tabIndex={-1}
+              data-testid="team-link-panel"
+              className="outline-none"
             >
-              <p data-testid="invite-delivery" className="mb-3 text-sm text-ink-600">
-                {deliveryMessage(shown.issued, shown.email, shown.kind)}
-              </p>
-              <p className="mb-3 text-sm text-ink-600">
-                {shown.issued.delivery === "email"
-                  ? "The link works once."
-                  : "Give this single-use link directly to the intended person."}{" "}
-                Expires{" "}
-                {formatDateTime(shown.issued.expires_at, shown.timeZone)} (
-                {shown.timeZone === MALAYSIA
-                  ? "Malaysia time"
-                  : `${shown.timeZone.replaceAll("_", " ")} time`}
-                ).
-              </p>
-              {shown.issued.delivery === "manual" && (
-                <>
-                  <label htmlFor="issued-link" className="sr-only">
-                    Secure invitation or reset link
-                  </label>
-                  <input
-                    id="issued-link"
-                    type="text"
-                    autoComplete="off"
-                    readOnly
-                    className={field}
-                    value={inviteLink(shown.issued, window.location.origin)}
-                    onFocus={(e) => e.target.select()}
-                  />
-                </>
-              )}
-              <div className="mt-4 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  className={secondary}
-                  onClick={() => setShown(null)}
-                >
-                  {shown.issued.delivery === "email" ? "Hide message" : "Hide link"}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  className={secondary}
-                  onClick={() => void revokeLink()}
-                >
-                  Revoke link
-                </button>
-              </div>
-            </Panel>
-          )}
-          <Panel title="Invite a member">
-            <form onSubmit={invite} className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label htmlFor="member-name" className="mb-2 block text-sm">
-                  Display name
-                </label>
-                <input
-                  id="member-name"
-                  className={field}
-                  maxLength={120}
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-              <div>
-                <label htmlFor="member-email" className="mb-2 block text-sm">
-                  Email
-                </label>
-                <input
-                  id="member-email"
-                  type="email"
-                  className={field}
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
-              <div>
-                <label htmlFor="member-role" className="mb-2 block text-sm">
-                  Tenant role
-                </label>
-                <select
-                  id="member-role"
-                  className={field}
-                  value={role}
-                  onChange={(e) => {
-                    const next = e.target.value as TenantRole;
-                    setRole(next);
-                    setHrAccess(defaultHrAccess(next));
-                  }}
-                >
-                  {roles.map((value) => (
-                    <option key={value} value={value}>
-                      {roleLabels[value]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {options.length > 0 && (
-                <div className="md:col-span-2">
-                  <label htmlFor="member-hr-access" className="mb-2 block text-sm">
-                    HR access
-                  </label>
-                  <select
-                    id="member-hr-access"
-                    data-testid="invite-hr-access"
-                    className={field}
-                    value={hrAccess}
-                    onChange={(e) => setHrAccess(e.target.value as HrAccessValue)}
+              <Panel
+                title={
+                  shown.issued.delivery === "email"
+                    ? "Link emailed"
+                    : "Share the secure link"
+                }
+              >
+                <p data-testid="invite-delivery" className="mb-3 text-sm text-ink-600">
+                  {deliveryMessage(shown.issued, shown.email, shown.kind)}
+                </p>
+                <p className="mb-3 text-sm text-ink-600">
+                  {shown.issued.delivery === "email"
+                    ? "The link works once."
+                    : "Give this single-use link directly to the intended person."}{" "}
+                  Expires{" "}
+                  {formatDateTime(shown.issued.expires_at, shown.timeZone)} (
+                  {shown.timeZone === MALAYSIA
+                    ? "Malaysia time"
+                    : `${shown.timeZone.replaceAll("_", " ")} time`}
+                  ).
+                </p>
+                {shown.issued.delivery === "manual" && (
+                  <>
+                    <label htmlFor="issued-link" className="sr-only">
+                      Secure invitation or reset link
+                    </label>
+                    <input
+                      id="issued-link"
+                      type="text"
+                      autoComplete="off"
+                      readOnly
+                      className={field}
+                      value={inviteLink(shown.issued, window.location.origin)}
+                      onFocus={(e) => e.target.select()}
+                    />
+                  </>
+                )}
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    className={secondary}
+                    onClick={() => setShown(null)}
                   >
-                    {options.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-2 text-xs text-ink-600">
-                    {options.find((option) => option.value === hrAccess)?.explanation}
-                    {facts?.isHrOwner
-                      ? ""
-                      : " Only the HR owner can give more than Staff."}
-                  </p>
+                    {shown.issued.delivery === "email" ? "Hide message" : "Hide link"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className={secondary}
+                    onClick={() => void revokeLink()}
+                  >
+                    Revoke link
+                  </button>
                 </div>
-              )}
-              <div className="flex items-end">
-                <button className={action} disabled={busy}>
-                  {busy ? "Saving…" : "Create invitation"}
-                </button>
-              </div>
-            </form>
-          </Panel>
-          <Panel title="Members">
+              </Panel>
+            </div>
+          )}
+          <section aria-labelledby="team-members-title">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h2
+                id="team-members-title"
+                className="font-(family-name:--fs-font-heading) text-base font-semibold"
+              >
+                Members
+              </h2>
+              <button
+                ref={inviteButton}
+                type="button"
+                data-testid="team-invite-open"
+                className={action}
+                onClick={() => {
+                  setError("");
+                  setInviteOpen(true);
+                }}
+              >
+                Invite someone
+              </button>
+            </div>
             {members === null ? (
               <p className="text-sm text-ink-500">Loading members…</p>
             ) : members.length === 0 ? (
@@ -420,81 +480,21 @@ export function TeamManagement({
                 started.
               </p>
             ) : (
-              <ul className="divide-y divide-ink-100">
+              <ul data-testid="team-members" className="grid gap-3">
                 {members.map((member) => (
-                  <li
+                  <MemberCard
                     key={member.user_id}
-                    className="flex flex-wrap items-center justify-between gap-4 py-4"
-                  >
-                    <div className="min-w-0">
-                      <p className="break-words text-sm font-medium">
-                        {member.display_name}
-                      </p>
-                      <p className="break-all text-xs text-ink-500">
-                        {member.email}
-                      </p>
-                      <p className="mt-1 text-xs text-ink-600">
-                        {member.is_enabled
-                          ? "Membership enabled"
-                          : "Membership disabled"}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <select
-                        aria-label={`Role for ${member.email}`}
-                        className={field + " w-auto"}
-                        disabled={busy}
-                        value={member.role}
-                        onChange={(e) =>
-                          void update(member, {
-                            role: e.target.value as TenantRole,
-                          })
-                        }
-                      >
-                        {roles.map((value) => (
-                          <option key={value} value={value}>
-                            {roleLabels[value]}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        className={secondary}
-                        onClick={() =>
-                          void update(member, {
-                            is_enabled: !member.is_enabled,
-                          })
-                        }
-                      >
-                        {member.is_enabled ? "Disable access" : "Enable access"}
-                      </button>
-                      {platform && (
-                        <>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            className={secondary}
-                            onClick={() => void reset(member)}
-                          >
-                            Issue reset
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            className={secondary}
-                            onClick={() => void revokeSessions(member)}
-                          >
-                            Revoke sessions
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </li>
+                    member={member}
+                    platform={platform}
+                    busy={busy}
+                    onChange={update}
+                    onReset={(target) => void reset(target)}
+                    onRevoke={revokeSessions}
+                  />
                 ))}
               </ul>
             )}
-          </Panel>
+          </section>
           <InvitationList
             key={selected}
             clientId={selected}
@@ -504,6 +504,27 @@ export function TeamManagement({
           />
         </div>
       )}
+      <SlideOver
+        open={inviteOpen}
+        onClose={() => {
+          setInviteOpen(false);
+          setError("");
+        }}
+        title="Invite a member"
+        returnFocusTo={inviteButton}
+        widthClass="max-w-lg"
+        testId="team-invite-drawer"
+        closeTestId="team-invite-close"
+      >
+        {error && (
+          <div className="mb-4">
+            <Notice error testId="team-invite-error">
+              {error}
+            </Notice>
+          </div>
+        )}
+        {inviteForm}
+      </SlideOver>
     </>
   );
 }
