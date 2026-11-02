@@ -918,3 +918,76 @@ async def test_personal_save_gates_and_refusals(world: HrWorld) -> None:
     assert {"home_address", "bank_name", "epf_number"} <= fields
     for secret in ("2 Own Lane", "CIMB", "12345678"):
         assert secret not in history.text
+
+
+# ---- Rulings after review: line breaks, uppercase numbers, unchanged numbers ------------------
+
+
+async def test_personal_home_address_keeps_line_breaks(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    first = await saved(world, "owner", staff, None, {"home_address": "1 Road\r\nTaman X\nKL"})
+    assert first["version"] == 1
+    assert (await stored_row(world, staff))["home_address"] == "1 Road\nTaman X\nKL"
+    read = await world.call("owner", "GET", personal_path(staff))
+    assert read.json()["home_address"] == "1 Road\nTaman X\nKL"
+    # The person may write it too.
+    mine = await saved(world, "staff", staff, 1, {"home_address": "2 Lane\nSabah"})
+    assert mine["version"] == 2
+    # A tab or NUL is still refused, without echoing the text.
+    for bad in ("Secret\tTab", "Secret\u0000Nul"):
+        response = await api_save(world, "owner", staff, 2, {"home_address": bad})
+        assert response.status_code == 422 and response.json()["detail"] == "invalid_hr_input"
+        assert "Secret" not in response.text
+    assert (await stored_row(world, staff))["version"] == 2
+
+
+async def test_personal_numbers_are_uppercased_when_saved(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    await saved(
+        world, "owner", staff, None, {}, {"tax_number": "sg 12345678", "socso_number": "a-12345"}
+    )
+    assert (await reveal(world, "owner", staff, "tax_number")).json() == {"value": "SG 12345678"}
+    assert (await reveal(world, "owner", staff, "socso_number")).json() == {"value": "A-12345"}
+
+
+async def history_count(world: HrWorld, employee: UUID, field: str) -> int:
+    rows = await world.q(
+        "SELECT count(*) AS n FROM hr_employee_changes WHERE client_id=%s AND employee_id=%s "
+        "AND changes ? %s",
+        (world.tenant, employee, field),
+    )
+    return rows[0]["n"]
+
+
+async def test_personal_resending_an_unchanged_number_writes_no_history(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    await saved(world, "owner", staff, None, {}, {"ic_or_passport": IC, "bank_account": BANK})
+    before = await stored_row(world, staff)
+    assert await history_count(world, staff, "ic_or_passport") == 1
+    # The same number again (a new key): a no-op, not a duplicate, and no new history.
+    again = await saved(world, "owner", staff, 1, {}, {"ic_or_passport": IC.lower()})
+    assert again["duplicate"] is False and again["version"] == 1
+    assert await history_count(world, staff, "ic_or_passport") == 1
+    after = await stored_row(world, staff)
+    assert after["ic_or_passport"] == before["ic_or_passport"] and after["version"] == 1
+    # An unchanged number next to a changed one: only the changed one is recorded.
+    mixed = await saved(
+        world, "owner", staff, 1, {}, {"ic_or_passport": IC, "bank_account": "999 888 777"}
+    )
+    assert mixed["version"] == 2
+    assert await history_count(world, staff, "ic_or_passport") == 1
+    assert await history_count(world, staff, "bank_account") == 2
+    assert (await reveal(world, "owner", staff, "bank_account")).json() == {"value": "999 888 777"}
+    # A different number is still a change, and clearing still clears.
+    changed = await saved(world, "owner", staff, 2, {}, {"ic_or_passport": IC + "1"})
+    assert changed["version"] == 3 and await history_count(world, staff, "ic_or_passport") == 2
+    cleared = await saved(world, "owner", staff, 3, {}, {"ic_or_passport": None})
+    assert cleared["version"] == 4 and await history_count(world, staff, "ic_or_passport") == 3
+    # A first number on a person with no row yet is stored.
+    other = world.employees["manager"]
+    first = await saved(world, "owner", other, None, {}, {"epf_number": "12345678"})
+    assert first["version"] == 1
+    # The person themself still may not send any number, even an unchanged one.
+    refused_self = await api_save(world, "staff", staff, 4, {}, {"bank_account": "999 888 777"})
+    assert refused_self.status_code == 409
+    assert refused_self.json() == {"detail": "personal_field_refused"}

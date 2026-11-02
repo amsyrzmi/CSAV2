@@ -15,13 +15,19 @@ from datetime import date
 from typing import Any, Literal, get_args
 from uuid import UUID
 
+from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
+from pydantic import ValidationInfo, field_validator
 
 from csa.core import crypto
 from csa.core.db import q as sql
 from csa.core.settings import get_settings
 from csa.core.tenancy import tx
-from csa.hr.automation_models import OperationReceipt, PersonalSave
+from csa.hr.automation_models import (
+    OperationReceipt,
+    PersonalSave,
+    personal_text_without_controls,
+)
 from csa.hr.models import HrModel, Version
 from csa.hr.operations import HrOperations
 from csa.hr.people_types import EncryptedField, SelfField
@@ -69,6 +75,13 @@ class PersonalOut(HrModel):
     socso_number: str | None
     version: Version | None  # None until the first save
     can_edit: Literal["all", "contact"]
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def reject_controls(  # pyright: ignore[reportIncompatibleMethodOverride]
+        cls, value: object, info: ValidationInfo
+    ) -> object:
+        return personal_text_without_controls(value, info.field_name)
 
 
 class PersonalRevealIn(HrModel):
@@ -159,21 +172,23 @@ class HrPersonal:
         return None if token is None else crypto.decrypt(token, _aad(field, employee_id))
 
     async def save(self, session: HrSession, body: PersonalSave, key: UUID) -> OperationReceipt:
-        sent = {
-            "operation": body.operation,
-            "employee_id": str(body.employee_id),
-            "expected_version": body.expected_version,
-            "values": body.values.model_dump(mode="json", exclude_unset=True),
-            "encrypted": {
-                field: None
-                if secret is None
-                else crypto.encrypt(secret.get_secret_value(), _aad(field, body.employee_id))
-                for field, secret in body.encrypted.items()
-            },
-        }
+        # The fingerprint covers the request as sent, so a retry matches whatever is trimmed below.
         fingerprint = personal_fingerprint(body)
         async with tx(self.core.pool, str(session.tenant_id)) as conn:
             await self.core._access(conn, session)
+            changed = await self._changed_numbers(conn, session, body)
+            sent = {
+                "operation": body.operation,
+                "employee_id": str(body.employee_id),
+                "expected_version": body.expected_version,
+                "values": body.values.model_dump(mode="json", exclude_unset=True),
+                "encrypted": {
+                    field: None
+                    if plain is None
+                    else crypto.encrypt(plain, _aad(field, body.employee_id))
+                    for field, plain in changed.items()
+                },
+            }
             row = await HrOperations._people_apply(
                 conn,
                 "hr/personal_apply.sql",
@@ -181,3 +196,32 @@ class HrPersonal:
             )
             await self.core._session(conn, session)
         return OperationReceipt.model_validate(row["receipt"])
+
+    async def _changed_numbers(
+        self, conn: AsyncConnection, session: HrSession, body: PersonalSave
+    ) -> dict[str, str | None]:
+        """The numbers to write: those sent, less any equal to what is stored. Every encryption
+        has a fresh nonce, so an unchanged number would otherwise count as a change. Only for HR:
+        the person themself may send no number, and the database refuses it."""
+        sent = {
+            field: None if secret is None else secret.get_secret_value()
+            for field, secret in body.encrypted.items()
+        }
+        if not any(plain is not None for plain in sent.values()):
+            return sent
+        rows = await sql.fetch_all(
+            "hr/personal_row.sql", (session.tenant_id, body.employee_id), conn=conn
+        )
+        if not rows or rows[0]["access"] != "hr":
+            return sent
+        stored = rows[0]
+        kept: dict[str, str | None] = {}
+        for field, plain in sent.items():
+            if plain is not None and stored[field] is not None:
+                try:
+                    if crypto.decrypt(stored[field], _aad(field, body.employee_id)) == plain:
+                        continue
+                except crypto.CryptoError:
+                    pass  # unreadable: write the new value
+            kept[field] = plain
+        return kept

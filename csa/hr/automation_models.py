@@ -9,7 +9,15 @@ from typing import Annotated, Literal, Self
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime, Field, SecretStr, StrictBool, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    Field,
+    SecretStr,
+    StrictBool,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from csa.hr.models import DirectoryValues, HrModel, ResolvedGrant, Version
 
@@ -113,6 +121,15 @@ class PersonUpdate(HrModel):
 _KUALA_LUMPUR = ZoneInfo("Asia/Kuala_Lumpur")
 
 
+def personal_text_without_controls(value: object, field_name: str | None) -> object:
+    """HrModel's control-character rule, except that the home address may hold line breaks (\n)."""
+    if isinstance(value, str):
+        text = value.replace("\n", "") if field_name == "home_address" else value
+        if any(ord(c) < 32 or ord(c) == 127 for c in text):
+            raise ValueError("control characters forbidden")
+    return value
+
+
 class PersonalValues(HrModel):
     """The plain personal fields. A key that is absent keeps the stored value and null clears it,
     so read `model_fields_set` (or dump with `exclude_unset`), never the defaults."""
@@ -125,6 +142,18 @@ class PersonalValues(HrModel):
     emergency_phone: str | None = Field(default=None, pattern=r"^[0-9+() -]{3,40}$")
     bank_name: str | None = Field(default=None, min_length=1, max_length=100)
 
+    @field_validator("home_address", mode="before")
+    @classmethod
+    def unix_line_breaks(cls, value: object) -> object:
+        return value.replace("\r\n", "\n") if isinstance(value, str) else value
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def reject_controls(  # pyright: ignore[reportIncompatibleMethodOverride]
+        cls, value: object, info: ValidationInfo
+    ) -> object:
+        return personal_text_without_controls(value, info.field_name)
+
     @field_validator("date_of_birth")
     @classmethod
     def not_in_the_future(cls, value: date | None) -> date | None:
@@ -133,7 +162,7 @@ class PersonalValues(HrModel):
         return value
 
 
-# What each number may look like after trimming (the IC or passport is also uppercased).
+# What each number may look like after trimming (letters are uppercased).
 _NUMBER_SHAPES: dict[str, re.Pattern[str]] = {
     "ic_or_passport": re.compile(r"[A-Z0-9-]{5,20}"),
     "bank_account": re.compile(r"[0-9 -]{5,34}"),
@@ -165,9 +194,7 @@ class PersonalSave(HrModel):
             if secret is None:
                 out[field] = None
                 continue
-            text = secret.get_secret_value().strip()
-            if field == "ic_or_passport":
-                text = text.upper()
+            text = secret.get_secret_value().strip().upper()
             if not _NUMBER_SHAPES[field].fullmatch(text):
                 raise ValueError("invalid_personal_number")
             out[field] = SecretStr(text)

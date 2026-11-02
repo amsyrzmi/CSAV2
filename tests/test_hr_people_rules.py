@@ -271,6 +271,41 @@ def test_personal_values_reject_bad_numbers(field: str, value: str):
         assert value not in repr(caught.value.errors(include_input=False))
 
 
+def test_home_address_keeps_line_breaks_and_nothing_else_is_a_control():
+    two = PersonalValues(home_address="1 Road\r\nTaman X\nKL")
+    assert two.home_address == "1 Road\nTaman X\nKL"
+    # The limit counts the normalised text.
+    assert PersonalValues(home_address="a" * 250 + "\r\n" + "a" * 249).home_address is not None
+    with pytest.raises(ValidationError):
+        PersonalValues(home_address="a" * 250 + "\r\n" + "a" * 250)
+    for bad in ("1 Road\tTaman", "1 Road\x00", "1 Road\rTaman", "1 Road\x1b[0m", "1\x7fRoad"):
+        with pytest.raises(ValidationError) as caught:
+            PersonalValues(home_address=bad)
+        assert "Road" not in str(caught.value.errors(include_input=False))
+    # Only the address may hold a line break.
+    for field in ("emergency_name", "emergency_relationship", "bank_name"):
+        with pytest.raises(ValidationError):
+            PersonalValues.model_validate({field: "a\nb"})
+
+
+def test_every_number_is_uppercased_on_the_way_in():
+    body = PersonalSave(
+        **numbers(
+            ic_or_passport="ab-12345",
+            tax_number=" sg 12345678 ",
+            socso_number="a-12345",
+            epf_number="12345678",
+        )
+    )
+    shown = {k: v.get_secret_value() for k, v in body.encrypted.items() if v is not None}
+    assert shown == {
+        "ic_or_passport": "AB-12345",
+        "tax_number": "SG 12345678",
+        "socso_number": "A-12345",
+        "epf_number": "12345678",
+    }
+
+
 def test_personal_numbers_are_normalised_and_hidden():
     body = PersonalSave(
         **numbers(
