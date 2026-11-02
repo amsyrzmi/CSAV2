@@ -238,25 +238,31 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
     return () => { controller.abort(); clearTimeout(timer); };
   }, [query, before, agent, status, instants.from, instants.to]);
 
-  // The last-assistants strip and the 24-hour line do not depend on the filters. They load once
-  // and then refresh with the list, on the newest page only.
+  // The last-assistants strip and the 24-hour line do not depend on the filters or on the page.
+  // They load once and then refresh on the newest page only. Paging does not read them again: the
+  // timer keeps ticking, and a tick on an older page just does nothing. (Back on the newest page
+  // the next tick, at most 5 seconds away, refreshes them.)
+  const newestRef = useRef(newest);
+  useEffect(() => { newestRef.current = newest; }, [newest]);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function load() {
-      const [runs, summary] = await Promise.allSettled([
-        api<RunPage>(`/console/v1/runs?${runsQuery(query, { limit: 100 })}`, { signal: controller.signal }),
-        api<RuntimeOverview>(`/console/v1/overview?${query}`, { signal: controller.signal }),
-      ]);
-      if (controller.signal.aborted) return;
-      if (runs.status === "fulfilled") { setCards(lastAssistants(runs.value.items)); setCardsFailed(false); }
-      else setCardsFailed(true);
-      setOverview(summary.status === "fulfilled" ? summary.value : null);
-      if (newest) timer = setTimeout(load, 5000);
+      if (newestRef.current) {
+        const [runs, summary] = await Promise.allSettled([
+          api<RunPage>(`/console/v1/runs?${runsQuery(query, { limit: 100 })}`, { signal: controller.signal }),
+          api<RuntimeOverview>(`/console/v1/overview?${query}`, { signal: controller.signal }),
+        ]);
+        if (controller.signal.aborted) return;
+        if (runs.status === "fulfilled") { setCards(lastAssistants(runs.value.items)); setCardsFailed(false); }
+        else setCardsFailed(true);
+        setOverview(summary.status === "fulfilled" ? summary.value : null);
+      }
+      timer = setTimeout(load, 5000);
     }
     void load();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [query, newest]);
+  }, [query]);
 
   // A filter that did not really change (the same chip, the same day, Clear when already clear)
   // does nothing: no new read, no loading flash, paging kept.

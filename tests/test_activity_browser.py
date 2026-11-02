@@ -100,6 +100,9 @@ class Stub:
     list_requests: list[dict[str, str]] = field(default_factory=list)
     strip_requests: list[dict[str, str]] = field(default_factory=list)
     event_requests: list[dict[str, str]] = field(default_factory=list)
+    overview_requests: list[dict[str, str]] = field(default_factory=list)
+    # List reads whose query has every key and value here wait for the event before answering.
+    holds: list[tuple[dict[str, str], asyncio.Event]] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
 
     def last_list(self) -> dict[str, str]:
@@ -140,7 +143,16 @@ class Stub:
                 items = rows[:limit]
                 more = len(rows) > limit
                 data = {"items": items, "next_before_id": items[-1]["id"] if more else None}
+                for wanted, gate in self.holds:
+                    if limit != 100 and wanted.items() <= query.items():
+                        await gate.wait()
+                        try:
+                            await request_route.fulfill(status=200, json=data)
+                        except Exception:  # the page gave up on this read; that is the point
+                            pass
+                        return
         elif path == "overview" and request.method == "GET":
+            self.overview_requests.append(query)
             if self.fail_overview:
                 status, data = 503, {"detail": "synthetic overview outage"}
             else:
@@ -892,6 +904,89 @@ async def test_strip_is_a_sideways_scroller_on_a_phone_and_a_grid_from_640(site:
             })"""
         )
         assert info == {"tab": None, "grid": "grid", "overflowX": "visible", "scrolls": False}, info
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_paging_does_not_read_the_strip_or_the_overview_again(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_activity(browser, site, stub)
+        await expect(page.get_by_test_id("activity-overview")).to_be_visible()
+        strip, overview = len(stub.strip_requests), len(stub.overview_requests)
+        started = time.monotonic()
+        older, newer = page.get_by_test_id("activity-older"), page.get_by_test_id("activity-newer")
+        await older.click()
+        await expect(run_row(page, 7)).to_be_visible()
+        await older.click()
+        await expect(run_row(page, 2)).to_be_visible()
+        await newer.click()
+        await newer.click()
+        await expect(run_row(page, 12)).to_be_visible()
+        # The five-second timer may fire once on the newest page; paging itself reads nothing.
+        paged_for = time.monotonic() - started
+        assert paged_for < 4.5, "the paging took long enough for the timer to fire"
+        assert len(stub.strip_requests) == strip, stub.strip_requests[strip:]
+        assert len(stub.overview_requests) == overview, stub.overview_requests[overview:]
+        # Back on the newest page the strip is refreshed again by the timer.
+        deadline = time.monotonic() + 12
+        while len(stub.strip_requests) == strip:
+            assert time.monotonic() < deadline, "the strip never refreshed on the newest page"
+            await asyncio.sleep(0.2)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_a_slow_earlier_answer_never_replaces_a_newer_filter(site: Site) -> None:
+    stub = Stub()
+    gate = asyncio.Event()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_activity(browser, site, stub)
+        # The first (Needed attention) read is held back; the reader moves on to Worked.
+        stub.holds.append(({"status": "error"}, gate))
+        await page.get_by_test_id("activity-status-error").click()
+        await expect(page.get_by_text("Loading runs...")).to_be_visible()
+        await page.get_by_test_id("activity-status-ok").click()
+        await expect(run_row(page, 12)).to_be_visible()
+        assert await row_ids(page) == [12, 11, 9, 8, 7]
+        # The slow answer arrives now; it must not replace what the reader asked for last.
+        gate.set()
+        await page.wait_for_timeout(800)
+        assert await row_ids(page) == [12, 11, 9, 8, 7]
+        await expect(page.get_by_test_id("activity-status-ok")).to_have_attribute(
+            "aria-pressed", "true"
+        )
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_an_opened_row_is_still_open_when_its_page_comes_back(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_activity(browser, site, stub)
+        toggle = page.get_by_test_id("activity-run-11-toggle")
+        await toggle.click()
+        await expect(toggle).to_have_attribute("aria-expanded", "true")
+        await page.get_by_test_id("activity-older").click()
+        await expect(run_row(page, 7)).to_be_visible()
+        await expect(run_row(page, 11)).to_have_count(0)
+        await page.get_by_test_id("activity-newer").click()
+        await expect(run_row(page, 11)).to_be_visible()
+        await expect(page.get_by_test_id("activity-run-11-toggle")).to_have_attribute(
+            "aria-expanded", "true"
+        )
+        assert not diagnostics, diagnostics
         await context.close()
 
     await with_browser(body)
