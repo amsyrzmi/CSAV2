@@ -6,7 +6,7 @@ import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
 /**
  * A row with a plain summary on the left and a "Show details" button on the right. Only the
  * button toggles: links and buttons inside `summary` stay clickable. The technical text sits
- * in a region linked by `aria-controls`; it stays mounted (so a test can find it) but is hidden
+ * in a group linked by `aria-controls`; it stays mounted (so a test can find it) but is hidden
  * and inert while closed. Controlled when `open` is given, otherwise it keeps its own state.
  * The height animates only while decorative motion is allowed (never under reduced motion,
  * a hidden tab or the "Reduce animations" preference). `toggleLabel` names what the button
@@ -50,10 +50,10 @@ export default function DetailsRow({
           aria-controls={regionId}
           data-testid={testId ? `${testId}-toggle` : undefined}
           onClick={toggle}
-          style={{ fontSize: "var(--fs-text-sm)", fontWeight: 500 }}
-          className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-[var(--fs-radius-control)] px-2 text-[color:var(--fs-primary)] hover:bg-[var(--fs-surface-blue)] pointer-coarse:min-h-11 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]"
+          className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-[var(--fs-radius-control)] px-2 text-[color:var(--fs-primary)] hover:bg-[var(--fs-surface-blue)] pointer-coarse:min-h-11"
         >
-          <span>
+          {/* Sized on a span: the tokens' unlayered `font: inherit` on buttons beats utilities. */}
+          <span className="text-[length:var(--fs-text-sm)] font-medium">
             {isOpen ? "Hide details" : "Show details"}
             {toggleLabel ? <span className="sr-only"> for {toggleLabel}</span> : null}
           </span>
@@ -79,7 +79,7 @@ export default function DetailsRow({
       </div>
       <div
         id={regionId}
-        role="region"
+        role="group"
         aria-label={toggleLabel ? `Details for ${toggleLabel}` : "Details"}
         data-testid={testId ? `${testId}-details` : undefined}
         inert={!isOpen}

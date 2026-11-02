@@ -4,16 +4,15 @@ import { chipLabel, isPressed, nextSingle, toggleChip, type ChipOption } from "@
 
 const chip =
   "inline-flex min-h-10 items-center gap-1.5 rounded-[var(--fs-radius-round)] border px-3 py-1.5 pointer-coarse:min-h-11 " +
-  "transition-[background-color,border-color,color] duration-150 ease-(--fs-ease-out) motion-reduce:transition-none " +
-  "focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
+  "transition-[background-color,border-color,color] duration-150 ease-(--fs-ease-out) motion-reduce:transition-none";
 const idle =
   "border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] text-[color:var(--fs-text)] hover:border-[color:var(--fs-primary)]";
 const pressed =
   "border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] text-[color:var(--fs-text)]";
 
 /**
- * A wrapping row of toggle chips. Pressed state is a check mark and bold words as well as
- * colour. `single` always has one chip pressed; `multi` lets any number be pressed (an "All"
+ * A wrapping row of toggle chips. Pressed state is a check mark as well as colour (the weight stays
+ * constant so a pressed chip keeps its width). `single` always has one chip pressed; `multi` lets any number be pressed (an "All"
  * chip, if the page wants one, is an ordinary option the caller handles in `onChange`).
  */
 export default function StatusChips<T extends string>({
@@ -50,26 +49,28 @@ export default function StatusChips<T extends string>({
             data-testid={`${testId}-${option.value}`}
             onClick={() => press(option.value)}
             className={`${chip} ${on ? pressed : idle}`}
-            // Inline: the console's `.fs-ui button { font: inherit }` would beat a weight class.
-            style={{ fontSize: "var(--fs-text-sm)", fontWeight: on ? 700 : 500 }}
           >
-            {on ? (
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="shrink-0"
-              >
-                <path d="m5 12 5 5 9-10" />
-              </svg>
-            ) : null}
-            <span className="min-w-0 [overflow-wrap:anywhere]">{chipLabel(option)}</span>
+            {/* The check's slot is always there so pressing a chip never widens it. */}
+            <span aria-hidden="true" className="inline-flex size-3.5 shrink-0 items-center justify-center">
+              {on ? (
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m5 12 5 5 9-10" />
+                </svg>
+              ) : null}
+            </span>
+            {/* Sized on a span: the tokens' unlayered `font: inherit` on buttons beats utilities. */}
+            <span className="min-w-0 text-[length:var(--fs-text-sm)] font-semibold [overflow-wrap:anywhere]">
+              {chipLabel(option)}
+            </span>
           </button>
         );
       })}
