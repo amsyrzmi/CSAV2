@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, Field, SecretStr
 
+from csa.hr.access_switches import SwitchId
 from csa.hr.models import (
     DirectoryProjection,
     DirectoryRecord,
@@ -190,6 +191,12 @@ class HrContext(HrModel):
     employee: EmployeeRef | None
     client_owner: bool
     actions: tuple[str, ...]
+    # The access switches the caller has on, in the access page's order.
+    switches: tuple[SwitchId, ...] = ()
+    # Workflow grants as "domain.action", sorted and unique.
+    workflows: tuple[str, ...] = ()
+    # Whether the caller has any HR work beyond their own requests and the directory.
+    hr_duties: bool = False
 
 
 class HrGuidance(HrModel):

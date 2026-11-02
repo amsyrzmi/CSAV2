@@ -49,7 +49,7 @@ MAX_WORDS = 5  # bounds the SQL; later words are ignored, so a long query still 
 _WORD_SPLIT = re.compile(r"[\s,]+")
 
 
-def _words(query: str) -> list[str]:
+def search_words(query: str) -> list[str]:
     """The first words of the query, split on whitespace and commas."""
     return [word for word in _WORD_SPLIT.split(query.strip()) if word][:MAX_WORDS]
 
@@ -62,7 +62,7 @@ def _title_start(word: str) -> str:
 async def search_people(conn: AsyncConnection[Any], client_id: UUID, query: str) -> list[PersonOut]:
     """Every word, in any order: in the name or work email, or starting a word of the job title.
     Name and email matches come first."""
-    words = _words(query)
+    words = search_words(query)
     if not words:
         return []
     patterns = [_like(word) for word in words]

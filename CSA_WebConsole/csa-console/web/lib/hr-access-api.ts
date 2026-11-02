@@ -6,6 +6,7 @@ export type SwitchId =
   | "own_requests"
   | "approves_team"
   | "hr_team"
+  | "manage_people"
   | "recruitment"
   | "attendance"
   | "payroll_prepare"
@@ -19,7 +20,7 @@ export type WarningKind =
   | "prepares_and_reviews";
 
 export const SWITCH_IDS: readonly SwitchId[] = [
-  "directory", "own_requests", "approves_team", "hr_team",
+  "directory", "own_requests", "approves_team", "hr_team", "manage_people",
   "recruitment", "attendance", "payroll_prepare", "payroll_review",
 ];
 
@@ -155,7 +156,7 @@ const INCLUDED_BY: Partial<Record<SwitchId, SwitchId>> = { directory: "hr_team" 
 const PRESETS: Record<PresetId, SwitchId[]> = {
   staff: ["directory", "own_requests"],
   manager: ["directory", "own_requests", "approves_team"],
-  hr_team: ["directory", "own_requests", "hr_team", "recruitment", "attendance"],
+  hr_team: ["directory", "own_requests", "hr_team", "manage_people", "recruitment", "attendance"],
   payroll_preparer: ["directory", "own_requests", "payroll_prepare"],
   payroll_reviewer: ["directory", "own_requests", "payroll_review"],
 };

@@ -23,6 +23,7 @@ import {
   typedMessage,
   type Outgoing,
 } from "@/lib/assistant-view";
+import { navigateLandingPath } from "@/lib/hr-paths";
 import type { Me } from "@/lib/identity-contracts";
 import { usePageContext } from "@/lib/page-context";
 import type { PackageState } from "@/lib/services-api";
@@ -195,7 +196,8 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         origin: attempt.origin,
         tab: result.tab,
         section: result.section,
-        path: href.split("?")[0],
+        // The HR pages redirect a legacy `?section=` to its own path; wait for that one.
+        path: navigateLandingPath(href),
       });
     router.push(href);
   }

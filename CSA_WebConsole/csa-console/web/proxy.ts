@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isHrPagePath } from "./lib/hr-paths";
 
 const publicPages = new Set(["/login", "/invite", "/forgot-password"]);
 const adoptedPages = new Set([
@@ -37,7 +38,7 @@ export function proxy(req: NextRequest) {
   if (path.startsWith("/console/v1/")) return NextResponse.next();
   if (publicPages.has(path)) return NextResponse.next();
   // The legacy API and all deferred UI routes are deliberately inaccessible.
-  if (!adoptedPages.has(path))
+  if (!adoptedPages.has(path) && !isHrPagePath(path))
     return new NextResponse("Not found", { status: 404 });
   // Navigation only; CSAV2 verifies the session and role in every request.
   if (!req.cookies.has("csa_session"))

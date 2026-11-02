@@ -21,6 +21,7 @@ SwitchId = Literal[
     "own_requests",
     "approves_team",
     "hr_team",
+    "manage_people",
     "recruitment",
     "attendance",
     "payroll_prepare",
@@ -40,11 +41,13 @@ SWITCH_IDS: tuple[SwitchId, ...] = (
     "own_requests",
     "approves_team",
     "hr_team",
+    "manage_people",
     "recruitment",
     "attendance",
     "payroll_prepare",
     "payroll_review",
 )
+MAX_SWITCHES = 16  # the most switch ids one person's `on` (or `base`) list may carry
 MAX_GRANTS = 32
 MAX_WORKFLOWS = 48
 BASIC_FIELDS = ("assigned_manager", "department", "display_name", "job_title", "work_email")
@@ -149,6 +152,9 @@ SWITCHES: Mapping[SwitchId, AccessRows] = {
             *_workflows(("attendance", "leave"), ("read",), "hr_operator"),
         ],
     ),
+    # Add and edit people and departments, and see Left people and employment profiles. It never
+    # changes access: that stays with the HR owner.
+    "manage_people": _rows([_grant("people.manage", "hr_operator")]),
     "recruitment": _rows(areas=["recruitment"]),
     "attendance": _rows(areas=["attendance"]),
     "payroll_prepare": _rows(
@@ -170,7 +176,7 @@ _STAFF = switch_set("directory", "own_requests")
 PRESETS: Mapping[PresetId, frozenset[SwitchId]] = {
     "staff": _STAFF,
     "manager": _STAFF | switch_set("approves_team"),
-    "hr_team": _STAFF | switch_set("hr_team", "recruitment", "attendance"),
+    "hr_team": _STAFF | switch_set("hr_team", "manage_people", "recruitment", "attendance"),
     "payroll_preparer": _STAFF | switch_set("payroll_prepare"),
     "payroll_reviewer": _STAFF | switch_set("payroll_review"),
 }

@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import Field, StrictBool, field_validator
 
-from csa.hr.access_switches import PresetId, SwitchId, WarningKind
+from csa.hr.access_switches import MAX_SWITCHES, PresetId, SwitchId, WarningKind
 from csa.hr.models import HrModel
 
 PAGE_SIZE = 50
@@ -54,8 +54,8 @@ class AccessChange(HrModel):
     """The person's full desired switch set, and the `on` set the page loaded it from."""
 
     user_id: UUID
-    on: list[SwitchId] = Field(max_length=8)
-    base: list[SwitchId] = Field(max_length=8)
+    on: list[SwitchId] = Field(max_length=MAX_SWITCHES)
+    base: list[SwitchId] = Field(max_length=MAX_SWITCHES)
 
     @field_validator("on", "base")
     @classmethod

@@ -6,6 +6,21 @@ Updated: 2026-10-22. PR #6 merged as `148c03e`; post-merge main CI
 Developer B's original uncommitted work in `/home/amsyrzmi/CSAV2-hr` on
 `feat/hr-foundation` was not modified.
 
+## People & HR 1a (2026-11-01)
+
+Branch `feat/hr-people`, migration `0520`. People & HR is now a set of sub-tabs with their own
+URLs (Home, People, Recruitment, Leave & attendance, Payroll, Training, Requests, Settings);
+the old single workspace and its “More HR tools” panel are gone, and every tool lives in its tab.
+New: the People list, org chart and departments, person profiles (Overview, Access, History),
+versioned edits, Add person, HR Home and My HR, and the `manage_people` access switch. The old
+`?section=` links below still work: they redirect to the tab’s own path. The full entry, the
+guards, the deferred items and the 1b seams are in the top entry of
+[../PROGRESS.md](../PROGRESS.md); the operating notes are in
+[SETUP.md](./SETUP.md#people-departments-and-manage-people) and the API in
+[../CONSOLE_API.md](../CONSOLE_API.md#people-departments-and-manage-people-project-1a-migration-0520).
+The directory/training browser scenario below now opens `/portal/hr/people` and
+`/portal/hr/training`.
+
 ## Workspace HR guidance
 
 The staff workspace now has a separate deterministic People & HR guide. Its
@@ -200,8 +215,8 @@ stable path above. No environment file was read or copied.
   [staff planner](../../csa/hr/assistant.py), [HTTP router](../../csa/hr/api.py).
 - [Core verified service](../../csa/hr/service.py), [ordered operations migration](../../db/migrations/0410_hr_operations.sql),
   [parameterized SQL](../../db/sql/hr/), [OpenAPI](../console_openapi.json).
-- [HR workspace](../../CSA_WebConsole/csa-console/web/components/console/HrWorkspace.tsx),
-  [remaining tools](../../CSA_WebConsole/csa-console/web/components/console/HrAutomation.tsx),
+- [HR shell and tabs](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
+  (replaced the single HR workspace and its remaining-tools panel in project 1a),
   [assistant UI](../../CSA_WebConsole/csa-console/web/components/console/HrAssistant.tsx),
   [local voice](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts).
 - [Owner bootstrap](../../scripts/bootstrap_hr_owner.py),

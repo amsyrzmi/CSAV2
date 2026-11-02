@@ -572,3 +572,19 @@ async def test_apply_on_accept_gives_up_on_a_held_tenant_lock(world: HrWorld) ->
     # The lock released, the access still waits and applies.
     assert await access.apply_on_accept(world.tenant, token_id) == "applied"
     assert await held(world, member) == rows(PRESETS["staff"], EMPTY)
+
+
+async def test_owner_hr_team_invitation_adds_manage_people(world: HrWorld) -> None:
+    issued = await invite(world, "owner", "hr_team")
+    member = await accept(world, issued["token"])
+    found = await held(world, member)
+    assert found == rows(PRESETS["hr_team"], EMPTY)
+    assert GrantRow("people.manage", "hr_operator", ()) in found.grants
+    [record] = await records(world, issued["id"])
+    assert record["details"]["preset"] == "hr_team"
+    expected = sorted(
+        ["directory", "own_requests", "hr_team", "recruitment", "attendance", "manage_people"]
+    )
+    assert record["details"]["on"] == expected == sorted(PRESETS["hr_team"])
+    assert record["details"]["added"] == expected
+    assert len(record["details"]["on"]) == 6

@@ -12,6 +12,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -19,7 +20,7 @@
               ],
               "type": "string"
             },
-            "maxItems": 8,
+            "maxItems": 16,
             "title": "Base",
             "type": "array"
           },
@@ -30,6 +31,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -37,7 +39,7 @@
               ],
               "type": "string"
             },
-            "maxItems": 8,
+            "maxItems": 16,
             "title": "On",
             "type": "array"
           },
@@ -219,6 +221,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -236,6 +239,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -305,6 +309,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -405,6 +410,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -418,6 +424,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -450,6 +457,7 @@
                 "own_requests",
                 "approves_team",
                 "hr_team",
+                "manage_people",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -643,6 +651,41 @@
           "manager_name"
         ],
         "title": "AccessWarningOut",
+        "type": "object"
+      },
+      "AccountLink": {
+        "additionalProperties": false,
+        "description": "Link a person to a member's console account, or unlink (None). HR owner only.",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "operation": {
+            "const": "account.link",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "account_id"
+        ],
+        "title": "AccountLink",
         "type": "object"
       },
       "ActionIn": {
@@ -2687,6 +2730,109 @@
         "title": "DecideIn",
         "type": "object"
       },
+      "DepartmentList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DepartmentOut"
+            },
+            "maxItems": 500,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "DepartmentList",
+        "type": "object"
+      },
+      "DepartmentOut": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "department_id": {
+            "format": "uuid",
+            "title": "Department Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "people": {
+            "minimum": 0.0,
+            "title": "People",
+            "type": "integer"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "department_id",
+          "name",
+          "archived",
+          "version",
+          "people"
+        ],
+        "title": "DepartmentOut",
+        "type": "object"
+      },
+      "DepartmentSave": {
+        "additionalProperties": false,
+        "description": "Create (no expected_version), rename, archive or restore a department.",
+        "properties": {
+          "archived": {
+            "default": false,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "department_id": {
+            "format": "uuid",
+            "title": "Department Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "operation": {
+            "const": "department.save",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "department_id",
+          "name"
+        ],
+        "title": "DepartmentSave",
+        "type": "object"
+      },
       "DirectoryField": {
         "enum": [
           "display_name",
@@ -3323,6 +3469,39 @@
         "title": "EmployeeSave",
         "type": "object"
       },
+      "EmploymentProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "employment_category": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Employment Category",
+            "type": "string"
+          },
+          "legal_entity_reference": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Legal Entity Reference",
+            "type": "string"
+          },
+          "region": {
+            "enum": [
+              "peninsular_labuan",
+              "sabah",
+              "sarawak"
+            ],
+            "title": "Region",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region",
+          "legal_entity_reference",
+          "employment_category"
+        ],
+        "title": "EmploymentProfile",
+        "type": "object"
+      },
       "EventOut": {
         "properties": {
           "agent": {
@@ -3392,6 +3571,58 @@
           "created_at"
         ],
         "title": "EventOut",
+        "type": "object"
+      },
+      "FieldChange": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "enum": [
+              "display_name",
+              "job_title",
+              "department",
+              "manager",
+              "work_email",
+              "work_phone",
+              "start_date",
+              "employment_type",
+              "active",
+              "region",
+              "legal_entity_reference",
+              "employment_category"
+            ],
+            "title": "Field",
+            "type": "string"
+          },
+          "new": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New"
+          },
+          "old": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old"
+          }
+        },
+        "required": [
+          "field",
+          "old",
+          "new"
+        ],
+        "title": "FieldChange",
         "type": "object"
       },
       "FileOut": {
@@ -3525,7 +3756,8 @@
           "training.draft",
           "training.submit",
           "training.withdraw",
-          "training.decide"
+          "training.decide",
+          "people.manage"
         ],
         "title": "HrAction",
         "type": "string"
@@ -3712,6 +3944,11 @@
               }
             ]
           },
+          "hr_duties": {
+            "default": false,
+            "title": "Hr Duties",
+            "type": "boolean"
+          },
           "private_areas": {
             "default": [],
             "items": {
@@ -3723,6 +3960,33 @@
               "type": "string"
             },
             "title": "Private Areas",
+            "type": "array"
+          },
+          "switches": {
+            "default": [],
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "manage_people",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "title": "Switches",
+            "type": "array"
+          },
+          "workflows": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Workflows",
             "type": "array"
           }
         },
@@ -3769,6 +4033,199 @@
           "as_of"
         ],
         "title": "HrGuidance",
+        "type": "object"
+      },
+      "HrHome": {
+        "additionalProperties": false,
+        "properties": {
+          "requests_waiting": {
+            "minimum": 0.0,
+            "title": "Requests Waiting",
+            "type": "integer"
+          },
+          "training_waiting": {
+            "minimum": 0.0,
+            "title": "Training Waiting",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "training_waiting",
+          "requests_waiting"
+        ],
+        "title": "HrHome",
+        "type": "object"
+      },
+      "HrPersonOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account_linked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Linked"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "employment_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full_time",
+                  "part_time",
+                  "contract",
+                  "intern"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employment Type"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Id"
+          },
+          "manager_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Name"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "starting",
+              "left"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          },
+          "work_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Phone"
+          }
+        },
+        "required": [
+          "employee_id",
+          "display_name",
+          "status"
+        ],
+        "title": "HrPersonOut",
         "type": "object"
       },
       "HumanReply": {
@@ -5305,6 +5762,33 @@
         "title": "LeaveInput",
         "type": "object"
       },
+      "LinkedAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "display_name"
+        ],
+        "title": "LinkedAccount",
+        "type": "object"
+      },
       "LocalOrderSummary": {
         "additionalProperties": false,
         "description": "Bounded manual-business projection; no contact, address or provider blob.",
@@ -6044,6 +6528,90 @@
         "title": "OrderReadResult",
         "type": "object"
       },
+      "OrgChart": {
+        "additionalProperties": false,
+        "properties": {
+          "looped": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Looped",
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/OrgNode"
+            },
+            "maxItems": 5000,
+            "title": "Nodes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes",
+          "looped"
+        ],
+        "title": "OrgChart",
+        "type": "object"
+      },
+      "OrgNode": {
+        "additionalProperties": false,
+        "properties": {
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Id"
+          }
+        },
+        "required": [
+          "employee_id",
+          "display_name",
+          "job_title",
+          "department",
+          "manager_id"
+        ],
+        "title": "OrgNode",
+        "type": "object"
+      },
       "OverviewOut": {
         "properties": {
           "failed": {
@@ -6771,6 +7339,188 @@
         "title": "PendingInvitationPage",
         "type": "object"
       },
+      "PeoplePage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HrPersonOut"
+            },
+            "maxItems": 50,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "total"
+        ],
+        "title": "PeoplePage",
+        "type": "object"
+      },
+      "PersonAccessOut": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "custom": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Custom",
+            "type": "array"
+          },
+          "is_owner": {
+            "title": "Is Owner",
+            "type": "boolean"
+          },
+          "on": {
+            "items": {
+              "enum": [
+                "directory",
+                "own_requests",
+                "approves_team",
+                "hr_team",
+                "manage_people",
+                "recruitment",
+                "attendance",
+                "payroll_prepare",
+                "payroll_review"
+              ],
+              "type": "string"
+            },
+            "title": "On",
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "on",
+          "custom",
+          "is_owner"
+        ],
+        "title": "PersonAccessOut",
+        "type": "object"
+      },
+      "PersonAdd": {
+        "additionalProperties": false,
+        "description": "A new active person. Owner or Manage people; never changes access or account links.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "const": "person.add",
+            "title": "Operation",
+            "type": "string"
+          },
+          "values": {
+            "$ref": "#/components/schemas/PersonValues"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "values"
+        ],
+        "title": "PersonAdd",
+        "type": "object"
+      },
+      "PersonChange": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Name"
+          },
+          "changed_at": {
+            "format": "date-time",
+            "title": "Changed At",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldChange"
+            },
+            "title": "Fields",
+            "type": "array"
+          }
+        },
+        "required": [
+          "changed_at",
+          "actor_name",
+          "fields"
+        ],
+        "title": "PersonChange",
+        "type": "object"
+      },
+      "PersonHistory": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PersonChange"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "title": "PersonHistory",
+        "type": "object"
+      },
       "PersonOut": {
         "additionalProperties": false,
         "properties": {
@@ -6813,6 +7563,201 @@
           "work_email"
         ],
         "title": "PersonOut",
+        "type": "object"
+      },
+      "PersonProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "can_edit": {
+            "title": "Can Edit",
+            "type": "boolean"
+          },
+          "person": {
+            "$ref": "#/components/schemas/HrPersonOut"
+          },
+          "sections": {
+            "items": {
+              "enum": [
+                "overview",
+                "access",
+                "history"
+              ],
+              "type": "string"
+            },
+            "title": "Sections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "person",
+          "sections",
+          "can_edit"
+        ],
+        "title": "PersonProfile",
+        "type": "object"
+      },
+      "PersonUpdate": {
+        "additionalProperties": false,
+        "description": "Every editable field at once. Never changes whether the person is active (1b).",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employment_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "person.update",
+            "title": "Operation",
+            "type": "string"
+          },
+          "values": {
+            "$ref": "#/components/schemas/PersonValues"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version",
+          "values"
+        ],
+        "title": "PersonUpdate",
+        "type": "object"
+      },
+      "PersonValues": {
+        "additionalProperties": false,
+        "description": "A person's editable Overview fields, for person.add and person.update.\n\nThe department is an existing one (`department_id`) or a name typed in the form\n(`new_department`, matched like department names are, or created), never both.",
+        "properties": {
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "display_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employment_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full_time",
+                  "part_time",
+                  "contract",
+                  "intern"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employment Type"
+          },
+          "job_title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Title"
+          },
+          "manager_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Id"
+          },
+          "new_department": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Department"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "work_email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Email"
+          },
+          "work_phone": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9+() -]{3,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Phone"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "PersonValues",
         "type": "object"
       },
       "PlanIn": {
@@ -15404,6 +16349,7 @@
                     "own_requests",
                     "approves_team",
                     "hr_team",
+                    "manage_people",
                     "recruitment",
                     "attendance",
                     "payroll_prepare",
@@ -16065,6 +17011,56 @@
         ]
       }
     },
+    "/console/v1/hr/departments": {
+      "get": {
+        "operationId": "departments_console_v1_hr_departments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepartmentList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Departments",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
     "/console/v1/hr/employees": {
       "get": {
         "operationId": "directory_page_console_v1_hr_employees_get",
@@ -16254,6 +17250,56 @@
         ]
       }
     },
+    "/console/v1/hr/home": {
+      "get": {
+        "operationId": "home_console_v1_hr_home_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HrHome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Home",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
     "/console/v1/hr/operations": {
       "post": {
         "operationId": "operation_console_v1_hr_operations_post",
@@ -16293,6 +17339,7 @@
                 "discriminator": {
                   "mapping": {
                     "access.save": "#/components/schemas/AccessSave",
+                    "account.link": "#/components/schemas/AccountLink",
                     "attendance.import": "#/components/schemas/AttendanceImport",
                     "automation.configure": "#/components/schemas/AutomationConfigure",
                     "automation.run": "#/components/schemas/AutomationRun",
@@ -16300,6 +17347,7 @@
                     "candidate.erase": "#/components/schemas/CandidateErase",
                     "candidate.intake": "#/components/schemas/CandidateIntake",
                     "candidate.note": "#/components/schemas/CandidateNote",
+                    "department.save": "#/components/schemas/DepartmentSave",
                     "employee.save": "#/components/schemas/EmployeeSave",
                     "interview.cancel": "#/components/schemas/ScheduleCancel",
                     "interview.schedule": "#/components/schemas/InterviewSchedule",
@@ -16308,6 +17356,8 @@
                     "payroll.reverse": "#/components/schemas/PayrollReverse",
                     "payroll.rules": "#/components/schemas/PayrollRules-Input",
                     "payroll.snapshot": "#/components/schemas/PayrollSnapshot",
+                    "person.add": "#/components/schemas/PersonAdd",
+                    "person.update": "#/components/schemas/PersonUpdate",
                     "private_access.save": "#/components/schemas/PrivateAccessSave",
                     "shift.cancel": "#/components/schemas/ScheduleCancel",
                     "shift.schedule": "#/components/schemas/ShiftSchedule"
@@ -16368,6 +17418,18 @@
                   },
                   {
                     "$ref": "#/components/schemas/AutomationConfigure"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonAdd"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonUpdate"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DepartmentSave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AccountLink"
                   }
                 ],
                 "title": "Body"
@@ -16399,6 +17461,375 @@
           }
         },
         "summary": "Operation",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/org-chart": {
+      "get": {
+        "operationId": "org_chart_console_v1_hr_org_chart_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgChart"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Org Chart",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people": {
+      "get": {
+        "operationId": "people_console_v1_hr_people_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "department",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department"
+            }
+          },
+          {
+            "in": "query",
+            "name": "manager",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Manager"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "active",
+                    "starting",
+                    "left"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeoplePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "People",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people/{employee_id}": {
+      "get": {
+        "operationId": "person_profile_console_v1_hr_people__employee_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonProfile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Profile",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people/{employee_id}/access": {
+      "get": {
+        "operationId": "person_access_console_v1_hr_people__employee_id__access_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonAccessOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Access",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people/{employee_id}/history": {
+      "get": {
+        "operationId": "person_history_console_v1_hr_people__employee_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person History",
         "tags": [
           "HR"
         ]
@@ -16489,6 +17920,7 @@
               "enum": [
                 "authority_audit",
                 "members",
+                "interviewers",
                 "employees",
                 "candidates",
                 "interviews",

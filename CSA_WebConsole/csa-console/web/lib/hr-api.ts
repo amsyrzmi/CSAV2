@@ -1,4 +1,5 @@
 import { api } from "./api";
+import type { SwitchId } from "./hr-access-api";
 import type { ProposalOut } from "./workspace-api";
 
 export interface HrContext {
@@ -6,6 +7,12 @@ export interface HrContext {
   client_owner: boolean;
   private_areas: ("recruitment" | "attendance" | "payroll")[];
   actions: string[];
+  /** The access switches that are on for the viewer, in switch order. */
+  switches: SwitchId[];
+  /** The `domain.action` workflows the viewer may use, sorted and unique. */
+  workflows: string[];
+  /** True for the HR owner and for anyone holding a switch beyond directory and own requests. */
+  hr_duties: boolean;
 }
 export interface Employee {
   employee: { tenant_id: string; employee_id: string };

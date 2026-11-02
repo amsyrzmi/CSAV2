@@ -112,7 +112,12 @@ test("HR pages are adopted but require sessions", async () => {
   const code = ts.transpileModule(await readFile(new URL("../proxy.ts", import.meta.url), "utf8"), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText;
-  const exports = {}; new Function("require", "exports", code)(require, exports);
+  const paths = ts.transpileModule(await readFile(new URL("../lib/hr-paths.ts", import.meta.url), "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const pathExports = {}; new Function("exports", paths)(pathExports);
+  const exports = {};
+  new Function("require", "exports", code)((name) => (name === "./lib/hr-paths" ? pathExports : require(name)), exports);
   const { NextRequest } = require("next/server");
   for (const path of ["/hr", "/portal/hr"]) {
     assert.equal(exports.proxy(new NextRequest(`https://example.test${path}`)).status, 307);

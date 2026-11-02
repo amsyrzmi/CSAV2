@@ -656,3 +656,31 @@ async def test_recent_changes_use_an_invitation_as_the_baseline(world: HrWorld) 
         "attendance",
     ]
     assert invitation["turned_off"] == [] and invitation["area"] is None
+
+
+async def test_manage_people_switch_saves_and_counts(world: HrWorld) -> None:
+    await clear_operator(world)
+    await turn(world, "operator", ["directory"])
+    before = await stored(world, "operator")
+    assert (await people(world))["counts"]["manage_people"] == 0
+
+    on = await turn(world, "operator", ["directory", "manage_people"])
+    assert on["results"] == [result(world, "operator", "saved")]
+    after = await stored(world, "operator")
+    assert after.minus(before) == SWITCHES["manage_people"] and before.issubset(after)
+    assert after.grants - before.grants == {GrantRow("people.manage", "hr_operator", ())}
+    page = await people(world)
+    assert page["counts"]["manage_people"] == 1
+    operator = await person(world, "operator")
+    assert sorted(operator["on"]) == ["directory", "manage_people"] and operator["custom"] == []
+    holders = await people(world, has="manage_people")
+    assert [item["user_id"] for item in holders["items"]] == [str(world.users["operator"])]
+    # The holder manages people, and still cannot open the access page.
+    assert (await world.call("operator", "GET", PEOPLE)).status_code == 404
+    events = (await world.call("owner", "GET", RECENT)).json()["items"]
+    assert (events[0]["turned_on"], events[0]["turned_off"]) == (["manage_people"], [])
+
+    off = await turn(world, "operator", ["directory"])
+    assert off["results"] == [result(world, "operator", "saved")]
+    assert await stored(world, "operator") == before
+    assert (await people(world))["counts"]["manage_people"] == 0

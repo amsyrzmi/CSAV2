@@ -29,6 +29,12 @@ export const SWITCH_COPY: Record<SwitchId, { label: string; tag: string; explana
     explanation: "Reads everyone's training, leave and attendance records. Prepares recruitment requests.",
     group: "Responsibilities",
   },
+  manage_people: {
+    label: "Manage people",
+    tag: "Manage people",
+    explanation: "Adds people and edits their profiles and departments. Sees people who have left and employment profiles.",
+    group: "Responsibilities",
+  },
   payroll_prepare: {
     label: "Prepares payroll",
     tag: "Prepares payroll",
@@ -58,7 +64,7 @@ export const SWITCH_COPY: Record<SwitchId, { label: string; tag: string; explana
 export const PRESET_COPY: Record<PresetId, { label: string; description: string }> = {
   staff: { label: "Staff", description: "Basic details and their own requests." },
   manager: { label: "Manager", description: "Staff, plus approves for their team." },
-  hr_team: { label: "HR team", description: "Staff, plus HR team member, recruitment and attendance." },
+  hr_team: { label: "HR team", description: "Staff, plus HR team member, manage people, recruitment and attendance." },
   payroll_preparer: { label: "Payroll preparer", description: "Staff, plus prepares payroll." },
   payroll_reviewer: { label: "Payroll reviewer", description: "Staff, plus reviews payroll." },
 };

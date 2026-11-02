@@ -160,6 +160,7 @@ class Records(HrModel):
 RECORD_TYPES = {
     "authority_audit": AuthorityEvent,
     "members": MemberRecord,
+    "interviewers": MemberRecord,
     "employees": AdminEmployee,
     "candidates": CandidateSummary,
     "candidate": CandidateDetails,

@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
+import psycopg
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
@@ -15,6 +16,7 @@ from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.hr.automation_models import (
     AccessSave,
+    AccountLink,
     AttendanceImport,
     AutomationConfigure,
     AutomationRun,
@@ -22,6 +24,7 @@ from csa.hr.automation_models import (
     CandidateErase,
     CandidateIntake,
     CandidateNote,
+    DepartmentSave,
     EmployeeSave,
     HrOperation,
     InterviewSchedule,
@@ -31,16 +34,39 @@ from csa.hr.automation_models import (
     PayrollReverse,
     PayrollRules,
     PayrollSnapshot,
+    PersonAdd,
+    PersonUpdate,
     PrivateAccessSave,
     ScheduleCancel,
     ShiftSchedule,
     leave_days,
 )
-from csa.hr.models import TrustedAccess
+from csa.hr.models import GrantScope, HrAction, TrustedAccess
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import HrSession
 from csa.hr.service import HrService, _fingerprint
 from csa.hr.workflows import LeaveInput, PayrollInput
+
+_PEOPLE_OPERATIONS = (PersonAdd, PersonUpdate, DepartmentSave)
+# Database refusals of hr_people_apply and account.link (the RAISE message), and the HR policy
+# code each one becomes.
+_PEOPLE_REFUSALS = {
+    "hr_people_manager_required": "permission_denied",
+    "hr_owner_required": "permission_denied",
+    "hr_employee_unavailable": "resource_unavailable",
+    "hr_employee_exists": "employee_exists",
+    "hr_person_changed": "person_changed",
+    "hr_manager_unavailable": "manager_unavailable",
+    "hr_manager_loop": "manager_loop",
+    "hr_manager_is_you": "manager_is_you",
+    "hr_own_manager_owner_only": "own_manager_owner_only",
+    "hr_department_unavailable": "department_unavailable",
+    "hr_department_archived": "department_archived",
+    "hr_department_changed": "department_changed",
+    "hr_department_name_taken": "department_name_taken",
+    "hr_account_taken": "account_taken",
+    "hr_member_unavailable": "member_unavailable",
+}
 
 
 class HrOperations:
@@ -74,6 +100,15 @@ class HrOperations:
         if not access.client_owner:
             raise HrPolicyError("permission_denied")
 
+    @staticmethod
+    def people_manager(access: TrustedAccess) -> None:
+        """The HR owner, or a holder of the Manage people switch. hr_people_apply checks again."""
+        if not access.client_owner and not any(
+            grant.action == HrAction.PEOPLE_MANAGE and grant.scope == GrantScope.HR
+            for grant in access.grants
+        ):
+            raise HrPolicyError("permission_denied")
+
     async def _authorize(
         self, conn: AsyncConnection, session: HrSession, body: HrOperation, access: TrustedAccess
     ) -> None:
@@ -86,9 +121,12 @@ class HrOperations:
                 CalendarSave,
                 LeaveBalanceSave,
                 AutomationConfigure,
+                AccountLink,
             ),
         ):
             self.owner(access)
+        elif isinstance(body, _PEOPLE_OPERATIONS):
+            self.people_manager(access)
         elif isinstance(body, (CandidateIntake, CandidateNote, CandidateErase, InterviewSchedule)):
             await self.private(conn, session, "recruitment")
         elif isinstance(body, (PayrollRules, PayrollSnapshot, PayrollReverse)):
@@ -132,7 +170,17 @@ class HrOperations:
                 return OperationReceipt.model_validate(old["receipt"]).model_copy(
                     update={"duplicate": True}
                 )
-            if isinstance(body, (EmployeeSave, AccessSave, PrivateAccessSave)):
+            if isinstance(body, (*_PEOPLE_OPERATIONS, AccountLink)):
+                path = (
+                    "hr/admin_apply.sql" if isinstance(body, AccountLink) else "hr/people_apply.sql"
+                )
+                row = await self._people_apply(
+                    conn,
+                    path,
+                    (session.tenant_id, key, fingerprint, Jsonb(body.model_dump(mode="json"))),
+                )
+                receipt = OperationReceipt.model_validate(row["receipt"])
+            elif isinstance(body, (EmployeeSave, AccessSave, PrivateAccessSave)):
                 row = await q.fetch_one(
                     "hr/admin_apply.sql",
                     (session.tenant_id, key, fingerprint, Jsonb(body.model_dump(mode="json"))),
@@ -167,6 +215,19 @@ class HrOperations:
                 )
             await self.core._session(conn, session)
         return receipt
+
+    @staticmethod
+    async def _people_apply(
+        conn: AsyncConnection, path: str, params: tuple[Any, ...]
+    ) -> dict[str, Any]:
+        """Run a people write; its database refusals become HR policy codes."""
+        try:
+            return await q.fetch_one(path, params, conn=conn)
+        except (psycopg.errors.CheckViolation, psycopg.errors.InsufficientPrivilege) as exc:
+            code = _PEOPLE_REFUSALS.get(exc.diag.message_primary or "")
+            if code is None:
+                raise
+            raise HrPolicyError(code) from None
 
     async def _mutate(
         self, conn: AsyncConnection, session: HrSession, body: HrOperation
@@ -582,8 +643,9 @@ class HrOperations:
                 rows = await q.fetch_all("hr/admin_employees.sql", (session.tenant_id,), conn=conn)
                 await self.core._session(conn, session)
                 return [r["value"] for r in rows]
-            if area in {"candidates", "interviews"}:
-                await self.private(conn, session, "recruitment")
+            if area in {"candidates", "interviews", "interviewers"}:
+                if area != "interviewers" or not access.client_owner:
+                    await self.private(conn, session, "recruitment")
             if area in {"payroll_rules", "payroll_snapshot"}:
                 await self.private(conn, session, "payroll")
                 from csa.hr.cases import HrWorkflowService
@@ -619,6 +681,7 @@ class HrOperations:
                 "shifts": "shift_page",
                 "payroll_rules": "rule_page",
                 "notifications": "notification_page",
+                "interviewers": "recruitment_members",
             }
             if area not in names:
                 raise HrPolicyError("unsupported_operation")
