@@ -368,7 +368,7 @@ same authority as the screen:
 5. **The assistant's name search stays company-wide,** as today (name, title, work email from the
    company directory). "Who reports to" and "who is in a department" answers follow the person's
    People access.
-6. **IC or passport and bank account numbers are encrypted at rest** with the existing crypto key,
+6. **IC or passport, bank account, tax, EPF and SOCSO numbers are encrypted at rest** with the existing crypto key,
    masked until shown, and every Show is audited. Uploaded documents are stored like KB uploads,
    not encrypted on disk and with no virus scan. This is noted as a known limit.
 7. **The leaving reason and employment profile are HR-only.** The last day is visible to managers.
