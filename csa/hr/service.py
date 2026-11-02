@@ -146,9 +146,12 @@ class HrService:
     async def guidance(self, session: HrSession) -> HrGuidance:
         async with tx(self.pool, str(session.tenant_id)) as conn:
             access = await self._access(conn, session)
-            # Guidance names the directory and training actions only; people.manage is a
-            # switch of the People pages, not something the assistant guides.
-            actions = {grant.action for grant in access.grants} - {HrAction.PEOPLE_MANAGE}
+            # Guidance names the directory and training actions only; people.manage and
+            # people.sensitive are switches of the People pages, not something the assistant guides.
+            actions = {grant.action for grant in access.grants} - {
+                HrAction.PEOPLE_MANAGE,
+                HrAction.PEOPLE_SENSITIVE,
+            }
             result = HrGuidance(actions=tuple(sorted(actions)), as_of=self.now())
             await self._session(conn, session)
         return result

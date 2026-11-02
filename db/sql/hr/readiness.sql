@@ -24,5 +24,6 @@ SELECT current_user = 'csa_app' AND NOT rolsuper AND NOT rolbypassrls AS safe_ro
     AND to_regprocedure('public.hr_calendar_lock(uuid,text,integer)') IS NOT NULL
     AND to_regprocedure('public.hr_people_rows(uuid)') IS NOT NULL
     AND to_regprocedure('public.hr_can_manage_people(uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_can_see_sensitive(uuid)') IS NOT NULL
     AS schema_ready
 FROM pg_roles WHERE rolname=current_user;

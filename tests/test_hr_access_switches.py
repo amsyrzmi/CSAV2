@@ -317,6 +317,39 @@ def test_people_manage_resolves_for_the_hr_scope_only() -> None:
         )
 
 
+def test_sensitive_details_switch_is_in_no_preset() -> None:
+    assert "sensitive_details" in SWITCH_IDS
+    assert SWITCH_IDS.index("sensitive_details") == SWITCH_IDS.index("manage_people") + 1
+    assert all("sensitive_details" not in switches for switches in PRESETS.values())
+
+
+def test_sensitive_details_round_trips_through_state() -> None:
+    switch = SWITCHES["sensitive_details"]
+    assert switch.grants == {GrantRow("people.sensitive", "hr_operator", ())}
+    assert switch.workflows == frozenset() and switch.areas == frozenset()
+    assert state(switch).on == {"sensitive_details"}
+    assert state(switch).uncovered == EMPTY
+    [save] = operations(uuid4(), EMPTY, switch)
+    assert isinstance(save, AccessSave)
+    assert [(g.action.value, g.scope.value, g.fields) for g in save.grants] == [
+        ("people.sensitive", "hr_operator", frozenset())
+    ]
+
+
+def test_people_sensitive_resolves_for_the_hr_scope_only() -> None:
+    granted = ResolvedGrant(action=HrAction.PEOPLE_SENSITIVE, scope=GrantScope.HR)
+    assert granted.action == "people.sensitive" and granted.fields == frozenset()
+    for scope in (GrantScope.SELF, GrantScope.TEAM, GrantScope.CLIENT_OWNER):
+        with pytest.raises(ValidationError, match="unsupported_grant"):
+            ResolvedGrant(action=HrAction.PEOPLE_SENSITIVE, scope=scope)
+    with pytest.raises(ValidationError, match="fields_only_for_directory"):
+        ResolvedGrant(
+            action=HrAction.PEOPLE_SENSITIVE,
+            scope=GrantScope.HR,
+            fields=frozenset({DirectoryField.DISPLAY_NAME}),
+        )
+
+
 def test_access_change_takes_up_to_max_switches() -> None:
     assert MAX_SWITCHES == 16 and len(SWITCH_IDS) <= MAX_SWITCHES
     every = list(SWITCH_IDS)

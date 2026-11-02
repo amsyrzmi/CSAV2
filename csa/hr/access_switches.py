@@ -22,6 +22,7 @@ SwitchId = Literal[
     "approves_team",
     "hr_team",
     "manage_people",
+    "sensitive_details",
     "recruitment",
     "attendance",
     "payroll_prepare",
@@ -42,6 +43,7 @@ SWITCH_IDS: tuple[SwitchId, ...] = (
     "approves_team",
     "hr_team",
     "manage_people",
+    "sensitive_details",
     "recruitment",
     "attendance",
     "payroll_prepare",
@@ -155,6 +157,10 @@ SWITCHES: Mapping[SwitchId, AccessRows] = {
     # Add and edit people and departments, and see Left people and employment profiles. It never
     # changes access: that stays with the HR owner.
     "manage_people": _rows([_grant("people.manage", "hr_operator")]),
+    # See and edit the sensitive personal details of people (IC or passport, bank, tax, EPF and
+    # SOCSO numbers, home address, personal phone, emergency contact). In no preset: the owner
+    # turns it on person by person.
+    "sensitive_details": _rows([_grant("people.sensitive", "hr_operator")]),
     "recruitment": _rows(areas=["recruitment"]),
     "attendance": _rows(areas=["attendance"]),
     "payroll_prepare": _rows(
