@@ -98,10 +98,10 @@ class AccessEvent(HrModel):
 
     For an invitation the actor is whoever chose the preset, and `turned_on` is the switches the
     preset added to what the person already had. For a move the actor is whoever moved the title
-    (a tenant admin or a platform admin), the target is the new owner, and `previous_owner_name`
-    is the owner it replaced (None for a first owner, or once they are no longer an enabled
-    member); no switches change. A platform admin's name is "FourStacks admin"; a name is None
-    once that person is no longer an enabled member.
+    (a tenant admin or a platform admin), the target is the new owner, `replaced_owner` says
+    whether there was an owner before, and `previous_owner_name` is that owner (None for a first
+    owner, or once they are no longer an enabled member); no switches change. A platform admin's
+    name is "FourStacks admin"; a name is None once that person is no longer an enabled member.
     """
 
     occurred_at: datetime
@@ -112,6 +112,7 @@ class AccessEvent(HrModel):
     target_user_id: UUID
     target_name: str | None
     previous_owner_name: str | None = None  # owner_move events only
+    replaced_owner: bool = False  # owner_move events only
     turned_on: list[SwitchId]
     turned_off: list[SwitchId]
     area: str | None

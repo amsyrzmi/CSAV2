@@ -129,7 +129,7 @@
       },
       "AccessEvent": {
         "additionalProperties": false,
-        "description": "One change: a save on this page, access set on an invitation when it was accepted, or a\nmove of the HR owner.\n\nFor an invitation the actor is whoever chose the preset, and `turned_on` is the switches the\npreset added to what the person already had. For a move the actor is whoever moved the title\n(a tenant admin or a platform admin), the target is the new owner, and `previous_owner_name`\nis the owner it replaced (None for a first owner, or once they are no longer an enabled\nmember); no switches change. A platform admin's name is \"FourStacks admin\"; a name is None\nonce that person is no longer an enabled member.",
+        "description": "One change: a save on this page, access set on an invitation when it was accepted, or a\nmove of the HR owner.\n\nFor an invitation the actor is whoever chose the preset, and `turned_on` is the switches the\npreset added to what the person already had. For a move the actor is whoever moved the title\n(a tenant admin or a platform admin), the target is the new owner, `replaced_owner` says\nwhether there was an owner before, and `previous_owner_name` is that owner (None for a first\nowner, or once they are no longer an enabled member); no switches change. A platform admin's\nname is \"FourStacks admin\"; a name is None once that person is no longer an enabled member.",
         "properties": {
           "actor_name": {
             "anyOf": [
@@ -202,6 +202,11 @@
               }
             ],
             "title": "Previous Owner Name"
+          },
+          "replaced_owner": {
+            "default": false,
+            "title": "Replaced Owner",
+            "type": "boolean"
           },
           "source": {
             "enum": [

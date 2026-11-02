@@ -465,6 +465,7 @@ class HrAccessPage:
                 "target_user_id": target,
                 "target_name": names.get(target),
                 "previous_owner_name": names.get(previous) if previous is not None else None,
+                "replaced_owner": previous is not None,
             }
             if moved:
                 items.append(

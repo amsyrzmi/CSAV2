@@ -84,6 +84,8 @@ export interface AccessEvent {
   target_name: string | null;
   /** The owner an "owner_move" replaced; null for a first owner or once they are gone. */
   previous_owner_name: string | null;
+  /** Whether an "owner_move" replaced someone, even once they can no longer be named. */
+  replaced_owner: boolean;
   turned_on: SwitchId[];
   turned_off: SwitchId[];
   area: string | null;

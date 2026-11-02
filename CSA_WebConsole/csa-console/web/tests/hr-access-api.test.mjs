@@ -259,7 +259,7 @@ test("an invitation that was already handled keeps its code and reads as a sente
 
 const event = (extra) => ({
   occurred_at: "2026-10-29T01:00:00Z", source: "invitation", preset: "manager", actor_user_id: MANAGER,
-  actor_name: "Daniel Lim", target_user_id: USER, target_name: "Aina Rahman", previous_owner_name: null,
+  actor_name: "Daniel Lim", target_user_id: USER, target_name: "Aina Rahman", previous_owner_name: null, replaced_owner: false,
   turned_on: ["approves_team"], turned_off: [], area: null, area_enabled: null, ...extra,
 });
 
@@ -273,8 +273,10 @@ test("an invitation event names who chose the access and the preset", () => {
 
 test("an owner move names who made whom the HR owner, and who it replaced", () => {
   const move = (extra) => event({ source: "owner_move", preset: null, turned_on: [], ...extra });
-  assert.equal(copy.eventText(move({ previous_owner_name: "Siti Aminah" })),
+  assert.equal(copy.eventText(move({ previous_owner_name: "Siti Aminah", replaced_owner: true })),
     "Daniel Lim made Aina Rahman the HR owner, replacing Siti Aminah");
+  assert.equal(copy.eventText(move({ replaced_owner: true })),
+    "Daniel Lim made Aina Rahman the HR owner, replacing Former member");
   assert.equal(copy.eventText(move({})), "Daniel Lim made Aina Rahman the HR owner");
   assert.equal(copy.eventText(move({ actor_name: "FourStacks admin", target_name: null })),
     "FourStacks admin made Former member the HR owner");

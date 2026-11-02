@@ -1046,7 +1046,7 @@ async def test_recent_changes_show_the_move_for_a_platform_actor(world: HrWorld)
     assert event["source"] == "owner_move" and event["preset"] is None
     assert event["actor_user_id"] == str(platform) and event["actor_name"] == "FourStacks admin"
     assert event["target_user_id"] == str(new) and event["target_name"] == "Synthetic New"
-    assert event["previous_owner_name"] == "Synthetic Old"
+    assert event["previous_owner_name"] == "Synthetic Old" and event["replaced_owner"] is True
     assert event["turned_on"] == [] and event["turned_off"] == []
     assert event["area"] is None and event["area_enabled"] is None
 
@@ -1072,11 +1072,18 @@ async def test_recent_changes_name_nobody_who_is_gone_and_a_first_owner_has_no_p
     items = (await world.call("manager", "GET", f"{ACCESS}/recent")).json()["items"]
 
     assert [
-        (i["source"], i["actor_name"], i["target_name"], i["previous_owner_name"]) for i in items
+        (
+            i["source"],
+            i["actor_name"],
+            i["target_name"],
+            i["previous_owner_name"],
+            i["replaced_owner"],
+        )
+        for i in items
     ] == [
-        ("owner_move", "Synthetic Admin", "Synthetic Mgr", None),
-        # The old owner has since been disabled, so the page can't name them.
-        ("owner_move", "Synthetic Admin", "Synthetic New", None),
+        ("owner_move", "Synthetic Admin", "Synthetic Mgr", None, False),
+        # The old owner has since been disabled: the page can't name them, but they were replaced.
+        ("owner_move", "Synthetic Admin", "Synthetic New", None, True),
     ]
     assert items[0]["actor_user_id"] == str(admin)
 

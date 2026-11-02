@@ -150,9 +150,10 @@ access.
   (otherwise `null`); its actor is whoever chose the preset (a platform admin shows as
   "FourStacks admin"), and `turned_on` is only what the preset added to what the person
   already had. An `owner_move` event is a change of HR owner: its actor is whoever moved
-  it (a platform admin shows as "FourStacks admin"), its target is the new owner, and
-  `previous_owner_name` is the owner it replaced (`null` for a first owner or once they are
-  no longer an enabled member); it changes no switches.
+  it (a platform admin shows as "FourStacks admin"), its target is the new owner,
+  `replaced_owner` is true when there was an owner before, and `previous_owner_name` is that
+  owner (`null` for a first owner or once they are no longer an enabled member, when the page
+  says "replacing Former member"); it changes no switches.
 - **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
   below) is applied when the invitation is accepted. If it is not, it waits for the HR
   owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an

@@ -164,8 +164,8 @@ export function eventText(e: AccessEvent): string {
   const actor = formerMember(e.actor_name);
   const target = formerMember(e.target_name);
   if (e.source === "owner_move")
-    return e.previous_owner_name
-      ? `${actor} made ${target} the HR owner, replacing ${e.previous_owner_name}`
+    return e.replaced_owner
+      ? `${actor} made ${target} the HR owner, replacing ${formerMember(e.previous_owner_name)}`
       : `${actor} made ${target} the HR owner`;
   if (e.source === "invitation" && e.preset)
     return `Set on invitation by ${actor}: ${PRESET_COPY[e.preset].label} for ${target}`;
