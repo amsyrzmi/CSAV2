@@ -20,6 +20,12 @@ export const RECORDS_COPY = {
     empty: "That file is empty.",
     name: "Rename the file and try again.",
   },
+  /** When a write may or may not have landed. The form keeps its Idempotency-Key, so choosing the button again is safe. */
+  uncertain: {
+    save: "We couldn't confirm the save. Choose Save changes again; it won't save twice.",
+    upload: "We couldn't confirm the upload. Choose Upload again; it won't upload twice.",
+    remove: "We couldn't confirm the removal. Choose Remove again; it won't remove twice.",
+  },
   /** Plain sentences for the codes the personal, document, leaving and rehire operations answer with. */
   refusals: {
     last_owner_leaving: "Make someone else the HR owner first. The company always needs one.",
@@ -49,6 +55,27 @@ export const RECORDS_COPY = {
 /** The sentence for a refusal code from a records operation. People codes (stale version, manager) share their sentences. */
 export function recordsRefusalText(code: string): string {
   return Object.hasOwn(RECORDS_COPY.refusals, code) ? RECORDS_COPY.refusals[code] : peopleRefusalText(code);
+}
+
+/**
+ * The sentence for a failed personal save, upload or removal. A 4xx is a definite answer, so its code picks
+ * the sentence. A network error (`failure` null) or a 5xx leaves the outcome unknown.
+ */
+export function recordsErrorText(failure: { status: number; code: string } | null, action: "save" | "upload" | "remove"): string {
+  if (failure && failure.status >= 400 && failure.status < 500) return recordsRefusalText(failure.code);
+  return RECORDS_COPY.uncertain[action];
+}
+
+/** The message after a personal save. A receipt version 0 means nothing was saved (no record exists). */
+export function personalSavedText(receiptVersion: number): string {
+  return receiptVersion === 0 ? "Nothing was saved because no details were entered." : "Personal details saved.";
+}
+
+/** "200 KB", "2.5 MB": a document's size in the list. */
+export function fileSizeText(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.floor(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export interface PersonalFieldSpec {

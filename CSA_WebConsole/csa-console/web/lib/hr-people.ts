@@ -362,13 +362,15 @@ export function historyText(change: FieldChange): string {
 }
 
 // Personal and Documents have no tab until their sections are built; the server already lists them.
-const SECTION_LABELS: Partial<Record<ProfileSection, string>> = { overview: "Overview", access: "Access", history: "History" };
+const SECTION_LABELS: Record<ProfileSection, string> = {
+  overview: "Overview", personal: "Personal", documents: "Documents", access: "Access", history: "History",
+};
 
-/** The profile's tabs, in the order the server lists the sections. Sections this release does not show are dropped. */
+/** The profile's tabs, in the order the server lists the sections. A section this release does not know is dropped. */
 export function profileTabs(sections: readonly string[]): { value: ProfileSection; label: string }[] {
   return sections
     .filter((section): section is ProfileSection => Object.hasOwn(SECTION_LABELS, section))
-    .map((section) => ({ value: section, label: SECTION_LABELS[section] ?? section }));
+    .map((section) => ({ value: section, label: SECTION_LABELS[section] }));
 }
 
 /**

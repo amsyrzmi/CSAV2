@@ -19,7 +19,7 @@ const records = await import(
 const { historyText, STATUS_LABELS, PEOPLE_COPY, peopleRefusalText } = await import(peopleUrl);
 const {
   RECORDS_COPY, PERSONAL_FIELDS, personalFormValues, personalBody, leaveBody, leaveUndoBody, rehireBody,
-  documentIssue, recordsRefusalText, leavingSummary,
+  documentIssue, recordsRefusalText, leavingSummary, fileSizeText, recordsErrorText, personalSavedText,
 } = records;
 
 const TENANT = "a b/1";
@@ -388,4 +388,34 @@ test("recordsRefusalText falls back to the people sentences, then to the generic
   assert.equal(recordsRefusalText("manager_loop"), peopleRefusalText("manager_loop"));
   for (const bad of ["__proto__", "constructor", "", "toString", "nope"])
     assert.equal(recordsRefusalText(bad), PEOPLE_COPY.refusalFallback, bad);
+});
+
+test("fileSizeText reads as bytes, KB or MB", () => {
+  assert.equal(fileSizeText(0), "0 B");
+  assert.equal(fileSizeText(999), "999 B");
+  assert.equal(fileSizeText(1024), "1 KB");
+  assert.equal(fileSizeText(1500), "1 KB");
+  assert.equal(fileSizeText(200 * 1024), "200 KB");
+  assert.equal(fileSizeText(MB), "1.0 MB");
+  assert.equal(fileSizeText(2.5 * MB), "2.5 MB");
+  assert.equal(fileSizeText(10 * MB), "10.0 MB");
+});
+
+test("recordsErrorText: a 4xx picks its sentence, anything else says the outcome is unknown and a retry is safe", () => {
+  assert.equal(recordsErrorText({ status: 409, code: "person_changed" }, "save"), PEOPLE_COPY.stale);
+  assert.equal(recordsErrorText({ status: 422, code: "hr_document_empty" }, "upload"), "That file is empty.");
+  assert.equal(recordsErrorText({ status: 404, code: "Not Found" }, "remove"), PEOPLE_COPY.refusalFallback);
+  for (const failure of [null, { status: 500, code: "x" }, { status: 503, code: "x" }]) {
+    assert.equal(recordsErrorText(failure, "save"), RECORDS_COPY.uncertain.save);
+    assert.match(RECORDS_COPY.uncertain.save, /Save/);
+    assert.match(RECORDS_COPY.uncertain.upload, /Upload/);
+    assert.match(RECORDS_COPY.uncertain.remove, /Remove/);
+    assert.match(recordsErrorText(failure, "upload"), /won't upload twice/);
+  }
+});
+
+test("personalSavedText: receipt version 0 means nothing was saved", () => {
+  assert.equal(personalSavedText(0), "Nothing was saved because no details were entered.");
+  assert.equal(personalSavedText(1), "Personal details saved.");
+  assert.equal(personalSavedText(7), "Personal details saved.");
 });

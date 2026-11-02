@@ -331,7 +331,9 @@ test("profileTabs labels the server's sections in the server's order", () => {
   ]);
   assert.deepEqual(profileTabs(["overview"]), [{ value: "overview", label: "Overview" }]);
   assert.deepEqual(profileTabs(["history", "overview"]).map((tab) => tab.value), ["history", "overview"]);
-  assert.deepEqual(profileTabs(["overview", "personal"]), [{ value: "overview", label: "Overview" }]);
+  assert.deepEqual(profileTabs(["overview", "personal", "documents", "access", "history"]).map((tab) => tab.label),
+    ["Overview", "Personal", "Documents", "Access", "History"]);
+  assert.deepEqual(profileTabs(["overview", "payroll", "__proto__"]), [{ value: "overview", label: "Overview" }]);
 });
 
 test("personFormValues prefills every field and the employment profile from the person (full replace)", () => {

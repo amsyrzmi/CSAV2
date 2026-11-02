@@ -12,6 +12,8 @@ import {
 } from "@/lib/hr-people-api";
 import { isDenied, shortWhen } from "@/lib/hr-pickers";
 import { action, secondary, Notice, Panel } from "../ui";
+import { DocumentsSection } from "./DocumentsSection";
+import { PersonalSection } from "./PersonalSection";
 import { PersonForm } from "./PersonForm";
 import { MemberSelect, useMemberOptions } from "./Pickers";
 import { peopleWriteError } from "./refusal";
@@ -29,8 +31,8 @@ export function PersonOverview({ person }: { person: Person }) {
 }
 
 /**
- * A person's profile: Overview for everyone who may see them, plus Access and History for HR
- * viewers (the HR owner and Manage people holders), as the server lists the sections. Editors
+ * A person's profile: Overview for everyone who may see them, plus Personal, Documents, Access and
+ * History where the server lists them (HR viewers, and the person themself for Personal). Editors
  * get Edit; only the HR owner gets the access page link and account linking.
  */
 export function PersonProfile({ tenant, context, readonly, platform, employeeId }: {
@@ -90,6 +92,8 @@ export function PersonProfile({ tenant, context, readonly, platform, employeeId 
         {canEdit && !readonly && <button type="button" className={`${action} mt-5`} disabled={opening}
           onClick={() => void startEditing()}>Edit</button>}
       </Panel>)}
+    {shown === "personal" && <PersonalSection tenant={tenant} employeeId={person.employee_id} readonly={readonly} />}
+    {shown === "documents" && <DocumentsSection tenant={tenant} employeeId={person.employee_id} canManage={canEdit && !readonly} />}
     {shown === "access" && <AccessSection tenant={tenant} employeeId={person.employee_id} owner={context.client_owner}
       readonly={readonly} platform={platform} onLinked={() => void reload()} />}
     {shown === "history" && <HistorySection tenant={tenant} employeeId={person.employee_id} version={person.version} />}
