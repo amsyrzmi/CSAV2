@@ -24,6 +24,8 @@ const OWNED = [
   "components/console/SandboxWorkspace.tsx",
   "components/console/chat/",
   "components/console/overview/",
+  "components/console/kit/",
+  "lib/chips.ts",
   "app/globals.css",
   "app/layout.tsx",
   "app/(admin)/layout.tsx",
