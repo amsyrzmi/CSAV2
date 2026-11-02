@@ -2,20 +2,21 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Archive, History, RefreshCw } from "lucide-react";
+import { Archive, History, Mic, MicOff, RefreshCw } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import type { Page, PendingSandboxTurn, SandboxThread, SandboxTurn, ScrollSnapshot } from "@/lib/sandbox-chat";
-import { chipsFor, disclaimerMode, scrollPlan } from "@/lib/sandbox-chat";
+import { chipsFor, needsManualCheck, scrollPlan } from "@/lib/sandbox-chat";
 import { VoiceConversation } from "./VoiceConversation";
 import { RecordedVoice } from "./RecordedVoice";
 import { localDictation, speakLocal } from "@/lib/hr-voice";
 import SlideOver from "./fs/SlideOver";
 import { ChatComposer } from "./chat/ChatComposer";
-import { CompactLimits, SandboxLimits } from "./chat/ChatDisclaimer";
+import { ChatHonestyLine } from "./chat/ChatDisclaimer";
 import { ChatEmptyState } from "./chat/ChatEmptyState";
 import { ChatHistory, threadLabel } from "./chat/ChatHistory";
 import { ChatMessages } from "./chat/ChatMessages";
+import { useSpeaking } from "./chat/useSpeaking";
 import { field, Heading, Notice, secondary } from "./ui";
 
 /**
@@ -104,6 +105,7 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
   const [voiceLanguage, setVoiceLanguage] = useState("en-US");
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const speaking = useSpeaking();
   const stopDictation = useRef<(() => void) | null>(null);
   const alive = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -310,7 +312,8 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
   const voiceRunning = voiceBusy || conversationVoiceBusy;
   const current = threads.find((item) => item.id === thread);
   const loaded = !thread || loadedThread === thread;
-  const mode = disclaimerMode(turns.length);
+  // The screen refreshes itself; the button is for a failed refresh and the 90-second notice.
+  const showCheck = needsManualCheck(pollError, turns, now);
   const history = (inPanel: boolean) => <ChatHistory threads={threads} loaded={threadsLoaded} selected={thread}
     showLabel={!inPanel} hasOlder={threadCursor !== null} onOlder={() => void olderThreads()}
     newLabel={createFailed ? "Try creating the chat again" : "New chat"}
@@ -330,8 +333,8 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
         <p data-testid="sandbox-chat-title" className="min-w-0 flex-1 truncate font-medium text-[color:var(--fs-text)]">
           {current ? threadLabel(current) : thread ? "Conversation" : "New chat"}</p>
         {thread && <>
-          <button type="button" className={headerIcon} onClick={() => setRevision((value) => value + 1)}
-            aria-label="Check for new messages" title="Check for new messages"><RefreshCw size={16} aria-hidden /></button>
+          {showCheck && <button type="button" className={headerIcon} onClick={() => setRevision((value) => value + 1)}
+            aria-label="Check for new messages" title="Check for new messages"><RefreshCw size={16} aria-hidden /></button>}
           <button type="button" className={headerIcon} disabled={!canWrite || locked} onClick={() => setConfirmArchive(true)}
             aria-label="Archive conversation" title="Archive conversation"><Archive size={16} aria-hidden /></button>
         </>}
@@ -368,11 +371,14 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
           <ChatComposer value={pending?.body ?? text} onChange={setText} textareaRef={composer}
             disabled={textDisabled} onSend={() => void send()} retry={pending?.source === "text"}
             sendDisabled={!canWrite || busy || creating || listening || voiceBusy || conversationVoiceBusy || pending?.source === "voice" || (!pending && !text.trim())}
-            listening={listening} onDictate={listening ? stopVoice : dictate}
-            dictateDisabled={!canWrite || busy || pending !== null || creating || voiceBusy || conversationVoiceBusy}
+            speaking={speaking}
             onStopSpeech={() => window.speechSynthesis?.cancel()}
-            voiceOpen={voiceOpen || voiceRunning} voiceToggleDisabled={voiceRunning} onVoiceToggle={() => setVoiceOpen((value) => !value)}
+            voiceOpen={voiceOpen || voiceRunning || listening} voiceToggleDisabled={voiceRunning || listening} onVoiceToggle={() => setVoiceOpen((value) => !value)}
             voice={<div className="space-y-3">
+              <button type="button" className={`${secondary} gap-2`} onClick={listening ? stopVoice : dictate}
+                disabled={!canWrite || busy || pending !== null || creating || voiceBusy || conversationVoiceBusy}>
+                {listening ? <MicOff size={16} aria-hidden /> : <Mic size={16} aria-hidden />}
+                {listening ? "Stop dictating" : "Dictate a message"}</button>
               <div>
                 <label htmlFor="sandbox-voice-language" className="block text-sm">Dictation language</label>
                 <select id="sandbox-voice-language" className={field} value={voiceLanguage} disabled={!canWrite || locked}
@@ -392,9 +398,7 @@ function Sandbox({ query, canWrite, role, dockClearance }: {
                   onText={setText} onBusy={setVoiceBusy} />
               </> : <p className="text-xs text-[color:var(--fs-text-secondary)]">Hands-free voice chat and recorded voice messages open with a conversation: choose one from history or start a new chat.</p>}
             </div>} />
-          {/* Whenever the composer shows, so do the limits: in full until the conversation is known
-              to have a message (the empty state holds its own full copy), then one line. */}
-          {!loaded ? <SandboxLimits /> : mode === "compact" ? <CompactLimits /> : null}
+          <ChatHonestyLine />
         </div>
       </div>
     </section>

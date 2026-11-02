@@ -36,15 +36,16 @@ CHIPS = [
 ]
 # A chip's button reads the starter, then an ellipsis; a click fills the composer with the starter.
 CHIP_LABELS = [chip.rstrip() + "…" for chip in CHIPS]
-FULL_NOTICE = (
-    "This chat only answers questions about your knowledge base and products. It cannot look up "
-    "customer records, orders, bookings, tickets, invoices or payments. It cannot read or send "
-    "email, message your customers or pass a question to your staff. It cannot confirm business "
-    "actions or take attachments. Dictation fills in your message for you to check before "
-    "sending, and read aloud uses your browser's voice. To add documents, use Knowledge base. "
-    "Archiving a chat hides it but does not delete it."
-)
-COMPACT = "Private chat. It only answers questions about your knowledge base and products."
+HONESTY = "Answers come from your knowledge base and products."
+# Text of the removed limits wall; none of it may appear anywhere in the chat any more.
+REMOVED_TEXT = [
+    "What it cannot do",
+    "It cannot look up",
+    "It cannot read or send email",
+    "Archiving a chat hides it but does not delete it.",
+    "Dictation fills in your message",
+    "Private chat. It only answers",
+]
 WIDTHS = [320, 390, 768, 1024, 1440]
 THEMES = ["cobalt", "night", "bureau"]
 REPLY = "Our opening hours are nine to six on weekdays."
@@ -106,6 +107,8 @@ class Synthetic:
         self.deliberate_failures = 0
         # Turn pages hold this many turns, newest first by id, with `before=` paging.
         self.page_size = 50
+        # Whether transcription answers "enabled" (the voice tray then shows its consent boxes).
+        self.voice_enabled = False
 
     @property
     def posts(self) -> list[str]:
@@ -127,7 +130,7 @@ class Synthetic:
                 {"id": "tenant-b", "name": "Tenant B"},
             ]
         elif path == "chat/voice" and request.method == "GET":
-            data = {"enabled": False}
+            data = {"enabled": self.voice_enabled}
         elif path == "chat/conversations" and request.method == "GET":
             data = {"items": self.threads, "next_cursor": None}
         elif path == "chat/conversations" and request.method == "POST" and self.failed_creations:
@@ -247,6 +250,7 @@ async def open_chat(
     query: str = "",
     width: int = 1440,
     theme: str = "cobalt",
+    init_script: str | None = None,
 ) -> AsyncIterator[Page]:
     """A fresh browser on the harness; fails on unexpected API calls, page or console errors."""
     errors: list[str] = []
@@ -264,6 +268,8 @@ async def open_chat(
                 lambda message: errors.append(message.text) if message.type == "error" else None,
             )
             await page.route("**/console/v1/**", api.route)
+            if init_script:
+                await page.add_init_script(init_script)
             await page.goto(f"{server}/login{query}")
             yield page
         finally:
@@ -274,11 +280,7 @@ async def open_chat(
     assert not errors, errors
 
 
-def squash(text: str) -> str:
-    return " ".join(text.split())
-
-
-async def test_empty_state_shows_prompt_chips_and_full_disclaimer(server: str) -> None:
+async def test_empty_state_shows_prompt_chips_and_the_honesty_line(server: str) -> None:
     api = Synthetic()
     async with open_chat(server, api) as page:
         await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
@@ -286,12 +288,52 @@ async def test_empty_state_shows_prompt_chips_and_full_disclaimer(server: str) -
         )
         chips = page.get_by_test_id("sandbox-chips").get_by_role("button")
         await expect(chips).to_have_text(CHIP_LABELS)
-        notice = page.get_by_test_id("sandbox-disclaimer")
-        await expect(notice).to_be_visible()
-        assert squash(await notice.inner_text()) == FULL_NOTICE
-        await expect(page.get_by_role("button", name="What it cannot do")).to_have_count(0)
+        await expect(page.get_by_test_id("sandbox-disclaimer")).to_have_count(0)
+        await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY)
         await expect(page.get_by_label("Your question", exact=False)).to_be_enabled()
         await expect(page.get_by_role("button", name="New chat")).to_be_enabled()
+
+
+def seeded_turn(number: int, status: str = "available", **extra: Any) -> dict[str, Any]:
+    replies = [{"id": f"r{number}", "body": REPLY}] if status == "available" else []
+    return {
+        "id": number,
+        "trace_id": "trace",
+        "request_key": f"seeded-{number}",
+        "body": f"Seeded question {number}",
+        "created_at": "2026-10-22T00:00:00Z",
+        "status": status,
+        "replies": replies,
+    } | extra
+
+
+async def test_long_limits_text_and_expander_are_gone(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api) as page:
+        # Empty state (a new chat), then a conversation with a message, then after a send.
+        await page.get_by_role("button", name="New chat").click(timeout=WAIT)
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible()
+        for stage in ("empty state", "conversation"):
+            if stage == "conversation":
+                await page.get_by_role("button", name="Conversation 1", exact=True).click()
+                await expect(page.get_by_role("log", name="Chat messages")).to_be_visible()
+            body = await page.locator("body").inner_text()
+            for text in REMOVED_TEXT:
+                assert text not in body, (stage, text)
+            await expect(page.get_by_role("button", name="What it cannot do")).to_have_count(0)
+            await expect(page.get_by_test_id("sandbox-disclaimer")).to_have_count(0)
+            await expect(page.get_by_test_id("chat-honesty-line")).to_have_count(1)
+            await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY)
+        await page.get_by_label("Your question", exact=False).fill("What are your opening hours?")
+        await page.get_by_role("button", name="Send message", exact=True).click()
+        await expect(
+            page.get_by_role("log").get_by_text("What are your opening hours?")
+        ).to_be_visible()
+        body = await page.locator("body").inner_text()
+        assert body.count(HONESTY) == 1
+        for text in REMOVED_TEXT:
+            assert text not in body, text
 
 
 async def test_chip_fills_the_composer_without_sending(server: str) -> None:
@@ -307,7 +349,7 @@ async def test_chip_fills_the_composer_without_sending(server: str) -> None:
         await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible()
 
 
-async def test_send_shows_reply_and_compacts_the_disclaimer(server: str) -> None:
+async def test_send_shows_reply_and_keeps_one_honesty_line(server: str) -> None:
     api = Synthetic()
     async with open_chat(server, api) as page:
         composer = page.get_by_label("Your question", exact=False)
@@ -319,15 +361,9 @@ async def test_send_shows_reply_and_compacts_the_disclaimer(server: str) -> None
         await expect(log.get_by_text("Available privately in this sandbox")).to_be_visible()
         assert api.posts == ["chat/conversations", "chat/conversations/thread-1/turns"]
         await expect(composer).to_have_value("")
-        await expect(page.get_by_text(COMPACT, exact=True)).to_be_visible()
-        await expect(page.get_by_test_id("sandbox-disclaimer")).to_be_hidden()
-        disclosure = page.get_by_role("button", name="What it cannot do")
-        await expect(disclosure).to_have_attribute("aria-expanded", "false")
-        await disclosure.click()
-        await expect(disclosure).to_have_attribute("aria-expanded", "true")
-        notice = page.get_by_test_id("sandbox-disclaimer")
-        await expect(notice).to_be_visible()
-        assert squash(await notice.inner_text()) == FULL_NOTICE
+        await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY)
+        await expect(page.get_by_test_id("sandbox-disclaimer")).to_have_count(0)
+        await expect(page.get_by_role("button", name="What it cannot do")).to_have_count(0)
         # The new conversation is selected in the history list.
         await expect(
             page.get_by_role("button", name="Conversation 1", exact=True)
@@ -358,7 +394,7 @@ async def test_history_lists_conversations_and_new_chat_creates_one(server: str)
         await expect(
             page.get_by_role("log", name="Chat messages").get_by_text("Not on Sundays.")
         ).to_be_visible()
-        await expect(page.get_by_text(COMPACT, exact=True)).to_be_visible()
+        await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY)
         await page.get_by_role("button", name="New chat").click()
         third = history.get_by_role("button", name="Conversation 3", exact=True)
         await expect(third).to_have_attribute("aria-current", "true")
@@ -597,16 +633,15 @@ async def test_scroll_follows_the_reader_not_the_poll(server: str) -> None:
         assert await scroller.evaluate(gap) < 2
 
 
-async def test_disclaimer_shows_when_the_first_read_fails(server: str) -> None:
+async def test_honesty_line_stays_when_the_first_read_fails(server: str) -> None:
     api = Synthetic(threads=1)
     api.failed_reads.add("thread-1")
     async with open_chat(server, api) as page:
         await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
         await expect(page.get_by_text("We lost touch with the chat:", exact=False)).to_be_visible()
         await expect(page.get_by_role("heading", name="How can I help today?")).to_have_count(0)
-        notice = page.get_by_test_id("sandbox-disclaimer")
-        await expect(notice).to_be_visible()
-        assert squash(await notice.inner_text()) == FULL_NOTICE
+        await expect(page.get_by_test_id("sandbox-disclaimer")).to_have_count(0)
+        await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY)
         await expect(page.get_by_label("Your question", exact=False)).to_be_enabled()
 
 
@@ -639,3 +674,98 @@ async def test_enter_sends_and_keeps_focus_but_not_with_shift_or_composition(ser
         assert api.posts == ["chat/conversations", "chat/conversations/thread-1/turns"]
         await expect(composer).to_have_value("")
         await expect(composer).to_be_focused()
+
+
+SPEECH_STUB = """
+window.speechTest = { speaking: false };
+window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
+Object.defineProperty(window, "speechSynthesis", { value: {
+  getVoices: () => [{ localService: true, lang: "en-US", name: "stub" }],
+  speak: () => { window.speechTest.speaking = true; },
+  cancel: () => { window.speechTest.speaking = false; },
+  get speaking() { return window.speechTest.speaking; },
+} });
+"""
+
+
+async def test_stop_reading_aloud_only_while_speaking(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api, init_script=SPEECH_STUB) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        stop = page.get_by_role("button", name="Stop reading aloud")
+        read = page.get_by_role("button", name="Read reply aloud")
+        await expect(read).to_be_visible()
+        await expect(stop).to_have_count(0)
+        await read.click()
+        await expect(stop).to_be_visible()
+        await stop.click()
+        await expect(stop).to_have_count(0)
+        # Speech that ends by itself takes the button away too.
+        await read.click()
+        await expect(stop).to_be_visible()
+        await page.evaluate("window.speechTest.speaking = false")
+        await expect(stop).to_have_count(0)
+
+
+async def test_check_for_new_messages_appears_after_a_failed_refresh_and_with_the_delay_notice(
+    server: str,
+) -> None:
+    api = Synthetic(threads=2)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    # Long past the 90-second delay, still waiting on a reply.
+    api.turns["thread-2"] = [seeded_turn(1, status="processing")]
+    check = lambda page: page.get_by_role("button", name="Check for new messages")  # noqa: E731
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        await expect(page.get_by_role("log", name="Chat messages")).to_be_visible()
+        # A healthy conversation: no button, however long it has been open.
+        await page.wait_for_timeout(600)
+        await expect(check(page)).to_have_count(0)
+        # The automatic refresh fails: the lost-touch notice and the button appear together.
+        api.failed_reads.add("thread-1")
+        await expect(page.get_by_text("We lost touch with the chat:", exact=False)).to_be_visible(
+            timeout=15_000
+        )
+        await expect(check(page)).to_be_visible()
+        api.failed_reads.discard("thread-1")
+        await check(page).click()
+        await expect(page.get_by_text("We lost touch with the chat:", exact=False)).to_have_count(0)
+        await expect(check(page)).to_have_count(0)
+        # A reply that has taken more than 90 seconds: the delay notice points at the button.
+        await page.get_by_role("button", name="Conversation 2", exact=True).click()
+        await expect(
+            page.get_by_text("This is taking longer than usual.", exact=False)
+        ).to_be_visible()
+        await expect(check(page)).to_be_visible()
+
+
+async def test_microphone_opens_the_voice_tray_with_consent_inside(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.voice_enabled = True
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        mic = page.get_by_role("button", name="Voice options", exact=True)
+        await expect(mic).to_have_attribute("aria-expanded", "false")
+        tray = page.get_by_role("group", name="Voice controls")
+        # Closed by default: nothing of the tray is reachable.
+        await expect(tray).to_be_hidden()
+        await expect(page.get_by_role("checkbox")).to_have_count(0)
+        # The toolbar holds one microphone button and Send, nothing else voice-related.
+        await expect(page.get_by_role("button", name="Dictate a message")).to_have_count(0)
+        await expect(page.get_by_role("button", name="Stop reading aloud")).to_have_count(0)
+        await mic.click()
+        await expect(mic).to_have_attribute("aria-expanded", "true")
+        await expect(tray).to_be_visible()
+        voice = tray.get_by_role("region", name="Hands-free voice chat")
+        await expect(voice.get_by_role("checkbox")).to_have_count(1)
+        await expect(tray.get_by_role("checkbox")).to_have_count(2)  # hands-free and recorded
+        await expect(tray.get_by_label("Dictation language")).to_be_visible()
+        await expect(voice.get_by_label("Playback language")).to_be_visible()
+        await expect(tray.get_by_role("button", name="Dictate a message")).to_be_visible()
+        await expect(
+            tray.get_by_text("Speech pauses submit your question.", exact=False)
+        ).to_be_visible()
+        await expect(tray.get_by_text("Maximum 60 seconds / 8 MB.", exact=False)).to_be_visible()
+        await mic.click()
+        await expect(tray).to_be_hidden()

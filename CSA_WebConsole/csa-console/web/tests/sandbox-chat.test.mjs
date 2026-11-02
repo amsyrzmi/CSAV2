@@ -35,10 +35,25 @@ const chat = await import(`data:text/javascript;base64,${Buffer.from(code).toStr
 const ROLES = ["platform_admin", "tenant_admin", "tenant_staff", "read_only", null];
 const FORBIDDEN = /customer records?|order|ticket|invoice|booking|email|approv|escalat|payment/i;
 
-test("the disclaimer is full until the conversation has a message, then compact", () => {
-  assert.equal(chat.disclaimerMode(0), "full");
-  assert.equal(chat.disclaimerMode(1), "compact");
-  assert.equal(chat.disclaimerMode(5), "compact");
+test("the limits wall is gone: no limits copy or disclaimer mode is exported", () => {
+  assert.equal(chat.disclaimerMode, undefined);
+  assert.equal(chat.SANDBOX_COMPACT_NOTICE, undefined);
+});
+
+test("Check for new messages is for a failed refresh or the 90-second notice only", () => {
+  const created_at = "2026-10-16T00:00:00Z";
+  const start = Date.parse(created_at);
+  const turn = (status) => ({ status, created_at });
+  // Healthy: nothing failed, nothing late.
+  assert.equal(chat.needsManualCheck("", [], start), false);
+  assert.equal(chat.needsManualCheck("", [turn("available"), turn("held"), turn("failed")], start + 600_000), false);
+  assert.equal(chat.needsManualCheck("", [turn("processing")], start + 90_000), false);
+  // A failed automatic refresh, with or without messages.
+  assert.equal(chat.needsManualCheck("Failed to fetch", [], start), true);
+  assert.equal(chat.needsManualCheck("Failed to fetch", [turn("available")], start), true);
+  // The delay notice (the same rule that shows it).
+  for (const status of ["queued", "processing", "awaiting_delivery"])
+    assert.equal(chat.needsManualCheck("", [turn("available"), turn(status)], start + 90_001), true, status);
 });
 
 test("every role gets the same three prompt chips, all inside the sandbox limits", () => {
@@ -63,11 +78,6 @@ test("every role gets the same three prompt chips, all inside the sandbox limits
   // A caller that edits its copy cannot change the shared list.
   chat.chipsFor("tenant_staff").push("Approve a refund");
   assert.deepEqual(chat.chipsFor("tenant_staff"), expected);
-});
-
-test("the compact disclaimer is one line naming the sandbox limits", () => {
-  assert.equal(chat.SANDBOX_COMPACT_NOTICE, "Private chat. It only answers questions about your knowledge base and products.");
-  assert.doesNotMatch(chat.SANDBOX_COMPACT_NOTICE, /\n/);
 });
 
 test("the log follows the end only for its first load, the reader's own question or a reader at the end", () => {

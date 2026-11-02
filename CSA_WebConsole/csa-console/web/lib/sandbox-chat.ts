@@ -51,18 +51,19 @@ export function chipLabel(chip: string): string {
   return `${chip.trimEnd()}…`;
 }
 
-/** The one line the full limits notice collapses to once a conversation has a message. */
-export const SANDBOX_COMPACT_NOTICE = "Private chat. It only answers questions about your knowledge base and products.";
-
 /** The same three chips for every role (a read-only member sees them disabled). A fresh copy. */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the role is the seam for per-role chips
 export function chipsFor(role: Me["role"]): string[] {
   return [...SANDBOX_CHIPS];
 }
 
-/** The full limits notice while the conversation is empty, one line once it has a message. */
-export function disclaimerMode(turnCount: number): "full" | "compact" {
-  return turnCount > 0 ? "compact" : "full";
+/**
+ * Whether "Check for new messages" shows. The screen refreshes itself every few seconds, so the
+ * button is only for when that failed (the lost-touch notice is up) or while the 90-second delay
+ * notice is up; both notices tell the reader to use it.
+ */
+export function needsManualCheck(pollError: string, turns: readonly SandboxTurn[], now: number): boolean {
+  return pollError !== "" || turns.some((turn) => sandboxDelayed(turn, now));
 }
 
 /** What the message log shows, as far as scrolling cares: which conversation, its range. */

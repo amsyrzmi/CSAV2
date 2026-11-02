@@ -1,6 +1,5 @@
 import AgentAvatar from "../fs/AgentAvatar";
 import { chipLabel } from "@/lib/sandbox-chat";
-import { SandboxLimits } from "./ChatDisclaimer";
 
 /** The assistant, drawn straight onto the page with no box, above a line of copy (and, inside a tenant, more below). */
 export function AssistantTile() {
@@ -8,8 +7,8 @@ export function AssistantTile() {
 }
 
 /**
- * An empty conversation: the assistant, "How can I help today?", the full limits notice and the
- * prompt chips. A chip only fills the composer; nothing is sent by a click.
+ * An empty conversation: the assistant, "How can I help today?" and the prompt chips. A chip
+ * only fills the composer; nothing is sent by a click.
  */
 export function ChatEmptyState({ chips, disabled, onChip }: {
   chips: string[];
@@ -20,7 +19,6 @@ export function ChatEmptyState({ chips, disabled, onChip }: {
     <AssistantTile />
     <h2 className="font-(family-name:--fs-font-heading) text-xl font-semibold text-[color:var(--fs-text)] sm:text-2xl">
       How can I help today?</h2>
-    <div className="w-full max-w-xl text-left"><SandboxLimits /></div>
     <ul data-testid="sandbox-chips" aria-label="Suggested questions" className="flex flex-wrap justify-center gap-2">
       {chips.map((chip) => <li key={chip}>
         <button type="button" disabled={disabled} onClick={() => onChip(chip)}
