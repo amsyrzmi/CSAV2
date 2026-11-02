@@ -286,6 +286,7 @@ async def open_activity(
     theme: str | None = None,
     wait_for_rows: bool = True,
     init_script: str | None = None,
+    path: str = "/portal/activity",
     **options: Any,
 ) -> tuple[Any, Page, list[str]]:
     site.upstream.me = make_me("tenant_admin")
@@ -303,7 +304,7 @@ async def open_activity(
     diagnostics: list[str] = []
     page.on("pageerror", lambda error: diagnostics.append(str(error)))
     await page.route("**/console/v1/**", stub.route)
-    await page.goto(f"{site.base}/portal/activity")
+    await page.goto(f"{site.base}{path}")
     if wait_for_rows:
         await expect(run_row(page, 12)).to_be_visible(timeout=WAIT)
     else:
@@ -672,6 +673,23 @@ async def test_strip_empty_state(site: Site) -> None:
         await expect(
             page.get_by_role("alert").filter(has_text="synthetic transient failure")
         ).to_have_count(1)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_link_opened_already_filtered_still_fills_the_strip(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_activity(
+            browser, site, stub, path="/portal/activity?agent=invoice_agent", wait_for_rows=False
+        )
+        loading = page.get_by_text("Loading recent assistants...")
+        await expect(loading).to_have_count(0, timeout=WAIT)
+        await expect(page.get_by_test_id("activity-overview")).to_be_visible(timeout=WAIT)
         assert not diagnostics, diagnostics
         await context.close()
 

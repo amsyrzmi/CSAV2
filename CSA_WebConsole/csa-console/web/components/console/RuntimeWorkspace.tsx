@@ -248,8 +248,11 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    let first = true;
     async function load() {
-      if (liveRef.current) {
+      // The first read always runs, so a link that opens already filtered (?agent=) still fills the strip.
+      if (first || liveRef.current) {
+        first = false;
         const [runs, summary] = await Promise.allSettled([
           api<RunPage>(`/console/v1/runs?${runsQuery(query, { limit: 100 })}`, { signal: controller.signal }),
           api<RuntimeOverview>(`/console/v1/overview?${query}`, { signal: controller.signal }),
