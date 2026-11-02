@@ -656,7 +656,8 @@ NO_BOX_JS = """(args) => {
         for (let node = el; node && node !== root; node = node.parentElement) {
             const s = getComputedStyle(node);
             chain.push({
-                tag: node.tagName.toLowerCase() + (node.dataset.agent ? "[" + node.dataset.agent + "]" : ""),
+                tag: node.tagName.toLowerCase(),
+                agent: node.dataset.agent || null,
                 background: s.backgroundColor + " " + s.backgroundImage,
                 radius: s.borderRadius,
                 border: s.borderTopWidth,

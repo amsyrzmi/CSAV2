@@ -284,7 +284,8 @@ NO_BOX_JS = """(args) => {
         for (let node = el; node && node !== root; node = node.parentElement) {
             const s = getComputedStyle(node);
             chain.push({
-                tag: node.tagName.toLowerCase() + (node.dataset.agent ? "[" + node.dataset.agent + "]" : ""),
+                tag: node.tagName.toLowerCase(),
+                agent: node.dataset.agent || null,
                 background: s.backgroundColor + " " + s.backgroundImage,
                 radius: s.borderRadius,
                 border: s.borderTopWidth,
@@ -466,9 +467,7 @@ async def test_loading_screen_sprites_are_96_px_on_wide_screens(console: Console
         )
         assert sizes == [[96.0, 96.0]] * 5, sizes
         # Drawn straight onto the page: no tile, radius, border or clipping on the way up.
-        found = await page.evaluate(
-            NO_BOX_JS, ["[data-agent]", '[data-testid="loading-screen"]']
-        )
+        found = await page.evaluate(NO_BOX_JS, ["[data-agent]", '[data-testid="loading-screen"]'])
         assert_no_box(found, 5)
         screen = await page.get_by_test_id("loading-screen").bounding_box()
         assert screen is not None and screen["height"] >= 900  # full screen centres in the viewport

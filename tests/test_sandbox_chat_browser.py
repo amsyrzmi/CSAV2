@@ -85,7 +85,8 @@ NO_BOX_JS = """(args) => {
         for (let node = el; node && node !== root; node = node.parentElement) {
             const s = getComputedStyle(node);
             chain.push({
-                tag: node.tagName.toLowerCase() + (node.dataset.agent ? "[" + node.dataset.agent + "]" : ""),
+                tag: node.tagName.toLowerCase(),
+                agent: node.dataset.agent || null,
                 background: s.backgroundColor + " " + s.backgroundImage,
                 radius: s.borderRadius,
                 border: s.borderTopWidth,
@@ -95,7 +96,6 @@ NO_BOX_JS = """(args) => {
         return chain;
     });
 }"""
-
 
 
 def free_port() -> int:
@@ -1139,7 +1139,7 @@ async def test_stop_reading_aloud_falls_back_to_a_reply_button_when_mic_and_text
         await read.click()
         stop = page.get_by_role("button", name="Stop reading aloud")
         await expect(stop).to_be_visible()
-        # Switch the microphone and the text box off by hand: neither prop changes, so React leaves them.
+        # Switch the microphone and text box off by hand; React leaves them as they are.
         await page.evaluate(
             """() => {
               document.querySelector('button[aria-label="Voice options"]').disabled = true;
@@ -1151,7 +1151,9 @@ async def test_stop_reading_aloud_falls_back_to_a_reply_button_when_mic_and_text
         await expect(stop).to_have_count(0)
         await expect(read).to_be_focused()
         # With no reply button either, focus goes to the log's scroller, never to the page body.
-        await page.evaluate("document.querySelector('button[aria-label=\"Read reply aloud\"]').disabled = true")
+        await page.evaluate(
+            "document.querySelector('button[aria-label=\"Read reply aloud\"]').disabled = true"
+        )
         await page.evaluate("window.speechTest.speaking = true")
         await expect(stop).to_be_visible()
         await stop.focus()

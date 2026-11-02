@@ -752,7 +752,8 @@ ME = "22222222-2222-4222-8222-222222222222"
 async def test_changing_your_own_access_says_you_will_be_signed_out(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = World()
-        world.members.append(make_member(ME, "Synthetic User", "synthetic@example.test", "tenant_admin"))
+        me = make_member(ME, "Synthetic User", "synthetic@example.test", "tenant_admin")
+        world.members.append(me)
         async with team_page(browser, site, world) as page:
             await open_card(page, ME)
             await page.get_by_test_id(f"team-access-{ME}").click()
@@ -764,7 +765,8 @@ async def test_changing_your_own_access_says_you_will_be_signed_out(site: Site) 
             await page.get_by_test_id(f"team-confirm-{ME}-cancel").click()
             await page.get_by_test_id(f"team-role-{ME}").select_option("tenant_staff")
             await expect(confirm).to_contain_text(
-                "You will be signed out of this company straight away and will need to sign in again."
+                "You will be signed out of this company straight away and will need to sign "
+                "in again."
             )
             assert world.sent("PATCH", "team/") == []
             # Someone else's card still names them.
@@ -802,9 +804,11 @@ async def test_focus_stays_on_a_control_that_remains_after_revoke_link_and_hide(
         async with team_page(browser, site, world) as page:
             # Revoke link in the invitations list: the arrow of the same row keeps focus.
             await page.get_by_test_id(f"team-invitation-{lina}-toggle").click()
-            await page.get_by_test_id(f"team-invitation-{lina}-details").get_by_role(
-                "button", name="Revoke link"
-            ).click()
+            await (
+                page.get_by_test_id(f"team-invitation-{lina}-details")
+                .get_by_role("button", name="Revoke link")
+                .click()
+            )
             await expect(page.get_by_test_id(f"team-invitation-{lina}-toggle")).to_be_focused()
             assert world.sent("DELETE", "admin/invites/")
             # The link panel just shown: Hide message and Revoke link hand focus to Invite someone.
