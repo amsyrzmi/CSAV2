@@ -23,7 +23,7 @@ export interface PeopleTabProps {
   view: PeopleListView;
 }
 
-const STATUS_TONES: Record<PersonStatus, StatusTone> = { active: "success", starting: "info", left: "neutral" };
+const STATUS_TONES: Record<PersonStatus, StatusTone> = { active: "success", starting: "info", leaving: "attention", left: "neutral" };
 
 /** The People tab: a switcher between the list, the org chart and (for editors) departments. */
 export function PeopleTab({ tenant, context, readonly, platform, view }: PeopleTabProps) {

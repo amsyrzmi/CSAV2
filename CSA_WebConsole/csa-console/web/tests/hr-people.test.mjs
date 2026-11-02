@@ -25,7 +25,7 @@ test("the pinned labels and sentinels", () => {
   assert.deepEqual(EMPLOYMENT_TYPES, [
     ["full_time", "Full-time"], ["part_time", "Part-time"], ["contract", "Contract"], ["intern", "Intern"],
   ]);
-  assert.deepEqual(STATUS_LABELS, { active: "Active", starting: "Starting", left: "Left" });
+  assert.deepEqual(STATUS_LABELS, { active: "Active", starting: "Starting", leaving: "Leaving", left: "Left" });
   assert.equal(NO_MANAGER, "");
   assert.equal(NEW_DEPARTMENT, "__new__");
   assert.equal(PEOPLE_COPY.noManager, "No manager (top of company)");

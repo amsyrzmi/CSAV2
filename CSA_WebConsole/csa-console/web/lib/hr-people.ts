@@ -1,8 +1,8 @@
 import type { HrContext, Training } from "./hr-api";
 import type { HrRoute } from "./hr-paths";
 import type {
-  Department, EmploymentType, FieldChange, HrHome, Interview, OrgChart, OrgNode, PeopleQuery, Person, PersonStatus,
-  ProfileSection, Region,
+  Department, EmploymentType, FieldChange, HrHome, Interview, LeavingReason, OrgChart, OrgNode, PeopleQuery, Person,
+  PersonStatus, ProfileSection, Region,
 } from "./hr-people-api";
 import type { Option } from "./hr-pickers";
 
@@ -11,7 +11,20 @@ import type { Option } from "./hr-pickers";
 export const EMPLOYMENT_TYPES: [EmploymentType, string][] = [
   ["full_time", "Full-time"], ["part_time", "Part-time"], ["contract", "Contract"], ["intern", "Intern"],
 ];
-export const STATUS_LABELS: Record<PersonStatus, string> = { active: "Active", starting: "Starting", left: "Left" };
+export const STATUS_LABELS: Record<PersonStatus, string> = {
+  active: "Active", starting: "Starting", leaving: "Leaving", left: "Left",
+};
+export const LEAVING_REASONS: [LeavingReason, string][] = [
+  ["resigned", "Resigned"], ["contract_ended", "Contract ended"], ["dismissed", "Dismissed"],
+  ["retired", "Retired"], ["other", "Other"],
+];
+/** The personal details fields in the order the page shows them. History says "Changed <label>" for these, with no values. */
+export const PERSONAL_LABELS = {
+  ic_or_passport: "IC or passport number", date_of_birth: "Date of birth", home_address: "Home address",
+  personal_phone: "Personal phone", emergency_name: "Emergency contact", emergency_relationship: "Relationship",
+  emergency_phone: "Emergency contact phone", bank_name: "Bank", bank_account: "Bank account number",
+  tax_number: "Income tax number", epf_number: "EPF number", socso_number: "SOCSO number",
+} as const;
 /** The manager select's value for "no manager". */
 export const NO_MANAGER = "";
 /** The department select's value for a department typed into the form. */
@@ -262,7 +275,7 @@ function klDate(instant: Date): string {
 function addDays(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY).toISOString().slice(0, 10);
 }
-function dateText(date: string): string {
+export function dateText(date: string): string {
   const [year, month, day] = date.split("-");
   return `${Number(day)} ${MONTHS[Number(month) - 1]} ${year}`;
 }
@@ -314,20 +327,32 @@ export function homeItems(input: {
 const FIELD_LABELS: Record<FieldChange["field"], string> = {
   display_name: "Name", job_title: "Job title", department: "Department", manager: "Manager",
   work_email: "Work email", work_phone: "Work phone", start_date: "Start date", employment_type: "Employment type",
-  active: "Status", region: "Region", legal_entity_reference: "Legal entity", employment_category: "Employment category",
+  active: "Status", last_day: "Last day", leaving_reason: "Leaving reason", region: "Region",
+  legal_entity_reference: "Legal entity", employment_category: "Employment category",
+  ...PERSONAL_LABELS, document: "Document",
 };
 
 function valueText(field: FieldChange["field"], value: string): string {
   if (field === "employment_type") return EMPLOYMENT_TYPES.find(([id]) => id === value)?.[1] ?? value;
   if (field === "region") return Object.hasOwn(REGION_LABELS, value) ? REGION_LABELS[value as Region] : value;
   if (field === "active") return value === "true" ? STATUS_LABELS.active : value === "false" ? STATUS_LABELS.left : value;
-  if (field === "start_date" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return dateText(value);
+  if (field === "leaving_reason") return LEAVING_REASONS.find(([id]) => id === value)?.[1] ?? value;
+  if ((field === "start_date" || field === "last_day") && /^\d{4}-\d{2}-\d{2}$/.test(value)) return dateText(value);
   return value;
 }
 
-/** One plain line for one changed field in a person's history. */
+/**
+ * One plain line for one changed field in a person's history. A personal field only ever says that it
+ * changed: the server sends no values for them and nothing here would print one.
+ */
 export function historyText(change: FieldChange): string {
   const label = FIELD_LABELS[change.field];
+  if (Object.hasOwn(PERSONAL_LABELS, change.field)) return `Changed ${label}`;
+  if (change.field === "document") {
+    if (change.new !== null) return `Added ${change.new}`;
+    if (change.old !== null) return `Removed ${change.old}`;
+    return `Changed ${label}`;
+  }
   const before = change.old === null ? null : `"${valueText(change.field, change.old)}"`;
   const after = change.new === null ? null : `"${valueText(change.field, change.new)}"`;
   if (before && after) return `${label} changed from ${before} to ${after}`;
@@ -336,13 +361,14 @@ export function historyText(change: FieldChange): string {
   return `${label} changed`;
 }
 
-const SECTION_LABELS: Record<ProfileSection, string> = { overview: "Overview", access: "Access", history: "History" };
+// Personal and Documents have no tab until their sections are built; the server already lists them.
+const SECTION_LABELS: Partial<Record<ProfileSection, string>> = { overview: "Overview", access: "Access", history: "History" };
 
 /** The profile's tabs, in the order the server lists the sections. Sections this release does not show are dropped. */
 export function profileTabs(sections: readonly string[]): { value: ProfileSection; label: string }[] {
   return sections
     .filter((section): section is ProfileSection => Object.hasOwn(SECTION_LABELS, section))
-    .map((section) => ({ value: section, label: SECTION_LABELS[section] }));
+    .map((section) => ({ value: section, label: SECTION_LABELS[section] ?? section }));
 }
 
 /**
