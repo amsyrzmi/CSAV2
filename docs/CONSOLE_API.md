@@ -340,7 +340,8 @@ leaver finish) has `actor_name` `System`.
   active again. A manager who has left is dropped. No access comes back.
 
 New refusals (409 with the code as `detail`): `last_owner_leaving` (the HR owner cannot be marked
-as leaving; a company has one HR owner, so ownership must move first), `leaver_has_access` (only
+as leaving; a company has one HR owner, so ownership must move first, which a tenant admin does
+on the Team page), `leaver_has_access` (only
 the HR owner marks someone whose account holds HR duties beyond the staff switches or an enabled
 `tenant_admin` membership of the company; marking yourself is allowed), `last_day_past`,
 `leaving_final` (already left, or nothing to undo),

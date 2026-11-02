@@ -123,10 +123,32 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Open Documents as each viewer | A person with a Contract and an Other document | The HR owner and Manage people holders see both; the person (My HR → My documents) sees the Contract only, with no Upload; their manager and colleagues have no Documents section | manual |
 | Mark a person as leaving with a last day a week ahead, then Undo leaving | HR owner | The profile says "Leaving on <date> (Resigned)" and People lists them as Leaving; Undo leaving says "Leaving undone. They stay on." and they are Active again | manual |
 | Mark a person with a report and a linked console account as leaving, last day today; check again the next day | HR owner | Today: still Leaving and can still sign in; the report now has the chosen manager. The next day: Left (under the Left filter), History shows the change by "System", the member's HR access switches are gone and they can no longer open the company | manual |
-| Mark yourself as leaving | HR owner, on their own profile | "The HR owner can't be marked as leaving. Contact support to move HR ownership to someone else first." and nothing changes | manual |
+| Mark yourself as leaving | HR owner, on their own profile | "The HR owner can't be marked as leaving. Ask your tenant admin to move HR ownership to someone else first." and nothing changes (the Malay chat says "Pemilik HR tidak boleh ditandakan sebagai akan berhenti. Minta pentadbir syarikat anda memindahkan pemilikan HR kepada orang lain dahulu.") | manual |
 | Mark a colleague who has Approves (or any HR access) as leaving | Member with Manage people | "Only the HR owner can mark someone with HR access as leaving." and nothing changes | manual |
 | Rehire a person who has left | HR owner, a Left person | Rehire with a start date says "Rehired. Invite them again from Settings to give console access."; the person is Active with no access switches | manual |
 | Open People & HR Home | HR owner | No "HR chat (assistant & voice)" block; the assistant dock is the only assistant | manual |
+
+## Moving the HR owner
+
+The browser scenario `test_tenant_admin_moves_hr_owner` covers the panel against a stubbed API (the choice, the confirmation, a lost answer and its retry, `try_again`, `owner_changed`, `not_sent` and `repeat`). A person checks the rest on staging, with emails on and at least three members: a tenant admin who is not the HR owner, a colleague, a read-only member and the current HR owner.
+
+| Check | Setup | Expected | Smoke id |
+| --- | --- | --- | --- |
+| Set the first HR owner | Company with the HR package and no HR owner, signed in as a tenant admin | The Team page says "No HR owner yet"; **Set HR owner**, choose a colleague, Confirm; the panel names them and says "HR owner changed." | manual |
+| Move to a colleague | Tenant admin, a colleague who has signed in and changed their password | The confirmation names the old owner and says they lose the powers at once and payroll stays off; after Confirm the panel names the colleague | manual |
+| Move to yourself | Tenant admin who is not the HR owner | The confirmation adds "You are making yourself the HR owner."; after Confirm the panel names you and the People & HR Settings page opens for you | manual |
+| Choose a read-only member | Tenant admin | The read-only member is not in the picker; after changing their role to Staff they are | manual |
+| Choose a member who has not changed their password, or is marked as leaving | Tenant admin | Not in the picker, or refused with "This person can't be the HR owner yet. They need to sign in and change their password first." or "This person is leaving, so they can't be the HR owner. Choose someone else." | manual |
+| Ask for the HR owner as someone who is not a tenant admin | A staff or read-only member calling `GET /console/v1/team/hr-owner` | 403 "tenant administrator required"; the Team page shows no panel | manual |
+| Emails received | Mail on; old owner, new owner and two tenant admins | Each address gets exactly one email (a tenant admin who is also the new owner gets one); it names the company, who made the change, old and new owner and the time in the company's timezone, with no link and no HR data | manual |
+| The old owner after the move | Old owner signed in on the access page in another tab | Their next action there is refused and the access page is gone on reload; an assistant card made before the move is refused on Confirm | manual |
+| The new owner's powers | New owner signed in | They open the access page, approve a training request for a colleague, and see candidates; saving their own switches on the access page keeps their owner rows | manual |
+| Payroll stays off | New owner | No Payroll tab and no payroll private area until they turn it on on the access page; the change shows in Recent changes | manual |
+| Recent changes | HR owner, on the access page | A line "<actor> made <new owner> the HR owner, replacing <old owner>" | manual |
+| Move by a platform admin | Platform admin, the admin Team page for the company | The same panel; the emails and Recent changes name the actor "FourStacks admin" | manual |
+| Two admins at once | Two tenant admins with the Team page open; the first moves the owner | The second Confirm is refused with "The HR owner changed since you opened this page. Reload to see who it is now." and the panel then names the new owner | manual |
+| Move the old owner who has left | An owner whose account is disabled | The move still works and the old owner is still emailed | manual |
+| Mark the HR owner as leaving, then move ownership, then mark them again | HR owner on their own profile | Refused in English and in Malay with the tenant-admin sentence; after the move the same action succeeds | manual |
 
 ## People actions
 

@@ -20,8 +20,8 @@ const { PEOPLE_COPY } = await import(peopleUrl);
 
 test("a person card's Confirm refusal reads as the profile's sentence, in English and Malay", () => {
   const owner = { status: 409, code: "last_owner_leaving", message: "last_owner_leaving" };
-  assert.equal(card.hrPersonRefusal(owner, "en"), "The HR owner can't be marked as leaving. Contact support to move HR ownership to someone else first.");
-  assert.equal(card.hrPersonRefusal(owner, "ms"), "Pemilik HR tidak boleh ditandakan sebagai akan berhenti. Hubungi sokongan untuk memindahkan pemilikan HR kepada orang lain dahulu.");
+  assert.equal(card.hrPersonRefusal(owner, "en"), "The HR owner can't be marked as leaving. Ask your tenant admin to move HR ownership to someone else first.");
+  assert.equal(card.hrPersonRefusal(owner, "ms"), "Pemilik HR tidak boleh ditandakan sebagai akan berhenti. Minta pentadbir syarikat anda memindahkan pemilikan HR kepada orang lain dahulu.");
   assert.equal(card.hrPersonRefusal({ code: "manager_loop" }, "en"), PEOPLE_COPY.refusals.manager_loop);
   // Codes the card does not own fall through to the dock's usual error line.
   assert.equal(card.hrPersonRefusal({ code: "proposal_stale" }, "en"), null);
