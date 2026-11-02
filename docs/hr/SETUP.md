@@ -138,9 +138,10 @@ use **Mark as leaving** on a person's Overview.
   HR viewers only; the person and their direct manager see the last day.
 - **Who can be marked.** The HR owner cannot be marked as leaving while they are the owner: “Make
   someone else the HR owner first. The company always needs one.” (a company has one HR owner).
-  Only the HR owner can mark someone who holds HR access beyond the staff switches as leaving
-  (“Only the HR owner can mark someone with HR access as leaving.”), because finishing them
-  removes that access. A Manage people holder can still mark themself.
+  Only the HR owner can mark someone who holds HR access beyond the staff switches, or who is a
+  tenant admin of the company, as leaving (“Only the HR owner can mark someone with HR access as
+  leaving.”), because finishing them removes that access and disables their membership. A Manage
+  people holder can still mark themself.
 - **Undo leaving** is on the profile until the end of the last day. If the reports have already
   moved, they stay with their new manager.
 - **On the last day** the person keeps their access all day, and their reports move to the chosen

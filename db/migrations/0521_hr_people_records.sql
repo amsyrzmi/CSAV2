@@ -829,8 +829,12 @@ BEGIN
    -- access, and only the HR owner changes access. Marking oneself is allowed. The staff rows
    -- allowed below mirror SWITCHES["directory"] and SWITCHES["own_requests"] in
    -- csa/hr/access_switches.py (tests/test_hr_people_records.py inserts them from there).
+   -- An enabled tenant_admin membership here counts too: the finish disables it.
    IF public.hr_is_owner(p_client) IS NOT TRUE AND leaver_account IS NOT NULL
     AND leaver_account IS DISTINCT FROM actor AND (
+     EXISTS(SELECT 1 FROM public.console_memberships m WHERE m.client_id=p_client
+            AND m.user_id=leaver_account AND m.is_enabled AND m.role='tenant_admin')
+     OR
      EXISTS(SELECT 1 FROM public.hr_grants g WHERE g.client_id=p_client AND g.user_id=leaver_account
             AND NOT ((g.action='directory.read' AND g.scope='hr_operator')
                      OR (g.scope='self' AND g.action IN ('directory.read','training.read',

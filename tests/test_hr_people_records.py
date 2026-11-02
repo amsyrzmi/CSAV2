@@ -1773,6 +1773,39 @@ async def test_people_manager_cannot_mark_a_colleague_with_hr_access_as_leaving(
     assert (await person_row(world, manager))["last_day"] is None
 
 
+async def test_people_manager_cannot_mark_a_tenant_admin_as_leaving(world: HrWorld) -> None:
+    """The finish disables the leaver's membership here, so a console admin counts as having
+    access even with only the staff switches' HR rows. Only this company's enabled admin
+    membership counts, and marking oneself stays allowed."""
+    today = await db_today(world)
+    staff, outsider = world.employees["staff"], world.employees["outsider"]
+    await make_people_manager(world, "outsider")
+    await staff_rows_only(world, "staff")
+
+    async def set_role(who: str, tenant: UUID, role: str, enabled: bool = True) -> None:
+        await world.q(
+            "INSERT INTO console_memberships(user_id,client_id,role,is_enabled) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (user_id,client_id) "
+            "DO UPDATE SET role=excluded.role, is_enabled=excluded.is_enabled",
+            (world.users[who], tenant, role, enabled),
+        )
+
+    await set_role("staff", world.tenant, "tenant_admin")
+    await refused(
+        world, "outsider", await leave_body(world, staff, today), 409, "leaver_has_access"
+    )
+    assert (await person_row(world, staff))["last_day"] is None
+    # A disabled admin membership here, or an admin membership in another company, does not.
+    await set_role("staff", world.tenant, "tenant_admin", enabled=False)
+    await set_role("staff", world.other_tenant, "tenant_admin")
+    await ok(world, "outsider", await leave_body(world, staff, today))
+    # The holder, a tenant admin themself, may still mark themself.
+    await set_role("outsider", world.tenant, "tenant_admin")
+    await ok(world, "outsider", await leave_body(world, outsider, today))
+    for person in (staff, outsider):
+        assert (await person_row(world, person))["last_day"] == today
+
+
 async def test_owner_can_mark_a_colleague_with_hr_access_as_leaving(world: HrWorld) -> None:
     today = await db_today(world)
     manager = world.employees["manager"]

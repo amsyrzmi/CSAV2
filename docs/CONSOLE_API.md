@@ -338,8 +338,9 @@ leaver finish) has `actor_name` `System`.
 
 New refusals (409 with the code as `detail`): `last_owner_leaving` (the HR owner cannot be marked
 as leaving; a company has one HR owner, so ownership must move first), `leaver_has_access` (only
-the HR owner marks someone whose account holds HR duties beyond the staff switches; marking
-yourself is allowed), `last_day_past`, `leaving_final` (already left, or nothing to undo),
+the HR owner marks someone whose account holds HR duties beyond the staff switches or an enabled
+`tenant_admin` membership of the company; marking yourself is allowed), `last_day_past`,
+`leaving_final` (already left, or nothing to undo),
 `not_left` (rehire of someone who has not left), `person_not_active`, and, as for `person.update`,
 `person_changed`, `manager_unavailable` and `manager_loop` (the new manager is the leaver or sits
 under them).
