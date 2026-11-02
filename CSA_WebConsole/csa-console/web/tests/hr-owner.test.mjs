@@ -84,8 +84,13 @@ test("moveUncertain is true for a network error or a 5xx and false for any 4xx",
   assert.equal(owner.moveUncertain(new ApiError(409, "try_again")), false);
   assert.equal(owner.moveUncertain(new ApiError(403, "tenant administrator required")), false);
   assert.equal(owner.moveUncertain(new ApiError(422, "hr_not_available")), false);
-  assert.equal(owner.UNCONFIRMED_TEXT,
+});
+
+test("uncertainText sends the admin to the panel only when it was read again", () => {
+  assert.equal(owner.uncertainText(true),
     "We couldn't confirm the change. Check who the HR owner is above, then try again.");
+  assert.equal(owner.uncertainText(false),
+    "We couldn't confirm the change or reload the HR owner. Reload the page before you try again.");
 });
 
 test("ownerStale is true only for owner_changed", () => {

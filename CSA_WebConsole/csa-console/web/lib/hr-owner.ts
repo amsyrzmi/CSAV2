@@ -56,8 +56,15 @@ export function ownerRefusalText(cause: unknown): string {
   return Object.hasOwn(refusals, code) ? refusals[code] : FALLBACK;
 }
 
-export const UNCONFIRMED_TEXT =
-  "We couldn't confirm the change. Check who the HR owner is above, then try again.";
+/**
+ * What the page says when the move may or may not have happened. It points at the panel only if the
+ * panel was read again; otherwise the name on screen could be the one from before the move.
+ */
+export function uncertainText(reloaded: boolean): string {
+  return reloaded
+    ? "We couldn't confirm the change. Check who the HR owner is above, then try again."
+    : "We couldn't confirm the change or reload the HR owner. Reload the page before you try again.";
+}
 
 /**
  * True when the move may have happened anyway: the request never got an answer (a network error has

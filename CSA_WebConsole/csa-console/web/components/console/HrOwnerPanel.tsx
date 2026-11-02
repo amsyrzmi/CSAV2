@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/ui/kit";
 import type { Member } from "@/lib/identity-contracts";
 import {
-  UNCONFIRMED_TEXT,
   confirmText,
   eligibleOwners,
   hrOwnerClient,
@@ -12,6 +11,7 @@ import {
   moveUncertain,
   ownerRefusalText,
   ownerStale,
+  uncertainText,
   type HeldKey,
   type HrOwnerState,
 } from "@/lib/hr-owner";
@@ -43,6 +43,7 @@ export function HrOwnerPanel({
   const mounted = useRef(false);
 
   // One read at a time wins: a later read, or a move's answer, makes an earlier one stale.
+  // "failed" means the server could not be read; null means this read was superseded.
   const read = useCallback(async () => {
     const mine = ++reads.current;
     try {
@@ -50,17 +51,20 @@ export function HrOwnerPanel({
       return mounted.current && mine === reads.current ? next : null;
     } catch {
       /* Keep what is shown: the Team page has its own errors, and the move stays refusable. */
-      return null;
+      return "failed" as const;
     }
   }, [clientId]);
+  /** True when the owner on screen is now current (read, or replaced by a newer read). */
   const load = useCallback(async () => {
     const next = await read();
+    if (next === "failed") return false;
     if (next) setState(next);
+    return true;
   }, [read]);
   useEffect(() => {
     mounted.current = true;
     void read().then((next) => {
-      if (next) setState(next);
+      if (next && next !== "failed") setState(next);
     });
     return () => {
       mounted.current = false;
@@ -93,8 +97,8 @@ export function HrOwnerPanel({
       if (!mounted.current) return;
       if (moveUncertain(cause)) {
         setOpen(false);
-        setNotice({ text: UNCONFIRMED_TEXT, error: true });
-        await load();
+        const reloaded = await load();
+        if (mounted.current) setNotice({ text: uncertainText(reloaded), error: true });
       } else {
         setRefusal(ownerRefusalText(cause));
         if (ownerStale(cause)) await load();
