@@ -19,7 +19,7 @@ const smallButton =
  * under it, each reply on the left beside the assistant with Read aloud and Copy. While the server
  * is working on a turn (`isWorking`) the assistant shows its working pose beside "Working on it".
  * What arrives after the conversation first showed eases in (not under reduced motion or the pause
- * preference). Follow-up starters sit under the log, after the latest reply, and only fill the
+ * preference); older turns paged in above it do not. Follow-up starters sit under the log, after the latest reply, and only fill the
  * composer. Status words are the sandbox's own.
  */
 export function ChatMessages({ turns, now, onReadAloud, readDisabled, followUps, onFollowUp }: {
@@ -34,12 +34,15 @@ export function ChatMessages({ turns, now, onReadAloud, readDisabled, followUps,
   const motion = useMotionAllowed();
   // Everything on screen when the log first mounted is not "new"; whatever shows up later is.
   const [initial] = useState(() => new Set(turns.flatMap((turn) => [`t${turn.id}`, ...turn.replies.map((reply) => `r${reply.id}`)])));
-  const arrives = (key: string) => (initial.has(key) ? "" : motion ? " fs-message-in" : "");
+  // Older turns paged in above ("Older messages") sit before everything first shown: they are history, not arrivals.
+  const [oldestShown] = useState(() => turns.reduce((oldest, turn) => Math.min(oldest, turn.id), Infinity));
+  const isNew = (turnId: number, key: string) => !initial.has(key) && turnId >= oldestShown;
+  const arrives = (turnId: number, key: string) => (isNew(turnId, key) ? (motion ? " fs-message-in" : "") : "");
   const workingId = turns.findLast((turn) => isWorking(turn.status))?.id;
   return <>
     <div className="space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
-      {turns.map((turn) => <article key={turn.id} data-arrived={initial.has(`t${turn.id}`) ? undefined : "true"}
-        className={`space-y-4${arrives(`t${turn.id}`)}`}>
+      {turns.map((turn) => <article key={turn.id} data-arrived={isNew(turn.id, `t${turn.id}`) ? "true" : undefined}
+        className={`space-y-4${arrives(turn.id, `t${turn.id}`)}`}>
         <div className="flex flex-col items-end gap-1.5 pl-8 sm:pl-16">
           <p className="max-w-full whitespace-pre-wrap break-words rounded-[var(--fs-radius-bubble)] rounded-br-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)] px-4 py-2.5 text-[color:var(--fs-text)]">
             <span className="sr-only">You: </span>{turn.body}</p>
@@ -47,7 +50,7 @@ export function ChatMessages({ turns, now, onReadAloud, readDisabled, followUps,
         </div>
         {sandboxDelayed(turn, now) && <Notice>This is taking longer than usual. It may still arrive. Do not send it again yet; use Check for new messages.</Notice>}
         {turn.id === workingId && <WorkingRow />}
-        {turn.replies.map((reply) => <div key={reply.id} className={`flex items-start gap-3${arrives(`r${reply.id}`)}`}>
+        {turn.replies.map((reply) => <div key={reply.id} className={`flex items-start gap-3${arrives(turn.id, `r${reply.id}`)}`}>
           <AgentAvatar agentId="assistant" size={32} state="rest" label="" />
           <div className="min-w-0 flex-1">
             <p className="whitespace-pre-wrap break-words pt-1 leading-relaxed text-[color:var(--fs-text)]">

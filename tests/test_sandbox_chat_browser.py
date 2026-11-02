@@ -1074,3 +1074,83 @@ async def test_open_voice_tray_text_has_no_limits_copy(server: str) -> None:
         # The honesty line stays outside the tray, once.
         assert HONESTY not in text
         assert (await page.locator("body").inner_text()).count(HONESTY) == 1
+
+
+async def test_older_messages_paged_in_do_not_ease_in(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = numbered_turns(30)
+    api.page_size = 20
+    async with open_chat(server, api) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        log = page.get_by_role("log", name="Chat messages")
+        await expect(log.get_by_text(re.compile(r"Answer 30$"))).to_be_visible()
+        await page.get_by_role("button", name="Older messages").click()
+        await expect(log.get_by_text(re.compile(r"Question 1$"))).to_be_attached()
+        await expect(log.locator("article")).to_have_count(30)
+        # History is not an arrival: no turn is marked or eased in.
+        await expect(page.locator("article[data-arrived='true']")).to_have_count(0)
+        await expect(page.locator("article.fs-message-in")).to_have_count(0)
+        # A turn that arrives afterwards still eases in.
+        api.turns["thread-1"].append(numbered_turns(31)[-1])
+        await expect(log.get_by_text(re.compile(r"Answer 31$"))).to_be_attached(timeout=10_000)
+        await expect(page.locator("article[data-arrived='true']")).to_have_count(1)
+        await expect(page.locator("article.fs-message-in")).to_have_count(1)
+
+
+async def test_stop_reading_aloud_falls_back_to_a_reply_button_when_mic_and_text_are_off(
+    server: str,
+) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api, init_script=SPEECH_STUB) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        read = page.get_by_role("button", name="Read reply aloud")
+        await read.click()
+        stop = page.get_by_role("button", name="Stop reading aloud")
+        await expect(stop).to_be_visible()
+        # Switch the microphone and the text box off by hand: neither prop changes, so React leaves them.
+        await page.evaluate(
+            """() => {
+              document.querySelector('button[aria-label="Voice options"]').disabled = true;
+              document.getElementById("sandbox-text").disabled = true;
+            }"""
+        )
+        await stop.focus()
+        await page.keyboard.press("Enter")
+        await expect(stop).to_have_count(0)
+        await expect(read).to_be_focused()
+        # With no reply button either, focus goes to the log's scroller, never to the page body.
+        await page.evaluate("document.querySelector('button[aria-label=\"Read reply aloud\"]').disabled = true")
+        await page.evaluate("window.speechTest.speaking = true")
+        await expect(stop).to_be_visible()
+        await stop.focus()
+        await page.keyboard.press("Enter")
+        await expect(stop).to_have_count(0)
+        await expect(page.get_by_test_id("sandbox-scroll")).to_be_focused()
+
+
+CLIPBOARD_REJECTS = """
+Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+  writeText: async () => { throw new Error("denied"); },
+} });
+"""
+CLIPBOARD_MISSING = """
+Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+"""
+
+
+@pytest.mark.parametrize("stub", [CLIPBOARD_REJECTS, CLIPBOARD_MISSING], ids=["rejects", "missing"])
+async def test_copy_reply_says_could_not_copy_when_the_browser_refuses(
+    server: str, stub: str
+) -> None:
+    api = Synthetic(threads=1)
+    api.turns["thread-1"] = [seeded_turn(1)]
+    async with open_chat(server, api, init_script=stub) as page:
+        await page.get_by_role("button", name="Conversation 1", exact=True).click(timeout=WAIT)
+        await page.get_by_role("button", name="Copy reply").click()
+        failed = page.get_by_text("Could not copy", exact=True)
+        await expect(failed).to_be_visible()
+        await expect(page.get_by_text("Copied", exact=True)).to_have_count(0)
+        # The words go away by themselves, and the button still works afterwards.
+        await expect(failed).to_have_count(0, timeout=4000)
+        await expect(page.get_by_role("button", name="Copy reply")).to_be_enabled()

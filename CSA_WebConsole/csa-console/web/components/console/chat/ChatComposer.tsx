@@ -19,7 +19,8 @@ const TRAY_CONTROLS = "button:not(:disabled), select:not(:disabled), input:not(:
  * is a new line. The send button is named "Send message" (or reads "Send the same message again").
  * Focus follows the tray: opening it with the microphone button moves focus to its first control,
  * closing it returns focus to the button; "Stop reading aloud" hands focus to the microphone
- * button when it is pressed (it unmounts once speech stops).
+ * button when it is pressed (it unmounts once speech stops), or to a Read aloud button when the microphone
+ * and the text box are both off.
  */
 export function ChatComposer({ value, onChange, textareaRef, disabled, onSend, sendDisabled, retry,
   speaking, onStopSpeech, voiceOpen, onVoiceToggle, voiceToggleDisabled, voice }: {
@@ -96,8 +97,12 @@ export function ChatComposer({ value, onChange, textareaRef, disabled, onSend, s
         {speaking && <button type="button" className={iconButton}
           onClick={() => {
             onStopSpeech();
-            // This button goes away once speech stops: keep the reader's place.
-            const next = micRef.current && !micRef.current.disabled ? micRef.current : textareaRef.current;
+            // This button goes away once speech stops: keep the reader's place. With the microphone and
+            // the text box both off (read-only), fall back to a reply's Read aloud button, then the log.
+            const open = (element: HTMLElement | null | undefined) => (element && !(element as HTMLButtonElement).disabled ? element : null);
+            const next = open(micRef.current) ?? open(textareaRef.current)
+              ?? open(document.querySelector<HTMLElement>('button[aria-label="Read reply aloud"]:not(:disabled)'))
+              ?? document.querySelector<HTMLElement>('[data-testid="sandbox-scroll"]');
             next?.focus();
           }}
           aria-label="Stop reading aloud" title="Stop reading aloud"><VolumeX size={18} aria-hidden /></button>}
