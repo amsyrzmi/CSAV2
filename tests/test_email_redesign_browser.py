@@ -559,7 +559,9 @@ async def test_only_one_dialog_when_sending_from_a_draft(site: Site) -> None:
             await expect(dialog).to_contain_text("Send this email?")
             await expect(dialog).to_contain_text("Here is the delivery date.")
             assert world.count("PUT", f"email/drafts/{REPLY_DRAFT}") == 0  # nothing was edited
-            await dialog.get_by_role("button", name="Keep editing").click()
+            # Focus enters the dialog once it is enabled, so Escape closes it.
+            await expect(dialog.get_by_role("button", name="Keep editing")).to_be_focused()
+            await page.keyboard.press("Escape")
             await expect(page.get_by_role("dialog")).to_have_count(0)
 
             await inline.get_by_test_id("email-send").click()

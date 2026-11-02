@@ -357,6 +357,10 @@ function AttentionPanel({ attention, busy, onOpen }: {
 function SendDialog({ draft, busy, from, onConfirm, onClose }: {
   draft: Draft; busy: boolean; from: string | null; onConfirm: () => void; onClose: () => void;
 }) {
+  const keep = useRef<HTMLButtonElement>(null);
+  // The dialog opens while the request that built it is still busy, so the button is disabled
+  // and `autoFocus` cannot land: take focus as soon as it is enabled, so Escape reaches the dialog.
+  useEffect(() => { if (!busy) keep.current?.focus(); }, [busy]);
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--fs-scrim)] p-4"
     onKeyDown={event => { if (event.key === "Escape" && !busy) onClose(); }}>
     <div role="dialog" aria-modal="true" aria-labelledby="email-send-title"
@@ -367,7 +371,7 @@ function SendDialog({ draft, busy, from, onConfirm, onClose }: {
       <div className="flex flex-wrap gap-2">
         <button type="button" data-testid="email-send-confirm" className={action} disabled={busy} onClick={onConfirm}>
           {busy ? "Sending…" : "Send now"}</button>
-        <button type="button" className={secondary} disabled={busy} autoFocus onClick={onClose}>Keep editing</button>
+        <button ref={keep} type="button" className={secondary} disabled={busy} autoFocus onClick={onClose}>Keep editing</button>
       </div>
     </div>
   </div>;
