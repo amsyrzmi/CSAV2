@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { chipLabel, isPressed, nextSingle, toggleChip } from "@/lib/chips";
 
 const chip =
-  "inline-flex min-h-10 items-center gap-1.5 rounded-[var(--fs-radius-round)] border px-3 py-1.5 pointer-coarse:min-h-11 " +
+  "relative inline-flex min-h-10 items-center justify-center gap-1.5 rounded-[var(--fs-radius-round)] border px-[1.375rem] py-1.5 pointer-coarse:min-h-11 " +
   "transition-[background-color,border-color,color] duration-150 ease-(--fs-ease-out) motion-reduce:transition-none";
 const idle =
   "border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] text-[color:var(--fs-text)] hover:border-[color:var(--fs-primary)]";
@@ -57,8 +57,9 @@ export default function StatusChips<T extends string>({
             onClick={() => press(option.value)}
             className={`${chip} ${on ? pressed : idle}`}
           >
-            {/* The check's slot is always there so pressing a chip never widens it. */}
-            <span aria-hidden="true" className="inline-flex size-3.5 shrink-0 items-center justify-center">
+            {/* The check sits in the left padding (equal on both sides), so the label is centred on a
+                pressed and an idle chip alike and pressing never changes the chip's size. */}
+            <span aria-hidden="true" className="absolute top-1/2 left-[7px] inline-flex size-3.5 -translate-y-1/2 items-center justify-center">
               {on ? (
                 <svg
                   viewBox="0 0 24 24"

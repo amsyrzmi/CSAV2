@@ -91,7 +91,14 @@ export function Thread({
   }
   const blocked = actions.blocked;
 
-  useEffect(() => { if (confirming) cancelRef.current?.focus(); }, [confirming]);
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (!confirming) return;
+    cancelRef.current?.focus({ preventScroll: true });
+    // Show the whole question with the bottom padding under it, clear of the assistant's launcher.
+    const form = formRef.current;
+    if (form) form.scrollTop = form.scrollHeight;
+  }, [confirming]);
   // After a send the box is free again: back to the box when the text went, else to the button.
   useEffect(() => {
     if (!refocus.current || blocked || confirming) return;
@@ -100,6 +107,8 @@ export function Thread({
   }, [confirming, blocked, text]);
 
   function cancelConfirm() {
+    // While the request is in flight the question stays up, so nothing can hide or move focus mid-send.
+    if (sending.current) return;
     setConfirming(false);
     queueRef.current?.focus();
   }
@@ -186,8 +195,8 @@ export function Thread({
     </div>
     {feedback}
     {current?.human_muted
-      ? <form key="reply" data-testid="inbox-composer"
-        className={`max-h-[60%] shrink-0 overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 ${roomMotion}`}
+      ? <form key="reply" ref={formRef} data-testid="inbox-composer"
+        className={`max-h-[60%] shrink-0 scroll-pb-16 overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 pb-16 md:scroll-pb-0 md:pb-3 ${roomMotion}`}
         onSubmit={(event) => { event.preventDefault(); if (text.trim() && !blocked) setConfirming(true); }}
         onKeyDown={(event) => {
           // Escape closes the question first; the inbox's own Escape (back to the list) must not also fire.
@@ -197,14 +206,14 @@ export function Thread({
           <textarea ref={boxRef} className={`${field} mt-1 h-20 py-2 md:h-24`} value={text} maxLength={2000}
             disabled={blocked} readOnly={confirming} onChange={(event) => setText(event.target.value)} required />
         </label>
-        <div className="mt-2 flex justify-end">
+        <div className="mt-2 flex justify-start md:justify-end">
           <button ref={queueRef} className={action} aria-expanded={confirming} aria-controls={`reply-confirm-${id}`}
             disabled={blocked || !!detailError || !text.trim()}>Queue reply</button></div>
         {confirming && <div id={`reply-confirm-${id}`} role="group" aria-label="Confirm reply" data-testid="inbox-reply-confirm"
           className="mt-2 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] p-3">
           <p className="text-sm font-medium">Queue this reply for delivery to the customer?</p>
           <p className="mt-1 text-xs text-ink-700">Once it is delivered you cannot take it back.</p>
-          <div className="mt-3 flex flex-wrap justify-end gap-2">
+          <div className="mt-3 flex flex-wrap justify-start gap-2 md:justify-end">
             <button ref={cancelRef} type="button" data-testid="inbox-reply-confirm-cancel" className={secondary}
               disabled={blocked} onClick={cancelConfirm}>Cancel</button>
             <button type="button" data-testid="inbox-reply-confirm-send" className={action}

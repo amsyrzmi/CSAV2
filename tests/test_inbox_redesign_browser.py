@@ -821,14 +821,19 @@ async def test_queue_reply_asks_for_confirmation_and_cancel_sends_nothing(shell:
         await expect(page.get_by_text("Reply queued.")).to_have_count(0)
 
 
-async def test_queue_reply_confirm_sends_once(shell: Shell) -> None:
+@pytest.mark.parametrize("how", ("dblclick", "same_tick"))
+async def test_queue_reply_confirm_sends_once(shell: Shell, how: str) -> None:
     state = Inbox(reply_delay=0.8)
     async with inbox_page(shell, state) as page:
         box = await open_composer(page)
         await page.get_by_role("button", name="Queue reply", exact=True).click()
         send = page.get_by_test_id("inbox-reply-confirm-send")
         await expect(send).to_be_visible()
-        await send.dblclick()
+        if how == "dblclick":
+            await send.dblclick()
+        else:
+            # Two clicks in one tick: nothing has re-rendered, so only the guard stops the second.
+            await send.evaluate("el => { el.click(); el.click(); }")
         await expect(
             page.get_by_text(
                 "Reply queued. Delivery status appears in the conversation.", exact=True
@@ -840,6 +845,71 @@ async def test_queue_reply_confirm_sends_once(shell: Shell) -> None:
         await expect(box).to_have_value("")
         # The button is disabled with nothing typed, so focus rests in the box for the next reply.
         await expect(box).to_be_focused()
+
+
+async def test_escape_does_nothing_while_the_reply_is_being_sent(shell: Shell) -> None:
+    state = Inbox(reply_delay=1.5)
+    async with inbox_page(shell, state) as page:
+        box = await open_composer(page)
+        await page.get_by_role("button", name="Queue reply", exact=True).click()
+        confirm = page.get_by_test_id("inbox-reply-confirm")
+        await page.get_by_test_id("inbox-reply-confirm-send").click()
+        await expect(page.get_by_test_id("inbox-reply-confirm-send")).to_have_text("Queueing reply")
+        await page.keyboard.press("Escape")
+        # Focus is on nothing while the buttons are disabled, so also aim Escape at the form itself.
+        await page.get_by_test_id("inbox-composer").evaluate(
+            "el => el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))"
+        )
+        await expect(page.get_by_test_id("inbox-reply-confirm-cancel")).to_be_disabled()
+        await asyncio.sleep(0.3)
+        # The question stays up until the request ends.
+        await expect(confirm).to_be_visible()
+        await expect(box).to_have_value(REPLY)
+        await expect(
+            page.get_by_text(
+                "Reply queued. Delivery status appears in the conversation.", exact=True
+            )
+        ).to_be_visible(timeout=WAIT)
+        await expect(confirm).to_have_count(0)
+        assert state.replies == [REPLY]
+
+
+@pytest.mark.parametrize("theme", ("cobalt", "night"))
+@pytest.mark.parametrize("size", ((390, 844), (320, 640)))
+async def test_assistant_launcher_never_covers_the_reply_buttons(
+    shell: Shell, theme: str, size: tuple[int, int]
+) -> None:
+    """A fixed pill like the assistant's launcher (bottom right, z-40, after the app)."""
+    width, height = size
+    async with inbox_page(shell, Inbox(), width=width, theme=theme) as page:
+        await page.set_viewport_size({"width": width, "height": height})
+        await page.goto(f"{shell.base}/portal/inbox")
+        await open_composer(page)
+        await page.evaluate(
+            """() => {
+                const pill = document.createElement("div");
+                pill.id = "dock-stand-in";
+                pill.style.cssText = "position:fixed;bottom:20px;right:20px;width:120px;"
+                    + "height:44px;z-index:40;background:red";
+                document.body.appendChild(pill);
+            }"""
+        )
+        queue = page.get_by_role("button", name="Queue reply", exact=True)
+        assert await on_top(queue), "Queue reply is under the launcher"
+        assert not await touches_corner(queue)
+        await queue.click()
+        for test_id in ("inbox-reply-confirm-send", "inbox-reply-confirm-cancel"):
+            button = page.get_by_test_id(test_id)
+            await expect(button).to_be_in_viewport()
+            assert await on_top(button), (test_id, "is under the launcher")
+            assert not await touches_corner(button), (test_id, "touches the launcher corner")
+        # The pill really is drawn over the corner (so the check above can fail).
+        assert (
+            await page.evaluate(
+                "() => document.elementFromPoint(innerWidth - 80, innerHeight - 42)?.id"
+            )
+            == "dock-stand-in"
+        )
 
 
 async def test_inbox_view_chips_filter_like_the_old_control(shell: Shell) -> None:
@@ -969,6 +1039,18 @@ async def on_top(button: Any) -> bool:
             const r = el.getBoundingClientRect();
             const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
             return hit === el || el.contains(hit);
+        }"""
+    )
+
+
+async def touches_corner(button: Any) -> bool:
+    """Whether the control's box meets the launcher stand-in's box (bottom 20, right 20, 120x44)."""
+    return await button.evaluate(
+        """el => {
+            const r = el.getBoundingClientRect();
+            const left = innerWidth - 20 - 120, top = innerHeight - 20 - 44;
+            const right = innerWidth - 20, bottom = innerHeight - 20;
+            return r.right > left && r.bottom > top && r.left < right && r.top < bottom;
         }"""
     )
 
