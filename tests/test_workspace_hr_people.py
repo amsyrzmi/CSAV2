@@ -405,3 +405,33 @@ async def test_planner_facts_never_hold_personal_fields(planned) -> None:  # noq
         "siti-ic-scan-secret", ".pdf",
     ):  # fmt: skip
         assert secret not in prompt
+
+
+async def test_refusal_only_the_database_decides_comes_back_at_confirm(planned) -> None:  # noqa: F811
+    """The company's only HR owner marking their own person as leaving: the card is made, and
+    Confirm is refused with ``last_owner_leaving`` (the dock shows the profile's sentence for it,
+    lib/hr-person-card.ts). Nothing changes and the card stays open."""
+    w, model = planned
+    browser = await _owner(w)
+    me = await w.q("SELECT user_id FROM hr_client_owners WHERE client_id=%s", w.tenants[0])
+    myself = await _person(w, "Owner Synthetic")
+    await w.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        w.tenants[0], me[0]["user_id"], myself,
+    )  # fmt: skip
+    model.reply(
+        {
+            "action": "hr_person_leave",
+            "person": "Owner Synthetic",
+            "last_day": "2099-12-31",
+            "reason": "retired",
+        }
+    )
+    thread = await _thread(w, browser)
+    proposal = _card(await _turn(w, browser, thread, "Mark me as leaving, I am retiring", "hr"))
+    refused = await _confirm(w, browser, proposal["id"])
+    assert refused.status_code == 409, refused.text
+    assert refused.json() == {"detail": "last_owner_leaving"}
+    assert (await _employee(w, myself))["last_day"] is None
+    seen = await browser.get(f"{PROPOSALS}/{proposal['id']}")
+    assert seen.json()["status"] == "requested"
