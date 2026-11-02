@@ -162,16 +162,18 @@ const STORED = {
   epf_number: "••••", socso_number: null, version: 4, can_edit: "all",
 };
 
-test("personalFormValues prefills strings, with masked numbers as shown", () => {
+const NUMBERS = ["ic_or_passport", "bank_account", "tax_number", "epf_number", "socso_number"];
+
+test("personalFormValues prefills plain fields and leaves every number box empty", () => {
   const form = personalFormValues(STORED);
-  assert.equal(form.ic_or_passport, "•••• 5678");
-  assert.equal(form.tax_number, "");
+  for (const field of NUMBERS) assert.equal(form[field], "", field);
   assert.equal(form.home_address, "1 Jalan Synthetic\n50000 Kuala Lumpur");
+  assert.equal(form.bank_name, "Test Bank");
   assert.deepEqual(Object.keys(form), PERSONAL_FIELDS.map((item) => item.id));
   assert.deepEqual(Object.values(personalFormValues(null)), PERSONAL_FIELDS.map(() => ""));
 });
 
-test("an untouched form sends every plain field and no encrypted field", () => {
+test("an untouched form sends every plain field and keeps every stored number", () => {
   const body = personalBody(personalFormValues(STORED), STORED, "all", ID);
   assert.deepEqual(body, {
     operation: "personal.save", employee_id: ID, expected_version: 4,
@@ -184,17 +186,35 @@ test("an untouched form sends every plain field and no encrypted field", () => {
   });
 });
 
-test("a typed number is sent trimmed, a cleared one as null, an untouched one not at all", () => {
-  const form = { ...personalFormValues(STORED), ic_or_passport: " 900517-14-9999 ", bank_account: "", tax_number: "SG123456789" };
+test("a typed number is sent trimmed and the others are kept", () => {
+  const form = { ...personalFormValues(STORED), ic_or_passport: " 900517-14-9999 ", tax_number: "SG123456789" };
   const body = personalBody(form, STORED, "all", ID);
-  assert.deepEqual(body.encrypted, { ic_or_passport: "900517-14-9999", bank_account: null, tax_number: "SG123456789" });
-  assert.equal("epf_number" in body.encrypted, false);
-  assert.equal("socso_number" in body.encrypted, false);
+  assert.deepEqual(body.encrypted, { ic_or_passport: "900517-14-9999", tax_number: "SG123456789" });
 });
 
-test("clearing a number that was never stored sends nothing", () => {
-  const form = { ...personalFormValues(STORED), tax_number: "   " };
+test("a number in the cleared set is sent as null, whatever is stored", () => {
+  const form = personalFormValues(STORED);
+  const body = personalBody(form, STORED, "all", ID, new Set(["bank_account", "socso_number"]));
+  assert.deepEqual(body.encrypted, { bank_account: null, socso_number: null });
+});
+
+test("cleared wins over typed text for the same number", () => {
+  const form = { ...personalFormValues(STORED), epf_number: "123456789", tax_number: "SG123456789" };
+  const body = personalBody(form, STORED, "all", ID, new Set(["epf_number"]));
+  assert.deepEqual(body.encrypted, { epf_number: null, tax_number: "SG123456789" });
+});
+
+test("blank or whitespace in a number box keeps the stored number", () => {
+  const form = { ...personalFormValues(STORED), ic_or_passport: "   ", tax_number: "" };
   assert.deepEqual(personalBody(form, STORED, "all", ID).encrypted, {});
+  assert.deepEqual(personalBody(form, null, "all", ID).encrypted, {});
+});
+
+test("text containing a mask bullet is never sent as a number", () => {
+  const form = { ...personalFormValues(STORED), ic_or_passport: "•••• 5678", bank_account: "12•••4321", epf_number: "••••" };
+  assert.deepEqual(personalBody(form, STORED, "all", ID).encrypted, {});
+  // Cleared still clears, even beside a pasted mask.
+  assert.deepEqual(personalBody(form, STORED, "all", ID, new Set(["epf_number"])).encrypted, { epf_number: null });
 });
 
 test("blank plain fields are sent as null (full replace) and the address keeps its line breaks", () => {
@@ -212,7 +232,7 @@ test("blank plain fields are sent as null (full replace) and the address keeps i
 test("contact mode sends only the five self fields and never a number", () => {
   const form = { ...personalFormValues(STORED), bank_name: "Other Bank", date_of_birth: "2000-01-01",
     ic_or_passport: "SHOULD-NOT-GO-1", personal_phone: "012 345 6789" };
-  const body = personalBody(form, { ...STORED, can_edit: "contact" }, "contact", ID);
+  const body = personalBody(form, { ...STORED, can_edit: "contact" }, "contact", ID, new Set(["tax_number", "ic_or_passport"]));
   assert.deepEqual(Object.keys(body.values),
     ["home_address", "personal_phone", "emergency_name", "emergency_relationship", "emergency_phone"]);
   assert.equal(body.values.personal_phone, "012 345 6789");

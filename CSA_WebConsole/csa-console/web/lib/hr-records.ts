@@ -69,11 +69,16 @@ export const PERSONAL_FIELDS: PersonalFieldSpec[] = (Object.keys(PERSONAL_LABELS
   id, label: PERSONAL_LABELS[id], encrypted: ENCRYPTED.has(id), self: SELF.has(id),
 }));
 
-/** The form's raw values, all strings. A number holds its mask until the user types over it or clears it. */
+/**
+ * The form's raw values, all strings. The five number boxes start empty (placeholder "Leave blank to
+ * keep"): the page never holds a stored number, only its mask, which is shown beside the box.
+ */
 export type PersonalFormValues = Record<PersonalField, string>;
 
 export function personalFormValues(personal: Personal | null): PersonalFormValues {
-  return Object.fromEntries(PERSONAL_FIELDS.map(({ id }) => [id, personal?.[id] ?? ""])) as PersonalFormValues;
+  return Object.fromEntries(
+    PERSONAL_FIELDS.map(({ id, encrypted }) => [id, encrypted ? "" : personal?.[id] ?? ""]),
+  ) as PersonalFormValues;
 }
 
 export interface PersonalSaveBody {
@@ -83,20 +88,23 @@ export interface PersonalSaveBody {
   expected_version: number | null;
   /** A plain field present here is replaced: blank clears it. A field left out is kept. */
   values: Partial<Record<PlainField, string | null>>;
-  /** Only a number that was typed (its new value) or cleared (null). */
+  /** Only a number that was typed (its new value) or cleared (null); the rest are kept. */
   encrypted: Partial<Record<EncryptedField, string | null>>;
 }
 
 const blankToNull = (value: string) => value.trim() || null;
+const MASK_BULLET = "•";
 
 /**
  * The `personal.save` body. `mode` is the server's `can_edit`: "contact" is the person editing their own
  * record, which sends only the five self fields and no number. Every plain field the form shows is sent,
- * so a retry is the same save. A number is left out unless it differs from what the form was prefilled
- * with (its mask): typed text is sent, an emptied box sends null.
+ * so a retry is the same save. A number is sent only on purpose: `cleared` (the "Clear" checkboxes) sends
+ * null and wins over typed text; typed text is sent trimmed; a blank box keeps the stored number. Text
+ * with a mask bullet counts as blank, so a pasted mask can never be saved as a number.
  */
 export function personalBody(
   form: PersonalFormValues, original: Personal | null, mode: "all" | "contact", employeeId: string,
+  cleared: ReadonlySet<EncryptedField> = new Set(),
 ): PersonalSaveBody {
   const values: PersonalSaveBody["values"] = {};
   const encrypted: PersonalSaveBody["encrypted"] = {};
@@ -104,8 +112,10 @@ export function personalBody(
     if (mode === "contact" && !field.self) continue;
     const text = form[field.id];
     if (field.encrypted) {
-      if (text.trim() === (original?.[field.id] ?? "")) continue;
-      encrypted[field.id as EncryptedField] = blankToNull(text);
+      const id = field.id as EncryptedField;
+      const typed = text.includes(MASK_BULLET) ? null : blankToNull(text);
+      if (cleared.has(id)) encrypted[id] = null;
+      else if (typed !== null) encrypted[id] = typed;
     } else if (field.id === "home_address") {
       // Line breaks belong to an address; the server stores them as \n.
       values[field.id] = blankToNull(text.replaceAll("\r\n", "\n"));
