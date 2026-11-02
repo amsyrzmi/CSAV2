@@ -42,3 +42,6 @@ __pycache__/
 /CSA_WebConsole/**/node_modules/
 /CSA_WebConsole/**/.next/
 /CSA_WebConsole/**/tsconfig.tsbuildinfo
+
+# Host-local Claude Code permission rules (never shared)
+/.claude/settings.local.json

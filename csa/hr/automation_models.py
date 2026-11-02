@@ -10,6 +10,10 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, StrictBool, field_validator, model_validator
 
 from csa.hr.models import DirectoryValues, HrModel, ResolvedGrant, Version
+
+# From the leaf module, not people_contracts: people_contracts imports access_switches, which
+# imports this module.
+from csa.hr.people_types import EmploymentProfile, EmploymentType
 from csa.hr.workflows import AttendanceInput, Money, Region, ReviewedPayrollAmounts, WorkflowGrant
 
 PrivateArea = Literal["recruitment", "attendance", "payroll"]
@@ -42,6 +46,84 @@ class EmployeeSave(HrModel):
         ):
             raise ValueError("employment_profile_must_be_complete")
         return self
+
+
+class PersonValues(HrModel):
+    """A person's editable Overview fields, for person.add and person.update.
+
+    The department is an existing one (`department_id`) or a name typed in the form
+    (`new_department`, matched like department names are, or created), never both.
+    """
+
+    display_name: str = Field(min_length=1, max_length=120)
+    job_title: str | None = Field(default=None, min_length=1, max_length=120)
+    start_date: date | None = None
+    manager_id: UUID | None = None
+    department_id: UUID | None = None
+    new_department: str | None = Field(default=None, min_length=1, max_length=120)
+    work_email: str | None = Field(default=None, min_length=3, max_length=254)
+    work_phone: str | None = Field(default=None, pattern=r"^[0-9+() -]{3,40}$")
+    employment_type: EmploymentType | None = None
+
+    @field_validator("work_email")
+    @classmethod
+    def plain_work_email(cls, value: str | None) -> str | None:
+        return DirectoryValues.plain_work_email(value)
+
+    @model_validator(mode="after")
+    def one_department(self) -> Self:
+        if self.department_id is not None and self.new_department is not None:
+            raise ValueError("one_department_choice")
+        return self
+
+
+class PersonAdd(HrModel):
+    """A new active person. Owner or Manage people; never changes access or account links."""
+
+    operation: Literal["person.add"]
+    employee_id: UUID
+    values: PersonValues
+    employment_profile: EmploymentProfile | None = None
+
+    @model_validator(mode="after")
+    def title_and_start(self) -> Self:
+        if self.values.job_title is None or self.values.start_date is None:
+            raise ValueError("title_and_start_required")
+        return self
+
+
+class PersonUpdate(HrModel):
+    """Every editable field at once. Never changes whether the person is active (1b)."""
+
+    operation: Literal["person.update"]
+    employee_id: UUID
+    expected_version: Version
+    values: PersonValues
+    employment_profile: EmploymentProfile | None = None
+
+    @model_validator(mode="after")
+    def not_own_manager(self) -> Self:
+        if self.values.manager_id == self.employee_id:
+            raise ValueError("manager_self")
+        return self
+
+
+class DepartmentSave(HrModel):
+    """Create (no expected_version), rename, archive or restore a department."""
+
+    operation: Literal["department.save"]
+    department_id: UUID
+    expected_version: Version | None = None
+    name: str = Field(min_length=1, max_length=120)
+    archived: StrictBool = False
+
+
+class AccountLink(HrModel):
+    """Link a person to a member's console account, or unlink (None). HR owner only."""
+
+    operation: Literal["account.link"]
+    employee_id: UUID
+    account_id: UUID | None
 
 
 class AccessSave(HrModel):
@@ -287,7 +369,11 @@ HrOperation = Annotated[
     | NotificationRead
     | ShiftSchedule
     | ScheduleCancel
-    | AutomationConfigure,
+    | AutomationConfigure
+    | PersonAdd
+    | PersonUpdate
+    | DepartmentSave
+    | AccountLink,
     Field(discriminator="operation"),
 ]
 

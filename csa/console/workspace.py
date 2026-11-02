@@ -6,6 +6,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ValidationError
 
@@ -29,7 +30,7 @@ from csa.workspace.contracts import (
 )
 from csa.workspace.directory import my_people, search_people, throttle_lookup
 from csa.workspace.planner import PlannerError, WorkspacePlanner
-from csa.workspace.registry import ProposalRegistry
+from csa.workspace.registry import ProposalActionRefused, ProposalRegistry
 from csa.workspace.service import (
     WorkspaceConflict,
     WorkspaceNotFound,
@@ -307,14 +308,19 @@ def build_workspace_router() -> APIRouter:
         response: Response,
         actor: Annotated[ConsoleActor, Depends(workspace_actor)],
         client_id: Annotated[UUID, Depends(tenant)],
-    ) -> ProposalOut:
+    ) -> ProposalOut | JSONResponse:
         _workspace_access(actor, client_id)
         registry = _registry(request)
         # The registry runs its own short transactions (the `expired` write commits before
         # the refusal is raised) and holds none of them while the executor runs.
-        result = await registry.confirm(
-            request.app.state.pool, request, actor, client_id, proposal_id
-        )
+        try:
+            result = await registry.confirm(
+                request.app.state.pool, request, actor, client_id, proposal_id
+            )
+        except ProposalActionRefused as exc:
+            # The owning service's body as is: a send refusal carries retry_after or a message.
+            headers = {**(exc.headers or {}), "Cache-Control": "no-store"}
+            return JSONResponse(exc.content, status_code=exc.status_code, headers=headers)
         response.headers["Cache-Control"] = "no-store"
         return result
 

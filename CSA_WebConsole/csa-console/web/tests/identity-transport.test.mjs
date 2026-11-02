@@ -41,8 +41,17 @@ const proxyCode = ts.transpileModule(proxySource, {
     module: ts.ModuleKind.CommonJS,
   },
 }).outputText;
+const hrPathsCode = ts.transpileModule(
+  await readFile(new URL("../lib/hr-paths.ts", import.meta.url), "utf8"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
+).outputText;
+const hrPathsExports = {};
+new Function("exports", hrPathsCode)(hrPathsExports);
 const proxyExports = {};
-new Function("require", "exports", proxyCode)(require, proxyExports);
+new Function("require", "exports", proxyCode)(
+  (name) => (name === "./lib/hr-paths" ? hrPathsExports : require(name)),
+  proxyExports,
+);
 const { NextRequest } = require("next/server");
 
 test("A1 staff workspace pages are adopted but require a session cookie", () => {
@@ -212,6 +221,21 @@ test("multipart preserves file body, browser boundary, idempotency and CSRF", as
     assert.equal(calls[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
     assert.equal(calls[1][1].credentials, "same-origin");
   } finally { globalThis.fetch = original; }
+});
+
+test("HR tab and People pages are adopted, anything else under HR stays deferred", () => {
+  const profile = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  for (const route of ["/hr/people", "/portal/hr/leave", "/portal/hr/people/org-chart", `/portal/hr/people/${profile}`]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307, route);
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 200, route);
+  }
+  for (const route of ["/hr/onboarding", "/portal/hr/people/nope", "/portal/hrx", `/hr/people/${profile}/x`]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 404, route);
+  }
 });
 
 test("M3 KB screens are adopted but still require a session", () => {

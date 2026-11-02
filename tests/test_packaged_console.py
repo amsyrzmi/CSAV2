@@ -1976,7 +1976,8 @@ async def test_packaged_hr_browser_acceptance(
         )
         await owner.execute(
             "INSERT INTO hr_grants(client_id,user_id,action,scope,fields) "
-            "VALUES (%s,%s,'directory.read','hr_operator',ARRAY['display_name'])",
+            "VALUES (%s,%s,'directory.read','hr_operator',"
+            "ARRAY['display_name','job_title','department','work_email','assigned_manager'])",
             (tenants[0], users["platform"]),
         )
         for name in ("manager", "staff", "foreign"):
@@ -2102,7 +2103,10 @@ async def test_packaged_hr_browser_acceptance(
             await platform.goto(f"{w.origin}/hr")
             await platform.get_by_text("Select a tenant to continue.", exact=True).wait_for()
             assert await platform.get_by_test_id("assistant-open").count() == 0
+            # The old directory link redirects to People and keeps the tenant. The platform grant
+            # is the complete directory switch, so the People table lists the colleagues.
             await platform.goto(f"{w.origin}/hr?section=directory&client_id={tenants[0]}")
+            await platform.wait_for_url(f"{w.origin}/hr/people?client_id={tenants[0]}")
             await platform.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
             assert (
                 await platform.get_by_label("Tenant membership", exact=False).input_value()
@@ -2111,8 +2115,17 @@ async def test_packaged_hr_browser_acceptance(
             await platform.get_by_test_id("assistant-open").wait_for()
 
             staff = await new_page("staff")
+            # Staff hold only a partial self directory grant, which is not the directory switch:
+            # People is not in the tab bar and the page shows the no-access notice.
             await staff.goto(f"{w.origin}/portal/hr?section=directory")
-            await staff.get_by_role("cell", name="Synthetic HR staff", exact=True).wait_for()
+            await staff.wait_for_url(f"{w.origin}/portal/hr/people")
+            await staff.get_by_text(
+                "You don't have access to this part of People & HR.", exact=False
+            ).wait_for()
+            hr_tabs = staff.get_by_role("navigation", name="HR sections")
+            assert await hr_tabs.get_by_role("link", name="People", exact=True).count() == 0
+            # The signed-in name may show in the shell; a colleague's must not.
+            assert await staff.get_by_text("Synthetic HR manager", exact=True).count() == 0
             assert await staff.get_by_text("private-staff@example.test", exact=True).count() == 0
             await staff.get_by_test_id("assistant-open").wait_for()
             projection = await hr_fetch(staff, f"/console/v1/hr/employees/{employees['staff']}")
@@ -2135,7 +2148,8 @@ async def test_packaged_hr_browser_acceptance(
                 "status"
             ] == 404
 
-            await staff.get_by_role("button", name="Training", exact=True).click()
+            await hr_tabs.get_by_role("link", name="Training", exact=True).click()
+            await staff.wait_for_url(f"{w.origin}/portal/hr/training")
             await staff.get_by_label("Training title", exact=True).fill(title)
             await staff.get_by_label("Learning objective", exact=True).fill(objective)
             await staff.get_by_role("button", name="Save draft", exact=True).click()
@@ -2166,6 +2180,7 @@ async def test_packaged_hr_browser_acceptance(
 
             manager = await new_page("manager")
             await manager.goto(f"{w.origin}/portal/hr?section=training")
+            await manager.wait_for_url(f"{w.origin}/portal/hr/training")
             manager_projection = await hr_fetch(
                 manager, f"/console/v1/hr/employees/{employees['staff']}"
             )
@@ -2196,7 +2211,7 @@ async def test_packaged_hr_browser_acceptance(
             await manager.get_by_role("button", name="Confirm decision", exact=True).click()
             await reviewed.get_by_text("approved · version 2", exact=True).wait_for()
             await staff.reload()
-            await staff.get_by_role("button", name="Training", exact=True).click()
+            await staff.wait_for_url(f"{w.origin}/portal/hr/training")
             await article.get_by_text("approved · version 2", exact=True).wait_for()
 
             for name in ("admin", "reader", "foreign"):

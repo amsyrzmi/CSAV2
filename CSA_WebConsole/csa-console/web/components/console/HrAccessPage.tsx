@@ -10,7 +10,7 @@ import {
 import {
   changesSummary, PAGE_COPY, PRESET_COPY, refusalText, SWITCH_COPY, warningText,
 } from "@/lib/hr-access-copy";
-import { HrAccessFeatures, HrAccessRecent } from "./HrAccessMore";
+import { HrAccessFeatures, HrAccessPending, HrAccessRecent } from "./HrAccessMore";
 import { HrAccessPanel, initials, plain, warningsFor } from "./HrAccessPanel";
 import { action, field, Notice, secondary } from "./ui";
 
@@ -300,6 +300,8 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
       </div>
     </div>
 
+    <HrAccessPending tenant={tenant} readonly={readonly}
+      onApplied={() => { setRecentRefresh((n) => n + 1); void load({ filters, cursor }, true); }} />
     <HrAccessFeatures tenant={tenant} readonly={readonly} />
     <HrAccessRecent tenant={tenant} refresh={recentRefresh} />
 

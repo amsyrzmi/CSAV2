@@ -26,6 +26,10 @@ class PlanOut(Contract):
     is_active: bool
 
 
+class SettingsOut(Contract):
+    timezone: str  # the tenant's IANA zone (clients.timezone), for showing dates
+
+
 class PlanIn(Contract):
     code: str = Field(pattern=r"^[a-z0-9_-]{1,64}$")
     name: str = Field(min_length=1, max_length=120)

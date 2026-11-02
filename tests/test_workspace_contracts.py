@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import get_args
 from uuid import uuid4
 
 import pytest
@@ -27,6 +28,7 @@ from csa.workspace.contracts import (
     ProposalCard,
     RecordRef,
     ResolvedWorkspaceAuthority,
+    TabKey,
     TrainingSubmitProposal,
     VerifiedWorkspacePrincipal,
     WorkspaceActionProposal,
@@ -487,6 +489,21 @@ def test_page_context_and_record_ref() -> None:
     assert turn.page_context == ctx and turn.page_hint is None
 
 
+def test_subscriptions_is_a_gated_page_context_tab() -> None:
+    from csa.console.contracts import Role
+    from csa.console.services import PackageState
+    from csa.workspace.rules import tab_available
+
+    ctx = PageContext(tab="subscriptions", section="requests")
+    assert ctx.tab == "subscriptions" and ctx.record is None
+
+    active = PackageState(key="subscriptions", status="active")
+    assert tab_available("subscriptions", Role.TENANT_STAFF, [active])
+    assert not tab_available("subscriptions", Role.TENANT_STAFF, [])
+    suspended = PackageState(key="subscriptions", status="suspended")
+    assert not tab_available("subscriptions", Role.TENANT_STAFF, [suspended])
+
+
 def test_workspace_proposal_discriminator_parses_every_kind() -> None:
     adapter = TypeAdapter(WorkspaceProposal)
     cid = uuid4()
@@ -495,6 +512,9 @@ def test_workspace_proposal_discriminator_parses_every_kind() -> None:
         "navigate": {"tab": "inbox", "section": None, "record": None},
         "directory_lookup": {"query": "ann"},
         "email_compose": {"recipient_address": "a@example.com", "subject": "s", "instructions": ""},
+        "email_reply": {"thread_id": "t1", "cc": ["c@example.com"], "send": True},
+        "email_team": {"subject": "s", "instructions": "i"},
+        "inbox_summary": {},
         "training_submit": {"request_id": uuid4()},
         "inbox_decision": {
             "approval_id": 1,
@@ -549,3 +569,28 @@ def test_proposal_card_forbids_extra_and_results_join_union() -> None:
     people = adapter.validate_python({"action": "directory_lookup", "candidates": []})
     assert isinstance(people, DirectoryResult)
     assert InboxDecisionProposal and NavigateProposal and DirectoryLookupProposal
+
+
+def test_tab_labels_match_the_console_navigation() -> None:
+    """The assistant names a tab as the sidebar does, for every tab the assistant can open."""
+    import re
+    from pathlib import Path
+
+    from csa.workspace.rules import TAB_LABELS
+
+    source = Path(__file__).parents[1] / "CSA_WebConsole/csa-console/web/lib/navigation.ts"
+    labels = dict(re.findall(r'\{ key: "(\w+)", label: "([^"]+)"', source.read_text()))
+    # The sandbox chat folded into Overview: the dock's `chat` tab opens and is named as Overview.
+    labels["chat"] = labels["overview"]
+    tab_keys = set(get_args(TabKey))
+    assert tab_keys <= TAB_LABELS.keys()
+    assert tab_keys <= labels.keys()
+    for key, label in TAB_LABELS.items():
+        assert labels[key] == label
+
+
+def test_text_tables_have_the_same_keys() -> None:
+    from csa.workspace.service import _TEXT
+
+    assert _TEXT["en"].keys() == _TEXT["ms"].keys()
+    assert {"not_included", "no_work_email"} <= _TEXT["ms"].keys()

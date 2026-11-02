@@ -112,6 +112,7 @@ test("every switch has the agreed label, an explanation and a group", () => {
     own_requests: "Can request their own training, leave and attendance",
     approves_team: "Approves training, leave and attendance for their team",
     hr_team: "HR team member",
+    manage_people: "Manage people",
     recruitment: "Works on recruitment",
     attendance: "Works on attendance",
     payroll_prepare: "Prepares payroll",
@@ -124,11 +125,28 @@ test("every switch has the agreed label, an explanation and a group", () => {
   assert.deepEqual(Object.keys(copy.PRESET_COPY), ["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"]);
 });
 
+test("manage_people is the ninth switch, right after hr_team", () => {
+  assert.equal(access.SWITCH_IDS.length, 9);
+  assert.deepEqual(access.SWITCH_IDS.slice(3, 6), ["hr_team", "manage_people", "recruitment"]);
+  assert.equal(copy.SWITCH_COPY.manage_people.tag, "Manage people");
+  assert.equal(copy.SWITCH_COPY.manage_people.group, "Responsibilities");
+  assert.equal(copy.SWITCH_COPY.manage_people.explanation,
+    "Adds people and edits their profiles and departments. Sees people who have left and employment profiles.");
+  assert.equal(copy.PRESET_COPY.hr_team.description,
+    "Staff, plus HR team member, manage people, recruitment and attendance.");
+  assert.deepEqual(Object.keys(copy.SWITCH_COPY).sort(), [...access.SWITCH_IDS].sort());
+  assert.deepEqual(access.setSwitch(["directory"], "manage_people", true, ["directory"]), ["directory", "manage_people"]);
+  assert.deepEqual(access.setSwitch(["directory", "manage_people"], "manage_people", false, ["directory", "manage_people"]), ["directory"]);
+});
+
 test("desired sets keep included switches and presets only add", () => {
   assert.deepEqual(access.withIncluded(["hr_team"]), ["directory", "hr_team"]);
   assert.deepEqual(access.withIncluded(["payroll_review", "directory"]), ["directory", "payroll_review"]);
   assert.deepEqual(access.applyPreset(["payroll_review"], "hr_team"),
-    ["directory", "own_requests", "hr_team", "recruitment", "attendance", "payroll_review"]);
+    ["directory", "own_requests", "hr_team", "manage_people", "recruitment", "attendance", "payroll_review"]);
+  assert.ok(access.applyPreset([], "hr_team").includes("manage_people"));
+  for (const preset of ["staff", "manager", "payroll_preparer", "payroll_reviewer"])
+    assert.equal(access.applyPreset([], preset).includes("manage_people"), false, preset);
   assert.equal(access.includedWith(["hr_team", "directory"], "directory"), "hr_team");
   assert.equal(access.includedWith(["directory"], "directory"), null);
   assert.equal(access.changeCount(["directory"], ["directory", "own_requests", "approves_team"]), 2);
@@ -194,4 +212,56 @@ test("the new refusal reasons read as plain sentences", () => {
   const partly = copy.refusalText("partly_saved");
   assert.notEqual(partly, copy.refusalText(null));
   assert.doesNotMatch(partly, /_/);
+});
+
+const PENDING_ID = "66666666-6666-4666-8666-666666666666";
+
+test("the pending, apply and dismiss calls carry the tenant", async () => {
+  const pending = { items: [{ token_id: PENDING_ID, user_id: USER, display_name: "Aina Rahman", preset: "manager",
+    chosen_by: MANAGER, chooser_name: "Daniel Lim", accepted_at: "2026-10-29T01:00:00Z" }] };
+  const applied = { user_id: USER, outcome: "saved", reason: null };
+  const [, requests] = await capture(async () => {
+    assert.deepEqual(await access.pendingInvitations(TENANT), pending);
+    assert.deepEqual(await access.applyInvitation(TENANT, PENDING_ID), applied);
+    assert.equal(await access.dismissInvitation(TENANT, PENDING_ID), undefined);
+  }, (path) => path.includes("/dismiss") ? new Response(null, { status: 204 })
+    : path.includes("/apply") ? Response.json(applied) : Response.json(pending));
+  assert.deepEqual(requests.map(([path, init]) => [init.method ?? "GET", path]), [
+    ["GET", `/console/v1/hr/access/invitations?${SUFFIX}`],
+    ["POST", `/console/v1/hr/access/invitations/${PENDING_ID}/apply?${SUFFIX}`],
+    ["POST", `/console/v1/hr/access/invitations/${PENDING_ID}/dismiss?${SUFFIX}`],
+  ]);
+  for (const [, init] of requests.slice(1)) assert.equal(init.headers.get("X-CSRF-Token"), "synthetic-csrf");
+});
+
+test("an invitation that was already handled keeps its code and reads as a sentence", async () => {
+  const [failure] = await capture(
+    () => access.applyInvitation(TENANT, PENDING_ID).then(() => null, (cause) => cause),
+    () => Response.json({ detail: "invitation_already_handled" }, { status: 409 }),
+  );
+  assert.ok(failure instanceof ApiError);
+  assert.equal(failure.code, "invitation_already_handled");
+  assert.equal(failure.message, "This was already applied or dismissed. Reload to see the latest.");
+});
+
+const event = (extra) => ({
+  occurred_at: "2026-10-29T01:00:00Z", source: "invitation", preset: "manager", actor_user_id: MANAGER,
+  actor_name: "Daniel Lim", target_user_id: USER, target_name: "Aina Rahman",
+  turned_on: ["approves_team"], turned_off: [], area: null, area_enabled: null, ...extra,
+});
+
+test("an invitation event names who chose the access and the preset", () => {
+  assert.equal(copy.eventText(event({})), "Set on invitation by Daniel Lim: Manager for Aina Rahman");
+  assert.match(copy.eventText(event({ actor_name: "FourStacks admin", preset: "staff" })), /FourStacks admin/);
+  assert.match(copy.eventText(event({ actor_name: null })), /Set on invitation by Former member/);
+  assert.equal(copy.eventText(event({ source: "page", preset: null, turned_on: ["recruitment"] })),
+    'Daniel Lim turned on "Works on recruitment" for Aina Rahman');
+});
+
+test("the pending line names the preset and who chose it", () => {
+  const row = { token_id: PENDING_ID, user_id: USER, display_name: "Aina Rahman", preset: "payroll_reviewer",
+    chosen_by: MANAGER, chooser_name: null, accepted_at: "2026-10-29T01:00:00Z" };
+  assert.equal(copy.pendingText(row), "Payroll reviewer, chosen by Former member");
+  assert.equal(copy.pendingText({ ...row, chooser_name: "FourStacks admin", preset: "staff" }),
+    "Staff, chosen by FourStacks admin");
 });

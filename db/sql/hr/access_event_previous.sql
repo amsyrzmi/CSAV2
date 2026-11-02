@@ -1,1 +1,1 @@
-SELECT details FROM public.hr_authority_events WHERE client_id=%s AND operation='access.save' AND details->>'user_id'=%s AND (occurred_at,request_key)<(%s::timestamptz,%s::uuid) ORDER BY occurred_at DESC,request_key DESC LIMIT 1;
+SELECT operation,details FROM public.hr_authority_events WHERE client_id=%s AND operation IN ('access.save','invitation_access') AND details->>'user_id'=%s AND (occurred_at,request_key)<(%s::timestamptz,%s::uuid) ORDER BY occurred_at DESC,request_key DESC LIMIT 1;

@@ -48,7 +48,8 @@ persistent migration, deployment, live-provider or payroll-compliance acceptance
   No employee references, private areas, records or model input are returned.
   The staff workspace renders fixed guidance and same-origin links to the existing
   HR pages; this is separate from persisted workspace turns and their action union.
-  HR navigation accepts only `section=directory|training`; platform links retain the
+  HR navigation accepts only `section=directory|training` (since project 1a the HR pages
+  redirect these to `/people` and `/training`); platform links retain the
   explicitly selected `client_id`. URL hints never establish authority. Opening a
   page rechecks resource eligibility, and read-only sessions still cannot mutate.
 - `/operations` handles explicitly granted administration and private operations;
@@ -72,10 +73,13 @@ PCB calculation are not implemented by these local receipts.
 ### HR access page
 
 The "Who can do what" page (People & HR) reads and changes each member's HR access as
-eight switches. The server works out the switches, the "Custom access" rows, the
+nine switches. The server works out the switches, the "Custom access" rows, the
 warnings and the version; the page shows what it returns. Switch ids:
-`directory`, `own_requests`, `approves_team`, `hr_team`, `recruitment`,
-`attendance`, `payroll_prepare`, `payroll_review`.
+`directory`, `own_requests`, `approves_team`, `hr_team`, `manage_people`, `recruitment`,
+`attendance`, `payroll_prepare`, `payroll_review`. `manage_people` ("Manage people", migration
+0520) is the grant row `people.manage` on the `hr_operator` scope with no fields; the
+`hr_team` preset turns it on and no other preset does. Neither it nor its grant can change
+access.
 
 - **Owner only.** All three routes need the HR client owner. Anyone else, including
   another tenant's owner, gets 404 `resource_unavailable`, as for
@@ -94,7 +98,8 @@ warnings and the version; the page shows what it returns. Switch ids:
 - `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
   page showed, `dry_run` and 1–50 `changes`, each `{user_id, on, base}`: the
   member's full desired switch set (`on`) and the `on` set the page loaded them
-  with (`base`), both at most 8 unique switch ids; user ids are unique. The body
+  with (`base`), both at most 16 unique switch ids (9 exist; the headroom keeps the next switch from needing
+  another function rewrite); user ids are unique. The body
   cap is 65536 bytes.
   - A `version` that no longer matches gives 409 `access_changed` and writes
     nothing (a dry run too). The page reloads, keeps its own edits over each
@@ -138,9 +143,125 @@ warnings and the version; the page shows what it returns. Switch ids:
   `access.save` lists `turned_on` and `turned_off` against that person's previous
   `access.save`; a private-area event gives `area` and `area_enabled`. A member who
   is no longer enabled has `actor_name` or `target_name` `null` ("Former member").
+  Each event has a `source`: `page` for a save on this page, or `invitation` for access
+  set on an invitation when it was accepted. An `invitation` event carries the `preset`
+  (otherwise `null`); its actor is whoever chose the preset (a platform admin shows as
+  "FourStacks admin"), and `turned_on` is only what the preset added to what the person
+  already had.
+- **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
+  below) is applied when the invitation is accepted. If it is not, it waits for the HR
+  owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an
+  enabled user with an enabled membership in the tenant), or any preset, Staff included,
+  whose apply failed (for example the tenant's HR lock was held for more than 5 s). HR owner
+  only, tenant query as for the other `/access` routes:
+  - `GET /access/invitations` returns `PendingInvitationPage`: `items` of
+    `{token_id, user_id, display_name, preset, chosen_by, chooser_name, accepted_at}`.
+    `chooser_name` is "FourStacks admin" for a platform admin and `null` once the chooser
+    is no longer an enabled member.
+  - `POST /access/invitations/{token_id}/apply` applies the chosen preset now, on top of
+    what the person already has (it never turns a switch off), and returns an
+    `AccessPersonResult` with `outcome` `saved`. It checks again that the caller is the HR
+    owner. Refusals are errors, never a `refused` outcome: 409
+    `invitation_already_handled` when it was already applied or dismissed; 404
+    `resource_unavailable` for an unknown token.
+  - `POST /access/invitations/{token_id}/dismiss` leaves the person's access as it is; 204.
+    The same 409 applies.
 - The company features ("What the HR assistant can help with") stay on
   `PUT /agents`. They control only the HR assistant and agents; they never limit
   what staff can do in the console, and no switch or warning depends on them.
+
+### People, departments and Manage people (project 1a, migration 0520)
+
+The People & HR pages are `/portal/hr/…` for staff and `/hr/…` for a platform admin (who keeps
+`client_id` on every link): Home (`/portal/hr`), `people`, `people/org-chart`,
+`people/departments`, `people/new`, `people/<employee_id>`, `recruitment`, `leave`, `payroll`,
+`training`, `requests` and `settings`. An old `?section=` link redirects to its tab
+(`directory` and `people` to People, `attendance` and `leave` to Leave & attendance, `workflows`
+and `requests` to Requests; `training`, `recruitment`, `payroll` and `settings` to their own).
+The new routes below are GET only, return no-store, and take only `client_id` and the query keys
+named here (`/people` is the only one with any; another key is 400 `invalid_hr_query`). A person
+the caller may not see, and any caller the route does not serve, gets 404 `resource_unavailable`.
+
+**Who sees what.** The server decides the viewer: `hr` (the HR owner or a holder of Manage
+people), `directory` (the complete directory switch: `directory.read` on `hr_operator` with all
+five basic fields) or `self` (any other HR session of the tenant). A hand-made partial directory
+grant is `self`, not `directory`. A `self` viewer can open only their own linked person's profile;
+the list, org chart and departments are 404 for them. A `directory` viewer sees active and starting
+people with basic fields only. The HR-only fields (`employment_profile`, `version`,
+`account_linked`, and Left people) are present for `hr` and `null` or absent for everyone else.
+
+- `GET /people?q=&department=&manager=&status=&cursor=` returns `PeoplePage`: up to 50 `items`
+  (`HrPersonOut`: `employee_id`, `display_name`, `job_title`, `department_id`, `department`,
+  `manager_id`, `manager_name`, `work_email`, `work_phone`, `start_date`, `employment_type`,
+  `status`, and the HR-only three), an opaque `next_cursor` and the `total` that matches.
+  `q` (at most 120 characters) uses the directory's word-by-word rule (the first 5 words, each in
+  the name or work email or starting a word of the job title). `department` is a department id,
+  `none` or `all`; `manager` an employee id; `status` is `active`, `starting` or `left`. With no
+  `status` the list shows Active and Starting; `left` is for `hr` only and is 404 for the others.
+  `starting` means the start date is after today in Asia/Kuala_Lumpur. `cursor` is a number the
+  API returned. A `department` that is neither `none` nor an id is 409 `invalid_department_filter`.
+- `GET /people/{employee_id}` returns `PersonProfile`: the `person`, the `sections` the viewer may
+  open (`overview` for everyone; `access` and `history` for `hr`) and `can_edit`.
+- `GET /people/{employee_id}/history` returns `PersonHistory` (`hr` only): up to 200 changes,
+  newest first, each `{changed_at, actor_name, fields:[{field, old, new}]}`, and `truncated`.
+  A database trigger writes one row per change from any path, so changes made through
+  `employee.save` appear too.
+- `GET /people/{employee_id}/access` returns `PersonAccessOut` (`hr` only): the linked
+  `account` (`{user_id, display_name}` or `null`), the `on` switches, the `custom` rows and
+  `is_owner`.
+- `GET /org-chart` returns `OrgChart`: `nodes` (up to 5000) and `looped`, the ids that sit in a
+  manager loop (shown flat). `directory` viewers see active and starting people.
+- `GET /departments` returns `DepartmentList`: each `{department_id, name, archived, version,
+  people}`. `hr` and `directory` viewers only.
+- `GET /home` returns `HrHome` (`training_waiting`, `requests_waiting`): counts of what waits for
+  the caller, from the caller's own grants.
+
+**Departments** are rows (`hr_departments`). The old free-text `department` was folded into rows by
+the migration (names that differ only in case or spacing become one department), and the text
+column stays as a mirror of the linked department's name, kept by triggers. So `employee.save`, the
+directory and every existing reader keep working. A department name stays taken while archived.
+
+**New operations** on `POST /operations` (CSRF and `Idempotency-Key`, as for the others):
+
+- `person.add` `{employee_id, values, employment_profile?}`: a new active person. `employee_id`
+  is chosen by the client, so a retry is safe. `values` is `{display_name, job_title, start_date,
+  manager_id?, department_id? | new_department?, work_email?, work_phone?, employment_type?}`
+  (`employment_type` is `full_time`, `part_time`, `contract` or `intern`; `job_title` and
+  `start_date` are required here; giving both `department_id` and `new_department` is 422).
+- `person.update` `{employee_id, expected_version, values, employment_profile?}`: every editable
+  field at once. It never changes whether the person is active (leaving and rehire are 1b), and
+  a `manager_id` equal to `employee_id` is 422. A stale `expected_version` is 409 `person_changed`.
+  The `employment_profile` (`region`, `legal_entity_reference`, `employment_category`) is
+  all-three-or-none.
+- `department.save` `{department_id, expected_version?, name, archived}`: create (no
+  `expected_version`), rename, archive or restore. A stale version is 409 `department_changed`.
+- `account.link` `{employee_id, account_id | null}`: link a person to a tenant member's console
+  account, or unlink. HR owner only.
+
+`person.add`, `person.update` and `department.save` are for the HR owner or a Manage people
+holder; the database checks again. They write a receipt but no authority event, and cannot change
+access, account links or whether a person is active. `employee.save` stays in the API for
+the HR owner (it is the only way to change `is_active` until 1b; the console no longer has a form
+for it).
+
+Refusals are 409 with the code as `detail`, except `permission_denied` and `resource_unavailable`
+(404 `resource_unavailable`): `employee_exists`, `person_changed`, `manager_unavailable`,
+`manager_loop` (the new manager reports, directly or not, to this person), `manager_is_you` (a
+non-owner cannot newly make their own linked person anyone's manager), `own_manager_owner_only` (a
+non-owner cannot change their own linked person's manager), `department_unavailable`,
+`department_archived`, `department_changed`, `department_name_taken`, `account_taken` (the
+account is linked to another person) and `member_unavailable` (not an active member of the tenant).
+Validation failures are 422 `invalid_hr_input` with no field named.
+
+**`GET /records/interviewers`** (a new `records` area) returns `{user_id, display_name}` for every
+enabled console member of the tenant, for the HR owner or anyone with private recruitment
+access (everyone else gets 404). The Recruitment tab uses it to choose an interviewer.
+
+**`GET /context` (`HrContext`) gained three fields:** `switches` (the access switches that are on
+for the caller, in switch order), `workflows` (the caller's `domain.action` workflow grants, sorted
+and unique) and `hr_duties` (true for the HR owner and for anyone holding a switch beyond
+directory and own requests). The console uses them to hide tabs the caller cannot use; they
+never grant anything.
 
 ## Authentication, tenancy and settings
 
@@ -572,18 +693,35 @@ payload or employee/contact identity mapping is stored.
 | `GET /workspace/people/me` | tenant query | The caller's employee link and manager |
 
 `page_context` is `{tab, section?, record?}` where `tab` is one of `overview`,
-`services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `activity`, `chat` and
+`services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `subscriptions`, `activity`, `chat` and
 `record` is `{kind, id, version?}`. The legacy `page_hint` path (fixed page guidance and a
 single local order read with `source:"local_records"`, `marketplace_sync:"unavailable"`
 and an `as_of` timestamp) is unchanged; reusing a request key with different input, or
 replaying an order result after its resource version changes, returns 409. A
 missing or foreign order returns only `resource_unavailable`.
 
+### Language
+
+Every planned turn has one language, `"en"` or `"ms"`, returned as `WorkspaceTurnOut.language`
+(default `"en"`) on the 201 response, the 200 replay and `GET .../turns`, and saved in the stored
+turn result (no migration; a turn stored without it reads as English). The server guesses it from
+what the user typed (`detect_language` in `csa/workspace/planner.py`, which ignores email
+addresses, URLs and words both languages share) and decides it once per turn: a clear guess wins,
+and when the message gives no clear guess (a typed address, a name, "ok", a clicked option) the
+turn carries the previous turn's language, or English for the first turn of a thread. The turn's
+answers, questions, locked-tab text and cards are written in that language; a locked tab is named
+as the console's sidebar shows it (for example "People & HR"). The console panel (dock title,
+buttons, card status and error lines, the email preview's labels) follows `language`, from the
+latest turn for panel-wide text and from the turn or card for its own text; text the console
+shows by name (tab names, addresses, subjects, bodies) is never translated. Limits: before any
+turn exists the panel is English, so a first message that fails gets an English error; the HR
+assistant chat and tab-origin cards stay English.
+
 ### Planner
 
 A turn with `page_context` is planned by one model call that returns exactly one typed
-proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `training_submit`,
-`inbox_decision` or `clarification`. The planner only proposes; role, package, switch and
+proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `email_reply`,
+`email_team`, `inbox_summary`, `training_submit`, `inbox_decision` or `clarification`. The planner only proposes; role, package, switch and
 record-version gates are enforced afterwards by the turn service and the proposal
 registry, so a wrong plan can at worst produce a refused turn or a card the user
 declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; the
@@ -601,6 +739,12 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   own manager (as `GET /workspace/people/me` does) before planning and passes only the
   manager's `employee_id`, or a reason (`no_employee_link`, `no_manager`,
   `package_inactive`).
+- When the message is about training (English or Malay words such as "training",
+  "course", "latihan", "kursus"), the server passes `my_employee`: `{linked,
+  can_request_training, reason}`, with `reason` one of `hr_inactive`, `no_hr_access`,
+  `no_employee_link`, `assistant_off` (the tenant's HR assistant switch is off) or null.
+  When either flag is false the planner answers with the reason instead of proposing
+  `training_submit`.
 - The dock repeats the originating request in follow-up turns: picking a directory
   candidate sends `Use employee <id> for: <original message>`, and a clarification answer
   sends the option value with its question and the original message.
@@ -611,20 +755,41 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   written.
 - The user's own message is sent to the planner unredacted; the stored turn body is
   redacted before it is persisted.
-- A `navigate` to a tab that the role or packages do not unlock is turned into an
-  `answer` explaining that the package is not active.
+- A `navigate` to a tab that the console would not offer (the package and role rule of
+  `navigationFor`, in `csa/workspace/rules.py` `tab_available`) is turned into an `answer`:
+  the package is not active, or the tab is not available to the role.
 - Planner failures return 503 `planner_unavailable` (provider timeout, transport or HTTP
-  error; retryable) or 502 `planner_invalid_output` (output failed the strict schema).
+  error; retryable) or 502 `planner_invalid_output` (output that is not JSON, or a refusal
+  the server cannot name). A plan refused for a named rule is re-planned once (one
+  correction per turn, shared with the content correction) and, if refused again, answered
+  with a no-option question for the address on an email turn, otherwise a plain answer (see
+  `docs/EMAIL_ASSISTANT.md`).
+- A failure of the email-drafting model (invalid output, provider error or timeout) on an
+  `email_compose`, `email_reply` or `email_team` turn returns 503
+  `email_model_unavailable`; nothing is drafted or stored.
 
 ### Proposals and confirmation
 
-Every mutation is a proposal the user confirms on a card. Kinds: `email_export`
-(freeze a draft and save it to the user's own Gmail drafts), `training_submit` (submit a
-training request), `inbox_decision` (approve or reject a held customer reply) and
-`subscription_action` (a [subscription state change](#subscriptions), requested from the
-Subscriptions tab).
+Every mutation is a proposal the user confirms on a card. The kinds are:
+
+- `email_export`: freeze a draft and save it to the user's own Gmail drafts;
+- `email_send`: send a draft from the user's own Gmail (see
+  [Email management](#email-management));
+- `training_submit`: submit a training request. When the card is made (and again at
+  confirm) the caller must have their own employee record (409 `no_employee_link`) and the
+  `training.submit` grant, plus `training.draft` for a new request (403
+  `hr_training_not_permitted`), so a refused submit never leaves a draft behind;
+- `inbox_decision`: approve or reject a held customer reply;
+- `subscription_action`: a [subscription state change](#subscriptions), requested from
+  the Subscriptions tab.
+
 `ProposalOut` is `{id, kind, status, card, result, created_at, expires_at}`; the card
-holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
+holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at`, `expected_version`
+and `language` (`"en"` or `"ms"`, default `"en"`): the language the card's title, summary and field
+labels are written in. It is stored with the card, so confirm and cancel responses and a reloaded
+card keep it, and it never enters the proposal payload or its hash. A card made from a tab
+(`POST /workspace/proposals`) and a card stored before the field existed read `"en"`. The email
+cards' hidden `Subject` and `Draft` sentinel fields keep their English labels in both languages.
 
 Statuses are `requested`, then `confirmed`, then `executed`, or `cancelled` / `expired`.
 A proposal lives 15 minutes and is visible only to its owner.
@@ -659,7 +824,12 @@ version. The package gate is re-run at confirm.
 | `proposal_consumed` | 409 | Already confirmed or cancelled, or another confirm holds the lease |
 | `proposal_stale` | 409 | Payload hash or `expected_version` no longer matches |
 | `planner_unavailable` | 503 | No planner configured, or the model provider failed |
-| `planner_invalid_output` | 502 | The model output failed the strict proposal schema |
+| `planner_invalid_output` | 502 | Non-JSON output or an unnamed refusal; named schema failures are corrected once |
+| `email_model_unavailable` | 503 | The email-drafting model failed on a compose, reply or team turn; try again |
+| `mailbox_not_connected` | 409 | An `email_export` or `email_send` card was asked for while the user's mailbox is not connected; checked when the card is made, not only at confirm |
+| `no_employee_link` | 409 | A `training_submit` card was asked for, or a training draft saved, while the caller's login is not linked to an employee record |
+| `hr_training_not_permitted` | 403 | A `training_submit` card was asked for without the training grants it needs (`training.submit`, plus `training.draft` for a new request) |
+| `reply_approval_not_found` | 404 | An `inbox_decision` card named a held reply that is gone or belongs to another conversation |
 
 Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 `workspace.proposal.created`, `workspace.proposal.confirmed`,
@@ -673,7 +843,8 @@ Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 | Inbox decision | `customer_support` package `active` or `suspended` |
 | Training submit | `hr` package active; training proposals created by the assistant (planner or HR chat) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
 | People search and `people/me` | `hr` package active (`people/me` reports `package_inactive` as a `reason`, not an error) |
-| Email export and compose | `staff_email` package active and `email_settings.enabled` |
+| Email export, compose and send | `staff_email` package active and `email_settings.enabled` |
+| Email my team | The above, the `hr` package, and the HR access switch "approves team" |
 
 ### People
 
@@ -696,6 +867,92 @@ one of `recipient_employee_id` (resolved through the directory; 422
 subject, instructions and an optional language (default `auto`). It returns a model-written draft with
 `thread_id` null and `source="model"`, exported through the existing export flow (and so
 through an `email_export` proposal). Nothing is sent.
+
+### Email management
+
+All routes sit under `/console/v1/email`, take the tenant `client_id` query, need the
+`staff_email` package and the tenant switch, and (except the reads) take an
+`Idempotency-Key`. Sending uses the staff member's own Gmail; no scope beyond
+`gmail.readonly` and `gmail.compose` is needed. The behaviour and limits are in
+[EMAIL_ASSISTANT.md](EMAIL_ASSISTANT.md#sending).
+
+| Route | Body | Result |
+|---|---|---|
+| `GET /drafts/{draft_id}` | none | `DraftOut` for the owner; 404 otherwise. The console uses it to show recipients and body on a card |
+| `PUT /drafts/{draft_id}` | `{to?, cc?, bcc?, subject, body}` | Edited `DraftOut` (`recipient` is the old single-To field) |
+| `POST /drafts/{draft_id}/send` | `{version}` | `SendResult` `{outcome, sent_at, gmail_message_id, remaining_this_hour}` |
+| `POST /drafts/{draft_id}/release` | none | `DraftOut` back in `draft`, owner only |
+| `POST /threads/{thread_id}/reply` | `{instructions?, language? (auto\|en\|ms), cc?, bcc?}` | 201 `DraftOut` addressed by the reply rule; 409 `reply_target_unavailable` when the only target is the owner |
+| `POST /sync/more` | none | `Receipt` for the next page of 20 threads; `{"threads": 0, "done": true}` once the mailbox holds 200 threads or cleanup removed the whole page |
+| `GET /attention` | none | `AttentionPage` `{as_of, items, skipped}` |
+
+`DraftOut` carries `to`, `cc`, `bcc`, `recipients` (each address with an `outside` flag),
+`status` (`draft`, `sending`, `sent` or `exported`), `sent_at`, `needs_staff_input`,
+`reply_to_message_id` and `version`. The server computes `version` from the thread,
+recipients, subject and body; a client sends it back on `send` and never computes it.
+`EmailContext` gains `last_synced_at` and `more_available`.
+
+Email errors:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `draft_changed` | 409 | The draft changed since the version was read; read it again |
+| `draft_already_sending` | 409 | Another send of this draft is in flight |
+| `draft_already_sent` | 409 | The draft was sent |
+| `draft_already_exported` | 409 | The draft was saved to Gmail drafts and is frozen |
+| `draft_needs_staff_input` | 409 | A `[STAFF:` placeholder is still in the draft |
+| `send_limit_reached` | 429 | 20 sends in the last 60 minutes; the body has `retry_after` in seconds |
+| `send_refused` | 409 | Gmail refused the message with another 4xx; the draft is back in `draft` |
+| `mailbox_reauthorization_required` | 409 | Gmail answered 401, or 403 for a reason other than a quota limit; reconnect the mailbox |
+| `provider_rate_limited` | 409 | Gmail answered 429, or 403 with the reason `userRateLimitExceeded`, `rateLimitExceeded` or `dailyLimitExceeded`; the draft is back in `draft` |
+| `invalid_message` | 409 | Gmail could not accept the message; the draft is back in `draft` |
+| `recipients_invalid` | 422 | Not 1 to 20 valid addresses in To, CC and BCC together |
+| `send_outcome_unknown` | 502 | Timeout, 5xx, 408, 409, 499 or a 200 without an id. The draft stays `sending`; the body has `message` "Check your Gmail Sent folder before trying again." |
+| `draft_not_releasable` | 409 | Release needs the owner, status `sending`, no Gmail id and a claim at least 120 seconds old |
+| `send_released` | 409 | A replay of a send key whose outcome was unknown, after the owner released the draft (it is back in `draft`). Gmail is not called; send again with a new key |
+| `reply_target_unavailable` | 409 | The only reply target is the mailbox owner |
+
+A send makes at most one Gmail call, with a 25-second deadline and no retry, after
+claiming the draft under a per-mailbox lock. Each claim carries a `send_claim_id`, so a
+late outcome from a released attempt never changes the row.
+
+`GET /attention` reads stored data only and runs at most 5 analyses. It leaves out
+`newsletter_or_promotion`, `spam_or_phishing` and threads whose latest message the owner
+sent, and returns up to 10 items. It skips threads it cannot analyse and counts them in
+`skipped`. It is refused for `read_only` members. `GET /threads` lists every cached
+thread, up to 200. A thread's time is Gmail's `internalDate` for its latest message (the
+`Date` header only when that is missing), and a message labelled `SENT` (send-as aliases
+included) counts as the owner's.
+
+`email_send` proposal: the card follows the user's own words, never a planner question or
+a clicked option, nor text equal to an option any earlier card offered. The first match wins:
+a draft word (draft, drafts, draf, save, simpan) or a negated send (don't send, do not send,
+never send, jangan hantar) gives an `email_export` card; a send word (send, hantar, kirim)
+gives a send card unless a write word (write, tulis, karang) is there and the planner does not
+ask to send; an email verb (email, e-mail, e-mel) gives a send card when the planner also asks
+to send and the user wrote no write word; anything else is an `email_export` card (see
+[EMAIL_ASSISTANT.md](EMAIL_ASSISTANT.md#workspace-assistant)). In the console only the newest
+assistant card's options and candidates can be clicked; older cards are history.
+Its stored payload is `{draft_id, version}`; the card's title, summary
+and fields hold counts only, and so does the `email_export` card now. `expected_version` is
+the draft version, so an edit after the card was made makes the confirm return 409
+`draft_changed` and nothing is sent. The `email_export` card's `expected_version` is the
+same `draft_version`, bound to To, CC, BCC, subject and body, so any edit makes it
+`proposal_stale`. The executor uses an idempotency key derived from the
+proposal id. A refused confirm returns the send error body above (for example
+`send_limit_reached` with `retry_after`). The executed result is `{draft_id, outcome,
+sent_at, gmail_message_id, remaining_this_hour}`, with no content.
+
+Planner actions: `email_reply` takes a `thread_id` from the mailbox facts (its To is never
+chosen by the model), `email_team` drafts one email to the caller's active direct reports
+(refusals `package_inactive`, `not_team_approver`, `no_employee_link`, `no_reports`,
+`no_work_email` and `team_too_large` come back as plain answers), and `inbox_summary`
+answers from `GET /attention`; its failures are also plain answers, and the stored turn
+says only "Inbox summary: N items." Any address the model proposes must appear in the
+user's own message; an address seen only in the mailbox can never become a recipient. An
+employee id in To, CC or BCC must be in the message, among the ids an earlier directory
+turn offered, or `my_manager`; any other id is refused, corrected once, then met with a
+no-option question asking the user to type the address.
 
 ### HR assistant delegation
 
@@ -721,6 +978,7 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 
 | Method/path | Who | Result |
 |---|---|---|
+| `GET /settings` | any tenant member | `{timezone}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar |
 | `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active}` |
 | `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`. 409 `plan_exists`; audited `subscriptions.plan.created` |
 | `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives). 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active or paused subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
@@ -735,7 +993,7 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 "Writers" are `tenant_admin` and `tenant_staff` in their own tenant, and platform admins
 who select a tenant with `?client_id=`. Every member of the tenant may read, including
 `read_only`; a `read_only` writer attempt and any other tenant's id are 403. The static
-paths (`/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
+paths (`/settings`, `/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
 "Add subscription" form uses `GET /customers` to find the customer, then `POST` (the
 collection) with an active plan and an optional start date.
 
@@ -975,10 +1233,10 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 | POST `/invites/accept` | `{token,password,display_name?}` | Single-use acceptance, membership/session creation |
 | GET/POST `/admin/clients` | POST `{slug,name,timezone?}` | Platform admin; list (up to 200) / audited creation |
 | GET `/profile` | Platform selection if applicable | Verified tenant profile |
-| POST `/admin/invites` | `{email,display_name,client_id,role}` | Platform admin; issue manual-delivery invitation |
+| POST `/admin/invites` | `{email,display_name,client_id,role,hr_preset?}` | Platform admin; issue an invitation, emailed when mail is on |
 | POST `/team/invites` | Same | Selected tenant admin/platform; no platform role grants |
-| GET `/admin/invites` | `client_id=UUID` | Authorized tenant admin/platform; pending/used/revoked/expiry metadata |
-| POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement; same scoped authorization |
+| GET `/admin/invites` | `client_id=UUID` | Authorized tenant admin/platform; pending/used/revoked/expiry metadata, and `hr_preset` (`null` for none) |
+| POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement (keeps `hr_preset` and who chose it); same scoped authorization |
 | DELETE `/admin/invites/{id}` | — | Revoke invitation; reset-token revocation requires platform admin |
 | GET `/team` | `client_id=UUID` | Selected tenant admin/platform; member list |
 | PATCH `/team/{user_id}` | query `client_id`; `{role?,is_enabled?}` | Scoped member change; revoke affected tenant sessions; protect last admin |
@@ -994,9 +1252,36 @@ writes, and read-only users cannot mutate. Membership changes and disablement pr
 last active tenant administrator; platform disablement also protects the last platform admin.
 
 Invitations/reset tokens are hashed, expire after 48 hours, and are consumed under locks.
-Raw tokens are returned once to the authorized issuer for **manual delivery**. The UI uses
-`/invite#token=...` and immediately clears the fragment before submitting the token in JSON.
-There is no email provider integration. Existing credentialed accounts cannot be overwritten
+The UI uses `/invite#token=...` and immediately clears the fragment before submitting the
+token in JSON.
+
+**Delivery (B4).** Invite, renew and admin-issued reset return `IssuedTokenOut`:
+`{id, token, expires_at, delivery, delivery_note}`. With invitation mail on
+(`INVITE_MAIL_ENABLED` and both `SMTP_USERNAME` and `SMTP_PASSWORD` secrets, sent through
+the Google Workspace relay `smtp-relay.gmail.com:587` with STARTTLS, 10 s timeout),
+the link is emailed after the token commits: `delivery` is `email`, `delivery_note` is
+`null` and **`token` is `null`**, so the raw token never leaves the server. Otherwise
+`delivery` is `manual` and the raw token is returned once to the authorized issuer, with
+`delivery_note` saying why: `mail_off` (mail is not configured, which is normal) or
+`send_failed` (the relay refused, timed out or failed; the user and token still exist
+once, with no retry). Failures are logged by category only (`smtp_disabled`,
+`smtp_auth_failed`, `smtp_refused`, `smtp_timeout`, `smtp_error`), never with the address,
+link or body; a message that fails to build is `smtp_error` too. The gateway names itself
+in EHLO as `SMTP_EHLO_HOSTNAME` (default `fourstacks.my`). With `INVITE_MAIL_ENABLED` on but
+a relay secret missing or empty, startup logs one warning, `console_mail_inactive` with
+category `secrets_missing`, and mail stays off. Reset links expire in `Asia/Kuala_Lumpur`
+time; invitation links in the tenant's `clients.timezone`, which is checked before the
+invitation is written only while mail is on (with mail off an invalid zone does not block
+inviting). Renewing an invitation that has no tenant is 404 `pending invitation not found`.
+
+**HR access on an invitation.** `InviteIn.hr_preset` is one of `staff`, `manager`,
+`hr_team`, `payroll_preparer`, `payroll_reviewer`, or omitted for no HR access. Any
+inviting admin may choose none or `staff`; the other presets only the tenant's HR owner
+(403 `hr_preset_requires_hr_owner`, checked again at apply time). A preset on a tenant
+without the `hr` package is 422 `hr_not_available`. The preset and who chose it are stored
+on the token (migration 0483) and applied when the invitation is accepted; see
+`/access/invitations` under "HR access page" for one that must wait for the HR owner.
+Existing credentialed accounts cannot be overwritten
 through invitations; cross-tenant account attachment and membership switching remain deferred.
 Admin-issued password resets require an account that has already set its password.
 A pending invitation returns 409 without revoking its token; renew or accept that invitation

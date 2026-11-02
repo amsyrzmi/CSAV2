@@ -1,8 +1,11 @@
-INSERT INTO public.email_threads(client_id,mailbox_id,thread_id,subject,sender,snippet,latest_message_id,latest_body,received_at,labels,unread,synced_at)
-VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,clock_timestamp())
+INSERT INTO public.email_threads(client_id,mailbox_id,thread_id,subject,sender,snippet,latest_message_id,latest_body,received_at,labels,unread,
+ latest_rfc_message_id,latest_references,latest_reply_to,latest_from_owner,synced_at)
+VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,clock_timestamp())
 ON CONFLICT (client_id,mailbox_id,thread_id) DO UPDATE SET subject=excluded.subject,sender=excluded.sender,snippet=excluded.snippet,
  latest_body=excluded.latest_body,received_at=excluded.received_at,labels=excluded.labels,unread=excluded.unread,synced_at=clock_timestamp(),
  latest_message_id=excluded.latest_message_id,
+ latest_rfc_message_id=excluded.latest_rfc_message_id,latest_references=excluded.latest_references,
+ latest_reply_to=excluded.latest_reply_to,latest_from_owner=excluded.latest_from_owner,
  category=CASE WHEN public.email_threads.latest_message_id IS DISTINCT FROM excluded.latest_message_id THEN NULL ELSE public.email_threads.category END,
  priority=CASE WHEN public.email_threads.latest_message_id IS DISTINCT FROM excluded.latest_message_id THEN NULL ELSE public.email_threads.priority END,
  summary=CASE WHEN public.email_threads.latest_message_id IS DISTINCT FROM excluded.latest_message_id THEN NULL ELSE public.email_threads.summary END,

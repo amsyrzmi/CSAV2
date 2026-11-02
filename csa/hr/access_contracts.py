@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import Field, StrictBool, field_validator
 
-from csa.hr.access_switches import SwitchId, WarningKind
+from csa.hr.access_switches import MAX_SWITCHES, PresetId, SwitchId, WarningKind
 from csa.hr.models import HrModel
 
 PAGE_SIZE = 50
@@ -54,8 +54,8 @@ class AccessChange(HrModel):
     """The person's full desired switch set, and the `on` set the page loaded it from."""
 
     user_id: UUID
-    on: list[SwitchId] = Field(max_length=8)
-    base: list[SwitchId] = Field(max_length=8)
+    on: list[SwitchId] = Field(max_length=MAX_SWITCHES)
+    base: list[SwitchId] = Field(max_length=MAX_SWITCHES)
 
     @field_validator("on", "base")
     @classmethod
@@ -92,9 +92,18 @@ class AccessChangeResult(HrModel):
 
 
 class AccessEvent(HrModel):
+    """One change: a save on this page, or access set on an invitation when it was accepted.
+
+    For an invitation the actor is whoever chose the preset, and `turned_on` is the switches the
+    preset added to what the person already had. A platform admin's name is "FourStacks admin";
+    a name is None once that person is no longer an enabled member.
+    """
+
     occurred_at: datetime
+    source: Literal["page", "invitation"]
+    preset: PresetId | None  # set for invitation events only
     actor_user_id: UUID
-    actor_name: str | None  # None once the member is no longer enabled
+    actor_name: str | None
     target_user_id: UUID
     target_name: str | None
     turned_on: list[SwitchId]
@@ -106,3 +115,19 @@ class AccessEvent(HrModel):
 class AccessEventPage(HrModel):
     items: list[AccessEvent] = Field(max_length=PAGE_SIZE)
     next_cursor: str | None = None
+
+
+class PendingInvitationAccess(HrModel):
+    """An accepted invitation whose HR access was neither applied nor dismissed."""
+
+    token_id: UUID
+    user_id: UUID
+    display_name: str
+    preset: PresetId
+    chosen_by: UUID
+    chooser_name: str | None  # "FourStacks admin", or None once no longer an enabled member
+    accepted_at: datetime
+
+
+class PendingInvitationPage(HrModel):
+    items: list[PendingInvitationAccess] = Field(max_length=PAGE_SIZE)

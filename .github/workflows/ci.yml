@@ -8,8 +8,11 @@
 name: ci
 
 on:
+  # Pushes run CI only on main (publish-staging-images needs a push-to-main run).
+  # Every other branch is covered by its pull_request run, so a PR push does not
+  # run the full suite twice.
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
 
 permissions:

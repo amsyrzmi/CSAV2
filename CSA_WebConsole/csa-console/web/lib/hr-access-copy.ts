@@ -1,4 +1,4 @@
-import type { AccessEvent, AccessWarningOut, PresetId, SwitchId } from "./hr-access-api";
+import type { AccessEvent, AccessWarningOut, PendingInvitationAccess, PresetId, SwitchId } from "./hr-access-api";
 
 /** Words for the "Who can do what" page. Copy follows docs/WRITING_GUIDE.md. */
 export type SwitchGroup = "Everyday" | "Responsibilities" | "Private areas";
@@ -27,6 +27,12 @@ export const SWITCH_COPY: Record<SwitchId, { label: string; tag: string; explana
     label: "HR team member",
     tag: "HR team",
     explanation: "Reads everyone's training, leave and attendance records. Prepares recruitment requests.",
+    group: "Responsibilities",
+  },
+  manage_people: {
+    label: "Manage people",
+    tag: "Manage people",
+    explanation: "Adds people and edits their profiles and departments. Sees people who have left and employment profiles.",
     group: "Responsibilities",
   },
   payroll_prepare: {
@@ -58,7 +64,7 @@ export const SWITCH_COPY: Record<SwitchId, { label: string; tag: string; explana
 export const PRESET_COPY: Record<PresetId, { label: string; description: string }> = {
   staff: { label: "Staff", description: "Basic details and their own requests." },
   manager: { label: "Manager", description: "Staff, plus approves for their team." },
-  hr_team: { label: "HR team", description: "Staff, plus HR team member, recruitment and attendance." },
+  hr_team: { label: "HR team", description: "Staff, plus HR team member, manage people, recruitment and attendance." },
   payroll_preparer: { label: "Payroll preparer", description: "Staff, plus prepares payroll." },
   payroll_reviewer: { label: "Payroll reviewer", description: "Staff, plus reviews payroll." },
 };
@@ -147,6 +153,8 @@ const quoted = (ids: SwitchId[]) => ids.map((id) => `"${SWITCH_COPY[id].label}"`
 export function eventText(e: AccessEvent): string {
   const actor = formerMember(e.actor_name);
   const target = formerMember(e.target_name);
+  if (e.source === "invitation" && e.preset)
+    return `Set on invitation by ${actor}: ${PRESET_COPY[e.preset].label} for ${target}`;
   if (e.area) {
     const area = AREAS[e.area] ?? `the private ${e.area} area`;
     return `${actor} ${e.area_enabled ? "opened" : "closed"} ${area} for ${target}`;
@@ -159,3 +167,13 @@ export function eventText(e: AccessEvent): string {
     ? `${actor} ${parts.join(" and ")} for ${target}`
     : `${actor} changed custom access for ${target}`;
 }
+
+/** The preset waiting on an accepted invitation, and who chose it. */
+export function pendingText(item: PendingInvitationAccess): string {
+  return `${PRESET_COPY[item.preset].label}, chosen by ${formerMember(item.chooser_name)}`;
+}
+
+export const PENDING_COPY = {
+  title: "Waiting for access chosen on the invitation",
+  description: "These members accepted an invitation with HR access chosen for them. Apply it to give them that access, or dismiss it to leave their access as it is.",
+};

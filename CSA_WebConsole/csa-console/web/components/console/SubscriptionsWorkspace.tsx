@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type RefObject } from "react";
+import SlideOver from "@/components/console/fs/SlideOver";
 import { api } from "@/lib/api";
+import { usePublishContext } from "@/lib/page-context";
 import type { Client, Me } from "@/lib/identity-contracts";
 import {
   availableActions,
@@ -11,6 +13,7 @@ import {
   eventSentence,
   formatDateTime,
   formatDay,
+  getSettings,
   getSubscription,
   listPlans,
   listRequests,
@@ -57,6 +60,10 @@ const cell = "border-b border-ink-100 px-3 py-2 align-top";
 const head = "border-b border-ink-200 px-3 py-2 text-left font-medium text-ink-600";
 
 type PlanName = (code: string) => string;
+
+/** The tenant's time zone, so dates read the same for everyone; undefined until it loads. */
+const TimeZoneContext = createContext<string | undefined>(undefined);
+const useTimeZone = () => useContext(TimeZoneContext);
 
 function message(cause: unknown) {
   return cause instanceof Error ? cause.message : "The request failed. Try again.";
@@ -114,7 +121,17 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
   const [tab, setTab] = useState<Tab>("customers");
   const [plans, setPlans] = useState<PlanOut[]>([]);
   const [plansRevision, setPlansRevision] = useState(0);
+  const [timeZone, setTimeZone] = useState<string | undefined>(undefined);
+  usePublishContext({ tab: "subscriptions", section: tab });
   const [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    // Without it dates fall back to the browser's zone.
+    getSettings(tenantId)
+      .then((settings) => { if (live) setTimeZone(settings.timezone); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [tenantId]);
   useEffect(() => {
     let live = true;
     // Archived plans too: old timeline events and subscriptions still name them.
@@ -126,7 +143,7 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
   const names = new Map(plans.map((plan) => [plan.code, plan.name]));
   const planName: PlanName = (code) => names.get(code) ?? code;
   return (
-    <>
+    <TimeZoneContext.Provider value={timeZone}>
       <div role="tablist" aria-label="Subscription sections" className="mb-5 flex flex-wrap gap-2">
         {TABS.map(({ key, label }) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key}
@@ -139,7 +156,7 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
       {tab === "plans" && <Plans tenantId={tenantId} writer={writer} plans={plans}
         onChanged={() => setPlansRevision((value) => value + 1)} />}
       {tab === "requests" && <Requests tenantId={tenantId} writer={writer} planName={planName} />}
-    </>
+    </TimeZoneContext.Provider>
   );
 }
 
@@ -150,6 +167,7 @@ interface Filters { q: string; status: SubscriptionStatus | ""; plan: string }
 function Customers({ tenantId, writer, plans, planName }: {
   tenantId: string | null; writer: boolean; plans: PlanOut[]; planName: PlanName;
 }) {
+  const timeZone = useTimeZone();
   const [draft, setDraft] = useState("");
   const [filters, setFilters] = useState<Filters>({ q: "", status: "", plan: "" });
   const [rows, setRows] = useState<SubscriptionOut[] | null>(null);
@@ -157,6 +175,7 @@ function Customers({ tenantId, writer, plans, planName }: {
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState("");
   useEffect(() => {
@@ -226,10 +245,18 @@ function Customers({ tenantId, writer, plans, planName }: {
             <tbody>
               {rows.map((row) => (
                 <tr key={row.id} data-testid="subscription-row" className="cursor-pointer hover:bg-ink-50"
-                  onClick={() => setOpenId(row.id)}>
+                  onClick={(event) => {
+                    // A click on the row itself leaves nothing focused; return to the name button.
+                    openerRef.current = event.currentTarget.querySelector("button");
+                    setOpenId(row.id);
+                  }}>
                   <td className={cell}>
                     <button type="button" className="text-left font-medium text-brand-700 hover:underline"
-                      onClick={(event) => { event.stopPropagation(); setOpenId(row.id); }}>
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openerRef.current = event.currentTarget;
+                        setOpenId(row.id);
+                      }}>
                       {customerName(row.customer)}
                     </button>
                     {row.customer.full_name && (row.customer.phone || row.customer.email) && (
@@ -242,7 +269,7 @@ function Customers({ tenantId, writer, plans, planName }: {
                     {row.cancel_at_period_end && row.status === "active" &&
                       <p className="text-xs text-ink-500">Cancels at period end</p>}
                   </td>
-                  <td className={cell}>{row.status === "cancelled" ? "—" : formatDay(row.renews_at)}</td>
+                  <td className={cell}>{row.status === "cancelled" ? "—" : formatDay(row.renews_at, timeZone)}</td>
                   <td className={cell}>{money(row.price, row.currency)}</td>
                 </tr>
               ))}
@@ -253,7 +280,7 @@ function Customers({ tenantId, writer, plans, planName }: {
       {next && <div className="mt-4"><button type="button" className={secondary} onClick={() => void more()}>
         Show more customers</button></div>}
       {openId && <Drawer key={openId} tenantId={tenantId} id={openId} writer={writer} plans={plans}
-        planName={planName} onClose={() => setOpenId(null)} onChanged={() => setRevision((value) => value + 1)} />}
+        planName={planName} returnFocusTo={openerRef} onClose={() => setOpenId(null)} onChanged={() => setRevision((value) => value + 1)} />}
     </Panel>
   );
 }
@@ -357,10 +384,18 @@ function AddSubscription({ tenantId, plans, onAdded, onCancel }: {
   );
 }
 
-function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
+function Drawer({ tenantId, id, writer, plans, planName, returnFocusTo, onClose, onChanged }: {
   tenantId: string | null; id: string; writer: boolean; plans: PlanOut[]; planName: PlanName;
-  onClose: () => void; onChanged: () => void;
+  returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void; onChanged: () => void;
 }) {
+  const timeZone = useTimeZone();
+  // Mounted closed, opened by the effect: a native dialog that mounts already open is closed
+  // again by React's strict-mode effect cycle, and its close event would call onClose.
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const [detail, setDetail] = useState<SubscriptionDetail | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
@@ -379,12 +414,8 @@ function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
   const events = [...(detail?.events ?? [])].sort(
     (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
   return (
-    <aside role="dialog" aria-label={`Subscription for ${name}`} data-testid="subscription-drawer"
-      className="fixed inset-y-0 right-0 z-40 w-full max-w-lg overflow-y-auto border-l border-ink-200 bg-white p-5 shadow-xl sm:p-6">
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <h2 className="text-lg font-semibold">{name}</h2>
-        <button type="button" className={secondary} data-testid="subscription-close" onClick={onClose}>Close</button>
-      </div>
+    <SlideOver open={shown} onClose={onClose} title={name} returnFocusTo={returnFocusTo} widthClass="max-w-lg"
+      testId="subscription-drawer" closeTestId="subscription-close">
       {error && <div className="mb-4"><Notice error>{error}</Notice></div>}
       {!subscription ? (!error && <Notice>Loading the subscription…</Notice>) : (
         <>
@@ -394,16 +425,16 @@ function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
             <Detail label="Plan" value={subscription.plan_name || planName(subscription.plan)} />
             <Detail label="Status" value={STATUS_LABELS[subscription.status]} testId="subscription-detail-status" />
             <Detail label="Price" value={money(subscription.price, subscription.currency)} />
-            <Detail label="Started on" value={formatDay(subscription.started_at)} />
-            {subscription.status !== "cancelled" && <Detail label="Renews on" value={formatDay(subscription.renews_at)} />}
-            {subscription.paused_at && <Detail label="Paused on" value={formatDay(subscription.paused_at)} />}
+            <Detail label="Started on" value={formatDay(subscription.started_at, timeZone)} />
+            {subscription.status !== "cancelled" && <Detail label="Renews on" value={formatDay(subscription.renews_at, timeZone)} />}
+            {subscription.paused_at && <Detail label="Paused on" value={formatDay(subscription.paused_at, timeZone)} />}
             {subscription.status === "paused" && <Detail label="Resumes on"
-              value={subscription.resume_at ? formatDay(subscription.resume_at) : "When someone resumes it"} />}
-            {subscription.cancelled_at && <Detail label="Cancelled on" value={formatDay(subscription.cancelled_at)} />}
+              value={subscription.resume_at ? formatDay(subscription.resume_at, timeZone) : "When someone resumes it"} />}
+            {subscription.cancelled_at && <Detail label="Cancelled on" value={formatDay(subscription.cancelled_at, timeZone)} />}
             {subscription.pending_plan && <Detail label="Scheduled change"
-              value={`Moves to ${planName(subscription.pending_plan)} on ${formatDay(subscription.pending_effective_at)}`} />}
+              value={`Moves to ${planName(subscription.pending_plan)} on ${formatDay(subscription.pending_effective_at, timeZone)}`} />}
             {subscription.cancel_at_period_end && <Detail label="Cancellation"
-              value={`Cancels when the period ends on ${formatDay(subscription.renews_at)}`} />}
+              value={`Cancels when the period ends on ${formatDay(subscription.renews_at, timeZone)}`} />}
           </dl>
           {writer && !pending && (
             <div className="mt-5 flex flex-wrap gap-2" data-testid="subscription-actions">
@@ -433,7 +464,7 @@ function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
               {events.map((event) => (
                 <li key={event.id} className="border-l-2 border-brand-200 pl-3">
                   <p className="text-xs text-ink-500">
-                    <time dateTime={event.created_at}>{formatDateTime(event.created_at)}</time>
+                    <time dateTime={event.created_at}>{formatDateTime(event.created_at, timeZone)}</time>
                     {event.actor.startsWith("system:") ? " · Automatic" : ""}
                   </p>
                   <p>{eventSentence(event, planName)}</p>
@@ -443,7 +474,7 @@ function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
           )}
         </>
       )}
-    </aside>
+    </SlideOver>
   );
 }
 
@@ -761,12 +792,13 @@ function RequestList({ tenantId, status, writer, planName, revision, onDecided }
 }
 
 function RequestSummary({ row, planName }: { row: RequestOut; planName: PlanName }) {
+  const timeZone = useTimeZone();
   return (
     <div className="min-w-0">
       <p className="font-medium">{customerName(row.customer)}</p>
       <p>{requestSentence(row, planName)}</p>
       {row.reason && <p className="text-ink-600">Reason: {row.reason}</p>}
-      <p className="text-xs text-ink-500">Requested {formatDateTime(row.requested_at)}</p>
+      <p className="text-xs text-ink-500">Requested {formatDateTime(row.requested_at, timeZone)}</p>
     </div>
   );
 }
@@ -844,12 +876,13 @@ function OpenRequest({ row, tenantId, writer, planName, onDecided }: {
 }
 
 function DecidedRequest({ row, planName }: { row: RequestOut; planName: PlanName }) {
+  const timeZone = useTimeZone();
   return (
     <li className="flex flex-wrap items-start justify-between gap-3 py-3 text-sm" data-testid="request-decided">
       <RequestSummary row={row} planName={planName} />
       <div className="text-right">
         <p className="font-medium">{row.decision === "approved" ? "Approved" : "Declined"}</p>
-        {row.decided_at && <p className="text-xs text-ink-500">{formatDateTime(row.decided_at)}</p>}
+        {row.decided_at && <p className="text-xs text-ink-500">{formatDateTime(row.decided_at, timeZone)}</p>}
         {row.note && <p className="text-ink-600">Note: {row.note}</p>}
       </div>
     </li>

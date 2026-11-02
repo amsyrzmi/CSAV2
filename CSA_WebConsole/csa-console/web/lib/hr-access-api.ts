@@ -6,6 +6,7 @@ export type SwitchId =
   | "own_requests"
   | "approves_team"
   | "hr_team"
+  | "manage_people"
   | "recruitment"
   | "attendance"
   | "payroll_prepare"
@@ -19,7 +20,7 @@ export type WarningKind =
   | "prepares_and_reviews";
 
 export const SWITCH_IDS: readonly SwitchId[] = [
-  "directory", "own_requests", "approves_team", "hr_team",
+  "directory", "own_requests", "approves_team", "hr_team", "manage_people",
   "recruitment", "attendance", "payroll_prepare", "payroll_review",
 ];
 
@@ -72,6 +73,9 @@ export interface AccessChangeResult {
 }
 export interface AccessEvent {
   occurred_at: string;
+  /** "invitation" when the access was set on an invitation and applied when it was accepted. */
+  source: "page" | "invitation";
+  preset: PresetId | null;
   actor_user_id: string;
   actor_name: string | null;
   target_user_id: string;
@@ -82,6 +86,18 @@ export interface AccessEvent {
   area_enabled: boolean | null;
 }
 export interface AccessEventPage { items: AccessEvent[]; next_cursor: string | null }
+/** An accepted invitation whose HR access has not been applied or dismissed yet. */
+export interface PendingInvitationAccess {
+  token_id: string;
+  user_id: string;
+  display_name: string;
+  preset: PresetId;
+  chosen_by: string;
+  /** "FourStacks admin" for a platform admin; null once the chooser is no longer a member. */
+  chooser_name: string | null;
+  accepted_at: string;
+}
+export interface PendingInvitationPage { items: PendingInvitationAccess[] }
 export interface AccessFilters {
   cursor?: string;
   q?: string;
@@ -114,6 +130,18 @@ export function accessRecent(tenant: string, cursor?: string): Promise<AccessEve
   return api<AccessEventPage>(path(tenant, "/recent", { cursor }));
 }
 
+export function pendingInvitations(tenant: string): Promise<PendingInvitationPage> {
+  return api<PendingInvitationPage>(path(tenant, "/invitations"));
+}
+
+export function applyInvitation(tenant: string, tokenId: string): Promise<AccessPersonResult> {
+  return api<AccessPersonResult>(path(tenant, `/invitations/${encodeURIComponent(tokenId)}/apply`), { method: "POST" });
+}
+
+export function dismissInvitation(tenant: string, tokenId: string): Promise<void> {
+  return api<void>(path(tenant, `/invitations/${encodeURIComponent(tokenId)}/dismiss`), { method: "POST" });
+}
+
 /** Someone changed access or a reporting line since the page loaded. */
 export function isAccessChanged(cause: unknown): boolean {
   return cause instanceof ApiError && cause.status === 409 && cause.code === "access_changed";
@@ -128,7 +156,7 @@ const INCLUDED_BY: Partial<Record<SwitchId, SwitchId>> = { directory: "hr_team" 
 const PRESETS: Record<PresetId, SwitchId[]> = {
   staff: ["directory", "own_requests"],
   manager: ["directory", "own_requests", "approves_team"],
-  hr_team: ["directory", "own_requests", "hr_team", "recruitment", "attendance"],
+  hr_team: ["directory", "own_requests", "hr_team", "manage_people", "recruitment", "attendance"],
   payroll_preparer: ["directory", "own_requests", "payroll_prepare"],
   payroll_reviewer: ["directory", "own_requests", "payroll_review"],
 };

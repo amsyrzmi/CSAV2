@@ -26,6 +26,18 @@ class GroqError(CompletionError):
         super().__init__(code)
 
 
+def _json_validate_failed(response: httpx.Response) -> bool:
+    """Groq's 400 for a reply that is not valid JSON. Only the fixed ``error.code`` is read:
+    the body also carries the model's text (``failed_generation``), which never leaves here."""
+    if response.status_code != 400:
+        return False
+    try:
+        error = response.json().get("error")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(error, dict) and error.get("code") == "json_validate_failed"
+
+
 class GroqClient:
     def __init__(self, api_key: str, model: str, http_client: httpx.AsyncClient) -> None:
         self._api_key = api_key
@@ -53,7 +65,8 @@ class GroqClient:
             ],
         }
         started = time.monotonic()
-        # One retry on timeout or a transient upstream failure; each attempt gets half the budget
+        # One retry on timeout, a transient upstream failure or a malformed-JSON 400 (the model
+        # wrote invalid JSON; another sample usually parses); each attempt gets half the budget
         # so the pair still fits inside the caller's node deadline.
         response: httpx.Response | None = None
         for attempt in range(ATTEMPTS):
@@ -72,9 +85,12 @@ class GroqClient:
                 if attempt + 1 < ATTEMPTS:
                     continue
                 raise GroqError("groq_transport_error") from exc
-            if response.status_code in _RETRYABLE and attempt + 1 < ATTEMPTS:
+            retryable = response.status_code in _RETRYABLE or _json_validate_failed(response)
+            if retryable and attempt + 1 < ATTEMPTS:
                 continue
             break
+        if response is not None and _json_validate_failed(response):
+            raise GroqError("groq_invalid_output") from None
         if response is None or not response.is_success:
             status = response.status_code if response is not None else None
             raise GroqError(f"groq_http_{status}", status_code=status)

@@ -1,5 +1,14 @@
 /** Pure helpers behind the assistant dock and proposal card (no React, no I/O). */
+import {
+  errorLine,
+  languageOf,
+  panelText,
+  statusText,
+  type Language,
+  type PanelKey,
+} from "@/lib/assistant-copy";
 import type { Me } from "@/lib/identity-contracts";
+import { formatWhen } from "@/lib/email-recipients";
 import { navigationFor } from "@/lib/navigation";
 import type { PackageState } from "@/lib/services-api";
 import type {
@@ -20,6 +29,7 @@ const TABS: readonly TabKey[] = [
   "business",
   "hr",
   "email",
+  "subscriptions",
   "activity",
   "chat",
 ];
@@ -74,8 +84,53 @@ export function tabForPath(
   return TABS.find((tab) => tab === key) ?? null;
 }
 
+/** Each tab's sidebar label (lib/navigation.ts), for a tab this user cannot open. */
+const TAB_NAMES: Record<TabKey, string> = {
+  overview: "Overview",
+  services: "Services",
+  inbox: "Customer inbox",
+  knowledge_base: "Knowledge base",
+  business: "Business management",
+  hr: "People & HR",
+  email: "Email assistant",
+  subscriptions: "Subscriptions",
+  activity: "Assistant activity",
+  chat: "Overview",
+};
+
+export function tabName(tab: TabKey): string {
+  return TAB_NAMES[tab] ?? tab;
+}
+
 export function tabLabel(tab: TabKey, me: Me, packages: PackageState[]): string {
   return navEntry(tab, me, packages)?.label ?? tab;
+}
+
+/**
+ * The line shown for a navigate result, in the turn's language. A tab this user cannot open (same
+ * rule as `tabHref`) gets only the notice, never "Opened X.". The tab keeps the name the console
+ * shows.
+ */
+export function navigateText(
+  tab: TabKey,
+  resume: boolean,
+  me: Me,
+  packages: PackageState[],
+  language: Language = "en",
+): { text: string; error: boolean } {
+  if (!navigationFor(me, packages).some((item) => item.key === tab)) {
+    return { text: panelText(language, "navigate_unavailable", { tab: tabName(tab) }), error: true };
+  }
+  const key = resume ? "navigate_opened_resume" : "navigate_opened";
+  return { text: panelText(language, key, { tab: tabLabel(tab, me, packages) }), error: false };
+}
+
+/**
+ * The dock's line for a failed turn, in the given language: `api.ts` explains the codes it knows
+ * in English, and an email refusal it leaves as the bare code gets the Email tab's sentence.
+ */
+export function turnErrorText(cause: unknown, language: Language = "en"): string {
+  return errorLine(cause, language);
 }
 
 /** What the tab published, else the bare tab derived from the route. */
@@ -102,10 +157,35 @@ export function resumeContext(
 
 /** How much of the originating message a follow-up turn repeats. */
 const ORIGIN_CHARS = 1000;
+/** WorkspaceTurnInput.body max_length on the gateway. */
+const BODY_CHARS = 4000;
 
-function originOf(text: string): string {
+/**
+ * A planner-written question can quote mailbox data, so its addresses never travel in a turn:
+ * the gateway accepts an address the current message carries as one the user wrote.
+ */
+function maskAddresses(text: string): string {
+  return text.replace(/[^\s@<>]+@[^\s@<>]+/g, "[address]");
+}
+
+function originOf(text: string, limit: number = ORIGIN_CHARS): string {
   const trimmed = text.trim();
-  return trimmed.length > ORIGIN_CHARS ? `${trimmed.slice(0, ORIGIN_CHARS)}…` : trimmed;
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
+}
+
+/**
+ * A message for the planner and the request it continues. `origin` is kept in the console's
+ * memory, unredacted: stored turn bodies have addresses masked, so a later follow-up repeats
+ * the console's copy instead.
+ */
+export interface Outgoing {
+  text: string;
+  origin: string;
+}
+
+/** The request a turn's result continues: the console's copy, else the stored (redacted) body. */
+export function originFor(turn: WorkspaceTurn, origins: Record<string, string>): string {
+  return origins[turn.request_key] ?? turn.body;
 }
 
 /** Follow-up turn text when the user picks a directory candidate from `origin`'s result. */
@@ -113,22 +193,103 @@ export function candidateFollowUp(person: PersonOut, origin: string): string {
   return `Use employee ${person.employee_id} for: ${originOf(origin)}`;
 }
 
-/** Follow-up turn text answering a clarification, carrying its question and request. */
+/** A picked candidate's turn; the follow-up itself is the request later turns continue. */
+export function candidateAnswer(person: PersonOut, origin: string): Outgoing {
+  const text = candidateFollowUp(person, origin);
+  return { text, origin: text };
+}
+
+/**
+ * Follow-up turn text answering a clarification (a clicked option or a typed reply), carrying
+ * its question and request. The request is cut to ORIGIN_CHARS, and further when the whole turn
+ * would pass the gateway's body limit; with no room left the answer goes alone.
+ */
 export function clarificationAnswer(
-  option: ClarificationOption,
+  answer: ClarificationOption | string,
   question: string,
   origin: string,
 ): string {
-  return `${option.value}\n(Answer to “${question}” for: ${originOf(origin)})`;
+  const value = typeof answer === "string" ? answer.trim() : answer.value;
+  const head = `${value}\n(Answer to “${maskAddresses(question)}” for: `;
+  const room = BODY_CHARS - head.length - ")".length - "…".length;
+  if (room < 1) return value;
+  return `${head}${originOf(origin, Math.min(ORIGIN_CHARS, room))})`;
 }
 
-const guidance: Record<string, string> = {
-  workspace_home_help:
-    "Use this internal workspace for staff guidance and authorized local business reads. Customer sandbox conversations are separate.",
-  business_orders_help:
-    "Business order views read tenant-scoped local records only. They do not query a marketplace or change an order.",
-  business_order_help:
-    "This order lookup reads one tenant-scoped local record. Confirm its source and local update time before relying on it.",
+const ANSWERED = "; answered “";
+
+/**
+ * The request with one more answer folded in, at most ORIGIN_CHARS where it can be: the first
+ * request is kept, the oldest answers are dropped first, and the first request is shortened
+ * only when the newest answer would not fit beside it.
+ */
+function foldAnswer(origin: string, question: string, answer: string): string {
+  const whole = origin.trim();
+  const cut = whole.indexOf(ANSWERED);
+  let head = cut < 0 ? whole : whole.slice(0, cut);
+  const answers = cut < 0 ? [] : whole.slice(cut + ANSWERED.length).split(ANSWERED);
+  answers.push(`${maskAddresses(question)}”: ${answer.trim()}`);
+  const joined = () => [head, ...answers].join(ANSWERED);
+  while (answers.length > 1 && joined().length > ORIGIN_CHARS) answers.shift();
+  const room = ORIGIN_CHARS - (joined().length - head.length) - "…".length;
+  if (joined().length > ORIGIN_CHARS) head = `${head.slice(0, Math.max(room, 100))}…`;
+  return joined();
+}
+
+/**
+ * The answer's turn; later clarifications continue the request with this answer folded in. A
+ * clicked option's value is planner-written, so its addresses are masked in the fold; a typed
+ * answer is the user's own and stays as typed.
+ */
+function answered(value: string, question: string, origin: string, clicked: boolean): Outgoing {
+  return {
+    text: clarificationAnswer(value, question, origin),
+    origin: foldAnswer(origin, question, clicked ? maskAddresses(value) : value),
+  };
+}
+
+/** The turn for a clicked clarification option. */
+export function optionAnswer(
+  option: ClarificationOption,
+  question: string,
+  origin: string,
+): Outgoing {
+  return answered(option.value, question, origin, true);
+}
+
+/**
+ * The turn for text typed into the dock. When the thread's latest result is a clarification it
+ * is still unanswered, so the text answers it exactly as a clicked option would; otherwise the
+ * text is a new request.
+ */
+export function typedMessage(
+  text: string,
+  turns: WorkspaceTurn[],
+  origins: Record<string, string>,
+): Outgoing {
+  const last = turns.at(-1);
+  if (last && "action" in last.result && last.result.action === "clarification")
+    return answered(text, last.result.question, originFor(last, origins), false);
+  return { text, origin: text };
+}
+
+/** The newest turn's language, for the lines that belong to the whole panel; English before any turn. */
+export function latestLanguage(turns: WorkspaceTurn[]): Language {
+  return languageOf(turns.at(-1));
+}
+
+/**
+ * Only the newest card answers. An older clarification or candidate list is history: clicking it
+ * would answer a question the conversation has moved past.
+ */
+export function isAnswerable(turns: WorkspaceTurn[], turnId: number): boolean {
+  return turns.at(-1)?.id === turnId;
+}
+
+const guidance: Record<string, PanelKey> = {
+  workspace_home_help: "guidance_workspace_home_help",
+  business_orders_help: "guidance_business_orders_help",
+  business_order_help: "guidance_business_order_help",
 };
 
 type OrderRead = Extract<WorkspaceResult, { action: "local_order_read" }>;
@@ -143,23 +304,20 @@ export type ResultView =
   | { kind: "directory"; candidates: PersonOut[] }
   | { kind: "clarification"; question: string; options: ClarificationOption[] };
 
-export function resultView(result: WorkspaceResult): ResultView {
+export function resultView(result: WorkspaceResult, language: Language = "en"): ResultView {
   if ("status" in result && result.status === "denied")
     return {
       kind: "notice",
       error: true,
-      text:
-        result.code === "resource_unavailable"
-          ? "The requested record is unavailable in this tenant."
-          : "This request could not be authorized.",
+      text: panelText(language, result.code === "resource_unavailable" ? "denied_unavailable" : "denied"),
     };
   if ("status" in result && result.status === "unavailable")
-    return { kind: "notice", error: true, text: "The assistant could not complete this request." };
+    return { kind: "notice", error: true, text: panelText(language, "unavailable") };
   switch (result.action) {
     case "page_guidance":
       return {
         kind: "guidance",
-        text: guidance[result.instruction_key] ?? "No guidance is available for this page.",
+        text: panelText(language, guidance[result.instruction_key] ?? "guidance_none"),
         source: result.source,
         asOf: result.as_of,
       };
@@ -174,7 +332,7 @@ export function resultView(result: WorkspaceResult): ResultView {
     case "directory_lookup":
       return result.candidates.length
         ? { kind: "directory", candidates: result.candidates }
-        : { kind: "notice", error: false, text: "No matching colleague was found." };
+        : { kind: "notice", error: false, text: panelText(language, "no_colleague") };
     case "clarification":
       return { kind: "clarification", question: result.question, options: result.options };
   }
@@ -207,44 +365,51 @@ function field(record: unknown, key: string): unknown {
 }
 
 /** One line describing a settled proposal, from the executor's receipt where possible. */
-export function resultSummary(proposal: ProposalOut): string {
-  if (proposal.status === "cancelled") return "Cancelled. Nothing was changed.";
-  if (proposal.status === "expired") return "This proposal expired. Nothing was changed.";
-  if (proposal.status === "requested") return "Waiting for your confirmation.";
-  if (proposal.status === "confirmed") return "Confirmed. The action is being completed.";
+export function resultSummary(proposal: ProposalOut, language: Language = "en"): string {
+  const say = (key: PanelKey, vars?: Record<string, string | number>) => panelText(language, key, vars);
+  if (proposal.status === "cancelled") return say("summary_cancelled");
+  if (proposal.status === "expired") return say("summary_expired");
+  if (proposal.status === "requested") return say("summary_requested");
+  if (proposal.status === "confirmed") return say("summary_confirmed");
   const result = proposal.result;
   switch (proposal.kind) {
-    case "email_export": {
-      const subject = text(field(result, "subject"));
-      const recipient = text(field(result, "recipient"));
-      return subject && recipient
-        ? `Saved “${subject}” to your Gmail drafts, addressed to ${recipient}. Nothing was sent.`
-        : "Saved to your Gmail drafts. Nothing was sent.";
+    case "email_export":
+      // The receipt is {draft_id, status, gmail_draft_id}: no subject or address is stored.
+      return say("summary_export");
+    case "email_send": {
+      // csa/workspace/executors.py EmailSendExecutor: outcome, time and Gmail's id only.
+      const sentAt = text(field(result, "sent_at"));
+      return field(result, "outcome") === "sent" && sentAt
+        ? say("summary_sent_at", { when: formatWhen(sentAt) })
+        : say("summary_sent");
     }
     case "training_submit": {
       const request = field(result, "request");
       const title = text(field(request, "title"));
       const status = text(field(request, "status"));
-      return title
-        ? `Submitted “${title}”${status ? ` (now ${status.replaceAll("_", " ")})` : ""}.`
-        : "Training request submitted.";
+      if (!title) return say("summary_training");
+      return status
+        ? say("summary_training_status", { title, status: statusText(status, language) })
+        : say("summary_training_title", { title });
     }
     case "inbox_decision": {
       // csa/console/inbox.py InboxResult: an expired or already-handled approval is not an error.
       const queued = field(result, "queued") === true;
       switch (field(result, "outcome")) {
         case "expired":
-          return `Approval expired.${queued ? " Follow-up reply queued." : " No reply queued."}`;
+          return `${say("summary_approval_expired")} ${say(queued ? "summary_followup_queued" : "summary_no_reply_queued")}`;
         case "already_handled":
-          return "Already handled. Nothing was changed.";
+          return say("summary_already_handled");
         default:
-          return `Your decision on the held reply was recorded.${queued ? " Reply queued for delivery." : ""}`;
+          return queued ? `${say("summary_decision")} ${say("summary_reply_queued")}` : say("summary_decision");
       }
     }
     case "subscription_action": {
       // csa/subscriptions/executor.py receipt: subscription_id, status, version, event_id.
       const status = text(field(result, "status"));
-      return status ? `Subscription updated. It is now ${status}.` : "Subscription updated.";
+      return status
+        ? say("summary_subscription_status", { status: statusText(status, language) })
+        : say("summary_subscription");
     }
   }
 }

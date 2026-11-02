@@ -7,8 +7,10 @@ from typing import get_args
 from uuid import UUID, uuid4
 
 import pytest
+from csa.hr.access_contracts import AccessChange
 from csa.hr.access_switches import (
     EMPTY,
+    MAX_SWITCHES,
     PRESETS,
     SWITCH_IDS,
     SWITCHES,
@@ -29,6 +31,8 @@ from csa.hr.access_switches import (
     warnings,
 )
 from csa.hr.automation_models import AccessSave, PrivateAccessSave
+from csa.hr.models import DirectoryField, GrantScope, HrAction, ResolvedGrant
+from pydantic import ValidationError
 
 BASIC = ("assigned_manager", "department", "display_name", "job_title", "work_email")
 
@@ -272,3 +276,51 @@ def test_switch_grant_supersedes_partial_uncovered_grant() -> None:
         assert len(saves) == 1
         pairs = [(g.action.value, g.scope.value) for g in saves[0].grants]
         assert len(pairs) == len(set(pairs))
+
+
+def test_manage_people_switch_is_one_people_manage_grant() -> None:
+    switch = SWITCHES["manage_people"]
+    assert switch.grants == {GrantRow("people.manage", "hr_operator", ())}
+    assert switch.workflows == frozenset() and switch.areas == frozenset()
+    assert state(switch).on == {"manage_people"}
+    assert state(switch).uncovered == EMPTY
+    assert SWITCH_IDS.index("manage_people") == SWITCH_IDS.index("hr_team") + 1
+    # The access.save that turns it on carries the grant as a resolved people.manage/HR grant.
+    [save] = operations(uuid4(), EMPTY, switch)
+    assert isinstance(save, AccessSave)
+    assert [(g.action.value, g.scope.value, g.fields) for g in save.grants] == [
+        ("people.manage", "hr_operator", frozenset())
+    ]
+
+
+def test_hr_team_preset_includes_manage_people() -> None:
+    assert "manage_people" in PRESETS["hr_team"]
+    assert [p for p, switches in PRESETS.items() if "manage_people" in switches] == ["hr_team"]
+    team = rows(PRESETS["hr_team"], EMPTY)
+    assert GrantRow("people.manage", "hr_operator", ()) in team.grants
+    assert state(team).on == PRESETS["hr_team"]
+    # The hr_team switch itself does not include it: it is a switch of its own.
+    assert "manage_people" not in state(SWITCHES["hr_team"]).on
+
+
+def test_people_manage_resolves_for_the_hr_scope_only() -> None:
+    granted = ResolvedGrant(action=HrAction.PEOPLE_MANAGE, scope=GrantScope.HR)
+    assert granted.action == "people.manage" and granted.fields == frozenset()
+    for scope in (GrantScope.SELF, GrantScope.TEAM, GrantScope.CLIENT_OWNER):
+        with pytest.raises(ValidationError, match="unsupported_grant"):
+            ResolvedGrant(action=HrAction.PEOPLE_MANAGE, scope=scope)
+    with pytest.raises(ValidationError, match="fields_only_for_directory"):
+        ResolvedGrant(
+            action=HrAction.PEOPLE_MANAGE,
+            scope=GrantScope.HR,
+            fields=frozenset({DirectoryField.DISPLAY_NAME}),
+        )
+
+
+def test_access_change_takes_up_to_max_switches() -> None:
+    assert MAX_SWITCHES == 16 and len(SWITCH_IDS) <= MAX_SWITCHES
+    every = list(SWITCH_IDS)
+    change = AccessChange(user_id=uuid4(), on=every, base=every)
+    assert "manage_people" in change.on
+    too_many = AccessChange.model_json_schema()["properties"]["on"]["maxItems"]
+    assert too_many == MAX_SWITCHES

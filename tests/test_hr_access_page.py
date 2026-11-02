@@ -616,3 +616,71 @@ async def test_recent_changes_show_disabled_people_without_names(world: HrWorld)
     event = next(i for i in items if i["target_user_id"] == str(world.users["operator"]))
     assert event["target_name"] is None and event["actor_name"] == "Synthetic Staff"
     assert event["turned_on"] == ["approves_team"]
+
+
+async def test_recent_changes_use_an_invitation_as_the_baseline(world: HrWorld) -> None:
+    await clear_operator(world)
+    key = uuid4()
+    hr_team = ["attendance", "directory", "hr_team", "own_requests", "recruitment"]
+    details = {
+        "user_id": str(world.users["operator"]),
+        "preset": "hr_team",
+        "on": hr_team,
+        "added": hr_team,
+        "chosen_by": str(world.users["owner"]),
+    }
+    await world.q(
+        "INSERT INTO hr_operations(client_id,subject_id,request_key,operation,fingerprint,"
+        "receipt) VALUES (%s,%s,%s,'invitation_access',%s,%s)",
+        (world.tenant, world.users["operator"], key, "0" * 64, Jsonb({"status": "saved"})),
+    )
+    await world.q(
+        "INSERT INTO hr_authority_events(client_id,subject_id,request_key,operation,details) "
+        "VALUES (%s,%s,%s,'invitation_access',%s)",
+        (world.tenant, world.users["operator"], key, Jsonb(details)),
+    )
+    await turn(world, "operator", ["directory", "own_requests", "hr_team", "approves_team"])
+    items = (await recent(world))["items"]
+    save, invitation = [i for i in items if i["target_user_id"] == str(world.users["operator"])]
+    assert save["source"] == "page" and save["preset"] is None
+    # Areas are not part of an access.save, so the invitation's area switches are not "turned off".
+    assert save["turned_on"] == ["approves_team"] and save["turned_off"] == []
+    assert invitation["source"] == "invitation" and invitation["preset"] == "hr_team"
+    assert invitation["actor_user_id"] == str(world.users["owner"])
+    assert invitation["actor_name"] == "Synthetic Staff"
+    assert invitation["turned_on"] == [
+        "directory",
+        "own_requests",
+        "hr_team",
+        "recruitment",
+        "attendance",
+    ]
+    assert invitation["turned_off"] == [] and invitation["area"] is None
+
+
+async def test_manage_people_switch_saves_and_counts(world: HrWorld) -> None:
+    await clear_operator(world)
+    await turn(world, "operator", ["directory"])
+    before = await stored(world, "operator")
+    assert (await people(world))["counts"]["manage_people"] == 0
+
+    on = await turn(world, "operator", ["directory", "manage_people"])
+    assert on["results"] == [result(world, "operator", "saved")]
+    after = await stored(world, "operator")
+    assert after.minus(before) == SWITCHES["manage_people"] and before.issubset(after)
+    assert after.grants - before.grants == {GrantRow("people.manage", "hr_operator", ())}
+    page = await people(world)
+    assert page["counts"]["manage_people"] == 1
+    operator = await person(world, "operator")
+    assert sorted(operator["on"]) == ["directory", "manage_people"] and operator["custom"] == []
+    holders = await people(world, has="manage_people")
+    assert [item["user_id"] for item in holders["items"]] == [str(world.users["operator"])]
+    # The holder manages people, and still cannot open the access page.
+    assert (await world.call("operator", "GET", PEOPLE)).status_code == 404
+    events = (await world.call("owner", "GET", RECENT)).json()["items"]
+    assert (events[0]["turned_on"], events[0]["turned_off"]) == (["manage_people"], [])
+
+    off = await turn(world, "operator", ["directory"])
+    assert off["results"] == [result(world, "operator", "saved")]
+    assert await stored(world, "operator") == before
+    assert (await people(world))["counts"]["manage_people"] == 0
