@@ -59,6 +59,8 @@ export function useRecords<T extends { id: string }>(path: string) {
       setLoading(true);
       setError("");
       setCursor(next);
+      // After a failed page the cursor already equals `next`: the revision forces the read again.
+      setRevision((value) => value + 1);
     },
     newest: () => {
       setLoading(true);

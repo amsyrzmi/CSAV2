@@ -134,6 +134,8 @@ class Stub:
     list_gate: asyncio.Event = field(default_factory=open_event)
     older_gate: asyncio.Event = field(default_factory=open_event)
     hold_unfiltered: bool = False
+    # The next N older-page reads (`before=`) answer 503.
+    older_failures: int = 0
     order_queries: list[dict[str, list[str]]] = field(default_factory=list)
     counts_queries: list[dict[str, list[str]]] = field(default_factory=list)
     other_calls: list[str] = field(default_factory=list)
@@ -175,6 +177,12 @@ class Stub:
                 await self.list_gate.wait()
             if query.get("before"):
                 await self.older_gate.wait()
+                if self.older_failures > 0:
+                    self.older_failures -= 1
+                    await request_route.fulfill(
+                        status=503, json={"detail": "synthetic older outage"}
+                    )
+                    return
             rows = self.filtered(query, with_status=True)
             if query.get("before"):
                 ids = [row["id"] for row in rows]
@@ -569,6 +577,36 @@ async def test_older_accumulates_rows(site: Site) -> None:
             await expect(cards(page)).to_have_count(PAGE_SIZE)
             assert stub.order_queries[-1] == {}
             await expect(page.get_by_role("button", name="Older orders")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_older_works_again_after_a_failed_older_page(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        stub.older_failures = 1
+        async with business_page(browser, site, stub) as page:
+            await expect(cards(page)).to_have_count(PAGE_SIZE)
+            older = page.get_by_role("button", name="Older orders")
+            await older.click()
+            # The failed page says so, keeps the first page, and nothing stays "loading".
+            await expect(page.get_by_text("synthetic older outage")).to_be_visible()
+            await expect(cards(page)).to_have_count(PAGE_SIZE)
+            await expect(page.get_by_text("Loading local orders...")).to_have_count(0)
+            reads = len([q for q in stub.order_queries if q.get("before")])
+            assert reads == 1, stub.order_queries
+            # Pressing Older again sends a second read (the cursor did not change) and merges it.
+            await expect(older).to_be_enabled()
+            await older.click()
+            await expect(cards(page)).to_have_count(ORDERS_TOTAL)
+            assert len([q for q in stub.order_queries if q.get("before")]) == 2, stub.order_queries
+            await expect(page.get_by_text("Loading local orders...")).to_have_count(0)
+            await expect(page.get_by_text("synthetic older outage")).to_have_count(0)
+            # Refresh is usable again.
+            refresh = page.get_by_test_id("business-orders-refresh")
+            await expect(refresh).to_be_enabled()
+            await refresh.click()
+            await expect(cards(page)).to_have_count(PAGE_SIZE)
 
     await with_browser(body)
 
