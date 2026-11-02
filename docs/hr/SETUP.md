@@ -230,26 +230,31 @@ background worker when users close their browsers.
 > describe the deprecated `POST /console/v1/hr/assistant` route, which stays for one release
 > and is then removed in a cleanup PR. `lib/hr-voice.ts` stays for the sandbox workspace.
 
+Everything in this section up to the dictation paragraph applies only to the deprecated
+`POST /console/v1/hr/assistant` route. No console screen calls it any more, so there is no
+chat UI and no provider notice of its own.
+
 Set `HR_ASSISTANT_ENABLED=true` in the authorized gateway configuration, using the
 existing configured Groq client. A client owner must also enable `hr_assistant` and
-any actual HR tool it will use. Submitted messages and the caller’s employee
+any actual HR tool it will use. Messages submitted to the route and the caller’s employee
 reference go to the configured model provider; persisted private CV/payroll stores
-are never supplied. The UI discloses the provider use before submission.
+are never supplied.
 
-The planner may request one typed permitted action or return a fixed clarification.
+The route's planner may request one typed permitted action or return a fixed clarification.
 Its schema rejects approval/rejection and payroll preparation. All executions use
 the same freshly verified services as manual forms. Session-bound persisted plans
 and operation receipts handle explicit retries after uncertain responses. Changing
 an input with the same key conflicts; an acknowledged operation can begin a new
 request. Permission/calendar set order is canonicalized across app processes.
 
-Dictation fills an editable text box; it does not submit automatically. Recognition
+Dictation (`lib/hr-voice.ts`, now used only by the Sandbox assistant; the workspace
+assistant dock has none) fills an editable text box; it does not submit automatically. Recognition
 requires [on-device processing support](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition/processLocally)
 and an installed English Malaysia language pack. Speech playback selects only a
 [local voice](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesisVoice/localService).
 No cloud speech fallback or automatic language-pack download is attempted. Browser
 support and actual microphone acceptance must still be verified on the client’s
-browser; typed chat remains available.
+browser; typed input remains available.
 
 ## Acceptance before rollout
 

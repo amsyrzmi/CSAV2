@@ -244,7 +244,8 @@ stable path above. No environment file was read or copied.
   [parameterized SQL](../../db/sql/hr/), [OpenAPI](../console_openapi.json).
 - [HR shell and tabs](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
   (replaced the single HR workspace and its remaining-tools panel in project 1a),
-  assistant UI (the separate HR chat was retired in 1b; the workspace dock is the only assistant),
+  [assistant dock](../../CSA_WebConsole/csa-console/web/components/console/AssistantDock.tsx)
+  (the separate HR chat was retired in 1b; the dock is the only assistant),
   [local voice](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts).
 - [Owner bootstrap](../../scripts/bootstrap_hr_owner.py),
   [maintenance worker](../../scripts/run_hr_maintenance.py).

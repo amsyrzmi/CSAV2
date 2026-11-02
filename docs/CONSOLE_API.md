@@ -930,7 +930,7 @@ Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 | Action | Requires |
 |---|---|
 | Inbox decision | `customer_support` package `active` or `suspended` |
-| Training submit | `hr` package active; training proposals created by the assistant (planner or HR chat) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
+| Training submit | `hr` package active; training proposals created by an assistant (the workspace planner, or the deprecated `POST /console/v1/hr/assistant` route) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
 | People search and `people/me` | `hr` package active (`people/me` reports `package_inactive` as a `reason`, not an error) |
 | Email export, compose and send | `staff_email` package active and `email_settings.enabled` |
 | Email my team | The above, the `hr` package, and the HR access switch "approves team" |
