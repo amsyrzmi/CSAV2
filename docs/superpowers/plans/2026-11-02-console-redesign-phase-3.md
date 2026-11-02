@@ -113,7 +113,7 @@
 
 - [ ] **Step 1:** Restart the preview stack (stop the old `next dev` and stub, then `launch_preview.sh`) so `http://127.0.0.1:3100/login` runs the current code with the extended stub; warm the pages; keep both bound to 127.0.0.1.
 - [ ] **Step 2:** Screenshot and LOOK at: the Services page (avatars without a box) and Assistant activity in cobalt, night and bureau at 390 and 1440; the Password page; a kit demo is not needed. Fix defects in owned files with focused commits.
-- [ ] **Step 3:** Report the preview URL, accounts and any residuals. Do not proceed to Phase B until the controller has shown the owner.
+- [ ] **Step 3:** Report the preview URL, accounts and any residuals. Do not wait for anyone: report and finish; the owner reacts to the preview while later phases run.
 
 ---
 
@@ -154,7 +154,7 @@
 
 ### Task 9: Checkpoint B: preview refresh
 
-Same as Task 6 for the chat: restart the preview, screenshot and look at the Overview empty state, a conversation, a pending turn (extend the stub with a `processing` turn) and the voice tray at 390 and 1440 in the three themes; fix defects; report URL and residuals. Wait for the controller before Phase C.
+Same as Task 6 for the chat: restart the preview, screenshot and look at the Overview empty state, a conversation, a pending turn (extend the stub with a `processing` turn) and the voice tray at 390 and 1440 in the three themes; fix defects; report URL and residuals. Do not wait: the controller keeps executing and the owner reacts to the preview while later tasks run.
 
 ---
 
