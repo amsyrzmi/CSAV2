@@ -110,6 +110,7 @@ try {
     "public/fourstacks/agents/email.svg",
     "public/fourstacks/agents/subscriptions.svg",
     "public/fourstacks/agents/bookings.svg",
+    "public/fourstacks/agents/einvoicing.svg",
     "tests/identity-transport.test.mjs",
     "tests/hr-transport.test.mjs",
     "tests/hr-access-api.test.mjs",
