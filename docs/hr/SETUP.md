@@ -60,9 +60,10 @@ and frontend for the migrate step.
   “directory”: they get no People tab. Anyone else with HR access sees only their own profile,
   under Home.
 - **The Left filter.** People who have left are hidden by default. The HR owner and Manage people
-  holders choose **Left** in the status filter to see them. Leaving and rehire themselves come in
-  project 1b; until then there is no screen that makes someone inactive. The API call
-  `employee.save` (HR owner) still can.
+  holders choose **Left** in the status filter to see them. People who are leaving stay in the
+  default list, marked Leaving. Marking someone as leaving and rehiring them are on the profile
+  (project 1b, see “Leaving and rehire” below). The API call `employee.save` (HR owner) can still
+  make someone inactive directly.
 - **Departments.** Each department is a row, and a person points at one. The free-text department
   already on each person was turned into departments by the migration (names that differ only in
   case or spacing became one). The old text column is kept as a mirror of the department’s name so
@@ -78,6 +79,33 @@ and frontend for the migrate step.
 - **Linking a console account.** In a person’s **Access** section the HR owner picks a tenant
   member to link, or unlinks the current one. A member can be linked to one person only.
   Changing what the member can do stays on the access page (**Settings → People & access**).
+
+## Personal details and Sensitive details
+
+Migration `0521` (project 1b) adds a **Personal** section to a person's profile: IC or passport
+number, date of birth, home address, personal phone, emergency contact (name, relationship and
+phone), bank, bank account number, income tax number, EPF number and SOCSO number.
+
+- **The switch.** `sensitive_details` (“Sensitive details”) lets a member see and edit every
+  person's personal details. No preset turns it on; the HR owner turns it on for one member on the
+  access page. It does not let them change access. Manage people alone does not show personal
+  details.
+- **Who sees the section.** The HR owner and Sensitive details holders see and edit it for anyone.
+  The person sees their own and edits only their home address, personal phone and emergency
+  contact; HR keeps the rest. Managers and colleagues never see it, and it never appears in the
+  People list, the directory, search or the assistant.
+- **Give Sensitive details with the directory switch.** A holder of Sensitive details who does not
+  also have the directory switch (“See everyone's basic details”, part of the Staff preset) or
+  Manage people cannot open other people's profiles, so cannot reach their Personal section. The
+  staff defaults include the directory switch, so this only happens when it was turned off by hand.
+- **Numbers.** The IC or passport, bank account, tax, EPF and SOCSO numbers are encrypted in the
+  database with the gateway's `CREDENTIALS_KEY`, so keep that key with the backups. They are shown
+  masked, as `•••• ` and the last 4 characters (`••••` for 4 characters or fewer). **Show** reveals
+  one number until **Hide**, Edit or a reload, and every Show is recorded (who, whose, which
+  number, when). In the edit form a number box starts empty: leave it blank to keep the stored
+  number, type to replace it, or tick **Clear** to remove it.
+- **History.** A change is listed in the person's History by field name only (“Changed Bank
+  account number”), never with its value.
 
 ## Employee documents
 
@@ -97,6 +125,37 @@ history entry are kept.
 - **Not covered.** Files are **not scanned for viruses** and are **not encrypted on disk**; the
   volume and its backups need the access control and disk encryption of the host. The document
   list, download and History show the file name, so names should not carry identity numbers.
+
+## Leaving and rehire
+
+Migration `0521` (project 1b) adds leaving to the profile. The HR owner and Manage people holders
+use **Mark as leaving** on a person's Overview.
+
+- **Mark as leaving.** Choose the last day (today or later, Kuala Lumpur time) and the reason:
+  Resigned, Contract ended, Dismissed, Retired or Other (Other needs a short reason, at most 200
+  characters). When the person has reports, choose who they move to; the default is the leaver's
+  own manager. The person shows as **Leaving** until the last day has passed. The reason is for
+  HR viewers only; the person and their direct manager see the last day.
+- **Who can be marked.** The HR owner cannot be marked as leaving while they are the owner: “Make
+  someone else the HR owner first. The company always needs one.” (a company has one HR owner).
+  Only the HR owner can mark someone who holds HR access beyond the staff switches as leaving
+  (“Only the HR owner can mark someone with HR access as leaving.”), because finishing them
+  removes that access. A Manage people holder can still mark themself.
+- **Undo leaving** is on the profile until the end of the last day. If the reports have already
+  moved, they stay with their new manager.
+- **On the last day** the person keeps their access all day, and their reports move to the chosen
+  manager (or to no manager, when that person has since left).
+- **The day after the last day** the person is finished: they become Left, their HR access in this
+  company (switches, workflow rows, private areas and the HR owner row) is deleted, their console
+  membership of the company is disabled and their sessions there are revoked. The link between
+  the person and the console account is kept. History shows these changes by “System”, and one
+  `hr.leaver_finished` row goes to the console audit log. The main worker (`apps/worker`) runs
+  this every 15 minutes (`hr_leavers_round`, 900 seconds), and People & HR Home runs it too for
+  that company while the HR owner has it open (its maintenance, every five minutes), so a stopped
+  worker only delays it. Running it twice finishes a person once.
+- **Rehire** is on the profile of someone who has left: choose a new start date. They come back as
+  an active person with no manager if their old manager has left. No access comes back: invite
+  them again from **Settings** to give console access.
 
 ## Private recruitment and scheduling
 
@@ -190,6 +249,12 @@ support and actual microphone acceptance must still be verified on the client’
 browser; typed chat remains available.
 
 ## Acceptance before rollout
+
+The access page and the People profile have browser scenarios in
+[`test_hr_access_browser.py`](../../tests/test_hr_access_browser.py) against a synthetic API:
+the owner changing two members' switches, and the HR owner using a profile's Personal (masked
+number and Show) and Documents (upload, list, download) sections, marking the person as leaving
+and undoing it. CI runs them.
 
 The bounded People/training browser scenario is maintained in
 [`test_packaged_hr_browser_acceptance`](../../tests/test_packaged_console.py).

@@ -21,6 +21,24 @@ guards, the deferred items and the 1b seams are in the top entry of
 The directory/training browser scenario below now opens `/portal/hr/people` and
 `/portal/hr/training`.
 
+## People & HR 1b (2026-11-02)
+
+Branch `feat/hr-people-1b`, migration `0521`. A person's profile gains **Personal** (the personal
+details, with the IC or passport, bank account, tax, EPF and SOCSO numbers encrypted, masked and
+shown one at a time with an audited Show) and **Documents** (upload, list, download and remove),
+and the Overview gains **Mark as leaving**, **Undo leaving** and **Rehire**. A new access switch,
+`sensitive_details` ("Sensitive details", in no preset), lets a member see and edit personal
+details. A leaver's reports move on their last day and the leaver is finished the day after by the
+worker's `hr_leavers_round` (every 900 seconds) or HR Home's maintenance (the HR owner's open Home). My HR shows the person's
+own personal details and documents. The full entry is the top entry of
+[../PROGRESS.md](../PROGRESS.md); the operating notes are in
+[SETUP.md](./SETUP.md#personal-details-and-sensitive-details) (and the documents and leaving
+sections after it) and the API in
+[../CONSOLE_API.md](../CONSOLE_API.md#personal-details-documents-and-leaving-project-1b-migration-0521).
+The browser scenario `test_hr_owner_personal_documents_and_leaving` in
+[`test_hr_access_browser.py`](../../tests/test_hr_access_browser.py) covers Personal, Documents,
+Mark as leaving and Undo.
+
 ## HR chat retired (project 1b)
 
 The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace

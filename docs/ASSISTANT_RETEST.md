@@ -100,7 +100,7 @@ Tick each row when the result matches.
 
 ## People & HR screens
 
-The 1a screens have browser scenarios for the access page and the training flow, not for every row below, so a person checks them on staging. Sign in as the HR owner unless the setup says otherwise.
+The 1a screens have browser scenarios for the access page and the training flow, and 1b one for a profile's Personal and Documents sections with Mark as leaving and Undo (`tests/test_hr_access_browser.py`), not for every row below, so a person checks them on staging. Sign in as the HR owner unless the setup says otherwise.
 
 | Check | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
@@ -114,6 +114,19 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Open People | Member with only the staff defaults | People shows the colleagues' basic details; no Left filter, no Add person, no Access or History sections | manual |
 | Open People | Member whose directory access is a hand-made partial grant | No People tab; opening `/portal/hr/people` shows the no-access notice | manual |
 | Open People & HR | Member with no HR duties | Home is My HR: their own profile, leave balances and training requests | manual |
+| Turn on Sensitive details for a member on Settings → People & access | HR owner, a member with the Staff preset | "Sensitive details" is a switch under Responsibilities and no preset turns it on; after saving, the member sees a Personal section on other people's profiles | manual |
+| Open a person's Personal section | HR owner, a person with an IC number and a bank account number saved | Each number shows as `•••• ` and its last 4 characters; Show reveals that one number and Hide masks it again; reloading the page masks it | manual |
+| Open a person's profile | Member with Manage people but not Sensitive details | No Personal section; Documents is there | manual |
+| Open My HR and edit my personal details | Member linked to a person, no HR duties | Only home address, personal phone and emergency contact can be changed ("HR keeps the rest"); the saved change shows in that person's History as "Changed Home address" with no value | manual |
+| Upload a PDF on a person's Documents, then download it | HR owner | "Document uploaded."; the list shows Contract, the file name, its size and the date; Download gives the same file | manual |
+| Upload a file renamed from `.png` to `.pdf` | HR owner | Refused with "Choose a PDF, JPG, PNG or Word (.docx) file."; nothing is listed | manual |
+| Open Documents as each viewer | A person with a Contract and an Other document | The HR owner and Manage people holders see both; the person (My HR → My documents) sees the Contract only, with no Upload; their manager and colleagues have no Documents section | manual |
+| Mark a person as leaving with a last day a week ahead, then Undo leaving | HR owner | The profile says "Leaving on <date> (Resigned)" and People lists them as Leaving; Undo leaving says "Leaving undone. They stay on." and they are Active again | manual |
+| Mark a person with a report and a linked console account as leaving, last day today; check again the next day | HR owner | Today: still Leaving and can still sign in; the report now has the chosen manager. The next day: Left (under the Left filter), History shows the change by "System", the member's HR access switches are gone and they can no longer open the company | manual |
+| Mark yourself as leaving | HR owner, on their own profile | "Make someone else the HR owner first. The company always needs one." and nothing changes | manual |
+| Mark a colleague who has Approves (or any HR access) as leaving | Member with Manage people | "Only the HR owner can mark someone with HR access as leaving." and nothing changes | manual |
+| Rehire a person who has left | HR owner, a Left person | Rehire with a start date says "Rehired. Invite them again from Settings to give console access."; the person is Active with no access switches | manual |
+| Open People & HR Home | HR owner | No "HR chat (assistant & voice)" block; the assistant dock is the only assistant | manual |
 
 ## People actions
 
