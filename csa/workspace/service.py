@@ -45,6 +45,7 @@ from csa.email.service import EmailService
 from csa.hr.api import hr_session_from
 from csa.hr.policy import HrPolicyError
 from csa.hr.service import HrService
+from csa.workspace import hr_people
 from csa.workspace.contracts import (
     MAX_WORK_TTL,
     AnswerProposal,
@@ -548,6 +549,27 @@ _TEXT: dict[str, dict[str, str]] = {
         "emails": "emails",
         "item": "item",
         "items": "items",
+        "people_not_permitted": "Adding, changing or marking people as leaving needs the HR "
+        "owner or the Manage people switch. Ask your HR owner.",
+        "people_list_not_permitted": "Your access doesn't include the People list.",
+        "person_not_found": "I couldn't find {name} in People.",
+        "person_unavailable": "That person isn't available to you in People.",
+        "department_not_found": "I couldn't find a {name} department in People.",
+        "which_person": "Which {name} do you mean?",
+        "ask_person": "Who do you mean? Type their name.",
+        "ask_name": "What is the new person's full name?",
+        "ask_job_title": "What is their job title?",
+        "ask_start_date": "When do they start? For example 1 December 2026.",
+        "ask_change": "What should change? For example the job title, department or manager.",
+        "ask_last_day": "What is their last day? For example 30 November 2026.",
+        "ask_reason": "Why are they leaving?",
+        "ask_leave_note": "In a few words, why are they leaving?",
+        "last_day_past": "The last day can't be in the past. Give today or a later day.",
+        "person_values_invalid": "One of those details doesn't look right. Check the work "
+        "email or phone and try again.",
+        "no_change": "{name} already has those details, so there is nothing to change.",
+        "nobody_reports": "Nobody reports to {name}.",
+        "nobody_matches": "Nobody in People matches that.",
     },
     "ms": {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
@@ -610,6 +632,28 @@ _TEXT: dict[str, dict[str, str]] = {
         "emails": "e-mel",
         "item": "item",
         "items": "item",
+        "people_not_permitted": "Menambah, menukar atau menandakan orang akan berhenti "
+        "memerlukan pemilik HR atau suis Manage people. Minta pemilik HR anda.",
+        "people_list_not_permitted": "Akses anda tidak termasuk senarai People.",
+        "person_not_found": "Saya tidak menjumpai {name} dalam People.",
+        "person_unavailable": "Orang itu tidak tersedia untuk anda dalam People.",
+        "department_not_found": "Saya tidak menjumpai jabatan {name} dalam People.",
+        "which_person": "{name} yang mana satu?",
+        "ask_person": "Siapa yang anda maksudkan? Taip nama mereka.",
+        "ask_name": "Apakah nama penuh orang baharu itu?",
+        "ask_job_title": "Apakah jawatan mereka?",
+        "ask_start_date": "Bila mereka mula bekerja? Contohnya 1 Disember 2026.",
+        "ask_change": "Apa yang perlu ditukar? Contohnya jawatan, jabatan atau pengurus.",
+        "ask_last_day": "Bilakah hari terakhir mereka? Contohnya 30 November 2026.",
+        "ask_reason": "Kenapa mereka berhenti?",
+        "ask_leave_note": "Dalam beberapa perkataan, kenapa mereka berhenti?",
+        "last_day_past": "Hari terakhir tidak boleh pada masa lalu. Berikan hari ini atau "
+        "hari yang kemudian.",
+        "person_values_invalid": "Salah satu butiran itu nampak tidak betul. Semak e-mel atau "
+        "telefon kerja dan cuba lagi.",
+        "no_change": "{name} sudah mempunyai butiran itu, jadi tiada apa-apa untuk ditukar.",
+        "nobody_reports": "Tiada sesiapa melapor kepada {name}.",
+        "nobody_matches": "Tiada sesiapa dalam People yang sepadan.",
     },
 }
 
@@ -803,6 +847,14 @@ _TRAINING_WORDS = re.compile(
     r"|pensijilan)\b",
     re.IGNORECASE,
 )
+# The message is about people records (adding, changing, leaving, who reports to whom) in
+# English or Malay; resolves the caller's People view (people_access).
+_PEOPLE_WORDS = re.compile(
+    r"\b(add|hire[sd]?|hiring|new staff|chang(?:e|es|ed|ing)|managers?|departments?|leaving"
+    r"|resign(?:s|ed|ing|ation)?|last day|reports? to|who is in|tambah|pekerja baru|tukar"
+    r"|pengurus|jabatan|berhenti|letak jawatan|hari terakhir|melapor kepada|siapa dalam)\b",
+    re.IGNORECASE,
+)
 _EMPLOYEE_ID = re.compile(
     r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
 )
@@ -929,6 +981,9 @@ async def planner_facts(
     employee = None
     if _TRAINING_WORDS.search(turn.body):
         employee = await _my_employee(request, actor, client_id, packages)
+    people = None
+    if _PEOPLE_WORDS.search(turn.body):
+        people = await hr_people.people_access(request, actor, client_id, packages)
     return PlannerFacts(
         role=actor.role,
         packages=packages,
@@ -940,6 +995,7 @@ async def planner_facts(
         mailbox_threads=threads,
         my_team=team,
         my_employee=employee,
+        people_access=people,
     )
 
 
@@ -1651,7 +1707,32 @@ async def _resolve(
         )
     if isinstance(proposal, InboxSummaryProposal):
         return await _summary(request, actor, client_id, facts)
+    if isinstance(proposal, hr_people.PEOPLE_PROPOSALS):
+        return _people_planned(
+            await hr_people.resolve(
+                request,
+                actor,
+                client_id,
+                turn,
+                proposal,
+                facts,
+                registry,
+                _TEXT[facts.language],
+            )
+        )
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
+
+
+def _people_planned(resolved: hr_people.Resolved) -> _Planned:
+    """A resolved people action as a planned turn; server-built questions are cleaned too."""
+    if isinstance(resolved, PreparedProposal):
+        return _Planned(prepared=resolved)
+    if isinstance(resolved, AnswerProposal):
+        return _Planned(answer=resolved)
+    if isinstance(resolved, ClarificationProposal):
+        live, stored = _clarification(resolved)
+        return _Planned(result=live, stored=stored)
+    return _Planned(result=resolved)
 
 
 async def _answer(

@@ -6426,6 +6426,17 @@
             "title": "Action",
             "type": "string"
           },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
           "record": {
             "anyOf": [
               {
@@ -8751,7 +8762,8 @@
               "email_send",
               "training_submit",
               "inbox_decision",
-              "subscription_action"
+              "subscription_action",
+              "hr_person"
             ],
             "title": "Kind",
             "type": "string"
@@ -8818,7 +8830,8 @@
               "email_send",
               "training_submit",
               "inbox_decision",
-              "subscription_action"
+              "subscription_action",
+              "hr_person"
             ],
             "title": "Kind",
             "type": "string"
@@ -24403,7 +24416,8 @@
                       "email_send",
                       "training_submit",
                       "inbox_decision",
-                      "subscription_action"
+                      "subscription_action",
+                      "hr_person"
                     ],
                     "title": "Kind",
                     "type": "string"

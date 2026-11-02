@@ -53,7 +53,8 @@ export type ProposalKind =
   | "email_send"
   | "training_submit"
   | "inbox_decision"
-  | "subscription_action";
+  | "subscription_action"
+  | "hr_person";
 
 export interface ProposalCard {
   proposal_id: string;
@@ -134,6 +135,8 @@ export type WorkspaceActionResult =
       section: string | null;
       record: RecordRef | null;
       resume: boolean;
+      /** A page to open instead of the tab's own (a person's profile); absent on older turns. */
+      path?: string | null;
     }
   | { action: "directory_lookup"; candidates: PersonOut[] }
   | {

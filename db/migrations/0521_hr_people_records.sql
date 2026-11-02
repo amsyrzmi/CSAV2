@@ -44,10 +44,17 @@
 --     account's HR grants, workflow rows, areas and owner row here, disables its membership and
 --     revokes its sessions here; history with no actor and one console_audit row
 --     'hr.leaver_finished'. EXECUTE to csa_app only.
+--   The assistant's people actions: console_proposals_kind_check (0484) also allows 'hr_person', and
+--     console_workspace_turns_action_check (0484) also allows 'hr_person_add', 'hr_person_update',
+--     'hr_person_leave', 'people_query' and 'hr_person_open' (every earlier kind and action is kept).
 -- No new roles and no FORCE ROW LEVEL SECURITY. Every function is SECURITY DEFINER and pinned to
 -- search_path.
 -- Pre-check: 0520 applied (hr_grants_scope_action, hr_can_manage_people).
 -- Rollback (in this order; later tasks add their steps at the top, newest first):
+--   DELETE FROM public.console_proposals WHERE kind='hr_person'; DELETE FROM
+--     public.console_workspace_turns WHERE action IN ('hr_person_add','hr_person_update',
+--     'hr_person_leave','people_query','hr_person_open'); then restore console_proposals_kind_check
+--     and console_workspace_turns_action_check from 0484 (the people cards and turns are lost);
 --   DROP FUNCTION public.hr_finish_leaver(uuid,uuid); DROP FUNCTION public.hr_leavers_due(uuid);
 --   DROP FUNCTION public.hr_people_rows(uuid), then create it again from 0520 (with its grant);
 --     recreate public.hr_people_apply(uuid,uuid,text,jsonb), public.hr_employee_change_rows(uuid,
@@ -986,3 +993,18 @@ DO $$ DECLARE f regprocedure; BEGIN
   EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO csa_app',f);
  END LOOP;
 END $$;
+
+-- ---- The assistant's people actions -------------------------------------------------------------
+ALTER TABLE public.console_proposals DROP CONSTRAINT IF EXISTS console_proposals_kind_check;
+ALTER TABLE public.console_proposals ADD CONSTRAINT console_proposals_kind_check
+    CHECK (kind IN ('email_export', 'training_submit', 'inbox_decision', 'subscription_action',
+                    'email_send', 'hr_person'));
+
+ALTER TABLE public.console_workspace_turns
+    DROP CONSTRAINT IF EXISTS console_workspace_turns_action_check;
+ALTER TABLE public.console_workspace_turns
+    ADD CONSTRAINT console_workspace_turns_action_check CHECK (action IN (
+        'answer','navigate','directory_lookup','email_compose','training_submit',
+        'inbox_decision','clarification','page_guidance','local_order_read',
+        'email_reply','email_team','inbox_summary','email_send',
+        'hr_person_add','hr_person_update','hr_person_leave','people_query','hr_person_open'));
