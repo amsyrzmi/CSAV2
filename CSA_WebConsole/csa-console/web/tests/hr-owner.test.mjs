@@ -122,6 +122,17 @@ test("confirmText covers no old owner, an old owner and the admin choosing thems
     `${first} ${last} You are making yourself the HR owner.`);
 });
 
+test("heldAfterRead lets a key go once the owner it expected is no longer the owner", () => {
+  const held = { key: "key-1", newOwnerId: BEN, expectedOwnerId: ADA };
+  assert.equal(owner.heldAfterRead(held, ADA), held, "nothing moved: a retry reuses the key");
+  assert.equal(owner.heldAfterRead(held, BEN), null, "the move landed");
+  assert.equal(owner.heldAfterRead(held, null), null, "the owner is gone");
+  const first = { key: "key-2", newOwnerId: BEN, expectedOwnerId: null };
+  assert.equal(owner.heldAfterRead(first, null), first, "still no owner");
+  assert.equal(owner.heldAfterRead(first, BEN), null, "the first owner landed");
+  assert.equal(owner.heldAfterRead(null, ADA), null);
+});
+
 test("moveDoneText says what happened to the emails", () => {
   assert.equal(owner.moveDoneText("sent"), "HR owner changed.");
   assert.equal(owner.moveDoneText("not_sent"),

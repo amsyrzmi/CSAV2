@@ -5,6 +5,7 @@ import type { Member } from "@/lib/identity-contracts";
 import {
   confirmText,
   eligibleOwners,
+  heldAfterRead,
   hrOwnerClient,
   moveDoneText,
   moveKey,
@@ -58,7 +59,10 @@ export function HrOwnerPanel({
   const load = useCallback(async () => {
     const next = await read();
     if (next === "failed") return false;
-    if (next) setState(next);
+    if (next) {
+      held.current = heldAfterRead(held.current, next.owner?.user_id ?? null);
+      setState(next);
+    }
     return true;
   }, [read]);
   useEffect(() => {
@@ -91,7 +95,7 @@ export function HrOwnerPanel({
       // The answer names who holds the title now, which can differ from the person picked.
       reads.current++;
       setState({ available: true, owner: result.owner });
-      setNotice({ text: moveDoneText(result.mail), error: false });
+      setNotice({ text: moveDoneText(result.mail), error: result.mail === "not_sent" });
       setOpen(false);
     } catch (cause) {
       if (!mounted.current) return;

@@ -513,7 +513,8 @@ async def exercise_owner_move(browser: Any, base: str, upstream: Upstream, tmp_p
         await pick("Lina Wong")
         await confirm.click()
         await expect(name).to_have_text("HR owner: Lina Wong", timeout=WAIT)
-        await expect(panel).to_contain_text(
+        # An alert, not a calm note: the admin has to act, and nothing else tells those people.
+        await expect(panel.get_by_role("alert")).to_have_text(
             "HR owner changed, but we couldn't send the emails. Please tell the people affected."
         )
         assert moves()[4]["body"]["expected_owner_id"] == MANAGER_ID

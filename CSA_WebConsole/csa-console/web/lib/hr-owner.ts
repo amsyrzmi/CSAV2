@@ -101,6 +101,15 @@ export function moveKey(
     : { key: make(), newOwnerId, expectedOwnerId };
 }
 
+/**
+ * The key still worth holding after the owner was read. A different owner means the request can't
+ * be retried as it was: it landed, or someone else moved first. Without this, the owner coming back
+ * later would make the same choice replay the old receipt instead of moving.
+ */
+export function heldAfterRead(held: HeldKey | null, ownerId: string | null): HeldKey | null {
+  return held && held.expectedOwnerId === ownerId ? held : null;
+}
+
 /** What the confirmation says. No old owner means there is nobody to lose the powers. */
 export function confirmText({
   oldOwnerName,
