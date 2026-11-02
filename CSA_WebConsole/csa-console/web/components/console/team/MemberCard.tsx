@@ -28,6 +28,7 @@ type Pending = { kind: "role"; role: TenantRole } | { kind: "disable" };
 export default function MemberCard({
   member,
   platform,
+  selfId,
   busy,
   onChange,
   onReset,
@@ -35,6 +36,8 @@ export default function MemberCard({
 }: {
   member: Member;
   platform: boolean;
+  /** The signed-in user's id; their own card says "You will be signed out". */
+  selfId?: string;
   busy: boolean;
   /** Sends the change; resolves to the server's message when it refuses, else null. */
   onChange: (member: Member, change: { role?: TenantRole; is_enabled?: boolean }) => Promise<string | null>;
@@ -131,7 +134,7 @@ export default function MemberCard({
           : `Disable access for ${member.display_name}?`}
       </p>
       <p className="mt-1 text-sm text-[color:var(--fs-text-secondary)]">
-        {signOutSentence(member.display_name, pending.kind === "role" ? "role" : "disable", member.email)}
+        {signOutSentence(member.display_name, pending.kind === "role" ? "role" : "disable", member.email, selfId === member.user_id)}
       </p>
       {error && (
         <div className="mt-2">

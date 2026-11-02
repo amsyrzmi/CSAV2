@@ -41,9 +41,12 @@ interface Shown {
 export function TeamManagement({
   platform = false,
   clientId = null,
+  selfId,
 }: {
   platform?: boolean;
   clientId?: string | null;
+  /** The signed-in user's id, so a change to one's own access says "You will be signed out". */
+  selfId?: string;
 }) {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [selected, setSelected] = useState(clientId ?? "");
@@ -64,12 +67,17 @@ export function TeamManagement({
   const linkPanel = useRef<HTMLDivElement>(null);
   const inviteButton = useRef<HTMLButtonElement>(null);
   const errorBox = useRef<HTMLDivElement>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     // A link or message that just appeared may be far above the button that made it.
     if (!shown) return;
     linkPanel.current?.focus({ preventScroll: true });
     linkPanel.current?.scrollIntoView({ block: "nearest" });
   }, [shown]);
+  useEffect(() => {
+    // The drawer's own effect has already focused its Close button; start on the first question.
+    if (inviteOpen) nameInput.current?.focus();
+  }, [inviteOpen]);
   useEffect(() => {
     if (error && !inviteOpen) errorBox.current?.scrollIntoView({ block: "nearest" });
   }, [error, inviteOpen]);
@@ -248,6 +256,7 @@ export function TeamManagement({
       await del(`/console/v1/admin/invites/${shown.issued.id}`);
       setShown(null);
       setRevision((value) => value + 1);
+      inviteButton.current?.focus();
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -257,7 +266,7 @@ export function TeamManagement({
   const inviteForm = (
     <form onSubmit={invite} className="grid gap-4">
       <p className="text-sm text-[color:var(--fs-text-secondary)]">
-        They will get a link to join this company. You can change their role later.
+        A link to join this company will be created. You can change their role later.
       </p>
       <div>
         <label htmlFor="member-name" className="mb-2 block text-sm">
@@ -265,6 +274,7 @@ export function TeamManagement({
         </label>
         <input
           id="member-name"
+          ref={nameInput}
           className={field}
           maxLength={120}
           required
@@ -435,7 +445,10 @@ export function TeamManagement({
                   <button
                     type="button"
                     className={secondary}
-                    onClick={() => setShown(null)}
+                    onClick={() => {
+                      setShown(null);
+                      inviteButton.current?.focus();
+                    }}
                   >
                     {shown.issued.delivery === "email" ? "Hide message" : "Hide link"}
                   </button>
@@ -486,6 +499,7 @@ export function TeamManagement({
                     key={member.user_id}
                     member={member}
                     platform={platform}
+                    selfId={selfId}
                     busy={busy}
                     onChange={update}
                     onReset={(target) => void reset(target)}

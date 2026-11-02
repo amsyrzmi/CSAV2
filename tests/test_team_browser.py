@@ -744,3 +744,86 @@ async def test_team_at_five_widths_in_three_themes(site: Site, theme: str) -> No
                 await page.evaluate("() => document.querySelector('main')?.scrollTo(0, 0)")
 
     await with_browser(body)
+
+
+ME = "22222222-2222-4222-8222-222222222222"
+
+
+async def test_changing_your_own_access_says_you_will_be_signed_out(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World()
+        world.members.append(make_member(ME, "Synthetic User", "synthetic@example.test", "tenant_admin"))
+        async with team_page(browser, site, world) as page:
+            await open_card(page, ME)
+            await page.get_by_test_id(f"team-access-{ME}").click()
+            confirm = page.get_by_test_id(f"team-confirm-{ME}")
+            await expect(confirm).to_contain_text(
+                "You will be signed out of this company straight away"
+            )
+            await expect(confirm).to_contain_text("another administrator enables your access again")
+            await page.get_by_test_id(f"team-confirm-{ME}-cancel").click()
+            await page.get_by_test_id(f"team-role-{ME}").select_option("tenant_staff")
+            await expect(confirm).to_contain_text(
+                "You will be signed out of this company straight away and will need to sign in again."
+            )
+            assert world.sent("PATCH", "team/") == []
+            # Someone else's card still names them.
+            await open_card(page, SITI)
+            await page.get_by_test_id(f"team-access-{SITI}").click()
+            await expect(page.get_by_test_id(f"team-confirm-{SITI}")).to_contain_text(
+                f"Siti Aminah {SIGNED_OUT}"
+            )
+
+    await with_browser(body)
+
+
+async def test_invite_drawer_starts_on_display_name_and_says_a_link_will_be_created(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = World()
+        async with team_page(browser, site, world) as page:
+            await page.get_by_test_id("team-invite-open").click()
+            drawer = page.get_by_role("dialog", name="Invite a member")
+            await expect(drawer).to_be_visible()
+            await expect(drawer.get_by_label("Display name")).to_be_focused()
+            await expect(drawer).to_contain_text("A link to join this company will be created.")
+            await expect(drawer).not_to_contain_text("They will get a link")
+
+    await with_browser(body)
+
+
+async def test_focus_stays_on_a_control_that_remains_after_revoke_link_and_hide(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = World()
+        lina = "77777777-7777-4777-8777-000000000001"
+        async with team_page(browser, site, world) as page:
+            # Revoke link in the invitations list: the arrow of the same row keeps focus.
+            await page.get_by_test_id(f"team-invitation-{lina}-toggle").click()
+            await page.get_by_test_id(f"team-invitation-{lina}-details").get_by_role(
+                "button", name="Revoke link"
+            ).click()
+            await expect(page.get_by_test_id(f"team-invitation-{lina}-toggle")).to_be_focused()
+            assert world.sent("DELETE", "admin/invites/")
+            # The link panel just shown: Hide message and Revoke link hand focus to Invite someone.
+            await page.get_by_test_id("team-invite-open").click()
+            await page.get_by_label("Display name").fill("Nora Hassan")
+            await page.get_by_label("Email", exact=True).fill("nora@example.test")
+            await page.get_by_role("button", name="Create invitation").click()
+            await expect(page.get_by_test_id("team-link-panel")).to_be_visible()
+            await page.get_by_role("button", name="Hide message").click()
+            await expect(page.get_by_test_id("team-link-panel")).to_have_count(0)
+            assert await focused(page) == "team-invite-open"
+            await page.get_by_test_id("team-invite-open").click()
+            await page.get_by_label("Display name").fill("Omar Tan")
+            await page.get_by_label("Email", exact=True).fill("omar2@example.test")
+            await page.get_by_role("button", name="Create invitation").click()
+            panel = page.get_by_test_id("team-link-panel")
+            await expect(panel).to_be_visible()
+            await panel.get_by_role("button", name="Revoke link").click()
+            await expect(panel).to_have_count(0)
+            assert await focused(page) == "team-invite-open"
+
+    await with_browser(body)

@@ -67,6 +67,8 @@ export function InvitationList({
         );
       else await del(`/console/v1/admin/invites/${row.id}`);
       setRows(await api<Invitation[]>(endpoint));
+      // Revoke link may take the button away: leave focus on the row's arrow, which stays.
+      if (!renew) document.querySelector<HTMLElement>(`[data-testid="team-invitation-${row.id}-toggle"]`)?.focus();
     } catch (cause) {
       setError((cause as Error).message);
     } finally {

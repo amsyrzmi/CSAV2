@@ -62,6 +62,18 @@ test("signOutSentence: says what the server does, no more", () => {
   assert.match(signOutSentence("  ", "role", "a@example.test"), /^a@example\.test will be signed out/);
 });
 
+test("signOutSentence speaks to the person themselves when they change their own access", () => {
+  const role = signOutSentence("Aiman Yusof", "role", "a@example.test", true);
+  assert.match(role, /^You will be signed out of this company straight away and will need to sign in again\.$/);
+  const disable = signOutSentence("Aiman Yusof", "disable", "a@example.test", true);
+  assert.match(disable, /^You will be signed out of this company straight away/);
+  // They cannot enable themselves again, so the sentence does not tell them to.
+  assert.match(disable, /another administrator enables your access again/);
+  assert.doesNotMatch(disable, /until you enable/);
+  // Someone else still gets their own name.
+  assert.match(signOutSentence("Aiman Yusof", "role", "a@example.test", false), /^Aiman Yusof will be/);
+});
+
 test("revokedMessage names the person and says where they were signed out", () => {
   assert.equal(
     revokedMessage("Aiman Yusof", "a@example.test"),

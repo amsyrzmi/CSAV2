@@ -55,12 +55,14 @@ function called(name: string, email?: string): string {
 /**
  * What a role change or Disable access does, in the words of the confirm step. The server
  * revokes that member's sessions for this company in the same transaction, so they are signed
- * out of this company straight away. It says nothing about other companies.
+ * out of this company straight away. It says nothing about other companies. When the person
+ * changing the access is the member themselves (`self`), the sentence speaks to them.
  */
-export function signOutSentence(name: string, change: "role" | "disable", email?: string): string {
-  const who = called(name, email);
-  return change === "role"
-    ? `${who} will be signed out of this company straight away and will need to sign in again.`
+export function signOutSentence(name: string, change: "role" | "disable", email?: string, self = false): string {
+  const who = self ? "You" : called(name, email);
+  if (change === "role") return `${who} will be signed out of this company straight away and will need to sign in again.`;
+  return self
+    ? "You will be signed out of this company straight away and will not be let back in until another administrator enables your access again."
     : `${who} will be signed out of this company straight away and will not be let back in until you enable access again.`;
 }
 
