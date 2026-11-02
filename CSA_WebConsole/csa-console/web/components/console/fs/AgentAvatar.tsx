@@ -7,6 +7,7 @@ import {
   decodeFrame,
   frameRects,
   gridForSize,
+  haloFilter,
   type AvatarSize,
   type AvatarMotion,
   type AvatarState,
@@ -51,9 +52,10 @@ const MOTION_CLASS: Record<AvatarMotion, string> = {
 };
 
 /**
- * An agent is a pixel creature on a rounded tile, never a circle, so it cannot be mistaken for a
- * customer's round initials. The sprite fills the tile; sizes are whole-number multiples of the
- * grid. The server render, and every moment motion is not allowed (reduced motion, the pause
+ * An agent is a pixel creature drawn straight onto the surface, with no tile, chip or box around
+ * it, and never a circle, so it cannot be mistaken for a customer's round initials. Sizes are
+ * whole-number multiples of the grid. On the night theme a one-cell light outline (the halo token)
+ * keeps the darker body tones readable; it is transparent elsewhere and absent while dimmed. The server render, and every moment motion is not allowed (reduced motion, the pause
  * preference, a hidden tab, an offscreen avatar), is idle frame 0 alone: the rest pose.
  * `working` loops the eight working frames (48 grid sizes only); `wake` plays them once and holds
  * the last until the parent sets the state back to `idle`. On 32 grid sizes both play the idle loop.
@@ -70,15 +72,15 @@ function AgentAvatar({
   label?: string;
   state?: AvatarState;
 }) {
-  const tile = useRef<HTMLSpanElement>(null);
-  const motionAllowed = useMotionAllowed(tile);
+  const root = useRef<HTMLSpanElement>(null);
+  const motionAllowed = useMotionAllowed(root);
   const grid = gridForSize(size);
   const plan = avatarPlan(state, motionAllowed, grid);
   const frames = FRAME_INDEXES[plan.frameCount];
   const accessible = label ? { role: "img", "aria-label": label } : { "aria-hidden": true };
   return (
     <span
-      ref={tile}
+      ref={root}
       data-agent={agentId}
       data-state={state}
       style={{
@@ -89,9 +91,7 @@ function AgentAvatar({
         verticalAlign: "middle",
         width: size,
         height: size,
-        borderRadius: 10,
-        background: "var(--fs-sprite-tile)",
-        overflow: "hidden",
+        filter: haloFilter(size, plan.dimmed),
       }}
     >
       <svg

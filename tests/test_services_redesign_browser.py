@@ -594,7 +594,7 @@ async def test_einvoicing_row_shows_one_status_word_without_avatar(site: Site) -
         await expect(row.get_by_test_id("services-status-e_invoicing")).to_have_text("Coming soon")
         await expect(row.get_by_text("Planned", exact=True)).to_have_count(0)
         await expect(row.locator("[data-agent]")).to_have_count(0)
-        await expect(row.locator("svg").first).to_be_visible()  # the plain icon on the chip
+        await expect(row.locator("svg").first).to_be_visible()  # the plain icon, no chip
         await expect(row.get_by_role("button")).to_have_count(0)
         # Every other row keeps its own pixel avatar, and nothing else says "Planned".
         for key, agent in (
@@ -610,6 +610,52 @@ async def test_einvoicing_row_shows_one_status_word_without_avatar(site: Site) -
             await expect(row_of(page, key).get_by_text("Planned", exact=True)).to_have_count(0)
         assert not diagnostics, diagnostics
         await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_services_row_avatar_has_no_second_chip(site: Site) -> None:
+    """The avatar sits straight on the row: no chip, tile, border or radius around it."""
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        for theme in THEMES:
+            context, page, diagnostics = await open_services(browser, site, stub, theme=theme)
+            boxes = await page.evaluate(
+                """() => [...document.querySelectorAll('[data-testid^="services-card-"]')]
+                .map(row => {
+                    const mark = row.querySelector('[data-agent]') ?? row.querySelector('svg');
+                    const chain = [];
+                    for (let node = mark; node && node !== row; node = node.parentElement) {
+                        const style = getComputedStyle(node);
+                        chain.push({
+                            key: row.dataset.testid,
+                            tag: node.tagName.toLowerCase(),
+                            background: style.backgroundColor + ' ' + style.backgroundImage,
+                            radius: style.borderRadius,
+                            overflow: style.overflow,
+                            border: style.borderTopWidth,
+                        });
+                    }
+                    return chain;
+                })"""
+            )
+            assert len(boxes) >= 8, boxes
+            for chain in boxes:
+                for box in chain:
+                    if box["tag"] == "svg":
+                        continue
+                    assert box["background"] == "rgba(0, 0, 0, 0) none", (theme, box)
+                    assert box["radius"] == "0px", (theme, box)
+                    assert box["border"] == "0px", (theme, box)
+            # The avatar and its icon fallback are the only thing in their slot: no wrapper chip.
+            slot = await avatar_of(row_of(page, "customer_support")).evaluate(
+                "el => [el.parentElement.children.length, el.parentElement.dataset.agent ?? null]"
+            )
+            assert slot[0] == 1, slot
+            assert not diagnostics, diagnostics
+            await context.close()
 
     await with_browser(body)
     assert not stub.unexpected, stub.unexpected

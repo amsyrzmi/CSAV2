@@ -12,7 +12,7 @@ function moduleUrl(source) {
 }
 const load = async (path) =>
   import(moduleUrl(await readFile(new URL(path, import.meta.url), "utf8")));
-const { decodeFrame, frameRects, gridForSize, avatarPlan, frameSetFor, AVATAR_SIZES } =
+const { decodeFrame, frameRects, gridForSize, avatarPlan, frameSetFor, haloFilter, AVATAR_SIZES } =
   await load("../lib/pixel-avatars.ts");
 const { PIXEL_DATA, PIXEL_GRIDS } = await load("../lib/pixel-avatars-data.ts");
 const { AGENT_IDS } = await load("../lib/agent-avatars.ts");
@@ -232,10 +232,10 @@ test("the CSS has the eight-frame loop and the one-shot wake, both stopped by th
   assert.ok(flat.includes('[data-motion="off"] .fs-px-anim .fs-px-f0 { opacity: 1 !important; }'), "pause shows f0");
 });
 
-// ---- Sprite contrast on the tile (spec section 6: each sprite reaches 3:1 in every theme) ----
+// ---- Sprites drawn straight onto the surface (no tile): the sticker outline keeps them readable ----
 const themesCss = await readFile(new URL("../app/themes.css", import.meta.url), "utf8");
 
-function tileOf(theme, name) {
+function tokenOf(theme, name) {
   let value;
   for (const [, selector, body] of themesCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selectors = selector.replace(/\/\*[\s\S]*?\*\//g, "").split(",").map((x) => x.trim());
@@ -257,41 +257,115 @@ function ratio(a, b) {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
-/** Alpha-blend `top` at `alpha` over `bottom` (both #rrggbb). */
-function blend(top, bottom, alpha) {
-  const channel = (hex, i) => parseInt(hex.slice(i, i + 2), 16);
-  return `#${[1, 3, 5]
-    .map((i) => Math.round(channel(top, i) * alpha + channel(bottom, i) * (1 - alpha)))
-    .map((v) => v.toString(16).padStart(2, "0"))
-    .join("")}`;
+
+// The surfaces an avatar is drawn on: the page, the card, the raised card and the blue tint.
+const SURFACES = ["--fs-bg", "--fs-surface", "--fs-surface-raised", "--fs-surface-blue"];
+
+/** [palette index at the silhouette edge] per frame: non-transparent cells 4-adjacent to a transparent one (or the border). */
+function edgeColours(data) {
+  const sets = [[data.idle["32"], 32], [data.idle["48"], 48], [data.working["48"], 48]];
+  const colours = [];
+  for (const [frames, grid] of sets) {
+    for (const encoded of frames) {
+      const rows = decodeFrame(encoded, grid);
+      for (let y = 0; y < grid; y += 1) {
+        for (let x = 0; x < grid; x += 1) {
+          if (rows[y][x] < 0) continue;
+          const open = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => {
+            const [nx, ny] = [x + dx, y + dy];
+            return nx < 0 || ny < 0 || nx >= grid || ny >= grid || rows[ny][nx] < 0;
+          });
+          if (open) colours.push(data.palette[rows[y][x]]);
+        }
+      }
+    }
+  }
+  return colours;
 }
 
-// Legibility rests on the shared navy outline and white eyes, not on each body fill: the sprite
-// is decorative (the agent's name is always printed beside it), and the body hues are chosen for
-// character, from yellow to dark blue, so no one tile gives every fill 3:1. The outline against
-// the chip is what separates the shape from the page in every theme.
-const OUTLINE = "#15203A";
-const THEME_NAMES = ["cobalt", "night", "bureau"];
+/** Edge cells under 3:1 against some surface of the theme, counting the halo when it is opaque. */
+function uncovered(theme, data, withHalo) {
+  const halo = tokenOf(theme, "--fs-sprite-halo");
+  const surfaces = SURFACES.map((name) => tokenOf(theme, name));
+  const drawn = withHalo && /^#[0-9a-f]{6}$/i.test(halo);
+  const colours = edgeColours(data);
+  let failing = 0;
+  for (const colour of colours) {
+    // A cell is carried when it reaches 3:1 itself, or when the halo drawn around every edge cell
+    // reaches 3:1 against the surface it sits on (the halo then draws the silhouette).
+    const carried = surfaces.every((surface) => ratio(colour, surface) >= 3 || (drawn && ratio(halo, surface) >= 3));
+    if (!carried) failing += 1;
+  }
+  return { failing, edges: colours.length };
+}
 
-test("the sprite outline stands out from the chip in every theme (aim 6:1, floor 3:1)", () => {
-  for (const theme of THEME_NAMES) {
-    const chip = tileOf(theme, "--fs-sprite-tile");
-    const value = ratio(OUTLINE, chip);
-    assert.ok(value >= 6, `${theme} outline on ${chip}: ${value.toFixed(2)}:1`);
+test("night: every avatar's silhouette edge reaches 3:1 against each night surface, counting the halo", () => {
+  for (const id of AGENT_IDS) {
+    const { failing, edges } = uncovered("night", PIXEL_DATA[id], true);
+    assert.ok(edges > 0, id);
+    assert.equal(failing, 0, `${id}: ${failing} of ${edges} edge cells under 3:1 on night even with the halo`);
   }
 });
 
-test("white eyes read against the outline they sit in (7:1)", () => {
-  assert.ok(ratio("#FFFFFF", OUTLINE) >= 7, `${ratio("#FFFFFF", OUTLINE).toFixed(2)}:1`);
+test("night: without the halo the dark tones of support, hr and assistant would fall into the page", () => {
+  for (const id of ["support", "hr", "assistant"]) {
+    assert.ok(uncovered("night", PIXEL_DATA[id], false).failing > 0, id);
+  }
 });
 
-test("the dimmed state (saturate .55, opacity .85) keeps the outline at 3:1 on the chip", () => {
-  // Saturation hardly moves a near-neutral navy, so only the opacity blend is computed.
+// Known limitation, reported to the owner (task 3 report): on the two light themes the sprite
+// stands alone (the halo is transparent) and the pale bodies (yellow, lime, mint, orange) sit
+// under 3:1 against white or cream. The tile that used to be drawn behind them was only about
+// 1.1:1 off the surface, so removing it changes nothing there. These ceilings hold the line: the
+// share of edge cells under 3:1 may not grow when sprite art or tokens change, and the numbers
+// should come down, not go up.
+const LIGHT_CEILING = {
+  support: 0.25, knowledge: 0.65, orders: 0.5, tickets: 0.85, ecommerce: 0.85, invoices: 0.65,
+  assistant: 0.3, hr: 0.3, email: 0.3, subscriptions: 0.8, bookings: 0.55,
+};
+
+test("cobalt and bureau: the share of edge cells under 3:1 stays inside the recorded ceiling", () => {
+  assert.deepEqual(Object.keys(LIGHT_CEILING).sort(), [...AGENT_IDS].sort());
+  for (const theme of ["cobalt", "bureau"]) {
+    for (const id of AGENT_IDS) {
+      const { failing, edges } = uncovered(theme, PIXEL_DATA[id], true);
+      assert.ok(failing / edges <= LIGHT_CEILING[id], `${theme} ${id}: ${((failing / edges) * 100).toFixed(1)}% under 3:1`);
+    }
+  }
+});
+
+test("the halo is the former tile colour on night and transparent on cobalt and bureau", () => {
+  assert.equal(tokenOf("night", "--fs-sprite-halo").toLowerCase(), "#dbe6fb");
+  assert.equal(tokenOf("cobalt", "--fs-sprite-halo"), "transparent");
+  assert.equal(tokenOf("bureau", "--fs-sprite-halo"), "transparent");
+  // The night halo itself stands out from every night surface.
+  for (const name of SURFACES) assert.ok(ratio(tokenOf("night", "--fs-sprite-halo"), tokenOf("night", name)) >= 3, name);
+});
+
+test("haloFilter draws four crisp one-cell drop-shadows and none in the dim state", () => {
+  // 32 grid: 32 px is 1 px per cell, 64 px is 2; 48 grid: 48 px is 1, 96 is 2, 144 is 3.
+  for (const [size, cell] of [[32, 1], [64, 2], [48, 1], [96, 2], [144, 3]]) {
+    const filter = haloFilter(size, false);
+    const expected = [`${cell}px 0`, `-${cell}px 0`, `0 ${cell}px`, `0 -${cell}px`]
+      .map((offset) => `drop-shadow(${offset} 0 var(--fs-sprite-halo))`).join(" ");
+    assert.equal(filter, expected, `size ${size}`);
+  }
+  for (const size of AVATAR_SIZES) assert.equal(haloFilter(size, true), undefined, `dimmed ${size}`);
+});
+
+test("AgentAvatar draws no tile and no halo while dimmed", async () => {
+  const source = await readFile(new URL("../components/console/fs/AgentAvatar.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /background\s*:/);
+  assert.doesNotMatch(source, /borderRadius/);
+  assert.doesNotMatch(source, /overflow\s*:/);
+  assert.match(source, /haloFilter\(size, plan\.dimmed\)/);
+});
+
+test("white eyes read against the navy outline they sit in (7:1)", () => {
+  assert.ok(ratio("#FFFFFF", "#15203A") >= 7, `${ratio("#FFFFFF", "#15203A").toFixed(2)}:1`);
+});
+
+test("the dimmed state keeps its saturate .55 opacity .85 filter", () => {
   const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(css, /\.fs-px-dim\s*\{\s*filter:\s*saturate\(0?\.55\)\s+opacity\(0?\.85\)/);
-  for (const theme of THEME_NAMES) {
-    const chip = tileOf(theme, "--fs-sprite-tile");
-    const value = ratio(blend(OUTLINE, chip, 0.85), chip);
-    assert.ok(value >= 3, `${theme} dimmed outline on ${chip}: ${value.toFixed(2)}:1`);
-  }
 });

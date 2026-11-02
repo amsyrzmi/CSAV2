@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -301,13 +302,14 @@ def default_agents() -> dict[str, dict[str, Any]]:
 
 
 async def open_agents(
-    browser: Any, site: Site, stub: Stub, **context_options: Any
+    browser: Any, site: Site, stub: Stub, *, theme: str | None = None, **context_options: Any
 ) -> tuple[Any, Page, list[str]]:
     context = await browser.new_context(**context_options)
     context.set_default_navigation_timeout(WAIT)
-    await context.add_cookies(
-        [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
-    )
+    cookies = [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
+    if theme:
+        cookies.append({"name": "fs-theme", "value": theme, "url": site.base})
+    await context.add_cookies(cookies)
     page = await context.new_page()
     diagnostics: list[str] = []
     page.on("pageerror", lambda error: diagnostics.append(str(error)))
@@ -541,3 +543,88 @@ async def test_agent_activation_under_reduced_motion_never_animates(site: Site) 
             await context.close()
         finally:
             await browser.close()
+
+
+THEMES = ("cobalt", "night", "bureau")
+NIGHT_HALO = "rgb(219, 230, 251)"
+TRANSPARENT = "rgba(0, 0, 0, 0)"
+
+
+async def test_no_avatar_has_a_background_or_radius(site: Site) -> None:
+    """Every avatar and every parent up to the card is transparent, square and unclipped."""
+    stub = Stub(default_agents())
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            for theme in THEMES:
+                context, page, diagnostics = await open_agents(browser, site, stub, theme=theme)
+                await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+                found = await page.evaluate(
+                    """() => {
+                        const card = '[data-testid^="agent-card-"]';
+                        return [...document.querySelectorAll(card + ' [data-agent]')]
+                        .map(el => {
+                            const boxes = [];
+                            for (let node = el; node && !node.matches(card);
+                                 node = node.parentElement) {
+                                const style = getComputedStyle(node);
+                                const id = node.dataset.agent;
+                                const agent = id ? '[' + id + ']' : '';
+                                boxes.push({
+                                    tag: node.tagName.toLowerCase() + agent,
+                                    background: style.backgroundColor + ' ' + style.backgroundImage,
+                                    radius: style.borderRadius,
+                                    overflow: style.overflow,
+                                    border: style.borderTopWidth,
+                                });
+                            }
+                            return boxes;
+                        });
+                    }"""
+                )
+                assert len(found) >= 2, (theme, found)
+                for boxes in found:
+                    assert boxes[0]["tag"].startswith("span["), boxes
+                    for box in boxes:
+                        assert box["background"] == f"{TRANSPARENT} none", (theme, box)
+                        assert box["radius"] == "0px", (theme, box)
+                        assert box["overflow"] == "visible", (theme, box)
+                        assert box["border"] == "0px", (theme, box)
+                assert not diagnostics, diagnostics
+                await context.close()
+        finally:
+            await browser.close()
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_avatar_halo_present_on_night_only(site: Site) -> None:
+    """Night outlines the sprite with four one-cell light drop-shadows; the dim state has none."""
+    stub = Stub(default_agents())
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            for theme in THEMES:
+                context, page, diagnostics = await open_agents(browser, site, stub, theme=theme)
+                await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+                live = card_of(page, "kb_agent").locator("[data-agent]")
+                dim = card_of(page, "ticket_agent").locator("[data-agent]")
+                await expect(live).to_have_attribute("data-state", "idle", timeout=WAIT)
+                await expect(dim).to_have_attribute("data-state", "still")
+                halo = await live.evaluate("el => getComputedStyle(el).filter")
+                shadows = re.findall(r"drop-shadow\((rgba?\([^)]*\)) (\S+) (\S+) (\S+)\)", halo)
+                assert len(shadows) == 4, (theme, halo)
+                # 48 px on the 48 grid: one cell is one pixel; the four offsets point four ways,
+                # crisp (no blur).
+                assert sorted(f"{x} {y}" for _, x, y, _ in shadows) == sorted(
+                    ["1px 0px", "-1px 0px", "0px 1px", "0px -1px"]
+                ), (theme, halo)
+                assert {blur for *_, blur in shadows} == {"0px"}, (theme, halo)
+                colour = NIGHT_HALO if theme == "night" else TRANSPARENT
+                assert {c for c, *_ in shadows} == {colour}, (theme, halo)
+                # Dimmed (not active): no halo at all on any theme.
+                assert await dim.evaluate("el => getComputedStyle(el).filter") == "none", theme
+                assert not diagnostics, diagnostics
+                await context.close()
+        finally:
+            await browser.close()
+    assert not stub.unexpected, stub.unexpected

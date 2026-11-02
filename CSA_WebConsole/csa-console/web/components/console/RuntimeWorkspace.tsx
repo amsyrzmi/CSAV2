@@ -154,8 +154,6 @@ function AgentManagement({ query, platform }: { query: string; platform: boolean
   );
 }
 
-/** The sprite chip colour, shared by the avatar tile and the icon shown for an agent without one. */
-const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-sprite-ink)" };
 /**
  * Agents that are planned but not built yet. Listed by name rather than inferred from "has no
  * avatar", so a future agent that simply lacks art is not mislabelled as planned.
@@ -213,8 +211,8 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
       className="rounded-[14px] border border-[var(--fs-border)] bg-[var(--fs-surface)] p-5 shadow-[var(--fs-shadow-card)] sm:p-6">
       <header className="mb-4 flex items-start gap-3">
         {avatar ? <AgentAvatar agentId={avatar} size={48} label="" state={state} /> :
-          <span aria-hidden="true" style={CHIP}
-            className="inline-flex size-12 flex-none items-center justify-center rounded-[10px]">
+          <span aria-hidden="true"
+            className="inline-flex size-12 flex-none items-center justify-center text-[color:var(--fs-text-secondary)]">
             <Receipt className="size-6" />
           </span>}
         <div className="min-w-0 flex-1">

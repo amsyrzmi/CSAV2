@@ -29,7 +29,6 @@ const TONE_CLASS: Record<StatusTone, string> = {
   off: "text-[color:var(--fs-danger)]",
   neutral: "text-ink-600",
 };
-const CHIP = { background: "var(--fs-sprite-tile)", color: "var(--fs-sprite-ink)" };
 const CARD = "rounded-[14px] border border-[var(--fs-border)] bg-[var(--fs-surface)] shadow-[var(--fs-shadow-card)]";
 
 /** Plain words about what each count covers; the footer is not a link. */
@@ -259,7 +258,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
       className="border-t border-dashed border-[var(--fs-border)] px-4 py-4 sm:px-5">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="flex min-w-0 flex-1 basis-60 items-start gap-3">
-          <span style={CHIP} className="inline-flex size-14 flex-none items-center justify-center rounded-xl">
+          <span className="inline-flex size-14 flex-none items-center justify-center text-[color:var(--fs-text-secondary)]">
             {avatar ? <AgentAvatar agentId={avatar} size={48} label="" state={avatarState} /> :
               <Receipt aria-hidden="true" className="size-6" />}
           </span>

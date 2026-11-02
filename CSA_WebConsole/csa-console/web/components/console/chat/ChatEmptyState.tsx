@@ -2,11 +2,9 @@ import AgentAvatar from "../fs/AgentAvatar";
 import { chipLabel } from "@/lib/sandbox-chat";
 import { SandboxLimits } from "./ChatDisclaimer";
 
-/** The assistant in a rounded tile, above a line of copy (and, inside a tenant, more below). */
+/** The assistant, drawn straight onto the page with no box, above a line of copy (and, inside a tenant, more below). */
 export function AssistantTile() {
-  return <span className="grid size-14 shrink-0 place-items-center rounded-[var(--fs-radius-tile)] bg-[var(--fs-surface-blue)]">
-    <AgentAvatar agentId="assistant" size={48} label="" />
-  </span>;
+  return <span className="inline-flex shrink-0"><AgentAvatar agentId="assistant" size={48} label="" /></span>;
 }
 
 /**

@@ -126,3 +126,17 @@ export function avatarPlan(state: AvatarState, motionAllowed: boolean, grid: Spr
   if (frameSet === "idle") return { animate, dimmed, motion: "idle", frameSet, frameCount: 4 };
   return { animate, dimmed, motion: state === "wake" ? "wake" : "working", frameSet, frameCount: 8 };
 }
+
+/**
+ * The sticker outline: four crisp drop-shadows (right, left, down, up) of one sprite cell, in the
+ * theme's `--fs-sprite-halo` (light on night, transparent on cobalt and bureau). One cell is
+ * `size / grid` px, so the outline is one sprite pixel wide at every size. Nothing in the dim
+ * state (`undefined`): a dimmed avatar says "not active" and is quieter than a live one.
+ */
+export function haloFilter(size: number, dimmed: boolean): string | undefined {
+  if (dimmed) return undefined;
+  const cell = size / gridForSize(size);
+  return [`${cell}px 0`, `-${cell}px 0`, `0 ${cell}px`, `0 -${cell}px`]
+    .map((offset) => `drop-shadow(${offset} 0 var(--fs-sprite-halo))`)
+    .join(" ");
+}

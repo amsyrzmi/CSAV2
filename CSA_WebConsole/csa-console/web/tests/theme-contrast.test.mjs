@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 
@@ -37,7 +37,7 @@ const COLOUR_TOKENS = [
   "--fs-text-secondary", "--fs-primary", "--fs-primary-hover", "--fs-border", "--fs-border-control",
   "--fs-focus", "--fs-disabled-bg", "--fs-disabled-text", "--fs-success", "--fs-success-bg",
   "--fs-warning", "--fs-warning-bg", "--fs-danger", "--fs-danger-bg", "--fs-info", "--fs-info-bg",
-  "--fs-on-primary", "--fs-shell", "--fs-rail", "--fs-tile", "--fs-sprite-tile", "--fs-sprite-ink", "--fs-human", "--color-white",
+  "--fs-on-primary", "--fs-shell", "--fs-rail", "--fs-tile", "--fs-human", "--color-white",
   "--fs-ink-950", "--fs-ink-800", "--fs-ink-700", "--fs-ink-400", "--fs-ink-200", "--fs-ink-100",
   "--fs-ink-50", "--fs-brand-100", "--fs-brand-200", "--fs-brand-900",
   "--fs-border-strong", "--fs-neutral-bg", "--fs-neutral-text", "--fs-customer-bg", "--fs-customer-text",
@@ -122,8 +122,6 @@ const PAIRS = [
   ["--fs-text", "--fs-rail", 3, "brand mark body stacks on the rail"],
   ["--fs-text", "--fs-surface", 3, "brand mark body stacks on the top bar"],
   ["--fs-primary", "--fs-surface", 3, "brand mark accent stack on the top bar"],
-  // The sprite chip stays light in every theme (night too), so its icon ink cannot be --fs-text.
-  ["--fs-sprite-ink", "--fs-sprite-tile", 4.5, "icon on the sprite chip (agent or service without an avatar)"],
 ];
 
 for (const theme of THEMES) {
@@ -231,3 +229,34 @@ for (const theme of THEMES) {
     assert.ok(ratio(map["--fs-auth-text"], there) >= 4.5, `${theme}: ${ratio(map["--fs-auth-text"], there).toFixed(2)} at 75%`);
   });
 }
+
+test("--fs-sprite-halo is defined in all three themes: light on night, transparent on cobalt and bureau", () => {
+  for (const theme of THEMES) {
+    const value = tokens(theme)["--fs-sprite-halo"];
+    assert.ok(value, `${theme} is missing --fs-sprite-halo`);
+    assert.match(value, theme === "night" ? /^#[0-9a-f]{6}$/i : /^transparent$/, `${theme} --fs-sprite-halo = ${value}`);
+  }
+  // Night's outline stands out from the card, the page and the blue tint it can sit on.
+  const night = tokens("night");
+  for (const surface of ["--fs-surface", "--fs-surface-raised", "--fs-surface-blue", "--fs-bg"]) {
+    assert.ok(ratio(night["--fs-sprite-halo"], night[surface]) >= 3, `night halo on ${surface}`);
+  }
+});
+
+test("no reference to the retired sprite tile or chip ink token remains", async () => {
+  const retired = [["--fs-sprite", "tile"].join("-"), ["--fs-sprite", "ink"].join("-")];
+  const root = new URL("../", import.meta.url);
+  const found = [];
+  async function walk(dir) {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const next = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
+      if (entry.isDirectory()) await walk(next);
+      else if (/\.(tsx?|css|mjs)$/.test(entry.name)) {
+        const text = await readFile(next, "utf8");
+        for (const token of retired) if (text.includes(token)) found.push(`${next.pathname.split("/web/")[1]}: ${token}`);
+      }
+    }
+  }
+  for (const dir of ["app/", "components/", "lib/", "tests/"]) await walk(new URL(dir, root));
+  assert.deepEqual(found, []);
+});
