@@ -608,6 +608,38 @@ async def stored_row(world: HrWorld, employee: UUID) -> dict[str, Any]:
     return row
 
 
+def company_aad(tenant: UUID, column: str, employee: UUID) -> bytes:
+    """The personal-number AAD: table, column, then the company and the person (ids are chosen
+    by the client, so the same employee id can exist in two companies)."""
+    return crypto.credential_aad("hr_employee_personal", column, f"{tenant}:{employee}")
+
+
+async def test_personal_ciphertext_is_bound_to_the_company(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    await saved(world, "owner", staff, None, {}, {"ic_or_passport": IC})
+    token = (await stored_row(world, staff))["ic_or_passport"]
+    assert crypto.decrypt(token, company_aad(world.tenant, "ic_or_passport", staff)) == IC
+    # The same employee id in another company, or the id alone, does not open it.
+    for aad in (
+        company_aad(world.other_tenant, "ic_or_passport", staff),
+        crypto.credential_aad("hr_employee_personal", "ic_or_passport", str(staff)),
+    ):
+        with pytest.raises(crypto.CryptoError):
+            crypto.decrypt(token, aad)
+    # Reading decrypts with the company's AAD: a value written under it is masked and shown.
+    written = crypto.encrypt("A1234567", company_aad(world.tenant, "tax_number", staff))
+    await world.q(
+        "UPDATE hr_employee_personal SET tax_number=%s WHERE client_id=%s AND employee_id=%s",
+        (written, world.tenant, staff),
+    )
+    response = await world.call("owner", "GET", personal_path(staff))
+    assert response.status_code == 200, response.text
+    assert response.json()["tax_number"] == "•••• 4567"
+    shown = await reveal(world, "owner", staff, "tax_number")
+    assert shown.status_code == 200, shown.text
+    assert shown.json()["value"] == "A1234567"
+
+
 async def test_personal_get_masks_encrypted_values(world: HrWorld) -> None:
     staff = world.employees["staff"]
     # A person with no saved details: an empty record, no version, the owner may edit everything.
@@ -631,12 +663,12 @@ async def test_personal_get_masks_encrypted_values(world: HrWorld) -> None:
     assert row["ic_or_passport"].startswith("v1:") and IC not in "".join(
         str(value) for value in row.values()
     )
-    aad = crypto.credential_aad("hr_employee_personal", "ic_or_passport", str(staff))
+    aad = company_aad(world.tenant, "ic_or_passport", staff)
     assert crypto.decrypt(row["ic_or_passport"], aad) == IC  # uppercased on the way in
     with pytest.raises(crypto.CryptoError):
         crypto.decrypt(
             row["ic_or_passport"],
-            crypto.credential_aad("hr_employee_personal", "bank_account", str(staff)),
+            company_aad(world.tenant, "bank_account", staff),
         )
     assert row["tax_number"] is None
 

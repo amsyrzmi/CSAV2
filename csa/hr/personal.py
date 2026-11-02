@@ -92,8 +92,10 @@ class PersonalReveal(HrModel):
     value: str | None
 
 
-def _aad(column: str, employee_id: UUID) -> bytes:
-    return crypto.credential_aad(_TABLE, column, str(employee_id))
+def _aad(column: str, client_id: UUID, employee_id: UUID) -> bytes:
+    """Bound to the company as well as the person: employee ids are chosen by the client, so
+    the same id can exist in two companies."""
+    return crypto.credential_aad(_TABLE, column, f"{client_id}:{employee_id}")
 
 
 def fingerprint_payload(body: PersonalSave) -> str:
@@ -140,7 +142,7 @@ class HrPersonal:
             column: mask(
                 None
                 if row[column] is None
-                else crypto.decrypt(row[column], _aad(column, employee_id))
+                else crypto.decrypt(row[column], _aad(column, session.tenant_id, employee_id))
             )
             for column in _ENCRYPTED
         }
@@ -169,7 +171,11 @@ class HrPersonal:
             )
             await self.core._session(conn, session)
         token = row["ciphertext"]
-        return None if token is None else crypto.decrypt(token, _aad(field, employee_id))
+        return (
+            None
+            if token is None
+            else crypto.decrypt(token, _aad(field, session.tenant_id, employee_id))
+        )
 
     async def save(self, session: HrSession, body: PersonalSave, key: UUID) -> OperationReceipt:
         # The fingerprint covers the request as sent, so a retry matches whatever is trimmed below.
@@ -185,7 +191,7 @@ class HrPersonal:
                 "encrypted": {
                     field: None
                     if plain is None
-                    else crypto.encrypt(plain, _aad(field, body.employee_id))
+                    else crypto.encrypt(plain, _aad(field, session.tenant_id, body.employee_id))
                     for field, plain in changed.items()
                 },
             }
@@ -219,7 +225,12 @@ class HrPersonal:
         for field, plain in sent.items():
             if plain is not None and stored[field] is not None:
                 try:
-                    if crypto.decrypt(stored[field], _aad(field, body.employee_id)) == plain:
+                    if (
+                        crypto.decrypt(
+                            stored[field], _aad(field, session.tenant_id, body.employee_id)
+                        )
+                        == plain
+                    ):
                         continue
                 except crypto.CryptoError:
                     pass  # unreadable: write the new value

@@ -372,7 +372,8 @@ async def test_planner_facts_never_hold_personal_fields(planned) -> None:  # noq
     siti = await _person(w, "Siti Aminah")
     plaintext = "880101-14-5678"
     ciphertext = crypto.encrypt(
-        plaintext, crypto.credential_aad("hr_employee_personal", "ic_or_passport", str(siti))
+        plaintext,
+        crypto.credential_aad("hr_employee_personal", "ic_or_passport", f"{tenant}:{siti}"),
     )
     await w.q(
         "INSERT INTO hr_employee_personal(client_id,employee_id,ic_or_passport,home_address,"
