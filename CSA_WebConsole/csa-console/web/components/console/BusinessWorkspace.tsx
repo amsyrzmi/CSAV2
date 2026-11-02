@@ -15,7 +15,7 @@ import { effectiveCountsRange, orderChipOptions, paymentOptions } from "@/lib/bu
 import { toInstants, type DayRange } from "@/lib/date-range";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
-import { OrderCard, ProductCard, StoreCard, type Order, type Product } from "./business/cards";
+import { Fold, OrderCard, ProductCard, StoreCard, type Order, type Product } from "./business/cards";
 import { useOrderCounts, useRecords } from "./business/useRecords";
 import { DateRangeFilter, StatusChips } from "./kit";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
@@ -62,13 +62,9 @@ export function BusinessWorkspace({ me }: { me: Me }) {
         {demoMode ? "Exit demo mode" : "Show synthetic demo"}
       </button>
     </div>
-    {demoMode
-      ? <Notice>DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok API request or
+    {demoMode && <Notice>DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok API request or
           listing is sent. Demo changes stay in this page&apos;s temporary state and reset when you exit
-          or reload.</Notice>
-      : <Notice>Local records only, not a live TikTok Shop feed. No marketplace synchronization or store
-          connection verification is performed. Stock is not synchronized or authoritative across stores.
-          Refresh explicitly to read current local records.</Notice>}
+          or reload.</Notice>}
     {!demoMode && error && <Notice error>{error}</Notice>}
     {!demoMode && platform && <label className="my-5 block">Tenant
       <select className={field} value={selected} onChange={(event) => setSelected(event.target.value)}>
@@ -81,12 +77,20 @@ export function BusinessWorkspace({ me }: { me: Me }) {
       : <>
           {tenant ? <BusinessRecords key={tenant} query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""} />
             : <Notice>Select a tenant to view its business records.</Notice>}
-          <div className="mt-5"><Panel title="Not available in this slice">
-            <p className="text-sm">Marketplace listings, connection verification or changes, live carrier tracking, listing edits,
-              stock updates, fulfilment, cancellations, returns/refunds, payments and cross-platform synchronization
-              are unavailable here. Tickets, invoices, PDF downloads and staff preparation are later M6 slices.
-              Existing adapter code does not establish live seller authorization or a verified connection.</p>
-          </Panel></div>
+          <div className="mt-5 space-y-3">
+            <Fold testId="business-about" title="About this page">
+              <Notice>Local records only, not a live TikTok Shop feed. No marketplace synchronization or store
+                connection verification is performed. Stock is not synchronized or authoritative across stores.
+                Refresh explicitly to read current local records.</Notice>
+            </Fold>
+            <Fold testId="business-not-yet" title="What this page does not do yet">
+              <h3 className="mb-2 font-semibold">Not available in this slice</h3>
+              <p>Marketplace listings, connection verification or changes, live carrier tracking, listing edits,
+                stock updates, fulfilment, cancellations, returns/refunds, payments and cross-platform synchronization
+                are unavailable here. Tickets, invoices, PDF downloads and staff preparation are later M6 slices.
+                Existing adapter code does not establish live seller authorization or a verified connection.</p>
+            </Fold>
+          </div>
         </>}
   </>;
 }
@@ -140,42 +144,15 @@ function BusinessRecords({ query }: { query: string }) {
   });
   const { counts, failed } = useOrderCounts(orderCountsPath(query, { ...narrowed, ...counted }), refresh);
   return <div className="mt-5 space-y-5">
-    <Panel title="Local store records (not verified connections)">
-      <StoreRecords key={query} query={query} />
-    </Panel>
-    <Panel title="Orders and tracking references">
-      <form className="mb-4 space-y-3" onSubmit={(event) => {
-        event.preventDefault();
-        setApplied({ channel, shopId });
-      }}>
-        <label className="block">Source/platform (local orders)
-          <select className={field} value={channel} onChange={(event) => {
-            setChannel(event.target.value);
-            setShopId("");
-          }}>
-            <option value="">All local sources</option>
-            <option value="tiktok_shop">TikTok Shop</option>
-            <option value="shopee">Shopee</option>
-            <option value="telegram">Telegram</option>
-            <option value="web">Web</option>
-            <option value="manual">Manual</option>
-          </select>
-        </label>
-        <label className="block">Exact store ID (optional, requires source/platform)
-          <input className={field} value={shopId} maxLength={100} disabled={!channel}
-            onChange={(event) => setShopId(event.target.value)} />
-        </label>
-        <button className={secondary} type="submit">Apply order filters</button>
-        <p className="text-sm">Filters match persisted source and store IDs exactly. Options do not
-          indicate connected stores. Apply filters to restart at the newest matching orders.</p>
-      </form>
+    <section className="card rounded-[14px] p-3 sm:p-6">
+      <h2 className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold sm:mb-5">Orders and tracking references</h2>
       <div className="mb-3 flex flex-wrap items-end gap-3">
-        <div>
+        <div className="shrink-0">
           <p aria-hidden="true" className="mb-1 text-sm">Order date</p>
           <DateRangeFilter testId="business-date" label="Order date" value={range}
             onChange={(next) => { setRange(next); setAllTime(false); }} />
         </div>
-        <div className="w-full sm:w-64">
+        <div className="min-w-0 flex-1 basis-40 sm:w-64 sm:flex-none">
           <label htmlFor="business-payment" className="mb-1 block text-sm">Payment status</label>
           <select id="business-payment" data-testid="business-payment" className={field} value={payment}
             onChange={(event) => setPayment(event.target.value)}>
@@ -194,18 +171,53 @@ function BusinessRecords({ query }: { query: string }) {
               loaded just now. The list below still works.</span>
           : <span>{scope.kind === "chosen" ? "The numbers cover the dates you chose."
               : scope.kind === "all" ? "The numbers cover all time. This can be slow for a busy shop."
-              : "The numbers cover the last 30 days."}</span>}
+              : "The numbers cover the last 30 days. The list shows every date until you choose dates."}</span>}
         {scope.kind === "default" && <button type="button" className={secondary}
           data-testid="business-counts-all-time" onClick={() => setAllTime(true)}>Count all time</button>}
         {scope.kind === "all" && <button type="button" className={secondary}
           data-testid="business-counts-default" onClick={() => setAllTime(false)}>Use the last 30 days</button>}
       </div>
-      <OrderRecords key={listPath} path={listPath} applied={applied}
+      <OrderRecords key={listPath} path={listPath}
         onRefresh={() => { setToday(new Date()); setRefresh((value) => value + 1); }} />
-    </Panel>
+      <div className="mt-4">
+        <Fold testId="business-more-filters" title="More filters">
+          <form className="space-y-3" onSubmit={(event) => {
+            event.preventDefault();
+            setApplied({ channel, shopId });
+          }}>
+            <label className="block">Source/platform (local orders)
+              <select className={field} value={channel} onChange={(event) => {
+                setChannel(event.target.value);
+                setShopId("");
+              }}>
+                <option value="">All local sources</option>
+                <option value="tiktok_shop">TikTok Shop</option>
+                <option value="shopee">Shopee</option>
+                <option value="telegram">Telegram</option>
+                <option value="web">Web</option>
+                <option value="manual">Manual</option>
+              </select>
+            </label>
+            <label className="block">Exact store ID (optional, requires source/platform)
+              <input className={field} value={shopId} maxLength={100} disabled={!channel}
+                onChange={(event) => setShopId(event.target.value)} />
+            </label>
+            <button className={secondary} type="submit">Apply order filters</button>
+            <p className="text-sm">Filters match persisted source and store IDs exactly. Options do not
+              indicate connected stores. Apply filters to restart at the newest matching orders.</p>
+          </form>
+          <p className="mt-3 text-sm">Applied source: {applied.channel || "All local sources"}
+            {" · "}Applied store ID: {applied.shopId || "All stores / not recorded"}</p>
+        </Fold>
+      </div>
+    </section>
     <Panel title="Local catalogue and inventory">
-      <p className="mb-4 text-sm">Tenant-wide local stock. Order source/store filters do not filter
-        these products; verified store listing mappings are not available in this slice.</p>
+      <div className="mb-4">
+        <Fold testId="business-about-catalogue" title="About the catalogue">
+          <p className="text-sm">Tenant-wide local stock. Order source/store filters do not filter
+            these products; verified store listing mappings are not available in this slice.</p>
+        </Fold>
+      </div>
       <div className="mb-4 flex gap-3">
         <button className={secondary} disabled={products.loading} onClick={products.newest}>Refresh newest products</button>
         {products.next && <button className={secondary} disabled={products.loading} onClick={products.older}>Older products</button>}
@@ -217,6 +229,10 @@ function BusinessRecords({ query }: { query: string }) {
         {products.items?.map((product) => <ProductCard key={product.id} product={product} />)}
       </ul>
     </Panel>
+    <Fold testId="business-stores" title="Store connections and local store records">
+      <h3 className="mb-3 font-semibold">Local store records (not verified connections)</h3>
+      <StoreRecords key={query} query={query} />
+    </Fold>
   </div>;
 }
 
@@ -274,25 +290,19 @@ function StorePage({ path }: { path: string }) {
   </>;
 }
 
-function OrderRecords({ path, applied, onRefresh }: {
-  path: string;
-  applied: { channel: string; shopId: string };
-  onRefresh: () => void;
-}) {
+function OrderRecords({ path, onRefresh }: { path: string; onRefresh: () => void }) {
   const orders = useRecords<Order>(path);
   return <>
-    <p className="mb-3 text-sm">Applied source: {applied.channel || "All local sources"}
-      {" · "}Applied store ID: {applied.shopId || "All stores / not recorded"}</p>
-    <div className="mb-4 flex gap-3">
-      <button className={secondary} disabled={orders.loading}
-        onClick={() => { orders.newest(); onRefresh(); }}>Refresh newest orders</button>
-      {orders.next && <button className={secondary} disabled={orders.loading} onClick={orders.older}>Older orders</button>}
-    </div>
     {orders.error && <Notice error>{orders.error}</Notice>}
     {orders.loading && <p>Loading local orders...</p>}
     {orders.items?.length === 0 && !orders.loading && <p>No local orders match these filters. This does not mean your marketplace has no orders.</p>}
     <ul data-testid="business-orders-list" className="space-y-3">
       {orders.items?.map((order) => <OrderCard key={order.id} order={order} />)}
     </ul>
+    <div className="mt-4 flex flex-wrap gap-3">
+      <button className={secondary} disabled={orders.loading}
+        onClick={() => { orders.newest(); onRefresh(); }}>Refresh newest orders</button>
+      {orders.next && <button className={secondary} disabled={orders.loading} onClick={orders.older}>Older orders</button>}
+    </div>
   </>;
 }

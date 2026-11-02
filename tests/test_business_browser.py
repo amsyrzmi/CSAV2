@@ -252,6 +252,12 @@ async def until(
         await asyncio.sleep(0.1)
 
 
+async def open_fold(page: Page, name: str) -> None:
+    """Open one of the closed-by-default folds (`business-<name>`) and wait for its text."""
+    await page.get_by_test_id(f"business-{name}-toggle").click()
+    await expect(page.get_by_test_id(f"business-{name}-details")).to_be_visible()
+
+
 def order_card(page: Page, n: int) -> Any:
     return page.get_by_test_id(f"business-order-{oid(n)}")
 
@@ -320,6 +326,11 @@ async def test_orders_show_cards_and_arrow_details(site: Site) -> None:
             await expect(product_details).to_contain_text("MUG-1 · Blue mug 1")
             await expect(product_details).to_contain_text("MYR 18.00 · Local status: Active")
             await expect(product_details).to_contain_text("Stock: 10 · Reserved: 3 · Available: 7")
+            # The store records sit in a closed fold, with the two disabled buttons inside it.
+            await expect(page.get_by_test_id("business-stores-details")).to_be_hidden()
+            await expect(page.get_by_test_id("business-more-filters-details")).to_be_hidden()
+            await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
+            await open_fold(page, "stores")
             store = page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
             await expect(store).to_contain_text("TikTok Shop · SHOP-A")
             await expect(store).to_contain_text("Not verified")
@@ -430,10 +441,14 @@ async def test_date_range_status_and_payment_filters_send_the_right_query(site: 
             await until(lambda: last_counts() == {})
             await expect(page.get_by_test_id("business-counts-note")).to_contain_text("all time")
             # Source filters still apply with the existing button and ride on both reads.
+            await open_fold(page, "more-filters")
             await page.get_by_label("Source/platform (local orders)").select_option("shopee")
             await page.get_by_role("button", name="Apply order filters").click()
             await until(lambda: last_order() == {"channel": ["shopee"]})
             await until(lambda: last_counts() == {"channel": ["shopee"]})
+            await expect(page.get_by_test_id("business-more-filters-details")).to_contain_text(
+                "Applied source: shopee · Applied store ID: All stores / not recorded"
+            )
 
     await with_browser(body)
 
@@ -559,6 +574,8 @@ async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -
         stub = Stub()
         async with business_page(browser, site, stub, theme=theme) as page:
             await order_card(page, 1).get_by_role("button", name="Show details").click()
+            for name in ("more-filters", "about-catalogue", "stores", "about", "not-yet"):
+                await open_fold(page, name)
             for width in WIDTHS:
                 await page.set_viewport_size({"width": width, "height": 900})
                 await expect(order_card(page, 1)).to_have_attribute("data-open", "true")
@@ -586,17 +603,22 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(browser, site, stub) as page:
+            # The long notices and the store section are folded; their text stays reachable.
+            await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
+            await open_fold(page, "about")
+            await expect(
+                page.get_by_text("Local records only, not a live TikTok Shop feed.", exact=False)
+            ).to_be_visible()
+            await open_fold(page, "not-yet")
+            await expect(
+                page.get_by_text("Not available in this slice", exact=True)
+            ).to_be_visible()
+            await open_fold(page, "stores")
             connect = page.get_by_role("button", name="Connect unavailable", exact=True)
             reconnect = page.get_by_role("button", name="Reconnect unavailable", exact=True)
             await expect(connect).to_be_disabled()
             await expect(reconnect).to_be_disabled()
             await expect(page.get_by_role("button", name=" unavailable")).to_have_count(2)
-            await expect(
-                page.get_by_text("Local records only, not a live TikTok Shop feed.", exact=False)
-            ).to_be_visible()
-            await expect(
-                page.get_by_text("Not available in this slice", exact=True)
-            ).to_be_visible()
             before = (len(stub.order_queries), len(stub.counts_queries), list(stub.other_calls))
             await page.get_by_role("button", name="Show synthetic demo").click()
             await expect(
@@ -620,7 +642,29 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
             ) == before
             await page.get_by_role("button", name="Exit demo mode").click()
             await expect(order_card(page, 1)).to_be_visible()
+            await open_fold(page, "stores")
             await expect(connect).to_be_disabled()
             await expect(reconnect).to_be_disabled()
+
+    await with_browser(body)
+
+
+async def test_first_screen_at_390_shows_filters_and_the_first_orders(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub, width=390, height=844) as page:
+            await expect(
+                page.get_by_role("heading", name="Business management")
+            ).to_be_in_viewport()
+            for testid in ("business-date", "business-payment", "business-status-all"):
+                await expect(page.get_by_test_id(testid)).to_be_in_viewport()
+            # The first order's summary is on the first screen, with no technical paragraph above.
+            await expect(page.get_by_test_id(f"business-order-{oid(1)}-title")).to_be_in_viewport()
+            top = await page.get_by_test_id("business-orders-list").evaluate(
+                "el => el.getBoundingClientRect().top"
+            )
+            assert top < 844, top
+            for text in ("Local records only", "Connect unavailable", "Exact store ID"):
+                await expect(page.get_by_text(text, exact=False).first).to_be_hidden()
 
     await with_browser(body)

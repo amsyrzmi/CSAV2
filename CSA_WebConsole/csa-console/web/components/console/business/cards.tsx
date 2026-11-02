@@ -32,6 +32,21 @@ export type StoreSummaryInput = { platform: string; shop_id: string | null; conn
 const card =
   "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 
+/** A closed-by-default fold for long technical text: a plain title and the usual arrow. */
+export function Fold({ testId, title, children }: { testId: string; title: string; children: ReactNode }) {
+  return (
+    <div className={card}>
+      <DetailsRow
+        testId={testId}
+        toggleLabel={title}
+        summary={<p className="font-medium">{title}</p>}
+      >
+        {children}
+      </DetailsRow>
+    </div>
+  );
+}
+
 /** A bordered card: the plain summary on the left, the arrow on the right, the record behind it. */
 function RecordCard({
   testId, toggleLabel, title, subtitle, labels, children,
