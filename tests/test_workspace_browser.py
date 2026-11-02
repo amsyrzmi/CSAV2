@@ -425,9 +425,29 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                     "version": None,
                     "account_linked": None,
                 },
-                "sections": ["overview"],
+                "sections": ["overview", "personal", "documents"],
                 "can_edit": False,
             }
+        elif path == f"hr/people/{ALI_B}/personal":
+            # My HR also shows the member's own personal details and documents.
+            data = {
+                "date_of_birth": None,
+                "home_address": None,
+                "personal_phone": None,
+                "emergency_name": None,
+                "emergency_relationship": None,
+                "emergency_phone": None,
+                "bank_name": None,
+                "ic_or_passport": None,
+                "bank_account": None,
+                "tax_number": None,
+                "epf_number": None,
+                "socso_number": None,
+                "version": None,
+                "can_edit": "contact",
+            }
+        elif path == f"hr/people/{ALI_B}/documents":
+            data = {"items": []}
         elif path == "hr/records/balances":
             data = {"items": []}
         elif path == f"email/drafts/{EMAIL_DRAFT}" and request.method == "GET":
