@@ -269,7 +269,7 @@ const KUALA_LUMPUR_HOURS = 8;
 const DAY = 86_400_000;
 
 /** `YYYY-MM-DD` of an instant on the Kuala Lumpur calendar. */
-function klDate(instant: Date): string {
+export function klDate(instant: Date): string {
   return new Date(instant.getTime() + KUALA_LUMPUR_HOURS * 3_600_000).toISOString().slice(0, 10);
 }
 function addDays(date: string, days: number): string {

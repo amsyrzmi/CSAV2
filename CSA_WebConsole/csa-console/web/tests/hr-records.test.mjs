@@ -20,7 +20,9 @@ const { historyText, STATUS_LABELS, PEOPLE_COPY, peopleRefusalText } = await imp
 const {
   RECORDS_COPY, PERSONAL_FIELDS, personalFormValues, personalBody, leaveBody, leaveUndoBody, rehireBody,
   documentIssue, recordsRefusalText, leavingSummary, fileSizeText, recordsErrorText, personalSavedText,
+  canMarkLeaving, canUndoLeaving, canRehire, reportsMoveChoices, leavingErrorText, leaveFormIssue, rehireFormIssue,
 } = records;
+const { klDate } = await import(peopleUrl);
 
 const TENANT = "a b/1";
 const SUFFIX = "client_id=a%20b%2F1";
@@ -418,4 +420,109 @@ test("personalSavedText: receipt version 0 means nothing was saved", () => {
   assert.equal(personalSavedText(0), "Nothing was saved because no details were entered.");
   assert.equal(personalSavedText(1), "Personal details saved.");
   assert.equal(personalSavedText(7), "Personal details saved.");
+});
+
+// ---- leaving and rehire on the profile ----
+
+test("which profile actions show: mark as leaving, undo and rehire", () => {
+  const profile = (status, extra = {}) => ({ person: { status }, can_edit: true, ...extra });
+  assert.deepEqual(["active", "starting", "leaving", "left"].map((status) => canMarkLeaving(profile(status), false)),
+    [true, true, false, false]);
+  assert.deepEqual(["active", "starting", "leaving", "left"].map((status) => canUndoLeaving(profile(status), false)),
+    [false, false, true, false]);
+  assert.deepEqual(["active", "starting", "leaving", "left"].map((status) => canRehire(profile(status), false)),
+    [false, false, false, true]);
+  for (const check of [canMarkLeaving, canUndoLeaving, canRehire]) {
+    assert.equal(check(profile("active", { can_edit: false }), false), false);
+    assert.equal(check(profile("leaving", { can_edit: false }), false), false);
+    assert.equal(check(profile("left", { can_edit: false }), false), false);
+  }
+  // A read-only company changes nothing.
+  assert.equal(canMarkLeaving(profile("active"), true), false);
+  assert.equal(canUndoLeaving(profile("leaving"), true), false);
+  assert.equal(canRehire(profile("left"), true), false);
+});
+
+const node = (id, manager = null, name = id) => ({ employee_id: id, display_name: name, job_title: null, department: null, manager_id: manager });
+const opt = (id) => [id, id.toUpperCase()];
+
+test("reportsMoveChoices defaults to the leaver's manager and drops the leaver and everyone below them", () => {
+  // boss > lee > (ann > ann2), (bob); cat is a peer under boss.
+  const chart = { nodes: [node("boss"), node("lee", "boss"), node("ann", "lee"), node("ann2", "ann"), node("bob", "lee"), node("cat", "boss")], looped: [] };
+  const choices = reportsMoveChoices({
+    options: ["boss", "lee", "ann", "ann2", "bob", "cat"].map(opt), chart, person: { employee_id: "lee", manager_id: "boss" },
+  });
+  assert.equal(choices.hasReports, true);
+  assert.equal(choices.defaultId, "boss");
+  assert.deepEqual(choices.options.map(([id]) => id), ["boss", "cat"]);
+});
+
+test("reportsMoveChoices defaults to no manager, and says when the leaver has no reports", () => {
+  const chart = { nodes: [node("lee"), node("ann", "lee"), node("cat")], looped: [] };
+  const top = reportsMoveChoices({ options: ["lee", "ann", "cat"].map(opt), chart, person: { employee_id: "lee", manager_id: null } });
+  assert.equal(top.defaultId, "");
+  assert.equal(top.hasReports, true);
+  assert.deepEqual(top.options.map(([id]) => id), ["cat"]);
+  const none = reportsMoveChoices({ options: ["lee", "cat"].map(opt), chart, person: { employee_id: "cat", manager_id: null } });
+  assert.equal(none.hasReports, false);
+  assert.equal(none.defaultId, "");
+});
+
+test("reportsMoveChoices: a manager who is not offered (left) is not the default; an unknown chart still asks", () => {
+  const chart = { nodes: [node("lee", "gone"), node("ann", "lee")], looped: [] };
+  const choices = reportsMoveChoices({ options: ["lee", "ann", "cat"].map(opt), chart, person: { employee_id: "lee", manager_id: "gone" } });
+  assert.equal(choices.defaultId, "");
+  const unknown = reportsMoveChoices({ options: ["lee", "ann", "cat"].map(opt), chart: null, person: { employee_id: "lee", manager_id: "cat" } });
+  assert.equal(unknown.hasReports, true);
+  assert.equal(unknown.defaultId, "cat");
+  assert.deepEqual(unknown.options.map(([id]) => id), ["ann", "cat"]);
+});
+
+test("reportsMoveChoices copes with a reporting loop", () => {
+  const chart = { nodes: [node("lee", "ann"), node("ann", "lee")], looped: ["lee", "ann"] };
+  const choices = reportsMoveChoices({ options: ["lee", "ann", "cat"].map(opt), chart, person: { employee_id: "lee", manager_id: "ann" } });
+  assert.deepEqual(choices.options.map(([id]) => id), ["cat"]);
+  assert.equal(choices.defaultId, "");
+});
+
+test("leaveFormIssue stops the plain mistakes before sending, with sentences that carry no code", () => {
+  const today = "2026-11-02";
+  const ok = { lastDay: "2026-11-02", reason: "resigned", note: "" };
+  assert.equal(leaveFormIssue(ok, today), null);
+  assert.equal(leaveFormIssue({ ...ok, lastDay: "2026-12-31" }, today), null);
+  assert.equal(leaveFormIssue({ ...ok, lastDay: "" }, today), "Choose the last day.");
+  assert.equal(leaveFormIssue({ ...ok, lastDay: "2026-11-01" }, today), RECORDS_COPY.refusals.last_day_past);
+  assert.equal(leaveFormIssue({ ...ok, reason: "other" }, today), "Say what the reason is, in a few words.");
+  assert.equal(leaveFormIssue({ ...ok, reason: "other", note: "   " }, today), "Say what the reason is, in a few words.");
+  assert.equal(leaveFormIssue({ ...ok, reason: "other", note: "x".repeat(201) }, today), "Keep the reason to 200 characters or fewer.");
+  assert.equal(leaveFormIssue({ ...ok, reason: "other", note: "Moved abroad" }, today), null);
+  // The note only matters for Other.
+  assert.equal(leaveFormIssue({ ...ok, note: "x".repeat(500) }, today), null);
+});
+
+test("rehireFormIssue needs a start date", () => {
+  assert.equal(rehireFormIssue(""), "Choose a start date.");
+  assert.equal(rehireFormIssue("  "), "Choose a start date.");
+  assert.equal(rehireFormIssue("2027-01-04"), null);
+});
+
+test("klDate is the Kuala Lumpur calendar day", () => {
+  assert.equal(klDate(new Date("2026-11-01T16:30:00Z")), "2026-11-02");
+  assert.equal(klDate(new Date("2026-11-01T15:59:00Z")), "2026-11-01");
+});
+
+test("leavingErrorText: a 4xx picks its sentence, anything else names the button to choose again", () => {
+  assert.equal(leavingErrorText({ status: 409, code: "person_changed" }, "leave"), PEOPLE_COPY.stale);
+  assert.equal(leavingErrorText({ status: 422, code: "last_owner_leaving" }, "leave"),
+    "Make someone else the HR owner first. The company always needs one.");
+  assert.equal(leavingErrorText({ status: 409, code: "not_left" }, "rehire"), "Only someone who has left can be rehired.");
+  assert.equal(leavingErrorText({ status: 422, code: "manager_loop" }, "leave"), peopleRefusalText("manager_loop"));
+  const buttons = { leave: /Mark as leaving/, undo: /Undo leaving/, rehire: /Rehire/ };
+  for (const [action, button] of Object.entries(buttons))
+    for (const failure of [null, { status: 500, code: "x" }, { status: 503, code: "x" }]) {
+      const text = leavingErrorText(failure, action);
+      assert.match(text, button);
+      assert.match(text, /won't happen twice|won't be saved twice/);
+      assert.doesNotMatch(text, /_/);
+    }
 });
