@@ -1997,11 +1997,34 @@ async def test_finish_leaver_requires_the_tenant_setting(world: HrWorld) -> None
         assert row["outcome"] == "none"
     assert await person_row(world, leaver) == before
     assert await membership_enabled(world, world.users["staff"], world.tenant)
-    # The due list is the same for every caller; the finish itself needs the tenant.
+    # With no company set (the worker), the due list names any company; the finish needs one.
     async with world.service.pool.connection() as conn:
         due = await q.fetch_all("hr/leavers_due.sql", (world.tenant,), conn=conn)
     assert due == [{"client_id": world.tenant, "employee_id": leaver}]
     assert await finish(world, leaver) == "moved_finished"
+
+
+async def test_leavers_due_is_scoped_to_the_sessions_company(world: HrWorld) -> None:
+    """A session with a company set sees only that company's due leavers, even when it passes
+    NULL or another company; with no company set (the worker's round) it sees every company."""
+    yesterday = await db_today(world) - timedelta(days=1)
+    staff = world.employees["staff"]
+    for tenant in (world.tenant, world.other_tenant):
+        await mark_due(world, tenant, staff, yesterday)
+    mine = {(world.tenant, staff)}
+    both = mine | {(world.other_tenant, staff)}
+
+    async def due(conn: Any, client: UUID | None) -> set[tuple[UUID, UUID]]:
+        rows = await q.fetch_all("hr/leavers_due.sql", (client,), conn=conn)
+        return {(r["client_id"], r["employee_id"]) for r in rows}
+
+    async with tx(world.service.pool, str(world.tenant)) as conn:
+        assert await due(conn, None) == mine
+        assert await due(conn, world.tenant) == mine
+        assert await due(conn, world.other_tenant) == set()
+    async with world.service.pool.connection() as conn:
+        assert await due(conn, None) >= both
+        assert await due(conn, world.other_tenant) == {(world.other_tenant, staff)}
 
 
 async def test_leaving_fields_by_viewer(world: HrWorld) -> None:

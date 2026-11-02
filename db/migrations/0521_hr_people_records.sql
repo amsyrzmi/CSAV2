@@ -903,14 +903,18 @@ BEGIN
 END $$;
 
 -- The active people whose last day has come and who still need a step: their reports have not
--- moved yet, or the last day is past. Every tenant's (the worker), or one tenant's (Home).
+-- moved yet, or the last day is past. Every tenant's (the worker, whose session sets no
+-- app.client_id), or one tenant's (Home). A session with app.client_id set sees only that
+-- tenant, whatever p_client it passes: NULL means its own tenant, another tenant gives nothing.
 CREATE FUNCTION public.hr_leavers_due(p_client uuid DEFAULT NULL)
 RETURNS TABLE(client_id uuid, employee_id uuid)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
  SELECT e.client_id, e.id FROM public.hr_employees e
+ CROSS JOIN LATERAL (SELECT nullif(current_setting('app.client_id',true),'')::uuid AS id) ctx
  WHERE e.is_active AND e.last_day<=(now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date
   AND (e.reports_moved_at IS NULL OR e.last_day<(now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date)
   AND (p_client IS NULL OR e.client_id=p_client)
+  AND (ctx.id IS NULL OR e.client_id=ctx.id)
  ORDER BY e.last_day, e.client_id, e.id
  LIMIT 500;
 $$;
