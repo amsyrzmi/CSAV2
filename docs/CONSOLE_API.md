@@ -1129,7 +1129,8 @@ No write routes are added; normal session/tenant controls remain authoritative.
 
 | Method/path | Query | Response |
 |---|---|---|
-| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, optional `from`, `to`, `status`, `payment_status`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders/counts` | optional `from`, `to`, `payment_status`, `channel`, `shop_id`, tenant query (a `status` parameter is ignored) | `{total,by_status:{<status>:int}}` with every order status present, zero included |
 | `GET /business/orders/{id}` | optional `channel` and `shop_id`, tenant query | Local order summary including persisted tracking/carrier, channel/store/order IDs and local timestamps |
 | `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"unavailable",items,next_cursor}` |
 | `GET /business/products/{id}` | tenant query | Local product summary, decimal price and local stock/reserved/available quantities |
@@ -1156,6 +1157,25 @@ tenant/channel/store, including a cursor moved to a different store. A missing s
 returns an empty local page, not a connection-health claim. Omitting filters preserves
 all tenant-local orders, including missing store IDs. Products remain tenant-wide local
 catalogue/stock; no store-specific listing or inventory mapping is inferred.
+
+Order list window and status filters (all optional, combine with each other, with `channel`,
+`shop_id` and `before`, and stay tenant-scoped): `from` and `to` are ISO 8601 timestamps with an
+offset (for example `2026-03-10T00:00:00+08:00`) on `created_at`, the column the list sorts and
+pages on; `from` is inclusive and `to` exclusive, so a row stamped exactly at `to` belongs to the
+next window. `status` is one of `draft`, `pending_confirmation`, `confirmed`, `processing`,
+`shipped`, `delivered`, `cancelled`, `refunded`; `payment_status` is one of `unpaid`,
+`cod_pending`, `paid`, `refunded`, `failed`. An unknown value is rejected with 422
+`invalid_status` or `invalid_payment_status`, `from` at or after `to` with 422 `invalid_range`,
+and a timestamp without an offset with the standard 422 validation error. With none of them the
+response and the `(created_at, id)` descending order are unchanged. Orders with no `placed_at`
+are listed and counted like any other (the window is on `created_at`). The order objects do not
+gain customer or line-item fields.
+
+`GET /business/orders/counts` returns `{total, by_status}` for the same `from`, `to`,
+`payment_status`, `channel` and `shop_id` filters (same validation, same tenant, package and
+role gating as the list). It deliberately does not read `status`, so a status chip bar can show
+the number behind every chip while one status is selected. `by_status` lists all eight order
+statuses in the order above; a status with no matching order is `0`, and `total` is their sum.
 
 The UI applies order filters explicitly and remounts order paging on changed applied
 scope, aborting obsolete requests and starting from newest. Tenant changes reset filter

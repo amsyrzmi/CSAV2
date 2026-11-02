@@ -164,6 +164,18 @@ def test_inbox_list_indexes_exist(migrated_dsn: str) -> None:
 
 
 @requires_docker
+def test_orders_created_index_exists(migrated_dsn: str) -> None:
+    # 0503: the business order list and counts filter by client_id and a created_at window.
+    with psycopg.connect(migrated_dsn, autocommit=True) as conn:
+        defs = dict(
+            conn.execute(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'"
+            ).fetchall()
+        )
+    assert "(client_id, created_at)" in defs["orders_client_created_idx"]
+
+
+@requires_docker
 def test_console_last_change_is_a_pinned_definer_function(migrated_dsn: str) -> None:
     # 0502: csa_app reads the newest audit row per target only through this function.
     with psycopg.connect(migrated_dsn, autocommit=True) as conn:
