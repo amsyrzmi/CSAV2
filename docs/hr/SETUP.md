@@ -121,7 +121,9 @@ history entry are kept.
 - **Storage.** Files live under `HR_UPLOAD_ROOT/<client id>/` with a generated name, on a volume
   that only the gateway mounts (`staging-hr-uploads` in `deploy/compose.staging-pipeline.yml`,
   mounted at `/var/lib/csa/hr-uploads`). Leave `HR_UPLOAD_ROOT` unset and the document routes answer
-  503 `hr_documents_unavailable`. Include the volume in backups: the database holds only the record.
+  503 `hr_documents_unavailable`. It must not be, contain or sit inside `KB_UPLOAD_ROOT`; settings
+  refuse that at startup, since each side's cleanup would delete the other's files. Include the
+  volume in backups: the database holds only the record.
 - **Not covered.** Files are **not scanned for viruses** and are **not encrypted on disk**; the
   volume and its backups need the access control and disk encryption of the host. The document
   list, download and History show the file name, so names should not carry identity numbers.
