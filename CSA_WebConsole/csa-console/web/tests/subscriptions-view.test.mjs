@@ -17,7 +17,7 @@ const subsSource = await readFile(new URL("../lib/subscriptions-api.ts", import.
 const subsUrl = moduleUrl(subsSource.replace('"./api"', JSON.stringify(apiUrl)));
 const viewSource = await readFile(new URL("../lib/subscriptions-view.ts", import.meta.url), "utf8");
 const {
-  summaryCounts, isEndingSoon, formatInTenantZone, customerChipOptions, filterCustomers, reviewSentence,
+  summaryCounts, isEndingSoon, formatInTenantZone, validTimeZone, customerChipOptions, filterCustomers, reviewSentence,
 } = await import(moduleUrl(viewSource.replace('"@/lib/subscriptions-api"', JSON.stringify(subsUrl))));
 
 const NOW = new Date("2026-11-02T02:00:00Z");
@@ -39,8 +39,8 @@ const request = () => ({ id: `r${++counter}` });
 test("summaryCounts exact, plus-suffix and null", () => {
   const customers = [
     sub(),
-    sub({ renews_at: at(10) }),
-    sub({ status: "paused", renews_at: at(10) }),
+    sub({ cancel_at_period_end: true }),
+    sub({ status: "paused", cancel_at_period_end: true }),
     sub({ status: "cancelled", renews_at: null }),
   ];
   const requests = [request(), request()];
@@ -66,20 +66,17 @@ test("summaryCounts exact, plus-suffix and null", () => {
   assert.equal(summaryCounts(undefined, undefined, false, false, NOW), null);
 });
 
-test("endingSoon window", () => {
-  const soon = (overrides) => isEndingSoon(sub(overrides), NOW);
-  assert.equal(soon({ renews_at: at(30) }), true, "exactly 30 days is inside");
-  assert.equal(soon({ renews_at: at(30.01) }), false, "just past 30 days is outside");
-  assert.equal(soon({ renews_at: at(0.5) }), true);
-  assert.equal(soon({ renews_at: at(-2) }), true, "a renewal that is due now counts");
-  // Flagged to cancel at the period end counts however far the end is.
-  assert.equal(soon({ renews_at: at(200), cancel_at_period_end: true }), true);
-  // Only active customers: paused and cancelled never count.
-  assert.equal(soon({ status: "paused", renews_at: at(5) }), false);
-  assert.equal(soon({ status: "cancelled", renews_at: at(5), cancel_at_period_end: true }), false);
-  // No period end at all and no flag: not ending.
+test("endingSoon means set to cancel at the end of the period", () => {
+  const soon = (overrides) => isEndingSoon(sub(overrides));
+  assert.equal(soon({ cancel_at_period_end: true }), true);
+  assert.equal(soon({ cancel_at_period_end: true, renews_at: at(200) }), true, "however far the end is");
+  // A renewal coming up is not an ending, near or far.
+  assert.equal(soon({ renews_at: at(1) }), false);
+  assert.equal(soon({ renews_at: at(-2) }), false);
   assert.equal(soon({ renews_at: null }), false);
-  assert.equal(soon({ renews_at: "not a date" }), false);
+  // Only active customers: paused and cancelled never count.
+  assert.equal(soon({ status: "paused", cancel_at_period_end: true }), false);
+  assert.equal(soon({ status: "cancelled", cancel_at_period_end: true }), false);
 });
 
 test("formatInTenantZone Asia/Kuala_Lumpur vs UTC", () => {
@@ -90,6 +87,14 @@ test("formatInTenantZone Asia/Kuala_Lumpur vs UTC", () => {
   // Unknown zone: the browser's zone (pinned to Kuala Lumpur above).
   assert.equal(formatInTenantZone(iso, null), "28 Nov 2026, 02:00");
   assert.equal(formatInTenantZone("nonsense", "UTC"), "—");
+  // An empty or invalid zone must not throw (it would blank the drawer): the browser's zone.
+  assert.equal(formatInTenantZone(iso, ""), "28 Nov 2026, 02:00");
+  assert.equal(formatInTenantZone(iso, "   "), "28 Nov 2026, 02:00");
+  assert.equal(formatInTenantZone(iso, "Mars/Base"), "28 Nov 2026, 02:00");
+  assert.equal(validTimeZone("Asia/Kuala_Lumpur"), "Asia/Kuala_Lumpur");
+  assert.equal(validTimeZone("Mars/Base"), null);
+  assert.equal(validTimeZone(""), null);
+  assert.equal(validTimeZone(undefined), null);
 });
 
 test("customer chips count only a complete list and filter the loaded rows", () => {
@@ -100,17 +105,17 @@ test("customer chips count only a complete list and filter the loaded rows", () 
     sub({ status: "cancelled", renews_at: null }),
     sub({ cancel_at_period_end: true }),
   ];
-  const whole = customerChipOptions(rows, false, NOW);
+  const whole = customerChipOptions(rows, false);
   assert.deepEqual(whole.map((o) => [o.value, o.label, o.count]), [
     ["all", "All", 5], ["active", "Active", 3], ["paused", "Paused", 1],
-    ["cancelled", "Cancelled", 1], ["ending", "Ending soon", 2],
+    ["cancelled", "Cancelled", 1], ["ending", "Ending soon", 1],
   ]);
   // A paged list: the figures would only describe the loaded page, so none are drawn.
-  assert.ok(customerChipOptions(rows, true, NOW).every((o) => o.count === null));
-  assert.equal(filterCustomers(rows, "all", NOW).length, 5);
-  assert.deepEqual(filterCustomers(rows, "paused", NOW).map((r) => r.status), ["paused"]);
-  assert.equal(filterCustomers(rows, "active", NOW).length, 3);
-  assert.equal(filterCustomers(rows, "ending", NOW).length, 2);
+  assert.ok(customerChipOptions(rows, true).every((o) => o.count === null));
+  assert.equal(filterCustomers(rows, "all").length, 5);
+  assert.deepEqual(filterCustomers(rows, "paused").map((r) => r.status), ["paused"]);
+  assert.equal(filterCustomers(rows, "active").length, 3);
+  assert.equal(filterCustomers(rows, "ending").length, 1);
 });
 
 test("reviewSentence says the change in plain words", () => {

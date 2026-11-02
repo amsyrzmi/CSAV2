@@ -13,22 +13,11 @@ import {
   type SubscriptionOut,
 } from "@/lib/subscriptions-api";
 
-const DAY_MS = 86_400_000;
-/** "Ending soon" looks this many days ahead. */
-export const ENDING_SOON_DAYS = 30;
+type EndingFields = Pick<SubscriptionOut, "status" | "cancel_at_period_end">;
 
-type EndingFields = Pick<SubscriptionOut, "status" | "renews_at" | "cancel_at_period_end">;
-
-/**
- * An active customer who is set to cancel at the period end, or whose period ends within 30
- * days. A renewal that is already due counts. Paused and cancelled customers never do.
- */
-export function isEndingSoon(row: EndingFields, now: Date): boolean {
-  if (row.status !== "active") return false;
-  if (row.cancel_at_period_end) return true;
-  if (!row.renews_at) return false;
-  const end = Date.parse(row.renews_at);
-  return Number.isFinite(end) && end - now.getTime() <= ENDING_SOON_DAYS * DAY_MS;
+/** An active customer who is set to cancel at the end of the period. Paused and cancelled never are. */
+export function isEndingSoon(row: EndingFields): boolean {
+  return row.status === "active" && row.cancel_at_period_end;
 }
 
 export interface SummaryCounts {
@@ -43,24 +32,37 @@ export interface SummaryCounts {
  * drawn as zero.
  */
 export function summaryCounts(
-  customers: Pick<SubscriptionOut, "status" | "renews_at" | "cancel_at_period_end">[] | null | undefined,
+  customers: EndingFields[] | null | undefined,
   requests: Pick<RequestOut, "id">[] | null | undefined,
   hasMoreCustomers: boolean,
   hasMoreRequests: boolean,
-  now: Date,
+  // Kept for the agreed signature: "ending soon" no longer depends on the date.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _now: Date,
 ): SummaryCounts | null {
   if (!customers || !requests) return null;
   const text = (count: number, more: boolean) => `${count}${more ? "+" : ""}`;
   return {
     active: text(customers.filter((row) => row.status === "active").length, hasMoreCustomers),
-    endingSoon: text(customers.filter((row) => isEndingSoon(row, now)).length, hasMoreCustomers),
+    endingSoon: text(customers.filter((row) => isEndingSoon(row)).length, hasMoreCustomers),
     requestsWaiting: text(requests.length, hasMoreRequests),
   };
 }
 
-/** "27 Oct 2026, 09:15" in the company's zone; the browser's zone while that is unknown. */
+/** The zone if the browser knows it; null for an empty, unknown or malformed name. */
+export function validTimeZone(zone: string | null | undefined): string | null {
+  if (!zone || !zone.trim()) return null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone;
+  } catch {
+    return null;
+  }
+}
+
+/** "27 Oct 2026, 09:15" in the company's zone; the browser's zone while that is unknown or invalid. */
 export function formatInTenantZone(iso: string, timeZone: string | null): string {
-  return formatDateTime(iso, timeZone ?? undefined);
+  return formatDateTime(iso, validTimeZone(timeZone) ?? undefined);
 }
 
 // ---- Customer chips (client side, over the rows that were loaded) ----
@@ -76,19 +78,19 @@ const VIEWS: { value: CustomerView; label: string }[] = [
 ];
 
 /** Whether one loaded row belongs to a chip. */
-export function inView(row: EndingFields, view: CustomerView, now: Date): boolean {
+export function inView(row: EndingFields, view: CustomerView): boolean {
   switch (view) {
     case "all":
       return true;
     case "ending":
-      return isEndingSoon(row, now);
+      return isEndingSoon(row);
     default:
       return row.status === view;
   }
 }
 
-export function filterCustomers<T extends EndingFields>(rows: T[], view: CustomerView, now: Date): T[] {
-  return view === "all" ? rows : rows.filter((row) => inView(row, view, now));
+export function filterCustomers<T extends EndingFields>(rows: T[], view: CustomerView): T[] {
+  return view === "all" ? rows : rows.filter((row) => inView(row, view));
 }
 
 /**
@@ -98,12 +100,11 @@ export function filterCustomers<T extends EndingFields>(rows: T[], view: Custome
 export function customerChipOptions(
   rows: EndingFields[],
   paged: boolean,
-  now: Date,
 ): { value: CustomerView; label: string; count: number | null }[] {
   return VIEWS.map(({ value, label }) => ({
     value,
     label,
-    count: paged ? null : rows.filter((row) => inView(row, value, now)).length,
+    count: paged ? null : rows.filter((row) => inView(row, value)).length,
   }));
 }
 

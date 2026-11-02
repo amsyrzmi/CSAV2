@@ -714,18 +714,21 @@ def names(page: Page) -> Any:
 
 async def test_summary_row_shows_and_hides_on_failure(site: Site) -> None:
     async def body(browser: Any) -> None:
-        # Four active customers, three of them ending soon (two renew within 30 days, one is set
-        # to cancel), two requests waiting.
+        # Four active customers, one of them ending soon (Gita is set to cancel at the end of the
+        # period; renewals coming up do not count), two requests waiting.
         world = RichWorld(site.upstream)
         async with subs_page(browser, site, world) as page:
             summary = page.get_by_test_id("subscriptions-summary")
             await expect(summary).to_be_visible(timeout=WAIT)
             await expect(page.get_by_test_id("summary-active-value")).to_have_text("4")
-            await expect(page.get_by_test_id("summary-ending-value")).to_have_text("3")
+            await expect(page.get_by_test_id("summary-ending-value")).to_have_text("1")
             await expect(page.get_by_test_id("summary-requests-value")).to_have_text("2")
             await expect(summary).to_contain_text("Customers active")
             await expect(summary).to_contain_text("Ending soon")
             await expect(summary).to_contain_text("Requests waiting")
+            await expect(page.get_by_test_id("subscriptions-summary-note")).to_contain_text(
+                "Ending soon means set to cancel at the end of the period."
+            )
             # The row stays above every tab.
             await page.get_by_test_id("subscriptions-tab-plans").click()
             await expect(summary).to_be_visible()
@@ -757,11 +760,11 @@ async def test_summary_row_shows_and_hides_on_failure(site: Site) -> None:
 
 async def test_summary_row_adds_a_plus_where_a_further_page_exists(site: Site) -> None:
     async def body(browser: Any) -> None:
-        # Three customers per page: Aisyah, Ben and Dewi are active, two of them ending soon.
-        world = RichWorld(site.upstream, page_limit=3)
+        # Five customers per page: four are active (Aisyah, Ben, Dewi, Gita), one is ending soon.
+        world = RichWorld(site.upstream, page_limit=5)
         async with subs_page(browser, site, world) as page:
-            await expect(page.get_by_test_id("summary-active-value")).to_have_text("3+")
-            await expect(page.get_by_test_id("summary-ending-value")).to_have_text("2+")
+            await expect(page.get_by_test_id("summary-active-value")).to_have_text("4+")
+            await expect(page.get_by_test_id("summary-ending-value")).to_have_text("1+")
             # The requests list has no further page, so its figure is exact.
             await expect(page.get_by_test_id("summary-requests-value")).to_have_text("2")
             await expect(page.get_by_test_id("subscriptions-summary-note")).to_contain_text(
@@ -785,7 +788,7 @@ async def test_customer_chips_filter(site: Site) -> None:
                 "active": "Active (4)",
                 "paused": "Paused (1)",
                 "cancelled": "Cancelled (1)",
-                "ending": "Ending soon (3)",
+                "ending": "Ending soon (1)",
             }
             for key, text in labels.items():
                 await expect(page.get_by_test_id(f"customers-view-{key}")).to_have_text(text)
@@ -805,7 +808,7 @@ async def test_customer_chips_filter(site: Site) -> None:
                 "aria-pressed", "false"
             )
             await page.get_by_test_id("customers-view-ending").click()
-            await expect(rows).to_have_count(3)
+            await expect(rows).to_have_count(1)
             await expect(rows.filter(has_text="Gita Nair")).to_have_count(1)
             await expect(rows.filter(has_text="Dewi Lim")).to_have_count(0)
             await page.get_by_test_id("customers-view-cancelled").click()
@@ -832,22 +835,24 @@ async def test_customer_chips_filter(site: Site) -> None:
 
 async def test_customer_chips_say_when_they_cover_only_the_loaded_page(site: Site) -> None:
     async def body(browser: Any) -> None:
-        world = RichWorld(site.upstream, page_limit=3)
+        world = RichWorld(site.upstream, page_limit=5)
         async with subs_page(browser, site, world) as page:
             rows = page.get_by_test_id("subscription-row")
-            await expect(rows).to_have_count(3)
+            await expect(rows).to_have_count(5)
             note = page.get_by_test_id("customers-view-note")
             await expect(note).to_contain_text("only the customers loaded so far")
             # Figures over a partial page would mislead, so the chips carry none.
             await expect(page.get_by_test_id("customers-view-active")).to_have_text("Active")
             await page.get_by_test_id("customers-view-ending").click()
-            await expect(rows).to_have_count(2)
+            await expect(rows).to_have_count(1)
             await page.get_by_role("button", name="Show more customers").click()
             await expect(note).to_have_count(0)
             await expect(page.get_by_test_id("customers-view-ending")).to_have_text(
-                "Ending soon (3)"
+                "Ending soon (1)"
             )
-            await expect(rows).to_have_count(3)
+            await expect(rows).to_have_count(1)
+            await page.get_by_test_id("customers-view-all").click()
+            await expect(rows).to_have_count(6)
 
     await with_browser(body)
 
@@ -1017,6 +1022,59 @@ async def test_drawer_is_sectioned_into_who_plan_price_and_when(site: Site) -> N
     await with_browser(body)
 
 
+async def test_phone_filters_fold_under_more_filters(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world, width=390, height=844) as page:
+            rows = page.get_by_test_id("subscription-row")
+            await expect(rows).to_have_count(6)
+            await expect(page.get_by_test_id("subscriptions-summary")).to_be_visible()
+            # Search and its button stay in view; the two selects fold away but stay in the DOM.
+            await expect(page.get_by_test_id("subscriptions-search")).to_be_visible()
+            await expect(page.get_by_test_id("subscriptions-search-submit")).to_be_visible()
+            await expect(page.get_by_test_id("customers-view-all")).to_be_visible()
+            filters = page.get_by_test_id("customers-filters")
+            await expect(filters).to_contain_text("More filters")
+            await expect(page.get_by_test_id("customers-filters-active")).to_have_count(0)
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_hidden()
+            await expect(page.get_by_test_id("subscriptions-plan")).to_be_hidden()
+            assert await page.get_by_test_id("subscriptions-status").count() == 1
+            # Folding the selects and scrolling the chips keeps the list close: the chips are one
+            # row and the first customer starts within about 220 px of the search button.
+            chips = await page.get_by_test_id("customers-view").bounding_box()
+            search = await page.get_by_test_id("subscriptions-search-submit").bounding_box()
+            first = await rows.first.bounding_box()
+            assert chips and search and first
+            assert chips["height"] <= 56, chips
+            assert first["y"] - (search["y"] + search["height"]) <= 220, (search, first)
+            # Open the fold, choose, close it: the words beside the arrow say what is chosen.
+            await page.get_by_test_id("customers-filters-toggle").click()
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_visible()
+            await expect(page.get_by_test_id("help-status-filter")).to_contain_text(
+                "Status filters the whole list; the chips below only narrow what is loaded."
+            )
+            await page.get_by_test_id("subscriptions-status").select_option("paused")
+            await page.get_by_test_id("subscriptions-plan").select_option("pro")
+            await expect(rows).to_have_count(1)
+            await page.get_by_test_id("customers-filters-toggle").click()
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_hidden()
+            hint = page.get_by_test_id("customers-filters-active")
+            await expect(hint).to_be_visible()
+            await expect(hint).to_have_text(" · Status: Paused · Plan: Pro")
+            await expect(rows.first).to_contain_text("Farid Hassan")
+            reads = customer_reads(world)
+            assert reads[-1]["params"] == {"status": "paused", "plan": "pro"}, reads[-1]
+
+        # From sm up nothing is folded: the selects and the help line are always there.
+        async with subs_page(browser, site, world, width=1024) as page:
+            await expect(page.get_by_test_id("customers-filters")).to_have_count(0)
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_visible()
+            await expect(page.get_by_test_id("subscriptions-plan")).to_be_visible()
+            await expect(page.get_by_test_id("help-status-filter")).to_be_visible()
+
+    await with_browser(body)
+
+
 async def test_empty_states_keep_their_sentence_and_offer_one_next_action(site: Site) -> None:
     async def body(browser: Any) -> None:
         # No customers yet, plans exist: the old sentence stays and a button starts the first one.
@@ -1147,7 +1205,12 @@ async def test_subscriptions_at_five_widths_in_three_themes(site: Site, theme: s
                 outside = await page.evaluate(
                     """() => [...document.querySelectorAll(
                         '[data-testid^="summary-"], [data-testid^="customers-view-"]')]
-                        .filter(e => e.getBoundingClientRect().right > window.innerWidth + 0.5)
+                        .filter(e => {
+                            const row = e.parentElement;
+                            const scrolls = row && getComputedStyle(row).overflowX === 'auto';
+                            const right = e.getBoundingClientRect().right;
+                            return !scrolls && right > window.innerWidth + 0.5;
+                        })
                         .map(e => e.dataset.testid)"""
                 )
                 assert not outside, (theme, width, outside)

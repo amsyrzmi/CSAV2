@@ -42,9 +42,11 @@ import {
   formatInTenantZone,
   reviewSentence,
   summaryCounts,
+  validTimeZone,
   type CustomerView,
   type SummaryCounts,
 } from "@/lib/subscriptions-view";
+import { useMediaQuery } from "./inbox/hooks";
 import { DetailsRow, StatusChips } from "./kit";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
@@ -167,7 +169,7 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
     let live = true;
     // Without it dates fall back to the browser's zone.
     getSettings(tenantId)
-      .then((settings) => { if (live) setTimeZone(settings.timezone); })
+      .then((settings) => { if (live) setTimeZone(validTimeZone(settings.timezone) ?? undefined); })
       .catch(() => {});
     return () => { live = false; };
   }, [tenantId]);
@@ -214,7 +216,7 @@ function SummaryRow({ summary }: { summary: SummaryCounts }) {
       <ul className="grid grid-cols-3 gap-2 sm:gap-3">
         {tiles.map((tile) => (
           <li key={tile.id} data-testid={`summary-${tile.id}`}
-            className="min-w-0 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-3 py-2.5">
+            className="min-w-0 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-3 py-2 sm:py-2.5">
             <p data-testid={`summary-${tile.id}-value`}
               className="font-(family-name:--fs-font-heading) text-xl font-semibold sm:text-2xl">{tile.value}</p>
             <p data-testid={`summary-${tile.id}-label`} className="text-xs text-ink-600 sm:text-sm">{tile.label}</p>
@@ -222,7 +224,7 @@ function SummaryRow({ summary }: { summary: SummaryCounts }) {
         ))}
       </ul>
       <p data-testid="subscriptions-summary-note" className="mt-2 text-xs text-ink-600">
-        Ending soon means set to cancel, or the period ends within 30 days.
+        Ending soon means set to cancel at the end of the period.
         {partial ? " A plus sign means more are on the next page." : ""}
       </p>
     </section>
@@ -250,12 +252,11 @@ function Customers({ tenantId, writer, plans, planName, onOpenPlans, onDataChang
   const [notice, setNotice] = useState("");
   // The quick view narrows the rows already loaded; it never asks the server again.
   const [view, setView] = useState<CustomerView>("all");
-  const [loadedAt, setLoadedAt] = useState(() => new Date());
   useEffect(() => {
     let live = true;
     searchSubscriptions(tenantId, filters)
       .then((page) => {
-        if (live) { setRows(page.items); setNext(page.next_cursor); setError(""); setLoadedAt(new Date()); }
+        if (live) { setRows(page.items); setNext(page.next_cursor); setError(""); }
       })
       .catch((cause) => { if (live) setError(message(cause)); });
     return () => { live = false; };
@@ -271,8 +272,42 @@ function Customers({ tenantId, writer, plans, planName, onOpenPlans, onDataChang
     }
   }
   const filtered = Boolean(filters.q || filters.status || filters.plan);
-  const shown = rows ? filterCustomers(rows, view, loadedAt) : null;
+  const shown = rows ? filterCustomers(rows, view) : null;
   const hasActivePlan = plans.some((plan) => plan.is_active);
+  // Below `sm` the Status and Plan selects live under a closed "More filters" row.
+  const phone = useMediaQuery("(max-width: 639.98px)");
+  const statusHelpId = useId();
+  const activeHint = [
+    filters.status && `Status: ${STATUS_LABELS[filters.status]}`,
+    filters.plan && `Plan: ${plans.find((plan) => plan.code === filters.plan)?.name ?? filters.plan}`,
+  ].filter(Boolean).map((text) => ` · ${text}`).join("");
+  const statusField = (
+    <div>
+      <label className="mb-1 block text-sm font-medium" htmlFor="subscriptions-status">Status</label>
+      <select id="subscriptions-status" data-testid="subscriptions-status" className={field} value={filters.status}
+        aria-describedby={statusHelpId}
+        onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as Filters["status"] }))}>
+        <option value="">All statuses</option>
+        {(Object.keys(STATUS_LABELS) as SubscriptionStatus[]).map((status) =>
+          <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}
+      </select>
+    </div>
+  );
+  const planField = (
+    <div>
+      <label className="mb-1 block text-sm font-medium" htmlFor="subscriptions-plan">Plan</label>
+      <select id="subscriptions-plan" data-testid="subscriptions-plan" className={field} value={filters.plan}
+        onChange={(event) => setFilters((current) => ({ ...current, plan: event.target.value }))}>
+        <option value="">All plans</option>
+        {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
+      </select>
+    </div>
+  );
+  const statusHelp = (
+    <p id={statusHelpId} data-testid="help-status-filter" className="text-xs text-ink-600">
+      Status filters the whole list; the chips below only narrow what is loaded.
+    </p>
+  );
   function clearFilters() {
     setDraft("");
     setView("all");
@@ -303,30 +338,31 @@ function Customers({ tenantId, writer, plans, planName, onOpenPlans, onDataChang
             <button className={action} data-testid="subscriptions-search-submit">Search</button>
           </div>
         </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium" htmlFor="subscriptions-status">Status</label>
-          <select id="subscriptions-status" data-testid="subscriptions-status" className={field} value={filters.status}
-            onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as Filters["status"] }))}>
-            <option value="">All statuses</option>
-            {(Object.keys(STATUS_LABELS) as SubscriptionStatus[]).map((status) =>
-              <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium" htmlFor="subscriptions-plan">Plan</label>
-          <select id="subscriptions-plan" data-testid="subscriptions-plan" className={field} value={filters.plan}
-            onChange={(event) => setFilters((current) => ({ ...current, plan: event.target.value }))}>
-            <option value="">All plans</option>
-            {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
-          </select>
-        </div>
+        {phone ? (
+          // On a phone the two selects fold away; the words beside the arrow say what is chosen.
+          <div className="min-w-0">
+            <DetailsRow testId="customers-filters" toggleLabel={`more filters${activeHint}`}
+              summary={(
+                <span className="text-sm font-medium">More filters
+                  {activeHint && <span data-testid="customers-filters-active" className="font-normal text-ink-600">{activeHint}</span>}
+                </span>
+              )}>
+              <div className="space-y-3">{statusField}{planField}{statusHelp}</div>
+            </DetailsRow>
+          </div>
+        ) : (
+          <>{statusField}{planField}<div className="sm:col-span-2 xl:col-span-3">{statusHelp}</div></>
+        )}
       </form>
       {rows && rows.length > 0 && (
         <div className="mb-4">
           <p className="mb-1 text-sm font-medium">Show</p>
-          <StatusChips<CustomerView> mode="single" testId="customers-view" ariaLabel="Show customers"
-            options={customerChipOptions(rows, next !== null, loadedAt)} value={view}
-            onChange={(picked) => setView(picked as CustomerView)} />
+          {/* One scrolling row on phones (a part of the next chip shows as the hint), wrapping from 640 px. */}
+          <div className="min-w-0 max-sm:[&>[role=group]]:flex-nowrap max-sm:[&>[role=group]]:overflow-x-auto max-sm:[&>[role=group]]:overscroll-x-contain max-sm:[&>[role=group]]:py-1 max-sm:[&>[role=group]>button]:shrink-0">
+            <StatusChips<CustomerView> mode="single" testId="customers-view" ariaLabel="Show customers"
+              options={customerChipOptions(rows, next !== null)} value={view}
+              onChange={(picked) => setView(picked as CustomerView)} />
+          </div>
           {next && (
             <p data-testid="customers-view-note" className="mt-2 text-xs text-ink-600">
               These choices narrow only the customers loaded so far. Use Search, or show more customers, to look further.
