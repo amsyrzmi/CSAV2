@@ -32,6 +32,11 @@ test("the new password must differ from the current one", () => {
   assert.equal(checkRules("another-old-one", TWELVE, TWELVE).different, true);
 });
 
+test("an empty current password is not something to differ from", () => {
+  assert.equal(checkRules("", TWELVE, TWELVE).different, false);
+  assert.equal(rulesPass(checkRules("", TWELVE, TWELVE)), false);
+});
+
 test("a blank confirmation never matches, an equal one does", () => {
   assert.equal(checkRules("old", TWELVE, "").match, false);
   assert.equal(checkRules("old", TWELVE, TWELVE + "x").match, false);

@@ -520,6 +520,12 @@ async def test_save_disabled_until_rules_pass(console: Console) -> None:
         await expect(submit).to_be_disabled()
         await fill_form(page, CURRENT, CURRENT, CURRENT)
         await expect(submit).to_be_disabled()
+        await fill_form(page, "", NEW, NEW)
+        await expect(submit).to_be_disabled()
+        await expect(page.get_by_test_id("password-rule-different")).to_have_attribute(
+            "data-state", "unmet"
+        )
+        await expect(page.get_by_test_id("password-save-hint")).to_contain_text("current password")
         await fill_form(page, CURRENT, NEW, NEW)
         await expect(submit).to_be_enabled()
         await page.get_by_test_id("password-confirm").fill(NEW + "x")
@@ -569,5 +575,54 @@ async def test_success_panel_mentions_other_devices(console: Console) -> None:
         await expect(note).to_contain_text("other devices")
         await expect(note).to_contain_text("sign in again")
         await expect(page.get_by_test_id("password-submit")).to_be_disabled()
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_revealed_field_is_not_spell_checked(console: Console) -> None:
+    playwright, browser, page, _ = await open_page(console, "/portal/password")
+    try:
+        await page.get_by_role("button", name="Show new password", exact=True).click()
+        field = page.get_by_test_id("password-new")
+        await expect(field).to_have_attribute("type", "text")
+        await expect(field).to_have_attribute("spellcheck", "false")
+        await expect(field).to_have_attribute("autocapitalize", "none")
+        await expect(field).to_have_attribute("autocorrect", "off")
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_reveal_resets_after_saving(console: Console) -> None:
+    playwright, browser, page, _ = await open_page(console, "/portal/password")
+    try:
+        await fill_form(page, CURRENT, NEW, NEW)
+        for name in ("current password", "new password", "confirmation"):
+            await page.get_by_role("button", name=f"Show {name}", exact=True).click()
+        await expect(page.get_by_test_id("password-new")).to_have_attribute("type", "text")
+        await page.get_by_test_id("password-submit").click()
+        await expect(page.get_by_test_id("password-success")).to_be_visible()
+        for test_id in ("password-current", "password-new", "password-confirm"):
+            await expect(page.get_by_test_id(test_id)).to_have_attribute("type", "password")
+        for name in ("current password", "new password", "confirmation"):
+            await expect(
+                page.get_by_role("button", name=f"Show {name}", exact=True)
+            ).to_have_attribute("aria-pressed", "false")
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_checks_stay_away_after_saving_until_the_next_edit(console: Console) -> None:
+    playwright, browser, page, _ = await open_page(console, "/portal/password")
+    try:
+        await fill_form(page, CURRENT, NEW, NEW)
+        await page.get_by_test_id("password-submit").click()
+        await expect(page.get_by_test_id("password-success-note")).to_be_visible()
+        # The fields are empty, but an all-unmet list under "saved" would read like a failure.
+        await expect(page.get_by_test_id("password-checklist")).to_have_count(0)
+        await expect(page.get_by_test_id("password-save-hint")).to_have_count(0)
+        await page.get_by_test_id("password-new").fill("a")
+        await expect(page.get_by_test_id("password-checklist")).to_be_visible()
+        await expect(page.get_by_test_id("password-save-hint")).to_be_visible()
+        await expect(page.get_by_test_id("password-success-note")).to_have_count(0)
     finally:
         await close_page(playwright, browser)

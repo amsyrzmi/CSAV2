@@ -20,7 +20,15 @@ export function PasswordField({ fieldName, ...props }: Props) {
   const Icon = shown ? EyeOff : Eye;
   return (
     <div className="relative">
-      <input {...props} type={shown ? "text" : "password"} className={`${field} pr-12`} />
+      <input
+        {...props}
+        type={shown ? "text" : "password"}
+        // A revealed password must not be spell-checked, capitalised or sent to a vendor.
+        spellCheck={false}
+        autoCapitalize="none"
+        autoCorrect="off"
+        className={`${field} pr-12`}
+      />
       <button
         type="button"
         aria-label={`Show ${fieldName}`}

@@ -25,7 +25,15 @@ export function PasswordPanel({ email }: { email: string }) {
   // State lags a render behind a second click in the same task; a ref does not.
   const sending = useRef(false);
   const rules = checkRules(current, password, confirmation);
-  const ready = rulesPass(rules);
+  const ready = current !== "" && rulesPass(rules);
+  // Bumping this on submit remounts the three fields, which hides any revealed password.
+  const [round, setRound] = useState(0);
+
+  /** The first edit after a save brings the checks back and clears the saved notice. */
+  function edit(set: (value: string) => void, value: string) {
+    setDone(false);
+    set(value);
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -37,6 +45,7 @@ export function PasswordPanel({ email }: { email: string }) {
       return;
     }
     sending.current = true;
+    setRound((value) => value + 1);
     setBusy(true);
     try {
       await identity.changePassword(current, password);
@@ -76,11 +85,12 @@ export function PasswordPanel({ email }: { email: string }) {
             <PasswordField
               fieldName="current password"
               id="password-current"
+              key={`current-${round}`}
               data-testid="password-current"
               autoComplete="current-password"
               required
               value={current}
-              onChange={(e) => setCurrent(e.target.value)}
+              onChange={(e) => edit(setCurrent, e.target.value)}
             />
           </div>
           <div>
@@ -90,17 +100,18 @@ export function PasswordPanel({ email }: { email: string }) {
             <PasswordField
               fieldName="new password"
               id="password-new"
+              key={`new-${round}`}
               data-testid="password-new"
               autoComplete="new-password"
               minLength={12}
               maxLength={1024}
               required
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => edit(setPassword, e.target.value)}
             />
             <p className="mt-2 text-xs text-ink-500">At least 12 characters.</p>
             <StrengthHint password={password} />
-            <RuleChecklist rules={rules} typed={password !== "" || confirmation !== ""} />
+            {!done && <RuleChecklist rules={rules} typed={password !== "" || confirmation !== ""} />}
           </div>
           <div>
             <label htmlFor="password-confirm" className="mb-2 block text-sm">
@@ -109,13 +120,14 @@ export function PasswordPanel({ email }: { email: string }) {
             <PasswordField
               fieldName="confirmation"
               id="password-confirm"
+              key={`confirm-${round}`}
               data-testid="password-confirm"
               autoComplete="new-password"
               minLength={12}
               maxLength={1024}
               required
               value={confirmation}
-              onChange={(e) => setConfirmation(e.target.value)}
+              onChange={(e) => edit(setConfirmation, e.target.value)}
             />
           </div>
           {error && (
@@ -134,14 +146,14 @@ export function PasswordPanel({ email }: { email: string }) {
           <button
             data-testid="password-submit"
             disabled={busy || !ready}
-            aria-describedby={ready ? undefined : "password-save-hint"}
+            aria-describedby={ready || done ? undefined : "password-save-hint"}
             className={action}
           >
             {busy ? "Saving…" : "Update password"}
           </button>
-          {!ready && (
-            <p id="password-save-hint" className="text-xs text-[color:var(--fs-text-secondary)]">
-              Update password turns on when all three checks are done.
+          {!ready && !done && (
+            <p id="password-save-hint" data-testid="password-save-hint" className="text-xs text-[color:var(--fs-text-secondary)]">
+              Update password turns on when your current password is filled in and all three checks are done.
             </p>
           )}
         </form>

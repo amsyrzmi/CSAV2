@@ -25,8 +25,8 @@ export const RULE_ORDER: ReadonlyArray<keyof PasswordRules> = ["length", "differ
 export function checkRules(current: string, password: string, confirmation: string): PasswordRules {
   return {
     length: password.length >= MIN_LENGTH,
-    // An empty new password is not "different"; there is nothing to compare yet.
-    different: password !== "" && password !== current,
+    // Nothing to compare until both are typed: an empty field is not "different".
+    different: current !== "" && password !== "" && password !== current,
     match: confirmation !== "" && password === confirmation,
   };
 }
