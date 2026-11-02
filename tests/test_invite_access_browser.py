@@ -147,7 +147,7 @@ class OwnerMoveWorld(InviteWorld):
         self.owner = OWNER
         self.moves: list[Any] = []
 
-    def person(self, user_id: str) -> dict[str, Any]:
+    def owner_out(self, user_id: str) -> dict[str, Any]:
         return {"user_id": user_id, "display_name": self.NAMES[user_id], "usable": True}
 
     def members(self) -> list[dict[str, Any]]:
@@ -190,7 +190,7 @@ class OwnerMoveWorld(InviteWorld):
         if path == "team" and method == "GET" and params.get("client_id") == TENANT:
             return 200, self.members()
         if path == "team/hr-owner" and params.get("client_id") == TENANT and method == "GET":
-            return 200, {"available": True, "owner": self.person(self.owner)}
+            return 200, {"available": True, "owner": self.owner_out(self.owner)}
         if path == "team/hr-owner" and method == "POST" and body["client_id"] == TENANT:
             if not self.moves:
                 self.unexpected.append(f"POST {path} with nothing scripted: {body}")
@@ -202,11 +202,11 @@ class OwnerMoveWorld(InviteWorld):
                 return 409, {"detail": move[1]}
             if isinstance(move, tuple) and move[0] == "repeat":
                 self.owner = move[1]
-                return 200, {"owner": self.person(self.owner), "mail": "repeat"}
+                return 200, {"owner": self.owner_out(self.owner), "mail": "repeat"}
             if body["expected_owner_id"] != self.owner:
                 return 409, {"detail": "owner_changed"}
             self.owner = body["new_owner_id"]
-            return 200, {"owner": self.person(self.owner), "mail": move}
+            return 200, {"owner": self.owner_out(self.owner), "mail": move}
         return super().answer(caller, method, path, params, body)
 
 

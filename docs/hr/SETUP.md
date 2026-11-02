@@ -55,9 +55,12 @@ gateway both depend on it.
   panel is hidden when the company has no HR package.
 - **Who can do it.** A tenant admin of the company or a platform admin. Holding the tenant admin
   role gives no HR data: they learn who the owner is and nothing else, until they choose themselves.
-- **Who can be chosen.** An enabled member who can write (not read only), who has changed their
-  first password, and who is not marked as leaving. The picker lists only those people. A
-  member who cannot be chosen is refused with a sentence that says what to change first.
+- **Who can be chosen.** The picker lists enabled members who are not read only and are not already
+  the owner. The server then also requires that the person has changed their first password and is
+  not marked as leaving. Someone still on their first password or marked as leaving can be picked
+  but is refused at Confirm, with a sentence that says what is wrong (“This person can't be the HR
+  owner yet. They need to sign in and change their password first.” or “This person is leaving, so
+  they can't be the HR owner. Choose someone else.”).
 - **Choosing yourself.** A tenant admin may make themselves the HR owner. The confirmation says so,
   and everyone affected is emailed.
 - **What happens.** It is immediate and needs no accept step from the new owner. The old owner
