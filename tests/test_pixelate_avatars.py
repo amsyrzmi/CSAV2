@@ -159,3 +159,28 @@ def test_roles_pick_the_outline_white_and_three_body_tones() -> None:
         assert not tones & {role["o"], role["w"]}, agent
         assert pa.lightness(palette[role["h"]]) >= pa.lightness(palette[role["m"]])
         assert pa.lightness(palette[role["m"]]) >= pa.lightness(palette[role["d"]])
+
+
+def test_hand_drawn_titles_are_the_ones_the_console_shows() -> None:
+    source = (pa.WEB / "lib" / "agent-avatars.ts").read_text(encoding="utf-8")
+    block = re.search(r"AGENT_TITLES[^=]*=\s*\{(.*?)\};", source, re.S)
+    assert block is not None
+    titles = dict(re.findall(r'(\w+):\s*"([^"]+)"', block.group(1)))
+    assert sorted(pa.AGENT_TITLE) == sorted(pa.HAND_DRAWN)
+    for agent, title in pa.AGENT_TITLE.items():
+        assert titles[agent] == title, (agent, titles.get(agent), title)
+
+
+def test_stale_hand_drawn_svgs_are_found_and_rewritten(tmp_path, monkeypatch) -> None:
+    web, guide = tmp_path / "web", tmp_path / "guide"
+    web.mkdir()
+    guide.mkdir()
+    monkeypatch.setattr(pa, "AVATARS", web)
+    monkeypatch.setattr(pa, "UI_GUIDE_AGENTS", guide)
+    assert [p.parent for p in pa.stale_hand_drawn_svgs()] == [web, guide]  # missing counts as stale
+    (web / "einvoicing.svg").write_text("<svg/>", encoding="utf-8")
+    written = pa.write_hand_drawn_svgs()
+    assert sorted(p.parent for p in written) == sorted([web, guide])
+    assert pa.stale_hand_drawn_svgs() == []
+    assert (guide / "einvoicing.svg").read_text(encoding="utf-8") == pa.hand_drawn_svg("einvoicing")
+    assert pa.write_hand_drawn_svgs() == []

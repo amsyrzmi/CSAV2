@@ -1,7 +1,8 @@
 """Convert the twelve agent avatars into pixel-art idle and working frames.
 
 Run ``python -m scripts.pixelate_avatars`` to rewrite ``lib/pixel-avatars-data.ts`` in the web
-console, or add ``--check`` to fail when the committed file differs from a fresh generation.
+console (and the two committed SVG copies of each hand-drawn avatar), or add ``--check`` to fail
+when the committed files differ from a fresh generation.
 
 Eleven avatars come from vector art. The twelfth (``einvoicing``) is drawn cell by cell in
 ``scripts/hand_drawn_avatars.py``; it skips steps 1 and 2 (no browser), then joins the pipeline.
@@ -164,6 +165,30 @@ def hand_drawn_svg(agent: str) -> str:
         f'shape-rendering="crispEdges" role="img" aria-labelledby="{agent}-t">'
         f'<title id="{agent}-t">{title}</title>{"".join(rects)}</svg>\n'
     )
+
+
+def hand_drawn_svg_paths(agent: str) -> list[Path]:
+    """Where the two committed copies of a hand-drawn agent's source SVG live."""
+    return [AVATARS / f"{agent}.svg", UI_GUIDE_AGENTS / f"{agent}.svg"]
+
+
+def stale_hand_drawn_svgs() -> list[Path]:
+    """The committed hand-drawn SVG copies that differ from what the grids generate."""
+    return [
+        path
+        for agent in HAND_DRAWN
+        for path in hand_drawn_svg_paths(agent)
+        if not path.exists() or path.read_text(encoding="utf-8") != hand_drawn_svg(agent)
+    ]
+
+
+def write_hand_drawn_svgs() -> list[Path]:
+    """Rewrite the stale hand-drawn SVG copies; returns the files written."""
+    stale = stale_hand_drawn_svgs()
+    for path in stale:
+        agent = path.stem
+        path.write_text(hand_drawn_svg(agent), encoding="utf-8")
+    return stale
 
 
 def rasterise(ids: list[str]) -> dict[str, dict[int, tuple[list[str], Grid]]]:
@@ -1218,6 +1243,11 @@ def main(argv: list[str] | None = None) -> int:
     text = generate()
     if args.check:
         current = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
+        stale = stale_hand_drawn_svgs()
+        if stale:
+            names = ", ".join(str(path.relative_to(ROOT)) for path in stale)
+            print(f"{names} out of date; run python -m scripts.pixelate_avatars", file=sys.stderr)
+            return 1
         if current != text:
             print(
                 f"{OUTPUT} is out of date; run python -m scripts.pixelate_avatars", file=sys.stderr
@@ -1227,6 +1257,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     OUTPUT.write_text(text, encoding="utf-8")
     print(f"wrote {OUTPUT} ({len(text.encode())} bytes)")
+    for path in write_hand_drawn_svgs():
+        print(f"wrote {path}")
     return 0
 
 

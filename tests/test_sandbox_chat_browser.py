@@ -76,6 +76,28 @@ export default function Harness() {
 """
 
 
+NO_BOX_JS = """(args) => {
+    const [selector, rootSelector] = args;
+    const root = document.querySelector(rootSelector);
+    const found = [...root.querySelectorAll(selector)];
+    return found.map((el) => {
+        const chain = [];
+        for (let node = el; node && node !== root; node = node.parentElement) {
+            const s = getComputedStyle(node);
+            chain.push({
+                tag: node.tagName.toLowerCase() + (node.dataset.agent ? "[" + node.dataset.agent + "]" : ""),
+                background: s.backgroundColor + " " + s.backgroundImage,
+                radius: s.borderRadius,
+                border: s.borderTopWidth,
+                overflow: s.overflow,
+            });
+        }
+        return chain;
+    });
+}"""
+
+
+
 def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -296,6 +318,15 @@ async def test_empty_state_shows_prompt_chips_and_the_honesty_line(server: str) 
         await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY)
         await expect(page.get_by_label("Your question", exact=False)).to_be_enabled()
         await expect(page.get_by_role("button", name="New chat")).to_be_enabled()
+        # The assistant is drawn straight onto the page: no tile, radius, border or clipping.
+        found = await page.evaluate(
+            NO_BOX_JS, ['[data-agent="assistant"]', '[data-testid="sandbox-scroll"]']
+        )
+        assert len(found) == 1 and len(found[0]) >= 2, found
+        for box in found[0][:2]:  # the sprite and the span around it
+            assert box["background"] == "rgba(0, 0, 0, 0) none", box
+            assert box["radius"] == "0px" and box["border"] == "0px", box
+            assert box["overflow"] == "visible", box
 
 
 def seeded_turn(number: int, status: str = "available", **extra: Any) -> dict[str, Any]:

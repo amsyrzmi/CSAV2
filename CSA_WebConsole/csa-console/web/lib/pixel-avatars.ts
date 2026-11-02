@@ -129,7 +129,9 @@ export function avatarPlan(state: AvatarState, motionAllowed: boolean, grid: Spr
 
 /**
  * The sticker outline: four crisp drop-shadows (right, left, down, up) of one sprite cell, in the
- * theme's `--fs-sprite-halo` (light on night, the sprites' own navy on cobalt and bureau). One cell is
+ * theme's `--fs-sprite-halo` (light on night, the sprites' own navy on cobalt and bureau). The
+ * shadows are chained, so each one is cast by the sprite plus the shadows before it and together
+ * they grow into a full outline, diagonals included, not four separate ticks. One cell is
  * `size / grid` px, so the outline is one sprite pixel wide at every size. Nothing in the dim
  * state (`undefined`): a dimmed avatar says "not active" and is quieter than a live one.
  */

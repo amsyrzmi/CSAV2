@@ -275,6 +275,38 @@ async def close_console(console: Console, playwright: Any, browser: Any) -> None
     await playwright.stop()
 
 
+NO_BOX_JS = """(args) => {
+    const [selector, rootSelector] = args;
+    const root = document.querySelector(rootSelector);
+    const found = [...root.querySelectorAll(selector)];
+    return found.map((el) => {
+        const chain = [];
+        for (let node = el; node && node !== root; node = node.parentElement) {
+            const s = getComputedStyle(node);
+            chain.push({
+                tag: node.tagName.toLowerCase() + (node.dataset.agent ? "[" + node.dataset.agent + "]" : ""),
+                background: s.backgroundColor + " " + s.backgroundImage,
+                radius: s.borderRadius,
+                border: s.borderTopWidth,
+                overflow: s.overflow,
+            });
+        }
+        return chain;
+    });
+}"""
+
+
+def assert_no_box(found: list[list[dict[str, str]]], expected: int) -> None:
+    """Every avatar and every wrapper up to its container is transparent, square and unclipped."""
+    assert len(found) == expected, found
+    for chain in found:
+        assert chain, found
+        for box in chain:
+            assert box["background"] == "rgba(0, 0, 0, 0) none", box
+            assert box["radius"] == "0px" and box["border"] == "0px", box
+            assert box["overflow"] == "visible", box
+
+
 async def open_loading(console: Console, **options: Any) -> tuple[Any, Any, Page]:
     """The loading screen on screen, full screen, held there by a slow identity answer."""
     playwright, browser, page = await open_console(
@@ -433,6 +465,11 @@ async def test_loading_screen_sprites_are_96_px_on_wide_screens(console: Console
             })"""
         )
         assert sizes == [[96.0, 96.0]] * 5, sizes
+        # Drawn straight onto the page: no tile, radius, border or clipping on the way up.
+        found = await page.evaluate(
+            NO_BOX_JS, ["[data-agent]", '[data-testid="loading-screen"]']
+        )
+        assert_no_box(found, 5)
         screen = await page.get_by_test_id("loading-screen").bounding_box()
         assert screen is not None and screen["height"] >= 900  # full screen centres in the viewport
     finally:

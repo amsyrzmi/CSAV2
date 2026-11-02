@@ -284,23 +284,25 @@ function edgeColours(data) {
   return colours;
 }
 
-/** Edge cells under 3:1 against some surface of the theme, counting the halo when asked. */
-function uncovered(theme, data, withHalo) {
-  const halo = tokenOf(theme, "--fs-sprite-halo");
+/**
+ * Edge cells under 3:1 against some surface of the theme, counting the halo when asked.
+ * With the halo counted, a cell is carried exactly when the halo TOKEN reaches 3:1 against every
+ * surface (the halo is drawn around every edge cell), so those results speak for the token and
+ * not for the sprite art; only the without-halo results depend on the art. `haloColour` swaps the
+ * token for a stand-in to show the check can fail.
+ */
+function uncovered(theme, data, withHalo, haloColour = tokenOf(theme, "--fs-sprite-halo")) {
   const surfaces = SURFACES.map((name) => tokenOf(theme, name));
-  const drawn = withHalo;
   const colours = edgeColours(data);
   let failing = 0;
   for (const colour of colours) {
-    // A cell is carried when it reaches 3:1 itself, or when the halo drawn around every edge cell
-    // reaches 3:1 against the surface it sits on (the halo then draws the silhouette).
-    const carried = surfaces.every((surface) => ratio(colour, surface) >= 3 || (drawn && ratio(halo, surface) >= 3));
+    const carried = surfaces.every((surface) => ratio(colour, surface) >= 3 || (withHalo && ratio(haloColour, surface) >= 3));
     if (!carried) failing += 1;
   }
   return { failing, edges: colours.length };
 }
 
-test("night: every avatar's silhouette edge reaches 3:1 against each night surface, counting the halo", () => {
+test("night: the halo token carries every avatar's silhouette at 3:1 on each night surface", () => {
   for (const id of AGENT_IDS) {
     const { failing, edges } = uncovered("night", PIXEL_DATA[id], true);
     assert.ok(edges > 0, id);
@@ -314,10 +316,11 @@ test("night: without the halo the dark tones of support, hr and assistant would 
   }
 });
 
-test("cobalt and bureau: with the navy halo counted, no avatar has an edge cell under 3:1", () => {
+test("cobalt and bureau: the navy halo token carries every avatar's silhouette at 3:1", () => {
   for (const theme of ["cobalt", "bureau"]) {
     for (const id of AGENT_IDS) {
       const { failing, edges } = uncovered(theme, PIXEL_DATA[id], true);
+      assert.ok(edges > 0, `${theme} ${id}`);
       assert.equal(failing, 0, `${theme} ${id}: ${failing} of ${edges} edge cells under 3:1`);
     }
   }
@@ -328,6 +331,14 @@ test("cobalt and bureau: without the halo the pale bodies would be under 3:1 (th
     for (const id of ["tickets", "ecommerce", "subscriptions", "knowledge"]) {
       assert.ok(uncovered(theme, PIXEL_DATA[id], false).failing > 0, `${theme} ${id}`);
     }
+  }
+});
+
+test("the with-halo check can fail: a halo no darker than the surface leaves pale edges uncovered", () => {
+  // The boundary of the token-based check: a stand-in as pale as the cobalt page does not carry the pale bodies.
+  const pale = tokenOf("cobalt", SURFACES[0]);
+  for (const id of ["tickets", "ecommerce", "subscriptions", "knowledge"]) {
+    assert.ok(uncovered("cobalt", PIXEL_DATA[id], true, pale).failing > 0, id);
   }
 });
 

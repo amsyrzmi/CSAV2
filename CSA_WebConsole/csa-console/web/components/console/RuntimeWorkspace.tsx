@@ -77,7 +77,7 @@ export function RuntimeWorkspace({
 const PLANNED_AGENTS: ReadonlySet<string> = new Set(["lhdn_agent"]);
 
 /**
- * One agent: avatar chip, title, status words, the details, and the two switches.
+ * One agent: avatar (drawn straight onto the card, no box), title, status words, the details, and the two switches.
  *
  * The avatar follows the server, never the click. `pending` (the switch being saved) shows a
  * still, dimmed avatar and a "Saving..." label; when it clears, `failed` restores the old look

@@ -647,12 +647,49 @@ async def test_back_on_phone_returns_focus_to_the_open_conversation_row(shell: S
         await expect(row(page, UNNAMED)).to_be_focused()
 
 
+NO_BOX_JS = """(args) => {
+    const [selector, rootSelector] = args;
+    const root = document.querySelector(rootSelector);
+    const found = [...root.querySelectorAll(selector)];
+    return found.map((el) => {
+        const chain = [];
+        for (let node = el; node && node !== root; node = node.parentElement) {
+            const s = getComputedStyle(node);
+            chain.push({
+                tag: node.tagName.toLowerCase() + (node.dataset.agent ? "[" + node.dataset.agent + "]" : ""),
+                background: s.backgroundColor + " " + s.backgroundImage,
+                radius: s.borderRadius,
+                border: s.borderTopWidth,
+                overflow: s.overflow,
+            });
+        }
+        return chain;
+    });
+}"""
+
+
+def assert_no_box(found: list[list[dict[str, str]]], expected: int) -> None:
+    """Every avatar and every wrapper up to its container is transparent, square and unclipped."""
+    assert len(found) == expected, found
+    for chain in found:
+        assert chain, found
+        for box in chain:
+            assert box["background"] == "rgba(0, 0, 0, 0) none", box
+            assert box["radius"] == "0px" and box["border"] == "0px", box
+            assert box["overflow"] == "visible", box
+
+
 async def test_empty_state_connect_button_only_for_admins(shell: Shell) -> None:
     ask = "Ask your administrator to connect WhatsApp."
     async with inbox_page(shell, Inbox(items=[], needs_review_count=0)) as page:
         empty = page.get_by_test_id("inbox-list-state-empty")
         await expect(empty).to_be_visible(timeout=WAIT)
         await expect(empty.get_by_role("heading", name="No conversations yet")).to_be_visible()
+        # The empty-state avatar is drawn straight onto the page: no box of any kind.
+        found = await page.evaluate(
+            NO_BOX_JS, ["[data-agent]", '[data-testid="inbox-list-state-empty"]']
+        )
+        assert_no_box(found, 1)
         connect = page.get_by_test_id("inbox-connect-whatsapp")
         await expect(connect).to_be_visible()
         await expect(connect).to_have_attribute("href", "/portal/services")
