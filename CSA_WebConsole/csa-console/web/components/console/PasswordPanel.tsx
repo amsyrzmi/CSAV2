@@ -4,10 +4,14 @@ import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api";
 import { identity } from "@/lib/identity-api";
 import { passwordErrorText } from "@/lib/password-messages";
-import { PasswordInput } from "@/components/ui/password-input";
+import { checkRules, rulesPass } from "@/lib/password-rules";
+import { PasswordField } from "@/components/console/PasswordField";
+import { RuleChecklist, StrengthHint } from "@/components/console/PasswordFeedback";
 import { action, Notice, Panel } from "@/components/console/ui";
 
 const SUCCESS = "Password updated. Other devices have been signed out.";
+const SUCCESS_NOTE =
+  "You stay signed in here. Any other devices that used your old password must sign in again. Reset and invite links you had not used have stopped working.";
 
 /** Change the signed-in person's own password without leaving the dashboard shell. */
 export function PasswordPanel({ email }: { email: string }) {
@@ -20,6 +24,8 @@ export function PasswordPanel({ email }: { email: string }) {
   const [done, setDone] = useState(false);
   // State lags a render behind a second click in the same task; a ref does not.
   const sending = useRef(false);
+  const rules = checkRules(current, password, confirmation);
+  const ready = rulesPass(rules);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -67,7 +73,8 @@ export function PasswordPanel({ email }: { email: string }) {
             <label htmlFor="password-current" className="mb-2 block text-sm">
               Current password
             </label>
-            <PasswordInput
+            <PasswordField
+              fieldName="current password"
               id="password-current"
               data-testid="password-current"
               autoComplete="current-password"
@@ -80,7 +87,8 @@ export function PasswordPanel({ email }: { email: string }) {
             <label htmlFor="password-new" className="mb-2 block text-sm">
               New password
             </label>
-            <PasswordInput
+            <PasswordField
+              fieldName="new password"
               id="password-new"
               data-testid="password-new"
               autoComplete="new-password"
@@ -91,12 +99,15 @@ export function PasswordPanel({ email }: { email: string }) {
               onChange={(e) => setPassword(e.target.value)}
             />
             <p className="mt-2 text-xs text-ink-500">At least 12 characters.</p>
+            <StrengthHint password={password} />
+            <RuleChecklist rules={rules} typed={password !== "" || confirmation !== ""} />
           </div>
           <div>
             <label htmlFor="password-confirm" className="mb-2 block text-sm">
               Confirm new password
             </label>
-            <PasswordInput
+            <PasswordField
+              fieldName="confirmation"
               id="password-confirm"
               data-testid="password-confirm"
               autoComplete="new-password"
@@ -112,10 +123,27 @@ export function PasswordPanel({ email }: { email: string }) {
               {error}
             </Notice>
           )}
-          {done && <Notice testId="password-success">{SUCCESS}</Notice>}
-          <button data-testid="password-submit" disabled={busy} className={action}>
+          {done && (
+            <div className="space-y-2">
+              <Notice testId="password-success">{SUCCESS}</Notice>
+              <p data-testid="password-success-note" className="text-sm text-[color:var(--fs-text-secondary)]">
+                {SUCCESS_NOTE}
+              </p>
+            </div>
+          )}
+          <button
+            data-testid="password-submit"
+            disabled={busy || !ready}
+            aria-describedby={ready ? undefined : "password-save-hint"}
+            className={action}
+          >
             {busy ? "Saving…" : "Update password"}
           </button>
+          {!ready && (
+            <p id="password-save-hint" className="text-xs text-[color:var(--fs-text-secondary)]">
+              Update password turns on when all three checks are done.
+            </p>
+          )}
         </form>
       </Panel>
     </div>

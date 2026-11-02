@@ -301,7 +301,10 @@ async def test_password_mismatch_blocks_the_request(console: Console) -> None:
     playwright, browser, page, posts = await open_page(console, "/portal/password")
     try:
         await fill_form(page, CURRENT, NEW, NEW + "-different")
-        await page.get_by_test_id("password-submit").click()
+        # The Save button is disabled for a mismatch, so submit the form the way Enter would
+        # have before; the handler's own guard still has to refuse it.
+        await expect(page.get_by_test_id("password-submit")).to_be_disabled()
+        await page.locator("form").evaluate("(form) => form.requestSubmit()")
         error = page.get_by_test_id("password-error")
         await expect(error).to_have_text("The new passwords do not match.")
         await expect(error).to_have_attribute("role", "alert")
@@ -389,5 +392,182 @@ async def test_change_password_page_still_works(console: Console) -> None:
             await expect(page.get_by_label(name, exact=True)).to_be_visible()
         await expect(page.get_by_role("button", name="Save password", exact=True)).to_be_visible()
         assert posts == []
+    finally:
+        await close_page(playwright, browser)
+
+
+RULES = {
+    "password-rule-length": "At least 12 characters",
+    "password-rule-different": "Different from your current password",
+    "password-rule-match": "Matches the confirmation",
+}
+
+
+async def rule_states(page: Page) -> dict[str, str]:
+    states = {}
+    for test_id in RULES:
+        states[test_id] = await page.get_by_test_id(test_id).get_attribute("data-state") or ""
+    return states
+
+
+async def test_password_checklist_ticks_as_you_type(console: Console) -> None:
+    playwright, browser, page, posts = await open_page(console, "/portal/password")
+    try:
+        checklist = page.get_by_test_id("password-checklist")
+        await expect(checklist).to_be_visible()
+        for test_id, text in RULES.items():
+            await expect(page.get_by_test_id(test_id)).to_contain_text(text)
+        # Nothing typed yet: no rule is met.
+        for test_id in RULES:
+            await expect(page.get_by_test_id(test_id)).to_have_attribute("data-state", "unmet")
+        await page.get_by_test_id("password-current").fill(CURRENT)
+        await page.get_by_test_id("password-new").fill("short")
+        await expect(page.get_by_test_id("password-rule-length")).to_have_attribute(
+            "data-state", "unmet"
+        )
+        await expect(page.get_by_test_id("password-rule-different")).to_have_attribute(
+            "data-state", "met"
+        )
+        await page.get_by_test_id("password-new").fill(NEW)
+        await expect(page.get_by_test_id("password-rule-length")).to_have_attribute(
+            "data-state", "met"
+        )
+        await expect(page.get_by_test_id("password-rule-match")).to_have_attribute(
+            "data-state", "unmet"
+        )
+        await page.get_by_test_id("password-confirm").fill(NEW)
+        await expect(page.get_by_test_id("password-rule-match")).to_have_attribute(
+            "data-state", "met"
+        )
+        # The new password equal to the current one fails the second rule.
+        await page.get_by_test_id("password-new").fill(CURRENT)
+        await page.get_by_test_id("password-confirm").fill(CURRENT)
+        await expect(page.get_by_test_id("password-rule-different")).to_have_attribute(
+            "data-state", "unmet"
+        )
+        # Each item carries a marker and words, not colour alone.
+        item = page.get_by_test_id("password-rule-different")
+        await expect(item.locator("svg")).to_have_count(1)
+        await expect(item).to_contain_text("not done")
+        await page.get_by_test_id("password-new").fill(NEW)
+        await page.get_by_test_id("password-confirm").fill(NEW)
+        await expect(item).not_to_contain_text("not done")
+        # The list is announced politely and once typing pauses, not on every key.
+        live = checklist.locator("[aria-live='polite']")
+        await expect(live).to_have_count(1)
+        await expect(live).to_have_text("All 3 checks pass. You can save.")
+        assert posts == []
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_checklist_announcement_waits_for_a_pause(console: Console) -> None:
+    playwright, browser, page, _ = await open_page(console, "/portal/password")
+    try:
+        live = page.get_by_test_id("password-checklist").locator("[aria-live='polite']")
+        await expect(live).to_have_text("")
+        await page.get_by_test_id("password-new").press_sequentially("abc", delay=30)
+        # Still typing: nothing announced yet.
+        await expect(live).to_have_text("")
+        await expect(live).to_contain_text("of 3 checks pass", timeout=5_000)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_show_hide_toggles_each_field_independently(console: Console) -> None:
+    playwright, browser, page, _ = await open_page(console, "/portal/password")
+    try:
+        fields = {
+            "password-current": "current password",
+            "password-new": "new password",
+            "password-confirm": "confirmation",
+        }
+        for test_id in fields:
+            await expect(page.get_by_test_id(test_id)).to_have_attribute("type", "password")
+        await fill_form(page, CURRENT, NEW, NEW)
+        new_button = page.get_by_role("button", name="Show new password", exact=True)
+        await expect(new_button).to_have_attribute("aria-pressed", "false")
+        await new_button.click()
+        await expect(page.get_by_test_id("password-new")).to_have_attribute("type", "text")
+        await expect(page.get_by_test_id("password-current")).to_have_attribute("type", "password")
+        await expect(page.get_by_test_id("password-confirm")).to_have_attribute("type", "password")
+        await expect(new_button).to_have_attribute("aria-pressed", "true")
+        # The typed value survives the toggle.
+        await expect(page.get_by_test_id("password-new")).to_have_value(NEW)
+        confirm_button = page.get_by_role("button", name="Show confirmation", exact=True)
+        await confirm_button.click()
+        await expect(page.get_by_test_id("password-confirm")).to_have_attribute("type", "text")
+        await new_button.click()
+        await expect(page.get_by_test_id("password-new")).to_have_attribute("type", "password")
+        await expect(page.get_by_test_id("password-confirm")).to_have_attribute("type", "text")
+        await page.get_by_role("button", name="Show current password", exact=True).click()
+        await expect(page.get_by_test_id("password-current")).to_have_attribute("type", "text")
+        # The visible labels still name each field once.
+        for name in ("Current password", "New password", "Confirm new password"):
+            await expect(page.get_by_label(name, exact=True)).to_have_count(1)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_save_disabled_until_rules_pass(console: Console) -> None:
+    playwright, browser, page, posts = await open_page(console, "/portal/password")
+    try:
+        submit = page.get_by_test_id("password-submit")
+        await expect(submit).to_be_disabled()
+        await fill_form(page, CURRENT, "short", "short")
+        await expect(submit).to_be_disabled()
+        await fill_form(page, CURRENT, NEW, NEW + "-different")
+        await expect(submit).to_be_disabled()
+        await fill_form(page, CURRENT, CURRENT, CURRENT)
+        await expect(submit).to_be_disabled()
+        await fill_form(page, CURRENT, NEW, NEW)
+        await expect(submit).to_be_enabled()
+        await page.get_by_test_id("password-confirm").fill(NEW + "x")
+        await expect(submit).to_be_disabled()
+        assert posts == []
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_strength_hint_never_blocks_a_valid_password(console: Console) -> None:
+    playwright, browser, page, posts = await open_page(console, "/portal/password")
+    try:
+        strength = page.get_by_test_id("password-strength")
+        await expect(strength).to_be_visible()
+        await expect(strength).to_contain_text("Type a new password to see a hint")
+        await page.get_by_test_id("password-new").fill("short")
+        await expect(strength).to_contain_text("Too short")
+        # Exactly 12 characters: the lowest length the server accepts, rated plainly and allowed.
+        twelve = "abcdefghijkl"
+        await fill_form(page, CURRENT, twelve, twelve)
+        await expect(strength).to_contain_text("Okay")
+        await expect(page.get_by_test_id("password-submit")).to_be_enabled()
+        long_password = "correct horse battery staple"
+        await fill_form(page, CURRENT, long_password, long_password)
+        await expect(strength).to_contain_text("Strong")
+        await expect(page.get_by_test_id("password-submit")).to_be_enabled()
+        # Advisory only: typing sent nothing anywhere.
+        assert posts == []
+        await page.get_by_test_id("password-submit").click()
+        await expect(page.get_by_test_id("password-success")).to_be_visible()
+        assert posts == [{"current_password": CURRENT, "new_password": long_password}]
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_success_panel_mentions_other_devices(console: Console) -> None:
+    playwright, browser, page, _ = await open_page(console, "/portal/password")
+    try:
+        await expect(page.get_by_test_id("password-success-note")).to_have_count(0)
+        await fill_form(page, CURRENT, NEW, NEW)
+        await page.get_by_test_id("password-submit").click()
+        await expect(page.get_by_test_id("password-success")).to_have_text(
+            "Password updated. Other devices have been signed out."
+        )
+        note = page.get_by_test_id("password-success-note")
+        await expect(note).to_be_visible()
+        await expect(note).to_contain_text("other devices")
+        await expect(note).to_contain_text("sign in again")
+        await expect(page.get_by_test_id("password-submit")).to_be_disabled()
     finally:
         await close_page(playwright, browser)
