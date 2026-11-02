@@ -104,7 +104,7 @@ export default function StatusBar({
           {context.enabled && mailbox && (
             <p data-testid="email-mailbox-line">
               {`Mailbox: ${mailbox.address ?? "(pending)"} · ${mailbox.status}` +
-                (mailbox.last_sync_at ? ` · last synced ${new Date(mailbox.last_sync_at).toLocaleString()}` : "")}
+                (mailbox.last_sync_at ? ` · last synced ${formatWhen(mailbox.last_sync_at)}` : "")}
             </p>
           )}
           <p data-testid="email-disclosure" className="text-xs text-[color:var(--fs-text-secondary)]">{context.disclosure}</p>

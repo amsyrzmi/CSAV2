@@ -12,7 +12,7 @@ import {
   type DemoListing,
 } from "@/lib/business";
 import {
-  channelLabel, chipGroupLabel, effectiveCountsRange, orderChipOptions, paymentOptions,
+  channelLabel, chipGroupLabel, effectiveCountsRange, orderChipOptions, paymentOptions, whenText,
 } from "@/lib/business-view";
 import { todayLocal, toInstants, type DayRange } from "@/lib/date-range";
 import type { Client, Me } from "@/lib/identity-contracts";
@@ -311,9 +311,9 @@ function StorePage({ path }: { path: string }) {
       <p>Stored lifecycle: {connectionLabels[store.connection.status]}</p>
       <p>Live integration: {store.connection.live_integration}</p>
       <p>Authorization: {store.authorization} · Permissions: {store.permissions} · Provider reads: {store.provider_reads}</p>
-      <p>Recorded expiry: {store.expires_at ? new Date(store.expires_at).toLocaleString() : "Unknown"}
+      <p>Recorded expiry: {store.expires_at ? whenText(store.expires_at) : "Unknown"}
         {" · "}{store.expiry === "not_expired" ? "Not expired by recorded timestamp only" : store.expiry === "expired" ? "Expired by recorded timestamp" : "Expiry unknown"}</p>
-      <p>Local update: {new Date(store.updated_at).toLocaleString()} — not a provider verification timestamp</p>
+      <p>Local update: {whenText(store.updated_at)} — not a provider verification timestamp</p>
     </StoreCard>)}</ul>
   </>;
 }

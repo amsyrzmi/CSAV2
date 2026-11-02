@@ -258,7 +258,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
         draftCount={draftCount} draftsLoaded={drafts.length} shown={visible.length} />}
 
       {tab === "inbox" && <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <Panel title={`Threads${lastSync ? ` · synced ${new Date(lastSync).toLocaleString()}` : ""}`}>
+        <Panel title={`Threads${lastSync ? ` · synced ${formatWhen(lastSync)}` : ""}`}>
           <div className="space-y-4">
             {threads.length === 0 && <p className="text-sm">No threads cached yet. Sync the inbox.</p>}
             {threads.length > 0 && visible.length === 0 && <div data-testid="email-no-match" className="flex flex-wrap items-center gap-3 text-sm">
@@ -404,7 +404,7 @@ function ThreadView({ detail, busy, writable, modelConfigured, disclosure, draft
   return <div className="flex min-h-0 flex-col gap-3 text-sm">
     {/* The reading area scrolls above the docked reply box, unless a draft is open: its buttons must not be clipped. */}
     <div data-testid="email-reading-scroll" className={`min-h-0 space-y-3 ${drafts.length === 0 ? "lg:max-h-[max(16rem,calc(100dvh_-_19rem))] lg:overflow-y-auto lg:pr-1" : ""}`}>
-      <div className="text-xs text-ink-500 [overflow-wrap:anywhere]">From {detail.sender}{detail.received_at ? ` · ${new Date(detail.received_at).toLocaleString()}` : ""}</div>
+      <div className="text-xs text-ink-500 [overflow-wrap:anywhere]">From {detail.sender}{detail.received_at ? ` · ${formatWhen(detail.received_at)}` : ""}</div>
       {detail.summary ? <div className="rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-blue)] p-3">
         <div className="text-xs uppercase text-ink-500">{detail.category && categoryLabel[detail.category]} · priority {detail.priority}</div>
         <p className="mt-1">{detail.summary}</p>

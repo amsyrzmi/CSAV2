@@ -106,7 +106,7 @@ export function OrderCard({ order }: { order: Order }) {
       <p>Platform order: {order.external_order_id ?? "Not recorded"}</p>
       <p>Tracking: {order.tracking_no ?? "Not recorded"} · Carrier: {order.carrier ?? "Not recorded"}</p>
       <p>Created: {whenText(order.created_at)} · Placed: {whenText(order.placed_at)} · Shipped: {whenText(order.shipped_at)}</p>
-      <p>Local update: {new Date(order.updated_at).toLocaleString()} — not a marketplace sync timestamp</p>
+      <p>Local update: {whenText(order.updated_at)} — not a marketplace sync timestamp</p>
     </RecordCard>
   );
 }
@@ -128,7 +128,7 @@ export function ProductCard({ product }: { product: Product }) {
       <p className="break-words font-semibold">{product.sku} · {product.name}</p>
       <p>{product.currency} {product.price} · Local status: {product.is_active ? "Active" : "Inactive"}</p>
       <p>Stock: {product.stock_qty} · Reserved: {product.reserved_qty} · Available: {product.available_qty}</p>
-      <p>Local update: {new Date(product.updated_at).toLocaleString()} — not a marketplace sync timestamp</p>
+      <p>Local update: {whenText(product.updated_at)} — not a marketplace sync timestamp</p>
     </RecordCard>
   );
 }

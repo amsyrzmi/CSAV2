@@ -5,6 +5,7 @@ import { avatarForAgent } from "@/lib/agent-avatars";
 import { outcomeOf, plainSummary } from "@/lib/activity-view";
 import { api } from "@/lib/api";
 import type { AgentRun, RuntimeEvent } from "@/lib/identity-contracts";
+import { formatWhen } from "@/lib/email-recipients";
 import AgentAvatar from "../fs/AgentAvatar";
 import { DetailsRow } from "../kit";
 import { Notice } from "../ui";
@@ -53,7 +54,7 @@ export default function RunRow({
         #{run.id} {run.agent} / {run.status} / {run.error_code ?? (run.ok ? "Succeeded" : "Failed")}
       </p>
       <p className="mt-1 text-[color:var(--fs-text-secondary)]">
-        {new Date(run.created_at).toLocaleString()} / {run.latency_ms ?? "Unknown"} ms
+        {formatWhen(run.created_at)} / {run.latency_ms ?? "Unknown"} ms
       </p>
       {open && <RunDetail run={run} query={query} />}
     </DetailsRow>

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import { useSearchParams } from "next/navigation";
 import { api, del, post } from "@/lib/api";
 import type { Agent, Client, KbDocument, KbFile, KbGap, KbJob, Me } from "@/lib/identity-contracts";
-import { groupSources, looseFiles, pausedReason, pollingNeeded, type AgentState, type Card } from "@/lib/knowledge-view";
+import { addedText, groupSources, looseFiles, pausedReason, pollingNeeded, type AgentState, type Card } from "@/lib/knowledge-view";
 import { usePublishContext } from "@/lib/page-context";
 import { DetailsRow, PageIntro } from "./kit";
 import AddKnowledge from "./knowledge/AddKnowledge";
@@ -271,7 +271,7 @@ function Knowledge({ query, canWrite, servicesHref }: { query: string; canWrite:
             <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" className="mt-0.5 shrink-0 text-[color:var(--fs-text-secondary)]"><circle cx="12" cy="12" r="9" /></svg>
             <div className="min-w-0 [overflow-wrap:anywhere]">
               <p className="font-medium">{gap.query}</p>
-              <p className="text-[color:var(--fs-text-secondary)]">{gap.hits} hits. Last seen: {new Date(gap.last_seen).toLocaleString()}</p>
+              <p className="text-[color:var(--fs-text-secondary)]">{gap.hits} hits. Last seen: {addedText(gap.last_seen)}</p>
             </div>
           </div>
           {canWrite && <button className={secondary} disabled={busy || !writable} onClick={() => resolve(gap.id)}>Mark resolved</button>}
