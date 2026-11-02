@@ -36,9 +36,16 @@ BEGIN
   RAISE EXCEPTION 'hr_owner_move_denied' USING ERRCODE='42501'; END IF;
  -- The key scripts/bootstrap_hr_owner.py takes: it also serialises a first owner, who has no row.
  PERFORM pg_advisory_xact_lock(hashtextextended(p_client::text||':hr-owner-bootstrap',0));
- -- Other readers take the owner row FOR SHARE before grant rows, so this order can't deadlock with
- -- them. Employee and account rows are read without a lock: person.leave takes the employee row and
- -- then the owner row, so it waits for this move and then sees the new owner.
+ -- The current owner's requests take this row FOR SHARE before their grant rows, so this order
+ -- can't deadlock with those authority readers. Employee and account rows are read without a lock:
+ -- person.leave takes the employee row and then this row, so it waits for this move and then sees
+ -- the new owner.
+ -- One deadlock is accepted. hr_lock_authority locks this row only for the current owner, so the
+ -- person being made owner can hold their own grant rows FOR SHARE without it. If that request is
+ -- person.leave, it waits on this row while the directory.read upsert below waits on their grant
+ -- row. Postgres aborts one side (40P01), usually this move: nothing is half written and the route
+ -- answers "try again". Taking :hr-operations here or locking the target's grants first would make
+ -- it worse: the first deadlocks with the owner's ordinary requests, the second with access.save.
  SELECT o.user_id INTO holder FROM public.hr_client_owners o WHERE o.client_id=p_client FOR UPDATE;
  -- The actor before the receipt: a caller without the right never reads one.
  IF NOT EXISTS(SELECT 1 FROM public.console_users u

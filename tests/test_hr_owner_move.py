@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from csa.core.db import q
 from csa.core.tenancy import tx
 from psycopg.types.json import Jsonb
 
@@ -679,6 +680,68 @@ async def test_marking_the_new_owner_as_leaving_waits_for_the_move_and_is_refuse
         (world.tenant, employee),
     )
     assert rows == [{"last_day": None}]
+
+
+async def test_a_move_can_deadlock_with_person_leave_by_the_target(world: HrWorld) -> None:
+    # hr_lock_authority locks the owner row only for the current owner, so the person being made
+    # owner holds their grant rows without it. Their person.leave then waits on the owner row while
+    # the move's directory.read upsert waits on their grant row. The ruling accepts Postgres
+    # aborting one side, as long as nothing is half written.
+    admin, old, target = world.users["admin"], world.users["owner"], world.users["operator"]
+    await make_people_manager(world)
+    leaver = world.employees["staff"]
+    today = await db_today(world)
+    body = await leave_body(world, leaver, today + timedelta(days=5))
+    before = await everything(world)
+    key = uuid4()
+    leave_aborted = move_aborted = False
+    mover: asyncio.Task[dict[str, Any]] | None = None
+    try:
+        async with tx(world.service.pool, str(world.tenant)) as conn:
+            await conn.execute("SELECT set_config('app.hr_user_id', %s, true)", (str(target),))
+            # The route's order: authority first, then the operations lock, then the people write.
+            await q.fetch_one("hr/authority.sql", (world.tenant, target), conn=conn)
+            await q.execute("hr/key_lock.sql", (f"{world.tenant}:hr-operations",), conn=conn)
+            mover = asyncio.create_task(move(world, admin, target, old, key=key))
+            # The move now holds the owner row and waits on the target's directory.read row.
+            await wait_for_a_blocked_lock(world)
+            await q.fetch_one(
+                "hr/people_apply.sql",
+                (world.tenant, uuid4(), fingerprint("leave"), Jsonb(body)),
+                conn=conn,
+            )
+    except psycopg.errors.DeadlockDetected:
+        leave_aborted = True
+    assert mover is not None
+    try:
+        await asyncio.wait_for(mover, 30)
+    except psycopg.errors.DeadlockDetected:
+        move_aborted = True
+
+    assert leave_aborted != move_aborted
+    rows = await world.q(
+        "SELECT last_day FROM hr_employees WHERE client_id=%s AND id=%s", (world.tenant, leaver)
+    )
+    row = await owner_row(world)
+    assert row is not None
+    if move_aborted:
+        # The usual side: its deadlock timer started first. Only the leave's receipt is new.
+        assert await everything(world) == {**before, "operations": before["operations"] + 1}
+        assert row["user_id"] == old
+        assert await owner_only_rows(world, target) == set()
+        assert rows[0]["last_day"] is not None
+        moved = await world.q(
+            "SELECT 1 FROM hr_operations WHERE client_id=%s AND operation='owner.move'",
+            (world.tenant,),
+        )
+        assert moved == []
+        # The route's "try again": the same key finds no first run and moves.
+        retried = await move(world, admin, target, old, key=key)
+        assert retried == {"old_owner": old, "new_owner": target, "duplicate": False}
+    else:
+        # A stalled host can block the leave after the move's one deadlock check has passed.
+        assert row["user_id"] == target
+        assert rows[0]["last_day"] is None
 
 
 async def test_moves_away_from_a_disabled_owner(world: HrWorld) -> None:
