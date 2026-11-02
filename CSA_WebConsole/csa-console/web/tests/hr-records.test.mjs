@@ -370,7 +370,7 @@ test("recordsRefusalText has one plain sentence per new code", () => {
 });
 
 test("the pinned refusal sentences", () => {
-  assert.equal(recordsRefusalText("last_owner_leaving"), "Make someone else the HR owner first. The company always needs one.");
+  assert.equal(recordsRefusalText("last_owner_leaving"), "The HR owner can't be marked as leaving. Contact support to move HR ownership to someone else first.");
   assert.equal(recordsRefusalText("leaver_has_access"), "Only the HR owner can mark someone with HR access as leaving.");
   assert.equal(recordsRefusalText("last_day_past"), "Choose a last day from today onwards.");
   assert.equal(recordsRefusalText("leaving_final"), "This person has already left. Use Rehire instead.");
@@ -514,7 +514,7 @@ test("klDate is the Kuala Lumpur calendar day", () => {
 test("leavingErrorText: a 4xx picks its sentence, anything else names the button to choose again", () => {
   assert.equal(leavingErrorText({ status: 409, code: "person_changed" }, "leave"), PEOPLE_COPY.stale);
   assert.equal(leavingErrorText({ status: 422, code: "last_owner_leaving" }, "leave"),
-    "Make someone else the HR owner first. The company always needs one.");
+    "The HR owner can't be marked as leaving. Contact support to move HR ownership to someone else first.");
   assert.equal(leavingErrorText({ status: 409, code: "not_left" }, "rehire"), "Only someone who has left can be rehired.");
   assert.equal(leavingErrorText({ status: 422, code: "manager_loop" }, "leave"), peopleRefusalText("manager_loop"));
   const buttons = { leave: /Mark as leaving/, undo: /Undo leaving/, rehire: /Rehire/ };

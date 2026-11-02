@@ -9,7 +9,7 @@ import { RECORDS_COPY } from "./hr-records";
  * thing; each code here has its Malay pair.
  */
 export const HR_PERSON_REFUSALS_MS: Record<string, string> = {
-  last_owner_leaving: "Jadikan orang lain pemilik HR dahulu. Syarikat sentiasa memerlukan seorang.",
+  last_owner_leaving: "Pemilik HR tidak boleh ditandakan sebagai akan berhenti. Hubungi sokongan untuk memindahkan pemilikan HR kepada orang lain dahulu.",
   leaver_has_access: "Hanya pemilik HR boleh menandakan orang yang mempunyai akses HR sebagai akan berhenti.",
   last_day_past: "Pilih hari terakhir mulai hari ini.",
   leaving_final: "Orang ini sudah berhenti. Gunakan Rehire.",

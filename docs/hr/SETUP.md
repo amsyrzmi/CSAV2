@@ -138,8 +138,9 @@ use **Mark as leaving** on a person's Overview.
   characters). When the person has reports, choose who they move to; the default is the leaver's
   own manager. The person shows as **Leaving** until the last day has passed. The reason is for
   HR viewers only; the person and their direct manager see the last day.
-- **Who can be marked.** The HR owner cannot be marked as leaving while they are the owner: “Make
-  someone else the HR owner first. The company always needs one.” (a company has one HR owner).
+- **Who can be marked.** The HR owner cannot be marked as leaving while they are the owner: “The HR
+  owner can't be marked as leaving. Contact support to move HR ownership to someone else first.”
+  (a company has one HR owner, and the console has no way to change it yet).
   Only the HR owner can mark someone who holds HR access beyond the staff switches, or who is a
   tenant admin of the company, as leaving (“Only the HR owner can mark someone with HR access as
   leaving.”), because finishing them removes that access and disables their membership. A Manage
