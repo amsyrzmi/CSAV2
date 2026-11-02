@@ -82,6 +82,8 @@ const ACTION_HELP: Record<SubscriptionAction, string> = {
   extend_renewal: "Moves the next renewal to the day you choose. The plan does not change.",
 };
 const cell = "border-b border-ink-100 px-3 py-2 align-top";
+/** On a phone each customer is one small block (name, then plan and status, then renewal and price) instead of a table that scrolls sideways. */
+const phoneCell = "max-sm:border-b-0 max-sm:px-0 max-sm:py-0 max-sm:before:block max-sm:before:text-xs max-sm:before:text-ink-600 max-sm:before:content-[attr(data-label)]";
 const head = "border-b border-ink-200 px-3 py-2 text-left font-medium text-ink-600";
 
 type PlanName = (code: string) => string;
@@ -400,20 +402,21 @@ function Customers({ tenantId, writer, plans, planName, onOpenPlans, onDataChang
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[40rem] text-sm" data-testid="subscriptions-table">
-            <thead><tr>
+          <table className="w-full text-sm sm:min-w-[40rem]" data-testid="subscriptions-table">
+            <thead className="max-sm:sr-only"><tr>
               <th className={head}>Customer</th><th className={head}>Plan</th><th className={head}>Status</th>
               <th className={head}>Renews on</th><th className={head}>Price</th>
             </tr></thead>
             <tbody>
               {(shown ?? []).map((row) => (
-                <tr key={row.id} data-testid="subscription-row" className="cursor-pointer hover:bg-ink-50"
+                <tr key={row.id} data-testid="subscription-row"
+                  className="cursor-pointer hover:bg-ink-50 max-sm:grid max-sm:grid-cols-2 max-sm:gap-x-3 max-sm:gap-y-2 max-sm:border-b max-sm:border-ink-100 max-sm:px-1 max-sm:py-3"
                   onClick={(event) => {
                     // A click on the row itself leaves nothing focused; return to the name button.
                     openerRef.current = event.currentTarget.querySelector("button");
                     setOpenId(row.id);
                   }}>
-                  <td className={cell}>
+                  <td className={`${cell} max-sm:col-span-2 max-sm:border-b-0 max-sm:p-0`}>
                     <button type="button" className="text-left font-medium text-brand-700 hover:underline"
                       onClick={(event) => {
                         event.stopPropagation();
@@ -426,14 +429,14 @@ function Customers({ tenantId, writer, plans, planName, onOpenPlans, onDataChang
                       <p className="text-xs text-ink-500">{row.customer.phone || row.customer.email}</p>
                     )}
                   </td>
-                  <td className={cell}>{row.plan_name || planName(row.plan)}</td>
-                  <td className={cell}>
+                  <td data-label="Plan" className={`${cell} ${phoneCell}`}>{row.plan_name || planName(row.plan)}</td>
+                  <td data-label="Status" className={`${cell} ${phoneCell}`}>
                     <span data-testid="subscription-status">{STATUS_LABELS[row.status]}</span>
                     {row.cancel_at_period_end && row.status === "active" &&
                       <p className="text-xs text-ink-500">Cancels at period end</p>}
                   </td>
-                  <td className={cell}>{row.status === "cancelled" ? "—" : formatDay(row.renews_at, timeZone)}</td>
-                  <td className={cell}>{money(row.price, row.currency)}</td>
+                  <td data-label="Renews on" className={`${cell} ${phoneCell}`}>{row.status === "cancelled" ? "—" : formatDay(row.renews_at, timeZone)}</td>
+                  <td data-label="Price" className={`${cell} ${phoneCell}`}>{money(row.price, row.currency)}</td>
                 </tr>
               ))}
             </tbody>
