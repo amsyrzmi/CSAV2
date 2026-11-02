@@ -14,7 +14,7 @@ const avatars = await import(moduleUrl(
 ));
 const { AGENT_IDS, AGENT_TITLES, avatarForAgent, avatarForPackage } = avatars;
 
-test("capability names map onto the eleven avatar ids in one place", () => {
+test("capability names map onto the twelve avatar ids in one place", () => {
   const expected = {
     kb_agent: "knowledge",
     ticket_agent: "tickets",
@@ -25,6 +25,7 @@ test("capability names map onto the eleven avatar ids in one place", () => {
     ecommerce_agent: "ecommerce",
     subscription_agent: "subscriptions",
     booking_agent: "bookings",
+    lhdn_agent: "einvoicing",
   };
   for (const [name, id] of Object.entries(expected)) {
     assert.equal(avatarForAgent(name), id, name);
@@ -32,20 +33,19 @@ test("capability names map onto the eleven avatar ids in one place", () => {
 });
 
 test("the service ids map to themselves", () => {
-  for (const id of ["support", "assistant", "hr", "email"]) {
+  for (const id of ["support", "assistant", "hr", "email", "einvoicing"]) {
     assert.equal(avatarForAgent(id), id);
   }
 });
 
-test("lhdn_agent and unknown names have no avatar", () => {
-  assert.equal(avatarForAgent("lhdn_agent"), null);
+test("unknown names have no avatar", () => {
   assert.equal(avatarForAgent("nonsense"), null);
   assert.equal(avatarForAgent(""), null);
   assert.equal(avatarForAgent("constructor"), null);
   assert.equal(avatarForAgent("__proto__"), null);
 });
 
-test("packages map onto avatars and e_invoicing has none", () => {
+test("packages map onto avatars, e_invoicing included", () => {
   const expected = {
     customer_support: "support",
     orders_products: "orders",
@@ -54,19 +54,19 @@ test("packages map onto avatars and e_invoicing has none", () => {
     marketplaces: "ecommerce",
     hr: "hr",
     staff_email: "email",
+    e_invoicing: "einvoicing",
   };
   for (const [key, id] of Object.entries(expected)) {
     assert.equal(avatarForPackage(key), id, key);
   }
-  assert.equal(avatarForPackage("e_invoicing"), null);
   for (const key of ["", "nonsense", "support", "constructor", "__proto__", "toString"]) {
     assert.equal(avatarForPackage(key), null, key);
   }
 });
 
-test("there are eleven distinct ids and each has a title", () => {
-  assert.equal(AGENT_IDS.length, 11);
-  assert.equal(new Set(AGENT_IDS).size, 11);
+test("there are twelve distinct ids and each has a title", () => {
+  assert.equal(AGENT_IDS.length, 12);
+  assert.equal(new Set(AGENT_IDS).size, 12);
   for (const id of AGENT_IDS) {
     assert.equal(typeof AGENT_TITLES[id], "string", id);
     assert.notEqual(AGENT_TITLES[id], "");

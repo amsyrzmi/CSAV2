@@ -11,6 +11,7 @@ export const AGENT_IDS = [
   "email",
   "subscriptions",
   "bookings",
+  "einvoicing",
 ] as const;
 
 export type AgentId = (typeof AGENT_IDS)[number];
@@ -27,6 +28,7 @@ export const AGENT_TITLES: Record<AgentId, string> = {
   email: "Email assistant",
   subscriptions: "Subscriptions agent",
   bookings: "Bookings agent",
+  einvoicing: "E-invoicing agent",
 };
 
 const CAPABILITY_AVATARS = new Map<string, AgentId>([
@@ -39,9 +41,10 @@ const CAPABILITY_AVATARS = new Map<string, AgentId>([
   ["ecommerce_agent", "ecommerce"],
   ["subscription_agent", "subscriptions"],
   ["booking_agent", "bookings"],
+  ["lhdn_agent", "einvoicing"],
 ]);
 
-/** The avatar for a console capability name or a service id; null when there is none (for example lhdn_agent). */
+/** The avatar for a console capability name or a service id; null when there is none (an unknown name). */
 export function avatarForAgent(name: string): AgentId | null {
   const capability = CAPABILITY_AVATARS.get(name);
   if (capability) return capability;
@@ -56,9 +59,10 @@ const PACKAGE_AVATARS = new Map<string, AgentId>([
   ["marketplaces", "ecommerce"],
   ["hr", "hr"],
   ["staff_email", "email"],
+  ["e_invoicing", "einvoicing"],
 ]);
 
-/** The avatar for a package key; null when there is none (e_invoicing is planned) or the key is unknown. */
+/** The avatar for a package key; null when the key is unknown. */
 export function avatarForPackage(key: string): AgentId | null {
   return PACKAGE_AVATARS.get(key) ?? null;
 }

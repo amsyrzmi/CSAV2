@@ -16,10 +16,11 @@ const { AGENT_IDS } = await import(moduleUrl(
 ));
 const { PIXEL_DATA, PIXEL_GRIDS } = data;
 
-// The hue each agent must keep (degrees); mirrors the design spec, section 6.
+// The hue each agent must keep (degrees); mirrors the design specs (phase 2 section 6, phase 3 section 6.3).
 const HUE = {
   support: 225, knowledge: 172, orders: 28, tickets: 50, ecommerce: 145,
   invoices: 200, assistant: 268, hr: 330, email: 5, subscriptions: 95, bookings: 305,
+  einvoicing: 120,
 };
 
 // Test-only decoder of the documented format (the real one ships with AgentAvatar).

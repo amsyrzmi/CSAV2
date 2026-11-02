@@ -196,5 +196,23 @@
     ],
     "avatar": "bookings.svg",
     "working": null
+  },
+  {
+    "id": "einvoicing",
+    "title": "E-invoicing agent",
+    "artKind": null,
+    "silhouette": "receipt",
+    "eyeCount": 2,
+    "color": "#2F58E0",
+    "shade": "#162E85",
+    "accent": "#94B8FF",
+    "backdrop": "#EAF4FF",
+    "spectrum": [
+      "#7FA2FF",
+      "#2F58E0",
+      "#1A35A3"
+    ],
+    "avatar": "einvoicing.svg",
+    "working": null
   }
 ]

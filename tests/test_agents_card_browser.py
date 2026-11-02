@@ -501,12 +501,14 @@ async def test_unlinked_agents_page_still_renders(site: Site) -> None:
                 "Recent failures",
             ):
                 await expect(kb.locator("dt", has_text=label).first).to_be_visible()
-            # No avatar for this one: an icon on the chip and the word "Planned" beside the title.
+            # The planned agent has its own avatar and the word "Planned" beside the title.
             planned = card_of(page, "lhdn_agent")
             await expect(planned.get_by_text("Planned", exact=True)).to_be_visible()
-            await expect(planned.locator("[data-agent]")).to_have_count(0)
+            await expect(planned.locator("[data-agent]")).to_have_attribute(
+                "data-agent", "einvoicing"
+            )
             await expect(planned.get_by_role("button")).to_have_count(0)
-            # "Planned" comes from an explicit list, not from the missing avatar.
+            # "Planned" comes from an explicit list, and an unknown agent keeps the plain icon.
             other = card_of(page, "mystery_agent")
             await expect(other.locator("[data-agent]")).to_have_count(0)
             await expect(other.get_by_text("Planned", exact=True)).to_have_count(0)
@@ -628,3 +630,24 @@ async def test_avatar_halo_present_on_every_theme_but_not_when_dim(site: Site) -
         finally:
             await browser.close()
     assert not stub.unexpected, stub.unexpected
+
+
+async def test_einvoicing_avatar_renders_in_agent_card(site: Site) -> None:
+    """The planned LHDN agent card draws the twelfth avatar (the Services row is tested apart)."""
+    stub = Stub(agents=default_agents())
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            context, page, diagnostics = await open_agents(browser, site, stub)
+            card = card_of(page, "lhdn_agent")
+            avatar = card.locator("[data-agent]")
+            await expect(avatar).to_have_attribute("data-agent", "einvoicing", timeout=WAIT)
+            await expect(avatar.locator("svg g.fs-px-frame").first).to_be_attached()
+            assert await avatar.locator("svg rect").count() > 40, "the sprite has real cells"
+            box = await avatar.bounding_box()
+            assert box is not None and box["width"] == 48 and box["height"] == 48, box
+            await expect(card.get_by_test_id("agent-planned-lhdn_agent")).to_have_text("Planned")
+            assert not diagnostics, diagnostics
+            await context.close()
+        finally:
+            await browser.close()

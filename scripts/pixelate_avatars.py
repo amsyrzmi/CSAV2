@@ -1,7 +1,10 @@
-"""Convert the eleven approved vector agent avatars into pixel-art idle frames.
+"""Convert the twelve agent avatars into pixel-art idle and working frames.
 
 Run ``python -m scripts.pixelate_avatars`` to rewrite ``lib/pixel-avatars-data.ts`` in the web
 console, or add ``--check`` to fail when the committed file differs from a fresh generation.
+
+Eleven avatars come from vector art. The twelfth (``einvoicing``) is drawn cell by cell in
+``scripts/hand_drawn_avatars.py``; it skips steps 1 and 2 (no browser), then joins the pipeline.
 
 Pipeline, per avatar and per grid size (32 and 48):
 
@@ -28,10 +31,13 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from scripts.hand_drawn_avatars import HAND_DRAWN, SOURCE_COLOURS
+
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "CSA_WebConsole" / "csa-console" / "web"
 AVATARS = WEB / "public" / "fourstacks" / "agents"
 AGENT_IDS_TS = WEB / "lib" / "agent-avatars.ts"
+UI_GUIDE_AGENTS = ROOT / "ui-guide" / "assets" / "agents"
 OUTPUT = WEB / "lib" / "pixel-avatars-data.ts"
 
 SIZES = (32, 48)
@@ -53,7 +59,12 @@ HUE = {
     "email": 5,
     "subscriptions": 95,
     "bookings": 305,
+    # The largest free arc: 25 degrees from lime (95) and from green (145); the receipt shape and
+    # its seal, not the hue alone, make this avatar recognisable.
+    "einvoicing": 120,
 }
+# Title of each hand-drawn agent (the same text as AGENT_TITLES in lib/agent-avatars.ts).
+AGENT_TITLE = {"einvoicing": "E-invoicing agent"}
 SOURCE_HUE = 215
 KNOWLEDGE_EYE = (0.35, 0.4, 0.65, 0.7)  # its blink region: x0, y0, x1, y1 as grid fractions
 HUE_SPREAD = 0.35  # how much of the source's own hue variation survives
@@ -114,17 +125,63 @@ def agent_ids() -> list[str]:
     return ids
 
 
+def hand_drawn_sources(agent: str) -> dict[int, tuple[list[str], Grid]]:
+    """The hand-drawn grids of one agent as {size: (source palette, grid)}, with no browser."""
+    letters = list(SOURCE_COLOURS)
+    palette = [SOURCE_COLOURS[letter] for letter in letters]
+    sources: dict[int, tuple[list[str], Grid]] = {}
+    for size in SIZES:
+        art = HAND_DRAWN[agent][size]
+        if len(art) != size or any(len(row) != size for row in art):
+            raise SystemExit(f"{agent}: the hand-drawn {size} grid is not {size} x {size}")
+        unknown = set("".join(art)) - set(letters) - {"."}
+        if unknown:
+            raise SystemExit(f"{agent}: unknown letters {sorted(unknown)} in the {size} grid")
+        grid = [[letters.index(c) if c != "." else -1 for c in row] for row in art]
+        sources[size] = (palette, grid)
+    return sources
+
+
+def hand_drawn_svg(agent: str) -> str:
+    """The source SVG of a hand-drawn agent: one rect per run of cells on the 48 grid."""
+    art = HAND_DRAWN[agent][48]
+    title = f"{AGENT_TITLE[agent]} avatar"
+    rects: list[str] = []
+    for y, row in enumerate(art):
+        x = 0
+        while x < len(row):
+            end = x
+            while end + 1 < len(row) and row[end + 1] == row[x]:
+                end += 1
+            if row[x] != ".":
+                fill = SOURCE_COLOURS[row[x]]
+                rects.append(
+                    f'<rect x="{x}" y="{y}" width="{end - x + 1}" height="1" fill="{fill}"/>'
+                )
+            x = end + 1
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="160" height="160" '
+        f'shape-rendering="crispEdges" role="img" aria-labelledby="{agent}-t">'
+        f'<title id="{agent}-t">{title}</title>{"".join(rects)}</svg>\n'
+    )
+
+
 def rasterise(ids: list[str]) -> dict[str, dict[int, tuple[list[str], Grid]]]:
-    """Render every SVG with Chromium; returns {id: {size: (source palette, grid)}}."""
+    """Render every SVG with Chromium; returns {id: {size: (source palette, grid)}}.
+
+    Hand-drawn agents are read from ``scripts/hand_drawn_avatars.py`` instead.
+    """
     from playwright.sync_api import sync_playwright
 
-    out: dict[str, dict[int, tuple[list[str], Grid]]] = {}
+    out: dict[str, dict[int, tuple[list[str], Grid]]] = {
+        agent: hand_drawn_sources(agent) for agent in ids if agent in HAND_DRAWN
+    }
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         try:
             page = browser.new_page()
             page.set_content("<html><body></body></html>")
-            for agent in ids:
+            for agent in (a for a in ids if a not in HAND_DRAWN):
                 svg = (AVATARS / f"{agent}.svg").read_text(encoding="utf-8")
                 out[agent] = {}
                 for size in SIZES:
@@ -311,6 +368,14 @@ def idle_frames(agent: str, grid: Grid, palette: list[str]) -> list[Grid]:
             region_shift(grid, 0, ears, -1, 0),
             shift(region_shift(grid, 0, ears, 0, 1), 0, -2),
             region_shift(grid, 0, ears, 1, 0),
+        ]
+    if agent == "einvoicing":  # the paper hem flutters, with one little hop
+        hem = int(n * 0.84)
+        return [
+            grid,
+            region_shift(grid, hem, n, 1, 0),
+            shift(grid, 0, -1),
+            region_shift(grid, hem, n, -1, 0),
         ]
     raise ValueError(f"no idle motion for {agent}")
 
@@ -718,6 +783,38 @@ PROPS: dict[str, dict[str, Stamp]] = {
         "tick1": ("......", "......", "o.....", "oo....", ".o...."),
         "tick2": ("....oo", "...oo.", "o.oo..", "oooo..", ".oo..."),
     },
+    # einvoicing: a receipt slip on the ground and a round seal stamp held in its right tendril;
+    # the stamp comes down onto the slip and lifts off, leaving a ring (the seal) behind.
+    "einvoicing": {
+        "slip": (
+            "ooooooooooooo",
+            "owwwwwwwwwwwo",
+            "owdddwwwwwwwo",
+            "owwwwwwwwwwwo",
+            "owddwwwwwwwwo",
+            "owwwwwwwwwwwo",
+            "owwwwwwwwwwwo",
+            "ooooooooooooo",
+        ),
+        "mark": (
+            ".mmm.",
+            "m...m",
+            "m.d.m",
+            "m...m",
+            ".mmm.",
+        ),
+        "stamp": (
+            "..ooo..",
+            ".ohhho.",
+            ".ohhmo.",
+            "..odo..",
+            "..odo..",
+            "ooooooo",
+            "ommmmmo",
+            "odddddo",
+            "ooooooo",
+        ),
+    },
 }
 # fmt: on
 
@@ -968,6 +1065,28 @@ def working_plan(
             [cal, pick, tick2],
             [cal, pick, tick2],
         ]
+        return poses, props
+    if agent == "einvoicing":  # leans in, brings the stamp down on the slip, lifts it off
+        arm = (33, 26, 46, 36)
+        up = tendril_reach(g, role, arm, 0, -1)
+        fwd = tendril_reach(g, role, arm, 1, 1)
+        down = tendril_reach(g, role, arm, 1, 3)
+        poses = [
+            g,
+            lean(up, 1),
+            lean(fwd, 2),
+            shift(lean(down, 2), 0, 1),
+            scale(down, 1.03, 0.96),
+            lean(fwd, 1),
+            lean(up, 1),
+            g,
+        ]
+        slip, mark = ("slip", 35, 39), ("mark", 41, 40)
+        stamp_y = [22, 26, 30, 33, 33, 29, 25, 23]
+        props = []
+        for i in range(WORK_FRAMES):
+            places = [slip, *([mark] if i >= 4 else []), ("stamp", 40, stamp_y[i])]
+            props.append(places)
         return poses, props
     raise ValueError(f"no working loop for {agent}")
 

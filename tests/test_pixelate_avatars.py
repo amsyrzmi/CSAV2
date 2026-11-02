@@ -1,8 +1,9 @@
 """The pixel avatar generator's motion and prop code against the committed data module.
 
 `python -m scripts.pixelate_avatars --check` needs Chromium to rasterise the SVGs, so it is not
-run here. These tests need no browser: they start from the committed rest poses (idle frame 0)
-and rebuild every other frame with the generator's own code. That proves frame 0 is the plain
+run here (the hand-drawn E-invoicing avatar needs no browser and is rebuilt below). These tests
+need no browser: they start from the committed rest poses (idle frame 0) and rebuild every other
+frame with the generator's own code. That proves frame 0 is the plain
 rest pose the motions start from, and that the committed idle and working frames match the code.
 """
 
@@ -82,6 +83,44 @@ def test_working_frame_7_returns_close_to_the_rest_pose(agent: str) -> None:
     poses, _ = pa.working_plan(agent, rest, entry["palette"], role)
     near = [pa.shift(rest, dx, dy) for dx in range(-2, 3) for dy in range(-2, 3)]
     assert poses[7] in near
+
+
+def test_hand_drawn_avatar_rebuilds_the_committed_data_without_a_browser() -> None:
+    assert sorted(pa.HAND_DRAWN) == ["einvoicing"]
+    for agent in pa.HAND_DRAWN:
+        built = pa.build_agent(agent, pa.hand_drawn_sources(agent))
+        assert built == DATA[agent], f"{agent}: regenerate with python -m scripts.pixelate_avatars"
+
+
+def test_hand_drawn_svg_is_the_48_grid_and_both_copies_agree() -> None:
+    svg = pa.hand_drawn_svg("einvoicing")
+    assert (pa.AVATARS / "einvoicing.svg").read_text(encoding="utf-8") == svg
+    assert (pa.UI_GUIDE_AGENTS / "einvoicing.svg").read_text(encoding="utf-8") == svg
+    # Every cell of the 48 art is covered exactly once by a rect of its own colour.
+    cells: dict[tuple[int, int], str] = {}
+    pattern = r'<rect x="(\d+)" y="(\d+)" width="(\d+)" height="1" fill="(#[0-9A-F]{6})"/>'
+    rects = re.findall(pattern, svg)
+    for x, y, width, fill in rects:
+        for dx in range(int(width)):
+            assert (int(x) + dx, int(y)) not in cells
+            cells[(int(x) + dx, int(y))] = fill
+    art = pa.HAND_DRAWN["einvoicing"][48]
+    expected = {
+        (x, y): pa.SOURCE_COLOURS[c]
+        for y, row in enumerate(art)
+        for x, c in enumerate(row)
+        if c != "."
+    }
+    assert cells == expected
+
+
+def test_hand_drawn_grids_share_the_receipt_and_seal_shape_across_sizes() -> None:
+    # Both grids carry the two eyes (white cells), the seal's dark check and the lightest tendril.
+    for size, art in pa.HAND_DRAWN["einvoicing"].items():
+        flat = "".join(art)
+        assert len(art) == size and all(len(row) == size for row in art)
+        for letter in "lamdsow":
+            assert letter in flat, f"{size}: missing {letter}"
 
 
 def test_knowledge_blink_closes_the_eye_but_keeps_the_antenna_tips_white() -> None:

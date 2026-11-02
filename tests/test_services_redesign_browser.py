@@ -584,7 +584,7 @@ async def test_stat_cards_show_real_counts(site: Site) -> None:
     assert not stub.unexpected, stub.unexpected
 
 
-async def test_einvoicing_row_shows_one_status_word_without_avatar(site: Site) -> None:
+async def test_einvoicing_row_shows_one_status_word(site: Site) -> None:
     stub = Stub()
 
     async def body(browser: Any) -> None:
@@ -593,10 +593,8 @@ async def test_einvoicing_row_shows_one_status_word_without_avatar(site: Site) -
         # One status word: "Coming soon" (asserted across the Services tests); no extra "Planned".
         await expect(row.get_by_test_id("services-status-e_invoicing")).to_have_text("Coming soon")
         await expect(row.get_by_text("Planned", exact=True)).to_have_count(0)
-        await expect(row.locator("[data-agent]")).to_have_count(0)
-        await expect(row.locator("svg").first).to_be_visible()  # the plain icon, no chip
         await expect(row.get_by_role("button")).to_have_count(0)
-        # Every other row keeps its own pixel avatar, and nothing else says "Planned".
+        # Every row, this one included, keeps its own pixel avatar; nothing else says "Planned".
         for key, agent in (
             ("customer_support", "support"),
             ("orders_products", "orders"),
@@ -605,9 +603,29 @@ async def test_einvoicing_row_shows_one_status_word_without_avatar(site: Site) -
             ("marketplaces", "ecommerce"),
             ("hr", "hr"),
             ("staff_email", "email"),
+            ("e_invoicing", "einvoicing"),
         ):
             await expect(avatar_of(row_of(page, key))).to_have_attribute("data-agent", agent)
             await expect(row_of(page, key).get_by_text("Planned", exact=True)).to_have_count(0)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_einvoicing_avatar_renders_in_services_row(site: Site) -> None:
+    """The twelfth avatar is really drawn (frame 0 as runs of cells) in the Services row."""
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_services(browser, site, stub)
+        avatar = avatar_of(row_of(page, "e_invoicing"))
+        await expect(avatar).to_have_attribute("data-agent", "einvoicing")
+        await expect(avatar.locator("svg g.fs-px-frame").first).to_be_attached()
+        assert await avatar.locator("svg rect").count() > 40, "the sprite has real cells"
+        box = await avatar.bounding_box()
+        assert box is not None and box["width"] == 48 and box["height"] == 48, box
         assert not diagnostics, diagnostics
         await context.close()
 
