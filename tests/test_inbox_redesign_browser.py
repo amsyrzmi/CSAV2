@@ -1175,3 +1175,25 @@ async def test_how_it_works_text_sits_behind_a_closed_arrow(shell: Shell) -> Non
         assert row_box["y"] < 700, row_box
         await page.get_by_test_id("inbox-howto-toggle").click()
         await expect(notice).to_be_visible()
+
+
+async def test_queue_reply_points_at_its_question_only_while_open_and_a_release_closes_it(
+    shell: Shell,
+) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state) as page:
+        await open_composer(page)
+        queue = page.get_by_role("button", name="Queue reply", exact=True)
+        confirm = page.get_by_test_id("inbox-reply-confirm")
+        # aria-controls names an element only while that element exists.
+        await expect(queue).not_to_have_attribute("aria-controls", re.compile(r".+"))
+        await queue.click()
+        await expect(confirm).to_be_visible()
+        controls = await queue.get_attribute("aria-controls")
+        assert controls and await page.locator(f"[id='{controls}']").count() == 1
+        # The conversation is released to the AI (seen by the next poll): the question goes too.
+        row = next(item for item in state.items if item["id"] == NEWCOMER)
+        row["human_muted"], row["owned_by"] = False, None
+        await expect(confirm).to_have_count(0, timeout=15_000)
+        await expect(page.get_by_label("Human reply", exact=True)).to_have_count(0)
+        assert state.replies == []

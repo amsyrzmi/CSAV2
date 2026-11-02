@@ -35,6 +35,8 @@ export function Thread({
   const [text, setText] = useState("");
   // The reply is queued only after a second, explicit step; Cancel is where focus starts.
   const [confirming, setConfirming] = useState(false);
+  // A poll that shows the conversation released to the AI takes the reply box away: the question goes too.
+  if (confirming && muted === false) setConfirming(false);
   const refocus = useRef(false);
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const queueRef = useRef<HTMLButtonElement>(null);
@@ -207,7 +209,7 @@ export function Thread({
             disabled={blocked} readOnly={confirming} onChange={(event) => setText(event.target.value)} required />
         </label>
         <div className="mt-2 flex justify-start md:justify-end">
-          <button ref={queueRef} className={action} aria-expanded={confirming} aria-controls={`reply-confirm-${id}`}
+          <button ref={queueRef} className={action} aria-expanded={confirming} aria-controls={confirming ? `reply-confirm-${id}` : undefined}
             disabled={blocked || !!detailError || !text.trim()}>Queue reply</button></div>
         {confirming && <div id={`reply-confirm-${id}`} role="group" aria-label="Confirm reply" data-testid="inbox-reply-confirm"
           className="mt-2 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] p-3">
