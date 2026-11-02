@@ -30,7 +30,9 @@ In this round, by phase (the owner previews after each):
 - **Phase A, shared pieces and quick fixes.** The four shared building blocks (section 6.1); avatars without a tile and readable on all themes (6.2); the e-invoicing avatar (6.3); the Password page polish (6.4).
 - **Phase B, chat.** Remove the long limits text and expander; simpler, more interactive chat (6.5).
 - **Phase C, the tabs.** Assistant activity (6.6), Knowledge base (6.7), Business management (6.8), Customer inbox (6.9), Email assistant (6.10), Subscriptions (6.11), Team (6.12).
-- **Phase D, People & HR and the other new features.** Owner-approved ideas 2 to 5 (6.13) and restyling the newly merged screens onto the shell tokens and shared pieces (6.15).
+- **Phase D (ON HOLD by the owner, 2026-11-02: it follows the HR developer's project 1b once that is merged to main, then main is merged here again).** People & HR and the other new features. Owner-approved ideas 2 to 5 (6.13) and restyling the newly merged screens onto the shell tokens and shared pieces (6.15).
+
+**Status 2026-11-02:** the owner approved the design with phases A, B and C to build now and phase D held. Everything merged on `origin/main` (up to `cb13b35`) is already in this branch (merge `03a92c5`); the HR developer's unmerged branch `feat/hr-people-1b` is work in progress and is not merged here.
 
 ## 3. Non-goals and anti-goals
 
