@@ -101,6 +101,9 @@ class Stub:
     strip_requests: list[dict[str, str]] = field(default_factory=list)
     event_requests: list[dict[str, str]] = field(default_factory=list)
     overview_requests: list[dict[str, str]] = field(default_factory=list)
+    # When (time.monotonic) each strip / overview read arrived.
+    strip_times: list[float] = field(default_factory=list)
+    overview_times: list[float] = field(default_factory=list)
     # List reads whose query has every key and value here wait for the event before answering.
     holds: list[tuple[dict[str, str], asyncio.Event]] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
@@ -139,6 +142,8 @@ class Stub:
                     await request_route.fulfill(status=503, json={"detail": "strip outage"})
                     return
                 (self.strip_requests if limit == 100 else self.list_requests).append(query)
+                if limit == 100:
+                    self.strip_times.append(time.monotonic())
                 rows = self.filtered(query)
                 items = rows[:limit]
                 more = len(rows) > limit
@@ -153,6 +158,7 @@ class Stub:
                         return
         elif path == "overview" and request.method == "GET":
             self.overview_requests.append(query)
+            self.overview_times.append(time.monotonic())
             if self.fail_overview:
                 status, data = 503, {"detail": "synthetic overview outage"}
             else:
@@ -916,26 +922,31 @@ async def test_paging_does_not_read_the_strip_or_the_overview_again(site: Site) 
     async def body(browser: Any) -> None:
         context, page, diagnostics = await open_activity(browser, site, stub)
         await expect(page.get_by_test_id("activity-overview")).to_be_visible()
-        strip, overview = len(stub.strip_requests), len(stub.overview_requests)
-        started = time.monotonic()
+        # The first reads (a dev server may mount twice) are the starting point.
+        start = (len(stub.strip_times) - 1, len(stub.overview_times) - 1)
         older, newer = page.get_by_test_id("activity-older"), page.get_by_test_id("activity-newer")
         await older.click()
         await expect(run_row(page, 7)).to_be_visible()
+        # On an older page nothing polls: wait out more than one 5-second tick.
+        strip, overview = len(stub.strip_requests), len(stub.overview_requests)
+        await page.wait_for_timeout(6500)
+        assert len(stub.strip_requests) == strip, stub.strip_requests[strip:]
+        assert len(stub.overview_requests) == overview, stub.overview_requests[overview:]
         await older.click()
         await expect(run_row(page, 2)).to_be_visible()
         await newer.click()
         await newer.click()
         await expect(run_row(page, 12)).to_be_visible()
-        # The five-second timer may fire once on the newest page; paging itself reads nothing.
-        paged_for = time.monotonic() - started
-        assert paged_for < 4.5, "the paging took long enough for the timer to fire"
-        assert len(stub.strip_requests) == strip, stub.strip_requests[strip:]
-        assert len(stub.overview_requests) == overview, stub.overview_requests[overview:]
-        # Back on the newest page the strip is refreshed again by the timer.
+        # Back on the newest page the timer reads them again.
         deadline = time.monotonic() + 12
         while len(stub.strip_requests) == strip:
             assert time.monotonic() < deadline, "the strip never refreshed on the newest page"
             await asyncio.sleep(0.2)
+        # Every read came from the 5-second timer: none was fired by a page change in between.
+        for times, first in ((stub.strip_times, start[0]), (stub.overview_times, start[1])):
+            times = times[first:]
+            gaps = [later - earlier for earlier, later in zip(times, times[1:], strict=False)]
+            assert all(gap >= 4.5 for gap in gaps), gaps
         assert not diagnostics, diagnostics
         await context.close()
 
