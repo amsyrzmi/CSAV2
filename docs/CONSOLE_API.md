@@ -138,16 +138,19 @@ access.
 - Warnings (`AccessWarningOut`, names resolved by the server): `no_approver`,
   `no_manager`, `no_payroll_reviewer`, `manager_without_team` and
   `prepares_and_reviews`. They warn; they never block a save.
-- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`
-  and `private_access.save` events, newest first, with an opaque cursor. Each
+- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`,
+  `private_access.save` and `owner.move` events, newest first, with an opaque cursor. Each
   `access.save` lists `turned_on` and `turned_off` against that person's previous
   `access.save`; a private-area event gives `area` and `area_enabled`. A member who
   is no longer enabled has `actor_name` or `target_name` `null` ("Former member").
-  Each event has a `source`: `page` for a save on this page, or `invitation` for access
-  set on an invitation when it was accepted. An `invitation` event carries the `preset`
+  Each event has a `source`: `page` for a save on this page, `invitation` for access
+  set on an invitation when it was accepted, or `owner_move`. An `invitation` event carries the `preset`
   (otherwise `null`); its actor is whoever chose the preset (a platform admin shows as
   "FourStacks admin"), and `turned_on` is only what the preset added to what the person
-  already had.
+  already had. An `owner_move` event is a change of HR owner: its actor is whoever moved
+  it (a platform admin shows as "FourStacks admin"), its target is the new owner, and
+  `previous_owner_name` is the owner it replaced (`null` for a first owner or once they are
+  no longer an enabled member); it changes no switches.
 - **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
   below) is applied when the invitation is accepted. If it is not, it waits for the HR
   owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an
