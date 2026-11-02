@@ -1,4 +1,4 @@
-"""Invitation and reset email copy: plain text plus a minimal HTML part.
+"""Invitation, reset and HR-owner email copy: plain text plus a minimal HTML part.
 
 Copy follows docs/WRITING_GUIDE.md. Every value is escaped in the HTML part, and the
 subject is kept to one line so a business name can never add a header.
@@ -108,3 +108,27 @@ def reset_mail(*, to: str, name: str, link: str, expires_at: datetime) -> Outgoi
         ]
     )
     return OutgoingMail(to=to, subject="Reset your FourStacks password", text=text, html=html)
+
+
+def owner_moved_mail(
+    *,
+    to: str,
+    name: str,
+    business_name: str,
+    actor_name: str,
+    old_owner_name: str | None,
+    new_owner_name: str,
+    moved_at: datetime,
+    tz: str,
+) -> OutgoingMail:
+    """No link and no HR data: this only says who holds the title now."""
+    moved = (
+        f"{actor_name} made {new_owner_name} the HR owner of {business_name} "
+        f"on {when(moved_at, tz)}"
+    )
+    change = f"{moved}." if old_owner_name is None else f"{moved}, replacing {old_owner_name}."
+    power = "The HR owner controls who has HR access and can see sensitive employee details."
+    text = f"Hello {name},\n\n{change}\n\n{power}\n\nFourStacks\n"
+    html = _html([f"Hello {escape(name)},", escape(change), power, "FourStacks"])
+    subject = f"HR owner changed for {_one_line(business_name)}"
+    return OutgoingMail(to=to, subject=subject, text=text, html=html)

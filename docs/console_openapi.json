@@ -4160,6 +4160,113 @@
         "title": "HrHome",
         "type": "object"
       },
+      "HrOwnerMoveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "expected_owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Owner Id"
+          },
+          "new_owner_id": {
+            "format": "uuid",
+            "title": "New Owner Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "new_owner_id",
+          "expected_owner_id"
+        ],
+        "title": "HrOwnerMoveIn",
+        "type": "object"
+      },
+      "HrOwnerMoveOut": {
+        "additionalProperties": false,
+        "properties": {
+          "mail": {
+            "enum": [
+              "sent",
+              "not_sent",
+              "repeat"
+            ],
+            "title": "Mail",
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/HrOwnerPerson"
+          }
+        },
+        "required": [
+          "owner",
+          "mail"
+        ],
+        "title": "HrOwnerMoveOut",
+        "type": "object"
+      },
+      "HrOwnerOut": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HrOwnerPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "available",
+          "owner"
+        ],
+        "title": "HrOwnerOut",
+        "type": "object"
+      },
+      "HrOwnerPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "usable": {
+            "title": "Usable",
+            "type": "boolean"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "display_name",
+          "usable"
+        ],
+        "title": "HrOwnerPerson",
+        "type": "object"
+      },
       "HrPersonOut": {
         "additionalProperties": false,
         "properties": {
@@ -23478,6 +23585,100 @@
           }
         },
         "summary": "Team",
+        "tags": [
+          "console identity"
+        ]
+      }
+    },
+    "/console/v1/team/hr-owner": {
+      "get": {
+        "operationId": "hr_owner_console_v1_team_hr_owner_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Client Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HrOwnerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hr Owner",
+        "tags": [
+          "console identity"
+        ]
+      },
+      "post": {
+        "operationId": "hr_owner_move_console_v1_team_hr_owner_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HrOwnerMoveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HrOwnerMoveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hr Owner Move",
         "tags": [
           "console identity"
         ]

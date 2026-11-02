@@ -1332,6 +1332,8 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 | POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement (keeps `hr_preset` and who chose it); same scoped authorization |
 | DELETE `/admin/invites/{id}` | — | Revoke invitation; reset-token revocation requires platform admin |
 | GET `/team` | `client_id=UUID` | Selected tenant admin/platform; member list |
+| GET `/team/hr-owner` | `client_id=UUID` | Selected tenant admin/platform; `{available,owner}`, where `owner` is `{user_id,display_name,usable}` or `null`; package off gives 200 with `available=false` and `owner=null` |
+| POST `/team/hr-owner` | `Idempotency-Key`; `{client_id,new_owner_id,expected_owner_id}` | Selected tenant admin/platform; moves the HR owner at once and emails the people affected; `{owner,mail}`. See [Moving the HR owner](#moving-the-hr-owner) |
 | PATCH `/team/{user_id}` | query `client_id`; `{role?,is_enabled?}` | Scoped member change; revoke affected tenant sessions; protect last admin |
 | GET `/admin/users` | bounded `limit` | Platform admin; safe user metadata |
 | PATCH `/admin/users/{id}` | `{is_enabled}` | Platform admin; disable revokes sessions/tokens; protect last admins |
@@ -1383,6 +1385,41 @@ instead. This prevents reset acceptance from bypassing the membership-creation s
 Tenant creation atomically writes the tenant, nine disabled registry rows with current
 Pydantic input schemas, and an actor-attributed audit event. It starts no channel, provider,
 worker or external operation. Deliberate subscription/tenant enablement is separate.
+
+### Moving the HR owner
+
+A tenant admin of the company or a platform admin, who needs no membership, can read and move the
+HR owner. A tenant admin gains no HR data by holding that role: they learn who the owner is and
+nothing else. `usable` is false when the owner's account or membership is disabled or their role is
+`read_only`.
+
+`POST /team/hr-owner` runs `hr_owner_move` (migration 0522) on the app pool. `expected_owner_id` is
+required, and `null` means "no owner yet". A new owner gets no payroll access.
+
+| Answer | Detail | When |
+|---|---|---|
+| 403 | `tenant administrator required` | The caller isn't a tenant admin of this company or a platform admin |
+| 422 | `hr_not_available` | The company's HR package isn't active |
+| 409 | `owner_read_only` | The person chosen is a read-only member |
+| 409 | `owner_leaving` | The person chosen is marked as leaving, or their linked person isn't active |
+| 409 | `owner_unavailable` | The person chosen isn't an enabled member, or is still on their first password |
+| 409 | `owner_unchanged` | The person chosen is already the owner |
+| 409 | `owner_changed` | `expected_owner_id` is not the current owner |
+| 409 | `idempotency_conflict` | The key was already used for something else: another person, another expected owner or another operation |
+| 409 | `try_again` | A rare deadlock with another HR action; nothing changed, so the same request can be sent again |
+
+A 200 means the move has committed. `owner` is who holds the title now, so a retry after a later
+move names the later owner. `mail` is one of:
+
+- `sent`: every email went out.
+- `not_sent`: mail is off, or at least one email failed. The move stands, and the page asks the
+  admin to tell the people affected. Logs carry a failure category only.
+- `repeat`: this key already ran with this request. Nothing changed and no email went out.
+
+One email goes to the old owner (even if they're disabled), the new owner and each enabled tenant
+admin, once per address. It names the company, who made the change, the old and new owner and the
+time in the company's timezone, or the console's default zone if that timezone is invalid. A
+platform admin appears as "FourStacks admin". There is no link and no HR data.
 
 ## Endpoints
 ### `GET /console/v1/traces?limit=50&before=<ISO time>`

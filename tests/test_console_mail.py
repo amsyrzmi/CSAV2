@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from csa.console.mail_templates import invitation_mail, reset_mail
+from csa.console.mail_templates import invitation_mail, owner_moved_mail, reset_mail
 from csa.console.mailer import Mailer, OutgoingMail, SmtpTransport
 from csa.core.settings import Settings
 from structlog.testing import capture_logs
@@ -84,6 +84,61 @@ def test_invitation_subject_keeps_one_line() -> None:
         tz="Asia/Kuala_Lumpur",
     )
     assert mail.subject == "You're invited to Kedai Bcc: someone@example.test on FourStacks"
+
+
+def test_owner_moved_mail_has_no_link_and_names_everyone() -> None:
+    mail = owner_moved_mail(
+        to="aminah@example.test",
+        name="Aminah <Synthetic>",
+        business_name="Kedai\r\nAli & Anak",
+        actor_name="FourStacks admin",
+        old_owner_name="Old <Owner>",
+        new_owner_name="New & Owner",
+        moved_at=EXPIRES,
+        tz="Asia/Jakarta",
+    )
+    assert mail.to == "aminah@example.test"
+    assert mail.subject == "HR owner changed for Kedai Ali & Anak"
+    assert mail.text == (
+        "Hello Aminah <Synthetic>,\n"
+        "\n"
+        "FourStacks admin made New & Owner the HR owner of Kedai\r\nAli & Anak "
+        "on 27 Oct 2026, 08:15, replacing Old <Owner>.\n"
+        "\n"
+        "The HR owner controls who has HR access and can see sensitive employee details.\n"
+        "\n"
+        "FourStacks\n"
+    )
+    assert mail.html == (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        f'<body style="{BODY}">\n'
+        "<p>Hello Aminah &lt;Synthetic&gt;,</p>\n"
+        "<p>FourStacks admin made New &amp; Owner the HR owner of Kedai\r\nAli &amp; Anak "
+        "on 27 Oct 2026, 08:15, replacing Old &lt;Owner&gt;.</p>\n"
+        "<p>The HR owner controls who has HR access and can see sensitive employee details.</p>\n"
+        "<p>FourStacks</p>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    for part in (mail.text, mail.html):
+        assert "http" not in part.replace('lang="en"', "") and "<a " not in part
+
+
+def test_owner_moved_mail_first_owner() -> None:
+    mail = owner_moved_mail(
+        to="aminah@example.test",
+        name="Aminah",
+        business_name="Kedai Ali",
+        actor_name="Synthetic Admin",
+        old_owner_name=None,
+        new_owner_name="Aminah",
+        moved_at=EXPIRES,
+        tz="Asia/Kuala_Lumpur",
+    )
+    sentence = "Synthetic Admin made Aminah the HR owner of Kedai Ali on 27 Oct 2026, 09:15."
+    assert f"\n{sentence}\n" in mail.text and f"<p>{sentence}</p>" in mail.html
+    assert "replacing" not in mail.text and "replacing" not in mail.html
 
 
 def test_reset_template_snapshot() -> None:
