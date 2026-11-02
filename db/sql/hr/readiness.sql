@@ -32,5 +32,7 @@ SELECT current_user = 'csa_app' AND NOT rolsuper AND NOT rolbypassrls AS safe_ro
     AND to_regprocedure('public.hr_document_add(uuid,uuid,uuid,uuid,text,text,text,text,integer,text)') IS NOT NULL
     AND to_regprocedure('public.hr_document_remove(uuid,uuid)') IS NOT NULL
     AND to_regprocedure('public.hr_document_storage_names(uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_leavers_due(uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_finish_leaver(uuid,uuid)') IS NOT NULL
     AS schema_ready
 FROM pg_roles WHERE rolname=current_user;

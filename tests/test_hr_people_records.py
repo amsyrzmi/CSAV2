@@ -10,6 +10,7 @@ import io
 import re
 import zipfile
 from collections.abc import Iterator, Mapping
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -19,7 +20,7 @@ import psycopg
 import pytest
 from csa.console.auth import build_identity_router
 from csa.console.security import digest
-from csa.core import crypto, settings
+from csa.core import crypto, db, settings
 from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.hr import documents
@@ -28,17 +29,23 @@ from csa.hr.automation_models import PersonalSave
 from csa.hr.operations import HrOperations
 from csa.hr.personal import fingerprint_payload, personal_fingerprint
 from fastapi import FastAPI
+from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
 from tests.test_hr_people import (
+    changes,
+    get_ok,
     make_people_manager,
+    name_users,
+    ok,
+    person_row,
     read_as,
     read_as_other_tenant_owner,
     refused,
 )
-from tests.test_hr_persistence import HrWorld, hr_database, world
+from tests.test_hr_persistence import HrWorld, hr_database, workflow_grant, world
 
 __all__ = ["hr_database", "world"]
 pytestmark = [requires_docker, pytest.mark.asyncio]
@@ -1516,3 +1523,595 @@ async def test_document_list_for_a_person_outside_the_tenant_is_not_found(
         assert (mine.status_code, mine.json()) == (200, {"items": []})
         response = await foreign.get(f"{PEOPLE}/{own}/documents")
         assert (response.status_code, response.json()) == (404, {"detail": "resource_unavailable"})
+
+
+# ---- Leaving, finishing leavers and rehire --------------------------------------------------
+
+LEAVER_FUNCTIONS = ("hr_leavers_due(uuid)", "hr_finish_leaver(uuid,uuid)")
+
+
+async def db_today(world: HrWorld) -> date:
+    """Today in Kuala Lumpur, as the database counts it."""
+    rows = await world.q("SELECT (now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date AS today")
+    return rows[0]["today"]
+
+
+async def versioned(world: HrWorld, operation: str, employee: UUID, **extra: Any) -> dict[str, Any]:
+    row = await person_row(world, employee)
+    return {
+        "operation": operation,
+        "employee_id": str(employee),
+        "expected_version": row["version"],
+        **extra,
+    }
+
+
+async def leave_body(
+    world: HrWorld,
+    employee: UUID,
+    last_day: date,
+    *,
+    reason: str = "resigned",
+    note: str | None = None,
+    new_manager: UUID | None = None,
+) -> dict[str, Any]:
+    return await versioned(
+        world,
+        "person.leave",
+        employee,
+        last_day=last_day.isoformat(),
+        reason=reason,
+        note=note,
+        reports_new_manager=str(new_manager) if new_manager else None,
+    )
+
+
+async def finish(world: HrWorld, employee: UUID, *, setting: UUID | None = None) -> str:
+    """hr_finish_leaver for `world.tenant`, in a transaction whose app.client_id is `setting`."""
+    async with tx(world.service.pool, str(setting or world.tenant)) as conn:
+        row = await q.fetch_one("hr/leaver_finish.sql", (world.tenant, employee), conn=conn)
+    return row["outcome"]
+
+
+async def set_last_day(world: HrWorld, employee: UUID, day: date) -> None:
+    await world.q(
+        "UPDATE hr_employees SET last_day=%s WHERE client_id=%s AND id=%s",
+        (day, world.tenant, employee),
+    )
+
+
+async def access_rows(world: HrWorld, user: UUID, tenant: UUID) -> int:
+    rows = await world.q(
+        "SELECT (SELECT count(*) FROM hr_grants WHERE client_id=%s AND user_id=%s)"
+        " + (SELECT count(*) FROM hr_workflow_grants WHERE client_id=%s AND user_id=%s)"
+        " + (SELECT count(*) FROM hr_private_grants WHERE client_id=%s AND user_id=%s)"
+        " + (SELECT count(*) FROM hr_client_owners WHERE client_id=%s AND user_id=%s) AS n",
+        (tenant, user) * 4,
+    )
+    return rows[0]["n"]
+
+
+async def membership_enabled(world: HrWorld, user: UUID, tenant: UUID) -> bool:
+    rows = await world.q(
+        "SELECT is_enabled FROM console_memberships WHERE user_id=%s AND client_id=%s",
+        (user, tenant),
+    )
+    return rows[0]["is_enabled"]
+
+
+async def test_mark_leaving_records_last_day_reason_and_history(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    last = await db_today(world) + timedelta(days=10)
+    before = await person_row(world, staff)
+    body = await leave_body(world, staff, last, reason="other", note="Moving abroad")
+    receipt = await ok(world, "owner", body)
+    assert receipt["operation"] == "person.leave" and receipt["resource_id"] == str(staff)
+    after = await person_row(world, staff)
+    assert after["version"] == before["version"] + 1 == receipt["version"]
+    assert (after["last_day"], after["leaving_reason"], after["leaving_note"]) == (
+        last,
+        "other",
+        "Moving abroad",
+    )
+    assert after["is_active"] is True and after["left_at"] is None
+    assert after["reports_new_manager"] is None and after["reports_moved_at"] is None
+    history = await changes(world, staff)
+    assert history[-1]["changed_by"] == world.users["owner"]
+    assert history[-1]["changes"] == {
+        "last_day": {"old": None, "new": last.isoformat()},
+        "leaving_reason": {"old": None, "new": "other"},
+    }
+    shown = await get_ok(world, "owner", f"{PEOPLE}/{staff}")
+    assert shown["person"]["status"] == "leaving"
+    assert shown["person"]["last_day"] == last.isoformat()
+    assert shown["person"]["leaving"] == {"reason": "other", "note": "Moving abroad"}
+    served = await get_ok(world, "owner", f"{PEOPLE}/{staff}/history")
+    assert served["items"][0]["fields"] == [
+        {"field": "last_day", "old": None, "new": last.isoformat()},
+        {"field": "leaving_reason", "old": None, "new": "other"},
+    ]
+    # The same key again returns the first receipt.
+    key = uuid4()
+    again = await leave_body(world, staff, last + timedelta(days=1))
+    first = await world.call("owner", "POST", OPERATIONS, again, key=key)
+    second = await world.call("owner", "POST", OPERATIONS, again, key=key)
+    assert first.status_code == second.status_code == 200, second.text
+    assert second.json() == {**first.json(), "duplicate": True}
+    # A people manager may mark someone as leaving too; a staff member may not.
+    await make_people_manager(world)
+    await ok(world, "operator", await leave_body(world, staff, last))
+    await refused(world, "staff", await leave_body(world, staff, last), 404, "resource_unavailable")
+
+
+async def test_leave_refuses_past_last_day_and_inactive_person(world: HrWorld) -> None:
+    today = await db_today(world)
+    staff, outsider = world.employees["staff"], world.employees["outsider"]
+    yesterday = today - timedelta(days=1)
+    await refused(world, "owner", await leave_body(world, staff, yesterday), 409, "last_day_past")
+    await world.q(
+        "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id=%s",
+        (world.tenant, outsider),
+    )
+    await refused(
+        world, "owner", await leave_body(world, outsider, today), 409, "person_not_active"
+    )
+    # A stale version, an unknown person and a note-less Other are refused too.
+    stale = await leave_body(world, staff, today)
+    await ok(world, "owner", await leave_body(world, staff, today))
+    await refused(world, "owner", stale, 409, "person_changed")
+    unknown = {**stale, "employee_id": str(uuid4())}
+    await refused(world, "owner", unknown, 404, "resource_unavailable")
+    other = await leave_body(world, staff, today, reason="other")
+    response = await op_raw(world, "owner", other)
+    assert response.status_code == 422, response.text
+
+
+async def op_raw(world: HrWorld, who: str, body: dict[str, Any]) -> httpx.Response:
+    return await world.call(who, "POST", OPERATIONS, body)
+
+
+async def test_leave_refuses_new_manager_inside_the_leavers_tree(world: HrWorld) -> None:
+    today = await db_today(world)
+    leaver, staff = world.employees["manager"], world.employees["staff"]
+    grand = uuid4()  # a report's report
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,manager_id) "
+        "VALUES (%s,%s,'Synthetic Grand Report',%s)",
+        (world.tenant, grand, staff),
+    )
+    for inside in (leaver, staff, grand):
+        body = await leave_body(world, leaver, today, new_manager=inside)
+        await refused(world, "owner", body, 409, "manager_loop")
+    gone = uuid4()
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,is_active) "
+        "VALUES (%s,%s,'Synthetic Gone',false)",
+        (world.tenant, gone),
+    )
+    for unavailable in (gone, uuid4()):
+        body = await leave_body(world, leaver, today, new_manager=unavailable)
+        await refused(world, "owner", body, 409, "manager_unavailable")
+    outsider = world.employees["outsider"]
+    await ok(world, "owner", await leave_body(world, leaver, today, new_manager=outsider))
+    assert (await person_row(world, leaver))["reports_new_manager"] == outsider
+    # A people manager may not pick themself as the reports' new manager; the owner may.
+    await make_people_manager(world, "outsider")
+    mine = await leave_body(world, leaver, today, new_manager=outsider)
+    await refused(world, "outsider", mine, 409, "manager_is_you")
+    await ok(world, "outsider", await leave_body(world, leaver, today, new_manager=None))
+    assert (await person_row(world, leaver))["reports_new_manager"] is None
+
+
+async def test_last_hr_owner_cannot_leave_until_another_owner_exists(world: HrWorld) -> None:
+    today = await db_today(world)
+    owner = world.employees["owner"]
+    await refused(world, "owner", await leave_body(world, owner, today), 409, "last_owner_leaving")
+    await make_people_manager(world)
+    await refused(
+        world, "operator", await leave_body(world, owner, today), 409, "last_owner_leaving"
+    )
+    assert (await person_row(world, owner))["last_day"] is None
+    # hr_client_owners holds one owner per company: recording another owner moves the row.
+    await world.q(
+        "UPDATE hr_client_owners SET user_id=%s WHERE client_id=%s",
+        (world.users["manager"], world.tenant),
+    )
+    await ok(world, "manager", await leave_body(world, owner, today))
+    assert (await person_row(world, owner))["last_day"] == today
+
+
+async def test_leave_undo_until_last_day_only(world: HrWorld) -> None:
+    today = await db_today(world)
+    leaver, outsider = world.employees["manager"], world.employees["outsider"]
+    body = await leave_body(world, leaver, today + timedelta(days=3), new_manager=outsider)
+    await ok(world, "owner", body)
+    undone = await ok(world, "owner", await versioned(world, "person.leave_undo", leaver))
+    row = await person_row(world, leaver)
+    assert row["version"] == undone["version"]
+    leaving = ("last_day", "leaving_reason", "leaving_note", "reports_new_manager")
+    assert all(row[column] is None for column in (*leaving, "reports_moved_at", "left_at"))
+    assert (await changes(world, leaver))[-1]["changes"] == {
+        "last_day": {"old": (today + timedelta(days=3)).isoformat(), "new": None},
+        "leaving_reason": {"old": "resigned", "new": None},
+    }
+    # Nothing to undo.
+    nothing = await versioned(world, "person.leave_undo", leaver)
+    await refused(world, "owner", nothing, 409, "leaving_final")
+    # Still allowed on the last day itself, even after the reports moved.
+    await ok(world, "owner", await leave_body(world, leaver, today, new_manager=outsider))
+    assert await finish(world, leaver) == "moved"
+    await ok(world, "owner", await versioned(world, "person.leave_undo", leaver))
+    assert (await person_row(world, leaver))["reports_moved_at"] is None
+    # Not once the last day has passed, and not after finishing.
+    await ok(world, "owner", await leave_body(world, leaver, today))
+    await set_last_day(world, leaver, today - timedelta(days=1))
+    late = await versioned(world, "person.leave_undo", leaver)
+    await refused(world, "owner", late, 409, "leaving_final")
+    # Re-marking cleared reports_moved_at, so the move runs again (there are no reports left).
+    assert await finish(world, leaver) == "moved_finished"
+    final = await versioned(world, "person.leave_undo", leaver)
+    await refused(world, "owner", final, 409, "leaving_final")
+
+
+async def test_finish_leaver_waits_for_the_day_after_and_runs_once(world: HrWorld) -> None:
+    today = await db_today(world)
+    names = await name_users(world)
+    leaver, outsider = world.employees["manager"], world.employees["outsider"]
+    reports = (world.employees["staff"], world.employees["owner"])
+    user = world.users["manager"]
+    # Access in this company to remove: the fixture's grants plus a workflow row and an area.
+    await workflow_grant(world, "manager", "leave", "decide", "assigned_manager")
+    await world.q(
+        "INSERT INTO hr_private_grants(client_id,user_id,area,approved_by) "
+        "VALUES (%s,%s,'attendance',%s)",
+        (world.tenant, user, world.users["owner"]),
+    )
+    # The same account in another company: membership, a grant and a session there stay.
+    other_session = uuid4()
+    await world.q(
+        "INSERT INTO console_memberships(user_id,client_id,role) VALUES (%s,%s,'tenant_staff')",
+        (user, world.other_tenant),
+    )
+    await world.q(
+        "INSERT INTO hr_grants(client_id,user_id,action,scope) "
+        "VALUES (%s,%s,'training.read','self')",
+        (world.other_tenant, user),
+    )
+    await world.q(
+        "INSERT INTO console_sessions(id,user_id,token_hash,csrf_hash,client_id,expires_at) "
+        "VALUES (%s,%s,%s,%s,%s,now()+interval '1 hour')",
+        (other_session, user, digest(f"t-{uuid4()}"), digest(f"c-{uuid4()}"), world.other_tenant),
+    )
+    granted = await access_rows(world, user, world.tenant)
+    assert granted >= 5
+
+    # The last day is today: the reports move, and the leaver keeps every access all day.
+    await ok(world, "owner", await leave_body(world, leaver, today, new_manager=outsider))
+    assert await finish(world, leaver) == "moved"
+    for report in reports:
+        assert (await person_row(world, report))["manager_id"] == outsider
+        moved = (await changes(world, report))[-1]
+        assert moved["changed_by"] is None
+        assert moved["changes"] == {"manager": {"old": "Synthetic Staff", "new": "Synthetic Staff"}}
+    row = await person_row(world, leaver)
+    assert row["is_active"] is True and row["reports_moved_at"] is not None
+    assert row["left_at"] is None
+    assert await finish(world, leaver) == "none"
+    assert await access_rows(world, user, world.tenant) == granted
+    assert await membership_enabled(world, user, world.tenant)
+    assert (await get_ok(world, "manager", f"{PEOPLE}/{leaver}"))["person"]["status"] == "leaving"
+
+    # The day after: finished, once.
+    await set_last_day(world, leaver, today - timedelta(days=1))
+    version = (await person_row(world, leaver))["version"]
+    assert await finish(world, leaver) == "finished"
+    row = await person_row(world, leaver)
+    assert row["is_active"] is False and row["left_at"] is not None
+    assert row["version"] == version + 1
+    assert await access_rows(world, user, world.tenant) == 0
+    assert not await membership_enabled(world, user, world.tenant)
+    sessions = await world.q(
+        "SELECT id, revoked_at FROM console_sessions WHERE user_id=%s", (user,)
+    )
+    revoked = {s["id"]: s["revoked_at"] is not None for s in sessions}
+    assert revoked == {world.sessions["manager"]: True, other_session: False}
+    # Another company's membership and grant for the same user are untouched.
+    assert await membership_enabled(world, user, world.other_tenant)
+    assert await access_rows(world, user, world.other_tenant) == 1
+    # The account link stays, so History and documents still name the account.
+    link = await world.q(
+        "SELECT user_id FROM hr_employee_accounts WHERE client_id=%s AND employee_id=%s",
+        (world.tenant, leaver),
+    )
+    assert link == [{"user_id": user}]
+    # The audit: history by "System" through the trigger, and one console_audit row.
+    finished = (await changes(world, leaver))[-1]
+    assert finished == {"changes": {"active": {"old": "true", "new": "false"}}, "changed_by": None}
+    history = await get_ok(world, "owner", f"{PEOPLE}/{leaver}/history")
+    assert history["items"][0]["actor_name"] == "System"
+    audit = await world.q(
+        "SELECT actor_id, action, target_id, details FROM console_audit "
+        "WHERE client_id=%s AND action='hr.leaver_finished'",
+        (world.tenant,),
+    )
+    assert audit == [
+        {
+            "actor_id": None,
+            "action": "hr.leaver_finished",
+            "target_id": str(leaver),
+            "details": {"employee_id": str(leaver), "user_id": str(user)},
+        }
+    ]
+    assert names["manager"] not in str(audit)
+    assert await finish(world, leaver) == "none"
+    # The leaver's own session no longer opens the HR area.
+    refused_now = await world.call("manager", "GET", f"{PEOPLE}/{leaver}")
+    assert refused_now.status_code in (401, 404), refused_now.text
+
+    # Two calls at the same moment finish once: the second cannot take the company lock.
+    late = uuid4()
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name,last_day,leaving_reason) "
+        "VALUES (%s,%s,'Synthetic Late Leaver',%s,'retired')",
+        (world.tenant, late, today - timedelta(days=1)),
+    )
+    async with tx(world.service.pool, str(world.tenant)) as first:
+        one = await q.fetch_one("hr/leaver_finish.sql", (world.tenant, late), conn=first)
+        async with tx(world.service.pool, str(world.tenant)) as second:
+            two = await q.fetch_one("hr/leaver_finish.sql", (world.tenant, late), conn=second)
+    assert (one["outcome"], two["outcome"]) == ("moved_finished", "none")
+    assert await finish(world, late) == "none"
+    audits = await world.q(
+        "SELECT count(*) AS n FROM console_audit WHERE client_id=%s AND target_id=%s",
+        (world.tenant, str(late)),
+    )
+    assert audits == [{"n": 1}]
+
+
+async def test_finish_leaver_requires_the_tenant_setting(world: HrWorld) -> None:
+    today = await db_today(world)
+    leaver = world.employees["staff"]
+    await ok(world, "owner", await leave_body(world, leaver, today))
+    await set_last_day(world, leaver, today - timedelta(days=1))
+    before = await person_row(world, leaver)
+    assert await finish(world, leaver, setting=world.other_tenant) == "none"
+    async with world.service.pool.connection() as conn:
+        row = await q.fetch_one("hr/leaver_finish.sql", (world.tenant, leaver), conn=conn)
+        assert row["outcome"] == "none"
+    assert await person_row(world, leaver) == before
+    assert await membership_enabled(world, world.users["staff"], world.tenant)
+    # The due list is the same for every caller; the finish itself needs the tenant.
+    async with world.service.pool.connection() as conn:
+        due = await q.fetch_all("hr/leavers_due.sql", (world.tenant,), conn=conn)
+    assert due == [{"client_id": world.tenant, "employee_id": leaver}]
+    assert await finish(world, leaver) == "moved_finished"
+
+
+async def test_leaving_fields_by_viewer(world: HrWorld) -> None:
+    today = await db_today(world)
+    staff = world.employees["staff"]
+    last = today + timedelta(days=5)
+    await ok(world, "owner", await leave_body(world, staff, last, reason="dismissed", note="Note"))
+    # The manager reads the directory, so sees the person; the operator is a colleague.
+    await world.grant("manager", "directory.read", "hr_operator")
+    expected = {
+        "operator": ("active", None, None),
+        "manager": ("leaving", last.isoformat(), None),
+        "staff": ("leaving", last.isoformat(), None),
+        "owner": ("leaving", last.isoformat(), {"reason": "dismissed", "note": "Note"}),
+    }
+    for who, (status, last_day, leaving) in expected.items():
+        person = (await get_ok(world, who, f"{PEOPLE}/{staff}"))["person"]
+        assert (person["status"], person["last_day"], person["leaving"]) == (
+            status,
+            last_day,
+            leaving,
+        ), who
+    rows = await read_as(world, "operator", "hr/people_rows.sql")
+    colleague = next(r for r in rows if r["employee_id"] == staff)
+    assert (colleague["last_day"], colleague["leaving_reason"], colleague["leaving_note"]) == (
+        None,
+        None,
+        None,
+    )
+    managed = next(
+        r
+        for r in await read_as(world, "manager", "hr/people_rows.sql")
+        if r["employee_id"] == staff
+    )
+    assert (managed["last_day"], managed["leaving_reason"], managed["leaving_note"]) == (
+        last,
+        None,
+        None,
+    )
+    # The People list's "leaving" filter is what each viewer can tell.
+    hr_list = await get_ok(world, "owner", f"{PEOPLE}?status=leaving")
+    assert [p["employee_id"] for p in hr_list["items"]] == [str(staff)]
+    colleague_list = await get_ok(world, "operator", f"{PEOPLE}?status=leaving")
+    assert colleague_list["items"] == []
+
+
+async def finish_now(world: HrWorld, employee: UUID) -> None:
+    """Mark as leaving today, let the day pass, and finish."""
+    today = await db_today(world)
+    await ok(world, "owner", await leave_body(world, employee, today))
+    await set_last_day(world, employee, today - timedelta(days=1))
+    assert await finish(world, employee) in {"finished", "moved_finished"}
+
+
+async def test_rehire_reactivates_without_access(world: HrWorld) -> None:
+    today = await db_today(world)
+    staff, user = world.employees["staff"], world.users["staff"]
+    active = await versioned(world, "person.rehire", staff, start_date=today.isoformat())
+    await refused(world, "owner", active, 409, "not_left")
+    await finish_now(world, staff)
+    start = today + timedelta(days=7)
+    body = await versioned(world, "person.rehire", staff, start_date=start.isoformat())
+    receipt = await ok(world, "owner", body)
+    row = await person_row(world, staff)
+    assert receipt["version"] == row["version"]
+    assert row["is_active"] is True and row["start_date"] == start
+    leaving = ("last_day", "leaving_reason", "leaving_note", "reports_new_manager")
+    assert all(row[column] is None for column in (*leaving, "reports_moved_at", "left_at"))
+    assert row["manager_id"] == world.employees["manager"]  # still active, so kept
+    # No account or grant comes back.
+    assert await access_rows(world, user, world.tenant) == 0
+    assert not await membership_enabled(world, user, world.tenant)
+    shown = (await get_ok(world, "owner", f"{PEOPLE}/{staff}"))["person"]
+    assert (shown["status"], shown["last_day"], shown["leaving"]) == ("starting", None, None)
+    latest = (await changes(world, staff))[-1]["changes"]
+    assert latest["active"] == {"old": "false", "new": "true"}
+    assert latest["start_date"]["new"] == start.isoformat()
+    assert latest["last_day"]["new"] is None and latest["leaving_reason"]["new"] is None
+    # A stale version is refused.
+    await refused(world, "owner", body, 409, "person_changed")
+
+
+async def test_rehire_drops_an_inactive_manager(world: HrWorld) -> None:
+    today = await db_today(world)
+    staff, owner, manager = (world.employees[n] for n in ("staff", "owner", "manager"))
+    learning = (
+        await world.q(
+            "SELECT id FROM hr_departments WHERE client_id=%s AND name='Learning'", (world.tenant,)
+        )
+    )[0]["id"]
+    await world.q(
+        "UPDATE hr_departments SET archived_at=now() WHERE client_id=%s AND id=%s",
+        (world.tenant, learning),
+    )
+    await world.q(
+        "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id IN (%s,%s)",
+        (world.tenant, staff, manager),
+    )
+    await make_people_manager(world)
+    body = await versioned(world, "person.rehire", staff, start_date=today.isoformat())
+    await ok(world, "operator", body)
+    row = await person_row(world, staff)
+    assert row["is_active"] is True and row["manager_id"] is None
+    assert row["department_id"] == learning  # kept, though archived
+    assert (await changes(world, staff))[-1]["changes"]["manager"] == {
+        "old": "Synthetic Staff",
+        "new": None,
+    }
+    # The owner's employee still reports to the (inactive) manager; with the manager rehired
+    # first, a rehire keeps an active manager.
+    await world.q(
+        "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id=%s",
+        (world.tenant, owner),
+    )
+    for person in (manager, owner):
+        rehire = await versioned(world, "person.rehire", person, start_date="2026-01-05")
+        await ok(world, "operator", rehire)
+    assert (await person_row(world, owner))["manager_id"] == manager
+
+
+async def mark_due(world: HrWorld, tenant: UUID, employee: UUID, day: date) -> None:
+    """A last day written directly (the API refuses a past one)."""
+    await world.q(
+        "UPDATE hr_employees SET last_day=%s, leaving_reason='resigned' "
+        "WHERE client_id=%s AND id=%s",
+        (day, tenant, employee),
+    )
+
+
+async def test_worker_leavers_round_finishes_due_rows(
+    world: HrWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.worker import main as worker
+
+    today = await db_today(world)
+    staff, outsider = world.employees["staff"], world.employees["outsider"]
+    yesterday = today - timedelta(days=1)
+    await mark_due(world, world.tenant, staff, yesterday)
+    await mark_due(world, world.tenant, outsider, today)
+    await mark_due(world, world.other_tenant, staff, yesterday)
+    app_pool = db.build_pool(
+        make_conninfo(world.dsn, user="csa_app", password="synthetic_hr_app"), max_size=2
+    )
+    await app_pool.open(wait=True)
+    real_tx = worker.tx
+
+    def failing_tx(pool: Any, client_id: str) -> Any:
+        if client_id == str(world.other_tenant):
+            raise RuntimeError("synthetic failure")
+        return real_tx(pool, client_id)
+
+    try:
+        # One failing row is logged by id and does not stop the others.
+        monkeypatch.setattr(worker, "tx", failing_tx)
+        with capture_logs() as logs:
+            seen, changed = await worker.hr_leavers_round(app_pool)
+        assert seen >= 3 and changed >= 2
+        assert not (await person_row(world, staff))["is_active"]
+        moved = await person_row(world, outsider)
+        assert moved["is_active"] and moved["reports_moved_at"] is not None
+        failed = [log for log in logs if log["event"] == "hr_leaver_finish_failed"]
+        assert {(log["client_id"], log["employee_id"]) for log in failed} >= {
+            (str(world.other_tenant), str(staff))
+        }
+        summary = [log for log in logs if log["event"] == "hr_leavers_round"]
+        assert len(summary) == 1 and summary[0]["seen"] == seen
+        assert summary[0]["changed"] == changed and summary[0]["failed"] >= 1
+        assert "Synthetic" not in str(logs)
+        monkeypatch.setattr(worker, "tx", real_tx)
+        await worker.hr_leavers_round(app_pool)
+        other = await world.q(
+            "SELECT is_active FROM hr_employees WHERE client_id=%s AND id=%s",
+            (world.other_tenant, staff),
+        )
+        assert other == [{"is_active": False}]
+        async with app_pool.connection() as conn:
+            due = await q.fetch_all("hr/leavers_due.sql", (None,), conn=conn)
+        mine = {(world.tenant, staff), (world.tenant, outsider), (world.other_tenant, staff)}
+        assert not mine & {(r["client_id"], r["employee_id"]) for r in due}
+    finally:
+        await app_pool.close()
+
+
+async def test_home_maintenance_finishes_this_companys_leavers(world: HrWorld) -> None:
+    today = await db_today(world)
+    staff = world.employees["staff"]
+    for tenant in (world.tenant, world.other_tenant):
+        await mark_due(world, tenant, staff, today - timedelta(days=1))
+    await ok(world, "owner", {"operation": "automation.run"})
+    assert not (await person_row(world, staff))["is_active"]
+    assert (await changes(world, staff))[-1]["changed_by"] is None  # the system, not the owner
+    other = await world.q(
+        "SELECT is_active FROM hr_employees WHERE client_id=%s AND id=%s",
+        (world.other_tenant, staff),
+    )
+    assert other == [{"is_active": True}]
+    assert not await membership_enabled(world, world.users["staff"], world.tenant)
+
+
+async def test_leaver_functions_are_pinned(world: HrWorld) -> None:
+    roles = ("csa_app", "csa_ro", "csa_identity", "csa_hr_maintenance", "public")
+    for signature in LEAVER_FUNCTIONS:
+        rows = await world.q(
+            "SELECT p.prosecdef, p.proconfig, "
+            + ", ".join(
+                f"has_function_privilege('{role}', p.oid, 'EXECUTE') AS {role}" for role in roles
+            )
+            + " FROM pg_proc p WHERE p.oid = to_regprocedure(%s)",
+            (f"public.{signature}",),
+        )
+        assert len(rows) == 1, signature
+        assert rows[0]["prosecdef"] is True, signature
+        assert rows[0]["proconfig"] == ["search_path=pg_catalog, public, pg_temp"], signature
+        assert rows[0]["csa_app"] is True, signature
+        assert not any(rows[0][role] for role in roles[1:]), signature
+    # The leaving columns' checks.
+    staff = world.employees["staff"]
+    for statement in (
+        "UPDATE hr_employees SET last_day=current_date, leaving_reason='fired'",
+        "UPDATE hr_employees SET last_day=current_date, leaving_reason='other'",
+        "UPDATE hr_employees SET last_day=current_date, leaving_reason='other', "
+        "leaving_note=repeat('x',201)",
+        "UPDATE hr_employees SET last_day=current_date",
+        "UPDATE hr_employees SET leaving_reason='resigned'",
+    ):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await world.q(
+                statement + " WHERE client_id=%s AND id=%s",  # type: ignore[arg-type]
+                (world.tenant, staff),
+            )

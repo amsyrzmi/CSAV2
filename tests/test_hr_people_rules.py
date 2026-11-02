@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from csa.hr.automation_models import PersonalSave, PersonalValues
+from csa.hr.automation_models import PersonalSave, PersonalValues, PersonLeave
 from csa.hr.people_contracts import HrPersonOut
 from csa.hr.people_rules import (
     history_fields,
@@ -38,6 +38,17 @@ def test_status_active_starting_left():
     assert person_status(True, D, D) == "active"
     assert person_status(True, D + timedelta(days=1), D) == "starting"
     assert person_status(False, D - timedelta(days=9), D) == "left"
+
+
+def test_person_status_leaving_until_last_day():
+    assert person_status(True, None, D, D + timedelta(days=3)) == "leaving"
+    assert person_status(True, None, D, D) == "leaving"  # all of the last day
+    # The day after, the person stays active until the maintenance finishes them.
+    assert person_status(True, None, D, D - timedelta(days=1)) == "active"
+    assert person_status(False, None, D, D) == "left"
+    # Leaving wins over starting; no last day keeps the 1a statuses.
+    assert person_status(True, D + timedelta(days=2), D, D + timedelta(days=9)) == "leaving"
+    assert person_status(True, D + timedelta(days=2), D, None) == "starting"
 
 
 def test_kl_today_uses_malaysia_time():
@@ -461,3 +472,61 @@ def test_sniff_refuses_content_that_lies_or_is_empty(name: str, data: bytes, cod
 
     with pytest.raises(HrPolicyError, match=code):
         sniff(data, name)
+
+
+def _leave(**kw: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "operation": "person.leave",
+        "employee_id": str(uuid4()),
+        "expected_version": 2,
+        "last_day": "2026-11-30",
+        "reason": "resigned",
+    }
+    return {**base, **kw}
+
+
+def test_leave_body_requires_note_for_other() -> None:
+    plain = PersonLeave.model_validate(_leave())
+    assert plain.note is None and plain.reports_new_manager is None
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="other"))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="other", note="   "))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="other", note="x" * 201))
+    other = PersonLeave.model_validate(_leave(reason="other", note=" Moving abroad "))
+    assert (other.reason, other.note) == ("other", "Moving abroad")
+    assert PersonLeave.model_validate(_leave(note="x" * 200)).note == "x" * 200
+    for reason in ("resigned", "contract_ended", "dismissed", "retired", "other"):
+        PersonLeave.model_validate(_leave(reason=reason, note="Synthetic note"))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="fired"))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(expected_version=None))
+
+
+def test_person_from_row_leaving_fields_by_what_the_row_holds() -> None:
+    last = D + timedelta(days=5)
+    hr = person_from_row(
+        _row(last_day=last, leaving_reason="other", leaving_note="Moving abroad", version=1), D, {}
+    )
+    assert (hr.status, hr.last_day) == ("leaving", last)
+    assert hr.leaving is not None and (hr.leaving.reason, hr.leaving.note) == (
+        "other",
+        "Moving abroad",
+    )
+    # A manager's row: the last day, no reason.
+    managed = person_from_row(_row(last_day=last, leaving_reason=None, leaving_note=None), D, {})
+    assert (managed.status, managed.last_day, managed.leaving) == ("leaving", last, None)
+    # A colleague's row (and every 1a-shaped row): active, nothing about leaving.
+    colleague = person_from_row(_row(), D, {})
+    assert (colleague.status, colleague.last_day, colleague.leaving) == ("active", None, None)
+
+
+def test_history_fields_place_the_leaving_fields() -> None:
+    changes = {
+        "leaving_reason": {"old": None, "new": "resigned"},
+        "last_day": {"old": None, "new": "2026-11-30"},
+        "active": {"old": "true", "new": "false"},
+    }
+    assert [f.field for f in history_fields(changes)] == ["active", "last_day", "leaving_reason"]

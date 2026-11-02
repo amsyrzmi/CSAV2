@@ -59,6 +59,9 @@ PEOPLE_COLUMNS = [
     "employment_category",
     "version",
     "account_user_id",
+    "last_day",
+    "leaving_reason",
+    "leaving_note",
 ]
 HR_ONLY = ("region", "legal_entity_reference", "employment_category", "version", "account_user_id")
 READ_FUNCTIONS = (
@@ -449,7 +452,8 @@ async def test_history_records_directory_field_changes_with_old_and_new(world: H
     # The HR read: newest first, named actors, a platform admin as "FourStacks admin".
     history = await read_as(world, "owner", "hr/employee_changes.sql", (world.tenant, staff, 10))
     assert [row["changes"] for row in history] == [row["changes"] for row in reversed(rows)]
-    assert [row["actor_name"] for row in history] == ["FourStacks admin", names["owner"], None]
+    # The fixture's insert ran without an HR user: a system write, shown as "System".
+    assert [row["actor_name"] for row in history] == ["FourStacks admin", names["owner"], "System"]
     assert history == sorted(history, key=lambda row: row["changed_at"], reverse=True)
     assert (
         len(await read_as(world, "owner", "hr/employee_changes.sql", (world.tenant, staff, 2))) == 2
@@ -1756,7 +1760,7 @@ async def test_history_and_access_reads_are_hr_only(world: HrWorld) -> None:
     latest, created = history["items"]
     assert latest["actor_name"] == names["owner"]
     assert latest["fields"] == [{"field": "job_title", "old": "Trainer", "new": "Lead Trainer"}]
-    assert created["actor_name"] is None
+    assert created["actor_name"] == "System"  # the fixture's insert ran without an HR user
     assert {f["field"] for f in created["fields"]} >= {"display_name", "job_title", "department"}
     assert latest["changed_at"] >= created["changed_at"]
 

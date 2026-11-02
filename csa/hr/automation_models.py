@@ -23,7 +23,7 @@ from csa.hr.models import DirectoryValues, HrModel, ResolvedGrant, Version
 
 # From the leaf module, not people_contracts: people_contracts imports access_switches, which
 # imports this module.
-from csa.hr.people_types import EmploymentProfile, EmploymentType, EncryptedField
+from csa.hr.people_types import EmploymentProfile, EmploymentType, EncryptedField, LeavingReason
 from csa.hr.workflows import AttendanceInput, Money, Region, ReviewedPayrollAmounts, WorkflowGrant
 
 PrivateArea = Literal["recruitment", "attendance", "payroll"]
@@ -116,6 +116,43 @@ class PersonUpdate(HrModel):
         if self.values.manager_id == self.employee_id:
             raise ValueError("manager_self")
         return self
+
+
+class PersonLeave(HrModel):
+    """Mark an active person as leaving: the last day (today or later, in Kuala Lumpur), the reason
+    and the direct reports' new manager (None: no manager). The database checks the day, the
+    manager and the HR owner rule."""
+
+    operation: Literal["person.leave"]
+    employee_id: UUID
+    expected_version: Version
+    last_day: date
+    reason: LeavingReason
+    note: str | None = Field(default=None, min_length=1, max_length=200)
+    reports_new_manager: UUID | None = None
+
+    @model_validator(mode="after")
+    def other_needs_a_note(self) -> Self:
+        if self.reason == "other" and self.note is None:
+            raise ValueError("leaving_note_required")
+        return self
+
+
+class PersonLeaveUndo(HrModel):
+    """Undo "Mark as leaving", until the end of the last day."""
+
+    operation: Literal["person.leave_undo"]
+    employee_id: UUID
+    expected_version: Version
+
+
+class PersonRehire(HrModel):
+    """Make a left person active again from a new start date. No access comes back."""
+
+    operation: Literal["person.rehire"]
+    employee_id: UUID
+    expected_version: Version
+    start_date: date
 
 
 _KUALA_LUMPUR = ZoneInfo("Asia/Kuala_Lumpur")
@@ -465,6 +502,9 @@ HrOperation = Annotated[
     | AutomationConfigure
     | PersonAdd
     | PersonUpdate
+    | PersonLeave
+    | PersonLeaveUndo
+    | PersonRehire
     | DepartmentSave
     | AccountLink
     | PersonalSave,

@@ -36,6 +36,9 @@ from csa.hr.automation_models import (
     PayrollSnapshot,
     PersonAdd,
     PersonalSave,
+    PersonLeave,
+    PersonLeaveUndo,
+    PersonRehire,
     PersonUpdate,
     PrivateAccessSave,
     ScheduleCancel,
@@ -48,7 +51,14 @@ from csa.hr.records import HrSession
 from csa.hr.service import HrService, _fingerprint
 from csa.hr.workflows import LeaveInput, PayrollInput
 
-_PEOPLE_OPERATIONS = (PersonAdd, PersonUpdate, DepartmentSave)
+_PEOPLE_OPERATIONS = (
+    PersonAdd,
+    PersonUpdate,
+    PersonLeave,
+    PersonLeaveUndo,
+    PersonRehire,
+    DepartmentSave,
+)
 # Database refusals of hr_people_apply and account.link (the RAISE message), and the HR policy
 # code each one becomes.
 _PEOPLE_REFUSALS = {
@@ -67,6 +77,12 @@ _PEOPLE_REFUSALS = {
     "hr_department_name_taken": "department_name_taken",
     "hr_account_taken": "account_taken",
     "hr_member_unavailable": "member_unavailable",
+    # Leaving and rehire.
+    "hr_last_owner_leaving": "last_owner_leaving",
+    "hr_leaving_final": "leaving_final",
+    "hr_not_left": "not_left",
+    "hr_person_not_active": "person_not_active",
+    "hr_last_day_past": "last_day_past",
     # Personal details (hr_personal_apply and hr_personal_reveal).
     "hr_personal_access_required": "permission_denied",
     "hr_personal_field_refused": "personal_field_refused",
@@ -487,6 +503,11 @@ class HrOperations:
             )
             if private["allowed"]:
                 await q.execute("hr/interview_cancel_erased.sql", (tenant,), conn=conn)
+            # Finish this company's due leavers too, so they are finished while the worker is down.
+            for leaver in await q.fetch_all("hr/leavers_due.sql", (tenant,), conn=conn):
+                await q.fetch_one(
+                    "hr/leaver_finish.sql", (tenant, leaver["employee_id"]), conn=conn
+                )
             await q.execute(
                 "hr/notification_training.sql",
                 (

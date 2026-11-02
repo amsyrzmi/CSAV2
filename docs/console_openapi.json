@@ -3674,6 +3674,8 @@
               "start_date",
               "employment_type",
               "active",
+              "last_day",
+              "leaving_reason",
               "region",
               "legal_entity_reference",
               "employment_category",
@@ -4242,6 +4244,28 @@
             ],
             "title": "Job Title"
           },
+          "last_day": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Day"
+          },
+          "leaving": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeavingOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "manager_id": {
             "anyOf": [
               {
@@ -4281,6 +4305,7 @@
             "enum": [
               "active",
               "starting",
+              "leaving",
               "left"
             ],
             "title": "Status",
@@ -5862,6 +5887,39 @@
           "reason"
         ],
         "title": "LeaveInput",
+        "type": "object"
+      },
+      "LeavingOut": {
+        "additionalProperties": false,
+        "description": "Why a person is leaving. HR viewers only.",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "enum": [
+              "resigned",
+              "contract_ended",
+              "dismissed",
+              "retired",
+              "other"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "LeavingOut",
         "type": "object"
       },
       "LinkedAccount": {
@@ -7624,6 +7682,107 @@
         "title": "PersonHistory",
         "type": "object"
       },
+      "PersonLeave": {
+        "additionalProperties": false,
+        "description": "Mark an active person as leaving: the last day (today or later, in Kuala Lumpur), the reason\nand the direct reports' new manager (None: no manager). The database checks the day, the\nmanager and the HR owner rule.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "last_day": {
+            "format": "date",
+            "title": "Last Day",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "operation": {
+            "const": "person.leave",
+            "title": "Operation",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "resigned",
+              "contract_ended",
+              "dismissed",
+              "retired",
+              "other"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "reports_new_manager": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reports New Manager"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version",
+          "last_day",
+          "reason"
+        ],
+        "title": "PersonLeave",
+        "type": "object"
+      },
+      "PersonLeaveUndo": {
+        "additionalProperties": false,
+        "description": "Undo \"Mark as leaving\", until the end of the last day.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "person.leave_undo",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version"
+        ],
+        "title": "PersonLeaveUndo",
+        "type": "object"
+      },
       "PersonOut": {
         "additionalProperties": false,
         "properties": {
@@ -7699,6 +7858,41 @@
           "can_edit"
         ],
         "title": "PersonProfile",
+        "type": "object"
+      },
+      "PersonRehire": {
+        "additionalProperties": false,
+        "description": "Make a left person active again from a new start date. No access comes back.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "person.rehire",
+            "title": "Operation",
+            "type": "string"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version",
+          "start_date"
+        ],
+        "title": "PersonRehire",
         "type": "object"
       },
       "PersonUpdate": {
@@ -17984,6 +18178,9 @@
                     "payroll.rules": "#/components/schemas/PayrollRules-Input",
                     "payroll.snapshot": "#/components/schemas/PayrollSnapshot",
                     "person.add": "#/components/schemas/PersonAdd",
+                    "person.leave": "#/components/schemas/PersonLeave",
+                    "person.leave_undo": "#/components/schemas/PersonLeaveUndo",
+                    "person.rehire": "#/components/schemas/PersonRehire",
                     "person.update": "#/components/schemas/PersonUpdate",
                     "personal.save": "#/components/schemas/PersonalSave",
                     "private_access.save": "#/components/schemas/PrivateAccessSave",
@@ -18052,6 +18249,15 @@
                   },
                   {
                     "$ref": "#/components/schemas/PersonUpdate"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonLeave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonLeaveUndo"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonRehire"
                   },
                   {
                     "$ref": "#/components/schemas/DepartmentSave"
@@ -18212,6 +18418,7 @@
                   "enum": [
                     "active",
                     "starting",
+                    "leaving",
                     "left"
                   ],
                   "type": "string"

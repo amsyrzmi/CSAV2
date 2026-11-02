@@ -13,6 +13,7 @@ from csa.hr.people_contracts import (
     FieldChange,
     HistoryField,
     HrPersonOut,
+    LeavingOut,
     OrgChart,
     OrgNode,
     PeoplePage,
@@ -36,17 +37,25 @@ def kl_today(now: datetime) -> date:
     return now.astimezone(_KUALA_LUMPUR).date()
 
 
-def person_status(active: bool, start_date: date | None, today: date) -> PersonStatus:
+def person_status(
+    active: bool, start_date: date | None, today: date, last_day: date | None = None
+) -> PersonStatus:
+    """Left, then leaving (a last day not yet past), then starting (a start date ahead)."""
     if not active:
         return "left"
+    if last_day is not None and last_day >= today:
+        return "leaving"
     if start_date is not None and start_date > today:
         return "starting"
     return "active"
 
 
 def person_from_row(row: Mapping[str, Any], today: date, names: Mapping[UUID, str]) -> HrPersonOut:
-    """One `hr_people_rows` row as a person. The HR-only columns are absent for other viewers."""
+    """One `hr_people_rows` row as a person. The HR-only columns are absent for other viewers,
+    and the last day for anyone but HR viewers, the person and their direct manager."""
     manager_id = row["manager_id"]
+    last_day = row.get("last_day")
+    reason = row.get("leaving_reason")
     profile = None
     if all(
         row.get(key) is not None
@@ -70,7 +79,9 @@ def person_from_row(row: Mapping[str, Any], today: date, names: Mapping[UUID, st
         work_phone=row["work_phone"],
         start_date=row["start_date"],
         employment_type=row["employment_type"],
-        status=person_status(row["active"], row["start_date"], today),
+        status=person_status(row["active"], row["start_date"], today, last_day),
+        last_day=last_day,
+        leaving=LeavingOut(reason=reason, note=row.get("leaving_note")) if reason else None,
         employment_profile=profile,
         version=version,
         account_linked=row.get("account_user_id") is not None if version is not None else None,
