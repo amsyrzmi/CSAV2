@@ -122,15 +122,32 @@ import { describeRange, toInstants, type DayRange } from "@/lib/date-range";
 
 export default function DateDemo() {
   const [range, setRange] = useState<DayRange>({ from: null, to: null });
+  const [far, setFar] = useState<DayRange>({ from: null, to: null });
   return (
-    <main style={{ padding: 16, maxWidth: 720 }}>
-      <h1>Date demo</h1>
-      <DateRangeFilter testId="demo-date" value={range} onChange={setRange} today="2026-11-02" />
-      <p data-testid="demo-date-value">{JSON.stringify(range)}</p>
-      <p data-testid="demo-date-instants">{JSON.stringify(toInstants(range))}</p>
-      <p data-testid="demo-date-describe">{describeRange(range)}</p>
-      <button type="button" data-testid="demo-date-after">After the filter</button>
-    </main>
+    <>
+      <div style={{ display: "flex", padding: 16 }}>
+        <div style={{ marginLeft: "auto" }}>
+          <DateRangeFilter testId="demo-far" value={far} onChange={setFar} today="2026-11-02" />
+        </div>
+      </div>
+      <main style={{ padding: 16, maxWidth: 720 }}>
+        <h1>Date demo</h1>
+        <DateRangeFilter testId="demo-date" value={range} onChange={setRange} today="2026-11-02" />
+        <p data-testid="demo-date-value">{JSON.stringify(range)}</p>
+        <p data-testid="demo-date-instants">{JSON.stringify(toInstants(range))}</p>
+        <p data-testid="demo-date-describe">{describeRange(range)}</p>
+        <button type="button" data-testid="demo-date-after">After the filter</button>
+        <div style={{ height: 2000 }} />
+        {/* Stands in for AssistantDock: fixed bottom-5 right-5 z-40, after the page in <main>. */}
+        <div
+          data-testid="demo-dock"
+          style={{
+            position: "fixed", bottom: 20, right: 20, zIndex: 40, width: 72, height: 72,
+            borderRadius: 36, background: "currentColor",
+          }}
+        />
+      </main>
+    </>
   );
 }
 """
@@ -421,6 +438,10 @@ async def test_status_chips_single_and_multi_press_state(console: Console) -> No
         weight = "(el) => getComputedStyle(el.querySelector('span:last-child')).fontWeight"
         assert int(await chip("all").evaluate(weight)) == int(await chip("open").evaluate(weight))
         assert int(await chip("all").evaluate(weight)) >= 600
+        # A second cue besides colour and the check: a doubled border (inset ring), same box.
+        shadow = "(el) => getComputedStyle(el).boxShadow"
+        assert await chip("all").evaluate(shadow) != "none"
+        assert await chip("open").evaluate(shadow) == "none"
 
         await chip("open").click()
         await expect(page.get_by_test_id("demo-single-value")).to_have_text('"open"')
@@ -824,7 +845,11 @@ DATE_CONTRAST_JS = (
             ratio: ratio(parse(getComputedStyle(el).borderTopColor), around),
         };
     };
-    return { texts: probe.texts.map(text), borders: probe.borders.map(border) };
+    const active = document.activeElement;
+    const ring = active && active.tagName === 'BUTTON'
+        ? ratio(parse(getComputedStyle(active).outlineColor), backdrop(active.parentElement))
+        : null;
+    return { texts: probe.texts.map(text), borders: probe.borders.map(border), ring };
 }"""
 )
 
@@ -915,6 +940,8 @@ async def test_date_filter_sheet_fits_at_320_in_three_themes(console: Console, t
             }"""
         )
         assert ring["style"] != "none" and ring["width"] >= 2, (theme, ring)
+        contrast = await page.evaluate(DATE_CONTRAST_JS, {"texts": [], "borders": []})
+        assert contrast["ring"] is not None and contrast["ring"] >= 3.0, (theme, contrast)
         # On the sheet, a tap on the dimmed page behind it closes it.
         await page.get_by_test_id("demo-date-scrim").click(position={"x": 160, "y": 20})
         await expect(page.get_by_test_id("demo-date-popover")).to_have_count(0)
@@ -922,7 +949,7 @@ async def test_date_filter_sheet_fits_at_320_in_three_themes(console: Console, t
         await close_demo(playwright, browser)
 
 
-async def test_date_filter_is_a_popover_from_640_up(console: Console) -> None:
+async def test_date_filter_is_a_positioned_popover_from_640_up(console: Console) -> None:
     playwright, browser, page = await open_date_demo(console, width=1024)
     try:
         trigger = page.get_by_test_id("demo-date")
@@ -945,7 +972,7 @@ async def test_date_filter_is_a_popover_from_640_up(console: Console) -> None:
                 };
             }"""
         )
-        assert measured["position"] == "absolute", measured
+        assert measured["position"] == "fixed", measured
         assert measured["width"] == 320, measured
         assert measured["top"] > measured["triggerBottom"], measured
         assert measured["left"] == measured["triggerLeft"], measured
@@ -1000,5 +1027,167 @@ async def test_selected_range_visible_without_colour(console: Console) -> None:
         await expect(page.get_by_test_id("demo-date-summary")).to_contain_text(
             "12 Nov to 18 Nov 2026"
         )
+    finally:
+        await close_demo(playwright, browser)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_date_sheet_is_not_covered_by_a_fixed_dock(console: Console, theme: str) -> None:
+    # AssistantDock is fixed bottom-5 right-5 z-40 and renders after the page; the demo page has
+    # a stand-in in the same place. The sheet must sit above it, "Done" included.
+    playwright, browser, page = await open_date_demo(console, theme=theme, width=390)
+    try:
+        await page.get_by_test_id("demo-date").click()
+        done = page.get_by_test_id("demo-date-done")
+        await expect(done).to_be_visible()
+        box = await done.bounding_box()
+        assert box is not None
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        probe = await page.evaluate(
+            """([x, y]) => {
+                const dock = document.querySelector('[data-testid=demo-dock]')
+                    .getBoundingClientRect();
+                const top = document.elementFromPoint(x, y);
+                return {
+                    overlapsDock: x >= dock.left && x <= dock.right
+                        && y >= dock.top && y <= dock.bottom,
+                    topIsDone: !!top && !!top.closest('[data-testid=demo-date-done]'),
+                    topIs: top ? (top.dataset.testid || top.tagName) : null,
+                    inBody: document.body.contains(
+                        document.querySelector('[data-testid=demo-date-popover]')
+                    ) && document.querySelector('[data-testid=demo-date-popover]').parentElement
+                        === document.body,
+                };
+            }""",
+            [x, y],
+        )
+        # The test means something only if the dock really sits where "Done" is.
+        assert probe["overlapsDock"], probe
+        assert probe["topIsDone"], probe
+        assert probe["inBody"], probe
+        # And a real click lands (Playwright refuses a click another element would intercept).
+        await done.click()
+        await expect(page.get_by_test_id("demo-date-popover")).to_have_count(0)
+        await expect(page.get_by_test_id("demo-date")).to_be_focused()
+    finally:
+        await close_demo(playwright, browser)
+
+
+@pytest.mark.parametrize("width", [640, 768, 1024])
+async def test_date_popover_flips_at_the_right_edge(console: Console, width: int) -> None:
+    playwright, browser, page = await open_date_demo(console, width=width)
+    try:
+        trigger = page.get_by_test_id("demo-far")
+        await trigger.click()
+        popover = page.get_by_test_id("demo-far-popover")
+        await expect(popover).to_be_visible()
+        measured = await page.evaluate(
+            """() => {
+                const p = document.querySelector('[data-testid=demo-far-popover]')
+                    .getBoundingClientRect();
+                const t = document.querySelector('[data-testid=demo-far]').getBoundingClientRect();
+                return {
+                    left: p.left, right: p.right, top: p.top, width: p.width,
+                    triggerRight: t.right, triggerBottom: t.bottom,
+                    inner: window.innerWidth,
+                    scroll: document.documentElement.scrollWidth,
+                    client: document.documentElement.clientWidth,
+                };
+            }"""
+        )
+        assert measured["left"] >= 0 and measured["right"] <= measured["inner"], measured
+        assert measured["right"] <= measured["inner"] - 8 + 0.5, measured  # keeps its margin
+        # Flipped to the button's right edge, still below it.
+        assert abs(measured["right"] - measured["triggerRight"]) <= 1, measured
+        assert measured["top"] >= measured["triggerBottom"], measured
+        assert measured["scroll"] <= measured["client"], measured
+        # It works from there: a click selects, Escape returns focus to the far button.
+        await page.get_by_test_id("demo-far-day-2026-11-12").click()
+        await page.keyboard.press("Escape")
+        await expect(popover).to_have_count(0)
+        await expect(trigger).to_be_focused()
+        await expect(trigger).to_contain_text("12 Nov 2026")
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def test_date_sheet_locks_page_scroll_below_640_only(console: Console) -> None:
+    playwright, browser, page = await open_date_demo(console, width=390)
+    try:
+        await page.mouse.move(200, 100)
+        await page.get_by_test_id("demo-date").click()
+        await expect(page.get_by_test_id("demo-date-popover")).to_be_visible()
+        assert await page.evaluate("document.body.style.overflow") == "hidden"
+        await page.mouse.wheel(0, 400)
+        await page.wait_for_timeout(200)
+        assert await page.evaluate("window.scrollY") == 0
+        await page.keyboard.press("Escape")
+        await expect(page.get_by_test_id("demo-date-popover")).to_have_count(0)
+        # Restored on close: nothing left on the body, and the page scrolls again.
+        assert await page.evaluate("document.body.style.overflow") == ""
+        assert await page.evaluate("document.body.style.paddingRight") == ""
+        await page.mouse.wheel(0, 400)
+        await page.wait_for_function("window.scrollY > 0")
+    finally:
+        await close_demo(playwright, browser)
+
+    # From 640 px up the page is not locked, and the popover follows its button on scroll.
+    playwright, browser, page = await open_date_demo(console, width=1024)
+    try:
+        await page.mouse.move(600, 500)
+        await page.get_by_test_id("demo-date").click()
+        await expect(page.get_by_test_id("demo-date-popover")).to_be_visible()
+        assert await page.evaluate("document.body.style.overflow") == ""
+        await page.mouse.wheel(0, 120)
+        await page.wait_for_function("window.scrollY > 0")
+        await page.wait_for_timeout(100)
+        gap = await page.evaluate(
+            """() => {
+                const p = document.querySelector('[data-testid=demo-date-popover]')
+                    .getBoundingClientRect();
+                const t = document.querySelector('[data-testid=demo-date]').getBoundingClientRect();
+                return p.top - t.bottom;
+            }"""
+        )
+        assert abs(gap - 8) <= 1, gap
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def test_date_popover_tab_order_across_the_portal(console: Console) -> None:
+    playwright, browser, page = await open_date_demo(console)
+    try:
+        trigger = page.get_by_test_id("demo-date")
+        await trigger.click()
+        await expect(day(page, "2026-11-02")).to_be_focused()
+        # The popover sits at the end of <body>, so the button walks into it and back.
+        await trigger.focus()
+        await page.keyboard.press("Tab")
+        await expect(page.get_by_test_id("demo-date-prev")).to_be_focused()
+        await page.keyboard.press("Shift+Tab")
+        await expect(trigger).to_be_focused()
+        await expect(page.get_by_test_id("demo-date-popover")).to_be_visible()
+        # Forward through every control to Done, then out to the next thing after the button.
+        await page.keyboard.press("Tab")
+        for expected in (
+            "next",
+            "day-2026-11-02",
+            "preset-today",
+            "preset-last7",
+            "preset-last30",
+            "preset-month",
+            "preset-clear",
+            "done",
+        ):
+            await page.keyboard.press("Tab")
+            await expect(page.get_by_test_id(f"demo-date-{expected}")).to_be_focused()
+        await page.keyboard.press("Tab")
+        await expect(page.get_by_test_id("demo-date-after")).to_be_focused()
+        await expect(page.get_by_test_id("demo-date-popover")).to_have_count(0)
+        # A pointer click elsewhere closes it as well.
+        await trigger.click()
+        await expect(page.get_by_test_id("demo-date-popover")).to_be_visible()
+        await page.get_by_test_id("demo-date-describe").click()
+        await expect(page.get_by_test_id("demo-date-popover")).to_have_count(0)
     finally:
         await close_demo(playwright, browser)

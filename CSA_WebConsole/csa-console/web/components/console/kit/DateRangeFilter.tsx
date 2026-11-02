@@ -1,6 +1,16 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   WEEKDAY_NAMES,
   addDays,
@@ -23,6 +33,10 @@ const smallButton =
   "border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] px-3 text-[color:var(--fs-text)] " +
   "hover:border-[color:var(--fs-primary)] pointer-coarse:min-h-11";
 const sizeSm = "text-[length:var(--fs-text-sm)] font-medium";
+/** Space kept between the popover and the viewport edge, and between it and the button. */
+const EDGE = 8;
+const FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 function Chevron({ direction }: { direction: "left" | "right" | "down" }) {
   const path = direction === "left" ? "m15 6-6 6 6 6" : direction === "right" ? "m9 6 6 6-6 6" : "m6 9 6 6 6-6";
@@ -53,6 +67,14 @@ function Chevron({ direction }: { direction: "left" | "right" | "down" }) {
  * Keys in the grid: arrows move a day or a week, Home and End the week's ends, PageUp and
  * PageDown the month, Enter or Space selects. Escape closes and returns focus to the button.
  * The parent owns `value`. `today` is for tests; it defaults to the browser's date.
+ *
+ * The popover and its scrim are rendered through a portal into `document.body` (above the
+ * assistant dock and clear of any clipping or transformed ancestor), so from 640 px up it is
+ * placed from the button's measured position: left edges aligned, or right edges aligned when
+ * it would run off the screen (`align` "start" or "end" forces a side), always kept inside the
+ * viewport. Below 640 px it is a bottom sheet and the page behind does not scroll while it is
+ * open. Focus is not trapped (no `aria-modal`): Tab from the button enters the popover, and
+ * Tab past its last control (or a click elsewhere) closes it and moves on.
  */
 export default function DateRangeFilter({
   value,
@@ -60,12 +82,14 @@ export default function DateRangeFilter({
   testId,
   label = "Date range",
   today,
+  align,
 }: {
   value: DayRange;
   onChange: (range: DayRange) => void;
   testId?: string;
   label?: string;
   today?: string;
+  align?: "start" | "end";
 }) {
   const [open, setOpen] = useState(false);
   const [cursor, setCursor] = useState("");
@@ -73,6 +97,8 @@ export default function DateRangeFilter({
   const [picking, setPicking] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
   const focusCursor = useRef(false);
   const popoverId = useId();
   const id = (suffix: string) => (testId ? `${testId}-${suffix}` : undefined);
@@ -82,17 +108,83 @@ export default function DateRangeFilter({
   useEffect(() => {
     if (!open || !focusCursor.current) return;
     focusCursor.current = false;
-    wrapperRef.current?.querySelector<HTMLElement>(`[data-day="${cursor}"]`)?.focus();
+    popoverRef.current?.querySelector<HTMLElement>(`[data-day="${cursor}"]`)?.focus();
   });
+
+  // The popover lives in document.body, so "inside" means the button wrapper or the portal.
+  const inside = useCallback(
+    (node: Node) =>
+      [wrapperRef, popoverRef, scrimRef].some((ref) => ref.current?.contains(node) ?? false),
+    [],
+  );
+
+  // Place the popover (from 640 px up; the sheet below is positioned by CSS alone).
+  const place = useCallback(() => {
+    const popover = popoverRef.current;
+    const trigger = buttonRef.current;
+    if (!popover || !trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = popover.offsetWidth;
+    const height = popover.offsetHeight;
+    let left = align === "end" ? rect.right - width : rect.left;
+    if (align === undefined && rect.left + width > window.innerWidth - EDGE) left = rect.right - width;
+    left = Math.max(EDGE, Math.min(left, window.innerWidth - width - EDGE));
+    let top = rect.bottom + EDGE;
+    if (top + height > window.innerHeight - EDGE && rect.top - EDGE - height >= EDGE) {
+      top = rect.top - EDGE - height; // no room below, room above
+    }
+    popover.style.setProperty("--fs-date-left", `${left}px`);
+    popover.style.setProperty("--fs-date-top", `${top}px`);
+  }, [align]);
+
+  // Before paint, and again after every render while open (a six-week month is taller).
+  useLayoutEffect(() => {
+    if (open) place();
+  });
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, place]);
+
+  // Below 640 px the sheet looks modal: keep the page behind it still. Restored on close and
+  // on unmount; the scrollbar's width is kept as padding so nothing shifts where one is drawn.
+  useEffect(() => {
+    if (!open) return;
+    const query = window.matchMedia("(max-width: 639.98px)");
+    const body = document.body;
+    const before = { overflow: body.style.overflow, paddingRight: body.style.paddingRight };
+    const restore = () => {
+      body.style.overflow = before.overflow;
+      body.style.paddingRight = before.paddingRight;
+    };
+    const apply = () => {
+      restore();
+      if (!query.matches) return;
+      const bar = window.innerWidth - document.documentElement.clientWidth;
+      body.style.overflow = "hidden";
+      if (bar > 0) body.style.paddingRight = `${bar}px`;
+    };
+    apply();
+    query.addEventListener("change", apply);
+    return () => {
+      query.removeEventListener("change", apply);
+      restore();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !wrapperRef.current?.contains(event.target)) setOpen(false);
+      if (event.target instanceof Node && !inside(event.target)) setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
+  }, [open, inside]);
 
   const todayDay = today ?? todayLocal();
   const close = (returnFocus: boolean) => {
@@ -117,11 +209,36 @@ export default function DateRangeFilter({
     setCursor(day);
   };
 
+  // React sends events from the portal up to this wrapper, so it hears the popover's keys too.
   const onWrapperKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape" && open) {
+    if (!open) return;
+    if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
       close(true);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const trigger = buttonRef.current;
+    const popover = popoverRef.current;
+    const target = event.target as HTMLElement;
+    if (!trigger || !popover) return;
+    const controls = [...popover.querySelectorAll<HTMLElement>('button:not([tabindex="-1"])')];
+    if (target === trigger && !event.shiftKey) {
+      // The popover is last in the page, so walk into it from here.
+      event.preventDefault();
+      controls[0]?.focus();
+    } else if (popover.contains(target) && event.shiftKey && target === controls[0]) {
+      event.preventDefault();
+      trigger.focus();
+    } else if (popover.contains(target) && !event.shiftKey && target === controls.at(-1)) {
+      // Past the last control: close and carry on after the button, not off the end of the page.
+      event.preventDefault();
+      close(false);
+      const order = [...document.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (el) => !popover.contains(el) && el.tabIndex >= 0 && el.getClientRects().length > 0,
+      );
+      order[order.indexOf(trigger) + 1]?.focus();
     }
   };
   const onGridKeyDown = (event: KeyboardEvent<HTMLTableElement>) => {
@@ -146,7 +263,7 @@ export default function DateRangeFilter({
   };
   const onWrapperBlur = (event: FocusEvent<HTMLDivElement>) => {
     const to = event.relatedTarget;
-    if (open && to instanceof Node && !event.currentTarget.contains(to)) close(false);
+    if (open && to instanceof Node && !inside(to)) close(false);
   };
 
   const view = parseDay(cursor) ?? parseDay(todayDay) ?? { year: 1970, month: 1, day: 1 };
@@ -189,25 +306,28 @@ export default function DateRangeFilter({
         </span>
         <Chevron direction="down" />
       </button>
-      {open ? (
+      {open
+        ? createPortal(
         <>
           <div
+            ref={scrimRef}
             aria-hidden="true"
             data-testid={id("scrim")}
             onClick={() => close(false)}
-            className="fixed inset-0 z-30 bg-[var(--fs-scrim)] sm:hidden"
+            className="fixed inset-0 z-50 bg-[var(--fs-scrim)] sm:hidden"
           />
           <div
+            ref={popoverRef}
             id={popoverId}
             role="dialog"
             aria-label={label}
             data-testid={id("popover")}
             className={
-              "fixed inset-x-0 bottom-0 z-40 max-h-[85dvh] overflow-y-auto rounded-t-[var(--fs-radius-dialog)] border " +
+              "fixed inset-x-0 bottom-0 z-50 max-h-[85dvh] overflow-y-auto rounded-t-[var(--fs-radius-dialog)] border " +
               "border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] " +
               "text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)] " +
-              "sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-0 sm:top-full sm:mt-2 sm:w-80 sm:max-h-none " +
-              "sm:overflow-visible sm:rounded-[var(--fs-radius-panel)]"
+              "sm:inset-x-auto sm:bottom-auto sm:left-(--fs-date-left) sm:top-(--fs-date-top) sm:w-80 " +
+              "sm:max-h-[calc(100dvh-1rem)] sm:rounded-[var(--fs-radius-panel)]"
             }
           >
             <div className="flex items-center justify-between gap-2">
@@ -331,8 +451,10 @@ export default function DateRangeFilter({
               </button>
             </div>
           </div>
-        </>
-      ) : null}
+        </>,
+        document.body,
+      )
+        : null}
     </div>
   );
 }

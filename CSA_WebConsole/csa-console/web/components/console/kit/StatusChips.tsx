@@ -7,13 +7,15 @@ const chip =
   "transition-[background-color,border-color,color] duration-150 ease-(--fs-ease-out) motion-reduce:transition-none";
 const idle =
   "border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] text-[color:var(--fs-text)] hover:border-[color:var(--fs-primary)]";
+// The inset ring doubles the pressed border to 2px without changing the chip's size.
 const pressed =
-  "border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] text-[color:var(--fs-text)]";
+  "border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] text-[color:var(--fs-text)] shadow-[inset_0_0_0_1px_var(--fs-primary)]";
 
 /**
- * A wrapping row of toggle chips. Pressed state is a check mark as well as colour (the weight stays
- * constant so a pressed chip keeps its width). `single` always has one chip pressed; `multi` lets any number be pressed (an "All"
- * chip, if the page wants one, is an ordinary option the caller handles in `onChange`).
+ * A wrapping row of toggle chips. Pressed state is a check mark and a doubled border as well
+ * as colour (the weight and box stay constant so a pressed chip keeps its size). `single`
+ * always has one chip pressed; `multi` lets any number be pressed (an "All" chip, if the page
+ * wants one, is an ordinary option the caller handles in `onChange`).
  */
 export default function StatusChips<T extends string>({
   options,

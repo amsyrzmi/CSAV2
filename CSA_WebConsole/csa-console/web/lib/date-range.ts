@@ -167,13 +167,9 @@ function localStart(day: string): string | null {
 /**
  * The range as ISO UTC instants for the server: `from` is the local start of the first day,
  * `to` the local start of the day AFTER the last day (an exclusive end). Null stays null. Uses
- * the browser's time zone only. `_now` is accepted for call-site symmetry and is not used.
+ * the browser's time zone only.
  */
-export function toInstants(
-  range: DayRange,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- part of the agreed signature
-  _now?: Date,
-): { from: string | null; to: string | null } {
+export function toInstants(range: DayRange): { from: string | null; to: string | null } {
   return {
     from: range.from === null ? null : localStart(range.from),
     to: range.to === null ? null : localStart(addDays(range.to, 1)),
