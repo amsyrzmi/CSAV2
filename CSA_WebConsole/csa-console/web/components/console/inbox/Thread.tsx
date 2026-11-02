@@ -33,6 +33,13 @@ export function Thread({
   const muted = current?.human_muted ?? null;
   const base = `/console/v1/inbox/conversations/${id}`;
   const [text, setText] = useState("");
+  // The reply is queued only after a second, explicit step; Cancel is where focus starts.
+  const [confirming, setConfirming] = useState(false);
+  const refocus = useRef(false);
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const queueRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const sending = useRef(false);
 
   // The room changes only when the server's read says so, and animates only on a change.
   const [room, setRoom] = useState<{ muted: boolean | null; changed: boolean }>({ muted: null, changed: false });
@@ -83,6 +90,31 @@ export function Thread({
       } } satisfies Pending);
   }
   const blocked = actions.blocked;
+
+  useEffect(() => { if (confirming) cancelRef.current?.focus(); }, [confirming]);
+  // After a send the box is free again: back to the box when the text went, else to the button.
+  useEffect(() => {
+    if (!refocus.current || blocked || confirming) return;
+    refocus.current = false;
+    (text.trim() ? queueRef : boxRef).current?.focus();
+  }, [confirming, blocked, text]);
+
+  function cancelConfirm() {
+    setConfirming(false);
+    queueRef.current?.focus();
+  }
+  async function confirmSend() {
+    if (sending.current) return;
+    sending.current = true;
+    try {
+      const request = act("reply");
+      if (request) await request;
+    } finally {
+      sending.current = false;
+      setConfirming(false);
+      refocus.current = true;
+    }
+  }
 
   return <section aria-labelledby={`thread-${id}-title`} data-testid="inbox-thread"
     className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
@@ -154,14 +186,32 @@ export function Thread({
     </div>
     {feedback}
     {current?.human_muted
-      ? <form key="reply" className={`border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 ${roomMotion}`}
-        onSubmit={(event) => { event.preventDefault(); void act("reply"); }}>
+      ? <form key="reply" data-testid="inbox-composer"
+        className={`max-h-[60%] shrink-0 overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 ${roomMotion}`}
+        onSubmit={(event) => { event.preventDefault(); if (text.trim() && !blocked) setConfirming(true); }}
+        onKeyDown={(event) => {
+          // Escape closes the question first; the inbox's own Escape (back to the list) must not also fire.
+          if (event.key === "Escape" && confirming) { event.stopPropagation(); event.preventDefault(); cancelConfirm(); }
+        }}>
         <label className="block"><span className="text-sm font-medium">Human reply</span>
-          <textarea className={`${field} mt-1 h-24 py-2`} value={text} maxLength={2000} disabled={blocked}
-            onChange={(event) => setText(event.target.value)} required />
+          <textarea ref={boxRef} className={`${field} mt-1 h-20 py-2 md:h-24`} value={text} maxLength={2000}
+            disabled={blocked} readOnly={confirming} onChange={(event) => setText(event.target.value)} required />
         </label>
         <div className="mt-2 flex justify-end">
-          <button className={action} disabled={blocked || !!detailError || !text.trim()}>Queue reply</button></div>
+          <button ref={queueRef} className={action} aria-expanded={confirming} aria-controls={`reply-confirm-${id}`}
+            disabled={blocked || !!detailError || !text.trim()}>Queue reply</button></div>
+        {confirming && <div id={`reply-confirm-${id}`} role="group" aria-label="Confirm reply" data-testid="inbox-reply-confirm"
+          className="mt-2 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] p-3">
+          <p className="text-sm font-medium">Queue this reply for delivery to the customer?</p>
+          <p className="mt-1 text-xs text-ink-700">Once it is delivered you cannot take it back.</p>
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
+            <button ref={cancelRef} type="button" data-testid="inbox-reply-confirm-cancel" className={secondary}
+              disabled={blocked} onClick={cancelConfirm}>Cancel</button>
+            <button type="button" data-testid="inbox-reply-confirm-send" className={action}
+              disabled={blocked || !!detailError} onClick={() => void confirmSend()}>
+              {blocked ? "Queueing reply" : "Confirm and queue"}</button>
+          </div>
+        </div>}
       </form>
       : <p key="hint" className={`border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-3 py-3 text-sm text-ink-700 ${roomMotion}`}>
         Take over to reply as a team member.</p>}

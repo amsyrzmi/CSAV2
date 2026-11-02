@@ -1,6 +1,7 @@
 "use client";
 
-import { chipLabel, isPressed, nextSingle, toggleChip, type ChipOption } from "@/lib/chips";
+import type { ReactNode } from "react";
+import { chipLabel, isPressed, nextSingle, toggleChip } from "@/lib/chips";
 
 const chip =
   "inline-flex min-h-10 items-center gap-1.5 rounded-[var(--fs-radius-round)] border px-3 py-1.5 pointer-coarse:min-h-11 " +
@@ -25,7 +26,11 @@ export default function StatusChips<T extends string>({
   testId,
   ariaLabel,
 }: {
-  options: { value: T; label: string; count?: number | null }[];
+  /**
+   * `testId` replaces the generated `${testId}-${value}` for a page that already has stable
+   * ids, and `badge` is drawn after the label (a live count with its own id, for example).
+   */
+  options: { value: T; label: string; count?: number | null; testId?: string; badge?: ReactNode }[];
   value: T | T[];
   onChange: (next: T | T[]) => void;
   mode: "single" | "multi";
@@ -41,14 +46,14 @@ export default function StatusChips<T extends string>({
   };
   return (
     <div role="group" aria-label={ariaLabel} data-testid={testId} className="flex flex-wrap gap-2">
-      {options.map((option: ChipOption<T>) => {
+      {options.map((option) => {
         const on = isPressed(value, option.value);
         return (
           <button
             key={option.value}
             type="button"
             aria-pressed={on}
-            data-testid={`${testId}-${option.value}`}
+            data-testid={option.testId ?? `${testId}-${option.value}`}
             onClick={() => press(option.value)}
             className={`${chip} ${on ? pressed : idle}`}
           >
@@ -73,6 +78,7 @@ export default function StatusChips<T extends string>({
             <span className="min-w-0 text-[length:var(--fs-text-sm)] font-semibold [overflow-wrap:anywhere]">
               {chipLabel(option)}
             </span>
+            {option.badge}
           </button>
         );
       })}

@@ -1613,6 +1613,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
             await thread.get_by_text("Staff has taken over", exact=True).wait_for()
             await staff.get_by_label("Human reply", exact=True).fill(reply_text)
             await staff.get_by_role("button", name="Queue reply", exact=True).click()
+            await staff.get_by_test_id("inbox-reply-confirm-send").click()
             await staff.get_by_text("Outcome uncertain.", exact=False).wait_for()
             await thread.get_by_role("list").get_by_text(reply_text, exact=True).wait_for()
             await staff.get_by_role("button", name="Retry the same action", exact=True).click()

@@ -153,7 +153,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   return <div ref={rootRef} data-motion={motion ? "on" : "off"} className="mt-6 min-w-0 space-y-4">
     {!selected && <Feedback actions={actions} framed={false} />}
     {/* Breakpoints in rem like `md`: Tailwind cannot order a px variant against a rem one. */}
-    <div className="grid min-w-0 gap-3 md:h-[min(46rem,calc(100dvh-5rem))] md:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[14.5rem_minmax(0,1fr)_12rem]">
+    <div className="grid min-w-0 gap-3 md:h-[min(46rem,calc(100dvh-5rem))] md:grid-cols-[minmax(15rem,17.5rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[18rem_minmax(0,1fr)_12rem]">
       <div className={`${PANE} ${selected && threadOpen ? "hidden md:flex" : "flex"}`}>
         <ConversationList items={items} selected={selected} blocked={actions.blocked} now={now}
           status={{
