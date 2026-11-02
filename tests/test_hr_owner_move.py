@@ -21,9 +21,24 @@ from tests.conftest import requires_docker
 from tests.test_hr_people import make_people_manager, ok, op
 from tests.test_hr_people_records import db_today, finish, leave_body, set_last_day
 from tests.test_hr_persistence import HrWorld, hr_database, workflow_grant, world
+from tests.test_workspace_hr_people import (
+    _card,
+    _confirm,
+    _employee,
+    _owner,
+    _person,
+)
+from tests.test_workspace_planner import (  # noqa: F401 - fixture import
+    PROPOSALS,
+    _thread,
+    _turn,
+    planned,  # noqa: F811
+)
+from tests.test_workspace_registry import proposals_app  # noqa: F401 - fixture import
 
 __all__ = ["hr_database", "world"]
 pytestmark = [requires_docker, pytest.mark.asyncio]
+pytest_plugins = ["tests.test_console_sessions"]
 
 OWNER_ONLY_EXPECTED: set[tuple[str, ...]] = {("hr_grants", "training.decide")} | {
     ("hr_workflow_grants", d, a)
@@ -866,3 +881,290 @@ async def test_owner_read_returns_usable_and_refuses_other_actors(world: HrWorld
     # No owner: no row.
     await world.q("DELETE FROM hr_client_owners WHERE client_id=%s", (world.tenant,))
     assert await read_owner(world, admin) == []
+
+
+# ---- Task 3: what the new owner can do at once, who is cut off, and Recent changes ----------
+
+ACCESS = "/console/v1/hr/access"
+TRAINING = "/console/v1/hr/training-requests"
+
+
+async def strip_rows(world: HrWorld, name: str) -> None:
+    """Remove every HR row of a user, so only what a move gives them is left."""
+    user = world.users[name]
+    for table in ("hr_grants", "hr_workflow_grants", "hr_private_grants"):
+        await world.q(
+            f"DELETE FROM {table} WHERE client_id=%s AND user_id=%s",  # type: ignore[arg-type]
+            (world.tenant, user),
+        )
+
+
+async def test_new_owner_with_no_switches_can_work_at_once(world: HrWorld) -> None:
+    admin, old, new = world.users["admin"], world.users["owner"], world.users["staff"]
+    await strip_rows(world, "staff")
+    # The old owner's own request, which has an active manager: an owner decides only requests of
+    # people who have one.
+    submitted = await world.submit("owner")
+    request_id = submitted["request_id"]
+    session = world.proof("staff")
+    # Before the move the staff member has nothing.
+    assert (await world.service.context(session)).client_owner is False
+    assert (await world.call("staff", "GET", f"{ACCESS}/people")).status_code == 404
+    assert (await world.call("staff", "GET", TRAINING)).status_code == 404
+
+    await move(world, admin, new, old)
+
+    context = await world.service.context(session)
+    assert context.client_owner is True and context.hr_duties is True
+    assert {"training.decide", "training.read", "directory.read"} <= set(context.actions)
+    assert {"recruitment.decide", "attendance.decide", "leave.decide"} <= set(context.workflows)
+    # Training: list, open, decide.
+    page = await world.service.training_page(session, None, 10)
+    assert [item.request_id for item in page.items] == [UUID(request_id)]
+    opened = await world.call("staff", "GET", f"{TRAINING}/{request_id}")
+    assert opened.status_code == 200 and opened.json()["status"] == "submitted"
+    decided = await world.call(
+        "staff",
+        "POST",
+        f"{TRAINING}/{request_id}/transitions",
+        {"action": "approve", "expected_version": 1},
+    )
+    assert decided.status_code == 200, decided.text
+    assert decided.json()["request"]["status"] == "approved"
+    # People, the access page and its recent changes, and the directory.
+    assert (await world.call("staff", "GET", "/console/v1/hr/people")).status_code == 200
+    people = await world.call("staff", "GET", f"{ACCESS}/people")
+    assert people.status_code == 200, people.text
+    assert next(i for i in people.json()["items"] if i["user_id"] == str(new))["is_owner"] is True
+    assert (await world.call("staff", "GET", f"{ACCESS}/recent")).status_code == 200
+    assert (await world.call("staff", "GET", "/console/v1/hr/employees")).status_code == 200
+    # Candidates, which the recruitment area opens to the owner.
+    for area in ("candidates", "interviews", "interviewers"):
+        found = await world.call("staff", "GET", f"/console/v1/hr/records/{area}")
+        assert found.status_code == 200, (area, found.text)
+    # The attendance area is part of the standard set (shifts), payroll never is.
+    assert set(context.private_areas) == {"attendance", "recruitment"}
+    assert (await world.call("staff", "GET", "/console/v1/hr/records/shifts")).status_code == 200
+    payroll = await world.call("staff", "GET", "/console/v1/hr/records/payroll_rules")
+    assert payroll.status_code == 404, payroll.text
+
+
+async def test_old_owner_is_cut_off_in_the_next_request(world: HrWorld) -> None:
+    admin, old, new = world.users["admin"], world.users["owner"], world.users["staff"]
+    submitted = await world.submit("staff")
+    path = f"{TRAINING}/{submitted['request_id']}/transitions"
+    approve = {"action": "approve", "expected_version": 1}
+    # The old owner's page is open: this is the state of their tab at the time of the move.
+    assert (await world.call("owner", "GET", f"{ACCESS}/people")).status_code == 200
+    assert (await world.call("owner", "GET", f"{ACCESS}/recent")).status_code == 200
+    assert (await world.service.context(world.proof("owner"))).client_owner is True
+
+    await move(world, admin, new, old)
+
+    assert (await world.call("owner", "GET", f"{ACCESS}/people")).status_code == 404
+    assert (await world.call("owner", "GET", f"{ACCESS}/recent")).status_code == 404
+    assert (await world.call("owner", "POST", path, approve)).status_code == 404
+    assert (
+        await world.call("owner", "GET", "/console/v1/hr/records/candidates")
+    ).status_code == 404
+    context = await world.service.context(world.proof("owner"))
+    assert context.client_owner is False and "training.decide" not in context.actions
+    # The decision did not land.
+    assert await world.q(
+        "SELECT status FROM hr_training_requests WHERE client_id=%s", (world.tenant,)
+    ) == [{"status": "submitted"}]
+    # Their own rows still work: they read and draft their own training requests.
+    assert (await world.call("owner", "GET", TRAINING)).status_code == 200
+    own = await world.submit("owner")
+    assert own["status"] == "submitted"
+    # The new owner can decide what the old one could not.
+    assert (await world.call("staff", "POST", path, approve)).status_code == 200
+    own_path = f"{TRAINING}/{own['request_id']}/transitions"
+    assert (await world.call("staff", "POST", own_path, approve)).status_code == 200
+
+
+async def test_new_owner_saving_own_switches_keeps_owner_rows(world: HrWorld) -> None:
+    admin, old, new = world.users["admin"], world.users["owner"], world.users["staff"]
+    await move(world, admin, new, old)
+    assert await owner_only_rows(world, new) == OWNER_ONLY_EXPECTED
+    page = await world.call("staff", "GET", f"{ACCESS}/people")
+    assert page.status_code == 200, page.text
+    mine = next(i for i in page.json()["items"] if i["user_id"] == str(new))
+    assert "approves_team" not in mine["on"]
+
+    body = {
+        "batch_id": str(uuid4()),
+        "version": page.json()["version"],
+        "dry_run": False,
+        "changes": [
+            {"user_id": str(new), "on": [*mine["on"], "approves_team"], "base": mine["on"]}
+        ],
+    }
+    saved = await world.call("staff", "POST", f"{ACCESS}/changes", body)
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["results"] == [{"user_id": str(new), "outcome": "saved", "reason": None}]
+    # The title still has its powers: every owner-only row survived the save.
+    assert await owner_only_rows(world, new) == OWNER_ONLY_EXPECTED
+    assert await is_owner(world, new) is True
+    context = await world.service.context(world.proof("staff"))
+    assert {"recruitment.decide", "attendance.decide", "leave.decide"} <= set(context.workflows)
+    assert (await world.call("staff", "GET", f"{ACCESS}/people")).status_code == 200
+    # And they turned it off again without losing them either.
+    again = await world.call("staff", "GET", f"{ACCESS}/people")
+    mine = next(i for i in again.json()["items"] if i["user_id"] == str(new))
+    assert "approves_team" in mine["on"]
+    undo = {
+        "batch_id": str(uuid4()),
+        "version": again.json()["version"],
+        "dry_run": False,
+        "changes": [
+            {
+                "user_id": str(new),
+                "on": [s for s in mine["on"] if s != "approves_team"],
+                "base": mine["on"],
+            }
+        ],
+    }
+    assert (await world.call("staff", "POST", f"{ACCESS}/changes", undo)).status_code == 200
+    assert await owner_only_rows(world, new) == OWNER_ONLY_EXPECTED
+
+
+async def test_recent_changes_show_the_move_for_a_platform_actor(world: HrWorld) -> None:
+    # The fixture's "platform" user has a membership. A real one has none.
+    platform = await new_user(world, None, platform=True)
+    old, new = world.users["owner"], world.users["staff"]
+    await world.q("UPDATE console_users SET display_name='Synthetic Old' WHERE id=%s", (old,))
+    await world.q("UPDATE console_users SET display_name='Synthetic New' WHERE id=%s", (new,))
+    await move(world, platform, new, old)
+
+    response = await world.call("staff", "GET", f"{ACCESS}/recent")
+
+    assert response.status_code == 200, response.text
+    [event] = response.json()["items"]
+    assert event["source"] == "owner_move" and event["preset"] is None
+    assert event["actor_user_id"] == str(platform) and event["actor_name"] == "FourStacks admin"
+    assert event["target_user_id"] == str(new) and event["target_name"] == "Synthetic New"
+    assert event["previous_owner_name"] == "Synthetic Old"
+    assert event["turned_on"] == [] and event["turned_off"] == []
+    assert event["area"] is None and event["area_enabled"] is None
+
+
+async def test_recent_changes_name_nobody_who_is_gone_and_a_first_owner_has_no_previous(
+    world: HrWorld,
+) -> None:
+    admin, old, new = world.users["admin"], world.users["owner"], world.users["staff"]
+    mgr = world.users["manager"]
+    for user, name in ((admin, "Admin"), (old, "Old"), (new, "New"), (mgr, "Mgr")):
+        await world.q(
+            "UPDATE console_users SET display_name=%s WHERE id=%s", (f"Synthetic {name}", user)
+        )
+    await move(world, admin, new, old)
+    await world.q(
+        "UPDATE console_memberships SET is_enabled=false WHERE client_id=%s AND user_id=%s",
+        (world.tenant, old),
+    )
+    # A company that lost its owner row gets a first owner.
+    await world.q("DELETE FROM hr_client_owners WHERE client_id=%s", (world.tenant,))
+    await move(world, admin, mgr, None)
+
+    items = (await world.call("manager", "GET", f"{ACCESS}/recent")).json()["items"]
+
+    assert [
+        (i["source"], i["actor_name"], i["target_name"], i["previous_owner_name"]) for i in items
+    ] == [
+        ("owner_move", "Synthetic Admin", "Synthetic Mgr", None),
+        # The old owner has since been disabled, so the page can't name them.
+        ("owner_move", "Synthetic Admin", "Synthetic New", None),
+    ]
+    assert items[0]["actor_user_id"] == str(admin)
+
+
+async def test_a_move_is_not_the_baseline_for_the_owners_next_save(world: HrWorld) -> None:
+    admin, old, new = world.users["admin"], world.users["owner"], world.users["staff"]
+    await move(world, admin, new, old)
+    page = (await world.call("staff", "GET", f"{ACCESS}/people")).json()
+    mine = next(i for i in page["items"] if i["user_id"] == str(new))
+    body = {
+        "batch_id": str(uuid4()),
+        "version": page["version"],
+        "dry_run": False,
+        "changes": [
+            {"user_id": str(new), "on": [*mine["on"], "approves_team"], "base": mine["on"]}
+        ],
+    }
+    assert (await world.call("staff", "POST", f"{ACCESS}/changes", body)).status_code == 200
+
+    items = (await world.call("staff", "GET", f"{ACCESS}/recent")).json()["items"]
+
+    assert [i["source"] for i in items] == ["page", "owner_move"]
+    # A move is no baseline for the switch diff: with no earlier access.save the diff starts from
+    # nothing, so the standard set's own directory switch also shows as turned on (as for anyone
+    # whose rows did not come from this page). Nothing is shown as turned off.
+    assert "approves_team" in items[0]["turned_on"] and items[0]["turned_off"] == []
+
+
+async def test_card_made_before_the_move_is_refused_at_confirm(planned) -> None:  # noqa: F811
+    """The owner makes an hr_person_leave card for a colleague who holds HR access, a thing only
+    the owner may do. The title moves. Confirm then re-checks in the database and refuses, and
+    nothing changes. The old owner has Manage people, so the card gate passes and the refusal
+    comes from the database itself."""
+    w, model = planned
+    tenant = w.tenants[0]
+    browser = await _owner(w)
+    [row] = await w.q("SELECT user_id FROM hr_client_owners WHERE client_id=%s", tenant)
+    old = row["user_id"]
+    siti = await _person(w, "Siti Aminah")
+    _, colleague = await w.member(role="tenant_staff")
+    _, successor = await w.member(role="tenant_staff")
+    await w.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        tenant, UUID(colleague["user"]["id"]), siti,
+    )  # fmt: skip
+    for user in (old, UUID(colleague["user"]["id"])):
+        await w.q(
+            "INSERT INTO hr_grants(client_id,user_id,action,scope,fields) "
+            "VALUES (%s,%s,'people.manage','hr_operator','{}')",
+            tenant, user,
+        )  # fmt: skip
+    model.reply(
+        {
+            "action": "hr_person_leave",
+            "person": "Siti",
+            "last_day": "2099-12-31",
+            "reason": "resigned",
+        }
+    )
+    thread = await _thread(w, browser)
+    proposal = _card(await _turn(w, browser, thread, "Siti is leaving", "hr"))
+
+    # A platform admin, who is no member of the company, moves the title.
+    async with await psycopg.AsyncConnection.connect(w.owner_dsn) as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.client_id', %s, true), "
+                "set_config('app.hr_user_id', %s, true)",
+                (tenant, w.admin_id),
+            )
+            await conn.execute(
+                "SELECT * FROM public.hr_owner_move(%s,%s,%s,%s,%s,%s)",
+                (tenant, w.admin_id, successor["user"]["id"], old, uuid4(), fingerprint("card")),
+            )
+    [now] = await w.q(
+        "SELECT user_id::text AS user_id FROM hr_client_owners WHERE client_id=%s", tenant
+    )
+    assert now["user_id"] == successor["user"]["id"]
+
+    refused = await _confirm(w, browser, proposal["id"])
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json() == {"detail": "leaver_has_access"}
+    assert (await _employee(w, siti))["last_day"] is None
+    seen = await browser.get(f"{PROPOSALS}/{proposal['id']}")
+    assert seen.json()["status"] == "requested"
+    # Without Manage people either, the card gate refuses before the database is asked.
+    await w.q("DELETE FROM hr_grants WHERE client_id=%s AND user_id=%s", tenant, old)
+    gated = await _confirm(w, browser, proposal["id"])
+    assert gated.status_code == 404 and gated.json() == {"detail": "resource_unavailable"}
+    assert (await _employee(w, siti))["last_day"] is None
+    assert (await browser.get(f"{PROPOSALS}/{proposal['id']}")).json()["status"] == "requested"

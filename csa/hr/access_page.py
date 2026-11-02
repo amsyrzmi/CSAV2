@@ -179,10 +179,21 @@ def _baseline(operation: str, details: Mapping[str, Any]) -> frozenset[SwitchId]
 
 
 def _actor(event: Mapping[str, Any]) -> UUID:
-    """Who made the change: the chooser for an invitation (the invitee is the record's subject)."""
+    """Who made the change: the chooser for an invitation (the invitee is the record's subject),
+    and whoever moved the title for an owner move (the subject is the new owner)."""
     if event["operation"] == "invitation_access":
         return UUID(event["details"]["chosen_by"])
+    if event["operation"] == "owner.move":
+        return UUID(event["details"]["actor_id"])
     return event["subject_id"]
+
+
+def _previous_owner(event: Mapping[str, Any]) -> UUID | None:
+    """The owner an owner move replaced; None for a first owner or any other event."""
+    if event["operation"] != "owner.move":
+        return None
+    old = event["details"].get("old_owner_id")
+    return UUID(old) if old else None
 
 
 def _name(row: Mapping[str, Any]) -> str | None:
@@ -427,6 +438,7 @@ class HrAccessPage:
                     else frozenset()
                 )
             ids = {_actor(e) for e in page} | {UUID(e["details"]["user_id"]) for e in page}
+            ids |= {old for e in page if (old := _previous_owner(e)) is not None}
             found = await sql.fetch_all(
                 "hr/actor_names.sql", (tenant, sorted(ids, key=str)), conn=conn
             )
@@ -437,17 +449,24 @@ class HrAccessPage:
             details = event["details"]
             target = UUID(details["user_id"])
             invitation = event["operation"] == "invitation_access"
+            moved = event["operation"] == "owner.move"
             actor = _actor(event)
+            previous = _previous_owner(event)
             common: dict[str, Any] = {
                 "occurred_at": event["occurred_at"],
-                "source": "invitation" if invitation else "page",
+                "source": "invitation" if invitation else "owner_move" if moved else "page",
                 "preset": details["preset"] if invitation else None,
                 "actor_user_id": actor,
                 "actor_name": names.get(actor),
                 "target_user_id": target,
                 "target_name": names.get(target),
+                "previous_owner_name": names.get(previous) if previous is not None else None,
             }
-            if invitation:
+            if moved:
+                items.append(
+                    AccessEvent(**common, turned_on=[], turned_off=[], area=None, area_enabled=None)
+                )
+            elif invitation:
                 items.append(
                     AccessEvent(
                         **common,
