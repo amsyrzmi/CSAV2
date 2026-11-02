@@ -21,6 +21,15 @@ guards, the deferred items and the 1b seams are in the top entry of
 The directory/training browser scenario below now opens `/portal/hr/people` and
 `/portal/hr/training`.
 
+## HR chat retired (project 1b)
+
+The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace
+assistant dock is the only assistant and now handles the HR actions (add or update a person,
+mark someone as leaving, who reports to whom). `POST /console/v1/hr/assistant` and
+`csa/hr/assistant.py` stay for one release, marked deprecated in
+[../CONSOLE_API.md](../CONSOLE_API.md), and are removed in a cleanup PR. Entries below that
+mention the HR chat or its UI describe the earlier state.
+
 ## Workspace HR guidance
 
 The staff workspace now has a separate deterministic People & HR guide. Its
@@ -217,7 +226,7 @@ stable path above. No environment file was read or copied.
   [parameterized SQL](../../db/sql/hr/), [OpenAPI](../console_openapi.json).
 - [HR shell and tabs](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
   (replaced the single HR workspace and its remaining-tools panel in project 1a),
-  [assistant UI](../../CSA_WebConsole/csa-console/web/components/console/HrAssistant.tsx),
+  assistant UI (the separate HR chat was retired in 1b; the workspace dock is the only assistant),
   [local voice](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts).
 - [Owner bootstrap](../../scripts/bootstrap_hr_owner.py),
   [maintenance worker](../../scripts/run_hr_maintenance.py).

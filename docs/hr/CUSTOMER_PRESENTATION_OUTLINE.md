@@ -479,7 +479,7 @@ This brief reflects the repository's implementation and progress documentation, 
 - [HR agent dispatcher](../../csa/hr/agents.py)
 - [HR assistant planner](../../csa/hr/assistant.py)
 - [HR local voice implementation](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts)
-- [HR assistant interface](../../CSA_WebConsole/csa-console/web/components/console/HrAssistant.tsx)
+- [Assistant dock](../../CSA_WebConsole/csa-console/web/components/console/AssistantDock.tsx) (the separate HR chat was retired)
 - [HR interface (shell and tabs)](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
 - [Agent catalogue and console roadmap](../langgraph-rebuild/LG13_agent_catalog_and_console.md)
 - [Voice ingress and transcription design](../langgraph-rebuild/LG03_ingress_gateway_channels.md)

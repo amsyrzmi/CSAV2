@@ -163,6 +163,11 @@ background worker when users close their browsers.
 
 ## Staff chat and browser voice
 
+> **Moved (project 1b).** The separate HR chat on People & HR Home is retired; HR actions are
+> now asked of the workspace assistant dock, which is the only assistant. The notes below
+> describe the deprecated `POST /console/v1/hr/assistant` route, which stays for one release
+> and is then removed in a cleanup PR. `lib/hr-voice.ts` stays for the sandbox workspace.
+
 Set `HR_ASSISTANT_ENABLED=true` in the authorized gateway configuration, using the
 existing configured Groq client. A client owner must also enable `hr_assistant` and
 any actual HR tool it will use. Submitted messages and the caller’s employee

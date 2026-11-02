@@ -955,6 +955,10 @@ no-option question asking the user to type the address.
 
 ### HR assistant delegation
 
+**Deprecated.** `POST /console/v1/hr/assistant` is kept for one release, removed in a cleanup
+PR. The console no longer calls it: the separate HR chat left People & HR Home in project 1b,
+and the workspace assistant dock is the only assistant.
+
 `POST /console/v1/hr/assistant` keeps its HR planner and plan replay (`hr_chat_plans` is
 still written). A training submit no longer executes: it returns a `ProposalOut` with 201
 (a replay of the same request key returns 200 with the same proposal id), to be confirmed
