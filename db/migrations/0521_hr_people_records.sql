@@ -34,8 +34,10 @@
 --     partial index hr_employees_leaving. CREATE OR REPLACE hr_employee_record_change (0520, plus
 --     last_day and leaving_reason as history fields), hr_employee_change_rows (0520, a row with no
 --     HR user reads "System") and hr_people_apply (0520, plus person.leave, person.leave_undo and
---     person.rehire). hr_people_rows is dropped and created again with last_day (HR viewers, the
---     person and their direct manager), leaving_reason and leaving_note (HR viewers).
+--     person.rehire; a people.manage holder may not mark a colleague who holds HR duties beyond
+--     the staff switches, hr_leaver_has_access). hr_people_rows is dropped and created again
+--     with last_day (HR viewers, the person and their direct manager), leaving_reason and
+--     leaving_note (HR viewers).
 --     public.hr_leavers_due(p_client DEFAULT NULL): the active people whose last day has come and
 --     who still need a step, at most 500. public.hr_finish_leaver(p_client,p_employee): on the last
 --     day moves the direct reports; the day after makes the person inactive, deletes the linked
@@ -816,6 +818,23 @@ BEGIN
     AND NOT EXISTS(SELECT 1 FROM public.hr_client_owners o
                    WHERE o.client_id=p_client AND o.user_id IS DISTINCT FROM leaver_account) THEN
     RAISE EXCEPTION 'hr_last_owner_leaving' USING ERRCODE='23514'; END IF;
+   -- Only the HR owner may mark a colleague who holds HR duties here: the finish removes that
+   -- access, and only the HR owner changes access. Marking oneself is allowed. The staff rows
+   -- allowed below mirror SWITCHES["directory"] and SWITCHES["own_requests"] in
+   -- csa/hr/access_switches.py (tests/test_hr_people_records.py inserts them from there).
+   IF public.hr_is_owner(p_client) IS NOT TRUE AND leaver_account IS NOT NULL
+    AND leaver_account IS DISTINCT FROM actor AND (
+     EXISTS(SELECT 1 FROM public.hr_grants g WHERE g.client_id=p_client AND g.user_id=leaver_account
+            AND NOT ((g.action='directory.read' AND g.scope='hr_operator')
+                     OR (g.scope='self' AND g.action IN ('directory.read','training.read',
+                         'training.draft','training.submit','training.withdraw'))))
+     OR EXISTS(SELECT 1 FROM public.hr_workflow_grants w
+               WHERE w.client_id=p_client AND w.user_id=leaver_account
+               AND NOT (w.scope='self' AND w.domain IN ('attendance','leave')
+                        AND w.action IN ('read','prepare')))
+     OR EXISTS(SELECT 1 FROM public.hr_private_grants pg
+               WHERE pg.client_id=p_client AND pg.user_id=leaver_account)) THEN
+    RAISE EXCEPTION 'hr_leaver_has_access' USING ERRCODE='23514'; END IF;
    -- The reports' new manager: none, or an active employee outside the leaver's tree (the
    -- client suggests the leaver's own manager). The same is-you rule as a manager change.
    manager:=(p_body->>'reports_new_manager')::uuid;

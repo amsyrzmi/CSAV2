@@ -83,6 +83,7 @@ _PEOPLE_REFUSALS = {
     "hr_not_left": "not_left",
     "hr_person_not_active": "person_not_active",
     "hr_last_day_past": "last_day_past",
+    "hr_leaver_has_access": "leaver_has_access",
     # Personal details (hr_personal_apply and hr_personal_reveal).
     "hr_personal_access_required": "permission_denied",
     "hr_personal_field_refused": "personal_field_refused",

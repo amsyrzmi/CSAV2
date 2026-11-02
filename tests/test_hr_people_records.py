@@ -24,6 +24,7 @@ from csa.core import crypto, db, settings
 from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.hr import documents
+from csa.hr.access_switches import SWITCHES
 from csa.hr.api import build_hr_router
 from csa.hr.automation_models import PersonalSave
 from csa.hr.operations import HrOperations
@@ -1694,12 +1695,95 @@ async def test_leave_refuses_new_manager_inside_the_leavers_tree(world: HrWorld)
     outsider = world.employees["outsider"]
     await ok(world, "owner", await leave_body(world, leaver, today, new_manager=outsider))
     assert (await person_row(world, leaver))["reports_new_manager"] == outsider
-    # A people manager may not pick themself as the reports' new manager; the owner may.
+    # A people manager may not pick themself as the reports' new manager; the owner may. (The
+    # staff-only person: a colleague with HR duties is the owner's to mark, see below.)
     await make_people_manager(world, "outsider")
-    mine = await leave_body(world, leaver, today, new_manager=outsider)
+    mine = await leave_body(world, staff, today, new_manager=outsider)
     await refused(world, "outsider", mine, 409, "manager_is_you")
-    await ok(world, "outsider", await leave_body(world, leaver, today, new_manager=None))
-    assert (await person_row(world, leaver))["reports_new_manager"] is None
+    await ok(world, "outsider", await leave_body(world, staff, today, new_manager=None))
+    assert (await person_row(world, staff))["reports_new_manager"] is None
+
+
+async def staff_rows_only(world: HrWorld, who: str) -> None:
+    """Give `who` exactly the rows of the staff switches (directory and own requests), taken
+    from csa/hr/access_switches.py, so the SQL mirror of them is checked against the source."""
+    user = world.users[who]
+    for table in ("hr_grants", "hr_workflow_grants", "hr_private_grants"):
+        await world.q(
+            f"DELETE FROM {table} WHERE client_id=%s AND user_id=%s",  # type: ignore[arg-type]
+            (world.tenant, user),
+        )
+    staff = SWITCHES["directory"].union(SWITCHES["own_requests"])
+    assert not staff.areas
+    for grant in sorted(staff.grants):
+        await world.q(
+            "INSERT INTO hr_grants(client_id,user_id,action,scope,fields) VALUES (%s,%s,%s,%s,%s)",
+            (world.tenant, user, grant.action, grant.scope, list(grant.fields)),
+        )
+    for row in sorted(staff.workflows):
+        await world.q(
+            "INSERT INTO hr_workflow_grants(client_id,user_id,domain,action,scope) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (world.tenant, user, row.domain, row.action, row.scope),
+        )
+
+
+async def test_people_manager_cannot_mark_a_colleague_with_hr_access_as_leaving(
+    world: HrWorld,
+) -> None:
+    today = await db_today(world)
+    staff, manager, outsider = (world.employees[n] for n in ("staff", "manager", "outsider"))
+    await make_people_manager(world, "outsider")  # the holder, linked to the outsider person
+    # (a) Another people.manage holder.
+    await staff_rows_only(world, "staff")
+    await make_people_manager(world, "staff")
+    await refused(
+        world, "outsider", await leave_body(world, staff, today), 409, "leaver_has_access"
+    )
+    # (b) A payroll preparer: workflow rows and the payroll area, nothing else.
+    await staff_rows_only(world, "manager")
+    for domain, action, scope in sorted(SWITCHES["payroll_prepare"].workflows):
+        await world.q(
+            "INSERT INTO hr_workflow_grants(client_id,user_id,domain,action,scope) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (world.tenant, world.users["manager"], domain, action, scope),
+        )
+    await refused(
+        world, "outsider", await leave_body(world, manager, today), 409, "leaver_has_access"
+    )
+    await world.q(
+        "DELETE FROM hr_workflow_grants WHERE client_id=%s AND user_id=%s AND domain='payroll'",
+        (world.tenant, world.users["manager"]),
+    )
+    await world.q(
+        "INSERT INTO hr_private_grants(client_id,user_id,area,approved_by) "
+        "VALUES (%s,%s,'payroll',%s)",
+        (world.tenant, world.users["manager"], world.users["owner"]),
+    )
+    await refused(
+        world, "outsider", await leave_body(world, manager, today), 409, "leaver_has_access"
+    )
+    # (c) A staff-only colleague: exactly the staff switches' rows.
+    await staff_rows_only(world, "staff")
+    await ok(world, "outsider", await leave_body(world, staff, today))
+    # (d) The holder themself.
+    await ok(world, "outsider", await leave_body(world, outsider, today))
+    for person in (staff, outsider):
+        assert (await person_row(world, person))["last_day"] == today
+    assert (await person_row(world, manager))["last_day"] is None
+
+
+async def test_owner_can_mark_a_colleague_with_hr_access_as_leaving(world: HrWorld) -> None:
+    today = await db_today(world)
+    manager = world.employees["manager"]
+    await make_people_manager(world, "manager")  # on top of the fixture's approver grants
+    await world.q(
+        "INSERT INTO hr_private_grants(client_id,user_id,area,approved_by) "
+        "VALUES (%s,%s,'payroll',%s)",
+        (world.tenant, world.users["manager"], world.users["owner"]),
+    )
+    await ok(world, "owner", await leave_body(world, manager, today))
+    assert (await person_row(world, manager))["last_day"] == today
 
 
 async def test_last_hr_owner_cannot_leave_until_another_owner_exists(world: HrWorld) -> None:
