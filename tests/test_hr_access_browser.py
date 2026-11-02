@@ -63,6 +63,10 @@ SWITCHES = [
 ]
 DIRECTORY_LABEL = "See everyone's basic details"
 TITLE = "Warehouse supervisor"
+OWNER_LINE = (
+    "HR owner: full control of HR access, plus recruitment, attendance, leave "
+    "and training decisions."
+)
 
 
 class World:
@@ -589,6 +593,11 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         # (d) The owner ticks both, then gives only the manager the Manager preset.
         await page.get_by_test_id("hr-access-search").fill("")
         await expect(page.locator("[data-testid^='hr-access-row-']")).to_have_count(3, timeout=WAIT)
+        await expect(panel).not_to_contain_text(OWNER_LINE)
+        await expect(row(OWNER)).to_contain_text("HR owner")
+        await expect(row(STAFF)).not_to_contain_text("HR owner")
+        await row(OWNER).get_by_role("button").click()
+        await expect(panel).to_contain_text(OWNER_LINE)
         await page.get_by_test_id(f"hr-access-tick-{MANAGER}").check()
         await page.get_by_test_id(f"hr-access-tick-{STAFF}").check()
         await expect(page.get_by_test_id("hr-access-bulk")).to_contain_text("2 members ticked")

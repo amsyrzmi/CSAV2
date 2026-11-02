@@ -28,7 +28,8 @@ class AccessPerson(HrModel):
     is_owner: bool
     on: list[SwitchId]
     included: dict[SwitchId, SwitchId]
-    custom: list[str]  # the rows no switch describes, in plain words
+    # The rows no switch describes, in plain words; for the HR owner, without the standard set.
+    custom: list[str]
 
 
 class AccessWarningOut(HrModel):

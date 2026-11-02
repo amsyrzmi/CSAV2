@@ -15,6 +15,7 @@ import psycopg
 import pytest
 from csa.core.db import q
 from csa.core.tenancy import tx
+from csa.hr.access_switches import OWNER_ROWS, AccessRows
 from psycopg.types.json import Jsonb
 
 from tests.conftest import requires_docker
@@ -1078,6 +1079,55 @@ async def test_recent_changes_name_nobody_who_is_gone_and_a_first_owner_has_no_p
         ("owner_move", "Synthetic Admin", "Synthetic New", None),
     ]
     assert items[0]["actor_user_id"] == str(admin)
+
+
+async def held_rows(world: HrWorld, user: UUID) -> AccessRows:
+    args = (world.tenant, user)
+    grants = await world.q(
+        "SELECT action,scope,fields FROM hr_grants WHERE client_id=%s AND user_id=%s", args
+    )
+    workflows = await world.q(
+        "SELECT domain,action,scope FROM hr_workflow_grants WHERE client_id=%s AND user_id=%s", args
+    )
+    areas = await world.q(
+        "SELECT area FROM hr_private_grants WHERE client_id=%s AND user_id=%s", args
+    )
+    return AccessRows.from_summary(grants, workflows, [row["area"] for row in areas])
+
+
+async def access_person(world: HrWorld, viewer: str, user: UUID) -> dict[str, Any]:
+    response = await world.call(viewer, "GET", f"{ACCESS}/people")
+    assert response.status_code == 200, response.text
+    return next(i for i in response.json()["items"] if i["user_id"] == str(user))
+
+
+async def test_standard_owner_rows_are_exactly_what_a_move_gives(world: HrWorld) -> None:
+    # OWNER_ROWS is how the access page recognises 0522's list. Someone new holds nothing else.
+    fresh = await new_user(world)
+    await move(world, world.users["admin"], fresh, world.users["owner"])
+    assert await held_rows(world, fresh) == OWNER_ROWS
+
+
+async def test_access_page_lists_only_what_the_owner_holds_beyond_the_standard_rows(
+    world: HrWorld,
+) -> None:
+    admin, old, successor = world.users["admin"], world.users["owner"], world.users["manager"]
+    await move(world, admin, admin, old)
+    mine = await access_person(world, "admin", admin)
+    assert mine["is_owner"] is True and mine["custom"] == []
+
+    await workflow_grant(world, "admin", "leave", "read", "hr_operator")
+    mine = await access_person(world, "admin", admin)
+    assert mine["custom"] == ["Sees everyone's leave records"]
+
+    # The title no longer explains a former owner's leftovers, so they are a real custom list.
+    await move(world, admin, successor, admin)
+    former = await access_person(world, "manager", admin)
+    assert former["is_owner"] is False
+    assert former["custom"] == [
+        "Sees everyone's training requests",
+        "Sees everyone's leave records",
+    ]
 
 
 async def test_a_move_is_not_the_baseline_for_the_owners_next_save(world: HrWorld) -> None:

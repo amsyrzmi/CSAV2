@@ -32,6 +32,7 @@ from csa.hr.access_contracts import (
     AccessWarningOut,
 )
 from csa.hr.access_switches import (
+    OWNER_ROWS,
     SWITCH_IDS,
     SWITCHES,
     AccessLimitError,
@@ -207,6 +208,9 @@ def _ordered(switches: frozenset[SwitchId]) -> list[SwitchId]:
 
 
 def _person(p: PersonAccess, s: SwitchState) -> AccessPerson:
+    # The panel explains the title's own rows in one line. A former owner has no title to explain
+    # theirs, so what the switches leave out stays on their custom list.
+    custom = s.uncovered.minus(OWNER_ROWS) if p.is_owner else s.uncovered
     return AccessPerson(
         user_id=p.user_id,
         display_name=p.display_name,
@@ -217,7 +221,7 @@ def _person(p: PersonAccess, s: SwitchState) -> AccessPerson:
         is_owner=p.is_owner,
         on=_ordered(s.on),
         included=dict(s.included),
-        custom=describe(s.uncovered),
+        custom=describe(custom),
     )
 
 

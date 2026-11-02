@@ -172,6 +172,21 @@ SWITCHES: Mapping[SwitchId, AccessRows] = {
     ),
 }
 
+# The rows a move of the HR owner gives (migration 0522): the title explains them, so the access
+# page doesn't list them as custom for the person who holds it. Display only: a save keeps them like
+# any other uncovered row. tests/test_hr_owner_move.py compares this with what a move writes.
+OWNER_ROWS = _rows(
+    [
+        _grant("directory.read", "hr_operator", BASIC_FIELDS),
+        _grant("training.read", "hr_operator"),
+        _grant("training.decide", "client_owner"),
+    ],
+    _workflows(
+        ("recruitment", "attendance", "leave"), ("read", "prepare", "decide"), "client_owner"
+    ),
+    ["recruitment", "attendance"],
+)
+
 
 def switch_set(*ids: SwitchId) -> frozenset[SwitchId]:
     return frozenset(ids)

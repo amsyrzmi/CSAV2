@@ -280,6 +280,11 @@ test("an owner move names who made whom the HR owner, and who it replaced", () =
     "FourStacks admin made Former member the HR owner");
 });
 
+test("the HR owner's access reads as one plain line", () => {
+  assert.equal(copy.OWNER_ACCESS_LINE,
+    "HR owner: full control of HR access, plus recruitment, attendance, leave and training decisions.");
+});
+
 test("the pending line names the preset and who chose it", () => {
   const row = { token_id: PENDING_ID, user_id: USER, display_name: "Aina Rahman", preset: "payroll_reviewer",
     chosen_by: MANAGER, chooser_name: null, accepted_at: "2026-10-29T01:00:00Z" };

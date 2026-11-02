@@ -93,8 +93,10 @@ access.
 - Each person carries `on` (every switch whose rows are all present),
   `included` (a switch whose rows sit inside another switch that is on, which
   cannot be turned off on its own), `custom` (the rows no switch describes, in
-  plain words), `team_size` and `is_owner`. Every save keeps the `custom` rows,
-  so the owner's own decision rows on `client_owner` are never dropped here.
+  plain words; for the HR owner, without the standard set a move of the title gives,
+  which the page sums up in one line), `team_size` and `is_owner`. Every save keeps
+  the rows no switch describes, so the owner's own decision rows on `client_owner`
+  are never dropped here.
 - `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
   page showed, `dry_run` and 1–50 `changes`, each `{user_id, on, base}`: the
   member's full desired switch set (`on`) and the `on` set the page loaded them
