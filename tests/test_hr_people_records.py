@@ -18,6 +18,7 @@ import httpx
 import psycopg
 import pytest
 from csa.console.auth import build_identity_router
+from csa.console.security import digest
 from csa.core import crypto, settings
 from csa.core.db import q
 from csa.core.tenancy import tx
@@ -1467,3 +1468,51 @@ async def test_document_table_and_functions_are_closed_to_other_roles(world: HrW
         "('csa_app','csa_ro','csa_identity','csa_hr_maintenance','PUBLIC')"
     )
     assert privileges == []
+
+
+async def test_document_list_for_a_person_outside_the_tenant_is_not_found(
+    world: HrWorld, hr_root: Path
+) -> None:
+    own = world.employees["manager"]  # exists in this tenant only
+    await uploaded(world, "owner", own, "mine.pdf", PDF)
+    # An unknown id is a 404, not an empty list.
+    unknown = await listed(world, "owner", uuid4())
+    assert (unknown.status_code, unknown.json()) == (404, {"detail": "resource_unavailable"})
+    assert (await listed(world, "owner", own)).status_code == 200
+    # The owner of another tenant, with a real session there, asks for this tenant's person.
+    other_owner, other_employee = uuid4(), uuid4()
+    token, csrf = f"synthetic-session-{uuid4()}", f"synthetic-csrf-{uuid4()}"
+    await world.q(
+        "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,'Other owner')",
+        (other_owner, f"synthetic-{other_owner}@example.test"),
+    )
+    await world.q(
+        "INSERT INTO console_memberships(user_id,client_id,role) VALUES (%s,%s,'tenant_admin')",
+        (other_owner, world.other_tenant),
+    )
+    await world.q(
+        "INSERT INTO console_sessions(id,user_id,token_hash,csrf_hash,client_id,expires_at) "
+        "VALUES (%s,%s,%s,%s,%s,now()+interval '1 hour')",
+        (uuid4(), other_owner, digest(token), digest(csrf), world.other_tenant),
+    )
+    await world.q(
+        "INSERT INTO hr_employees(client_id,id,display_name) VALUES (%s,%s,'Other owner')",
+        (world.other_tenant, other_employee),
+    )
+    await world.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        (world.other_tenant, other_owner, other_employee),
+    )
+    await world.q(
+        "INSERT INTO hr_client_owners(client_id,user_id,approved_by) VALUES (%s,%s,%s)",
+        (world.other_tenant, other_owner, other_owner),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=world.app), base_url="https://hr.example.test"
+    ) as foreign:
+        foreign.cookies.set("csa_session", token)
+        foreign.cookies.set("csa_csrf", csrf)
+        mine = await foreign.get(f"{PEOPLE}/{other_employee}/documents")
+        assert (mine.status_code, mine.json()) == (200, {"items": []})
+        response = await foreign.get(f"{PEOPLE}/{own}/documents")
+        assert (response.status_code, response.json()) == (404, {"detail": "resource_unavailable"})

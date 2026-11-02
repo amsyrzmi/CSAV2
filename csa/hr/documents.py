@@ -156,6 +156,9 @@ class HrDocuments:
                 )
             except psycopg.errors.InsufficientPrivilege:
                 raise HrPolicyError("permission_denied") from None
+            except psycopg.errors.CheckViolation:
+                # hr_document_unavailable: the person is not in this tenant.
+                raise HrPolicyError("resource_unavailable") from None
             await self.core._session(conn, session)
         return DocumentList(items=[self._out({**row, "document_id": row["id"]}) for row in rows])
 

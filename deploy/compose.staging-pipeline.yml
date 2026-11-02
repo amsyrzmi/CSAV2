@@ -15,7 +15,6 @@ x-runtime: &runtime
     CHANNEL_MODE: webhook
     PUBLIC_BASE_URL: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging origin required}
     KB_UPLOAD_ROOT: /var/lib/csa/uploads
-    HR_UPLOAD_ROOT: /var/lib/csa/hr-uploads
     TEI_ENDPOINT: http://staging-embeddings:8080
     KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
     TEI_QUERY_PREFIX: "query: "
@@ -25,6 +24,8 @@ services:
   gateway:
     restart: unless-stopped
     environment:
+      # HR documents: the gateway is the only service that mounts the volume (below).
+      HR_UPLOAD_ROOT: /var/lib/csa/hr-uploads
       TEI_ENDPOINT: http://staging-embeddings:8080
       KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
       TEI_QUERY_PREFIX: "query: "

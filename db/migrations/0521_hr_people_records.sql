@@ -380,6 +380,11 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $
 DECLARE access text:=public.hr_document_access(p_client,p_employee);
 BEGIN
  IF access IS NULL THEN RAISE EXCEPTION 'hr_document_access_required' USING ERRCODE='42501'; END IF;
+ -- A manager of documents asking about a person who is not in this tenant gets "not found", not an
+ -- empty list. (The person themself exists by their own account link.)
+ IF access='manage' AND NOT EXISTS(SELECT 1 FROM public.hr_employees e
+                                   WHERE e.client_id=p_client AND e.id=p_employee) THEN
+  RAISE EXCEPTION 'hr_document_unavailable' USING ERRCODE='23514'; END IF;
  RETURN QUERY
  SELECT d.id, d.employee_id, d.kind, d.file_name, d.media_type, d.byte_size, d.uploaded_at,
   CASE WHEN u.is_platform_admin THEN 'FourStacks admin'
