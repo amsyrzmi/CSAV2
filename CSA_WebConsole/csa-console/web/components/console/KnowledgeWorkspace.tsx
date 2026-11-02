@@ -1,11 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, del, post } from "@/lib/api";
 import type { Agent, Client, KbDocument, KbFile, KbGap, KbJob, Me } from "@/lib/identity-contracts";
+import { groupSources, looseFiles, pollingNeeded, type Card } from "@/lib/knowledge-view";
 import { usePublishContext } from "@/lib/page-context";
-import { action, field, Heading, Notice, Panel, secondary } from "./ui";
+import { DetailsRow, PageIntro } from "./kit";
+import AddKnowledge, { type AgentState } from "./knowledge/AddKnowledge";
+import { Maintenance, Settings } from "./knowledge/Disclosures";
+import KnowledgeCard, { type CardActions, type Source } from "./knowledge/KnowledgeCard";
+import SectionError from "./knowledge/SectionError";
+import { useKbSlot, type Slot } from "./knowledge/useKbSlot";
+import { action, field, Notice, Panel, secondary } from "./ui";
 
 export function KnowledgeWorkspace({ me }: { me: Me }) {
   usePublishContext({ tab: "knowledge_base" });
@@ -25,7 +32,8 @@ export function KnowledgeWorkspace({ me }: { me: Me }) {
   }, [platform]);
   const clientId = platform ? selected : me.active_client_id;
   return <>
-    <Heading title="Knowledge base" description="Tenant documents, original sources, ingestion jobs and unanswered questions." />
+    <h1 className="page-title mb-2 font-(family-name:--fs-font-heading) text-(length:--fs-text-page) font-semibold">Knowledge base</h1>
+    <PageIntro>Tenant documents, original sources, ingestion jobs and unanswered questions.</PageIntro>
     {error && <Notice error>{error}</Notice>}
     {platform && <div className="mb-5">
       <label htmlFor="kb-tenant" className="mb-2 block text-sm">Tenant</label>
@@ -35,49 +43,79 @@ export function KnowledgeWorkspace({ me }: { me: Me }) {
       </select>
     </div>}
     {clientId ? <Knowledge key={clientId} query={platform ? `client_id=${encodeURIComponent(clientId)}` : ""}
-      canWrite={me.role !== null && me.role !== "read_only"} /> : <Notice>Select a tenant to continue.</Notice>}
+      canWrite={me.role !== null && me.role !== "read_only"} servicesHref={platform ? "/services" : "/portal/services"} /> : <Notice>Select a tenant to continue.</Notice>}
   </>;
 }
 
-type Snapshot = { agent: Agent; files: KbFile[]; documents: KbDocument[]; jobs: KbJob[]; gaps: KbGap[] };
+const box =
+  "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 
-function Knowledge({ query, canWrite }: { query: string; canWrite: boolean }) {
-  const [data, setData] = useState<Snapshot | null>(null);
+type Confirm = { type: "files" | "documents"; id: string; name: string };
+
+function agentStateOf(slot: Slot<Agent[]>, row: Agent | undefined): AgentState {
+  if (row) return "ready";
+  return slot.data || slot.error ? "failed" : "loading";
+}
+
+function Knowledge({ query, canWrite, servicesHref }: { query: string; canWrite: boolean; servicesHref: string }) {
+  const agents = useKbSlot<Agent[]>("agents", query);
+  const files = useKbSlot<KbFile[]>("kb/files", query);
+  const documents = useKbSlot<KbDocument[]>("kb/documents", query);
+  const jobs = useKbSlot<KbJob[]>("kb/ingest-jobs", query);
+  const gaps = useKbSlot<KbGap[]>("kb/gaps", query);
   const [error, setError] = useState("");
-  const [loadError, setLoadError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [revision, setRevision] = useState(0);
   const [selection, setSelection] = useState<{ files: File[]; key: string } | null>(null);
-  const [confirm, setConfirm] = useState<{ type: "files" | "documents"; id: string; name: string } | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const feedback = useRef<HTMLDivElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
   const path = (resource: string) => `/console/v1/${resource}?${query}`;
+
+  const agent = agents.slot.data?.find((row) => row.name === "kb_agent");
+  const agentState = agentStateOf(agents.slot, agent);
+  const writable = canWrite && agent?.capability?.active === true;
+  const groups = useMemo(
+    () => groupSources(files.slot.data ?? [], documents.slot.data ?? [], jobs.slot.data ?? []),
+    [files.slot.data, documents.slot.data, jobs.slot.data],
+  );
+  const reading = pollingNeeded(groups);
+  const locked = [documents.slot, jobs.slot, gaps.slot].find((slot) => slot.code === "package_inactive");
+
+  const loadFiles = files.load;
+  const loadDocuments = documents.load;
+  const loadJobs = jobs.load;
+  const loadGaps = gaps.load;
+  const loadAgents = agents.load;
+  const reloadSources = useCallback(() => {
+    void loadFiles(); void loadDocuments(); void loadJobs();
+  }, [loadFiles, loadDocuments, loadJobs]);
+  const reloadAll = useCallback(() => {
+    reloadSources(); void loadGaps(); void loadAgents();
+  }, [reloadSources, loadGaps, loadAgents]);
+
+  // The page refreshes by itself only while a file is being read, and stops when none is.
   useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    async function refresh() {
-      try {
-        const request = <T,>(resource: string) => api<T>(`/console/v1/${resource}?${query}`, { signal: controller.signal });
-        const [agents, files, documents, jobs, gaps] = await Promise.all([
-          request<Agent[]>("agents"), request<KbFile[]>("kb/files"),
-          request<KbDocument[]>("kb/documents"),
-          request<KbJob[]>("kb/ingest-jobs"), request<KbGap[]>("kb/gaps"),
-        ]);
-        if (controller.signal.aborted) return;
-        const agent = agents.find((row) => row.name === "kb_agent");
-        if (!agent) throw new Error("KB capability metadata is unavailable.");
-        setData({ agent, files, documents, jobs, gaps });
-        setLoadError("");
-      } catch (cause) {
-        if (!controller.signal.aborted) { setLoadError((cause as Error).message); setData(null); }
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(refresh, 5000);
-      }
+    if (!reading) return;
+    const timer = setInterval(reloadSources, 5000);
+    return () => clearInterval(timer);
+  }, [reading, reloadSources]);
+  useEffect(() => {
+    if (error || message) feedback.current?.scrollIntoView({ block: "nearest" });
+  }, [error, message]);
+  useEffect(() => { if (confirm) cancel.current?.focus(); }, [confirm]);
+
+  function choose(event: ChangeEvent<HTMLInputElement>) {
+    const chosen = Array.from(event.target.files ?? []);
+    setError(""); setSelection(null);
+    if (!chosen.length) return;
+    if (chosen.length > 3 || chosen.some((file) => !/\.(pdf|docx|csv)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024)) {
+      setError("Select one to three non-empty PDF, DOCX or CSV files, at most 10 MB each.");
+      event.target.value = ""; return;
     }
-    void refresh();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [query, revision]);
-  const writable = canWrite && data?.agent.capability?.active === true;
+    setSelection({ files: chosen, key: crypto.randomUUID() });
+  }
   async function upload() {
     if (!selection) return;
     setBusy(true); setError(""); setMessage("");
@@ -90,7 +128,7 @@ function Knowledge({ query, canWrite }: { query: string; canWrite: boolean }) {
       setMessage(`${result.duplicate_request ? "Existing" : "Queued"} job ${result.job_id}. Queued is not yet searchable.`);
       setSelection(null);
       if (input.current) input.current.value = "";
-      setRevision((value) => value + 1);
+      reloadSources();
     } catch (cause) {
       setError(`${(cause as Error).message}. Retry keeps the same idempotency key; do not reselect files for an uncertain result.`);
     } finally { setBusy(false); }
@@ -101,7 +139,7 @@ function Knowledge({ query, canWrite }: { query: string; canWrite: boolean }) {
     try {
       await del(path(`kb/${confirm.type}/${confirm.id}`));
       setConfirm(null); setMessage("Deleted. Queued work cannot recreate this source or its deleted content.");
-      setRevision((value) => value + 1);
+      reloadSources();
     } catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }
   }
@@ -109,7 +147,7 @@ function Knowledge({ query, canWrite }: { query: string; canWrite: boolean }) {
     setBusy(true); setError("");
     try {
       await post(path(`kb/gaps/${id}/resolve`));
-      setRevision((value) => value + 1);
+      void loadGaps();
     } catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }
   }
@@ -118,91 +156,127 @@ function Knowledge({ query, canWrite }: { query: string; canWrite: boolean }) {
     try {
       const result = await post<{ removed_files: number }>(path("kb/storage/reconcile"));
       setMessage(`Storage reconciled: ${result.removed_files} orphaned/deleted/partial files removed. Active sources are retained.`);
-      setRevision((value) => value + 1);
+      reloadSources();
     } catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }
   }
-  return <div className="space-y-5">
-    {error && <Notice error>{error}</Notice>}
-    {loadError && <Notice error>{loadError}</Notice>}
-    {message && <Notice>{message}</Notice>}
-    <button className={secondary} disabled={busy} onClick={() => setRevision((value) => value + 1)}>Refresh knowledge base</button>
-    <Notice>Polling every 5 seconds. Lists show the latest 50 documents/gaps, 20 jobs and 100 sources.
-      Uploads need configured storage and an ingestion worker. A queued job is not proof the worker is running.</Notice>
-    {!data ? <Notice>{loadError ? "KB state unavailable. Refresh to retry." : "Loading knowledge base..."}</Notice> : <>
-      <Panel title="Embedding compatibility">
-        <p>{data.agent.detail}</p>
-        <p className="mt-2 text-sm">Model: {data.agent.embedding_model ?? "Not configured"}.
-          Compatible chunks: {data.agent.compatible_chunks ?? "Unknown"}.
-          Incompatible chunks: {data.agent.incompatible_chunks ?? "Unknown"}.
-          No legacy FAQ files are imported automatically.</p>
-        {!writable && <p className="mt-3 text-sm">{canWrite ? "Writes require both KB subscription and tenant switch on." : "Read-only access: upload, deletion and gap resolution are unavailable."}</p>}
-      </Panel>
-      {canWrite && <Panel title="Upload sources">
-        <label htmlFor="kb-files" className="mb-2 block text-sm">One to three PDF, DOCX or CSV files, at most 10 MB each</label>
-        <input ref={input} id="kb-files" type="file" multiple accept=".pdf,.docx,.csv" disabled={busy || !writable}
-          onChange={(event) => {
-            const files = Array.from(event.target.files ?? []);
-            setError(""); setSelection(null);
-            if (!files.length) return;
-            if (files.length > 3 || files.some((file) => !/\.(pdf|docx|csv)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024)) {
-              setError("Select one to three non-empty PDF, DOCX or CSV files, at most 10 MB each.");
-              event.target.value = ""; return;
-            }
-            setSelection({ files, key: crypto.randomUUID() });
-          }} />
-        {selection && <p className="mt-3 text-sm">{selection.files.map((file) => file.name).join(", ")}</p>}
-        <button className={`${action} mt-4`} disabled={busy || !writable || !selection} onClick={upload}>{busy ? "Working..." : "Queue upload / retry"}</button>
-      </Panel>}
-      {confirm && <Panel title="Confirm deletion">
+
+  const actions: CardActions = {
+    canWrite, writable, busy,
+    downloadHref: (id) => path(`kb/files/${id}/download`),
+    onDelete: (type, id, name) => setConfirm({ type, id, name }),
+    onAddAgain: () => { input.current?.scrollIntoView({ block: "center" }); input.current?.focus(); },
+  };
+  const fileRows = files.slot.data ?? [];
+  const sourceOf = (card: Card, kind: "document" | "job"): Source | null => {
+    if (kind === "document") {
+      const document = documents.slot.data?.find((row) => row.id === card.id);
+      return document ? { type: "document", document } : null;
+    }
+    const job = jobs.slot.data?.find((row) => row.id === card.id);
+    return job ? { type: "job", job } : null;
+  };
+  const cardList = (cards: Card[], kind: "document" | "job") => (
+    <ul className="space-y-3">
+      {cards.map((card) => {
+        const source = sourceOf(card, kind);
+        return source && <KnowledgeCard key={card.id} card={card} source={source} files={fileRows} actions={actions} />;
+      })}
+    </ul>
+  );
+  const retry = (slot: Slot<unknown>, name: string, what: string, load: () => Promise<void>) => slot.error && (
+    <SectionError name={name} what={what} message={slot.error} stale={slot.data !== null} onRetry={() => void load()} />
+  );
+  const loose = looseFiles(fileRows, groups);
+
+  if (locked) return <div className="space-y-5">
+    <Notice error testId="kb-locked">{locked.error}</Notice>
+    <button className={secondary} onClick={reloadAll}>Refresh knowledge base</button>
+  </div>;
+
+  return <div className="space-y-6">
+    {canWrite && <AddKnowledge inputRef={input} agent={agentState} writable={writable} busy={busy}
+      selection={selection?.files ?? null} onChange={choose} onUpload={upload} onRetryAgent={() => void loadAgents()} />}
+    {confirm && <Panel title="Confirm deletion">
+      <div data-testid="kb-confirm">
         <p>Delete {confirm.name}? Deleting a source with a linked document removes that document, its searchable chunks and every duplicate source linked to it. An already-authorized download may finish.</p>
         <div className="mt-4 flex gap-3">
           <button className={action} disabled={busy || !writable} onClick={remove}>Confirm delete</button>
-          <button className={secondary} disabled={busy} onClick={() => setConfirm(null)}>Cancel</button>
+          <button ref={cancel} className={secondary} disabled={busy} onClick={() => setConfirm(null)}>Cancel</button>
         </div>
-      </Panel>}
-      <Panel title="Ingestion jobs">
-        {!data.jobs.length && <p>No recorded jobs.</p>}
-        {data.jobs.map((job) => <article key={job.id} className="mb-4 border-b border-ink-200 pb-4 text-sm">
-          <p className="break-all font-semibold">{job.id}: {job.status} (attempts: {job.attempts})</p>
-          <p>{job.files.map((file) => file.name).join(", ")}</p>
-          {job.error && <p className="text-red-800">{job.error}</p>}
-          {job.meta.results.map((result, index) => <p key={index}>
-            {result.file}: {result.status}{result.version !== null && `, version ${result.version}`}
-            {result.chunks !== null && `, ${result.chunks} chunks`}{result.error && ` — ${result.error}`}
-          </p>)}
-        </article>)}
-      </Panel>
-      <Panel title="Original sources">
-        {canWrite && <button className={`${secondary} mb-4`} disabled={busy} onClick={reconcile}>Reconcile orphaned storage</button>}
-        {!data.files.length && <p>No uploaded sources. Text and legacy documents may have no downloadable source.</p>}
-        {data.files.map((file) => <article key={file.id} className="mb-4 border-b border-ink-200 pb-4 text-sm">
-          <p className="font-semibold">{file.name}</p>
-          <p>{file.media_type}, {file.size_bytes.toLocaleString()} bytes. {file.document_id ? `Document ${file.document_id}` : "No linked document yet."}</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <a className={secondary} href={path(`kb/files/${file.id}/download`)}>Download original</a>
-            {canWrite && <button className={secondary} disabled={busy || !writable} onClick={() => setConfirm({ type: "files", id: file.id, name: file.name })}>Delete source</button>}
+      </div>
+    </Panel>}
+    <div ref={feedback} className="space-y-3 empty:hidden">
+      {error && <Notice error>{error}</Notice>}
+      {message && <Notice>{message}</Notice>}
+    </div>
+
+    <section data-testid="kb-library" className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-(family-name:--fs-font-heading) text-lg font-semibold">What your assistant knows</h2>
+        <button className={secondary} disabled={busy} onClick={reloadAll}>Refresh knowledge base</button>
+      </div>
+      {retry(jobs.slot, "jobs", "the files being read", jobs.load)}
+      {groups.attention.length > 0 && <div data-testid="kb-attention" className="space-y-3">
+        <h3 className="font-semibold">Needs attention</h3>
+        {cardList(groups.attention, "job")}
+      </div>}
+      {groups.reading.length > 0 && <div data-testid="kb-reading" className="space-y-3">
+        <h3 className="font-semibold">Being read</h3>
+        {cardList(groups.reading, "job")}
+      </div>}
+      <div data-testid="kb-ready" className="space-y-3">
+        <h3 className="font-semibold">In your library</h3>
+        {retry(documents.slot, "documents", "your library", documents.load)}
+        {documents.slot.data === null && !documents.slot.error && <Notice>Loading knowledge base...</Notice>}
+        {documents.slot.data && !documents.slot.data.length && <div className="text-sm">
+          <p>No ingested documents.</p>
+          {canWrite && <p className="mt-1 text-[color:var(--fs-text-secondary)]">Add a file above and your assistant will read it.</p>}
+        </div>}
+        {cardList(groups.library, "document")}
+      </div>
+      {retry(files.slot, "files", "the original files", files.load)}
+      <div className={box}>
+        <DetailsRow testId="kb-other-files" toggleLabel="other uploaded files" summary={<p className="font-medium">Other uploaded files</p>}>
+          {!files.slot.data ? <p>{files.slot.error ? "The list of files could not be loaded." : "Loading..."}</p>
+            : !files.slot.data.length ? <p>No uploaded sources. Text and legacy documents may have no downloadable source.</p>
+            : !loose.length ? <p>Every uploaded file is shown on its card above.</p>
+            : <div className="space-y-4">{loose.map((file) => <article key={file.id}>
+              <p className="font-semibold">{file.name}</p>
+              <p>{file.media_type}, {file.size_bytes.toLocaleString()} bytes. {file.document_id ? `Document ${file.document_id}` : "No linked document yet."}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <a className={secondary} href={path(`kb/files/${file.id}/download`)}>Download original</a>
+                {canWrite && <button className={secondary} disabled={busy || !writable} onClick={() => setConfirm({ type: "files", id: file.id, name: file.name })}>Delete source</button>}
+              </div>
+            </article>)}</div>}
+        </DetailsRow>
+      </div>
+    </section>
+
+    <section data-testid="kb-gaps" className="space-y-3">
+      <h2 className="font-(family-name:--fs-font-heading) text-lg font-semibold">Unanswered questions</h2>
+      <p className="text-sm text-[color:var(--fs-text-secondary)]">
+        Customers asked these and your assistant had no answer. Add a file that covers them, then mark each one resolved.
+      </p>
+      {retry(gaps.slot, "gaps", "the unanswered questions", gaps.load)}
+      {gaps.slot.data === null && !gaps.slot.error && <p className="text-sm">Loading...</p>}
+      {gaps.slot.data && !gaps.slot.data.length && <p className="text-sm">No recorded unresolved gaps.</p>}
+      {gaps.slot.data && gaps.slot.data.length > 0 && <ul className="divide-y divide-[color:var(--fs-border)] rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)]">
+        {gaps.slot.data.map((gap) => <li key={gap.id} data-testid={`kb-gap-${gap.id}`} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-3 text-sm">
+          <div className="flex min-w-0 flex-1 basis-56 items-start gap-3">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" className="mt-0.5 shrink-0 text-[color:var(--fs-text-secondary)]"><circle cx="12" cy="12" r="9" /></svg>
+            <div className="min-w-0 [overflow-wrap:anywhere]">
+              <p className="font-medium">{gap.query}</p>
+              <p className="text-[color:var(--fs-text-secondary)]">{gap.hits} hits. Last seen: {new Date(gap.last_seen).toLocaleString()}</p>
+            </div>
           </div>
-        </article>)}
-      </Panel>
-      <Panel title="Documents and versions">
-        {!data.documents.length && <p>No ingested documents.</p>}
-        {data.documents.map((document) => <article key={document.id} className="mb-4 border-b border-ink-200 pb-4 text-sm">
-          <h3 className="font-semibold">{document.title}</h3>
-          <p>Version {document.version}, {document.is_active ? "active" : "superseded"}, {document.chunk_count} chunks.
-            Model: {document.embed_model ?? "Unlabelled"}. {document.category ?? "Uncategorised"} / {document.language} / {document.kind}.</p>
-          <p>Source: {document.file_name ?? document.source_uri ?? "Text / legacy source"}</p>
-          {canWrite && <button className={`${secondary} mt-2`} disabled={busy || !writable}
-            onClick={() => setConfirm({ type: "documents", id: document.id, name: document.title })}>Delete document</button>}
-        </article>)}
-      </Panel>
-      <Panel title="Unanswered questions">
-        {!data.gaps.length && <p>No recorded unresolved gaps.</p>}
-        {data.gaps.map((gap) => <article key={gap.id} className="mb-4 border-b border-ink-200 pb-4 text-sm">
-          <p>{gap.query}</p><p>{gap.hits} hits. Last seen: {new Date(gap.last_seen).toLocaleString()}</p>
-          {canWrite && <button className={`${secondary} mt-2`} disabled={busy || !writable} onClick={() => resolve(gap.id)}>Mark resolved</button>}
-        </article>)}
-      </Panel>
-    </>}
+          {canWrite && <button className={secondary} disabled={busy || !writable} onClick={() => resolve(gap.id)}>Mark resolved</button>}
+        </li>)}
+      </ul>}
+    </section>
+
+    <Maintenance agent={agent ?? null} agentState={agentState} canWrite={canWrite} writable={writable} busy={busy}
+      onReconcile={reconcile} onRetryAgent={() => void loadAgents()} />
+    <Settings agent={agent ?? null} agentState={agentState} servicesHref={servicesHref} onRetryAgent={() => void loadAgents()} />
   </div>;
 }
