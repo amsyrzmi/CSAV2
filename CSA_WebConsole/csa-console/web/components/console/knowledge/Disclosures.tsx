@@ -1,9 +1,9 @@
 "use client";
 
 import type { Agent } from "@/lib/identity-contracts";
+import type { AgentState } from "@/lib/knowledge-view";
 import { DetailsRow } from "../kit";
 import { Notice, secondary } from "../ui";
-import type { AgentState } from "./AddKnowledge";
 
 const box =
   "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
@@ -57,6 +57,8 @@ export function Maintenance({
                 No legacy FAQ files are imported automatically.</p>
               {!writable && <p className="mt-3 text-sm">{canWrite ? "Writes require both KB subscription and tenant switch on." : "Read-only access: upload, deletion and gap resolution are unavailable."}</p>}
             </>
+          ) : agentState === "missing" ? (
+            <p data-testid="kb-agent-missing">KB capability metadata is unavailable.</p>
           ) : agentState === "failed" ? (
             <p className="flex flex-wrap items-center gap-2">
               We could not load the assistant details.
@@ -97,6 +99,8 @@ export function Settings({
           </p>
           <a className={secondary} href={servicesHref}>Open Services</a>
         </div>
+      ) : agentState === "missing" ? (
+        <p>The knowledge assistant settings are not available.</p>
       ) : agentState === "failed" ? (
         <p className="flex flex-wrap items-center gap-2">
           We could not load the assistant settings.

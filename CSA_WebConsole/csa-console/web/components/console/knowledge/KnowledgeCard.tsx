@@ -8,7 +8,9 @@ import { secondary } from "../ui";
 
 const TONES: Record<Chip, StatusTone> = { ready: "success", reading: "info", needs_attention: "attention" };
 
-export type Source = { type: "document"; document: KbDocument } | { type: "job"; job: KbJob };
+export type Source =
+  | { type: "document"; document: KbDocument; foldedJobs: KbJob[] }
+  | { type: "job"; job: KbJob };
 
 export type CardActions = {
   canWrite: boolean;
@@ -17,6 +19,8 @@ export type CardActions = {
   downloadHref: (fileId: string) => string;
   onDelete: (type: "files" | "documents", id: string, name: string) => void;
   onAddAgain: () => void;
+  /** Why adding files is paused, in plain words, or null. */
+  pausedReason: string | null;
 };
 
 const box =
@@ -62,10 +66,13 @@ export default function KnowledgeCard({
               </span>
               {card.chip === "needs_attention" && canWrite && (
                 <button type="button" className={secondary} disabled={busy || !writable} onClick={actions.onAddAgain}>
-                  Add the file again
+                  Choose the file again
                 </button>
               )}
             </div>
+            {card.chip === "needs_attention" && canWrite && actions.pausedReason && (
+              <p data-testid={`${testId}-paused`} className="mt-1 text-sm text-[color:var(--fs-text-secondary)]">{actions.pausedReason}</p>
+            )}
           </div>
         }
       >
@@ -79,8 +86,10 @@ export default function KnowledgeCard({
         </dl>
         <div className="mt-3 space-y-1 border-t border-[color:var(--fs-border)] pt-3 text-[color:var(--fs-text-secondary)]">
           {source.type === "document" ? <DocumentLines document={source.document} /> : <JobLines job={source.job} />}
+          {source.type === "document" && source.foldedJobs.map((job) => <div key={job.id} className="pt-2"><JobLines job={job} /></div>)}
+          {own.length > 0 && <p className="pt-2 font-semibold text-[color:var(--fs-text)]">Original sources</p>}
           {own.map((file) => (
-            <div key={file.id} className="pt-2">
+            <div key={file.id} className="pt-1">
               <p className="font-semibold text-[color:var(--fs-text)]">{file.name}</p>
               <p>
                 {file.media_type}, {file.size_bytes.toLocaleString()} bytes.{" "}

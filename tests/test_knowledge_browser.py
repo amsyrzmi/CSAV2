@@ -208,6 +208,8 @@ class Stub:
     jobs: list[dict[str, Any]] = field(default_factory=default_jobs)
     gaps: list[dict[str, Any]] = field(default_factory=default_gaps)
     agent_active: bool = True
+    agent_missing: bool = False
+    upload_failures: int = 0
     fail: dict[str, tuple[int, dict[str, Any]]] = field(default_factory=dict)
     reads: dict[str, int] = field(default_factory=lambda: {name: 0 for name in LISTS})
     deletes: list[str] = field(default_factory=list)
@@ -229,7 +231,7 @@ class Stub:
                 status, data = self.fail[name]
             else:
                 data = {
-                    "agents": lambda: [make_agent(self.agent_active)],
+                    "agents": lambda: [] if self.agent_missing else [make_agent(self.agent_active)],
                     "files": lambda: self.files,
                     "documents": lambda: self.documents,
                     "jobs": lambda: self.jobs,
@@ -237,6 +239,10 @@ class Stub:
                 }[name]()
         elif path == "kb/uploads" and request.method == "POST":
             self.upload_keys.append(request.headers.get("idempotency-key", ""))
+            if self.upload_failures:
+                self.upload_failures -= 1
+                await request_route.fulfill(status=502, json={"detail": "synthetic upload failure"})
+                return
             self.jobs.insert(0, make_job("job-new", "queued", "new-upload.pdf", None, attempts=0))
             status, data = 202, {"job_id": "job-new", "duplicate_request": False}
         elif request.method == "DELETE" and re.fullmatch(r"kb/(files|documents)/[\w-]+", path):
@@ -445,6 +451,7 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
                 "Version 1, active, 12 chunks. Model: synthetic-embed-1. Shop / en / doc."
             )
             await expect(details).to_contain_text("Source: opening-hours.pdf")
+            await expect(details.get_by_text("Original sources", exact=True)).to_be_visible()
             await expect(details).to_contain_text(
                 "application/pdf, 2,097,152 bytes. Document doc-hours"
             )
@@ -482,7 +489,9 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
             )
             await expect(failed.get_by_role("button", name="Delete source")).to_be_enabled()
             # The retry: add the file again with the upload control.
-            await card(page, "job-failed").get_by_role("button", name="Add the file again").click()
+            await (
+                card(page, "job-failed").get_by_role("button", name="Choose the file again").click()
+            )
             await expect(page.locator("#kb-files")).to_be_focused()
 
             # Files no card shows still have their download and delete.
@@ -541,6 +550,12 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
         async with knowledge_page(browser, site, off) as page:
             await expect(page.locator("#kb-files")).to_be_disabled()
             await expect(page.get_by_test_id("kb-add")).to_contain_text("switched off")
+            # The failed card says why choosing the file again is paused, with the same reason.
+            paused = page.get_by_test_id("kb-card-job-failed-paused")
+            await expect(paused).to_contain_text("switched off")
+            await expect(
+                card(page, "job-failed").get_by_role("button", name="Choose the file again")
+            ).to_be_disabled()
             maintenance = await open_fold(page, "kb-maintenance")
             await expect(maintenance).to_contain_text(
                 "Writes require both KB subscription and tenant switch on."
@@ -664,5 +679,104 @@ async def test_first_screen_at_390_leads_with_adding_knowledge(site: Site) -> No
                 )"""
             )
             assert order == sorted(order), order
+
+    await with_browser(body)
+
+
+async def test_missing_assistant_row_keeps_the_old_sentence_and_pauses_writes(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(agent_missing=True)
+        async with knowledge_page(browser, site, stub) as page:
+            await expect(page.locator("#kb-files")).to_be_disabled()
+            await expect(page.get_by_test_id("kb-add-unknown")).to_contain_text("not available")
+            # The lists still load: only the writes wait.
+            await expect(card(page, "doc-hours")).to_be_visible()
+            await expect(page.get_by_test_id("kb-error-agents")).to_have_count(0)
+            maintenance = await open_fold(page, "kb-maintenance")
+            await expect(maintenance).to_contain_text("KB capability metadata is unavailable.")
+            await expect(maintenance).not_to_contain_text("We could not load the assistant details")
+            await expect(page.get_by_role("button", name="Mark resolved").first).to_be_disabled()
+
+    await with_browser(body)
+
+
+async def test_figures_say_unknown_when_their_list_failed(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # No file is being read, so nothing polls and the failures stay put.
+        jobs = [job for job in default_jobs() if job["status"] in ("failed", "done")]
+        stub = Stub(jobs=jobs)
+        stub.fail["files"] = (503, {"detail": "synthetic files outage"})
+        async with knowledge_page(browser, site, stub) as page:
+            details = await open_card(page, "doc-hours")
+            await expect(details).to_contain_text("Size")
+            await expect(details).to_contain_text("Unknown")
+            await expect(details).not_to_contain_text("Not stored")
+            failed = await open_card(page, "job-failed")
+            await expect(failed).to_contain_text("Unknown")
+            await expect(failed).not_to_contain_text("Not stored")
+            await expect(page.get_by_test_id("kb-error-files")).to_be_visible()
+
+        stub = Stub()
+        stub.jobs = [job for job in default_jobs() if job["status"] in ("failed", "done")]
+        async with knowledge_page(browser, site, stub) as page:
+            # Loaded, nothing matches: the original words stay.
+            stub.jobs = []
+            await page.get_by_role("button", name="Refresh knowledge base").click()
+            await expect(card(page, "job-failed")).to_have_count(0)
+            details = await open_card(page, "doc-hours")
+            await expect(details).to_contain_text("Not recorded")
+            stub.fail["jobs"] = (503, {"detail": "synthetic jobs outage"})
+            await page.get_by_role("button", name="Refresh knowledge base").click()
+            await expect(page.get_by_test_id("kb-error-jobs")).to_be_visible()
+            # The rows already loaded keep their loaded figures.
+            await expect(details).to_contain_text("Not recorded")
+
+        stub = Stub()
+        stub.fail["jobs"] = (503, {"detail": "synthetic jobs outage"})
+        async with knowledge_page(browser, site, stub) as page:
+            details = await open_card(page, "doc-hours")
+            await expect(details).to_contain_text("Unknown")
+            await expect(details).not_to_contain_text("Not recorded")
+
+    await with_browser(body)
+
+
+async def test_mark_resolved_posts_and_the_question_leaves_the_list(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with knowledge_page(browser, site, stub) as page:
+            row = page.get_by_test_id("kb-gap-gap-sunday")
+            await expect(row).to_contain_text("Do you deliver on Sundays?")
+            await expect(row).to_contain_text("4 hits. Last seen:")
+            await row.get_by_role("button", name="Mark resolved").click()
+            await expect(row).to_have_count(0)
+            assert stub.posts == ["kb/gaps/gap-sunday/resolve"], stub.posts
+            await expect(page.get_by_test_id("kb-gap-gap-halal")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_upload_failure_keeps_the_retry_message_and_the_same_key(
+    site: Site, tmp_path: Any
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(upload_failures=1)
+        sample = tmp_path / "retry-me.pdf"
+        sample.write_bytes(b"%PDF-1.4 synthetic")
+        async with knowledge_page(browser, site, stub) as page:
+            await page.locator("#kb-files").set_input_files(str(sample))
+            queue = page.get_by_role("button", name="Queue upload / retry")
+            await queue.click()
+            await expect(
+                page.get_by_text(
+                    "synthetic upload failure. Retry keeps the same idempotency key; "
+                    "do not reselect files for an uncertain result."
+                )
+            ).to_be_visible()
+            # The chosen file stays chosen and the retry sends the same key.
+            await expect(page.get_by_test_id("kb-add")).to_contain_text("retry-me.pdf")
+            await queue.click()
+            await expect(card(page, "job-new")).to_be_visible()
+            assert len(stub.upload_keys) == 2 and stub.upload_keys[0] == stub.upload_keys[1]
 
     await with_browser(body)

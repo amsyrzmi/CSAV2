@@ -4,10 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import { useSearchParams } from "next/navigation";
 import { api, del, post } from "@/lib/api";
 import type { Agent, Client, KbDocument, KbFile, KbGap, KbJob, Me } from "@/lib/identity-contracts";
-import { groupSources, looseFiles, pollingNeeded, type Card } from "@/lib/knowledge-view";
+import { groupSources, looseFiles, pausedReason, pollingNeeded, type AgentState, type Card } from "@/lib/knowledge-view";
 import { usePublishContext } from "@/lib/page-context";
 import { DetailsRow, PageIntro } from "./kit";
-import AddKnowledge, { type AgentState } from "./knowledge/AddKnowledge";
+import AddKnowledge from "./knowledge/AddKnowledge";
 import { Maintenance, Settings } from "./knowledge/Disclosures";
 import KnowledgeCard, { type CardActions, type Source } from "./knowledge/KnowledgeCard";
 import SectionError from "./knowledge/SectionError";
@@ -54,7 +54,9 @@ type Confirm = { type: "files" | "documents"; id: string; name: string };
 
 function agentStateOf(slot: Slot<Agent[]>, row: Agent | undefined): AgentState {
   if (row) return "ready";
-  return slot.data || slot.error ? "failed" : "loading";
+  // Loaded, but the list has no kb_agent row: not a failed fetch.
+  if (slot.data) return "missing";
+  return slot.error ? "failed" : "loading";
 }
 
 function Knowledge({ query, canWrite, servicesHref }: { query: string; canWrite: boolean; servicesHref: string }) {
@@ -77,7 +79,8 @@ function Knowledge({ query, canWrite, servicesHref }: { query: string; canWrite:
   const agentState = agentStateOf(agents.slot, agent);
   const writable = canWrite && agent?.capability?.active === true;
   const groups = useMemo(
-    () => groupSources(files.slot.data ?? [], documents.slot.data ?? [], jobs.slot.data ?? []),
+    () => groupSources(files.slot.data ?? [], documents.slot.data ?? [], jobs.slot.data ?? [],
+      { files: files.slot.data !== null, jobs: jobs.slot.data !== null }),
     [files.slot.data, documents.slot.data, jobs.slot.data],
   );
   const reading = pollingNeeded(groups);
@@ -162,7 +165,7 @@ function Knowledge({ query, canWrite, servicesHref }: { query: string; canWrite:
   }
 
   const actions: CardActions = {
-    canWrite, writable, busy,
+    canWrite, writable, busy, pausedReason: pausedReason(agentState, writable),
     downloadHref: (id) => path(`kb/files/${id}/download`),
     onDelete: (type, id, name) => setConfirm({ type, id, name }),
     onAddAgain: () => { input.current?.scrollIntoView({ block: "center" }); input.current?.focus(); },
@@ -171,7 +174,8 @@ function Knowledge({ query, canWrite, servicesHref }: { query: string; canWrite:
   const sourceOf = (card: Card, kind: "document" | "job"): Source | null => {
     if (kind === "document") {
       const document = documents.slot.data?.find((row) => row.id === card.id);
-      return document ? { type: "document", document } : null;
+      const foldedJobs = card.foldedJobIds.flatMap((id) => jobs.slot.data?.filter((row) => row.id === id) ?? []);
+      return document ? { type: "document", document, foldedJobs } : null;
     }
     const job = jobs.slot.data?.find((row) => row.id === card.id);
     return job ? { type: "job", job } : null;

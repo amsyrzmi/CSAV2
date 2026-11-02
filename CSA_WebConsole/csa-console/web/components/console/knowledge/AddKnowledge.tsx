@@ -1,9 +1,8 @@
 "use client";
 
 import type { ChangeEvent, RefObject } from "react";
+import { pausedReason, type AgentState } from "@/lib/knowledge-view";
 import { action, secondary } from "../ui";
-
-export type AgentState = "loading" | "ready" | "failed";
 
 /**
  * The first thing on the page: the upload control with the three plain steps beside it. The
@@ -29,6 +28,7 @@ export default function AddKnowledge({
   onUpload: () => void;
   onRetryAgent: () => void;
 }) {
+  const reason = pausedReason(agent, writable);
   return (
     <section data-testid="kb-add" className="card rounded-[14px] p-5 sm:p-6">
       <h2 className="mb-4 font-(family-name:--fs-font-heading) text-base font-semibold">Add knowledge</h2>
@@ -41,18 +41,13 @@ export default function AddKnowledge({
           <button type="button" className={`${action} mt-4`} disabled={busy || !writable || !selection} onClick={onUpload}>
             {busy ? "Working..." : "Queue upload / retry"}
           </button>
-          {agent === "ready" && !writable && (
-            <p data-testid="kb-add-off" className="mt-3 text-sm text-[color:var(--fs-text-secondary)]">
-              Adding is switched off for your assistant right now. Ask your administrator to switch it on in Services.
-            </p>
-          )}
-          {agent === "loading" && (
-            <p className="mt-3 text-sm text-[color:var(--fs-text-secondary)]">Checking whether adding is switched on...</p>
-          )}
-          {agent === "failed" && (
-            <p data-testid="kb-add-unknown" className="mt-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--fs-text-secondary)]">
-              We could not check whether adding is switched on, so it is paused.
-              <button type="button" className={secondary} data-testid="kb-retry-agents" onClick={onRetryAgent}>Try again</button>
+          {reason && (
+            <p data-testid={agent === "ready" ? "kb-add-off" : "kb-add-unknown"}
+              className="mt-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--fs-text-secondary)]">
+              {reason}
+              {agent === "failed" && (
+                <button type="button" className={secondary} data-testid="kb-retry-agents" onClick={onRetryAgent}>Try again</button>
+              )}
             </p>
           )}
         </div>

@@ -12,7 +12,7 @@ async function load(name) {
 }
 const {
   groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, kindText,
-  looseFiles,
+  looseFiles, pausedReason,
 } = await import(await load("knowledge-view.ts"));
 
 const file = (id, extra = {}) => ({
@@ -121,4 +121,65 @@ test("looseFiles keeps only the files no card shows", () => {
   const groups = groupSources(files, [document("d1")], jobs);
   assert.deepEqual(looseFiles(files, groups).map((f) => f.id), ["f3"]);
   assert.deepEqual(looseFiles([], groups), []);
+});
+
+test("a list that never loaded shows Unknown, a loaded absence keeps the original words", () => {
+  const files = [file("f1", { document_id: "d1" })];
+  const docs = [document("d1")];
+  const jobs = [job("j1", "queued")];
+  const values = (card) => Object.fromEntries(card.details.map((d) => [d.label, d.value]));
+  // Loaded but nothing matches: the original strings.
+  const loaded = groupSources([], docs, jobs);
+  assert.equal(values(loaded.library[0])["Size"], "Not stored");
+  assert.equal(values(loaded.library[0])["Reading job"], "Not recorded");
+  assert.equal(values(loaded.reading[0])["Size"], "Not stored");
+  // The files list failed or is not there yet.
+  const noFiles = groupSources([], docs, jobs, { files: false, jobs: true });
+  assert.equal(values(noFiles.library[0])["Size"], "Unknown");
+  assert.equal(values(noFiles.reading[0])["Size"], "Unknown");
+  assert.equal(values(noFiles.library[0])["Reading job"], "Not recorded");
+  // The jobs list failed.
+  const noJobs = groupSources(files, docs, [], { files: true, jobs: false });
+  assert.equal(values(noJobs.library[0])["Reading job"], "Unknown");
+  assert.equal(values(noJobs.library[0])["Size"], "2 KB");
+});
+
+test("a failed or partial job whose file is already on a library card folds into that card", () => {
+  const files = [file("f1", { document_id: "d1" }), file("f2")];
+  const results = [{ file: "f1.pdf", status: "done", error: null, document_id: "d1", chunks: 3, version: 1 }];
+  const single = job("j1", "partial", {
+    files: [{ name: "f1.pdf", file_id: "f1" }], error: "one page unreadable", meta: { results },
+  });
+  const groups = groupSources(files, [document("d1")], [single]);
+  assert.equal(groups.attention.length, 0);
+  assert.deepEqual(groups.library[0].foldedJobIds, ["j1"]);
+  const note = groups.library[0].details.find((d) => d.label === "What went wrong");
+  assert.equal(note.value, "one page unreadable");
+
+  // Two files: the unread one keeps its own card and no file sits on two cards.
+  const two = job("j2", "partial", {
+    files: [{ name: "f1.pdf", file_id: "f1" }, { name: "f2.pdf", file_id: "f2" }],
+    meta: { results: [...results, { file: "f2.pdf", status: "failed", error: "no text", document_id: null, chunks: null, version: null }] },
+  });
+  const mixed = groupSources(files, [document("d1")], [two]);
+  assert.deepEqual(mixed.library[0].foldedJobIds, ["j2"]);
+  assert.deepEqual(mixed.attention.map((c) => c.id), ["j2"]);
+  assert.deepEqual(mixed.attention[0].fileIds, ["f2"]);
+  const all = [...mixed.library, ...mixed.reading, ...mixed.attention].flatMap((c) => c.fileIds);
+  assert.equal(new Set(all).size, all.length);
+
+  // A running job for a file already in the library stays its own Being read card.
+  const again = job("j3", "running", { files: [{ name: "f1.pdf", file_id: "f1" }] });
+  assert.equal(groupSources(files, [document("d1")], [again]).reading.length, 1);
+  // A failed job with an unknown file id cannot be proven covered and keeps its card.
+  const unknown = job("j4", "failed", { files: [{ name: "x.pdf", file_id: null }] });
+  assert.equal(groupSources(files, [document("d1")], [unknown]).attention.length, 1);
+});
+
+test("pausedReason gives one plain reason for every paused state", () => {
+  assert.equal(pausedReason("ready", true), null);
+  assert.match(pausedReason("ready", false), /switched off/);
+  assert.match(pausedReason("failed", false), /could not check/);
+  assert.match(pausedReason("missing", false), /not available/);
+  assert.match(pausedReason("loading", false), /Checking/);
 });
