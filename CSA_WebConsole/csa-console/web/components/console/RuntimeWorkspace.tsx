@@ -258,7 +258,10 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
     return () => { controller.abort(); clearTimeout(timer); };
   }, [query, newest]);
 
-  function change(apply: () => void) {
+  // A filter that did not really change (the same chip, the same day, Clear when already clear)
+  // does nothing: no new read, no loading flash, paging kept.
+  function change(changed: boolean, apply: () => void) {
+    if (!changed) return;
     apply(); setStack([]); setPage(null);
   }
   function setOpen(id: number, open: boolean) {
@@ -277,18 +280,18 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
       <LastAssistants cards={cards} failed={cardsFailed} now={now} />
       <div className="flex flex-wrap items-end gap-3">
         <DateRangeFilter testId="activity-date" value={range}
-          onChange={(next) => change(() => setRange(next))} />
+          onChange={(next) => change(next.from !== range.from || next.to !== range.to, () => setRange(next))} />
         <div className="w-full sm:w-72">
           <label htmlFor="activity-agent" className="mb-1 block text-sm">Assistant</label>
           <select id="activity-agent" data-testid="activity-agent" className={field} value={agent}
-            onChange={(event) => change(() => setAgent(event.target.value))}>
+            onChange={(event) => change(event.target.value !== agent, () => setAgent(event.target.value))}>
             <option value="">All assistants</option>
             {initialAgent && !known && <option value={initialAgent}>{initialAgent}</option>}
             {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </div>
         <StatusChips mode="single" testId="activity-status" ariaLabel="Outcome" options={STATUS_OPTIONS}
-          value={status} onChange={(next) => change(() => setStatus(next as StatusFilter))} />
+          value={status} onChange={(next) => change(next !== status, () => setStatus(next as StatusFilter))} />
       </div>
       <Notice>This list refreshes every 5 seconds. It shows when each run happened, not what was said.
         An empty list only means nothing has run yet; it does not mean everything is healthy.</Notice>

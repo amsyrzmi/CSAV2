@@ -240,6 +240,7 @@ async def open_demo(
     *,
     theme: str = "cobalt",
     width: int = 1024,
+    height: int = 900,
     reduced_motion: bool = False,
     paused: bool = False,
     path: str = "/kit-demo",
@@ -249,7 +250,7 @@ async def open_demo(
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch()
     context = await browser.new_context(
-        viewport={"width": width, "height": 900},
+        viewport={"width": width, "height": height},
         reduced_motion="reduce" if reduced_motion else "no-preference",
         timezone_id=timezone_id,
     )
@@ -276,13 +277,14 @@ async def open_demo(
 
 
 async def open_date_demo(
-    console: Console, *, theme: str = "cobalt", width: int = 1024
+    console: Console, *, theme: str = "cobalt", width: int = 1024, height: int = 900
 ) -> tuple[Any, Any, Page]:
     # A fixed zone makes the instants below exact: Kuala Lumpur is UTC+8 all year.
     return await open_demo(
         console,
         theme=theme,
         width=width,
+        height=height,
         path="/kit-demo-date",
         ready="demo-date",
         timezone_id="Asia/Kuala_Lumpur",
@@ -1189,5 +1191,60 @@ async def test_date_popover_tab_order_across_the_portal(console: Console) -> Non
         await expect(page.get_by_test_id("demo-date-popover")).to_be_visible()
         await page.get_by_test_id("demo-date-describe").click()
         await expect(page.get_by_test_id("demo-date-popover")).to_have_count(0)
+    finally:
+        await close_demo(playwright, browser)
+
+
+@pytest.mark.parametrize(
+    ("case", "width", "height", "trigger_top"),
+    [("below", 1024, 900, 100), ("above", 1024, 900, 700), ("inside", 640, 500, 250)],
+)
+async def test_date_popover_vertical_placement(
+    console: Console, case: str, width: int, height: int, trigger_top: int
+) -> None:
+    """Below the button with room below; above with more room above; never past the viewport;
+    scrolling inside itself when neither side holds the whole calendar."""
+    playwright, browser, page = await open_date_demo(console, width=width, height=height)
+    try:
+        trigger = page.get_by_test_id("demo-date")
+        # Room above the button (the demo has none), then scroll it to the wanted height.
+        await page.evaluate("document.querySelector('h1').style.marginTop = '800px'")
+        await trigger.evaluate(
+            "(el, y) => window.scrollBy(0, el.getBoundingClientRect().top - y)", trigger_top
+        )
+        await page.wait_for_timeout(100)
+        await trigger.click()
+        popover = page.get_by_test_id("demo-date-popover")
+        await expect(popover).to_be_visible()
+        measured = await page.evaluate(
+            """() => {
+                const p = document.querySelector('[data-testid=demo-date-popover]');
+                const t = document.querySelector('[data-testid=demo-date]').getBoundingClientRect();
+                const r = p.getBoundingClientRect();
+                return {
+                    top: r.top, bottom: r.bottom, height: r.height,
+                    triggerTop: t.top, triggerBottom: t.bottom,
+                    max: p.style.getPropertyValue('--fs-date-max'),
+                    maxHeight: getComputedStyle(p).maxHeight,
+                    scrolls: p.scrollHeight > p.clientHeight + 1,
+                    inner: window.innerHeight,
+                };
+            }"""
+        )
+        assert measured["top"] >= 0 and measured["bottom"] <= measured["inner"] + 0.5, measured
+        assert measured["max"].endswith("px"), measured
+        assert measured["height"] <= float(measured["max"][:-2]) + 0.5, measured
+        if case == "below":
+            assert measured["top"] >= measured["triggerBottom"], measured
+            assert not measured["scrolls"], measured
+        elif case == "above":
+            assert measured["bottom"] <= measured["triggerTop"] + 0.5, measured
+            assert not measured["scrolls"], measured
+        else:
+            assert measured["scrolls"], measured
+            # Every control stays reachable: the last one scrolls into view and works.
+            await page.get_by_test_id("demo-date-done").click()
+            await expect(popover).to_have_count(0)
+            await expect(trigger).to_be_focused()
     finally:
         await close_demo(playwright, browser)

@@ -96,6 +96,7 @@ class Stub:
     events: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     fail_runs: bool = False
     fail_overview: bool = False
+    fail_strip: bool = False
     list_requests: list[dict[str, str]] = field(default_factory=list)
     strip_requests: list[dict[str, str]] = field(default_factory=list)
     event_requests: list[dict[str, str]] = field(default_factory=list)
@@ -131,6 +132,9 @@ class Stub:
                 status, data = 503, {"detail": "synthetic transient failure"}
             else:
                 limit = int(query["limit"])
+                if limit == 100 and self.fail_strip:
+                    await request_route.fulfill(status=503, json={"detail": "strip outage"})
+                    return
                 (self.strip_requests if limit == 100 else self.list_requests).append(query)
                 rows = self.filtered(query)
                 items = rows[:limit]
@@ -697,14 +701,20 @@ async def test_activity_at_five_widths_in_three_themes_without_overflow(site: Si
                 overflow = await page.evaluate(
                     """() => ({
                         page: [document.documentElement.scrollWidth, window.innerWidth],
+                        // Below 640 px the cards sit in a sideways-scrolling row, so only the
+                        // row itself (the section) must fit; from 640 px each card must too.
                         wide: [...document.querySelectorAll(
-                            '[data-testid^="activity-card-"], [data-testid^="activity-run-"], '
+                            (window.innerWidth >= 640 ? '[data-testid^="activity-card-"], ' : '')
+                            + '[data-testid^="activity-run-"], '
                             + '[data-testid="activity-last-assistants"], '
+                            + '[data-testid="activity-strip-scroll"], '
                             + '[data-testid="activity-status"], [data-testid="activity-agent"], '
                             + '[data-testid="activity-date"]'
                         )].filter(el => el.getBoundingClientRect().right > window.innerWidth + 0.5
                             || el.getBoundingClientRect().left < -0.5
-                            || el.scrollWidth > el.clientWidth + 1).map(el => el.dataset.testid),
+                            || (el.dataset.testid !== 'activity-strip-scroll'
+                                && el.scrollWidth > el.clientWidth + 1))
+                            .map(el => el.dataset.testid),
                     })"""
                 )
                 assert overflow["page"][0] <= overflow["page"][1], (theme, width, overflow)
@@ -746,6 +756,142 @@ async def test_reduced_motion_shows_rest_pose_in_strip(site: Site) -> None:
         for index in range(5):
             assert await frames(strip.locator("[data-agent]").nth(index)) == (1, "none")
         assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_unchanged_filter_is_a_no_op(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_activity(browser, site, stub)
+        older = page.get_by_test_id("activity-older")
+        await older.click()
+        await expect(run_row(page, 7)).to_be_visible()
+        # The older page does not poll, so any new request below came from the clicks.
+        seen = len(stub.list_requests)
+
+        async def nothing_happened() -> None:
+            await page.wait_for_timeout(700)
+            assert len(stub.list_requests) == seen, stub.list_requests[seen:]
+            await expect(page.get_by_text("Loading runs...")).to_have_count(0)
+            assert await row_ids(page) == [7, 6, 5, 4, 3]
+            await expect(page.get_by_test_id("activity-newer")).to_be_enabled()
+            await expect(older).to_be_enabled()
+
+        # The chip that is already pressed, and the same assistant again.
+        await page.get_by_test_id("activity-status-all").click()
+        await page.get_by_test_id("activity-agent").select_option("")
+        await nothing_happened()
+        # Clear while nothing is chosen.
+        await page.get_by_test_id("activity-date").click()
+        await page.get_by_test_id("activity-date-preset-clear").click()
+        await page.keyboard.press("Escape")
+        await nothing_happened()
+        # A real change does reset and read; picking the same day twice is one change.
+        year, month = datetime.now(ZoneInfo(ZONE)).year, datetime.now(ZoneInfo(ZONE)).month
+        await page.get_by_test_id("activity-date").click()
+        first = page.get_by_test_id(f"activity-date-day-{year}-{month:02d}-01")
+        await first.click()
+        await expect(page.get_by_test_id("activity-newer")).to_be_disabled()
+        await wait_requests(stub, seen + 1)
+        seen = len(stub.list_requests)
+        await first.click()
+        await page.wait_for_timeout(700)
+        assert len(stub.list_requests) == seen
+        await expect(page.get_by_text("Loading runs...")).to_have_count(0)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_strip_keeps_cards_and_says_so_when_a_refresh_fails(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        context, page, diagnostics = await open_activity(browser, site, stub)
+        stale = page.get_by_test_id("activity-strip-stale")
+        await expect(page.get_by_test_id("activity-card-invoices")).to_be_visible()
+        await expect(stale).to_have_count(0)
+        stub.fail_strip = True
+        await expect(stale).to_have_text("May be out of date", timeout=12_000)
+        # The cards stay, and the failure is not announced as an error.
+        await expect(page.get_by_test_id("activity-card-invoices")).to_be_visible()
+        await expect(page.get_by_text("Recent assistants are unavailable.")).to_have_count(0)
+        await expect(page.get_by_role("alert").filter(has_text="outage")).to_have_count(0)
+        await expect(
+            page.get_by_test_id("activity-last-assistants").get_by_role("alert")
+        ).to_have_count(0)
+        stub.fail_strip = False
+        await expect(stale).to_have_count(0, timeout=12_000)
+        assert not diagnostics, diagnostics
+        await context.close()
+
+    await with_browser(body)
+    assert not stub.unexpected, stub.unexpected
+
+
+async def test_strip_is_a_sideways_scroller_on_a_phone_and_a_grid_from_640(site: Site) -> None:
+    stub = Stub()
+
+    async def body(browser: Any) -> None:
+        for theme in THEMES:
+            context, page, diagnostics = await open_activity(
+                browser, site, stub, width=390, height=800, theme=theme
+            )
+            region = page.get_by_role("region", name="Recently active assistants")
+            await expect(region).to_have_count(1)
+            measured = await region.evaluate(
+                """el => {
+                    const cards = [...el.querySelectorAll('li')]
+                        .map(c => c.getBoundingClientRect());
+                    const style = getComputedStyle(el);
+                    return {
+                        scrolls: el.scrollWidth > el.clientWidth,
+                        overflowX: style.overflowX, snap: style.scrollSnapType,
+                        cardWidth: Math.round(cards[0].width), count: cards.length,
+                        // The third card starts on screen but runs past the edge: the hint.
+                        peek: cards[2].left < window.innerWidth
+                            && cards[2].right > window.innerWidth,
+                        tab: el.getAttribute('tabindex'),
+                        page: [document.documentElement.scrollWidth, window.innerWidth],
+                        listTop: el.getBoundingClientRect().height,
+                    };
+                }"""
+            )
+            assert measured["scrolls"] and measured["overflowX"] == "auto", measured
+            assert measured["snap"].startswith("x mandatory"), measured
+            assert measured["cardWidth"] == 152 and measured["count"] == 5, measured
+            assert measured["peek"], measured
+            assert measured["tab"] == "0", measured
+            assert measured["page"][0] <= measured["page"][1], measured
+            # Far shorter than five stacked cards (about 520 px).
+            assert measured["listTop"] < 260, measured
+            # Keyboard: the row takes focus, shows a ring and scrolls with the arrow keys.
+            await region.focus()
+            await expect(region).to_be_focused()
+            await page.keyboard.press("ArrowRight")
+            await page.wait_for_timeout(300)
+            assert await region.evaluate("el => el.scrollLeft") > 0
+            assert await region.evaluate("el => getComputedStyle(el).outlineStyle") != "none", theme
+            assert not diagnostics, diagnostics
+            await context.close()
+
+        context, page, diagnostics = await open_activity(browser, site, stub, width=1024)
+        region = page.get_by_role("region", name="Recently active assistants")
+        info = await region.evaluate(
+            """el => ({
+                tab: el.getAttribute('tabindex'),
+                grid: getComputedStyle(el.querySelector('ul')).display,
+                overflowX: getComputedStyle(el).overflowX,
+                scrolls: el.scrollWidth > el.clientWidth + 1,
+            })"""
+        )
+        assert info == {"tab": None, "grid": "grid", "overflowX": "visible", "scrolls": False}, info
         await context.close()
 
     await with_browser(body)
