@@ -18,8 +18,8 @@
 --   DROP FUNCTION public.hr_owner_read(uuid,uuid);
 --   DROP FUNCTION public.hr_owner_move(uuid,uuid,uuid,uuid,uuid,text);
 --   (Owners already moved stay, with their rows; the hr_operations, hr_authority_events and
---   console_audit rows stay too. An image from before this feature shows an owner.move row in
---   Recent changes as a private-area event.)
+--   console_audit rows stay too. An image from before this feature doesn't show owner.move rows in
+--   Recent changes at all, because its access_event_page.sql leaves that operation out.)
 
 CREATE FUNCTION public.hr_owner_move(p_client uuid, p_actor uuid, p_new_owner uuid,
     p_expected_owner uuid, p_request_key uuid, p_fingerprint text)

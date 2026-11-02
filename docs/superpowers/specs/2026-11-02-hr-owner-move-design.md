@@ -1,6 +1,6 @@
 # Moving the HR owner: design
 
-Status: draft for the owner's approval, 2026-11-02. Builds on PR #63 (People & HR 1b, migration 0521). Migration **0522**.
+Status: approved 2026-11-02. Builds on PR #63 (People & HR 1b, migration 0521). Migration **0522**.
 
 ## Why
 
@@ -133,7 +133,7 @@ Shared `TeamManagement.tsx`, so both Team pages get it. English only, like the r
 - A test compares the `client_owner` rows in the standard owner set with every `client_owner` combination the `hr_grants` and `hr_workflow_grants` checks allow (10 today), so a new owner-only power can't be silently missed.
 - The old owner keeps their rows outside `client_owner` after the move, and a move never adds or removes payroll rows.
 - A staff member, a read-only member and a tenant admin of another company are all refused, at both the route and the function.
-- Two admins moving at once: one wins, the other gets `owner_changed`. A retry with the same key returns the first result and sends no second round of emails.
+- Two admins moving at once: one wins, the other gets `owner_changed`. A retry with the same key answers with the current holder and sends no second round of emails.
 - After a move, the old owner can be marked as leaving, and the finish run the next day leaves the new owner in place.
 
 ## Left to the builder

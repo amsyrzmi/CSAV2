@@ -130,7 +130,7 @@ The 1a screens have browser scenarios for the access page and the training flow,
 
 ## Moving the HR owner
 
-The browser scenario `test_tenant_admin_moves_hr_owner` covers the panel against a stubbed API (the choice, the confirmation, a lost answer and its retry, `try_again`, `owner_changed`, `not_sent` and `repeat`). A person checks the rest on staging, with emails on and at least three members: a tenant admin who is not the HR owner, a colleague, a read-only member and the current HR owner.
+The browser scenario `test_tenant_admin_moves_hr_owner` covers the panel against a stubbed API (the choice, the confirmation, a lost answer and its retry, `try_again`, `owner_changed`, `not_sent` and `repeat`). A person checks the rest on staging, with emails on and at least four members: a tenant admin who is not the HR owner, a colleague, a read-only member and the current HR owner.
 
 | Check | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |

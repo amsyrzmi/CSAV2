@@ -75,12 +75,12 @@ gateway both depend on it.
   data. If mail is off or a send fails, the move stands and the page says: “HR owner changed, but
   we couldn't send the emails. Please tell the people affected.”
 - **Retries.** A lost answer is safe to retry: the page keeps one key per exact request, so a
-  repeat returns the first result (the page then says “If you're not sure the emails went out,
-  please tell the people affected.”) and sends no second email. If someone else changed the owner
-  first, the move is refused with “The HR owner changed since you opened this page. Reload to see
-  who it is now.” In the rare case of a deadlock with another HR action the answer is `try_again`:
-  “Someone else changed HR records at the same moment. Please try again.” Nothing changed, and the
-  same request can be sent again.
+  repeat changes nothing, names whoever holds the title now (a later move names the later owner),
+  and sends no second email (the page then says “If you're not sure the emails went out, please
+  tell the people affected.”). If someone else changed the owner first, the move is refused with
+  “The HR owner changed since you opened this page. Reload to see who it is now.” In the rare case
+  of a deadlock with another HR action the answer is `try_again`: “Someone else changed HR records
+  at the same moment. Please try again.” Nothing changed, and the same request can be sent again.
 - **Record.** Recent changes on the access page lists each move (“A made B the HR owner,
   replacing C”), and the move writes an audit row.
 - **Bootstrap.** `scripts/bootstrap_hr_owner.py` stays for isolated environments and seeding. It

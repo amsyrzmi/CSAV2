@@ -205,7 +205,9 @@ stable path above. No environment file was read or copied.
 - Employee, console account and customer contact remain distinct. Account linking
   uses explicit tenant membership references, never inferred email matches.
 - Directory reads expose only the five approved fields through explicit self,
-  direct-manager or HR grants. Console roles create no HR permissions.
+  direct-manager or HR grants. Console roles create no HR permissions, with one exception: a
+  tenant admin may move the HR owner, including to themselves, in the open (everyone affected is
+  emailed and the move is on the record).
 - Client ownership is recorded by the move itself, made by the company's tenant admin or a
   platform admin (migration 0522), or by the bootstrap script in isolated environments.
 - Training and employee-workflow decisions require an active assigned manager.
