@@ -125,6 +125,8 @@ class World:
     hold: asyncio.Event | None = None
     # Answers the next member change or session revoke with this status and detail.
     refuse: tuple[int, str] | None = None
+    # The next N reads of the member list answer 503 (after a change was saved).
+    team_read_failures: int = 0
 
     def sent(self, method: str, prefix: str) -> list[dict[str, Any]]:
         return [c for c in self.calls if c["method"] == method and c["path"].startswith(prefix)]
@@ -145,6 +147,10 @@ class World:
         elif path == "services/active" and method == "GET":
             data = {"packages": []}
         elif path == "team" and method == "GET" and params.get("client_id") == [TENANT]:
+            if self.team_read_failures > 0:
+                self.team_read_failures -= 1
+                await request_route.fulfill(status=503, json={"detail": "synthetic list outage"})
+                return
             data = self.members
         elif path == "admin/invites" and method == "GET" and params.get("client_id") == [TENANT]:
             data = self.invites
@@ -829,5 +835,29 @@ async def test_focus_stays_on_a_control_that_remains_after_revoke_link_and_hide(
             await panel.get_by_role("button", name="Revoke link").click()
             await expect(panel).to_have_count(0)
             assert await focused(page) == "team-invite-open"
+
+    await with_browser(body)
+
+
+async def test_a_saved_change_closes_its_question_when_only_the_list_read_fails(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = World()
+        async with team_page(browser, site, world) as page:
+            await open_card(page, SITI)
+            await page.get_by_test_id(f"team-role-{SITI}").select_option("read_only")
+            confirm = page.get_by_test_id(f"team-confirm-{SITI}")
+            await expect(confirm).to_be_visible()
+            world.team_read_failures = 1
+            await page.get_by_test_id(f"team-confirm-{SITI}-yes").click()
+            # Saved: the question is gone and shows no refusal; the page says the list is stale.
+            await expect(confirm).to_have_count(0)
+            assert [c["body"] for c in world.sent("PATCH", "team/")] == [{"role": "read_only"}]
+            await expect(
+                page.get_by_text("Saved, but the list could not be refreshed. Reload to see it.")
+            ).to_be_visible()
+            await expect(page.get_by_test_id(f"team-card-{SITI}-error")).to_have_count(0)
+            await expect(page.get_by_test_id(f"team-role-{SITI}")).to_be_enabled()
 
     await with_browser(body)

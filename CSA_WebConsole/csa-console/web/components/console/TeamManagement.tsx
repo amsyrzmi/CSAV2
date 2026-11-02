@@ -202,14 +202,22 @@ export function TeamManagement({
     setBusy(true);
     setError("");
     try {
-      await patch(
-        `/console/v1/team/${member.user_id}?client_id=${encodeURIComponent(selected)}`,
-        change,
-      );
-      await reload();
+      try {
+        await patch(
+          `/console/v1/team/${member.user_id}?client_id=${encodeURIComponent(selected)}`,
+          change,
+        );
+      } catch (cause) {
+        return (cause as Error).message;
+      }
+      // The change is saved. If only the list cannot be read again, the card's question still
+      // closes (it was not refused) and the page says so separately.
+      try {
+        await reload();
+      } catch {
+        setError("Saved, but the list could not be refreshed. Reload to see it.");
+      }
       return null;
-    } catch (cause) {
-      return (cause as Error).message;
     } finally {
       acting.current = false;
       setBusy(false);
