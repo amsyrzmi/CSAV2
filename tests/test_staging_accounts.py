@@ -272,9 +272,10 @@ async def test_run_audits_the_profile_once_per_company(world: World) -> None:
             "fields": ["brand_name"] if name in has_support else ["status", "brand_name"],
             "status": "pilot",
             "brand_name": name,
-            "previous": {"brand_name": None}
-            if name in has_support
-            else {"status": "onboarding", "brand_name": None},
+            "previous": {
+                "status": "pilot" if name in has_support else "onboarding",
+                "brand_name": None,
+            },
             "source": "staging-reset",
         }
         assert row["details"] == expected

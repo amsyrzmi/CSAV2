@@ -50,7 +50,8 @@ async def company(sessions: SessionWorld, tenant: str) -> dict[str, Any]:
 
 async def audits(sessions: SessionWorld, tenant: str, action: str) -> list[dict[str, Any]]:
     return await sessions.q(
-        "SELECT actor_id, details FROM console_audit WHERE client_id=%s AND action=%s ORDER BY created_at",
+        "SELECT actor_id, details FROM console_audit WHERE client_id=%s AND action=%s"
+        " ORDER BY created_at",
         tenant,
         action,
     )
@@ -262,13 +263,15 @@ async def test_warnings(sessions) -> None:
     await activate_only(sessions, tenant, "knowledge_base")
     assert "no_knowledge" in await warnings()
     rows = await sessions.q(
-        "INSERT INTO kb_documents(client_id,title,is_active) VALUES (%s,'Synthetic',false) RETURNING id",
+        "INSERT INTO kb_documents(client_id,title,is_active) VALUES"
+        " (%s,'Synthetic',false) RETURNING id",
         tenant,
     )
     document = rows[0]["id"]
     embedding = "[" + ",".join(["0"] * 384) + "]"
     await sessions.q(
-        "INSERT INTO kb_chunks(client_id,document_id,chunk_index,content,embedding) VALUES (%s,%s,0,'Synthetic',%s)",
+        "INSERT INTO kb_chunks(client_id,document_id,chunk_index,content,embedding)"
+        " VALUES (%s,%s,0,'Synthetic',%s)",
         tenant,
         document,
         embedding,
