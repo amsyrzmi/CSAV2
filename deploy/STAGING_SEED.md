@@ -49,6 +49,10 @@ Validation: `tests/test_seed_staging.py` runs the whole seed twice against a
 disposable migrated Testcontainer and checks roles, forced password change,
 revoked sessions, HR receipts and exact record counts.
 
+**A staging reset does not run this seed.** Seeding after a reset would add the demo tenants
+beside the real companies, and `accounts` (`deploy/STAGING_PIPELINE.md`, "Resetting staging")
+refuses to run again once a company outside its roster exists. Do not seed a reset staging.
+
 ## Running against staging (separate approval)
 
 Run from an approved checkout as a one-off container on the accepted Python

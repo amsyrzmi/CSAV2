@@ -486,11 +486,15 @@ Verify, with nothing secret on screen:
 ## 11. Staff email assistant (Google)
 
 The staff email assistant (`csa/email/`, `docs/EMAIL_ASSISTANT.md`) lets each staff member
-connect their own Gmail mailbox. It uses an **Internal** Google OAuth client in the
+connect their own Gmail mailbox. It uses an **External** Google OAuth client, in testing, in the
 fourstacks.my Google Cloud project with the redirect
-`https://staging-console.fourstacks.my/console/v1/email/oauth/callback`. Internal means
-only fourstacks.my Google accounts can connect, with no test users and no seven-day
-token expiry. Only the gateway uses it, through `provider-egress`. The assistant is off
+`https://staging-console.fourstacks.my/console/v1/email/oauth/callback`. External and in
+testing means only the test users listed in Google Cloud can connect, at most 100 of them,
+and each one's access expires every 7 days, so they have to connect again. Any Google
+account can be a test user, so the mailbox does not have to be a fourstacks.my one. The test
+users live in Google Cloud, so a staging reset does not touch them. Moving the client past
+testing needs Google's verification and a yearly security assessment, because the Gmail
+scopes are restricted. Only the gateway uses it, through `provider-egress`. The assistant is off
 unless `CSA_STAGING_EMAIL_ASSISTANT=true`. That variable and `CSA_STAGING_INVITE_MAIL`
 (section 10) are independent and both must be exported (`=true`) in the shell whenever the
 gateway is recreated, or the feature whose variable is missing is switched off.
@@ -526,7 +530,7 @@ Per tenant, to use it:
 
 Verify, with nothing secret on screen:
 
-1. Connect a fourstacks.my mailbox on the Email assistant tab: Google's consent screen
+1. Connect a test user's mailbox on the Email assistant tab: Google's consent screen
    appears and, after approval, the tab shows the mailbox as connected.
 2. Run a sync: threads from the last 14 days are listed.
 3. If the gateway fails to start with `EMAIL_ASSISTANT_ENABLED requires GOOGLE_CLIENT_ID,
@@ -569,6 +573,221 @@ In the section-2 shell:
 
    Anything other than `0` means a row was written in a shape the scrub does not cover:
    stop and investigate before the console is used again.
+
+## Resetting staging
+
+`scripts/staging_reset.py` wipes the staging database and the two upload folders, rebuilds
+them, and then sets up the real accounts and the three companies from a roster file. It
+is for staging only. The project, database, host and volumes are fixed in the code and
+cannot be changed by an argument.
+
+It has three commands:
+
+- `plan` only reads. It changes nothing. Anyone, including an agent, may run it.
+- `wipe` backs up, wipes and rebuilds. Only the owner, at a terminal.
+- `accounts` adds the other platform admins, then the companies and their invitations.
+  Only the owner, at a terminal.
+
+**What it wipes.** The database `csa_staging`: every account and session, all HR and
+customer data, and every Telegram, WhatsApp and Gmail connection. It also empties the two
+upload volumes `csa-staging_staging-uploads` and `csa-staging_staging-hr-uploads`, which
+hold the knowledge base files and the HR files.
+
+**What stays.** The secret files under `/srv/csa-staging/secrets`, the role passwords,
+`CREDENTIALS_KEY`, the embeddings cache and the Google test users (they live in Google
+Cloud). The Postgres server and its roles stay too. Only one database is dropped.
+
+**`wipe` takes staging down for a few minutes.** It stops the gateway, frontend, worker
+and delivery. The console is unavailable and bot replies wait until it finishes.
+
+### Before you start
+
+1. The code is merged, published and rolled out by the routine rollout above.
+   `staging_reset.py` runs from the checkout, but `staging_accounts.py` runs inside the
+   gateway, so it must be in the running image. `plan` checks that all four services run
+   the image for HEAD.
+2. You are in the main checkout `/home/amsyrzmi/CSAV2`, on `origin/main`, with a clean
+   tracked tree (`git pull --ff-only origin main`).
+3. The roster file `deploy/staging-accounts.local.json` is in place, with mode 0600.
+   It holds real addresses, so it is git-ignored and never goes in the repository, which
+   is public. The shape is in `deploy/staging-accounts.example.json`. To set the mode:
+
+   ```bash
+   chmod 0600 /home/amsyrzmi/CSAV2/deploy/staging-accounts.local.json
+   ```
+
+4. Invitation mail is on (`CSA_STAGING_INVITE_MAIL=true`, section 10). `accounts` refuses
+   when it is off, because it would otherwise have to print an invitation link.
+5. Every invited mailbox can receive mail now. An invitation lasts 48 hours.
+6. There is room on the disk. `plan` shows the free space and the size of the backup.
+
+### Run
+
+`wipe` and `accounts` refuse unless both stdin and stdout are a real terminal. A pipe is
+refused, so `| tee` does not work. This is on purpose: they ask for passwords, and the
+output names people. They need the owner's passwords, so an agent can only run `plan`.
+
+1. Read the plan. It prints what staging holds now, what will be lost, the size of the
+   backup and what `wipe` would refuse. Before the first real wipe it also checks that
+   the database container's maintenance database can be reached and that user 1000 can
+   read both volumes. If any of that fails, it refuses.
+
+   ```bash
+   cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset plan
+   ```
+
+   Exit 0 means it is ready. Exit 1 prints `Stopped at <step>: ...`. Fix the cause, then
+   run `plan` again.
+
+2. Wipe and rebuild. It asks you to type `wipe csa-staging`. No flag skips that. Later it
+   asks you for the first platform admin's initial password.
+
+   ```bash
+   cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset wipe
+   ```
+
+   In order, it backs up, stops the four services, drops and creates the database, empties
+   the two volumes, loads the base schema, migrates, creates the first platform admin,
+   starts the services and waits until they are ready. If it fails after the drop, it
+   says which step failed and what state staging is in. It is safe to run again.
+
+3. Sign in to the console as the first platform admin and change the password.
+   `accounts` cannot add anyone until this is done.
+
+4. Create the other admins, the companies and the invitations. It asks for the first
+   admin's password, and for each further admin it asks again, then for that admin's
+   initial password. Give each admin their initial password privately. They change it
+   at first sign-in.
+
+   ```bash
+   cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset accounts
+   ```
+
+   The company step runs inside the gateway, so its lines appear when it finishes. Each
+   line says `created`, `already there` or `mail not sent`, with an address but never a
+   link. Exit 2 means some mail was not sent. Use Renew invitation on that person's
+   Team page.
+
+   - Running `accounts` again is safe. It skips what exists and sends no second email.
+   - It refuses when staging holds a company outside the roster, so it refuses an
+     unwiped staging. Running `seed_staging` after a reset does the same, so do not.
+   - A repeat run soon after may have to wait. Each run uses up to one `admin_add`
+     throttle attempt for every admin it adds, plus one for the company step. The limit
+     is 5 attempts per 15 minutes per address.
+
+### After the tool
+
+Do these in order:
+
+1. Each invited person accepts within 48 hours and sets a password.
+2. Team Jo's tenant admin sets the HR owner on the Team page, once that person has signed
+   in. Syarikat Cekap's tenant admin makes themselves the HR owner.
+3. Team Jo's HR owner gives the manager and staff accounts their HR access on the access
+   page. Invitations carry no HR preset, so until then those two accounts look the same
+   and have no HR rights. A platform admin cannot choose the manager preset. Only the HR
+   owner can.
+4. Team Jo's tenant admin turns on the email assistant's inner switch. Only a tenant
+   admin of the company can change it. Activating the Staff email package does not do it.
+5. Bind the test bot. Run the command in section 5, with `--tenant team-jo` in place of
+   `--tenant demo-meranti`. The wipe removed the old binding, so the bot is free.
+6. Connect WhatsApp and Gmail again when wanted. The Google test users stay as they are,
+   but they must be listed there and their access expires every 7 days (section 11).
+7. Do the pending retests in `docs/ASSISTANT_RETEST.md`.
+
+### Backups
+
+Each `wipe` writes `~/csa-staging-backups/<UTC timestamp>/`, mode 0700. It holds:
+
+- `csa_staging.dump`, a `pg_dump` custom-format dump of `csa_staging`;
+- `csa-staging_staging-uploads.tar` and `csa-staging_staging-hr-uploads.tar`;
+- `manifest.json`, written last. It holds counts and image names, no addresses and no
+  secrets.
+
+A directory with no valid `manifest.json` is incomplete. The tool lists it as
+`(incomplete, do not restore)`. A repeat `wipe` after a failure backs up an already empty
+staging and leaves the earlier backups as they were, so the newest backup is not always
+the one you want.
+
+**Which backup to restore:** the newest complete one whose counts show real data, meaning
+companies above 0. When a stop shows no data in this run's backup, the tool prints
+`The most recent complete backup with real data is <directory>`. Use that one. To check
+by hand:
+
+```bash
+ls -1 ~/csa-staging-backups
+cat ~/csa-staging-backups/<timestamp>/manifest.json
+```
+
+Do not use a backup that says `no database dump`.
+
+### Restore from a backup
+
+Use this when a wipe failed and you want the old data back, or when you want the earlier
+data back after a reset. These commands replace what is on staging now with what the backup
+holds. Run them one block at a time and read each result. Set `B` first, with the
+timestamp of the backup you chose in place of `<timestamp>`, and keep the same
+terminal for all four steps.
+
+```bash
+B=~/csa-staging-backups/<timestamp>
+```
+
+1. Stop the four services. A container that does not exist gives an error. That is fine.
+
+   ```bash
+   docker --host unix:///var/run/docker.sock stop csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1
+   ```
+
+2. Rebuild the empty database and load the dump. The dump goes in on stdin. Run these
+   three lines one at a time, and stop if one fails.
+
+   ```bash
+   docker --host unix:///var/run/docker.sock exec csa-staging-staging-db-1 psql -U csa -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS csa_staging WITH (FORCE)"
+   docker --host unix:///var/run/docker.sock exec csa-staging-staging-db-1 psql -U csa -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE csa_staging OWNER csa"
+   docker --host unix:///var/run/docker.sock exec -i csa-staging-staging-db-1 pg_restore -U csa -d csa_staging --exit-on-error --single-transaction < "$B/csa_staging.dump"
+   ```
+
+3. Empty each upload volume and unpack its tar. Both steps use the same sealed container
+   as the backup: no network, read-only, no capabilities and user 1000. The image is the
+   one the gateway runs. If the gateway container is gone, set `IMAGE` to the `python_image`
+   named in `manifest.json` instead.
+
+   ```bash
+   IMAGE=$(docker --host unix:///var/run/docker.sock inspect csa-staging-gateway-1 --format '{{.Image}}')
+   for V in csa-staging_staging-uploads csa-staging_staging-hr-uploads; do
+     docker --host unix:///var/run/docker.sock run --rm --network none --read-only --cap-drop ALL \
+       --security-opt no-new-privileges:true --user 1000:1000 -v "$V":/data \
+       --entrypoint find "$IMAGE" /data -mindepth 1 -delete || break
+     docker --host unix:///var/run/docker.sock run --rm -i --network none --read-only --cap-drop ALL \
+       --security-opt no-new-privileges:true --user 1000:1000 -v "$V":/data \
+       --entrypoint tar "$IMAGE" -C /data -xf - < "$B/$V.tar" || break
+   done
+   ```
+
+4. Bring the services back. If all four containers still exist and HEAD has not moved,
+   start them:
+
+   ```bash
+   docker --host unix:///var/run/docker.sock start csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1
+   ```
+
+   Otherwise roll out as in Routine rollouts: `plan`, then `apply`. `apply` recreates the
+   services and applies any migrations the restored database lacks.
+
+**When `wipe` refuses after a failed wipe.** If HEAD moved after a failed wipe, or a
+service container no longer exists, `wipe` refuses, and `staging_rollout plan` cannot read
+a missing ledger. The way out is the same each time: restore the named backup (steps 1 to
+3 above), roll out (`plan`, then `apply`), then run `wipe` again.
+
+### Deleting a backup
+
+The tool never deletes a backup. A backup holds staging's data: accounts, customer and HR
+records, and uploaded files. Keep one while you might need it. Delete it when you do not,
+by naming the directory:
+
+```bash
+rm -r ~/csa-staging-backups/<timestamp>
+```
 
 ## Rollback
 
