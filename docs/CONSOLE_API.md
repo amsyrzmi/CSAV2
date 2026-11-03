@@ -93,8 +93,10 @@ access.
 - Each person carries `on` (every switch whose rows are all present),
   `included` (a switch whose rows sit inside another switch that is on, which
   cannot be turned off on its own), `custom` (the rows no switch describes, in
-  plain words), `team_size` and `is_owner`. Every save keeps the `custom` rows,
-  so the owner's own decision rows on `client_owner` are never dropped here.
+  plain words; for the HR owner, without the standard set a move of the title gives,
+  which the page sums up in one line), `team_size` and `is_owner`. Every save keeps
+  the rows no switch describes, so the owner's own decision rows on `client_owner`
+  are never dropped here.
 - `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
   page showed, `dry_run` and 1–50 `changes`, each `{user_id, on, base}`: the
   member's full desired switch set (`on`) and the `on` set the page loaded them
@@ -138,16 +140,20 @@ access.
 - Warnings (`AccessWarningOut`, names resolved by the server): `no_approver`,
   `no_manager`, `no_payroll_reviewer`, `manager_without_team` and
   `prepares_and_reviews`. They warn; they never block a save.
-- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`
-  and `private_access.save` events, newest first, with an opaque cursor. Each
+- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`,
+  `private_access.save` and `owner.move` events, newest first, with an opaque cursor. Each
   `access.save` lists `turned_on` and `turned_off` against that person's previous
   `access.save`; a private-area event gives `area` and `area_enabled`. A member who
   is no longer enabled has `actor_name` or `target_name` `null` ("Former member").
-  Each event has a `source`: `page` for a save on this page, or `invitation` for access
-  set on an invitation when it was accepted. An `invitation` event carries the `preset`
+  Each event has a `source`: `page` for a save on this page, `invitation` for access
+  set on an invitation when it was accepted, or `owner_move`. An `invitation` event carries the `preset`
   (otherwise `null`); its actor is whoever chose the preset (a platform admin shows as
   "FourStacks admin"), and `turned_on` is only what the preset added to what the person
-  already had.
+  already had. An `owner_move` event is a change of HR owner: its actor is whoever moved
+  it (a platform admin shows as "FourStacks admin"), its target is the new owner,
+  `replaced_owner` is true when there was an owner before, and `previous_owner_name` is that
+  owner (`null` for a first owner or once they are no longer an enabled member, when the page
+  says "replacing Former member"); it changes no switches.
 - **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
   below) is applied when the invitation is accepted. If it is not, it waits for the HR
   owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an
@@ -337,7 +343,8 @@ leaver finish) has `actor_name` `System`.
   active again. A manager who has left is dropped. No access comes back.
 
 New refusals (409 with the code as `detail`): `last_owner_leaving` (the HR owner cannot be marked
-as leaving; a company has one HR owner, so ownership must move first), `leaver_has_access` (only
+as leaving; a company has one HR owner, so ownership must move first, which a tenant admin does
+on the Team page), `leaver_has_access` (only
 the HR owner marks someone whose account holds HR duties beyond the staff switches or an enabled
 `tenant_admin` membership of the company; marking yourself is allowed), `last_day_past`,
 `leaving_final` (already left, or nothing to undo),
@@ -1332,6 +1339,8 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 | POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement (keeps `hr_preset` and who chose it); same scoped authorization |
 | DELETE `/admin/invites/{id}` | — | Revoke invitation; reset-token revocation requires platform admin |
 | GET `/team` | `client_id=UUID` | Selected tenant admin/platform; member list |
+| GET `/team/hr-owner` | `client_id=UUID` | Selected tenant admin/platform; `{available,owner}`, where `owner` is `{user_id,display_name,usable}` or `null`; package off gives 200 with `available=false` and `owner=null` |
+| POST `/team/hr-owner` | `Idempotency-Key`; `{client_id,new_owner_id,expected_owner_id}` | Selected tenant admin/platform; moves the HR owner at once and emails the people affected; `{owner,mail}`. See [Moving the HR owner](#moving-the-hr-owner) |
 | PATCH `/team/{user_id}` | query `client_id`; `{role?,is_enabled?}` | Scoped member change; revoke affected tenant sessions; protect last admin |
 | GET `/admin/users` | bounded `limit` | Platform admin; safe user metadata |
 | PATCH `/admin/users/{id}` | `{is_enabled}` | Platform admin; disable revokes sessions/tokens; protect last admins |
@@ -1383,6 +1392,41 @@ instead. This prevents reset acceptance from bypassing the membership-creation s
 Tenant creation atomically writes the tenant, nine disabled registry rows with current
 Pydantic input schemas, and an actor-attributed audit event. It starts no channel, provider,
 worker or external operation. Deliberate subscription/tenant enablement is separate.
+
+### Moving the HR owner
+
+A tenant admin of the company or a platform admin, who needs no membership, can read and move the
+HR owner. A tenant admin gains no HR data by holding that role: they learn who the owner is and
+nothing else. `usable` is false when the owner's account or membership is disabled or their role is
+`read_only`.
+
+`POST /team/hr-owner` runs `hr_owner_move` (migration 0522) on the app pool. `expected_owner_id` is
+required, and `null` means "no owner yet". A new owner gets no payroll access.
+
+| Answer | Detail | When |
+|---|---|---|
+| 403 | `tenant administrator required` | The caller isn't a tenant admin of this company or a platform admin |
+| 422 | `hr_not_available` | The company's HR package isn't active |
+| 409 | `owner_read_only` | The person chosen is a read-only member |
+| 409 | `owner_leaving` | The person chosen is marked as leaving, or their linked person isn't active |
+| 409 | `owner_unavailable` | The person chosen isn't an enabled member, or is still on their first password |
+| 409 | `owner_unchanged` | The person chosen is already the owner |
+| 409 | `owner_changed` | `expected_owner_id` is not the current owner |
+| 409 | `idempotency_conflict` | The key was already used for something else: another person, another expected owner or another operation |
+| 409 | `try_again` | A rare deadlock with another HR action; nothing changed, so the same request can be sent again |
+
+A 200 means the move has committed. `owner` is who holds the title now, so a retry after a later
+move names the later owner. `mail` is one of:
+
+- `sent`: every email went out.
+- `not_sent`: mail is off, or at least one email failed. The move stands, and the page asks the
+  admin to tell the people affected. Logs carry a failure category only.
+- `repeat`: this key already ran with this request. Nothing changed and no email went out.
+
+One email goes to the old owner (even if they're disabled), the new owner and each enabled tenant
+admin, once per address. It names the company, who made the change, the old and new owner and the
+time in the company's timezone, or the console's default zone if that timezone is invalid. A
+platform admin appears as "FourStacks admin". There is no link and no HR data.
 
 ## Endpoints
 ### `GET /console/v1/traces?limit=50&before=<ISO time>`

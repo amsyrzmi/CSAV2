@@ -10,7 +10,9 @@ are implemented; no persistent rollout or service activation was performed.
 1. Apply ordered migrations through `0410` in the separately authorized isolated
    environment using the normal migration process. Never use a production URL or
    a bare persistent reset to validate changes.
-2. Record the first client-approved HR owner. The new bootstrap tool requires
+2. Record the first client-approved HR owner. In a real company the tenant admin sets it on the
+   **Team** page (see “Moving the HR owner” below). The bootstrap tool stays for isolated
+   environments and seeding, and requires
    explicit dev/ci environment, an isolated loopback owner connection in
    `HR_BOOTSTRAP_DATABASE_URL`, an active member who has changed their password,
    and a nonempty business approval reference. It cannot replace an existing owner.
@@ -40,6 +42,49 @@ NO_LOCAL_ENV=1 ENV=dev uv run python -m scripts.bootstrap_hr_owner \
   --client-id "$HR_CLIENT_ID" --owner-id "$HR_OWNER_ID" \
   --approval-reference "$HR_OWNER_APPROVAL_REFERENCE" --client-approved-assignment
 ```
+
+## Moving the HR owner
+
+Migration `0522` lets the company move its own HR owner, so an owner who leaves is no longer a
+dead end. Apply it through `scripts/staging_rollout.py` with all images, since the console and the
+gateway both depend on it.
+
+- **Where.** On the **Team** page a panel names the HR owner (“HR owner: Name”, or “No HR owner
+  yet”) and offers **Change** (or **Set HR owner** when there is none). A platform admin sees the
+  same panel on the admin Team page for any company, so a customer can still ask FourStacks. The
+  panel is hidden when the company has no HR package.
+- **Who can do it.** A tenant admin of the company or a platform admin. Holding the tenant admin
+  role gives no HR data: they learn who the owner is and nothing else, until they choose themselves.
+- **Who can be chosen.** The picker lists enabled members who are not read only and are not already
+  the owner. The server then also requires that the person has changed their first password and is
+  not marked as leaving. Someone still on their first password or marked as leaving can be picked
+  but is refused at Confirm, with a sentence that says what is wrong (“This person can't be the HR
+  owner yet. They need to sign in and change their password first.” or “This person is leaving, so
+  they can't be the HR owner. Choose someone else.”).
+- **Choosing yourself.** A tenant admin may make themselves the HR owner. The confirmation says so,
+  and everyone affected is emailed.
+- **What happens.** It is immediate and needs no accept step from the new owner. The old owner
+  drops to their ordinary HR switches straight away, even if their account is disabled or read
+  only, and their open page or assistant card is refused on the next action. The new owner gets the
+  owner-only access and the access page. **A new owner gets no payroll automatically**: no payroll
+  workflow rows and no payroll private area. They (or anyone with the right) turn payroll on for
+  themselves on the access page, and that change shows in Recent changes.
+- **Emails.** One email goes to the old owner, the new owner and each enabled tenant admin, once
+  per address. It names the company, who made the change, the old and new owner and the time in the
+  company's timezone. A platform admin appears as “FourStacks admin”. There is no link and no HR
+  data. If mail is off or a send fails, the move stands and the page says: “HR owner changed, but
+  we couldn't send the emails. Please tell the people affected.”
+- **Retries.** A lost answer is safe to retry: the page keeps one key per exact request, so a
+  repeat changes nothing, names whoever holds the title now (a later move names the later owner),
+  and sends no second email (the page then says “If you're not sure the emails went out, please
+  tell the people affected.”). If someone else changed the owner first, the move is refused with
+  “The HR owner changed since you opened this page. Reload to see who it is now.” In the rare case
+  of a deadlock with another HR action the answer is `try_again`: “Someone else changed HR records
+  at the same moment. Please try again.” Nothing changed, and the same request can be sent again.
+- **Record.** Recent changes on the access page lists each move (“A made B the HR owner,
+  replacing C”), and the move writes an audit row.
+- **Bootstrap.** `scripts/bootstrap_hr_owner.py` stays for isolated environments and seeding. It
+  still cannot replace an existing owner.
 
 ## People, departments and Manage people
 
@@ -139,8 +184,9 @@ use **Mark as leaving** on a person's Overview.
   own manager. The person shows as **Leaving** until the last day has passed. The reason is for
   HR viewers only; the person and their direct manager see the last day.
 - **Who can be marked.** The HR owner cannot be marked as leaving while they are the owner: “The HR
-  owner can't be marked as leaving. Contact support to move HR ownership to someone else first.”
-  (a company has one HR owner, and the console has no way to change it yet).
+  owner can't be marked as leaving. Ask your tenant admin to move HR ownership to someone else
+  first.” (a company has one HR owner; the tenant admin moves it on the Team page, see “Moving the
+  HR owner”).
   Only the HR owner can mark someone who holds HR access beyond the staff switches, or who is a
   tenant admin of the company, as leaving (“Only the HR owner can mark someone with HR access as
   leaving.”), because finishing them removes that access and disables their membership. A Manage

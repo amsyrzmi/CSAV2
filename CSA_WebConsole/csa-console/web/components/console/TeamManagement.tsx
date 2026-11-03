@@ -19,6 +19,7 @@ import {
 import { servicesClient } from "@/lib/services-api";
 import { formatDateTime } from "@/lib/subscriptions-api";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
+import { HrOwnerPanel } from "./HrOwnerPanel";
 import { InvitationList } from "./InvitationList";
 
 const roles: TenantRole[] = ["tenant_admin", "tenant_staff", "read_only"];
@@ -39,9 +40,11 @@ interface Shown {
 export function TeamManagement({
   platform = false,
   clientId = null,
+  currentUserId,
 }: {
   platform?: boolean;
   clientId?: string | null;
+  currentUserId?: string;
 }) {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [selected, setSelected] = useState(clientId ?? "");
@@ -272,6 +275,7 @@ export function TeamManagement({
         <Notice>Select a tenant to manage its members.</Notice>
       ) : (
         <div className="space-y-5">
+          <HrOwnerPanel key={selected} clientId={selected} members={members ?? []} currentUserId={currentUserId} />
           {shown && (
             <Panel
               title={

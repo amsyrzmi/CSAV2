@@ -149,7 +149,10 @@ async def test_people_page_is_owner_only(world: HrWorld) -> None:
     assert {UUID(item["user_id"]) for item in page["items"]} == set(world.users.values())
     assert set(page["counts"]) == set(SWITCH_IDS) and page["version"]
     owner = next(i for i in page["items"] if i["user_id"] == str(world.users["owner"]))
-    assert owner["is_owner"] is True and owner["custom"]
+    assert owner["is_owner"] is True
+    # The title explains its own rows; the ones beyond the standard set are still listed.
+    assert "Records client-owner decisions on training" not in owner["custom"]
+    assert "Sees their own training requests" in owner["custom"]
     for name in ("admin", "staff"):
         response = await world.call(name, "GET", PEOPLE)
         assert response.status_code == 404 and response.json()["detail"] == "resource_unavailable"
@@ -263,14 +266,14 @@ async def test_owner_saving_own_switches_keeps_owner_decisions(world: HrWorld) -
     assert decisions.issubset(await stored(world, "owner"))
     owner = await person(world, "owner")
     assert "own_requests" not in owner["on"]
-    assert "Records client-owner decisions on leave" in owner["custom"]
+    assert "Records client-owner decisions on leave" not in owner["custom"]
 
     await turn(world, "owner", [*owner["on"], "own_requests"])
     after_on = await stored(world, "owner")
     assert decisions.issubset(after_on) and SWITCHES["own_requests"].issubset(after_on)
     await turn(world, "owner", owner["on"])
     assert decisions.issubset(await stored(world, "owner"))
-    assert "Records client-owner decisions on leave" in (await person(world, "owner"))["custom"]
+    assert "Records client-owner decisions on leave" not in (await person(world, "owner"))["custom"]
 
 
 async def test_stale_version_is_409_and_writes_nothing(world: HrWorld) -> None:
