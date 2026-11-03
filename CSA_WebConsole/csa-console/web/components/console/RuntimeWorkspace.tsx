@@ -12,7 +12,7 @@ import { toInstants, type DayRange } from "@/lib/date-range";
 import type {
   Agent, AgentRun, Client, Me, RunPage, RuntimeOverview,
 } from "@/lib/identity-contracts";
-import { buildText, connectionText, lastChangeText, SAVED_NOT_REFRESHED, setupText } from "@/lib/services-view";
+import { buildText, lastChangeText, SAVED_NOT_REFRESHED, safetyPauseText, setupText } from "@/lib/services-view";
 import LastAssistants from "./activity/LastAssistants";
 import RunRow from "./activity/RunRow";
 import AgentAvatar from "./fs/AgentAvatar";
@@ -151,7 +151,7 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
         <div><dt className="text-ink-500">Turned on for your company</dt><dd data-testid={`agent-company-${name}`}>{switchOn ? "Yes" : "No"}</dd></div>
         <div><dt className="text-ink-500">Availability</dt><dd>{buildText(agent.implementation)}</dd></div>
         <div><dt className="text-ink-500">Setup</dt><dd>{setupText(agent.readiness)}</dd></div>
-        <div><dt className="text-ink-500">Automatic safety pause</dt><dd>{agent.capability ? connectionText(agent.capability.circuit_state) : "No record yet"}</dd></div>
+        <div><dt className="text-ink-500">Automatic safety pause</dt><dd>{agent.capability ? safetyPauseText(agent.capability.circuit_state, agent.implementation, agent.readiness) : "No record yet"}</dd></div>
         <div><dt className="text-ink-500">Recent failures</dt><dd>{agent.capability?.fail_count ?? "No record yet"}</dd></div>
       </dl>
       <p className="my-4 text-sm text-ink-600">{agent.detail}</p>

@@ -74,6 +74,16 @@ export const buildText = (code: string) => BUILD_WORDS[code] ?? spaced(code);
 export const setupText = (code: string) => SETUP_WORDS[code] ?? spaced(code);
 export const connectionText = (code: string) => CONNECTION_WORDS[code] ?? spaced(code);
 
+/**
+ * The "Automatic safety pause" value. A closed circuit means "not paused", but "Running
+ * normally" overstates it for an assistant that is not built or not set up, so that case says
+ * only "Not paused".
+ */
+export function safetyPauseText(circuit: string, implementation: string, readiness: string): string {
+  if (circuit === "closed" && (implementation !== "local" || readiness !== "available")) return "Not paused";
+  return connectionText(circuit);
+}
+
 const CHANGE_WORDS: Record<LastChange["action"], string> = {
   requested: "Requested",
   activated: "Activated",

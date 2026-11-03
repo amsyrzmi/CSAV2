@@ -18,7 +18,7 @@ const view = await import(moduleUrl(
 ));
 const {
   serviceStats, rowAvatarState, statusLabel, agentCountLabel, lastChangeText, shortDate, statusLine,
-  SAVED_NOT_REFRESHED, buildText, setupText, connectionText,
+  SAVED_NOT_REFRESHED, buildText, setupText, connectionText, safetyPauseText,
 } = view;
 
 const agent = (name, active) => ({ name, capability: { name, active } });
@@ -244,4 +244,13 @@ test("the agent card words build, setup and connection in plain language, never 
   assert.equal(connectionText("half_open"), "Trying again");
   // A code the table does not know still reads as words, not as an underscored identifier.
   assert.equal(connectionText("some_new_state"), "some new state");
+});
+
+test("a closed circuit says Not paused for an assistant that is not built or not set up", () => {
+  assert.equal(safetyPauseText("closed", "local", "available"), "Running normally");
+  assert.equal(safetyPauseText("closed", "not_implemented", "available"), "Not paused");
+  assert.equal(safetyPauseText("closed", "prepared_only", "available"), "Not paused");
+  assert.equal(safetyPauseText("closed", "local", "setup_required"), "Not paused");
+  assert.equal(safetyPauseText("open", "not_implemented", "setup_required"), "Paused after errors");
+  assert.equal(safetyPauseText("half_open", "local", "available"), "Trying again");
 });
