@@ -206,9 +206,17 @@ class Api:
         elif path == "admin/clients" and request.method == "GET":
             data = CLIENTS
         elif path == "hr/context" and request.method == "GET":
-            # The rail asks for the HR tabs on pages that name a tenant; unused here.
-            await route.fulfill(status=404, json={"detail": "not stubbed"})
-            return
+            # The rail asks for the HR tabs of a company with the HR package; a member with no
+            # access beyond Home (the shape of `HrContext`). A refused read would be a console error.
+            data = {
+                "employee": None,
+                "client_owner": False,
+                "private_areas": [],
+                "actions": [],
+                "switches": [],
+                "workflows": [],
+                "hr_duties": False,
+            }
         elif path == "chat/voice" and request.method == "GET":
             data = {"enabled": False}
         elif path == "chat/conversations" and request.method == "GET":
