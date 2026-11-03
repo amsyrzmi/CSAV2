@@ -250,6 +250,12 @@ async def test_the_wired_gate_lets_a_sandbox_turn_through_where_customers_get_no
             "'{policy}', '{\"deployment_mode\": \"shadow\"}') WHERE id=%s",
             (client_id,),
         )
+        # This test never runs the worker, so the seeded event would stay queued and the next
+        # test's worker would claim it (a shadow company's turn) before its own.
+        conn.execute(
+            "UPDATE ingress_events SET status='completed', completed_at=now() WHERE client_id=%s",
+            (client_id,),
+        )
     pools = await _worker(owner_dsn, app_dsn)
     deps = pools[4]
     try:
