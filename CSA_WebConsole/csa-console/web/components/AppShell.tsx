@@ -1,19 +1,39 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
-import { Suspense, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { identity } from "@/lib/identity-api";
 import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
+import type { HrNavItem } from "@/lib/hr-paths";
 import { navigationFor } from "@/lib/navigation";
 import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
+import { useHrNav } from "@/components/console/hr/useHrNav";
 import { Rail } from "@/components/console/shell/Rail";
 import type { ShellAccount } from "@/components/console/shell/UserMenu";
 import { TopBar } from "@/components/console/shell/TopBar";
 import { Notice } from "@/components/console/ui";
 import { PageContextProvider } from "@/lib/page-context";
+
+/**
+ * Reports the People & HR sub-pages for the rail. It reads `?client_id=` (a platform admin's
+ * tenant), so it renders under Suspense and renders nothing itself.
+ */
+function HrNavBridge({ me, enabled, path, onItems }: {
+  me: Me;
+  enabled: boolean;
+  path: string;
+  onItems: (items: HrNavItem[] | null) => void;
+}) {
+  const platform = me.role === "platform_admin";
+  const param = useSearchParams().get("client_id")?.trim() || null;
+  const tenant = platform ? param : me.active_client_id;
+  const items = useHrNav({ enabled, platform, tenant, path });
+  useEffect(() => { onItems(items); }, [items, onItems]);
+  return null;
+}
 
 export function AppShell({
   me,
@@ -32,7 +52,12 @@ export function AppShell({
   const router = useRouter();
   const admin = me.role === "platform_admin";
   const home = admin ? "/" : "/portal";
-  const links = navigationFor(me, packages);
+  const [hrItems, setHrItems] = useState<HrNavItem[] | null>(null);
+  const baseLinks = navigationFor(me, packages);
+  // People & HR gets its sub-pages once the HR context is known; until then (and if it fails) it is a plain link.
+  const links = baseLinks.map((link) =>
+    link.key === "hr" && hrItems?.length ? { ...link, children: hrItems } : link,
+  );
   const [rail, setRail] = useState<RailState>(initialRail ?? "collapsed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -66,6 +91,14 @@ export function AppShell({
       data-testid="shell-root"
       className="flex min-h-dvh bg-[var(--fs-surface)] text-[color:var(--fs-text)]"
     >
+      <Suspense fallback={null}>
+        <HrNavBridge
+          me={me}
+          enabled={baseLinks.some((link) => link.key === "hr")}
+          path={path}
+          onItems={setHrItems}
+        />
+      </Suspense>
       <Rail
         links={links}
         path={path}

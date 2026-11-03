@@ -9,7 +9,7 @@ function moduleUrl(source) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
-const { navigationFor, businessPages, knowledgePages, currentChild, entryForPath } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
+const { navigationFor, businessPages, knowledgePages, currentChild, entryForPath, groupParentCurrent } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
 
 const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t", csrf_token: "" };
 const active = (...keys) => keys.map((key) => ({ key, status: "active" }));
@@ -168,4 +168,24 @@ test("entryForPath maps sub-pages to their group and never lets home claim a pag
   assert.equal(entryForPath(admin, "/")?.key, "overview");
   assert.equal(entryForPath(admin, "/knowledge-base/questions")?.key, "knowledge_base");
   assert.equal(entryForPath(admin, "/anything")?.key ?? null, null);
+});
+
+test("a group's parent link is current on its own page, in the group when hidden, and never while shown", () => {
+  const links = navigationFor(staff, active("orders_products"));
+  const business = links.find((l) => l.key === "business");
+  // The group is shown: the child carries the mark, the parent none.
+  assert.equal(groupParentCurrent(business, "/portal/business", true), undefined);
+  assert.equal(groupParentCurrent(business, "/portal/business/products", true), undefined);
+  // Hidden on the parent's own page: the parent is the current page.
+  assert.equal(groupParentCurrent(business, "/portal/business", false), "page");
+  // Hidden on a sub-page: "true", never "page", so a nav never has two current links.
+  assert.equal(groupParentCurrent(business, "/portal/business/products", false), "true");
+  assert.equal(groupParentCurrent(business, "/portal/business/stores", false), "true");
+  // Elsewhere, and a path that only starts with the same letters: nothing.
+  assert.equal(groupParentCurrent(business, "/portal/services", false), undefined);
+  assert.equal(groupParentCurrent(business, "/portal/businessx", false), undefined);
+  // A link without sub-pages is current on its own page only.
+  const services = links.find((l) => l.key === "services");
+  assert.equal(groupParentCurrent(services, "/portal/services", false), "page");
+  assert.equal(groupParentCurrent(services, "/portal/services/x", false), undefined);
 });

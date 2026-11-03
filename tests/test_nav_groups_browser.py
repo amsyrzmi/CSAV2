@@ -1,9 +1,11 @@
-"""Real browser acceptance for the rail groups: Business management and Business knowledge.
+"""Real browser acceptance for the rail groups: Business, Business knowledge and People & HR.
 
 Same stubbed-upstream setup as `test_console_shell_browser.py`: the real Next.js shell runs
 from a disposable staged copy, a loopback stub answers the layouts' server-side fetches and
 Playwright answers every browser-side `/console/v1/*` call (the sub-pages themselves only need
-to render, so their reads fail as "not stubbed"). One dev server serves every test here.
+to render, so their reads fail as "not stubbed"). One dev server serves every test here. The
+People & HR group's sub-pages come from the browser-side `hr/context` read, which a test
+stubs with `hr_context` (a body, or a status code for a failure).
 """
 
 from __future__ import annotations
@@ -218,11 +220,15 @@ async def open_page(
     role: str = "tenant_admin",
     logout: tuple[int, list[str]] | None = None,
     profile_status: int = 200,
+    hr_context: dict[str, Any] | int | None = None,
+    hr_calls: list[dict[str, str]] | None = None,
 ) -> tuple[Any, Any, Page]:
     """A fresh context signed in as `role` with every package active, on `path`.
 
     `logout` is the status the stubbed sign-out answers with and a list that records each call.
     `profile_status` is what the tenant profile read answers with (the user menu's tenant line).
+    `hr_context` is the body `hr/context` answers with, or the failing status to answer with;
+    left out it is "not stubbed". `hr_calls` records the query parameters of each such read.
     """
     console.upstream.profile_status = profile_status
     console.upstream.me = make_me(role)
@@ -240,7 +246,17 @@ async def open_page(
 
     async def route(request_route: Any) -> None:
         path_only = request_route.request.url.split("/console/v1/")[1].split("?")[0]
-        if path_only == "auth/csrf":
+        if path_only == "hr/context" and hr_context is not None:
+            query = request_route.request.url.partition("?")[2]
+            if hr_calls is not None:
+                hr_calls.append(dict(part.split("=", 1) for part in query.split("&") if part))
+            if isinstance(hr_context, int):
+                await request_route.fulfill(
+                    status=hr_context, json={"detail": "synthetic HR failure"}
+                )
+            else:
+                await request_route.fulfill(json=hr_context)
+        elif path_only == "auth/csrf":
             await request_route.fulfill(json={"csrf_token": "synthetic-csrf"})
         elif path_only == "services":
             await request_route.fulfill(json=[])
@@ -278,6 +294,30 @@ GROUPS = {
         },
     ),
 }
+
+
+def make_hr_context(**changes: Any) -> dict[str, Any]:
+    """An HR context for a member with no access beyond Home (the shape of `HrContext`)."""
+    return {
+        "employee": None,
+        "client_owner": False,
+        "private_areas": [],
+        "actions": [],
+        "switches": [],
+        "workflows": [],
+        "hr_duties": False,
+        **changes,
+    }
+
+
+# Training only: Home and Training are the tabs; People needs an owner or an access switch.
+HR_STAFF = make_hr_context(actions=["training.read"])
+# The owner: every tab but Recruitment and Payroll (those need a private area).
+HR_OWNER = make_hr_context(
+    client_owner=True, actions=["training.read"], workflows=["leave.request"], hr_duties=True
+)
+HR_OWNER_TABS = ("Home", "People", "Leave & attendance", "Training", "Requests", "Settings")
+PROFILE_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 
 
 def rail_nav(page: Page) -> Any:
@@ -545,5 +585,188 @@ async def test_chevron_does_not_animate_under_reduced_motion(console: Console) -
         # `transition: none` is what keeps it from animating.
         assert style[1] == "none" and float(style[0].rstrip("s")) < 0.001, style
         assert style[2] != "none", "the open chevron is still turned over, just without motion"
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_hr_group_lists_only_visible_tabs(console: Console) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/services", cookies=EXPANDED, role="tenant_staff", hr_context=HR_STAFF
+    )
+    try:
+        toggle = page.get_by_test_id("rail-group-hr-toggle")
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await expect(toggle).to_have_accessible_name("People & HR pages")
+        await toggle.click()
+        await expect(page.get_by_test_id("rail-child-hr-hr_home")).to_be_visible()
+        await expect(page.get_by_test_id("rail-child-hr-hr_training")).to_be_visible()
+        for hidden in ("people", "recruitment", "leave", "payroll", "requests", "settings"):
+            await expect(page.get_by_test_id(f"rail-child-hr-hr_{hidden}")).to_have_count(0)
+        assert await page.get_by_test_id("rail-child-hr-hr_training").get_attribute("href") == (
+            "/portal/hr/training"
+        )
+    finally:
+        await close_page(playwright, browser)
+    playwright, browser, page = await open_page(
+        console,
+        "/portal/services",
+        width=390,
+        height=844,
+        role="tenant_staff",
+        hr_context=HR_STAFF,
+    )
+    try:
+        await page.get_by_test_id("shell-menu").click()
+        toggle = page.get_by_test_id("menu-group-hr-toggle")
+        await expect(toggle).to_be_visible()
+        await toggle.click()
+        await expect(page.get_by_test_id("menu-child-hr-hr_training")).to_be_visible()
+        await expect(page.get_by_test_id("menu-child-hr-hr_people")).to_have_count(0)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_hr_group_has_no_children_when_context_fails(console: Console) -> None:
+    calls: list[dict[str, str]] = []
+    playwright, browser, page = await open_page(
+        console, "/portal/services", cookies=EXPANDED, hr_context=500, hr_calls=calls
+    )
+    try:
+        link = rail_nav(page).get_by_role("link", name="People & HR", exact=True)
+        await expect(link).to_be_visible()
+        for _ in range(100):  # The read has been made and has failed.
+            if calls:
+                break
+            await page.wait_for_timeout(100)
+        assert calls, "the rail never asked for the HR context"
+        await page.wait_for_timeout(500)
+        assert await link.get_attribute("href") == "/portal/hr"
+        await expect(page.get_by_test_id("rail-group-hr-toggle")).to_have_count(0)
+        await expect(page.get_by_test_id("rail-group-hr")).to_have_count(0)
+        await expect(page.locator("[data-testid^='rail-child-hr-']")).to_have_count(0)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_hr_people_child_is_current_on_a_profile_path(console: Console) -> None:
+    playwright, browser, page = await open_page(
+        console, f"/portal/hr/people/{PROFILE_ID}", cookies=EXPANDED, hr_context=HR_OWNER
+    )
+    try:
+        people = page.get_by_test_id("rail-child-hr-hr_people")
+        await expect(page.get_by_test_id("rail-group-hr-toggle")).to_have_attribute(
+            "aria-expanded", "true"
+        )
+        await expect(people).to_have_attribute("aria-current", "page")
+        await expect(page.get_by_test_id("rail-child-hr-hr_home")).not_to_have_attribute(
+            "aria-current", "page"
+        )
+        parent = rail_nav(page).get_by_role("link", name="People & HR", exact=True)
+        await expect(parent).not_to_have_attribute("aria-current", "page")
+        await expect(parent).to_have_attribute("data-group-current", "true")
+        await expect(rail_nav(page).locator("[aria-current=page]")).to_have_count(1)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_admin_hr_children_keep_client_id(console: Console) -> None:
+    calls: list[dict[str, str]] = []
+    playwright, browser, page = await open_page(
+        console,
+        f"/hr/people?client_id={TENANT}",
+        cookies=EXPANDED,
+        role="platform_admin",
+        hr_context=HR_OWNER,
+        hr_calls=calls,
+    )
+    try:
+        await expect(page.get_by_test_id("rail-child-hr-hr_people")).to_have_attribute(
+            "aria-current", "page"
+        )
+        expected = {
+            "hr_home": f"/hr?client_id={TENANT}",
+            "hr_people": f"/hr/people?client_id={TENANT}",
+            "hr_leave": f"/hr/leave?client_id={TENANT}",
+            "hr_training": f"/hr/training?client_id={TENANT}",
+            "hr_requests": f"/hr/requests?client_id={TENANT}",
+            "hr_settings": f"/hr/settings?client_id={TENANT}",
+        }
+        for key, href in expected.items():
+            assert await page.get_by_test_id(f"rail-child-hr-{key}").get_attribute("href") == href
+        assert calls and all(call.get("client_id") == TENANT for call in calls), calls
+        await page.get_by_test_id("rail-child-hr-hr_leave").click()
+        await page.wait_for_url(f"{console.base}/hr/leave?client_id={TENANT}")
+        await expect(page.get_by_test_id("rail-child-hr-hr_leave")).to_have_attribute(
+            "aria-current", "page"
+        )
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_one_current_link_per_nav(console: Console) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/hr", cookies=EXPANDED, role="tenant_staff", hr_context=HR_STAFF
+    )
+    try:
+        current = rail_nav(page).locator("[aria-current=page]")
+        parent = rail_nav(page).get_by_role("link", name="People & HR", exact=True)
+        home = page.get_by_test_id("rail-child-hr-hr_home")
+        await expect(home).to_have_attribute("aria-current", "page")
+        await expect(current).to_have_count(1)  # Only Home, not its group's parent link.
+        await expect(parent).not_to_have_attribute("aria-current", "page")
+        # Closed on the group's own page: the parent takes the mark, still one in the nav.
+        await page.get_by_test_id("rail-group-hr-toggle").click()
+        await expect(parent).to_have_attribute("aria-current", "page")
+        await expect(current).to_have_count(1)
+        # Closed on a sub-page: the parent says it is in the group, and "page" is nowhere else.
+        await page.get_by_test_id("rail-group-hr-toggle").click()
+        await page.get_by_test_id("rail-child-hr-hr_training").click()
+        await page.wait_for_url(f"{console.base}/portal/hr/training")
+        await expect(page.get_by_test_id("rail-child-hr-hr_training")).to_have_attribute(
+            "aria-current", "page"
+        )
+        await page.get_by_test_id("rail-group-hr-toggle").click()
+        await expect(parent).to_have_attribute("aria-current", "true")
+        await expect(current).to_have_count(0)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_collapsed_rail_marks_the_group_of_a_sub_page(console: Console) -> None:
+    playwright, browser, page = await open_page(console, "/portal/business/products")
+    try:
+        await expect(page.get_by_test_id("shell-rail")).to_have_attribute("data-rail", "collapsed")
+        nav = rail_nav(page)
+        parent = nav.get_by_role("link", name="Business management", exact=True)
+        await expect(parent).to_have_attribute("aria-current", "true")
+        await expect(
+            nav.get_by_role("link", name="Business knowledge", exact=True)
+        ).not_to_have_attribute("aria-current", "true")
+        await expect(nav.locator("[aria-current=page]")).to_have_count(0)
+        # On the group's own page the mark is the usual current page.
+        await page.goto(f"{console.base}/portal/business")
+        await expect(parent).to_have_attribute("aria-current", "page")
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_hr_tab_bar_still_lists_the_same_tabs(console: Console) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/hr/leave", cookies=EXPANDED, hr_context=HR_OWNER
+    )
+    try:
+        bar = page.get_by_role("navigation", name="HR sections")
+        links = bar.get_by_role("link")
+        await expect(links).to_have_count(len(HR_OWNER_TABS))
+        assert await links.all_inner_texts() == list(HR_OWNER_TABS)
+        await expect(bar.get_by_test_id("hr-nav-leave")).to_have_attribute("aria-current", "page")
+        await expect(bar.locator("[aria-current=page]")).to_have_count(1)
+        assert await bar.get_by_test_id("hr-nav-people").get_attribute("href") == (
+            "/portal/hr/people"
+        )
+        # The rail's group lists the very same tabs, in the same order.
+        children = page.get_by_test_id("rail-group-hr").get_by_role("link")
+        await expect(children).to_have_count(len(HR_OWNER_TABS))
+        assert await children.all_inner_texts() == list(HR_OWNER_TABS)
     finally:
         await close_page(playwright, browser)

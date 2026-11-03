@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import type { NavLink } from "@/lib/navigation";
+import { groupParentCurrent, type NavLink } from "@/lib/navigation";
 import type { RailState } from "@/lib/shell-state";
 import { BrandMark } from "./BrandMark";
 import { navIcon } from "./icons";
@@ -17,6 +17,10 @@ interface Tip {
 
 const ITEM =
   "relative flex h-10 items-center rounded-[10px] text-sm font-medium text-[color:var(--fs-text-secondary)] outline-offset-2 hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] focus-visible:outline-2 focus-visible:outline-[color:var(--fs-focus)] aria-[current=page]:bg-[var(--fs-surface)] aria-[current=page]:font-semibold aria-[current=page]:text-[color:var(--fs-text)] aria-[current=page]:shadow-[var(--fs-shadow-card)] [&_svg]:shrink-0 aria-[current=page]:[&_svg]:text-[color:var(--fs-primary)]";
+
+/** The sub-page mark of a collapsed group icon: the current look, without the card shadow. */
+const GROUP_MARK =
+  "aria-[current=true]:bg-[var(--fs-surface)] aria-[current=true]:font-semibold aria-[current=true]:text-[color:var(--fs-text)] aria-[current=true]:[&_svg]:text-[color:var(--fs-primary)]";
 
 /**
  * The collapse toggle (first in the tab order), the brand mark and navigation. Collapsed
@@ -120,8 +124,10 @@ export function Rail({
               <Link
                 key={href}
                 href={href}
-                aria-current={path === href ? "page" : undefined}
-                className={`${ITEM} ${itemSize}`}
+                // Collapsed, a group is one icon: marked "page" on its own page and "true"
+                // (styled alike) on a sub-page, so the current section shows without a list.
+                aria-current={link.children?.length ? groupParentCurrent(link, path, false) : path === href ? "page" : undefined}
+                className={`${ITEM} ${itemSize} ${GROUP_MARK}`}
                 {...tipFor(label)}
               >
                 <Icon size={18} aria-hidden="true" />

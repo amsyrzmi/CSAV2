@@ -63,6 +63,17 @@ export function currentChild(children: NavChild[], path: string, parentHref: str
   return best;
 }
 
+/**
+ * What a group's parent link announces. While the group is shown its child carries the page
+ * mark, so the parent has none; hidden, the parent is current on its own page and otherwise
+ * "true" (somewhere inside the group). Never "page" for a sub-page, so a nav has one such link.
+ */
+export function groupParentCurrent(link: NavLink, path: string, open: boolean): "page" | "true" | undefined {
+  if (open) return undefined;
+  if (path === link.href) return "page";
+  return currentChild(link.children ?? [], path, link.href) ? "true" : undefined;
+}
+
 /** Home entries are prefixes of every page under them, so they only match exactly. */
 const HOME_PATHS = new Set(["/", "/portal"]);
 

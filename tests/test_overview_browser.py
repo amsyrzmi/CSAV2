@@ -173,6 +173,10 @@ class Api:
             data = {"items": [], "next_cursor": None, "needs_review_count": self.review}
         elif path == "admin/clients" and request.method == "GET":
             data = CLIENTS
+        elif path == "hr/context" and request.method == "GET":
+            # The rail asks for the HR tabs on pages that name a tenant; unused here.
+            await route.fulfill(status=404, json={"detail": "not stubbed"})
+            return
         elif path == "chat/voice" and request.method == "GET":
             data = {"enabled": False}
         elif path == "chat/conversations" and request.method == "GET":

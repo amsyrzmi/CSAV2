@@ -98,6 +98,19 @@ export function isHrPagePath(pathname: string): boolean {
   return false;
 }
 
+/** One People & HR tab as a link: what the HR tab bar and the rail's People & HR group list. */
+export interface HrNavItem { key: string; label: string; href: string; testId: string }
+
+/** The tabs in `HR_TABS` order, only those in `tabs`. People opens on its list; a platform admin keeps the tenant. */
+export function hrNavItems(tabs: HrTab[], platform: boolean, tenant: string | null): HrNavItem[] {
+  return HR_TABS.filter((item) => tabs.includes(item.tab)).map((item) => ({
+    key: `hr_${item.tab}`,
+    label: item.label,
+    href: hrHref(item.tab === "people" ? { tab: "people", view: "list" } : { tab: item.tab }, platform, tenant),
+    testId: `hr-nav-${item.tab}`,
+  }));
+}
+
 /** Tabs with nothing the viewer may do are hidden, not greyed. */
 export function visibleTabs(ctx: HrContext): HrTab[] {
   const owner = ctx.client_owner;

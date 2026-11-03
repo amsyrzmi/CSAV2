@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState, type AnchorHTMLAttributes, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
-import { currentChild, type NavLink } from "@/lib/navigation";
+import { currentChild, groupParentCurrent, type NavLink } from "@/lib/navigation";
 
 const CHEVRON =
   "flex h-10 w-8 shrink-0 items-center justify-center rounded-[10px] text-[color:var(--fs-text-secondary)] outline-offset-2 hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] focus-visible:outline-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:h-11 pointer-coarse:w-11";
@@ -76,9 +76,13 @@ export function NavGroup({
         <Link
           {...linkProps}
           href={link.href}
-          aria-current={path === link.href && !open ? "page" : undefined}
+          aria-current={groupParentCurrent(link, path, open)}
           data-group-current={current ? "true" : undefined}
-          onClick={onNavigate}
+          // After the spread, and running the caller's handler too: neither replaces the other.
+          onClick={(event) => {
+            linkProps?.onClick?.(event);
+            onNavigate?.();
+          }}
           className={`${linkClass} min-w-0 flex-1 data-[group-current=true]:font-semibold data-[group-current=true]:text-[color:var(--fs-text)] data-[group-current=true]:[&_svg]:text-[color:var(--fs-primary)]`}
         >
           {icon}

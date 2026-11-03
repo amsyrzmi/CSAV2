@@ -278,6 +278,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             data = {"csrf_token": "synthetic-csrf"}
         elif path == "admin/clients" and platform:
             data = [TENANT_PROFILE]
+        elif path == "hr/context" and request.method == "GET":
+            # The rail asks for the HR tabs on pages that name a tenant; unused here.
+            status, data = 404, {"detail": "not stubbed"}
         elif path == "services" and request.method == "GET":
             data = list(rows.values())
         elif path == "services/orders_products/request" and not platform:

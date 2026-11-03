@@ -178,6 +178,9 @@ class World:
             return 200, {"csrf_token": "synthetic-csrf"}
         if path == "admin/clients" and platform:
             return 200, [TENANT_PROFILE]
+        # The rail asks for the HR tabs on pages that name a tenant; unused here.
+        if path == "hr/context" and method == "GET":
+            return 404, {"detail": "not stubbed"}
         # Overview is the assistant home: its status strip and the sandbox chat history.
         if path == "services/active" and method == "GET":
             return 200, {"packages": self.upstream.packages}
