@@ -13,6 +13,11 @@ import { Departments } from "./Departments";
 import { OrgChart } from "./OrgChart";
 import { PersonSelect, usePeopleOptions } from "./Pickers";
 
+/** The List / Org chart / Departments switch: one pill group, the current view lifted on a card. */
+const SEGMENT = "inline-flex min-h-10 items-center rounded-[var(--fs-radius-round)] px-4 text-sm font-medium focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:min-h-11";
+const SEGMENT_ON = "bg-[var(--fs-surface)] font-semibold text-[color:var(--fs-text)] shadow-[var(--fs-shadow-card)]";
+const SEGMENT_OFF = "text-[color:var(--fs-text-secondary)] hover:text-[color:var(--fs-text)]";
+
 /** The three views this tab serves; the profile and Add person pages come with their own routes. */
 export type PeopleListView = Extract<PeopleView, "list" | "org-chart" | "departments">;
 export interface PeopleTabProps {
@@ -34,9 +39,9 @@ export function PeopleTab({ tenant, context, readonly, platform, view }: PeopleT
     ...(canEdit ? [{ view: "departments" as const, label: "Departments" }] : []),
   ];
   return <div className="space-y-5">
-    <nav aria-label="People views" className="flex flex-wrap gap-2">
+    <nav aria-label="People views" className="inline-flex flex-wrap gap-1 rounded-[var(--fs-radius-round)] bg-[var(--fs-tile)] p-1">
       {views.map(item => <Link key={item.view} href={href({ tab: "people", view: item.view })}
-        className={item.view === view ? action : secondary} aria-current={item.view === view ? "page" : undefined}>{item.label}</Link>)}
+        className={`${SEGMENT} ${item.view === view ? SEGMENT_ON : SEGMENT_OFF}`} aria-current={item.view === view ? "page" : undefined}>{item.label}</Link>)}
     </nav>
     {view === "list" && <PeopleList tenant={tenant} canEdit={canEdit} readonly={readonly} href={href} />}
     {view === "org-chart" && <OrgChartView tenant={tenant} canEdit={canEdit} owner={context.client_owner} href={href} />}
@@ -126,7 +131,7 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
       <label className="block text-sm sm:col-span-2 lg:col-span-4">Search
         <span className="mt-1 flex gap-2">
           <input className={field} name="q" type="search" maxLength={120} placeholder="Name, job title or work email" />
-          <button className={action}>Search people</button>
+          <button className={`${action} shrink-0 whitespace-nowrap`}>Search people</button>
         </span></label>
       <label className="block text-sm">Department
         <select className={`${field} mt-1`} name="department" defaultValue="all">

@@ -115,9 +115,11 @@ export function Rail({
                   open={groups.isOpen(link)}
                   onToggle={() => groups.toggle(link)}
                   idPrefix="rail"
-                  linkClass={`${ITEM} gap-3 px-3`}
+                  // A group's label may wrap to a second line instead of being cut short: the arrow
+                  // takes the right-hand end of the row, and a long name must stay readable.
+                  linkClass={`${ITEM} h-auto! min-h-10 gap-3 px-3 py-1.5 leading-tight`}
                   icon={<Icon size={18} aria-hidden="true" />}
-                  label={text(label)}
+                  label={<span className="min-w-0 break-words">{label}</span>}
                 />
               );
             return (

@@ -6,10 +6,12 @@ import { ChevronDown } from "lucide-react";
 import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
 import { currentChild, groupParentCurrent, type NavLink } from "@/lib/navigation";
 
+// The arrow sits inside the row, at its right end, with no box of its own: the parent link's
+// hover and current surface runs under it, so the row reads as one item.
 const CHEVRON =
-  "flex h-10 w-8 shrink-0 items-center justify-center rounded-[10px] text-[color:var(--fs-text-secondary)] outline-offset-2 hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] focus-visible:outline-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:h-11 pointer-coarse:w-11";
+  "absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r-[10px] text-[color:var(--fs-text-secondary)] outline-offset-[-2px] hover:text-[color:var(--fs-text)] focus-visible:outline-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:w-11";
 const CHILD =
-  "flex min-h-9 items-center rounded-[10px] py-1.5 pl-10 pr-3 text-sm text-[color:var(--fs-text-secondary)] outline-offset-2 hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] focus-visible:outline-2 focus-visible:outline-[color:var(--fs-focus)] aria-[current=page]:bg-[var(--fs-surface)] aria-[current=page]:font-semibold aria-[current=page]:text-[color:var(--fs-text)] aria-[current=page]:shadow-[var(--fs-shadow-card)] pointer-coarse:min-h-11";
+  "flex min-h-9 items-center rounded-[10px] py-1.5 pl-5 pr-3 text-sm text-[color:var(--fs-text-secondary)] outline-offset-2 hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] focus-visible:outline-2 focus-visible:outline-[color:var(--fs-focus)] aria-[current=page]:bg-[var(--fs-surface)] aria-[current=page]:font-semibold aria-[current=page]:text-[color:var(--fs-text)] aria-[current=page]:shadow-[var(--fs-shadow-card)] pointer-coarse:min-h-11";
 
 /**
  * Which groups are open. A group is open while the path belongs to it; the chevron overrides
@@ -72,7 +74,7 @@ export function NavGroup({
   const listId = `${idPrefix}-group-${link.key}`;
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-1">
+      <div className="relative [&:hover>a:not([aria-current=page])]:bg-[var(--fs-tile)] [&:hover>a:not([aria-current=page])]:text-[color:var(--fs-text)]">
         <Link
           {...linkProps}
           href={link.href}
@@ -83,7 +85,7 @@ export function NavGroup({
             linkProps?.onClick?.(event);
             onNavigate?.();
           }}
-          className={`${linkClass} min-w-0 flex-1 data-[group-current=true]:font-semibold data-[group-current=true]:text-[color:var(--fs-text)] data-[group-current=true]:[&_svg]:text-[color:var(--fs-primary)]`}
+          className={`${linkClass} w-full min-w-0 pr-7! data-[group-current=true]:font-semibold data-[group-current=true]:text-[color:var(--fs-text)] data-[group-current=true]:[&_svg]:text-[color:var(--fs-primary)]`}
         >
           {icon}
           {label}
@@ -102,35 +104,46 @@ export function NavGroup({
             aria-hidden="true"
             style={{
               transform: open ? "rotate(180deg)" : "none",
-              transition: animate ? "transform 150ms var(--fs-ease-out)" : "none",
+              transition: animate ? "transform 200ms var(--fs-ease-out)" : "none",
             }}
           />
         </button>
       </div>
-      <ul
-        id={listId}
-        data-testid={listId}
-        // Closed it is collapsed to no height and visibility-hidden, not display:none, so the
-        // links keep a position (layout probes read it) while staying out of the focus order
-        // and the accessibility tree; `inert` backs that up.
-        inert={!open}
-        style={open ? undefined : { visibility: "hidden", height: 0, overflow: "hidden" }}
-        className={`m-0 flex list-none flex-col gap-0.5 p-0 ${open ? "mt-1" : ""}`}
+      {/* Closed, the grid row is 0fr: no height, and visibility-hidden (not display:none) so the
+          links keep a position (layout probes read it) while staying out of the focus order and
+          the accessibility tree; `inert` backs that up. Opening eases the row open unless motion
+          is reduced. */}
+      <div
+        className="grid"
+        style={{
+          gridTemplateRows: open ? "1fr" : "0fr",
+          transition: animate
+            ? `grid-template-rows 220ms var(--fs-ease-out), visibility 0s linear ${open ? "0s" : "220ms"}`
+            : "none",
+          visibility: open ? "visible" : "hidden",
+        }}
       >
-        {children.map((child) => (
-          <li key={child.key}>
-            <Link
-              href={child.href}
-              data-testid={`${idPrefix}-child-${link.key}-${child.key}`}
-              aria-current={open && current?.key === child.key ? "page" : undefined}
-              onClick={onNavigate}
-              className={CHILD}
-            >
-              {child.label}
-            </Link>
-          </li>
-        ))}
-      </ul>
+        <ul
+          id={listId}
+          data-testid={listId}
+          inert={!open}
+          className={`m-0 ml-5 flex min-h-0 list-none flex-col gap-0.5 overflow-hidden border-l border-[color:var(--fs-border)] p-0 ${open ? "mt-1" : ""}`}
+        >
+          {children.map((child) => (
+            <li key={child.key}>
+              <Link
+                href={child.href}
+                data-testid={`${idPrefix}-child-${link.key}-${child.key}`}
+                aria-current={open && current?.key === child.key ? "page" : undefined}
+                onClick={onNavigate}
+                className={CHILD}
+              >
+                {child.label}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

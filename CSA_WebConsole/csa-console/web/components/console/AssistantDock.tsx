@@ -44,12 +44,14 @@ import { CopyReply } from "./chat/CopyReply";
 import { starterLook } from "./chat/ChatEmptyState";
 import AgentAvatar from "./fs/AgentAvatar";
 import { ProposalCard } from "./ProposalCard";
-import { action, field, Notice, secondary } from "./ui";
+import { action, Notice, secondary } from "./ui";
 
 /** The corner the launcher and the panel share: 20 px in, or clear of a notch or home bar. */
 const corner = "bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-[max(1.25rem,env(safe-area-inset-right))]";
-const smallLink =
-  "rounded-[var(--fs-radius-control)] text-sm text-[color:var(--fs-text-secondary)] underline hover:text-[color:var(--fs-primary)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:opacity-50";
+const sendLook =
+  "inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-2 rounded-[var(--fs-radius-round)] bg-[var(--fs-primary)] text-sm font-medium text-[color:var(--fs-on-primary)] transition-colors duration-150 hover:bg-[var(--fs-primary-hover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-[var(--fs-disabled-bg)] disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:h-11";
+const headerButton =
+  "inline-flex min-h-9 items-center rounded-[var(--fs-radius-round)] border border-[color:var(--fs-border-control)] px-2.5 text-[13px] font-medium text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11";
 
 /** How long a resumed turn waits for the new tab to publish its context. */
 const RESUME_GRACE_MS = 1000;
@@ -300,6 +302,13 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     return () => clearTimeout(timer);
   }, [waitingForRoute]);
 
+  // The newest reply scrolls into view; an open question stays visible while the assistant works.
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = list.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [open, turns.length, busy]);
+
   function newConversation() {
     void withdrawOpen();
     mutation.current?.abort();
@@ -349,13 +358,14 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
       }}
       className={`fixed ${corner} z-40 flex max-h-[min(80dvh,40rem)] w-[min(28rem,calc(100vw-2.5rem))] flex-col rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]`}
     >
-      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[color:var(--fs-border)] px-4 py-3">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-[color:var(--fs-border)] px-3.5 py-3 sm:flex-nowrap">
+        <AgentAvatar agentId="assistant" size={32} state="rest" label="" />
         <h2 id={`${panelId}-title`} className="text-base font-semibold">
           {text.dock_title}
         </h2>
         <span
           data-testid="assistant-tab"
-          className="rounded-full bg-[var(--fs-surface-blue)] px-2 py-0.5 text-xs text-[color:var(--fs-text)]"
+          className="min-w-0 truncate rounded-full bg-[var(--fs-surface-blue)] px-2 py-0.5 text-xs text-[color:var(--fs-text)]"
         >
           {context
             ? panelText(language, "on_tab", { tab: tabLabel(context.tab, me, packages) })
@@ -363,7 +373,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         </span>
         <button
           type="button"
-          className={`ml-auto ${smallLink}`}
+          className={`ml-auto shrink-0 ${headerButton}`}
           disabled={busy}
           onClick={newConversation}
         >
@@ -373,19 +383,21 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
           type="button"
           aria-label={text.close_assistant}
           onClick={close}
-          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-[var(--fs-radius-control)] hover:bg-[var(--fs-surface-blue)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]"
+          className="inline-grid size-9 shrink-0 place-items-center rounded-[var(--fs-radius-round)] text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:size-11"
         >
           <X size={18} aria-hidden />
         </button>
       </header>
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3" aria-live="polite">
+      <div ref={list} className="flex-1 space-y-4 overflow-y-auto px-4 py-3" aria-live="polite">
         {!loaded && <p className="text-sm text-[color:var(--fs-text-secondary)]">{PANEL.en.loading}</p>}
         {loaded && turns.length === 0 && (
           <p className="text-sm text-[color:var(--fs-text-secondary)]">{text.empty_hint}</p>
         )}
         {turns.map((turn) => (
           <article key={turn.id} data-testid="assistant-turn" className="space-y-2">
-            <p className="ml-8 whitespace-pre-wrap break-words rounded-[var(--fs-radius-bubble)] rounded-br-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)] px-4 py-2.5 text-sm text-[color:var(--fs-text)]">{turn.body}</p>
+            <div className="flex justify-end pl-8">
+              <p className="max-w-full whitespace-pre-wrap break-words rounded-[var(--fs-radius-bubble)] rounded-br-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)] px-4 py-2.5 text-sm text-[color:var(--fs-text)]">{turn.body}</p>
+            </div>
             <div className="flex items-start gap-2">
               <AgentAvatar agentId="assistant" size={32} state="rest" label="" />
               <div className="min-w-0 flex-1">
@@ -427,12 +439,16 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
           if (body.trim()) ask(typedMessage(body, turns, origins), true);
         }}
       >
-        <label className="block text-sm">
+        <label htmlFor={`${panelId}-input`} className="block text-xs font-medium text-[color:var(--fs-text-secondary)]">
           {text.message_label}
+        </label>
+        <div className="rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] shadow-[var(--fs-shadow-card)] transition-[border-color,box-shadow] duration-150 has-[textarea:focus-visible]:border-[color:var(--fs-primary)] has-[textarea:focus-visible]:outline-2 has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-[color:var(--fs-focus)] has-[textarea:disabled]:bg-[var(--fs-disabled-bg)]">
           <textarea
+            id={`${panelId}-input`}
             ref={input}
             data-testid="assistant-input"
-            className={`${field} min-h-20 py-2`}
+            rows={2}
+            className="block max-h-40 min-h-12 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm leading-6 text-[color:var(--fs-text)] outline-none focus-visible:shadow-none focus-visible:outline-none! disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)]"
             value={body}
             maxLength={4000}
             disabled={busy || retry}
@@ -444,34 +460,34 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
               }
             }}
           />
-        </label>
-        <div className="flex flex-wrap gap-2">
-          {retry ? (
-            <>
-              <button type="button" className={action} onClick={() => pending && send(pending)}>
-                {text.retry_same}
-              </button>
+          <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5">
+            {retry ? (
+              <>
+                <button type="button" className={`${sendLook} px-4`} onClick={() => pending && send(pending)}>
+                  {text.retry_same}
+                </button>
+                <button
+                  type="button"
+                  className={headerButton}
+                  onClick={() => {
+                    setPending(null);
+                    setError("");
+                  }}
+                >
+                  {text.start_new}
+                </button>
+              </>
+            ) : (
               <button
-                type="button"
-                className={secondary}
-                onClick={() => {
-                  setPending(null);
-                  setError("");
-                }}
+                type="submit"
+                data-testid="assistant-send"
+                className={`${sendLook} px-4`}
+                disabled={busy || resume !== null || !body.trim() || !loaded}
               >
-                {text.start_new}
+                {busy ? text.button_sending : text.button_send}
               </button>
-            </>
-          ) : (
-            <button
-              type="submit"
-              data-testid="assistant-send"
-              className={action}
-              disabled={busy || resume !== null || !body.trim() || !loaded}
-            >
-              {busy ? text.button_sending : text.button_send}
-            </button>
-          )}
+            )}
+          </div>
         </div>
       </form>
     </section>

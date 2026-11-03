@@ -1,18 +1,14 @@
 "use client";
-import Link from "next/link";
 import { hrNavItems, type HrTab } from "@/lib/hr-paths";
-import { action, secondary } from "../ui";
+import SectionNav from "../kit/SectionNav";
 
-/** The People & HR tabs the viewer may use. Each is a link, so back, bookmarks and new tabs work. */
+/**
+ * The People & HR tabs the viewer may use. Each is a link, so back, bookmarks and new tabs work.
+ * It is the same underlined section bar as Business management, so every page group reads alike.
+ */
 export function HrTabBar({ tabs, current, platform, tenant }: {
   tabs: HrTab[]; current: HrTab; platform: boolean; tenant: string;
 }) {
-  return <nav aria-label="HR sections" className="flex flex-wrap gap-2">
-    {hrNavItems(tabs, platform, tenant).map(item => {
-      const here = item.key === `hr_${current}`;
-      return <Link key={item.key} href={item.href} data-testid={item.testId}
-        className={here ? action : secondary}
-        aria-current={here ? "page" : undefined}>{item.label}</Link>;
-    })}
-  </nav>;
+  return <SectionNav label="HR sections" testId="hr-sections" current={`hr_${current}`}
+    items={hrNavItems(tabs, platform, tenant)} />;
 }
