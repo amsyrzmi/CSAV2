@@ -128,6 +128,19 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Rehire a person who has left | HR owner, a Left person | Rehire with a start date says "Rehired. Invite them again from Settings to give console access."; the person is Active with no access switches | manual |
 | Open People & HR Home | HR owner | No "HR chat (assistant & voice)" block; the assistant dock is the only assistant | manual |
 
+## Go live
+
+| Check | Setup | Expected | Kind |
+|---|---|---|---|
+| A new company starts quiet | Platform admin creates a company and activates Customer support | The company is `pilot`; Services shows Customer replies as Off; Overview and Inbox show "Your customers aren't getting replies yet." | manual |
+| A file processes before going live | That company, with the Knowledge base add-on, replies still Off | The uploaded file finishes processing; a customer message gets no reply | manual |
+| No brand name | Tenant admin chooses a mode that replies, with the name blank | Save stays off and says "Add your brand name first." | manual |
+| Staff approve each reply | Tenant admin saves a name and this choice; message the bot | A draft waits in the Inbox, and the customer gets nothing until staff approve; the reply uses the brand name | manual |
+| Bot replies by itself | Tenant admin saves this choice; message the bot | The reply comes on that message, with no restart, using the brand name; the banner has gone from Overview and Inbox | manual |
+| Off again | Tenant admin saves Off | The next message gets no reply, and the banner is back | manual |
+| Nothing to answer from | The Knowledge base add-on is active with no processed file, replies on | The panel and the banner say "Your bot has nothing to answer from yet." until a file finishes | manual |
+| Who can change it | Staff and read-only members on Services | They see the state and "Ask your tenant admin to change this.", with no controls | manual |
+
 ## Knowledge base add-on
 
 | Check | Setup | Expected | Kind |

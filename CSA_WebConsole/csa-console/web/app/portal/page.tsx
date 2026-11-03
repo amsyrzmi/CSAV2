@@ -1,4 +1,5 @@
 import { requireIdentity, requireOwnProfile } from "@/lib/server-identity";
+import { CustomerRepliesBanner } from "@/components/console/CustomerRepliesBanner";
 import { Heading, Notice, Panel } from "@/components/console/ui";
 import { roleLabels } from "@/lib/identity-contracts";
 
@@ -7,6 +8,7 @@ export default async function PortalOverview() {
   const profile = me.active_client_id ? await requireOwnProfile() : null;
   return (
     <>
+      {me.active_client_id && <CustomerRepliesBanner tenantId={null} servicesHref="/portal/services" />}
       <Heading
         title="Your workspace"
         description="Your account and active tenant membership."
