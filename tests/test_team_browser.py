@@ -152,6 +152,9 @@ class World:
                 await request_route.fulfill(status=503, json={"detail": "synthetic list outage"})
                 return
             data = self.members
+        elif path == "team/hr-owner" and method == "GET" and params.get("client_id") == [TENANT]:
+            # A company without the HR package: the Team page shows no HR owner panel.
+            data = {"available": False, "owner": None}
         elif path == "admin/invites" and method == "GET" and params.get("client_id") == [TENANT]:
             data = self.invites
         elif path.startswith("team/") and method == "PATCH" and params.get("client_id") == [TENANT]:
