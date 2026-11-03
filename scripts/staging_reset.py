@@ -34,6 +34,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from pydantic import BaseModel, ConfigDict, ValidationError
+
 from scripts.migrate import MigrationError, discover_migrations
 from scripts.staging_rollout import (
     APP_SERVICES,
@@ -44,6 +46,7 @@ from scripts.staging_rollout import (
     REPO_ROOT,
     SERVICE_APP,
     STOP_SERVICES,
+    Completed,
     RolloutError,
     Runner,
     RunningImage,
@@ -91,6 +94,10 @@ ACCOUNTS_COMMAND = ".venv/bin/python -m scripts.staging_reset accounts"
 PLACEHOLDER_IMAGE = "unused-until-the-running-images-are-read"
 PG_DUMP_COMMAND = ("pg_dump", "-U", "csa", "-d", DATABASE, "-Fc")
 DUMP_FILE = f"{DATABASE}.dump"
+MANIFEST_FILE = "manifest.json"
+INCOMPLETE = "(incomplete, do not restore)"
+STDERR_TAIL_LINES = 5
+MIGRATION_ERROR_PREFIX = "migration error:"  # scripts/migrate.py; its texts name no connection
 BOOTSTRAP_APPROVAL = ("CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL", "approved-isolated-staging")
 ADMIN_ADD_APPROVAL = ("CSA_STAGING_ADMIN_ADD_APPROVAL", "approved-isolated-staging")
 GATEWAY_CONTAINER = f"{PROJECT}-gateway-1"
@@ -202,6 +209,17 @@ def _home_free() -> int:
     return shutil.disk_usage(Path.home()).free
 
 
+def _stderr_tail(stderr: str) -> str:
+    """The last lines of a step's stderr, for steps that handle no secret; "" when it has none."""
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    return "\n".join(lines[-STDERR_TAIL_LINES:])
+
+
+def _with_reason(message: str, stderr: str) -> str:
+    tail = _stderr_tail(stderr)
+    return f"{message}\n{tail}" if tail else message
+
+
 def _psql_argv(database: str, *arguments: str) -> list[str]:
     return [
         *compose_base(),
@@ -224,7 +242,11 @@ def _psql(runner: Runner, env: Mapping[str, str], database: str, sql: str) -> st
     )
     if result.returncode != 0:
         raise RolloutError(
-            "state", f"could not read staging with psql on {database} (exit {result.returncode})"
+            "state",
+            _with_reason(
+                f"could not read staging with psql on {database} (exit {result.returncode})",
+                result.stderr,
+            ),
         )
     return result.stdout.strip()
 
@@ -453,17 +475,98 @@ class _Stage:
     earlier: tuple[Path, ...] = ()  # backups already on disk when this wipe started, newest first
 
 
+class BackupManifest(BaseModel):
+    """What one backup holds. It is written last, so a directory without one is incomplete.
+
+    Counts and image refs only: no address, no slug and no secret.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    sha: str
+    python_image: str
+    frontend_image: str
+    schema_version: str | None
+    companies: int
+    accounts: int
+    upload_files: dict[str, int]
+    dump_skipped: bool
+
+
+def _read_manifest(directory: Path) -> BackupManifest | None:
+    try:
+        return BackupManifest.model_validate_json((directory / MANIFEST_FILE).read_bytes())
+    except (OSError, ValidationError):
+        return None
+
+
+def _write_manifest(context: ResetContext, directory: Path) -> None:
+    state = context.state
+    manifest = BackupManifest(
+        sha=context.sha,
+        python_image=context.python_image,
+        frontend_image=context.env[IMAGE_ENV["frontend"]],
+        schema_version=state.schema_version,
+        companies=len(state.slugs),
+        accounts=state.accounts,
+        upload_files=state.upload_files,
+        dump_skipped=not state.database_exists,
+    )
+    # Renamed into place, so a half-written manifest can't pass for a finished backup.
+    temporary = directory / f"{MANIFEST_FILE}.tmp"
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(manifest.model_dump_json(indent=2))
+        temporary.rename(directory / MANIFEST_FILE)
+    except OSError as error:
+        raise RolloutError(
+            "backup", f"could not write {MANIFEST_FILE}: {error.strerror}"
+        ) from error
+
+
+def _backup_line(directory: Path) -> str:
+    manifest = _read_manifest(directory)
+    if manifest is None:
+        return f"{directory}: {INCOMPLETE}"
+    line = (
+        f"{directory}: revision {manifest.sha[:7]}, "
+        f"schema {manifest.schema_version or 'none'}, "
+        f"companies {manifest.companies}, accounts {manifest.accounts}, "
+        f"upload files {sum(manifest.upload_files.values())}"
+    )
+    return f"{line}, no database dump" if manifest.dump_skipped else line
+
+
+def _holds_real_data(directory: Path) -> bool:
+    manifest = _read_manifest(directory)
+    return manifest is not None and manifest.companies > 0
+
+
+def _report_backups(stage: _Stage, out: Callable[[str], None]) -> None:
+    """List the earlier backups, and say which one to restore if this run's holds no real data."""
+    if stage.earlier:
+        out("Earlier backups, kept as they were:")
+        for directory in stage.earlier:
+            out(f"  {_backup_line(directory)}")
+    if stage.state == UNCHANGED or (stage.backup is not None and _holds_real_data(stage.backup)):
+        return  # staging still has its data, or this run's backup does
+    found = next((path for path in stage.earlier if _holds_real_data(path)), None)
+    if found is None:
+        out("No complete backup here holds any companies.")
+    else:
+        out(
+            f"The most recent complete backup with real data is {found}. "
+            "Restore that one to get the old data back."
+        )
+
+
 def _report_wipe_stop(error: RolloutError, stage: _Stage, out: Callable[[str], None]) -> None:
     _report_stop(error, out)
     out(stage.state)
     if stage.backup is not None:
-        out(f"This run's backup: {stage.backup}")
-    if stage.earlier:
-        out(f"Earlier backups, kept as they were: {', '.join(map(str, stage.earlier))}")
-        out(
-            "A backup taken after a failed wipe holds only what that wipe left. To get the old "
-            "data back, restore the newest backup from before the first wipe."
-        )
+        out(f"This run's backup: {_backup_line(stage.backup)}")
+    _report_backups(stage, out)
     if stage.state == UNCHANGED:
         out("Fix the cause and run wipe again.")
         return
@@ -517,8 +620,26 @@ def _back_up(
             ),
             directory / f"{volume}.tar",
         )
-    if stage.earlier:
-        out(f"Earlier backups are kept: {', '.join(map(str, stage.earlier))}")
+    _write_manifest(context, directory)
+    out(f"Backup finished: {_backup_line(directory)}")
+
+
+def _step_with_reason(
+    runner: Runner,
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    step: str,
+    what: str,
+    *,
+    input: str | None = None,  # noqa: A002
+) -> Completed:
+    """Run a step that handles no secret; a stop carries the tail of its stderr."""
+    result = runner.run(argv, env=env, input=input)
+    if result.returncode != 0:
+        raise RolloutError(
+            step, _with_reason(f"{what} failed (exit {result.returncode})", result.stderr)
+        )
+    return result
 
 
 def _load_baseline(
@@ -532,7 +653,7 @@ def _load_baseline(
         raise RolloutError(
             "baseline", f"{DATABASE} already has tables, so the base schema was not loaded"
         )
-    baseline = _run_step(
+    baseline = _step_with_reason(
         runner,
         [*docker_base(), *SEALED_RUN, "--entrypoint", "cat", python_image, BASELINE_IN_IMAGE],
         env,
@@ -545,7 +666,7 @@ def _load_baseline(
         f"{SERVICES_STOPPED}; {DATABASE} has no schema, or only part of the base schema; "
         f"{UPLOADS_EMPTY}"
     )
-    _run_step(
+    _step_with_reason(
         runner,
         _psql_argv(DATABASE, "-v", "ON_ERROR_STOP=1", "-q", "-f", "-"),
         env,
@@ -573,7 +694,17 @@ def _migrate_and_confirm(
     if result.stdout.strip():
         out(result.stdout.rstrip())
     if result.returncode != 0:
-        raise RolloutError("migrate", f"migrate exited {result.returncode}")
+        # Only scripts/migrate.py's own lines: the rest of its stderr can hold a connection string.
+        reasons = [
+            line for line in result.stderr.splitlines() if line.startswith(MIGRATION_ERROR_PREFIX)
+        ]
+        detail = (
+            "\n".join(reasons)
+            if reasons
+            else "Its other error output is not shown, because it can carry connection details. "
+            "The lines above show the last migration applied."
+        )
+        raise RolloutError("migrate", f"migrate exited {result.returncode}\n{detail}")
     found = _psql(runner, context.env, DATABASE, "SELECT max(version) FROM schema_migrations")
     if found != context.newest_migration:
         raise RolloutError(
@@ -607,7 +738,7 @@ def _rebuild(
         f"{SERVICES_STOPPED}; {DATABASE} was not dropped; the upload volumes are as they were"
     )
     out(f"Dropping and creating {DATABASE}…")
-    _run_step(
+    _step_with_reason(
         runner,
         _psql_argv(MAINTENANCE_DATABASE, "-v", "ON_ERROR_STOP=1", "-c", DROP_DATABASE_SQL),
         env,
@@ -617,7 +748,7 @@ def _rebuild(
     stage.state = (
         f"{SERVICES_STOPPED}; {DATABASE} does not exist; the upload volumes are as they were"
     )
-    _run_step(
+    _step_with_reason(
         runner,
         _psql_argv(MAINTENANCE_DATABASE, "-v", "ON_ERROR_STOP=1", "-c", CREATE_DATABASE_SQL),
         env,
@@ -630,7 +761,7 @@ def _rebuild(
     )
     out("Emptying the upload volumes…")
     for volume in UPLOAD_VOLUMES:
-        _run_step(
+        _step_with_reason(
             runner,
             _volume_run(context.python_image, f"{volume}:/data", "sh", "-c", EMPTY_VOLUME_SCRIPT),
             env,
@@ -678,6 +809,13 @@ def _rebuild(
     _await_ready(runner, env, sleep)
 
 
+def _on_a_terminal() -> bool:
+    """Input and output both. Compose allocates a TTY only when stdout is a terminal, and without
+    one the password prompts echo. What these commands print also names people, so no pipes.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -688,7 +826,7 @@ def wipe(
     *,
     docker_config: Path,
     read_line: Callable[[str], str] = input,
-    is_terminal: Callable[[], bool] = sys.stdin.isatty,
+    is_terminal: Callable[[], bool] = _on_a_terminal,
     free_bytes: Callable[[], int] = _home_free,
     clock: Callable[[], datetime] = _utc_now,
     sleep: Callable[[float], None] = time.sleep,
@@ -696,7 +834,10 @@ def wipe(
 ) -> int:
     """Back staging up, then drop and rebuild it. Only the typed phrase lets it past reading."""
     if not is_terminal():
-        out("wipe must be run by the owner at a real terminal. Nothing on staging was changed.")
+        out(
+            "wipe must be run by the owner at a real terminal, with no pipe on its input or "
+            "output. Nothing on staging was changed."
+        )
         return 1
     try:
         context = prepare(
@@ -728,17 +869,17 @@ def wipe(
         _report_wipe_stop(RolloutError("interrupt", "the wipe was interrupted"), stage, out)
         return 1
     first = context.roster.platform_admins[0]
-    out(f"Staging is rebuilt at {context.newest_migration}. The backup is in {stage.backup}.")
+    assert stage.backup is not None  # _rebuild starts by making it
+    out(
+        f"Staging is rebuilt at {context.newest_migration}. "
+        f"This run's backup: {_backup_line(stage.backup)}"
+    )
+    _report_backups(stage, out)
     out(
         f"Next: sign in as {first.email}, change the password, then run, at a terminal: "
         f"{ACCOUNTS_COMMAND}"
     )
     return 0
-
-
-def _on_a_terminal() -> bool:
-    """Input and output both: what ``accounts`` prints names people, so it must not be piped."""
-    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def company_step_input(password: str, roster: Roster) -> str:
@@ -854,6 +995,14 @@ def accounts(
         )
         if not context.state.has_schema:
             raise RolloutError("state", f"{DATABASE} has no schema; run wipe first")
+        wanted = {company.slug for company in context.roster.companies}
+        outside = [slug for slug in context.state.slugs if slug not in wanted]
+        if outside:
+            raise RolloutError(
+                "state",
+                f"companies outside the roster: {', '.join(outside)}; this staging was not "
+                "wiped. Nothing was created",
+            )
         first = context.roster.platform_admins[0]
         password = read_password(f"Password of {first.email}: ")
         # A control character or undecodable byte could not arrive as one line of stdin, and
@@ -889,7 +1038,7 @@ def main(argv: list[str] | None = None, runner: ResetRunner | None = None) -> in
                 REPO_ROOT,
                 docker_config=docker_config,
                 read_line=input,
-                is_terminal=sys.stdin.isatty,
+                is_terminal=_on_a_terminal,
                 free_bytes=_home_free,
             )
         if args.command == "accounts":

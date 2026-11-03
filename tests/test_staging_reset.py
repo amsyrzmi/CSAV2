@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import stat
@@ -546,7 +547,7 @@ def wipe_runner(
     runner = reset_runner(**kwargs)
 
     def step(name: str, answer: Completed | None = None) -> Completed:
-        return fail(3) if failing == name else (answer or ok())
+        return fail(3, f"synthetic reason for {name}\n") if failing == name else (answer or ok())
 
     def read_version(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
         migrated = any(MIGRATE in " ".join(call) for call in runner.order)
@@ -770,9 +771,47 @@ def test_backup_directory_and_files(reset_env: Path, tmp_path: Path) -> None:
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700
     assert {path.parent for path in runner.files} == {directory}
     assert sorted(path.name for path in directory.iterdir()) == sorted(
-        ["csa_staging.dump", *(f"{volume}.tar" for volume in rs.UPLOAD_VOLUMES)]
+        [
+            "csa_staging.dump",
+            "manifest.json",
+            *(f"{volume}.tar" for volume in rs.UPLOAD_VOLUMES),
+        ]
     )
     assert str(directory) in "\n".join(lines)
+    manifest = directory / "manifest.json"
+    assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+    assert json.loads(manifest.read_text()) == {
+        "sha": SHA,
+        "python_image": "ghcr.io/amsyrzmi/csa-python@sha256:" + "g" * 64,
+        "frontend_image": "ghcr.io/amsyrzmi/csa-frontend@sha256:" + "f" * 64,
+        "schema_version": "0520",
+        "companies": 2,
+        "accounts": 7,
+        "upload_files": {name: files for name, (files, _) in VOLUME_FILES.items()},
+        "dump_skipped": False,
+    }
+    text = manifest.read_text()
+    for person in (*load_roster(rs.ROSTER_PATH).platform_admins, *_members()):
+        assert person.email not in text
+    # The success line carries the counts, so the owner sees what the backup holds.
+    success = next(line for line in lines if line.startswith("Staging is rebuilt"))
+    assert str(directory) in success
+    assert "companies 2" in success and "accounts 7" in success and "upload files 15" in success
+
+
+def test_the_manifest_is_written_last(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    real = runner.run_to_file
+    seen: list[bool] = []
+
+    def watching(argv: Sequence[str], *, env: Mapping[str, str] | None, path: Path) -> int:
+        seen.append((path.parent / "manifest.json").exists())
+        return real(argv, env=env, path=path)
+
+    runner.run_to_file = watching  # type: ignore[method-assign]
+    assert _wipe(runner, reset_env, tmp_path)[0] == 0
+    assert seen == [False, False, False]
+    assert not list((rs.BACKUP_ROOT / "20261103T083015Z").glob("*.tmp"))
 
 
 def test_backup_failure_changes_nothing(reset_env: Path, tmp_path: Path) -> None:
@@ -913,6 +952,20 @@ def _earlier_backup() -> tuple[Path, Path]:
     earlier.mkdir(parents=True, mode=0o700)
     dump = earlier / "csa_staging.dump"
     dump.write_bytes(b"the first, good backup")
+    (earlier / "manifest.json").write_text(
+        json.dumps(
+            {
+                "sha": SHA,
+                "python_image": "python-image",
+                "frontend_image": "frontend-image",
+                "schema_version": "0500",
+                "companies": 4,
+                "accounts": 9,
+                "upload_files": {name: 1 for name in VOLUME_FILES},
+                "dump_skipped": False,
+            }
+        )
+    )
     return earlier, dump
 
 
@@ -927,9 +980,14 @@ def test_wipe_after_a_partial_wipe(reset_env: Path, tmp_path: Path) -> None:
     assert [argv.count("tar") for argv in runner.file_calls] == [1, 1]
     assert _ran(runner, rs.DROP_DATABASE_SQL)
     assert _ran(runner, BOOTSTRAP)
-    assert sorted(p.name for p in (rs.BACKUP_ROOT / "20261103T083015Z").iterdir()) == sorted(
-        f"{volume}.tar" for volume in rs.UPLOAD_VOLUMES
+    directory = rs.BACKUP_ROOT / "20261103T083015Z"
+    assert sorted(p.name for p in directory.iterdir()) == sorted(
+        ["manifest.json", *(f"{volume}.tar" for volume in rs.UPLOAD_VOLUMES)]
     )
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["dump_skipped"] is True
+    assert manifest["companies"] == 0
+    assert manifest["schema_version"] is None
     # The first, good backup is untouched and still named.
     assert dump.read_bytes() == b"the first, good backup"
     assert str(earlier) in text
@@ -945,7 +1003,7 @@ def test_a_failure_after_a_partial_wipe_points_at_the_earlier_backup(
     text = "\n".join(lines)
     assert str(rs.BACKUP_ROOT / "20261103T083015Z") in text
     assert str(earlier) in text
-    assert "before the first wipe" in text
+    assert f"most recent complete backup with real data is {earlier}" in text
     # A database with no schema is still dumped as it is.
     assert any("pg_dump" in argv for argv in runner.file_calls)
 
@@ -973,6 +1031,195 @@ def test_a_backup_directory_is_never_reused(reset_env: Path, tmp_path: Path) -> 
     assert "Stopped at backup" in "\n".join(lines)
     assert runner.file_calls == []
     assert not _ran(runner, " stop ")
+
+
+SYNTHETIC_DSN = "postgresql://csa:synthetic-dsn-secret@staging-db:5432/csa_staging"
+
+
+@pytest.mark.parametrize(
+    ("failing", "name"),
+    [
+        ("drop", "drop"),
+        ("create", "create"),
+        ("empty volume", "empty volume"),
+        ("read baseline", "read baseline"),
+        ("baseline", "baseline"),
+    ],
+)
+def test_a_failure_after_the_drop_shows_the_reason(
+    reset_env: Path, tmp_path: Path, failing: str, name: str
+) -> None:
+    code, lines = _wipe(wipe_runner(failing=failing), reset_env, tmp_path)
+    assert code != 0
+    assert f"synthetic reason for {name}" in "\n".join(lines)
+
+
+def test_the_reason_is_the_tail_of_stderr(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    noise = "".join(f"NOTICE: line {index}\n" for index in range(20))
+    runner.rules.insert(0, (has(LOAD_BASELINE), fail(3, noise + "ERROR: synthetic failure\n")))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    text = "\n".join(lines)
+    assert "ERROR: synthetic failure" in text
+    assert "NOTICE: line 19" in text
+    assert "NOTICE: line 0\n" not in text
+
+
+def test_a_failed_read_after_the_drop_shows_the_reason(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    runner.rules.insert(0, (has(EMPTINESS), fail(2, 'FATAL: database "csa_staging" is gone\n')))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    assert 'FATAL: database "csa_staging" is gone' in "\n".join(lines)
+    assert not _ran(runner, LOAD_BASELINE)
+
+
+def test_a_failed_migrate_shows_only_its_migration_error(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    reason = "migration error: CSA_APP_PASSWORD is required to set the csa_app login password"
+    stderr = (
+        "Traceback (most recent call last):\n"
+        f'  conninfo = "{SYNTHETIC_DSN}"\n'
+        f"could not connect to {SYNTHETIC_DSN}\n"
+        f"{reason}\n"
+        f"  migration error: {SYNTHETIC_DSN}\n"
+    )
+    runner.rules.insert(0, (has(MIGRATE), Completed(1, "applied 0100_roles.sql\n", stderr)))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    text = "\n".join(lines)
+    assert reason in text
+    assert "applied 0100_roles.sql" in text
+    assert "synthetic-dsn-secret" not in text
+    assert "Traceback" not in text
+    assert "not shown" not in text
+    assert "Stopped at migrate" in text
+
+
+def test_a_failed_migrate_with_no_migration_error_says_it_withheld_the_rest(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = wipe_runner()
+    stderr = f"Traceback (most recent call last):\npsycopg.OperationalError: {SYNTHETIC_DSN}\n"
+    runner.rules.insert(0, (has(MIGRATE), Completed(1, "applied 0100_roles.sql\n", stderr)))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    text = "\n".join(lines)
+    assert "synthetic-dsn-secret" not in text
+    assert "OperationalError" not in text
+    assert "not shown" in text
+    assert "last migration applied" in text
+
+
+def _t1_partial(reset_env: Path, tmp_path: Path) -> tuple[Path, list[str]]:
+    # T1: pg_dump succeeds, a tar fails. A partial directory is left, and nothing changed.
+    runner = wipe_runner()
+    runner.file_answer = lambda argv: 1 if "tar" in argv else 0
+    code, lines = _wipe(runner, reset_env, tmp_path, at=T0)
+    assert code != 0
+    directory = rs.BACKUP_ROOT / "20261103T083015Z"
+    assert (directory / "csa_staging.dump").exists()
+    assert not (directory / "manifest.json").exists()
+    return directory, lines
+
+
+def _t2_good(reset_env: Path, tmp_path: Path) -> tuple[Path, list[str]]:
+    # T2: a good backup of the real data, then the wipe fails at migrate.
+    code, lines = _wipe(
+        wipe_runner(failing="migrate"), reset_env, tmp_path, at=T0 + timedelta(minutes=5)
+    )
+    assert code != 0
+    directory = rs.BACKUP_ROOT / "20261103T083515Z"
+    assert (directory / "manifest.json").exists()
+    return directory, lines
+
+
+def test_a_partial_backup_says_it_is_incomplete(reset_env: Path, tmp_path: Path) -> None:
+    t1, lines = _t1_partial(reset_env, tmp_path)
+    assert f"This run's backup: {t1}: (incomplete, do not restore)" in lines
+    assert "Nothing on staging was changed." in lines
+
+
+def test_a_stop_at_the_backup_does_not_advise_a_restore(reset_env: Path, tmp_path: Path) -> None:
+    earlier, _ = _earlier_backup()
+    runner = wipe_runner()
+    runner.file_answer = lambda argv: 1 if "tar" in argv else 0
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    # Nothing changed, so staging itself still has its data; the list alone is enough.
+    assert any(line.startswith(f"  {earlier}: revision") for line in lines)
+    assert not any("most recent complete backup" in line for line in lines)
+    assert not any("No complete backup" in line for line in lines)
+
+
+def test_a_later_stop_tells_the_backups_apart(reset_env: Path, tmp_path: Path) -> None:
+    t1, _ = _t1_partial(reset_env, tmp_path)
+    t2, lines = _t2_good(reset_env, tmp_path)
+    assert f"  {t1}: (incomplete, do not restore)" in lines
+    this_run = next(line for line in lines if line.startswith(f"This run's backup: {t2}"))
+    assert f"revision {SHA[:7]}" in this_run
+    assert "schema 0520" in this_run
+    assert "companies 2" in this_run and "accounts 7" in this_run
+    assert "upload files 15" in this_run
+    # This run's backup holds the real data, so nothing points away from it.
+    assert not any("most recent complete backup" in line for line in lines)
+
+
+def test_success_after_failures_names_the_backup_with_the_real_data(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    t1, _ = _t1_partial(reset_env, tmp_path)
+    t2, _ = _t2_good(reset_env, tmp_path)
+    # T3: staging is already nearly empty, so this backup holds nothing, and the wipe succeeds.
+    code, lines = _wipe(
+        wipe_runner(database="empty"), reset_env, tmp_path, at=T0 + timedelta(minutes=10)
+    )
+    assert code == 0, lines
+    t3 = rs.BACKUP_ROOT / "20261103T084015Z"
+    success = next(line for line in lines if line.startswith("Staging is rebuilt"))
+    assert str(t3) in success
+    assert "companies 0" in success
+    advice = next(line for line in lines if "most recent complete backup" in line)
+    assert str(t2) in advice
+    assert str(t1) not in advice
+    assert f"  {t1}: (incomplete, do not restore)" in lines
+    assert any(line.startswith(f"  {t2}: revision") for line in lines)
+    assert (t1 / "csa_staging.dump").exists()
+
+
+def test_a_stop_after_failures_names_the_backup_with_the_real_data(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    _t1_partial(reset_env, tmp_path)
+    t2, _ = _t2_good(reset_env, tmp_path)
+    code, lines = _wipe(
+        wipe_runner(database="missing", failing="baseline"),
+        reset_env,
+        tmp_path,
+        at=T0 + timedelta(minutes=10),
+    )
+    assert code != 0
+    text = "\n".join(lines)
+    assert f"most recent complete backup with real data is {t2}" in text
+    assert "no database dump" in text
+
+
+def test_no_backup_with_real_data_is_said_plainly(reset_env: Path, tmp_path: Path) -> None:
+    code, lines = _wipe(wipe_runner(database="empty"), reset_env, tmp_path)
+    assert code == 0
+    assert any("No complete backup here holds any companies." in line for line in lines)
+
+
+@pytest.mark.parametrize("content", ["", "{not json", "[]", '{"sha": "only this"}'])
+def test_an_unreadable_manifest_counts_as_incomplete(
+    reset_env: Path, tmp_path: Path, content: str
+) -> None:
+    earlier, _ = _earlier_backup()
+    (earlier / "manifest.json").write_text(content)
+    _, lines = _wipe(wipe_runner(database="empty"), reset_env, tmp_path)
+    assert f"  {earlier}: (incomplete, do not restore)" in lines
+    assert not any(str(earlier) in line and "most recent" in line for line in lines)
 
 
 # --- accounts -----------------------------------------------------------------------------
@@ -1193,6 +1440,39 @@ def test_accounts_refuses_a_staging_with_no_schema(reset_env: Path, tmp_path: Pa
     assert _company_calls(runner) == []
 
 
+def test_accounts_refuses_a_staging_that_was_not_wiped(reset_env: Path, tmp_path: Path) -> None:
+    runner = accounts_runner()
+    runner.rules.insert(0, (has("SELECT slug"), ok("demo-company\nteam-jo\n")))
+
+    def no_prompt(prompt: str) -> str:
+        raise AssertionError("must not ask for the password")
+
+    lines: list[str] = []
+    code = rs.accounts(
+        runner,
+        reset_env,
+        docker_config=tmp_path / "dc",
+        is_terminal=lambda: True,
+        read_password=no_prompt,
+        out=lines.append,
+    )
+    assert code != 0
+    text = "\n".join(lines)
+    assert "demo-company" in text and "not wiped" in text
+    assert "team-jo" not in text
+    assert runner.tty_calls == []
+    assert _company_calls(runner) == []
+    assert not _ran(runner, "FROM console_users WHERE email")
+
+
+def test_accounts_accepts_a_staging_with_only_roster_companies(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = accounts_runner()  # the fake's two companies are both in the example roster
+    assert _accounts(runner, reset_env, tmp_path)[0] == 0
+    assert len(_company_calls(runner)) == 1
+
+
 def test_accounts_refuses_what_prepare_refuses(reset_env: Path, tmp_path: Path) -> None:
     runner = accounts_runner(off_main=True)
     code, lines = _accounts(runner, reset_env, tmp_path)
@@ -1262,10 +1542,33 @@ def test_main_refuses_without_a_terminal(
     assert runner.every_argv == []
 
 
+def test_main_refuses_a_wipe_with_its_output_piped(
+    reset_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Compose allocates a TTY only when stdout is a terminal; without one, getpass echoes.
+    monkeypatch.setattr("sys.stdin", _Terminal())
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+
+    def no_prompt(prompt: str = "") -> str:
+        raise AssertionError("must not prompt")
+
+    monkeypatch.setattr("builtins.input", no_prompt)
+    runner = wipe_runner()
+    assert rs.main(["wipe"], runner) == 1
+    assert "terminal" in rs.sys.stdout.getvalue()  # type: ignore[attr-defined]
+    assert runner.every_argv == []
+    assert not rs.BACKUP_ROOT.exists()
+
+
+def test_wipe_and_accounts_both_default_to_the_full_terminal_check() -> None:
+    for command in (rs.wipe, rs.accounts):
+        assert inspect.signature(command).parameters["is_terminal"].default is rs._on_a_terminal
+
+
 def test_main_runs_wipe(
     reset_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("sys.stdin", _Terminal())
+    monkeypatch.setattr(rs, "_on_a_terminal", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": rs.CONFIRM_PHRASE)
     runner = wipe_runner()
     assert rs.main(["wipe"], runner) == 0
