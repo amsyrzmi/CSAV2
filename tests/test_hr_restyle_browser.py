@@ -27,6 +27,7 @@ from tests.test_hr_access_browser import (
     MANAGER,
     OWNER,
     PDF,
+    STAFF,
     RecordsWorld,
 )
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
@@ -291,5 +292,196 @@ async def test_hr_owner_change_dialog_uses_theme_surface(site: Site, theme: str)
             await expect(page.get_by_role("dialog")).to_have_count(0)
             await expect(change).to_be_focused()
             assert not [c for c in world.calls if c["method"] == "POST"], world.calls
+
+    await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# The access page ("Who can do what", People & HR > Settings): theme tokens, and above the dock.
+# ---------------------------------------------------------------------------------------------
+
+ACCESS = "/portal/hr/settings"
+
+# The assistant dock's launcher is fixed bottom-right at z-index 40, after the page in the DOM.
+DOCK_JS = """() => {
+    const pill = document.createElement('button');
+    pill.id = 'dummy-dock';
+    pill.textContent = 'Assistant';
+    pill.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:40;width:132px;height:52px';
+    document.body.appendChild(pill);
+}"""
+
+# Everything the access page paints that is pure white, and what the theme's tokens resolve to.
+WHITE_JS = """() => {
+    const title = [...document.querySelectorAll('h2')].find(
+        (h) => h.textContent.trim() === 'Who can do what');
+    const root = title.parentElement.parentElement;
+    const probe = document.createElement('div');
+    probe.style.background = 'var(--fs-surface-raised)';
+    document.body.appendChild(probe);
+    const raised = getComputedStyle(probe).backgroundColor;
+    probe.style.background = 'var(--fs-scrim)';
+    const scrim = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const white = [root, ...root.querySelectorAll('*')].filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0
+            && getComputedStyle(el).backgroundColor === 'rgb(255, 255, 255)';
+    }).map((el) => el.dataset.testid || el.tagName + '.' + String(el.className).slice(0, 60));
+    const save = document.querySelector('[data-testid=hr-access-save]');
+    const bar = save ? save.parentElement.parentElement : null;
+    const dialog = document.querySelector('[role=dialog]');
+    return {
+        white, raised, scrim,
+        bar: bar ? getComputedStyle(bar).backgroundColor : null,
+        overlay: dialog ? getComputedStyle(dialog.parentElement).backgroundColor : null,
+    };
+}"""
+
+# Which buttons of the save bar and of the review dialog sit under the stand-in dock button.
+COVERED_JS = """() => {
+    const out = [];
+    const save = document.querySelector('[data-testid=hr-access-save]');
+    const buttons = [
+        ...(save ? save.parentElement.parentElement.querySelectorAll('button') : []),
+        ...document.querySelectorAll('[role=dialog] button'),
+    ];
+    for (const el of buttons) {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.bottom < 0 || r.top > innerHeight) continue;
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (hit && hit.id === 'dummy-dock') out.push(el.textContent.trim());
+    }
+    return out;
+}"""
+
+
+def access_ready(page: Page) -> Any:
+    return page.get_by_test_id(f"hr-access-row-{STAFF}")
+
+
+async def make_access_change(page: Page) -> None:
+    """Select Lina Wong and turn the directory switch on: one pending change, so the bar shows."""
+    await page.get_by_test_id(f"hr-access-row-{STAFF}").get_by_role("button").click()
+    panel = page.get_by_test_id("hr-access-panel")
+    await panel.get_by_test_id("hr-access-switch-directory").check()
+    await expect(page.get_by_test_id("hr-access-save")).to_be_visible()
+
+
+async def test_access_page_has_no_white_panels_in_night(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), ACCESS, theme="night", ready=access_ready
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", "night")
+            await make_access_change(page)
+            measured = await page.evaluate(WHITE_JS)
+            assert measured["white"] == [], measured
+            assert measured["bar"] == measured["raised"], measured
+            # The review dialog: its overlay paints the scrim token (dark in Night), not ink.
+            await page.get_by_test_id("hr-access-save").click()
+            dialog = page.get_by_role("dialog")
+            await expect(dialog).to_contain_text("Save 1 change for 1 person?", timeout=WAIT)
+            measured = await page.evaluate(WHITE_JS)
+            assert measured["white"] == [], measured
+            assert measured["overlay"] == measured["scrim"], measured
+            await dialog.get_by_role("button", name="Go back").click()
+            await expect(dialog).to_have_count(0)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("width", (320, 390, 1024))
+async def test_access_review_dialog_sits_above_the_dock(site: Site, width: int) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), ACCESS, width=width, height=800, ready=access_ready
+        ) as page:
+            await page.evaluate(DOCK_JS)
+            await make_access_change(page)
+            await page.get_by_test_id("hr-access-save").click()
+            dialog = page.get_by_role("dialog")
+            await expect(dialog).to_contain_text("Save 1 change for 1 person?", timeout=WAIT)
+            confirm = page.get_by_test_id("hr-access-confirm")
+            await expect(confirm).to_be_visible()
+            # The overlay stacks above the dock's z-index 40.
+            assert (
+                await dialog.evaluate("(el) => getComputedStyle(el.parentElement).zIndex") == "50"
+            )
+            assert await page.evaluate(COVERED_JS) == [], width
+            # The point at the middle of the confirm button belongs to the button, not the dock.
+            owner = await confirm.evaluate(
+                """(el) => {
+                    const r = el.getBoundingClientRect();
+                    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+                    return el.contains(document.elementFromPoint(x, y));
+                }"""
+            )
+            assert owner, width
+            await dialog.get_by_role("button", name="Go back").click()
+            await expect(dialog).to_have_count(0)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("width", (320, 390))
+async def test_save_bar_button_is_not_under_the_dock_launcher_at_320_and_390(
+    site: Site, width: int
+) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), ACCESS, width=width, height=700, ready=access_ready
+        ) as page:
+            await page.evaluate(DOCK_JS)
+            await make_access_change(page)
+            save = page.get_by_test_id("hr-access-save")
+            discard = page.get_by_role("button", name="Discard changes")
+            height = await page.evaluate("() => document.documentElement.scrollHeight")
+            # From the top, a third of the way, and the very end of the page and of main.
+            for fraction in (0, 0.3, 0.6, 1):
+                await page.evaluate(f"() => window.scrollTo(0, {int(height * fraction)})")
+                await page.evaluate(
+                    f"() => {{ const m = document.querySelector('main');"
+                    f" m?.scrollTo(0, m.scrollHeight * {fraction}); }}"
+                )
+                await page.wait_for_timeout(120)
+                covered = await page.evaluate(COVERED_JS)
+                assert covered == [], (width, fraction, covered)
+            # At the end of the page the bar is still reachable, with its button on top.
+            await save.scroll_into_view_if_needed()
+            await expect(save).to_be_visible()
+            await expect(discard).to_be_visible()
+            box = await save.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, box
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_access_page_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), ACCESS, theme=theme, ready=access_ready
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            await page.evaluate(DOCK_JS)
+            await make_access_change(page)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 900})
+                await page.wait_for_timeout(150)
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], (theme, width, measured)
+                outside = await page.evaluate(
+                    """() => [...document.querySelectorAll('[data-testid^="hr-access-"]')].filter(
+                        (el) => {
+                            const r = el.getBoundingClientRect();
+                            return r.width > 0 && (r.left < -0.5 || r.right > innerWidth + 0.5);
+                        }).map((el) => el.dataset.testid)"""
+                )
+                assert outside == [], (theme, width, outside)
+                white = await page.evaluate(WHITE_JS)
+                if theme == "night":
+                    assert white["white"] == [], (width, white)
+                assert await page.evaluate(COVERED_JS) == [], (theme, width)
 
     await with_browser(body)

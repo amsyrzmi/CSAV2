@@ -52,7 +52,7 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
         </p>
       </div>
     </header>
-    {result?.outcome === "refused" && <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+    {result?.outcome === "refused" && <p role="alert" className="rounded-md border border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] p-3 text-sm text-[color:var(--fs-danger)]">
       Not saved. {refusalText(result.reason)}</p>}
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="block text-sm">Preset
@@ -81,7 +81,7 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
         const on = desired.includes(id);
         const inside = includedWith(desired, id);
         const changed = on !== saved.has(id);
-        return <label key={id} className={`flex gap-3 rounded-md border p-3 text-sm ${changed ? "border-brand-300 bg-brand-50" : "border-ink-200"}`}>
+        return <label key={id} className={`flex gap-3 rounded-md border p-3 text-sm ${changed ? "border-[color:var(--fs-primary)] bg-brand-50" : "border-ink-200"}`}>
           <input type="checkbox" className="mt-1 h-4 w-4 shrink-0" data-testid={`hr-access-switch-${id}`} checked={on}
             disabled={inside !== null} onChange={(event) => onChange(setSwitch(desired, id, event.target.checked, person.on))} />
           <span>
@@ -94,13 +94,13 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
       })}
     </fieldset>)}
     {person.is_owner && <p className="text-sm">{OWNER_ACCESS_LINE}</p>}
-    {person.custom.length > 0 && <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
+    {person.custom.length > 0 && <div className="space-y-2 rounded-md border border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm">
       <h3 className="font-semibold">{CUSTOM_COPY.title}</h3>
       <p>{CUSTOM_COPY.intro}</p>
       <ul className="list-disc space-y-1 pl-5">{person.custom.map((row) => <li key={row}>{row}</li>)}</ul>
       <button type="button" className="font-medium text-brand-700 underline" onClick={onAdvanced}>{CUSTOM_COPY.link}</button>
     </div>}
-    {warnings.length > 0 && <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm" role="status">
+    {warnings.length > 0 && <div className="space-y-2 rounded-md border border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm" role="status">
       <h3 className="font-semibold">Things to check</h3>
       <ul className="list-disc space-y-1 pl-5">{warnings.map((w, index) => <li key={`${w.kind}:${index}`}>{warningText(w)}</li>)}</ul>
     </div>}

@@ -67,6 +67,8 @@ const OWNED = [
   "app/portal/chat/page.tsx",
   "components/console/hr/",
   "components/console/HrOwnerPanel.tsx",
+  "components/console/HrAccessPage.tsx",
+  "components/console/HrAccessPanel.tsx",
   "components/console/HrAccessMore.tsx",
   "components/console/WhatsAppPanel.tsx",
 ];
