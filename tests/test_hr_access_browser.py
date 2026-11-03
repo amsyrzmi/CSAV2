@@ -781,6 +781,8 @@ async def exercise_records(
         await expect(page.get_by_text("Mark Lina Wong as leaving")).to_be_visible(timeout=WAIT)
         await page.locator("input[name='last_day']").fill(last_day.isoformat())
         await page.get_by_role("button", name="Mark as leaving", exact=True).click()
+        # The form asks first; one more click sends it.
+        await page.get_by_test_id("hr-leaving-confirm").click()
         await expect(page.get_by_text("Marked as leaving.")).to_be_visible(timeout=WAIT)
         await expect(page.get_by_text(f"Leaving on {last_day_text} (Resigned)")).to_be_visible()
         [leave] = operations()

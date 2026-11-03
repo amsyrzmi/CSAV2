@@ -13,9 +13,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 from csa.workspace.contracts import (
@@ -41,7 +42,7 @@ from tests.test_hr_access_browser import (
     STAFF,
     RecordsWorld,
 )
-from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
+from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me, make_service
 from tests.test_services_redesign_browser import Site, with_browser
 from tests.test_team_browser import THEMES, WIDTHS, overflow
 from tests.test_workspace_browser import training_proposal
@@ -891,5 +892,186 @@ async def test_dock_shows_the_working_avatar_while_a_message_is_sending(site: Si
                 release.set()
             await expect(working).to_have_count(0, timeout=WAIT)
             await expect(panel.get_by_test_id("assistant-turn")).to_have_count(4)
+
+    await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# Confirm steps: Mark as leaving (inline question) and Disconnect number (ConfirmAction).
+# ---------------------------------------------------------------------------------------------
+
+MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+LEAVING_SENTENCE = (
+    "Their access to this company ends after the last day, and you can choose Undo leaving "
+    "on their profile until the end of the last day."
+)
+
+
+def next_week() -> Any:
+    """A last day a week ahead, in Kuala Lumpur, as the form's date value and as shown."""
+    day = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date() + timedelta(days=7)
+    return day, f"{day.day} {MONTHS[day.month - 1]} {day.year}"
+
+
+def leaving_calls(world: RestyleWorld) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["path"] == "hr/operations"]
+
+
+def mark_as_leaving(page: Page) -> Any:
+    return page.get_by_role("button", name="Mark as leaving", exact=True)
+
+
+async def ask_to_mark_as_leaving(page: Page, last_day: Any) -> None:
+    """Open the form, choose the last day and submit it: the question opens, nothing is sent."""
+    await mark_as_leaving(page).click()
+    await expect(page.get_by_text("Mark Lina Wong as leaving")).to_be_visible(timeout=WAIT)
+    await page.locator("input[name='last_day']").fill(last_day.isoformat())
+    await mark_as_leaving(page).click()
+    await expect(page.get_by_test_id("hr-leaving-confirm-question")).to_be_visible()
+
+
+async def test_mark_as_leaving_asks_first_and_cancel_sends_nothing(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        last_day, shown = next_week()
+        async with hr_page(
+            browser, site, world, PROFILE, ready=lambda p: profile_tab(p, "Overview")
+        ) as page:
+            await ask_to_mark_as_leaving(page, last_day)
+            question = page.get_by_test_id("hr-leaving-confirm-question")
+            await expect(question).to_have_text(
+                f"Lina Wong will be marked as leaving, last day {shown}. {LEAVING_SENTENCE}"
+            )
+            cancel = page.get_by_test_id("hr-leaving-cancel")
+            await expect(cancel).to_be_focused()
+            await expect(page.get_by_test_id("hr-leaving-confirm")).to_have_text(
+                "Yes, mark as leaving"
+            )
+            # The form is locked while it asks, so what is confirmed is what was submitted.
+            await expect(page.locator("input[name='last_day']")).to_be_disabled()
+            assert leaving_calls(world) == []
+            # The question fits a phone.
+            await page.set_viewport_size({"width": 320, "height": 700})
+            measured = await overflow(page)
+            assert measured["scroll"] <= measured["inner"], measured
+            confirm = page.get_by_test_id("hr-leaving-confirm")
+            await confirm.scroll_into_view_if_needed()
+            box = await confirm.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= 320, box
+            await page.set_viewport_size({"width": 1280, "height": 1000})
+            # Cancel closes the question, puts focus on the submit button and sends nothing.
+            await cancel.click()
+            await expect(question).to_have_count(0)
+            await expect(mark_as_leaving(page)).to_be_focused()
+            await expect(page.locator("input[name='last_day']")).to_have_value(last_day.isoformat())
+            assert leaving_calls(world) == []
+            # Escape does the same from the question.
+            await mark_as_leaving(page).click()
+            await expect(cancel).to_be_focused()
+            await page.keyboard.press("Escape")
+            await expect(question).to_have_count(0)
+            await expect(mark_as_leaving(page)).to_be_focused()
+            assert leaving_calls(world) == []
+            assert world.last_day is None
+
+    await with_browser(body)
+
+
+async def test_mark_as_leaving_confirm_sends_once(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        last_day, _ = next_week()
+        async with hr_page(
+            browser, site, world, PROFILE, ready=lambda p: profile_tab(p, "Overview")
+        ) as page:
+            await ask_to_mark_as_leaving(page, last_day)
+            assert leaving_calls(world) == []
+            # A double click on "Yes, mark as leaving" is one write.
+            await page.get_by_test_id("hr-leaving-confirm").dblclick()
+            await expect(page.get_by_text("Marked as leaving.")).to_be_visible(timeout=WAIT)
+            [leave] = leaving_calls(world)
+            assert leave["body"] == {
+                "operation": "person.leave",
+                "employee_id": EMPLOYEE[LEAVER],
+                "expected_version": 3,
+                "last_day": last_day.isoformat(),
+                "reason": "resigned",
+                "reports_new_manager": None,
+            }, leave["body"]
+            assert leave["key"], "the leave carries an Idempotency-Key"
+            assert world.last_day == last_day.isoformat()
+
+    await with_browser(body)
+
+
+class WhatsAppWorld(RestyleWorld):
+    """The restyle company with a connected WhatsApp number that DELETE disconnects."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.connected = True
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if path == "services" and method == "GET":
+            return 200, [make_service("customer_support", "Customer Support", "base", "active")]
+        if path == "channels/whatsapp" and method == "GET":
+            return 200, {
+                "connected": self.connected,
+                "display_phone": "+60 12-345 6789" if self.connected else None,
+                "phone_number_id_last4": "0987" if self.connected else None,
+                "waba_id": "208765432109876" if self.connected else None,
+                "enabled": self.connected,
+                "callback_url": "https://hooks.invalid/channels/whatsapp",
+                "connected_at": "2026-10-27T00:00:00Z" if self.connected else None,
+            }
+        if path == "channels/whatsapp" and method == "DELETE":
+            self.connected = False
+            return 200, {}
+        return super().answer(caller, method, path, params, body)
+
+
+@pytest.mark.parametrize("width", (320, 1280))
+async def test_whatsapp_disconnect_asks_inline_and_cancel_keeps_the_number(
+    site: Site, width: int
+) -> None:
+    async def body(browser: Any) -> None:
+        world = WhatsAppWorld()
+        async with hr_page(
+            browser,
+            site,
+            world,
+            "/portal/services",
+            width=width,
+            ready=lambda p: p.get_by_test_id("whatsapp-connected"),
+        ) as page:
+            deletes = lambda: [c for c in world.calls if c["method"] == "DELETE"]  # noqa: E731
+            trigger = page.get_by_test_id("whatsapp-disconnect")
+            await expect(trigger).to_have_text("Disconnect number")
+            await trigger.click()
+            ask = page.get_by_test_id("whatsapp-disconnect-ask")
+            # No browser dialog: the same question, inline, with Cancel focused.
+            await expect(ask).to_contain_text(
+                "Disconnect this number? Customers will not be able to message you on WhatsApp."
+            )
+            await expect(page.get_by_test_id("whatsapp-disconnect-cancel")).to_be_focused()
+            measured = await overflow(page)
+            assert measured["scroll"] <= measured["inner"], (width, measured)
+            # Cancel and Escape keep the number and send nothing; focus returns to the button.
+            await page.get_by_test_id("whatsapp-disconnect-cancel").click()
+            await expect(ask).to_have_count(0)
+            await expect(trigger).to_be_focused()
+            await trigger.click()
+            await page.keyboard.press("Escape")
+            await expect(ask).to_have_count(0)
+            await expect(trigger).to_be_focused()
+            assert deletes() == [] and world.connected
+            await expect(page.get_by_test_id("whatsapp-connected")).to_be_visible()
+            # Confirm disconnects it, once.
+            await trigger.click()
+            await page.get_by_test_id("whatsapp-disconnect-confirm").click()
+            await expect(page.get_by_test_id("whatsapp-connected")).to_have_count(0, timeout=WAIT)
+            assert len(deletes()) == 1 and not world.connected
 
     await with_browser(body)

@@ -7,7 +7,8 @@ import {
   getWhatsAppNumber,
   type WhatsAppNumber,
 } from "@/lib/channels-api";
-import { action, field, Notice, Panel, secondary } from "./ui";
+import ConfirmAction from "./email/ConfirmAction";
+import { action, field, Notice, Panel } from "./ui";
 
 const EMPTY = { phone_number_id: "", waba_id: "", access_token: "" };
 
@@ -58,11 +59,9 @@ export function WhatsAppPanel({ tenantId, canManage, platform }: {
           <div className="space-y-3">
             <p className="text-sm" data-testid="whatsapp-connected">
               Connected: {number.display_phone} · Messages arrive in the Inbox.</p>
-            {canManage && <button className={secondary} disabled={busy} data-testid="whatsapp-disconnect"
-              onClick={() => {
-                if (window.confirm("Disconnect this number? Customers will not be able to message you on WhatsApp."))
-                  void run(() => disconnectWhatsAppNumber(tenantId));
-              }}>Disconnect number</button>}
+            {canManage && <ConfirmAction label="Disconnect number" testId="whatsapp-disconnect" disabled={busy}
+              question="Disconnect this number? Customers will not be able to message you on WhatsApp."
+              onConfirm={() => void run(() => disconnectWhatsAppNumber(tenantId))} />}
           </div>
         ) : canManage ? (
           <form className="mt-3 space-y-3" onSubmit={(event) => {
