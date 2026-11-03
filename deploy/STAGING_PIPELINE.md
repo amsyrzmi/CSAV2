@@ -688,8 +688,33 @@ Do these in order:
    owner can.
 4. Team Jo's tenant admin turns on the email assistant's inner switch. Only a tenant
    admin of the company can change it. Activating the Staff email package does not do it.
-5. Bind the test bot. Run the command in section 5, with `--tenant team-jo` in place of
-   `--tenant demo-meranti`. The wipe removed the old binding, so the bot is free.
+5. Bind the test bot. Do not paste section 5 as it stands: it pins old image digests, and
+   the code in an old image does not fit the rebuilt schema. Use the images that are
+   running now. Run `plan` again (it only reads); it prints them under "Running images":
+   the `python` line and the `frontend` line. Put each full reference, starting `ghcr.io/`, in place of the two
+   `<...>` below, then run the command. The wipe removed the old binding, so the bot is
+   free.
+
+   ```bash
+   (
+     cd /home/amsyrzmi/CSAV2 || exit 1
+     export NO_LOCAL_ENV=1 ENV=ci COMPOSE_PROFILES=
+     export CSA_STAGING_PROJECT=csa-staging
+     export CSA_STAGING_SECRET_DIR=/srv/csa-staging/secrets
+     export CSA_STAGING_PYTHON_IMAGE=<python image from plan>
+     export CSA_STAGING_FRONTEND_IMAGE=<frontend image from plan>
+     export CSA_STAGING_CONSOLE_ORIGIN=https://staging-console.fourstacks.my
+     export CSA_STAGING_HOOKS_ORIGIN=https://hooks.fourstacks.my
+     docker compose --env-file /dev/null --project-name csa-staging \
+       --file deploy/compose.staging-local-proposal.yml \
+       --file deploy/compose.staging-shared-caddy.yml \
+       --file deploy/compose.staging-pipeline.yml \
+       --profile staging-approved --profile test-bot-setup-approved \
+       run --rm --no-deps staging-bot-setup --tenant team-jo --test-bot --replace-webhook
+   )
+   ```
+
+   It is section 5's command with `--tenant team-jo` and the running images.
 6. Connect WhatsApp and Gmail again when wanted. The Google test users stay as they are,
    but they must be listed there and their access expires every 7 days (section 11).
 7. Do the pending retests in `docs/ASSISTANT_RETEST.md`.
@@ -764,15 +789,38 @@ B=~/csa-staging-backups/<timestamp>
    done
    ```
 
-4. Bring the services back. If all four containers still exist and HEAD has not moved,
-   start them:
+4. Bring the services back. First check that the restored data fits the images that will
+   run it. Read the backup's schema and revision from its manifest or from the tool's
+   backup line, and compare them with the checkout:
+
+   ```bash
+   cat "$B/manifest.json"
+   ls /home/amsyrzmi/CSAV2/db/migrations | tail -1
+   git -C /home/amsyrzmi/CSAV2 rev-parse HEAD
+   ```
+
+   Start the existing containers only if all four still exist, the manifest's
+   `schema_version` is the number the newest migration file begins with, and its `sha` is
+   the checkout's HEAD. A backup taken before a later rollout does not meet this, because
+   its database has an older schema than the images now expect. If the numbers differ, or
+   you are in any doubt, do not start the containers. Roll out instead, as in Routine
+   rollouts: `plan`, then `apply`. `apply` recreates the services and applies any migrations
+   the restored database lacks.
+
+   To start them:
 
    ```bash
    docker --host unix:///var/run/docker.sock start csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1
    ```
 
-   Otherwise roll out as in Routine rollouts: `plan`, then `apply`. `apply` recreates the
-   services and applies any migrations the restored database lacks.
+   Then check readiness, the same `/readyz` probe the rollout uses. Exit 0 and no output
+   means ready. The gateway can take about 45 seconds, so if it fails, wait a few seconds
+   and run it again. If it still fails after a few minutes, stop and look at the gateway's
+   logs.
+
+   ```bash
+   docker --host unix:///var/run/docker.sock exec csa-staging-gateway-1 python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5)"
+   ```
 
 **When `wipe` refuses after a failed wipe.** If HEAD moved after a failed wipe, or a
 service container no longer exists, `wipe` refuses, and `staging_rollout plan` cannot read
