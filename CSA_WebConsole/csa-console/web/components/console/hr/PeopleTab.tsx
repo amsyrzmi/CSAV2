@@ -47,6 +47,8 @@ export function PeopleTab({ tenant, context, readonly, platform, view }: PeopleT
 }
 
 type Href = (route: HrRoute) => string;
+/** One row of a phone-width list: the same data as a table row, as a card. */
+const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 const profileRoute = (employeeId: string): HrRoute => ({ tab: "people", view: "profile", employeeId });
 
 function OrgChartView({ tenant, canEdit, owner, href }: { tenant: string; canEdit: boolean; owner: boolean; href: Href }) {
@@ -151,7 +153,7 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
           : page.items.length === 0
             ? <p className="text-sm text-ink-500">{filtered ? "No one matches. Clear the search or the filters." : emptyText("people", canEdit && !readonly)}</p>
             : <>
-              <div className="overflow-x-auto"><table className="w-full text-left text-sm">
+              <div className="overflow-x-auto"><table data-testid="hr-people-table" className="hidden w-full text-left text-sm md:table">
                 <thead><tr>{["Name", "Title", "Department", "Manager", "Status"].map(label => <th className="p-2" key={label} scope="col">{label}</th>)}</tr></thead>
                 <tbody>{page.items.map(person => <tr key={person.employee_id} className="border-t border-ink-200">
                   <td className="p-2"><Link className="font-medium underline" href={href(profileRoute(person.employee_id))}>{person.display_name}</Link></td>
@@ -160,7 +162,16 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
                   <td className="p-2">{person.manager_name ?? "—"}</td>
                   <td className="p-2"><StatusLabel tone={STATUS_TONES[person.status]}>{STATUS_LABELS[person.status]}</StatusLabel></td>
                 </tr>)}</tbody>
-              </table></div>
+              </table>
+              <ul data-testid="hr-people-cards" className="space-y-3 md:hidden">{page.items.map(person => <li key={person.employee_id} data-testid="hr-person-card" className={card}>
+                <Link className="font-medium underline" href={href(profileRoute(person.employee_id))}>{person.display_name}</Link>
+                <dl className="mt-2 space-y-1 text-sm">
+                  <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Title</dt><dd className="min-w-0 break-words text-right">{person.job_title ?? "—"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Department</dt><dd className="min-w-0 break-words text-right">{person.department ?? "—"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Manager</dt><dd className="min-w-0 break-words text-right">{person.manager_name ?? "—"}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Status</dt><dd><StatusLabel tone={STATUS_TONES[person.status]}>{STATUS_LABELS[person.status]}</StatusLabel></dd></div>
+                </dl>
+              </li>)}</ul></div>
               <p className="mt-3 text-sm text-ink-500" aria-live="polite">Showing {page.items.length} of {page.total}</p>
               {moreFailed && <Notice error>We could not load more people. Try again.</Notice>}
               {page.next_cursor && <button type="button" className={`${secondary} mt-3`} disabled={moreBusy} onClick={() => void loadMore()}>

@@ -11,6 +11,7 @@ tasks add their checks to this file.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -624,11 +625,11 @@ DOCK_MEASURE_JS = """() => {
     const bubble = panel.querySelector('[data-testid=assistant-turn] p');
     return {
         background: style.backgroundColor,
-        raised: token('--fs-surface-raised', 'background'),
+        raised: token('--fs-surface-raised', 'backgroundColor'),
         border: style.borderTopColor,
         borderToken: token('--fs-border', 'color'),
         bubble: bubble ? getComputedStyle(bubble).backgroundColor : null,
-        blue: token('--fs-surface-blue', 'background'),
+        blue: token('--fs-surface-blue', 'backgroundColor'),
         shadow: style.boxShadow,
         texts, white,
         rect: {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
@@ -826,7 +827,7 @@ async def test_proposal_card_uses_theme_surface(site: Site, theme: str) -> None:
                     }));
                     return {
                         background: style.backgroundColor,
-                        raised: token('--fs-surface-raised', 'background'),
+                        raised: token('--fs-surface-raised', 'backgroundColor'),
                         border: style.borderTopColor,
                         borderToken: token('--fs-border', 'color'),
                         texts,
@@ -1073,5 +1074,252 @@ async def test_whatsapp_disconnect_asks_inline_and_cancel_keeps_the_number(
             await page.get_by_test_id("whatsapp-disconnect-confirm").click()
             await expect(page.get_by_test_id("whatsapp-connected")).to_have_count(0, timeout=WAIT)
             assert len(deletes()) == 1 and not world.connected
+
+    await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# HR lists: cards below 768 px, the real table from 768 px up.
+# ---------------------------------------------------------------------------------------------
+
+PEOPLE = "/portal/hr/people"
+DEPARTMENTS = "/portal/hr/people/departments"
+DEPARTMENT_LONG = "Warehouse, Distribution and Cross-Border Operations Department"
+DEPARTMENT_IDS = (
+    "88888888-8888-4888-8888-000000000001",
+    "88888888-8888-4888-8888-000000000002",
+)
+
+
+class ListsWorld(RestyleWorld):
+    """The restyle company with two departments, one with a very long name."""
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if path == "hr/departments" and method == "GET" and params.get("client_id") == TENANT:
+            return 200, {
+                "items": [
+                    {
+                        "department_id": DEPARTMENT_IDS[0],
+                        "name": DEPARTMENT_LONG,
+                        "archived": False,
+                        "version": 1,
+                        "people": 3,
+                    },
+                    {
+                        "department_id": DEPARTMENT_IDS[1],
+                        "name": "Finance",
+                        "archived": True,
+                        "version": 2,
+                        "people": 0,
+                    },
+                ]
+            }
+        return super().answer(caller, method, path, params, body)
+
+
+# Each list: (table test id, cards test id, card test id, page path, optional tab to open).
+LISTS = {
+    "people": ("hr-people-table", "hr-people-cards", "hr-person-card", PEOPLE, None),
+    "documents": (
+        "hr-documents-table",
+        "hr-documents-cards",
+        "hr-document-card",
+        PROFILE,
+        "Documents",
+    ),
+    "departments": (
+        "hr-departments-table",
+        "hr-departments-cards",
+        "hr-department-card",
+        DEPARTMENTS,
+        None,
+    ),
+}
+
+# The display of a list's table and cards, the cards against the theme's tokens, and any card
+# that leaves the viewport.
+LIST_JS = """([tableId, cardsId, cardId]) => {
+    const parse = (v) => v.match(/[\\d.]+/g).map(Number);
+    const channel = (v) => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = (c) => 0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]);
+    const ratio = (a, b) => {
+        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+        return (hi + 0.05) / (lo + 0.05);
+    };
+    const token = (name, property) => {
+        const probe = document.createElement('div');
+        probe.style[property] = `var(${name})`;
+        document.body.appendChild(probe);
+        const value = getComputedStyle(probe)[property];
+        probe.remove();
+        return value;
+    };
+    const table = document.querySelector(`[data-testid=${tableId}]`);
+    const list = document.querySelector(`[data-testid=${cardsId}]`);
+    const cards = [...document.querySelectorAll(`[data-testid=${cardId}]`)];
+    const shown = cards.filter((el) => el.getBoundingClientRect().width > 0);
+    const texts = shown.flatMap((card) => {
+        const bg = parse(getComputedStyle(card).backgroundColor);
+        return [...card.querySelectorAll('p, dt, dd, a, button')].map((el) => ({
+            text: el.textContent.trim().slice(0, 40),
+            ratio: ratio(parse(getComputedStyle(el).color), bg),
+        }));
+    });
+    return {
+        table: getComputedStyle(table).display,
+        list: getComputedStyle(list).display,
+        cards: cards.length,
+        shown: shown.length,
+        outside: shown.filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.left < -0.5 || r.right > innerWidth + 0.5;
+        }).length,
+        sideways: shown.filter((el) => el.scrollWidth > el.clientWidth + 0.5).length,
+        backgrounds: [...new Set(shown.map((el) => getComputedStyle(el).backgroundColor))],
+        surface: token('--fs-surface', 'backgroundColor'),
+        borders: [...new Set(shown.map((el) => getComputedStyle(el).borderTopColor))],
+        borderToken: token('--fs-border', 'color'),
+        texts,
+    };
+}"""
+
+LIST_WIDTHS = ((320, False), (390, False), (767, False), (768, True), (1024, True), (1440, True))
+
+
+@asynccontextmanager
+async def open_list(
+    browser: Any,
+    site: Site,
+    name: str,
+    world: RestyleWorld,
+    *,
+    theme: str | None = None,
+) -> AsyncIterator[Page]:
+    """One HR list page at 1280 px, opened on the list's own tab."""
+    table, _, _, path, tab = LISTS[name]
+    ready = (lambda p: profile_tab(p, "Documents")) if tab else (lambda p: p.get_by_test_id(table))
+    async with hr_page(browser, site, world, path, theme=theme, ready=ready) as page:
+        if tab:
+            await profile_tab(page, tab).click()
+            await expect(page.get_by_test_id(table)).to_be_visible(timeout=WAIT)
+        yield page
+
+
+async def check_list(page: Page, name: str, width: int, table_shown: bool, theme: str) -> None:
+    """The table and the cards swap at 768 px; the cards fit and read on the theme's surface."""
+    table_id, cards_id, card_id, _, _ = LISTS[name]
+    where = (name, theme, width)
+    await page.set_viewport_size({"width": width, "height": 900})
+    await page.wait_for_timeout(120)
+    measured = await page.evaluate(LIST_JS, [table_id, cards_id, card_id])
+    if table_shown:
+        assert measured["table"] == "table" and measured["list"] == "none", (where, measured)
+        assert measured["shown"] == 0, (where, measured)
+        await expect(page.get_by_role("table")).to_have_count(1)
+    else:
+        assert measured["table"] == "none" and measured["list"] != "none", (where, measured)
+        assert measured["shown"] == measured["cards"] > 0, (where, measured)
+        # Out of the accessibility tree: no table or row below 768 px.
+        await expect(page.get_by_role("table")).to_have_count(0)
+        await expect(page.get_by_role("row")).to_have_count(0)
+        assert measured["outside"] == 0 and measured["sideways"] == 0, (where, measured)
+        assert measured["backgrounds"] == [measured["surface"]], (where, measured)
+        assert measured["borders"] == [measured["borderToken"]], (where, measured)
+        if theme == "night":
+            assert measured["backgrounds"] != ["rgb(255, 255, 255)"], (where, measured)
+        for item in measured["texts"]:
+            assert item["ratio"] >= 4.5, (where, item)
+    scrolled = await overflow(page)
+    assert scrolled["scroll"] <= scrolled["inner"], (where, scrolled)
+
+
+async def test_people_list_is_cards_below_768_and_a_table_above(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with open_list(browser, site, "people", ListsWorld()) as page:
+            for width, table_shown in LIST_WIDTHS:
+                await check_list(page, "people", width, table_shown, "cobalt")
+            # A card has the same facts as a row, and its name links to the profile.
+            await page.set_viewport_size({"width": 390, "height": 900})
+            card = page.get_by_test_id("hr-person-card").filter(has_text="Lina Wong")
+            await expect(card).to_have_count(1)
+            for label in ("Title", "Department", "Manager", "Status"):
+                await expect(card.locator("dt", has_text=label)).to_be_visible()
+            await expect(card).to_contain_text("Active")
+            await card.get_by_role("link", name="Lina Wong").click()
+            await expect(page).to_have_url(re.compile(rf"{PROFILE}$"), timeout=WAIT)
+
+    await with_browser(body)
+
+
+async def test_documents_list_is_cards_below_768_and_a_table_above(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with open_list(browser, site, "documents", ListsWorld()) as page:
+            for width, table_shown in LIST_WIDTHS:
+                await check_list(page, "documents", width, table_shown, "cobalt")
+            await page.set_viewport_size({"width": 390, "height": 900})
+            card = page.get_by_test_id("hr-document-card")
+            await expect(card).to_have_count(1)
+            await expect(card).to_contain_text(FILE_NAME)
+            await expect(card).to_contain_text("Nadia Hassan")
+            # The same download link and Remove button, one tap away.
+            download = card.get_by_role("link", name=f"Download {FILE_NAME}")
+            await expect(download).to_have_attribute("href", re.compile(DOCUMENT_ID))
+            await card.get_by_role("button", name=f"Remove {FILE_NAME}").click()
+            dialog = page.get_by_role("dialog", name="Remove this document?")
+            await expect(dialog).to_be_visible()
+            await dialog.get_by_role("button", name="Cancel").click()
+            await expect(card.get_by_role("button", name=f"Remove {FILE_NAME}")).to_be_focused()
+            # At 1280 the real table is back, with its cells.
+            await page.set_viewport_size({"width": 1280, "height": 900})
+            await expect(page.get_by_role("cell", name=FILE_NAME, exact=True)).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_departments_list_is_cards_below_768_and_a_table_above(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = ListsWorld()
+        async with open_list(browser, site, "departments", world) as page:
+            for width, table_shown in LIST_WIDTHS:
+                await check_list(page, "departments", width, table_shown, "cobalt")
+            await page.set_viewport_size({"width": 390, "height": 900})
+            cards = page.get_by_test_id("hr-department-card")
+            await expect(cards).to_have_count(2)
+            first = cards.filter(has_text=DEPARTMENT_LONG)
+            await expect(first).to_contain_text("In use")
+            await expect(cards.filter(has_text="Finance")).to_contain_text("Archived")
+            await expect(
+                first.get_by_role("button", name=f"Rename {DEPARTMENT_LONG}")
+            ).to_be_visible()
+            await expect(
+                cards.filter(has_text="Finance").get_by_role("button", name="Unarchive Finance")
+            ).to_be_visible()
+            # Rename opens its form in the card; Cancel closes it. Nothing was written.
+            await first.get_by_role("button", name=f"Rename {DEPARTMENT_LONG}").click()
+            name_field = first.locator("input[name='name']")
+            await expect(name_field).to_be_visible()
+            await expect(name_field).to_have_value(DEPARTMENT_LONG)
+            box = await name_field.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390, box
+            await first.get_by_role("button", name="Cancel").click()
+            await expect(name_field).to_have_count(0)
+            assert not [c for c in world.calls if c["method"] != "GET"], world.calls
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_hr_lists_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        for name in LISTS:
+            async with open_list(browser, site, name, ListsWorld(), theme=theme) as page:
+                await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+                for width in WIDTHS:
+                    await check_list(page, name, width, width >= 768, theme)
 
     await with_browser(body)
