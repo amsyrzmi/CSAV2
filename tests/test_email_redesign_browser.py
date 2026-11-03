@@ -545,7 +545,10 @@ async def test_platform_admin_picker_falls_back_to_ids_when_names_fail(site: Sit
             await expect(page.get_by_test_id("email-tenant").locator("option")).to_have_text(
                 ["Choose a tenant", ACME, BETA]
             )
-            await expect(page.get_by_role("alert")).to_have_count(0)
+            # Next's route announcer is an empty alert; only one with words would be a message.
+            await expect(
+                page.get_by_role("alert").filter(has_text=re.compile(r"\S"))
+            ).to_have_count(0)
 
     await with_browser(body)
 
