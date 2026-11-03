@@ -286,7 +286,7 @@ class Stub:
 def default_agents() -> dict[str, dict[str, Any]]:
     return {
         "kb_agent": make_agent(
-            "kb_agent", "Knowledge base agent", is_enabled=True, client_enabled=True
+            "kb_agent", "Business knowledge agent", is_enabled=True, client_enabled=True
         ),
         "ticket_agent": make_agent(
             "ticket_agent", "Ticketing & handoff agent", is_enabled=False, client_enabled=True
@@ -524,7 +524,7 @@ async def test_unlinked_agents_page_still_renders(site: Site) -> None:
                 "Not active"
             )
             # Each card title is an h4 under the service row's h3.
-            await expect(kb.get_by_role("heading", level=4)).to_have_text("Knowledge base agent")
+            await expect(kb.get_by_role("heading", level=4)).to_have_text("Business knowledge agent")
             await context.close()
         finally:
             await browser.close()

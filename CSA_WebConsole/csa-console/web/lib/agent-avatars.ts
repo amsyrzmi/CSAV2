@@ -18,7 +18,7 @@ export type AgentId = (typeof AGENT_IDS)[number];
 
 export const AGENT_TITLES: Record<AgentId, string> = {
   support: "Customer support assistant",
-  knowledge: "Knowledge base agent",
+  knowledge: "Business knowledge agent",
   orders: "Order management assistant",
   tickets: "Support cases & hand-over assistant",
   ecommerce: "E-commerce operations assistant",

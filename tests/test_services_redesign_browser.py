@@ -104,7 +104,7 @@ def default_services() -> dict[str, dict[str, Any]]:
             agents=[
                 make_agent(
                     "kb_agent",
-                    "Knowledge base agent",
+                    "Business knowledge agent",
                     active=True,
                     last_change=change("subscribed", 22),
                 ),

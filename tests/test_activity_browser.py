@@ -550,7 +550,7 @@ async def test_assistant_select_sends_agent(site: Site) -> None:
         assert len(labels) == 10 and len(set(labels)) == 10
         assert "Support cases & hand-over assistant: escalation" in labels
         assert "Order management assistant: approvals" in labels
-        assert "Knowledge base agent" in labels
+        assert "Business knowledge agent" in labels
 
         await select.select_option("escalation_agent")
         await expect(run_row(page, 10)).to_be_visible()

@@ -84,16 +84,16 @@ test("plainSummary relative times", () => {
   const now = new Date(Date.UTC(2026, 10, 2, 12, 0, 0));
   const made = (when) => run("customer_support_unknown", { created_at: when.toISOString() });
   const kb = (when) => run("kb_agent", { created_at: when.toISOString() });
-  assert.equal(plainSummary(kb(at(0, 20)), now), "Knowledge base agent finished just now");
-  assert.equal(plainSummary(kb(at(1)), now), "Knowledge base agent finished 1 minute ago");
-  assert.equal(plainSummary(kb(at(3)), now), "Knowledge base agent finished 3 minutes ago");
-  assert.equal(plainSummary(kb(at(59, 59)), now), "Knowledge base agent finished 59 minutes ago");
+  assert.equal(plainSummary(kb(at(0, 20)), now), "Business knowledge agent finished just now");
+  assert.equal(plainSummary(kb(at(1)), now), "Business knowledge agent finished 1 minute ago");
+  assert.equal(plainSummary(kb(at(3)), now), "Business knowledge agent finished 3 minutes ago");
+  assert.equal(plainSummary(kb(at(59, 59)), now), "Business knowledge agent finished 59 minutes ago");
   // A clock a little ahead of the server never shows a negative time.
-  assert.equal(plainSummary(kb(new Date(now.getTime() + 5000)), now), "Knowledge base agent finished just now");
+  assert.equal(plainSummary(kb(new Date(now.getTime() + 5000)), now), "Business knowledge agent finished just now");
   // An hour or more shows the date and the minute, in the reader's own zone.
   const local = new Date(2026, 10, 2, 9, 5);
   const later = new Date(2026, 10, 2, 12, 0);
-  assert.equal(plainSummary(kb(local), later), "Knowledge base agent finished on 2 Nov 2026, 09:05");
+  assert.equal(plainSummary(kb(local), later), "Business knowledge agent finished on 2 Nov 2026, 09:05");
   assert.equal(whenText(local.toISOString(), later), "on 2 Nov 2026, 09:05");
   assert.equal(whenText(at(2).toISOString(), now), "2 minutes ago");
   // An unknown capability keeps its own name rather than a made-up title.
@@ -126,7 +126,7 @@ test("agentOptions labels are unique", () => {
   assert.equal(labels.order_agent, "Order management assistant: orders");
   assert.equal(labels.order_approval, "Order management assistant: approvals");
   // A title that only one capability has stays plain.
-  assert.equal(labels.kb_agent, "Knowledge base agent");
+  assert.equal(labels.kb_agent, "Business knowledge agent");
   assert.equal(labels.invoice_agent, "Invoice lookup assistant");
   assert.equal(labels.booking_agent, "Bookings assistant");
   assert.ok(!Object.keys(labels).includes("lhdn_agent"), "nothing runs for lhdn_agent");

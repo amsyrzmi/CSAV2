@@ -62,7 +62,7 @@ const SETUP_WORDS: Record<string, string> = {
   available: "Ready",
   setup_required: "Setup needed",
   configured_unverified: "Set up, not yet checked",
-  reindex_required: "Knowledge base needs re-indexing",
+  reindex_required: "Business knowledge needs re-indexing",
 };
 const CONNECTION_WORDS: Record<string, string> = {
   closed: "Running normally",

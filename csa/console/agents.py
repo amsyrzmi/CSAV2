@@ -23,7 +23,7 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
     "escalation_agent": ("Escalation", "local", "Required staff handoff safety capability."),
     "order_approval": ("Order approval", "local", "Required staff approval safety capability."),
     "kb_agent": (
-        "Business knowledge",
+        "Business knowledge agent",
         "local",
         "Model-compatible KB retrieval; no live TEI probe.",
     ),

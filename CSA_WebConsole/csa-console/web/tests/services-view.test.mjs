@@ -238,7 +238,7 @@ test("the agent card words build, setup and connection in plain language, never 
   assert.equal(setupText("available"), "Ready");
   assert.equal(setupText("setup_required"), "Setup needed");
   assert.equal(setupText("configured_unverified"), "Set up, not yet checked");
-  assert.equal(setupText("reindex_required"), "Knowledge base needs re-indexing");
+  assert.equal(setupText("reindex_required"), "Business knowledge needs re-indexing");
   assert.equal(connectionText("closed"), "Running normally");
   assert.equal(connectionText("open"), "Paused after errors");
   assert.equal(connectionText("half_open"), "Trying again");
