@@ -103,7 +103,8 @@ async def test_backfill_skips(sessions: SessionWorld) -> None:
         == []
     )
     assert await sessions.q(
-        "SELECT status,reference FROM console_service_packages WHERE client_id=%s AND package='knowledge_base'",
+        "SELECT status,reference FROM console_service_packages"
+        " WHERE client_id=%s AND package='knowledge_base'",
         already_has,
     ) == [{"status": "suspended", "reference": "keep-me"}]
 
