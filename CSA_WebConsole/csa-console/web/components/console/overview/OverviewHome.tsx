@@ -4,23 +4,34 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
+import { overviewBody } from "@/lib/overview-home";
 import { CustomerRepliesBanner } from "../CustomerRepliesBanner";
 import { SandboxWorkspace } from "../SandboxWorkspace";
 import { AssistantTile } from "../chat/ChatEmptyState";
 import { Notice } from "../ui";
 import { StatusStrip } from "./StatusStrip";
+import { useActivePackages } from "./useActivePackages";
+import { WorkspaceHome } from "./WorkspaceHome";
 
 /**
  * Overview is the assistant home: a slim header (the tenant selector for platform
- * administrators, the sandbox label and the status strip) above the sandbox chat, which fills
- * the rest of the window. The page is marked `data-fill`, so the shell drops its centred column
- * and the chat's message list scrolls inside instead of the page.
+ * administrators and the status strip) above the sandbox chat, which fills the rest of the
+ * window. The page is marked `data-fill`, so the shell drops its centred column and the chat's
+ * message list scrolls inside instead of the page.
+ *
+ * A company without Customer support has no customers to chat as, so it gets the small home
+ * instead of the chat and the customer-replies banner. The company's packages are read once here
+ * and shared with the status strip; while they load nothing but a short wait shows, and a failed
+ * read shows the chat, as before.
  */
 export function OverviewHome({ me }: { me: Me }) {
   const platform = me.role === "platform_admin";
   const search = useSearchParams();
   const chosen = search.get("client_id")?.trim() || "";
   const tenant = platform ? chosen : me.active_client_id;
+
+  const packages = useActivePackages(tenant ? (platform ? tenant : "") : null);
+  const showing = packages === undefined ? "loading" : overviewBody(packages);
 
   let body: React.ReactNode;
   if (platform && !tenant) {
@@ -36,6 +47,10 @@ export function OverviewHome({ me }: { me: Me }) {
         <Notice>Your account has no active company. Ask your administrator to check your access.</Notice>
       </div>
     );
+  } else if (showing === "loading") {
+    body = <p role="status" className="p-6 text-center text-sm text-[color:var(--fs-text-secondary)]">Loading</p>;
+  } else if (showing === "home") {
+    body = <WorkspaceHome me={me} packages={packages ?? []} tenant={tenant} />;
   } else {
     body = <SandboxWorkspace me={me} chromeless tenant={tenant} />;
   }
@@ -47,12 +62,12 @@ export function OverviewHome({ me }: { me: Me }) {
         {platform && <TenantSelect value={chosen} />}
         {tenant && (
           <div className="sm:ml-auto">
-            <StatusStrip key={tenant} me={me} clientId={platform ? tenant : null} />
+            <StatusStrip key={tenant} me={me} clientId={platform ? tenant : null} packages={packages} />
           </div>
         )}
       </div>
-      {/* The banner is silent unless customers aren't being answered; an empty wrapper takes no room. */}
-      {tenant && (
+      {/* Only the chat has the banner, and it is silent unless customers aren't being answered. */}
+      {tenant && showing === "chat" && (
         <div className="shrink-0 px-4 pt-3 sm:px-6 empty:hidden">
           <CustomerRepliesBanner
             tenantId={platform ? tenant : null}

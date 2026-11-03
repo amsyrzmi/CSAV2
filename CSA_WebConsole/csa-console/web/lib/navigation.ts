@@ -97,6 +97,7 @@ export function entryForPath(links: NavLink[], path: string): NavLink | null {
 // Tab -> packages that unlock it (any one of them is enough).
 const gate: Partial<Record<NavKey, string[]>> = {
   inbox: ["customer_support"],
+  activity: ["customer_support"],
   knowledge_base: ["knowledge_base"],
   business: ["orders_products", "marketplaces"],
   hr: ["hr"],
@@ -104,8 +105,12 @@ const gate: Partial<Record<NavKey, string[]>> = {
   subscriptions: ["subscriptions"],
 };
 // Statuses that unlock a tab; mirrors the server gates. The Inbox stays reachable while
-// Customer Support is suspended so staff can resolve held replies and escalations.
-const unlocks: Partial<Record<NavKey, PackageState["status"][]>> = { inbox: ["active", "suspended"] };
+// Customer Support is suspended so staff can resolve held replies and escalations; Assistant
+// activity follows it, since an employee-only company has no customer conversations to show.
+const unlocks: Partial<Record<NavKey, PackageState["status"][]>> = {
+  inbox: ["active", "suspended"],
+  activity: ["active", "suspended"],
+};
 const ACTIVE_ONLY: PackageState["status"][] = ["active"];
 
 export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {

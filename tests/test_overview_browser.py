@@ -124,7 +124,9 @@ SUPPORT_AND_HR = [package("customer_support"), package("hr"), package("staff_ema
 class Api:
     """The browser-side console API as Playwright answers it, with every request recorded.
 
-    `packages` and `review` are what the strip's reads answer; None answers 500.
+    `packages` and `review` are what the strip's reads answer; None answers 500. `by_tenant`
+    answers the packages of a named company instead, as a platform admin's switch needs.
+    `warnings` is what the Go live banner's read reports.
     """
 
     def __init__(
@@ -133,8 +135,12 @@ class Api:
         packages: list[dict[str, str]] | None = None,
         review: int | None = 3,
         turns: int = 0,
+        by_tenant: dict[str, list[dict[str, str]]] | None = None,
+        warnings: list[str] | None = None,
     ) -> None:
         self.packages = SUPPORT_AND_HR if packages is None else packages
+        self.by_tenant = by_tenant or {}
+        self.warnings = warnings or []
         self.packages_fail = False
         self.review = review
         self.threads: list[dict[str, Any]] = []
@@ -142,10 +148,13 @@ class Api:
         self.requests: list[tuple[str, str]] = []
         self.unexpected: list[str] = []
         self.deliberate_failures = 0
-        self.refused_replies_reads = 0
         if turns:
             self.threads = [thread(1)]
             self.turns["thread-1"] = [turn(n, f"Question {n}") for n in range(1, turns + 1)]
+
+    def packages_for(self, tail: str) -> list[dict[str, str]]:
+        tenant = re.search(r"client_id=([^&]+)", tail)
+        return self.by_tenant.get(tenant.group(1), self.packages) if tenant else self.packages
 
     def paths(self, prefix: str) -> list[str]:
         return [tail for method, tail in self.requests if tail.split("?")[0] == prefix]
@@ -166,20 +175,30 @@ class Api:
             if self.packages_fail:
                 await self.fail(route)
                 return
-            data = {"packages": self.packages}
+            data = {"packages": self.packages_for(tail)}
         elif path == "inbox/conversations" and request.method == "GET":
             if self.review is None:
                 await self.fail(route)
                 return
             data = {"items": [], "next_cursor": None, "needs_review_count": self.review}
         elif path == "services/customer-replies" and request.method == "GET":
-            # The Go live banner reads this and stays silent: replies are on, or Customer support
-            # is not active and the gateway refuses, which the banner swallows.
-            if {"key": "customer_support", "status": "active"} not in self.packages:
-                self.refused_replies_reads += 1
+            # The gateway answers Customer support active or suspended and refuses everyone else.
+            # The page only asks where the chat shows, so a refusal here would be a console error.
+            support = {
+                item["status"]
+                for item in self.packages_for(tail)
+                if item["key"] == "customer_support"
+            }
+            if not support & {"active", "suspended"}:
+                self.unexpected.append(f"{request.method} {tail} (no Customer support)")
                 await route.fulfill(status=403, json={"detail": "package_inactive"})
                 return
-            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
+            data = {
+                "mode": "off" if self.warnings else "auto",
+                "brand_name": "Synthetic",
+                "can_manage": True,
+                "warnings": self.warnings,
+            }
         elif path == "admin/clients" and request.method == "GET":
             data = CLIENTS
         elif path == "hr/context" and request.method == "GET":
@@ -348,8 +367,6 @@ async def open_overview(
     assert not api.unexpected, api.unexpected
     if api.deliberate_failures:
         errors = [e for e in errors if "status of 500" not in e]
-    if api.refused_replies_reads:
-        errors = [e for e in errors if "status of 403" not in e]
     assert not errors, errors
 
 
@@ -457,6 +474,9 @@ async def test_strip_shows_both_numbers_for_staff(console: Console, support: str
         services = 1 if support == "suspended" else 2
         await expect(page.get_by_test_id("overview-strip-services")).to_contain_text(str(services))
         assert await strip_text(page) == (f"0 Replies to check {services} Services on")
+        # Suspended or active, the company keeps its chat, and the banner has nothing to say.
+        await expect(composer(page)).to_be_enabled()
+        await expect(page.get_by_test_id("customer-replies-banner")).to_have_count(0)
         # Plain text: nothing in the strip is a link or a live region.
         strip = page.get_by_test_id("overview-strip")
         await expect(strip.locator("a")).to_have_count(0)
@@ -481,12 +501,12 @@ async def test_strip_hides_review_for_read_only_and_when_inbox_read_fails(
         await requested(page, api, "inbox/conversations")
         await expect(page.get_by_test_id("overview-strip-review")).to_have_count(0)
         assert await strip_text(page) == "2 Services on"
-    # Without Customer Support the Inbox is not asked; the chat still works.
+    # Without Customer Support the Inbox is not asked, and the page is the small home.
     api = Api(packages=[package("hr")], review=7)
     async with open_overview(console, api, "/portal") as page:
         await expect(page.get_by_test_id("overview-strip-services")).to_contain_text("1")
         await expect(page.get_by_test_id("overview-strip-review")).to_have_count(0)
-        await expect(composer(page)).to_be_enabled()
+        await expect(page.get_by_test_id("workspace-home")).to_be_visible()
         assert api.paths("inbox/conversations") == []
 
 
@@ -633,3 +653,87 @@ async def test_overview_fits_five_widths_in_three_themes(console: Console) -> No
                 await expect(page.get_by_role("button", name="Send message")).to_be_in_viewport()
                 send = await page.get_by_role("button", name="Send message").bounding_box()
                 assert send and send["x"] + send["width"] <= width, where
+
+
+HOME_SENTENCE = "Ask the assistant at the side of the screen."
+
+
+async def test_a_company_without_customer_support_gets_the_small_home(console: Console) -> None:
+    api = Api(packages=[package("hr"), package("staff_email", "suspended")], review=7)
+    me = make_me("tenant_admin")
+    async with open_overview(console, api, "/portal", me=me, rail="expanded") as page:
+        home = page.get_by_test_id("workspace-home")
+        await expect(home).to_be_visible()
+        await expect(home.get_by_role("link", name="People & HR", exact=True)).to_have_attribute(
+            "href", "/portal/hr"
+        )
+        await expect(home.get_by_role("link", name="Services", exact=True)).to_have_attribute(
+            "href", "/portal/services"
+        )
+        # Suspended Email assistant is not something the company has.
+        await expect(home.get_by_role("link", name="Email assistant")).to_have_count(0)
+        await expect(home.get_by_text(HOME_SENTENCE, exact=True)).to_be_visible()
+        await expect(composer(page)).to_have_count(0)
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_have_count(0)
+        await expect(page.locator("h1")).to_have_count(1)
+        await expect(page.get_by_test_id("overview-strip-services")).to_contain_text("1")
+        # The rail loses Assistant activity with the chat it belongs to.
+        nav = page.get_by_role("navigation", name="Main navigation")
+        await expect(nav.get_by_role("link", name="People & HR")).to_be_visible()
+        await expect(nav.get_by_role("link", name="Assistant activity")).to_have_count(0)
+        await page.wait_for_timeout(500)
+        # One packages read serves the page and the strip; nothing customer-facing is asked for.
+        # `next dev` mounts effects twice, so the rail's single HR read is the yardstick.
+        assert len(api.paths("services/active")) == len(api.paths("hr/context")), api.requests
+        assert not [p for _, p in api.requests if p.startswith(("chat/", "inbox/"))]
+        assert not api.paths("services/customer-replies"), api.requests
+
+
+async def test_a_company_with_customer_support_gets_the_chat_and_the_banner(
+    console: Console,
+) -> None:
+    api = Api(warnings=["replies_off"])
+    async with open_overview(console, api, "/portal", me=make_me("tenant_admin")) as page:
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible()
+        await expect(composer(page)).to_be_enabled()
+        await expect(page.get_by_test_id("customer-replies-banner")).to_contain_text(
+            "Your customers aren't getting replies yet."
+        )
+        await expect(page.get_by_test_id("workspace-home")).to_have_count(0)
+        await expect(page.get_by_text(HOME_SENTENCE, exact=True)).to_have_count(0)
+        # The chat still works with replies off: it answers as a preview.
+        await composer(page).fill("When are you open?")
+        await page.get_by_role("button", name="Send message", exact=True).click()
+        await expect(page.get_by_text(REPLY)).to_be_visible()
+        nav = page.get_by_role("navigation", name="Main navigation")
+        await expect(nav.get_by_role("link", name="Assistant activity")).to_have_count(1)
+
+
+async def test_a_failed_packages_read_keeps_the_chat_without_an_error(console: Console) -> None:
+    api = Api(review=None)
+    api.packages_fail = True
+    async with open_overview(console, api, "/portal") as page:
+        await requested(page, api, "services/active")
+        await expect(composer(page)).to_be_enabled()
+        await expect(page.get_by_test_id("workspace-home")).to_have_count(0)
+        await expect(page.locator('p[role="alert"]')).to_have_count(0)
+
+
+async def test_a_platform_admin_switching_companies_follows_the_choice(console: Console) -> None:
+    api = Api(by_tenant={"tenant-a": SUPPORT_AND_HR, "tenant-b": [package("hr")]})
+    async with open_overview(
+        console, api, "/?client_id=tenant-a", me=make_me("platform_admin")
+    ) as page:
+        select = page.get_by_label("Tenant", exact=True)
+        await expect(composer(page)).to_be_enabled()
+        await select.select_option("tenant-b")
+        home = page.get_by_test_id("workspace-home")
+        await expect(home).to_be_visible()
+        await expect(composer(page)).to_have_count(0)
+        # The admin's links open the chosen company's pages.
+        await expect(home.get_by_role("link", name="People & HR")).to_have_attribute(
+            "href", "/hr?client_id=tenant-b"
+        )
+        await select.select_option("tenant-a")
+        await expect(composer(page)).to_be_enabled()
+        await expect(home).to_have_count(0)

@@ -194,3 +194,15 @@ test("a group's parent link is current on its own page, in the group when hidden
   assert.equal(groupParentCurrent(services, "/portal/services", false), "page");
   assert.equal(groupParentCurrent(services, "/portal/services/x", false), undefined);
 });
+
+test("Assistant activity follows Customer support: active or suspended, and always for platform admins", () => {
+  for (const status of ["active", "suspended"]) {
+    assert.ok(labels(staff, [{ key: "customer_support", status }]).includes("Assistant activity"), status);
+  }
+  for (const packages of [[], active("hr"), active("hr", "staff_email"), [{ key: "customer_support", status: "requested" }]]) {
+    assert.ok(!labels(staff, packages).includes("Assistant activity"), JSON.stringify(packages));
+  }
+  assert.ok(labels({ ...staff, role: "platform_admin" }, []).includes("Assistant activity"));
+  const link = navigationFor(staff, active("customer_support")).find((l) => l.key === "activity");
+  assert.equal(link?.href, "/portal/activity");
+});

@@ -142,6 +142,11 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Off again | Tenant admin saves Off | The next message gets no reply, even if the turn fails, and the banner is back | manual |
 | Nothing to answer from | The Business knowledge add-on is active with no processed file, replies on | The panel and the banner say "Your bot has nothing to answer from yet." until a file finishes | manual |
 | Who can change it | Staff and read-only members on Services | They see the state and "Ask your admin to change this.", with no controls | manual |
+| The Overview chat previews with replies Off | A company with Customer support and replies Off; ask the Overview chat a question the bot can answer | The chat answers, and the banner above it still says "Your customers aren't getting replies yet."; a customer on Telegram or WhatsApp still gets nothing | manual |
+| The Overview chat previews with "Staff approve each reply" | The same company, replies set to "Staff approve each reply"; ask the Overview chat the same question | The chat answers at once, with no draft in the Inbox | manual |
+| A review rule still holds the preview | A company with a `never_auto` intent or a confidence threshold; ask the Overview chat that kind of question | The chat holds the answer, as it would for a customer; it does not send it | manual |
+| An employee-only company has a small home | A company with People & HR and no Customer support; open Overview | Links to People & HR and Services, "Ask the assistant at the side of the screen.", no chat, no banner, and no Assistant activity in the menu | manual |
+| A platform admin switches company | Choose a company with Customer support, then one without, then back | Overview shows the chat, then the small home, then the chat; it never shows one company's page for the other | manual |
 
 ## Business knowledge add-on
 

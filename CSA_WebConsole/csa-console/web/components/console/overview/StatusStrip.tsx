@@ -9,12 +9,8 @@ import {
   activeServiceCount,
   canSeeInboxCount,
   stripParts,
-  type StripInput,
 } from "@/lib/overview-strip";
 import type { PackageState } from "@/lib/services-api";
-
-const REFRESH_MS = 60_000;
-const UNKNOWN: StripInput = { review: null, services: null };
 
 const pill =
   "inline-flex min-h-8 items-center gap-1.5 rounded-[var(--fs-radius-round)] border px-3 py-1 text-sm";
@@ -28,66 +24,42 @@ const tones = {
 };
 
 /**
- * Two real numbers above the Overview chat: replies needing review (only where the role and the
- * Customer Support package allow the Inbox) and active services. Each read stands alone: a failed
- * or disallowed read hides only its number, never shows zero, and with neither there is no strip.
- * Plain text, not a live region, so the slow refresh does not announce itself.
+ * Two real numbers above the Overview body: replies needing review (only where the role and the
+ * Customer Support package allow the Inbox) and active services. The packages come from the page,
+ * which reads them once for everything that needs them; `undefined` means still loading, `null`
+ * that the read failed. Each number stands alone: a failed or disallowed read hides only its
+ * number, never shows zero, and with neither there is no strip. Plain text, not a live region, so
+ * the slow refresh does not announce itself.
  */
-export function StatusStrip({ me, clientId }: { me: Me; clientId: string | null }) {
-  const [counts, setCounts] = useState<StripInput>(UNKNOWN);
-  const role = me.role;
+export function StatusStrip({ me, clientId, packages }: {
+  me: Me;
+  clientId: string | null;
+  packages: PackageState[] | null | undefined;
+}) {
+  // undefined until the Inbox read answers, null when it failed.
+  const [fetched, setFetched] = useState<number | null | undefined>(undefined);
+  // The Inbox count is only asked for when the packages say Customer Support is on, so a company
+  // without it (or a failed services read) makes no Inbox request at all.
+  const wantsReview = packages !== undefined && canSeeInboxCount(me.role, packages);
 
   useEffect(() => {
-    const tenant = clientId ? `client_id=${encodeURIComponent(clientId)}` : "";
-    let current: AbortController | null = null;
+    if (!wantsReview) return;
+    const tenant = clientId ? `&client_id=${encodeURIComponent(clientId)}` : "";
+    const controller = new AbortController();
+    api<ConversationPage>(`/console/v1/inbox/conversations?limit=1${tenant}`, { signal: controller.signal })
+      .then((page) => setFetched(typeof page?.needs_review_count === "number" ? page.needs_review_count : null))
+      .catch(() => {
+        if (!controller.signal.aborted) setFetched(null);
+      });
+    // `packages` is a dependency on purpose: each fresh read of the packages refreshes the count.
+    return () => controller.abort();
+  }, [wantsReview, packages, clientId]);
 
-    async function load() {
-      current?.abort();
-      const controller = new AbortController();
-      current = controller;
-      const { signal } = controller;
-      let packages: PackageState[] | null = null;
-      try {
-        const answer = await api<{ packages: PackageState[] }>(
-          `/console/v1/services/active${tenant ? `?${tenant}` : ""}`,
-          { signal },
-        );
-        packages = Array.isArray(answer?.packages) ? answer.packages : null;
-      } catch {
-        if (signal.aborted) return;
-      }
-      // The review count depends on the services read above: the Inbox count is only asked for when
-      // the packages say Customer Support is on, so a failed services read hides both numbers.
-      let review: number | null = null;
-      if (canSeeInboxCount(role, packages)) {
-        try {
-          const page = await api<ConversationPage>(
-            `/console/v1/inbox/conversations?limit=1${tenant ? `&${tenant}` : ""}`,
-            { signal },
-          );
-          review = typeof page?.needs_review_count === "number" ? page.needs_review_count : null;
-        } catch {
-          if (signal.aborted) return;
-        }
-      }
-      if (signal.aborted) return;
-      setCounts({ review, services: activeServiceCount(packages) });
-    }
-
-    void load();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") void load();
-    }, REFRESH_MS);
-    const onFocus = () => void load();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      current?.abort();
-      window.clearInterval(timer);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [clientId, role]);
-
-  const parts = stripParts(counts);
+  // Nothing until both answers are in, so the strip appears whole rather than growing a second pill.
+  const waiting = packages === undefined || (wantsReview && fetched === undefined);
+  const parts = waiting
+    ? []
+    : stripParts({ review: wantsReview ? (fetched ?? null) : null, services: activeServiceCount(packages ?? null) });
   if (!parts.length) return null;
   return (
     <ul data-testid="overview-strip" aria-label="Workspace status" className="flex flex-wrap items-center gap-2">
