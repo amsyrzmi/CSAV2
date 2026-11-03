@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useLayoutEffect, useState } from "react";
 import { identity } from "@/lib/identity-api";
 import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
@@ -31,7 +31,8 @@ function HrNavBridge({ me, enabled, path, onItems }: {
   const param = useSearchParams().get("client_id")?.trim() || null;
   const tenant = platform ? param : me.active_client_id;
   const items = useHrNav({ enabled, platform, tenant, path });
-  useEffect(() => { onItems(items); }, [items, onItems]);
+  // A layout effect, so a changed tenant's old sub-links are dropped before the next paint.
+  useLayoutEffect(() => { onItems(items); }, [items, onItems]);
   return null;
 }
 
