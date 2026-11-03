@@ -12,7 +12,7 @@ async function load(name) {
 }
 const {
   groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, kindText,
-  looseFiles, pausedReason, kbStatusLine, LIBRARY_PREVIEW,
+  looseFiles, pausedReason, kbStatusLine, LIBRARY_PREVIEW, validateSelection, progressWord, SELECTION_MESSAGE,
 } = await import(await load("knowledge-view.ts"));
 
 const file = (id, extra = {}) => ({
@@ -227,4 +227,29 @@ test("card plain rows for documents, reading and failed jobs", () => {
 
 test("the library shows five cards before Show all", () => {
   assert.equal(LIBRARY_PREVIEW, 5);
+});
+
+test("validateSelection rules and message", () => {
+  const MESSAGE = "Select one to three non-empty PDF, DOCX or CSV files, at most 10 MB each.";
+  assert.equal(SELECTION_MESSAGE, MESSAGE);
+  const ok = (name, size = 5) => ({ name, size });
+  assert.equal(validateSelection([ok("a.pdf")]), null);
+  assert.equal(validateSelection([ok("a.PDF"), ok("b.docx"), ok("c.csv")]), null);
+  assert.equal(validateSelection([ok("a.pdf", 10 * 1024 * 1024)]), null);
+  assert.equal(validateSelection([ok("a.pdf"), ok("b.pdf"), ok("c.pdf"), ok("d.pdf")]), MESSAGE);
+  assert.equal(validateSelection([ok("notes.txt")]), MESSAGE);
+  assert.equal(validateSelection([ok("a.pdf", 0)]), MESSAGE);
+  assert.equal(validateSelection([ok("a.pdf", 10 * 1024 * 1024 + 1)]), MESSAGE);
+  assert.equal(validateSelection([ok("a.pdf"), ok("b.txt")]), MESSAGE);
+  assert.equal(validateSelection([ok("pdf")]), MESSAGE);
+});
+
+test("progressWord maps every job status", () => {
+  assert.equal(progressWord(null), "Waiting");
+  assert.equal(progressWord("queued"), "Waiting");
+  assert.equal(progressWord("running"), "Reading");
+  assert.equal(progressWord("done"), "Ready");
+  assert.equal(progressWord("partial"), "Partly read");
+  assert.equal(progressWord("failed"), "Could not be read");
+  assert.equal(progressWord("something_new"), "Could not be read");
 });

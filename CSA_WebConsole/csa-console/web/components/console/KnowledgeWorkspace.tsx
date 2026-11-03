@@ -73,7 +73,7 @@ export function KnowledgeWorkspace({ me, section = "library" }: { me: Me; sectio
     {clientId ? <div key={clientId}>
       {section === "library" && <LibrarySection query={query} canWrite={canWrite} addHref={addHref} questionsHref={withQuery(pages[2].href)} />}
       {section === "add" && <AddSection query={query} canWrite={canWrite} />}
-      {section === "questions" && <QuestionsSection query={query} canWrite={canWrite} />}
+      {section === "questions" && <QuestionsSection query={query} canWrite={canWrite} addHref={addHref} />}
       {section === "maintenance" && <MaintenanceSection query={query} canWrite={canWrite} servicesHref={servicesHref} />}
     </div> : <Notice>Select a tenant to continue.</Notice>}
   </>;

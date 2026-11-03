@@ -48,6 +48,27 @@ const CHIP_LABELS: Record<Chip, string> = {
   needs_attention: "Needs attention",
 };
 
+/** The one message for a selection the upload cannot take; the picker and a drop both show it. */
+export const SELECTION_MESSAGE = "Select one to three non-empty PDF, DOCX or CSV files, at most 10 MB each.";
+
+/** The upload rule: one to three PDF, DOCX or CSV files, none empty, none over 10 MB. Null when the selection is fine. */
+export function validateSelection(files: { name: string; size: number }[]): string | null {
+  const bad = files.length > 3
+    || files.some((file) => !/\.(pdf|docx|csv)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024);
+  return bad ? SELECTION_MESSAGE : null;
+}
+
+export type ProgressWord = "Waiting" | "Reading" | "Ready" | "Partly read" | "Could not be read";
+
+/** One word for where an uploaded file is, from its job status (null while the job is not in the list yet). */
+export function progressWord(status: string | null): ProgressWord {
+  if (status === null || status === "queued") return "Waiting";
+  if (status === "running") return "Reading";
+  if (status === "done") return "Ready";
+  if (status === "partial") return "Partly read";
+  return "Could not be read";
+}
+
 /** How many cards of "In your library" show before "Show all". */
 export const LIBRARY_PREVIEW = 5;
 

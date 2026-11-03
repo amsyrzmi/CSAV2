@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from playwright.async_api import Page, expect
+from playwright.async_api import FilePayload, Page, expect
 
 from tests import test_services_redesign_browser as services
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
@@ -33,6 +33,8 @@ site = services.site
 
 THEMES = ("cobalt", "night", "bureau")
 WIDTHS = (320, 390, 768, 1024, 1440)
+SELECTION_MESSAGE = "Select one to three non-empty PDF, DOCX or CSV files, at most 10 MB each."
+QUEUED_TEXT = "Queued job job-new. Queued is not yet searchable."
 PACKAGE_SENTENCE = (
     "This area is not part of your organisation's active service packages. "
     "Ask your administrator to activate it in Services."
@@ -217,6 +219,9 @@ class Stub:
     agent_active: bool = True
     agent_missing: bool = False
     upload_failures: int = 0
+    answer_failures: int = 0
+    answer_delay: float = 0.0
+    answers: list[dict[str, Any]] = field(default_factory=list)
     fail: dict[str, tuple[int, dict[str, Any]]] = field(default_factory=dict)
     reads: dict[str, int] = field(default_factory=lambda: {name: 0 for name in LISTS})
     deletes: list[str] = field(default_factory=list)
@@ -256,6 +261,14 @@ class Stub:
                 return
             self.jobs.insert(0, make_job("job-new", "queued", "new-upload.pdf", None, attempts=0))
             status, data = 202, {"job_id": "job-new", "duplicate_request": False}
+        elif path == "kb/documents" and request.method == "POST":
+            self.answers.append(request.post_data_json)
+            await asyncio.sleep(self.answer_delay)
+            if self.answer_failures:
+                self.answer_failures -= 1
+                await request_route.fulfill(status=503, json={"detail": "synthetic answer failure"})
+                return
+            status, data = 200, {"status": "ingested"}
         elif request.method == "DELETE" and re.fullmatch(r"kb/(files|documents)/[\w-]+", path):
             self.deletes.append(path)
             kind, item = path.split("/")[1:]
@@ -350,6 +363,30 @@ async def open_plain(page: Page, item: str) -> Any:
     details = page.get_by_test_id(f"kb-card-{item}-details")
     await expect(details).to_be_visible()
     return details
+
+
+async def open_progress_tech(page: Page, job_id: str) -> Any:
+    """Open the Technical details of one upload row on the Add page."""
+    await page.get_by_test_id(f"kb-progress-{job_id}-tech-toggle").click()
+    details = page.get_by_test_id(f"kb-progress-{job_id}-tech-details")
+    await expect(details).to_be_visible()
+    return details
+
+
+DROP_SCRIPT = """(names) => {
+    const transfer = new DataTransfer();
+    for (const [name, size] of names) {
+        transfer.items.add(new File([new Uint8Array(size)], name));
+    }
+    const target = document.querySelector('[data-testid="kb-drop"]');
+    const init = {dataTransfer: transfer, bubbles: true, cancelable: true};
+    target.dispatchEvent(new DragEvent('drop', init));
+}"""
+
+
+async def add_ready(page: Page) -> None:
+    """Wait until the Add page is hydrated and adding is on (the drop area takes files)."""
+    await expect(page.get_by_role("button", name="Choose files")).to_be_enabled(timeout=WAIT)
 
 
 async def open_fold(page: Page, name: str) -> Any:
@@ -698,14 +735,15 @@ async def test_upload_queues_a_file_and_shows_it_as_reading(site: Site, tmp_path
             await expect(add).to_contain_text(
                 "One to three PDF, DOCX or CSV files, at most 10 MB each"
             )
+            await expect(add).to_contain_text("No file chosen yet")
             queue = add.get_by_role("button", name="Queue upload / retry")
             await expect(queue).to_be_disabled()
             await page.locator("#kb-files").set_input_files(str(sample))
             await expect(add).to_contain_text("new-upload.pdf")
             await queue.click()
-            await expect(
-                page.get_by_text("Queued job job-new. Queued is not yet searchable.")
-            ).to_be_visible()
+            row = page.get_by_test_id("kb-progress-job-new")
+            await expect(row).to_contain_text("new-upload.pdf")
+            await expect(page.get_by_test_id("kb-progress-job-new-word")).to_have_text("Waiting")
             assert len(stub.upload_keys) == 1 and stub.upload_keys[0]
             # The reading file shows as a card on the library page.
             await page.get_by_test_id("kb-subnav-library").click()
@@ -749,12 +787,23 @@ async def test_knowledge_at_five_widths_in_three_themes(site: Site, theme: str) 
         async with knowledge_page(
             browser, site, Stub(), theme=theme, path="/portal/faq/add", wait="kb-add"
         ) as page:
+            await expect(page.get_by_test_id("kb-drop")).to_be_visible()
+            await add_ready(page)
             await check(page, "add")
+            await page.evaluate(
+                DROP_SCRIPT, [["a-rather-long-file-name-for-the-delivery-list.pdf", 2048]]
+            )
+            await expect(page.get_by_test_id("kb-selection")).to_contain_text("a-rather-long")
+            await check(page, "add with a file")
         async with knowledge_page(
             browser, site, Stub(), theme=theme, path="/portal/faq/questions", wait="kb-gaps"
         ) as page:
             await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
             await check(page, "questions")
+            await page.get_by_test_id("kb-gap-gap-sunday-answer").click()
+            await page.get_by_label("Your answer").fill("We deliver on Sundays. " * 12)
+            await expect(page.get_by_test_id("kb-answer-save-gap-sunday")).to_be_enabled()
+            await check(page, "questions with an open answer form")
         async with knowledge_page(
             browser,
             site,
@@ -776,7 +825,8 @@ async def test_add_page_first_screen_at_390_leads_with_the_upload_area(site: Sit
         ) as page:
             await expect(page.get_by_role("heading", level=1)).to_be_in_viewport()
             await expect(page.get_by_test_id("kb-add")).to_be_in_viewport()
-            await expect(page.locator("#kb-files")).to_be_in_viewport()
+            await expect(page.get_by_test_id("kb-drop")).to_be_in_viewport()
+            await expect(page.get_by_role("button", name="Choose files")).to_be_in_viewport()
             # Nothing technical sits above the upload area.
             for text in (
                 "Embedding compatibility",
@@ -785,7 +835,7 @@ async def test_add_page_first_screen_at_390_leads_with_the_upload_area(site: Sit
             ):
                 await expect(page.get_by_text(text, exact=False).first).to_have_count(0)
             order = await page.evaluate(
-                """() => ['kb-subnav', 'kb-page-heading', 'kb-add'].map(
+                """() => ['kb-subnav', 'kb-page-heading', 'kb-add', 'kb-drop'].map(
                     id => document.querySelector(`[data-testid="${id}"]`)
                         .getBoundingClientRect().top
                 )"""
@@ -902,9 +952,9 @@ async def test_upload_failure_keeps_the_retry_message_and_the_same_key(
             # The chosen file stays chosen and the retry sends the same key.
             await expect(page.get_by_test_id("kb-add")).to_contain_text("retry-me.pdf")
             await queue.click()
-            await expect(
-                page.get_by_text("Queued job job-new. Queued is not yet searchable.")
-            ).to_be_visible()
+            await expect(page.get_by_test_id("kb-progress-job-new")).to_be_visible()
+            details = await open_progress_tech(page, "job-new")
+            await expect(details).to_contain_text(QUEUED_TEXT)
             assert len(stub.upload_keys) == 2 and stub.upload_keys[0] == stub.upload_keys[1]
 
     await with_browser(body)
@@ -1207,5 +1257,254 @@ async def test_knowledge_section_bar_keeps_the_admin_tenant(site: Site) -> None:
                 re.compile(r"/knowledge-base/maintenance$"), timeout=WAIT
             )
             await expect(page.get_by_text("Select a tenant to continue.")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_drop_area_replaces_the_raw_file_control(site: Site, tmp_path: Any) -> None:
+    async def body(browser: Any) -> None:
+        sample = tmp_path / "menu.pdf"
+        sample.write_bytes(b"%PDF-1.4 synthetic")
+        async with knowledge_page(
+            browser, site, Stub(), path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            drop = page.get_by_test_id("kb-drop")
+            await expect(drop).to_be_visible()
+            await expect(drop).to_contain_text("Drag files here, or")
+            # The native control is still there for the label and the picker, but not visible.
+            native = page.locator("#kb-files")
+            await expect(native).to_have_attribute("type", "file")
+            await expect(native).to_have_attribute("tabindex", "-1")
+            box = await native.bounding_box()
+            assert box is not None and box["width"] <= 1 and box["height"] <= 1, box
+            await expect(
+                page.get_by_label("One to three PDF, DOCX or CSV files, at most 10 MB each")
+            ).to_have_count(1)
+            # The button opens the picker, with the mouse and with the keyboard.
+            button = drop.get_by_role("button", name="Choose files")
+            async with page.expect_file_chooser() as chooser:
+                await button.click()
+            await (await chooser.value).set_files(str(sample))
+            await expect(page.get_by_test_id("kb-selection")).to_contain_text("menu.pdf")
+            await button.focus()
+            await expect(button).to_be_focused()
+            async with page.expect_file_chooser():
+                await page.keyboard.press("Enter")
+
+        # With adding switched off the area is inert.
+        async with knowledge_page(
+            browser, site, Stub(agent_active=False), path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            await expect(page.get_by_test_id("kb-add-off")).to_be_visible()
+            await expect(page.get_by_role("button", name="Choose files")).to_be_disabled()
+            await page.evaluate(DROP_SCRIPT, [["menu.pdf", 10]])
+            await expect(page.get_by_test_id("kb-selection")).to_have_text("No file chosen yet")
+            await expect(page.get_by_text(SELECTION_MESSAGE)).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_dropped_files_use_the_same_rules_as_the_picker(site: Site, tmp_path: Any) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            await add_ready(page)
+            message = page.get_by_text(SELECTION_MESSAGE)
+            queue = page.get_by_role("button", name="Queue upload / retry")
+            # Four files, a .txt and an empty file: the picker's message every time.
+            for dropped in (
+                [["a.pdf", 5], ["b.pdf", 5], ["c.pdf", 5], ["d.pdf", 5]],
+                [["notes.txt", 5]],
+                [["empty.pdf", 0]],
+            ):
+                await page.evaluate(DROP_SCRIPT, dropped)
+                await expect(message).to_be_visible()
+                await expect(page.get_by_test_id("kb-selection")).to_have_text("No file chosen yet")
+                await expect(queue).to_be_disabled()
+            # The picker says the same for the same files.
+            files = [
+                FilePayload(name=f"{n}.pdf", mimeType="application/pdf", buffer=b"x")
+                for n in "abcd"
+            ]
+            await page.locator("#kb-files").set_input_files(files)
+            await expect(message).to_be_visible()
+            await expect(queue).to_be_disabled()
+            # A good drop clears the message and queues like a picked file.
+            await page.evaluate(DROP_SCRIPT, [["menu.pdf", 5]])
+            await expect(message).to_have_count(0)
+            await expect(page.get_by_test_id("kb-selection")).to_contain_text("menu.pdf")
+            await expect(queue).to_be_enabled()
+            await queue.click()
+            await expect(page.get_by_test_id("kb-progress-job-new")).to_contain_text("menu.pdf")
+            assert len(stub.upload_keys) == 1
+
+    await with_browser(body)
+
+
+async def test_progress_moves_waiting_reading_ready_and_stops_polling(
+    site: Site, tmp_path: Any
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(jobs=[], files=[], documents=[])
+        sample = tmp_path / "new-upload.pdf"
+        sample.write_bytes(b"%PDF-1.4 synthetic")
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            await page.locator("#kb-files").set_input_files(str(sample))
+            await page.get_by_role("button", name="Queue upload / retry").click()
+            word = page.get_by_test_id("kb-progress-job-new-word")
+            await expect(word).to_have_text("Waiting")
+            for job in stub.jobs:
+                job["status"] = "running"
+            await expect(word).to_have_text("Reading", timeout=15_000)
+            for job in stub.jobs:
+                job["status"] = "done"
+            await expect(word).to_have_text("Ready", timeout=15_000)
+            settled = dict(stub.reads)
+            await asyncio.sleep(6.5)
+            assert stub.reads == settled, (stub.reads, settled)
+
+    await with_browser(body)
+
+
+async def test_upload_message_sits_under_technical_details(site: Site, tmp_path: Any) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        sample = tmp_path / "new-upload.pdf"
+        sample.write_bytes(b"%PDF-1.4 synthetic")
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            await page.locator("#kb-files").set_input_files(str(sample))
+            await page.get_by_role("button", name="Queue upload / retry").click()
+            await expect(page.get_by_test_id("kb-progress-job-new")).to_be_visible()
+            toggle = page.get_by_test_id("kb-progress-job-new-tech-toggle")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            await expect(page.get_by_text(QUEUED_TEXT)).to_be_hidden()
+            details = await open_progress_tech(page, "job-new")
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            await expect(details).to_contain_text(QUEUED_TEXT)
+
+    await with_browser(body)
+
+
+async def test_add_an_answer_saves_a_note_and_offers_mark_resolved(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
+            row = page.get_by_test_id("kb-gap-gap-sunday")
+            await expect(page.get_by_test_id("kb-questions-upload-link")).to_have_attribute(
+                "href", "/portal/faq/add"
+            )
+            opener = page.get_by_test_id("kb-gap-gap-sunday-answer")
+            await expect(opener).to_have_attribute("aria-expanded", "false")
+            await opener.click()
+            await expect(opener).to_have_attribute("aria-expanded", "true")
+            await expect(row).to_contain_text("Do you deliver on Sundays?")
+            save = page.get_by_test_id("kb-answer-save-gap-sunday")
+            await expect(save).to_be_disabled()
+            await page.get_by_label("Your answer").fill("  We deliver on Sundays from 10am.  ")
+            await expect(save).to_be_enabled()
+            await save.click()
+            saved = page.get_by_test_id("kb-answer-saved-gap-sunday")
+            await expect(saved).to_have_text("Saved. Your assistant can use this answer now.")
+            assert stub.answers == [
+                {
+                    "title": "Do you deliver on Sundays?",
+                    "content": "We deliver on Sundays from 10am.",
+                }
+            ], stub.answers
+            # Focus moves to the row's Mark resolved, which still works.
+            resolve = row.get_by_role("button", name="Mark resolved")
+            await expect(resolve).to_be_focused()
+            await resolve.click()
+            await expect(row).to_have_count(0)
+            assert stub.posts == ["kb/gaps/gap-sunday/resolve"]
+            # The other question's form can be cancelled without saving.
+            await page.get_by_test_id("kb-gap-gap-halal-answer").click()
+            await page.get_by_role("button", name="Cancel").click()
+            await expect(page.get_by_test_id("kb-answer-save-gap-halal")).to_have_count(0)
+            assert len(stub.answers) == 1
+
+        # A long question is cut to the title limit.
+        long_query = "Q" * 300
+        gaps = default_gaps()
+        gaps[0]["query"] = long_query
+        longer = Stub(gaps=gaps)
+        async with knowledge_page(
+            browser, site, longer, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
+            await page.get_by_test_id("kb-gap-gap-sunday-answer").click()
+            await page.get_by_label("Your answer").fill("Yes.")
+            await page.get_by_test_id("kb-answer-save-gap-sunday").click()
+            await expect(page.get_by_test_id("kb-answer-saved-gap-sunday")).to_be_visible()
+            assert longer.answers == [{"title": "Q" * 255, "content": "Yes."}]
+
+    await with_browser(body)
+
+
+async def test_save_answer_posts_once_and_never_claims_success_on_error(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # A double click posts once.
+        slow = Stub(answer_delay=0.8)
+        async with knowledge_page(
+            browser, site, slow, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
+            await page.get_by_test_id("kb-gap-gap-sunday-answer").click()
+            await page.get_by_label("Your answer").fill("We deliver on Sundays.")
+            await page.get_by_test_id("kb-answer-save-gap-sunday").dblclick()
+            await expect(page.get_by_test_id("kb-answer-saved-gap-sunday")).to_be_visible()
+            await asyncio.sleep(1.0)
+            assert len(slow.answers) == 1, slow.answers
+
+        # An error shows the warning, never the saved line, and the answer is kept.
+        failing = Stub(answer_failures=1)
+        async with knowledge_page(
+            browser, site, failing, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
+            await page.get_by_test_id("kb-gap-gap-sunday-answer").click()
+            await page.get_by_label("Your answer").fill("We deliver on Sundays.")
+            await page.get_by_test_id("kb-answer-save-gap-sunday").click()
+            await expect(page.get_by_test_id("kb-answer-error-gap-sunday")).to_have_text(
+                "We couldn't save the answer: synthetic answer failure. "
+                "Check What it knows before you try again, so it is not added twice."
+            )
+            await expect(page.get_by_test_id("kb-answer-saved-gap-sunday")).to_have_count(0)
+            await expect(page.get_by_label("Your answer")).to_have_value("We deliver on Sundays.")
+            # Pressing again after an error is a new, deliberate save.
+            await page.get_by_test_id("kb-answer-save-gap-sunday").click()
+            await expect(page.get_by_test_id("kb-answer-saved-gap-sunday")).to_be_visible()
+            assert len(failing.answers) == 2
+
+    await with_browser(body)
+
+
+async def test_read_only_sees_no_add_an_answer(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with knowledge_page(
+            browser,
+            site,
+            Stub(),
+            role="read_only",
+            path="/portal/faq/questions",
+            wait="kb-gaps",
+        ) as page:
+            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
+            await expect(page.get_by_role("button", name="Add an answer")).to_have_count(0)
+        # Adding switched off: the button is not offered either.
+        async with knowledge_page(
+            browser,
+            site,
+            Stub(agent_active=False),
+            path="/portal/faq/questions",
+            wait="kb-gaps",
+        ) as page:
+            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
+            await expect(page.get_by_role("button", name="Add an answer")).to_have_count(0)
 
     await with_browser(body)

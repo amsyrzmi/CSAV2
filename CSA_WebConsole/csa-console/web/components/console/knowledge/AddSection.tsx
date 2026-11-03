@@ -1,13 +1,26 @@
 "use client";
 
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { Agent, KbJob } from "@/lib/identity-contracts";
+import { progressWord, validateSelection, type ProgressWord } from "@/lib/knowledge-view";
 import { agentStateOf, lockedSlot, useKbSlot, type Slot } from "./useKbSlot";
 import AddKnowledge from "./AddKnowledge";
 import LockedNotice from "./LockedNotice";
 import SectionError from "./SectionError";
+import StatusLabel, { type StatusTone } from "../fs/StatusLabel";
+import { TechnicalDetails } from "../kit";
 import { Notice } from "../ui";
+
+const TONES: Record<ProgressWord, StatusTone> = {
+  Waiting: "info",
+  Reading: "info",
+  Ready: "success",
+  "Partly read": "attention",
+  "Could not be read": "attention",
+};
+
+type Upload = { jobId: string; names: string[]; message: string };
 
 /**
  * Add knowledge: the upload control and its own message and error. It reads the assistant row
@@ -18,7 +31,7 @@ export default function AddSection({ query, canWrite }: { query: string; canWrit
   const agents = useKbSlot<Agent[]>("agents", query);
   const jobs = useKbSlot<KbJob[]>("kb/ingest-jobs", query);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [uploads, setUploads] = useState<Upload[]>([]);
   const [busy, setBusy] = useState(false);
   const [selection, setSelection] = useState<{ files: File[]; key: string } | null>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -32,30 +45,44 @@ export default function AddSection({ query, canWrite }: { query: string; canWrit
   const loadJobs = jobs.load;
   const loadAgents = agents.load;
 
+  const jobRows = jobs.slot.data;
+  const wordOf = (upload: Upload): ProgressWord =>
+    progressWord(jobRows?.find((row) => row.id === upload.jobId)?.status ?? null);
+  const waiting = uploads.some((upload) => ["Waiting", "Reading"].includes(wordOf(upload)));
   useEffect(() => {
-    if (error || message) feedback.current?.scrollIntoView({ block: "nearest" });
-  }, [error, message]);
+    if (error) feedback.current?.scrollIntoView({ block: "nearest" });
+  }, [error]);
+  // The list is read again every 5 seconds only while a file of this visit is waiting or being read.
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setInterval(() => void loadJobs(), 5000);
+    return () => clearInterval(timer);
+  }, [waiting, loadJobs]);
 
-  function choose(event: ChangeEvent<HTMLInputElement>) {
-    const chosen = Array.from(event.target.files ?? []);
+  // The picker and a drop both come here, so both are held to the same rules.
+  function choose(chosen: File[]) {
     setError(""); setSelection(null);
     if (!chosen.length) return;
-    if (chosen.length > 3 || chosen.some((file) => !/\.(pdf|docx|csv)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024)) {
-      setError("Select one to three non-empty PDF, DOCX or CSV files, at most 10 MB each.");
-      event.target.value = ""; return;
+    const problem = validateSelection(chosen.map((file) => ({ name: file.name, size: file.size })));
+    if (problem) {
+      setError(problem);
+      if (input.current) input.current.value = "";
+      return;
     }
     setSelection({ files: chosen, key: crypto.randomUUID() });
   }
   async function upload() {
     if (!selection) return;
-    setBusy(true); setError(""); setMessage("");
+    setBusy(true); setError("");
     const form = new FormData();
     for (const file of selection.files) form.append("files", file);
     try {
       const result = await api<{ job_id: string; duplicate_request: boolean }>(path("kb/uploads"), {
         method: "POST", headers: { "Idempotency-Key": selection.key }, body: form,
       });
-      setMessage(`${result.duplicate_request ? "Existing" : "Queued"} job ${result.job_id}. Queued is not yet searchable.`);
+      const message = `${result.duplicate_request ? "Existing" : "Queued"} job ${result.job_id}. Queued is not yet searchable.`;
+      const entry = { jobId: result.job_id, names: selection.files.map((file) => file.name), message };
+      setUploads((current) => [entry, ...current.filter((row) => row.jobId !== result.job_id)]);
       setSelection(null);
       if (input.current) input.current.value = "";
       void loadJobs();
@@ -72,12 +99,25 @@ export default function AddSection({ query, canWrite }: { query: string; canWrit
   return <div className="space-y-6">
     {canWrite
       ? <AddKnowledge inputRef={input} agent={agentState} writable={writable} busy={busy}
-          selection={selection?.files ?? null} onChange={choose} onUpload={upload} onRetryAgent={() => void loadAgents()} />
+          selection={selection?.files ?? null} onFiles={choose} onUpload={upload} onRetryAgent={() => void loadAgents()} />
       : <Notice>Your role can read the business knowledge but not add to it.</Notice>}
     <div ref={feedback} className="space-y-3 empty:hidden">
       {error && <Notice error>{error}</Notice>}
-      {message && <Notice>{message}</Notice>}
       {retry(jobs.slot)}
     </div>
+    {uploads.length > 0 && <ul data-testid="kb-progress" className="space-y-3">
+      {uploads.map((upload) => {
+        const word = wordOf(upload);
+        const id = `kb-progress-${upload.jobId}`;
+        return <li key={upload.jobId} data-testid={id}
+          className="rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <p className="min-w-0 font-medium [overflow-wrap:anywhere]">{upload.names.join(", ")}</p>
+            <span data-testid={`${id}-word`}><StatusLabel tone={TONES[word]}>{word}</StatusLabel></span>
+          </div>
+          <TechnicalDetails testId={`${id}-tech`}><p>{upload.message}</p></TechnicalDetails>
+        </li>;
+      })}
+    </ul>}
   </div>;
 }

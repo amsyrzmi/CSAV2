@@ -1,13 +1,13 @@
 "use client";
 
-import type { ChangeEvent, RefObject } from "react";
+import type { RefObject } from "react";
 import { pausedReason, type AgentState } from "@/lib/knowledge-view";
 import { action, secondary } from "../ui";
+import UploadDrop from "./UploadDrop";
 
 /**
- * The first thing on the page: the upload control with the three plain steps beside it. The
- * control itself, its limits and its wording are unchanged; the page never takes it away while
- * a list reloads.
+ * The first thing on the page: the drop area with the three plain steps beside it. The picker,
+ * its limits and its wording are unchanged; the page never takes it away while a list reloads.
  */
 export default function AddKnowledge({
   inputRef,
@@ -15,7 +15,7 @@ export default function AddKnowledge({
   writable,
   busy,
   selection,
-  onChange,
+  onFiles,
   onUpload,
   onRetryAgent,
 }: {
@@ -24,7 +24,7 @@ export default function AddKnowledge({
   writable: boolean;
   busy: boolean;
   selection: File[] | null;
-  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFiles: (files: File[]) => void;
   onUpload: () => void;
   onRetryAgent: () => void;
 }) {
@@ -33,10 +33,7 @@ export default function AddKnowledge({
     <section data-testid="kb-add" className="card rounded-[14px] p-5 sm:p-6">
       <div className="grid gap-6 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <div className="min-w-0">
-          <label htmlFor="kb-files" className="mb-2 block text-sm">One to three PDF, DOCX or CSV files, at most 10 MB each</label>
-          <input ref={inputRef} id="kb-files" type="file" multiple accept=".pdf,.docx,.csv" disabled={busy || !writable}
-            className="block w-full max-w-full text-sm" onChange={onChange} />
-          {selection && <p className="mt-3 text-sm [overflow-wrap:anywhere]">{selection.map((file) => file.name).join(", ")}</p>}
+          <UploadDrop inputRef={inputRef} disabled={busy || !writable} selection={selection} onFiles={onFiles} />
           <button type="button" className={`${action} mt-4`} disabled={busy || !writable || !selection} onClick={onUpload}>
             {busy ? "Working..." : "Queue upload / retry"}
           </button>

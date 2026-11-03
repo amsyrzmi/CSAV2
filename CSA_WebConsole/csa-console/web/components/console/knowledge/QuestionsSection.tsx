@@ -1,20 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { useRef, useState } from "react";
 import { post } from "@/lib/api";
 import type { Agent, KbGap } from "@/lib/identity-contracts";
 import { addedText } from "@/lib/knowledge-view";
 import { Notice, secondary } from "../ui";
 import LockedNotice from "./LockedNotice";
+import AnswerForm from "./AnswerForm";
 import SectionError from "./SectionError";
 import { lockedSlot, useKbSlot } from "./useKbSlot";
 
 /** Unanswered questions: what customers asked that the assistant could not answer, with Mark resolved. */
-export default function QuestionsSection({ query, canWrite }: { query: string; canWrite: boolean }) {
+export default function QuestionsSection({
+  query,
+  canWrite,
+  addHref,
+}: {
+  query: string;
+  canWrite: boolean;
+  addHref: string;
+}) {
   const agents = useKbSlot<Agent[]>("agents", query);
   const gaps = useKbSlot<KbGap[]>("kb/gaps", query);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const resolveButtons = useRef(new Map<string, HTMLButtonElement>());
   const path = (resource: string) => `/console/v1/${resource}?${query}`;
   const agent = agents.slot.data?.find((row) => row.name === "kb_agent");
   const writable = canWrite && agent?.capability?.active === true;
@@ -36,6 +47,9 @@ export default function QuestionsSection({ query, canWrite }: { query: string; c
     <p className="text-sm text-[color:var(--fs-text-secondary)]">
       Customers asked these and your assistant had no answer. Add a file that covers them, then mark each one resolved.
     </p>
+    {canWrite && <p className="text-sm">
+      <Link data-testid="kb-questions-upload-link" className="font-medium text-[color:var(--fs-primary)] underline" href={addHref}>Upload a file instead</Link>
+    </p>}
     {error && <Notice error>{error}</Notice>}
     {gaps.slot.error && <SectionError name="gaps" what="the unanswered questions" message={gaps.slot.error}
       stale={gaps.slot.data !== null} onRetry={() => void loadGaps()} />}
@@ -50,7 +64,11 @@ export default function QuestionsSection({ query, canWrite }: { query: string; c
             <p className="text-[color:var(--fs-text-secondary)]">{gap.hits} hits. Last seen: {addedText(gap.last_seen)}</p>
           </div>
         </div>
-        {canWrite && <button className={secondary} disabled={busy || !writable} onClick={() => resolve(gap.id)}>Mark resolved</button>}
+        {canWrite && <button className={secondary} disabled={busy || !writable} data-testid={`kb-gap-${gap.id}-resolve`}
+          ref={(node) => { if (node) resolveButtons.current.set(gap.id, node); else resolveButtons.current.delete(gap.id); }}
+          onClick={() => resolve(gap.id)}>Mark resolved</button>}
+        {writable && <AnswerForm gap={gap} path={path} disabled={busy}
+          onSaved={() => setTimeout(() => resolveButtons.current.get(gap.id)?.focus(), 0)} />}
       </li>)}
     </ul>}
   </section>;
