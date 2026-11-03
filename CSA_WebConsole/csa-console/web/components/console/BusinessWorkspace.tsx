@@ -104,7 +104,7 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
             <Fold testId="business-about" title="About this page">
               <Notice>These are orders and products saved in fourstacks. They are not a live TikTok Shop
                 feed and don&apos;t update from TikTok Shop or Shopee yet. Stores are not connected or
-                checked, and stock is not matched across stores. Use Refresh to see the newest saved
+                checked, and stock is not matched or checked across stores. Use Refresh to see the newest saved
                 records.</Notice>
             </Fold>
             <Fold testId="business-not-yet" title="What this page does not do yet">

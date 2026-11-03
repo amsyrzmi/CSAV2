@@ -1175,6 +1175,9 @@ async def test_how_it_works_text_sits_behind_a_closed_arrow(shell: Shell) -> Non
         assert row_box["y"] < 700, row_box
         await page.get_by_test_id("inbox-howto-toggle").click()
         await expect(notice).to_be_visible()
+        await expect(
+            page.get_by_text("A sent reply waits to be delivered; its status shows under it.")
+        ).to_be_visible()
 
 
 async def test_queue_reply_points_at_its_question_only_while_open_and_a_release_closes_it(

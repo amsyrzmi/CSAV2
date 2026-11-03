@@ -29,6 +29,7 @@ export function InboxWorkspace({ me }: { me: Me }) {
       summary={<p className="text-sm text-ink-700">How taking over and replying work</p>}>
       <Notice>Take over a chat before you reply. The assistant stops replying until you hand it back.
         If the assistant is already sending a reply, taking over waits for it. Replies the assistant had lined up are not sent.
+        A sent reply waits to be delivered; its status shows under it.
         Each reply shows whether it was delivered.
         We hide common personal details in messages.</Notice>
     </DetailsRow>

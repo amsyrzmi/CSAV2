@@ -456,7 +456,7 @@ async def test_packaged_identity_readiness_and_boundaries(
                 assert page.status_code == 200
                 assert "These are orders and products saved in fourstacks." in page.text
                 assert "They are not a live TikTok Shop feed" in page.text
-                assert "stock is not matched across stores" in page.text
+                assert "stock is not matched or checked across stores" in page.text
                 assert "Not available yet" in page.text
             for client in (anonymous, member):
                 for path in (
