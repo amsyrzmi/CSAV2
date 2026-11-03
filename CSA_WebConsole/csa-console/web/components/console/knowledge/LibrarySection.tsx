@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { del } from "@/lib/api";
 import type { Agent, KbDocument, KbFile, KbGap, KbJob } from "@/lib/identity-contracts";
-import { groupSources, kbStatusLine, LIBRARY_PREVIEW, looseFiles, pausedReason, pollingNeeded, type Card } from "@/lib/knowledge-view";
-import { DetailsRow, TechDetailsProvider, TechSwitch } from "../kit";
+import {
+  formatBytes, groupSources, kbStatusLine, kindText, LIBRARY_PREVIEW, looseFiles, pausedReason, pollingNeeded, type Card,
+} from "@/lib/knowledge-view";
+import { DetailsRow, TechDetailsProvider, TechnicalDetails, TechSwitch } from "../kit";
 import { action, Notice, Panel, secondary } from "../ui";
 import KnowledgeCard, { type CardActions, type Source } from "./KnowledgeCard";
 import LockedNotice from "./LockedNotice";
@@ -87,7 +89,7 @@ export default function LibrarySection({
     setBusy(true); setError(""); setMessage("");
     try {
       await del(path(`kb/${confirm.type}/${confirm.id}`));
-      setConfirm(null); setMessage("Deleted. Queued work cannot recreate this source or its deleted content.");
+      setConfirm(null); setMessage("Deleted. Your assistant no longer uses this file.");
       reloadSources();
     } catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }
@@ -171,7 +173,7 @@ export default function LibrarySection({
         {retry(documents.slot, "documents", "your library", documents.load)}
         {documents.slot.data === null && !documents.slot.error && <Notice>Loading business knowledge...</Notice>}
         {documents.slot.data && !documents.slot.data.length && <div className="text-sm">
-          <p>No ingested documents.</p>
+          <p>No files yet.</p>
           {canWrite && <p className="mt-1 text-[color:var(--fs-text-secondary)]">
             <Link data-testid="kb-empty-add-link" className="font-medium text-[color:var(--fs-primary)] underline" href={addHref}>Add a file</Link> and your assistant will read it.
           </p>}
@@ -191,7 +193,10 @@ export default function LibrarySection({
             : !loose.length ? <p>Every uploaded file is shown on its card above.</p>
             : <div className="space-y-4">{loose.map((file) => <article key={file.id}>
               <p className="font-semibold">{file.name}</p>
-              <p>{file.media_type}, {file.size_bytes.toLocaleString()} bytes. {file.document_id ? `Document ${file.document_id}` : "No linked document yet."}</p>
+              <p>{kindText(file.name, null)}, {formatBytes(file.size_bytes)}. {file.document_id ? "Read by your assistant" : "Not read yet"}</p>
+              <TechnicalDetails testId={`kb-other-file-${file.id}-tech`}>
+                <p>{file.media_type}, {file.size_bytes.toLocaleString()} bytes. {file.document_id ? `Document ${file.document_id}` : "No linked document yet."}</p>
+              </TechnicalDetails>
               <div className="mt-2 flex flex-wrap gap-2">
                 <a className={secondary} href={path(`kb/files/${file.id}/download`)}>Download original</a>
                 {canWrite && <button className={secondary} disabled={busy || !writable} onClick={() => setConfirm({ type: "files", id: file.id, name: file.name })}>Delete source</button>}

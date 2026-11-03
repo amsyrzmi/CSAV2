@@ -107,6 +107,12 @@ export function jobStateText(status: string): string {
   return "Could not be read";
 }
 
+/** The plain line for a job that failed: how many tries it had. The exact line stays in Technical details. */
+export function couldNotReadText(attempts: number): string {
+  const tries = Number.isFinite(attempts) && attempts > 0 ? Math.round(attempts) : 0;
+  return tries === 0 ? "Could not be read" : `Could not be read after ${tries} ${tries === 1 ? "try" : "tries"}`;
+}
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, Math.round(bytes) || 0)} bytes`;
   const units = ["KB", "MB", "GB"];

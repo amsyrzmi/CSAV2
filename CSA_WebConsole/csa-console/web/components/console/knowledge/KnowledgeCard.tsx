@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { KbDocument, KbFile, KbJob } from "@/lib/identity-contracts";
-import { addedText, chipLabel, jobStateText, type Card, type Chip } from "@/lib/knowledge-view";
+import { addedText, chipLabel, couldNotReadText, jobStateText, type Card, type Chip } from "@/lib/knowledge-view";
 import StatusLabel, { type StatusTone } from "../fs/StatusLabel";
 import { DetailsRow, TechnicalDetails, useTechOpen } from "../kit";
 import { secondary } from "../ui";
@@ -31,7 +31,8 @@ const box =
 function summaryLine(card: Card, source: Source): string | null {
   if (source.type === "document") return source.document.is_active ? null : "An older version. Your assistant no longer uses it.";
   if (card.chip === "reading") return `${jobStateText(source.job.status)}. Your assistant cannot answer from it yet.`;
-  return `${jobStateText(source.job.status)}. Add the file again to try once more.`;
+  const state = source.job.status === "partial" ? jobStateText("partial") : couldNotReadText(source.job.attempts);
+  return `${state}. Add the file again to try once more.`;
 }
 
 /** One document or job as a card: plain words and a chip, with the original lines and actions behind the arrow. */

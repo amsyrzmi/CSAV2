@@ -2,7 +2,7 @@
 
 import type { Agent } from "@/lib/identity-contracts";
 import type { AgentState } from "@/lib/knowledge-view";
-import { DetailsRow } from "../kit";
+import { DetailsRow, TechnicalDetails } from "../kit";
 import { Notice, secondary } from "../ui";
 
 const box =
@@ -20,9 +20,9 @@ function Quiet({ testId, title, defaultOpen = false, children }: { testId: strin
 }
 
 /**
- * Maintenance: the technical text the page used to open with. Every sentence and control is
- * unchanged; it is only folded away. The one correction: the page no longer polls all the time,
- * so the polling sentence says when it does.
+ * Maintenance: a plain line, the controls, and under Technical details the technical text the
+ * page used to open with, word for word. The one correction: the page no longer polls all the
+ * time, so the polling sentence says when it does.
  */
 export function Maintenance({
   agent,
@@ -44,21 +44,12 @@ export function Maintenance({
   return (
     <Quiet testId="kb-maintenance" title="Maintenance" defaultOpen>
       <div className="space-y-4">
-        <Notice>Polling every 5 seconds while a file is being read. Lists show the latest 50 documents/gaps, 20 jobs and 100 sources.
-          Uploads need configured storage and an ingestion worker. A queued job is not proof the worker is running.</Notice>
+        <Notice>This page updates by itself while a file is being read.</Notice>
         <div>
-          <h3 className="mb-2 font-semibold">Embedding compatibility</h3>
           {agent ? (
-            <>
-              <p>{agent.detail}</p>
-              <p className="mt-2 text-sm">Model: {agent.embedding_model ?? "Not configured"}.
-                Compatible chunks: {agent.compatible_chunks ?? "Unknown"}.
-                Incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
-                No legacy FAQ files are imported automatically.</p>
-              {!writable && <p className="mt-3 text-sm">{canWrite ? "Writes require both KB subscription and tenant switch on." : "Read-only access: upload, deletion and gap resolution are unavailable."}</p>}
-            </>
+            !writable && <p className="text-sm">{canWrite ? "To add files, the knowledge assistant must be switched on in Services. Ask your admin." : "Read-only access: upload, deletion and gap resolution are unavailable."}</p>
           ) : agentState === "missing" ? (
-            <p data-testid="kb-agent-missing">KB capability metadata is unavailable.</p>
+            <p data-testid="kb-agent-missing">We couldn&apos;t check the knowledge assistant&apos;s settings.</p>
           ) : agentState === "failed" ? (
             <p className="flex flex-wrap items-center gap-2">
               We could not load the assistant details.
@@ -68,9 +59,23 @@ export function Maintenance({
         </div>
         {canWrite && (
           <div>
-            <button type="button" className={secondary} disabled={busy} onClick={onReconcile}>Reconcile orphaned storage</button>
+            <button type="button" className={secondary} disabled={busy} onClick={onReconcile}>Clean up leftover files</button>
           </div>
         )}
+        <TechnicalDetails testId="kb-maintenance-tech">
+          <div className="space-y-4">
+            <Notice>Polling every 5 seconds while a file is being read. Lists show the latest 50 documents/gaps, 20 jobs and 100 sources.
+              Uploads need configured storage and an ingestion worker. A queued job is not proof the worker is running.</Notice>
+            {agent && <div>
+              <h3 className="mb-2 font-semibold">Embedding compatibility</h3>
+              <p>{agent.detail}</p>
+              <p className="mt-2 text-sm">Model: {agent.embedding_model ?? "Not configured"}.
+                Compatible chunks: {agent.compatible_chunks ?? "Unknown"}.
+                Incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
+                No legacy FAQ files are imported automatically.</p>
+            </div>}
+          </div>
+        </TechnicalDetails>
       </div>
     </Quiet>
   );

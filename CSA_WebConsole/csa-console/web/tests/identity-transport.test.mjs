@@ -419,7 +419,7 @@ test("M6 synthetic demo listings are temporary local state with explicit no-API 
   assert.equal(added.length, 3);
   assert.equal(added[2].name, "Sample listing 3");
   assert.equal(added[2].status, "Demo draft");
-  assert.match(businessWorkspaceSource, /DEMO MODE — fictional sample data only\. Not connected to TikTok; no TikTok API request/);
+  assert.match(businessWorkspaceSource, /Example data only, made up for this view\. Not connected to TikTok; nothing here is sent\s+to TikTok/);
   assert.match(businessWorkspaceSource, /No TikTok request was made/);
   const demoSection = businessWorkspaceSource.split("function DemoBusinessWorkspace()")[1]
     .split("function BusinessRecords")[0];

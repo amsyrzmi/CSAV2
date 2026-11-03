@@ -55,7 +55,7 @@ export function KnowledgeWorkspace({ me, section = "library" }: { me: Me; sectio
   const addHref = withQuery(pages[1].href);
   return <>
     <h1 className="page-title mb-2 font-(family-name:--fs-font-heading) text-(length:--fs-text-page) font-semibold">Business knowledge</h1>
-    <PageIntro>Tenant documents, original sources, ingestion jobs and unanswered questions.</PageIntro>
+    <PageIntro>Files your assistant reads to answer customers, and questions it couldn&apos;t answer.</PageIntro>
     <SectionNav label="Business knowledge pages" testId="kb-subnav" items={pages} current={section}
       query={query || undefined} />
     <h2 ref={pageHeading} tabIndex={-1} data-testid="kb-page-heading"

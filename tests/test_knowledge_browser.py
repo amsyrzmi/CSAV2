@@ -410,7 +410,7 @@ async def test_one_failing_list_does_not_blank_the_page(site: Site) -> None:
             for other in ("agents", "files", "jobs", "gaps"):
                 await expect(page.get_by_test_id(f"kb-error-{other}")).to_have_count(0)
             # A failed load is never shown as an empty library.
-            await expect(page.get_by_text("No ingested documents.")).to_have_count(0)
+            await expect(page.get_by_text("No files yet.")).to_have_count(0)
             await expect(card(page, "doc-hours")).to_have_count(0)
 
             # Retry reads only that list.
@@ -455,7 +455,7 @@ async def test_one_failing_list_does_not_blank_the_page(site: Site) -> None:
                 "synthetic gaps outage"
             )
             await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_have_count(0)
-            await expect(page.get_by_text("No recorded unresolved gaps.")).to_have_count(0)
+            await expect(page.get_by_text("No unanswered questions right now.")).to_have_count(0)
 
     await with_browser(body)
 
@@ -558,12 +558,13 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
             await expect(card(page, "doc-hours")).to_have_count(0)
             assert stub.deletes == ["kb/documents/doc-hours"]
             await expect(
-                page.get_by_text(
-                    "Deleted. Queued work cannot recreate this source or its deleted content."
-                )
+                page.get_by_text("Deleted. Your assistant no longer uses this file.")
             ).to_be_visible()
 
             # A failed job: the error and the original job line sit behind its arrow.
+            await expect(card(page, "job-failed")).to_contain_text(
+                "Could not be read after 3 tries. Add the file again to try once more."
+            )
             failed = await open_card(page, "job-failed")
             await expect(failed).to_contain_text("job-failed: failed (attempts: 3)")
             await expect(failed).to_contain_text("Could not read any text in this PDF")
@@ -585,6 +586,7 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
             loose = page.get_by_test_id("kb-other-files-details")
             await expect(loose).to_be_visible()
             await expect(loose).to_contain_text("old-notes.pdf")
+            await expect(loose).to_contain_text("PDF, 512 bytes. Not read yet")
             await expect(loose.get_by_role("link", name="Download original")).to_have_count(1)
 
     await with_browser(body)
@@ -608,28 +610,31 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
                 "aria-expanded", "true"
             )
             await expect(page.get_by_test_id("kb-maintenance")).to_contain_text("Maintenance")
-            await expect(
-                maintenance.get_by_role("heading", name="Embedding compatibility")
-            ).to_be_visible()
             await expect(maintenance).to_contain_text(
-                "Model-compatible KB retrieval; no live TEI probe."
+                "This page updates by itself while a file is being read."
             )
-            await expect(maintenance).to_contain_text(
+            # The technical text is word for word, behind Technical details.
+            tech = page.get_by_test_id("kb-maintenance-tech-details")
+            await expect(tech).to_be_hidden()
+            await page.get_by_test_id("kb-maintenance-tech-toggle").click()
+            await expect(tech).to_be_visible()
+            await expect(
+                tech.get_by_role("heading", name="Embedding compatibility")
+            ).to_be_visible()
+            await expect(tech).to_contain_text("Model-compatible KB retrieval; no live TEI probe.")
+            await expect(tech).to_contain_text(
                 "Model: synthetic-embed-1. Compatible chunks: 24. Incompatible chunks: 0. "
                 "No legacy FAQ files are imported automatically."
             )
-            await expect(maintenance).to_contain_text(
+            await expect(tech).to_contain_text(
                 "Polling every 5 seconds while a file is being read. Lists show the latest 50 "
                 "documents/gaps, 20 jobs and 100 sources."
             )
-            await expect(maintenance).not_to_contain_text("Writes require both KB subscription")
+            await expect(maintenance).not_to_contain_text("To add files, the knowledge assistant")
             files_before = stub.reads["files"]
-            await maintenance.get_by_role("button", name="Reconcile orphaned storage").click()
+            await maintenance.get_by_role("button", name="Clean up leftover files").click()
             await expect(
-                page.get_by_text(
-                    "Storage reconciled: 2 orphaned/deleted/partial files removed. "
-                    "Active sources are retained."
-                )
+                page.get_by_text("Clean-up done: 2 leftover files removed. Files in use were kept.")
             ).to_be_visible()
             assert stub.posts == ["kb/storage/reconcile"]
             await until(
@@ -650,7 +655,8 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
         ) as page:
             maintenance = page.get_by_test_id("kb-maintenance-details")
             await expect(maintenance).to_contain_text(
-                "Writes require both KB subscription and tenant switch on."
+                "To add files, the knowledge assistant must be switched on in Services. "
+                "Ask your admin."
             )
             await expect(page.get_by_test_id("kb-settings-details")).to_contain_text(
                 "The knowledge assistant is off."
@@ -692,7 +698,7 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
                 "Read-only access: upload, deletion and gap resolution are unavailable."
             )
             await expect(
-                maintenance.get_by_role("button", name="Reconcile orphaned storage")
+                maintenance.get_by_role("button", name="Clean up leftover files")
             ).to_have_count(0)
 
     await with_browser(body)
@@ -736,7 +742,7 @@ async def test_upload_queues_a_file_and_shows_it_as_reading(site: Site, tmp_path
                 "One to three PDF, DOCX or CSV files, at most 10 MB each"
             )
             await expect(add).to_contain_text("No file chosen yet")
-            queue = add.get_by_role("button", name="Queue upload / retry")
+            queue = add.get_by_role("button", name="Upload", exact=True)
             await expect(queue).to_be_disabled()
             await page.locator("#kb-files").set_input_files(str(sample))
             await expect(add).to_contain_text("new-upload.pdf")
@@ -830,7 +836,7 @@ async def test_add_page_first_screen_at_390_leads_with_the_upload_area(site: Sit
             # Nothing technical sits above the upload area.
             for text in (
                 "Embedding compatibility",
-                "Reconcile orphaned storage",
+                "Clean up leftover files",
                 "Polling every 5 seconds",
             ):
                 await expect(page.get_by_text(text, exact=False).first).to_have_count(0)
@@ -858,7 +864,9 @@ async def test_missing_assistant_row_keeps_the_old_sentence_and_pauses_writes(si
             browser, site, stub, path="/portal/faq/maintenance", wait="kb-maintenance"
         ) as page:
             maintenance = page.get_by_test_id("kb-maintenance-details")
-            await expect(maintenance).to_contain_text("KB capability metadata is unavailable.")
+            await expect(maintenance).to_contain_text(
+                "We couldn't check the knowledge assistant's settings."
+            )
             await expect(maintenance).not_to_contain_text("We could not load the assistant details")
         async with knowledge_page(
             browser, site, stub, path="/portal/faq/questions", wait="kb-gaps"
@@ -921,7 +929,7 @@ async def test_mark_resolved_posts_and_the_question_leaves_the_list(site: Site) 
         ) as page:
             row = page.get_by_test_id("kb-gap-gap-sunday")
             await expect(row).to_contain_text("Do you deliver on Sundays?")
-            await expect(row).to_contain_text("4 hits. Last seen:")
+            await expect(row).to_contain_text("Asked 4 times. Last asked")
             await row.get_by_role("button", name="Mark resolved").click()
             await expect(row).to_have_count(0)
             assert stub.posts == ["kb/gaps/gap-sunday/resolve"], stub.posts
@@ -941,7 +949,7 @@ async def test_upload_failure_keeps_the_retry_message_and_the_same_key(
             browser, site, stub, path="/portal/faq/add", wait="kb-add"
         ) as page:
             await page.locator("#kb-files").set_input_files(str(sample))
-            queue = page.get_by_role("button", name="Queue upload / retry")
+            queue = page.get_by_role("button", name="Upload", exact=True)
             await queue.click()
             await expect(
                 page.get_by_text(
@@ -1176,7 +1184,7 @@ async def test_choose_the_file_again_links_to_the_add_page(site: Site) -> None:
             await expect(page.get_by_test_id("kb-add")).to_be_visible()
         # The empty library points at the same page.
         async with knowledge_page(browser, site, Stub(documents=[], jobs=[], files=[])) as page:
-            await expect(page.get_by_text("No ingested documents.")).to_be_visible()
+            await expect(page.get_by_text("No files yet.")).to_be_visible()
             await expect(page.get_by_test_id("kb-ready")).to_contain_text(
                 "Add a file and your assistant will read it."
             )
@@ -1312,7 +1320,7 @@ async def test_dropped_files_use_the_same_rules_as_the_picker(site: Site, tmp_pa
         ) as page:
             await add_ready(page)
             message = page.get_by_text(SELECTION_MESSAGE)
-            queue = page.get_by_role("button", name="Queue upload / retry")
+            queue = page.get_by_role("button", name="Upload", exact=True)
             # Four files, a .txt and an empty file: the picker's message every time.
             for dropped in (
                 [["a.pdf", 5], ["b.pdf", 5], ["c.pdf", 5], ["d.pdf", 5]],
@@ -1354,7 +1362,7 @@ async def test_progress_moves_waiting_reading_ready_and_stops_polling(
             browser, site, stub, path="/portal/faq/add", wait="kb-add"
         ) as page:
             await page.locator("#kb-files").set_input_files(str(sample))
-            await page.get_by_role("button", name="Queue upload / retry").click()
+            await page.get_by_role("button", name="Upload", exact=True).click()
             word = page.get_by_test_id("kb-progress-job-new-word")
             await expect(word).to_have_text("Waiting")
             for job in stub.jobs:
@@ -1379,7 +1387,7 @@ async def test_upload_message_sits_under_technical_details(site: Site, tmp_path:
             browser, site, stub, path="/portal/faq/add", wait="kb-add"
         ) as page:
             await page.locator("#kb-files").set_input_files(str(sample))
-            await page.get_by_role("button", name="Queue upload / retry").click()
+            await page.get_by_role("button", name="Upload", exact=True).click()
             await expect(page.get_by_test_id("kb-progress-job-new")).to_be_visible()
             toggle = page.get_by_test_id("kb-progress-job-new-tech-toggle")
             await expect(toggle).to_have_attribute("aria-expanded", "false")

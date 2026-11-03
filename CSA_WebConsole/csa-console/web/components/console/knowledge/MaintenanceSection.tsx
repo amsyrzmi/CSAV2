@@ -38,7 +38,7 @@ export default function MaintenanceSection({
     setBusy(true); setError("");
     try {
       const result = await post<{ removed_files: number }>(`/console/v1/kb/storage/reconcile?${query}`);
-      setMessage(`Storage reconciled: ${result.removed_files} orphaned/deleted/partial files removed. Active sources are retained.`);
+      setMessage(`Clean-up done: ${result.removed_files} leftover files removed. Files in use were kept.`);
       void loadFiles();
     } catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }

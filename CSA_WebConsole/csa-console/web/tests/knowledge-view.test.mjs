@@ -11,7 +11,7 @@ async function load(name) {
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
 const {
-  groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, kindText,
+  groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, couldNotReadText, kindText,
   looseFiles, pausedReason, kbStatusLine, LIBRARY_PREVIEW, validateSelection, progressWord, SELECTION_MESSAGE,
 } = await import(await load("knowledge-view.ts"));
 
@@ -252,4 +252,11 @@ test("progressWord maps every job status", () => {
   assert.equal(progressWord("partial"), "Partly read");
   assert.equal(progressWord("failed"), "Could not be read");
   assert.equal(progressWord("something_new"), "Could not be read");
+});
+
+test("couldNotReadText says how many tries a failed file had", () => {
+  assert.equal(couldNotReadText(3), "Could not be read after 3 tries");
+  assert.equal(couldNotReadText(1), "Could not be read after 1 try");
+  assert.equal(couldNotReadText(0), "Could not be read");
+  assert.equal(couldNotReadText(Number.NaN), "Could not be read");
 });

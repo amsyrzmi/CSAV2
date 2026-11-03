@@ -24,7 +24,8 @@ import { Fold, OrderCard, ProductCard, StoreCard, type Order, type Product } fro
 import OrderFilters from "./business/OrderFilters";
 import { useOrderCounts, useRecords } from "./business/useRecords";
 import {
-  DetailsRow, SectionNav, StatusChips, SummaryTiles, TechDetailsProvider, TechSwitch, useSectionArrivalFocus,
+  DetailsRow, SectionNav, StatusChips, SummaryTiles, TechDetailsProvider, TechnicalDetails, TechSwitch,
+  useSectionArrivalFocus,
 } from "./kit";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
@@ -73,7 +74,7 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
       title="Business management"
       description={demoMode
         ? "Synthetic demo only — sample listings do not connect to a seller account."
-        : "Read-only local orders, tracking references, products and stock."}
+        : "Your orders, deliveries, products and stock saved in fourstacks. View only."}
     />
     <SectionNav label="Business management pages" testId="business-subnav" items={pages}
       current={section} query={tenantQuery || undefined} />
@@ -83,12 +84,11 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
     </h2>
     {section === "orders" && demoMode && <div className="mb-5">
       <button className={secondary} type="button" aria-pressed={demoMode} onClick={() => setDemoMode(false)}>
-        Exit demo mode
+        Hide the example
       </button>
     </div>}
-    {section === "orders" && demoMode && <Notice>DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok API request or
-          listing is sent. Demo changes stay in this page&apos;s temporary state and reset when you exit
-          or reload.</Notice>}
+    {section === "orders" && demoMode && <Notice>Example data only, made up for this view. Not connected to TikTok; nothing here is sent
+          to TikTok. Changes stay on this page for now and disappear when you leave or reload.</Notice>}
     {!(section === "orders" && demoMode) && error && <Notice error>{error}</Notice>}
     {!(section === "orders" && demoMode) && platform && <label className="my-5 block">Tenant
       <select className={field} value={selected} onChange={(event) => chooseTenant(event.target.value)}>
@@ -102,16 +102,17 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
           {tenant ? <BusinessRecords key={tenant} query={tenantQuery} productsHref={pages[1].href} /> : needsTenant}
           <div className="mt-5 space-y-3">
             <Fold testId="business-about" title="About this page">
-              <Notice>Local records only, not a live TikTok Shop feed. No marketplace synchronization or store
-                connection verification is performed. Stock is not synchronized or authoritative across stores.
-                Refresh explicitly to read current local records.</Notice>
+              <Notice>These are orders and products saved in fourstacks. They are not a live TikTok Shop
+                feed and don&apos;t update from TikTok Shop or Shopee yet. Stores are not connected or
+                checked, and stock is not matched across stores. Use Refresh to see the newest saved
+                records.</Notice>
             </Fold>
             <Fold testId="business-not-yet" title="What this page does not do yet">
-              <h3 className="mb-2 font-semibold">Not available in this slice</h3>
-              <p>Marketplace listings, connection verification or changes, live carrier tracking, listing edits,
-                stock updates, fulfilment, cancellations, returns/refunds, payments and cross-platform synchronization
-                are unavailable here. Tickets, invoices, PDF downloads and staff preparation are later M6 slices.
-                Existing adapter code does not establish live seller authorization or a verified connection.</p>
+              <h3 className="mb-2 font-semibold">Not available yet</h3>
+              <p>Coming later: marketplace listings, connecting or changing stores, live courier tracking,
+                listing edits, stock updates, fulfilment, cancellations, returns and refunds, payments and
+                syncing between platforms. Support cases, invoices, PDF downloads and staff preparation are
+                coming later too. No seller account is connected or checked yet.</p>
             </Fold>
           </div>
           <div className="mt-5">
@@ -147,7 +148,7 @@ function DemoBusinessWorkspace() {
       <ul className="space-y-3">
         {listings.map((listing) => <li key={listing.id} className="rounded-md border border-ink-200 p-3 text-sm">
           <h3 className="font-semibold">{listing.sku} · {listing.name}</h3>
-          <p>MYR {listing.price} · {listing.status} · Demo only, not published</p>
+          <p>RM {listing.price} · {listing.status} · Demo only, not published</p>
         </li>)}
       </ul>
     </Panel>
@@ -220,7 +221,7 @@ function BusinessRecords({ query, productsHref }: { query: string; productsHref:
   };
   return <div className="space-y-5">
     <section className="card rounded-[14px] p-3 sm:p-6">
-      <h2 className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold sm:mb-5">Orders and tracking references</h2>
+      <h2 className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold sm:mb-5">Orders</h2>
       <SummaryTiles ariaLabel="Orders at a glance" testId="business-tiles" tiles={tiles} />
       <div data-testid="business-counts-note"
         className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[color:var(--fs-text-secondary)]">
@@ -234,7 +235,7 @@ function BusinessRecords({ query, productsHref }: { query: string; productsHref:
               {scope.kind !== "chosen" && <span>The list shows every date until you choose dates.</span>}
             </>}
         {scope.kind === "default" && <button type="button" className={secondary}
-          data-testid="business-counts-all-time" onClick={() => setAllTime(true)}>Count all time</button>}
+          data-testid="business-counts-all-time" onClick={() => setAllTime(true)}>Show totals for all dates</button>}
         {scope.kind === "all" && <button type="button" className={secondary}
           data-testid="business-counts-default" onClick={() => setAllTime(false)}>Use the last 30 days</button>}
         <button type="button" className={secondary} disabled={orders.loading}
@@ -248,7 +249,7 @@ function BusinessRecords({ query, productsHref }: { query: string; productsHref:
             event.preventDefault();
             setApplied({ channel, shopId });
           }}>
-            <label className="block">Source/platform (local orders)
+            <label className="block">Where the order came from
               <select className={field} value={channel} onChange={(event) => {
                 setChannel(event.target.value);
                 setShopId("");
@@ -269,8 +270,8 @@ function BusinessRecords({ query, productsHref }: { query: string; productsHref:
             <p className="text-sm">Filters match persisted source and store IDs exactly. Options do not
               indicate connected stores. Apply filters to restart at the newest matching orders.</p>
           </form>
-          <p className="mt-3 text-sm">Applied source: {applied.channel || "All local sources"}
-            {" · "}Applied store ID: {applied.shopId || "All stores / not recorded"}</p>
+          <p className="mt-3 text-sm">Showing: {applied.channel ? channelLabel(applied.channel) : "all sources"}
+            {", "}{applied.shopId ? `store ${applied.shopId}` : "all stores"}</p>
         </Fold>
       </OrderFilters>
       {(filters.length > 0 || applied.channel || applied.shopId) && <div data-testid="business-active-filters"
@@ -313,11 +314,11 @@ function ProductRecords({ query }: { query: string }) {
   const [stock, setStock] = useState(() => (search.get("stock") === "out" ? "out" : "all"));
   const shown = stock === "out" ? products.items?.filter((product) => product.available_qty <= 0) : products.items;
   return <div className="mt-5">
-    <Panel title="Local catalogue and inventory">
+    <Panel title="Products and stock">
       <div className="mb-4">
         <Fold testId="business-about-catalogue" title="About the catalogue">
-          <p className="text-sm">Tenant-wide local stock. Order source/store filters do not filter
-            these products; verified store listing mappings are not available in this slice.</p>
+          <p className="text-sm">Stock here is for your whole business, not per store. The order
+            filters do not change these products, and products are not matched to store listings yet.</p>
         </Fold>
       </div>
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -363,19 +364,23 @@ function StoreRecords({ query }: { query: string }) {
           <option value="lazada">Lazada</option>
         </select>
       </label>
-      <h3 className="mb-3 font-semibold">Local store records (not verified connections)</h3>
+      <h3 className="mb-3 font-semibold">Online stores (saved records only; connecting is coming soon)</h3>
       <StorePage key={path} path={path} />
     </section>
-    <Fold testId="business-stores" title="Store connections and local store records">
-      <Notice>These are local records and stored lifecycle evidence, not a live connection check.
-        Token contents, shop ciphers and permission scope values are not returned. Current provider
-        authorization and permissions remain unverified; provider reads are unavailable.
-        Recorded authorization or a future expiry does not prove a working connection.</Notice>
-      <p className="my-3 text-sm">Live TikTok authorization requires an eligible Partner Center app
-        and seller authorization. Account registration alone does not establish eligibility;
-        review/publishing or an independently verified testing route is still required.
-        Live authorization is not enabled in this workspace.</p>
-      <p className="text-sm">Pages follow stable local record IDs, not connection or update recency.</p>
+    <Fold testId="business-stores" title="About store connections">
+      <Notice>Store connections are coming soon. These are saved store details only, not a live
+        check, and saved access or a future expiry does not prove a store is connected.</Notice>
+      <TechnicalDetails testId="business-stores-tech">
+        <Notice>These are local records and stored lifecycle evidence, not a live connection check.
+          Token contents, shop ciphers and permission scope values are not returned. Current provider
+          authorization and permissions remain unverified; provider reads are unavailable.
+          Recorded authorization or a future expiry does not prove a working connection.</Notice>
+        <p className="my-3 text-sm">Live TikTok authorization requires an eligible Partner Center app
+          and seller authorization. Account registration alone does not establish eligibility;
+          review/publishing or an independently verified testing route is still required.
+          Live authorization is not enabled in this workspace.</p>
+        <p className="text-sm">Pages follow stable local record IDs, not connection or update recency.</p>
+      </TechnicalDetails>
     </Fold>
   </div>;
 }

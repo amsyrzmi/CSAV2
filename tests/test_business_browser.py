@@ -451,9 +451,14 @@ async def test_stores_page_shows_store_records(site: Site) -> None:
             await expect(page.get_by_test_id("business-stores-details")).to_be_hidden()
             await open_fold(page, "stores")
             await expect(page.get_by_test_id("business-stores-details")).to_contain_text(
+                "Store connections are coming soon. These are saved store details only"
+            )
+            # The original notices are word for word under Technical details.
+            await open_tech(page, "business-stores")
+            await expect(page.get_by_test_id("business-stores-tech-details")).to_contain_text(
                 "Account registration alone does not establish eligibility"
             )
-            await expect(page.get_by_test_id("business-stores-details")).to_contain_text(
+            await expect(page.get_by_test_id("business-stores-tech-details")).to_contain_text(
                 "Pages follow stable local record IDs"
             )
             await expect(store).to_contain_text("TikTok Shop · SHOP-A")
@@ -752,12 +757,12 @@ async def test_date_range_status_and_payment_filters_send_the_right_query(site: 
             )
             # Source filters still apply with the existing button and ride on both reads.
             await open_fold(page, "more-filters")
-            await page.get_by_label("Source/platform (local orders)").select_option("shopee")
+            await page.get_by_label("Where the order came from").select_option("shopee")
             await page.get_by_role("button", name="Apply order filters").click()
             await until(lambda: last_order() == {"channel": ["shopee"]})
             await until(lambda: last_counts() == {"channel": ["shopee"]})
             await expect(page.get_by_test_id("business-more-filters-details")).to_contain_text(
-                "Applied source: shopee · Applied store ID: All stores / not recorded"
+                "Showing: Shopee, all stores"
             )
 
     await with_browser(body)
@@ -1091,10 +1096,10 @@ async def test_see_an_example_opens_the_demo(site: Site) -> None:
             await expect(page.get_by_text("Show synthetic demo")).to_have_count(0)
             await example.click()
             await expect(
-                page.get_by_text("DEMO MODE — fictional sample data only.", exact=False)
+                page.get_by_text("Example data only, made up for this view.", exact=False)
             ).to_be_visible()
             await expect(page.get_by_test_id("business-tiles")).to_have_count(0)
-            exit_button = page.get_by_role("button", name="Exit demo mode")
+            exit_button = page.get_by_role("button", name="Hide the example")
             await expect(exit_button).to_have_attribute("aria-pressed", "true")
             await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
             exit_top = (await exit_button.bounding_box() or {})["y"]
@@ -1275,18 +1280,16 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
             await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
             await open_fold(page, "about")
             await expect(
-                page.get_by_text("Local records only, not a live TikTok Shop feed.", exact=False)
+                page.get_by_text("These are orders and products saved in fourstacks.", exact=False)
             ).to_be_visible()
             await open_fold(page, "not-yet")
-            await expect(
-                page.get_by_text("Not available in this slice", exact=True)
-            ).to_be_visible()
+            await expect(page.get_by_text("Not available yet", exact=True)).to_be_visible()
             before = (len(stub.order_queries), len(stub.counts_queries), list(stub.other_calls))
             await page.get_by_role("button", name="See an example").click()
             await expect(
                 page.get_by_text(
-                    "DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok "
-                    "API request or listing is sent.",
+                    "Example data only, made up for this view. Not connected to TikTok; nothing "
+                    "here is sent to TikTok.",
                     exact=False,
                 )
             ).to_be_visible()
@@ -1302,7 +1305,7 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
                 len(stub.counts_queries),
                 list(stub.other_calls),
             ) == before
-            await page.get_by_role("button", name="Exit demo mode").click()
+            await page.get_by_role("button", name="Hide the example").click()
             await expect(order_card(page, 1)).to_be_visible()
             # The demo lives on the Orders page only; the Connect buttons live on Stores.
             await page.get_by_test_id("business-subnav-stores").click()
@@ -1354,7 +1357,11 @@ async def test_first_screen_at_390_shows_tiles_the_filters_button_and_the_first_
                     .map((el) => Math.round(el.getBoundingClientRect().top))).size"""
             )
             assert rows == 1, rows
-            for text in ("Local records only", "Connect unavailable", "Exact store ID"):
+            for text in (
+                "These are orders and products saved",
+                "Connect unavailable",
+                "Exact store ID",
+            ):
                 await expect(page.get_by_text(text, exact=False).first).to_be_hidden()
             # Everything behind the Filters button and the All statuses arrow is closed.
             for testid in ("business-date", "business-payment", "business-status-all"):
@@ -1391,7 +1398,7 @@ async def test_active_source_filter_shows_outside_the_closed_fold(site: Site) ->
             await expect(page.get_by_test_id("business-source-filter")).to_have_count(0)
             await open_filters(page)
             await open_fold(page, "more-filters")
-            await page.get_by_label("Source/platform (local orders)").select_option("shopee")
+            await page.get_by_label("Where the order came from").select_option("shopee")
             await page.get_by_role("button", name="Apply order filters").click()
             await until(lambda: stub.order_queries[-1] == {"channel": ["shopee"]})
             # Close the fold again: the narrowing is still said in words, outside it.
@@ -1413,9 +1420,9 @@ async def test_active_source_filter_shows_outside_the_closed_fold(site: Site) ->
             await expect(page.get_by_test_id("business-more-filters-details")).to_be_hidden()
             await open_fold(page, "more-filters")
             await expect(page.get_by_test_id("business-more-filters-details")).to_contain_text(
-                "Applied source: All local sources"
+                "Showing: all sources, all stores"
             )
-            await expect(page.get_by_label("Source/platform (local orders)")).to_have_value("")
+            await expect(page.get_by_label("Where the order came from")).to_have_value("")
 
     await with_browser(body)
 

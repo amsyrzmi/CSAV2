@@ -454,9 +454,10 @@ async def test_packaged_identity_readiness_and_boundaries(
                 )
                 page = member.get("/portal/business")
                 assert page.status_code == 200
-                assert "Local records only, not a live TikTok Shop feed." in page.text
-                assert "Stock is not synchronized or authoritative across stores." in page.text
-                assert "Not available in this slice" in page.text
+                assert "These are orders and products saved in fourstacks." in page.text
+                assert "They are not a live TikTok Shop feed" in page.text
+                assert "stock is not matched across stores" in page.text
+                assert "Not available yet" in page.text
             for client in (anonymous, member):
                 for path in (
                     "/api/v1/channels/tiktok_shop/oauth/authorize",

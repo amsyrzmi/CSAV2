@@ -35,7 +35,7 @@ export default function AddKnowledge({
         <div className="min-w-0">
           <UploadDrop inputRef={inputRef} disabled={busy || !writable} selection={selection} onFiles={onFiles} />
           <button type="button" className={`${action} mt-4`} disabled={busy || !writable || !selection} onClick={onUpload}>
-            {busy ? "Working..." : "Queue upload / retry"}
+            {busy ? "Working..." : "Upload"}
           </button>
           {reason && (
             <p data-testid={agent === "ready" ? "kb-add-off" : "kb-add-unknown"}
