@@ -153,9 +153,9 @@ async def test_request_then_activate_flips_member_switches_and_audits(
     found = await caps(sessions, tenant)
     assert all(
         found[n]["is_enabled"] and found[n]["client_enabled"]
-        for n in ("kb_agent", "ticket_agent", "escalation_agent", "order_approval")
+        for n in ("ticket_agent", "escalation_agent", "order_approval")
     )
-    assert not found["order_agent"]["is_enabled"]
+    assert not found["order_agent"]["is_enabled"] and not found["kb_agent"]["is_enabled"]
     audit = await sessions.q(
         "SELECT action, target_id, details FROM console_audit"
         " WHERE client_id=%s AND action LIKE 'service.%%' ORDER BY created_at",
@@ -176,7 +176,6 @@ async def test_request_then_activate_flips_member_switches_and_audits(
     )
     assert [s["target_id"] for s in switches] == [
         "escalation_agent",
-        "kb_agent",
         "order_approval",
         "ticket_agent",
     ]
@@ -212,7 +211,7 @@ async def test_addon_requires_active_base_and_base_cannot_suspend_under_active_a
     found = await caps(sessions, tenant)
     assert not found["order_agent"]["is_enabled"] and not found["invoice_agent"]["is_enabled"]
     assert (
-        found["kb_agent"]["is_enabled"]
+        found["ticket_agent"]["is_enabled"]
         and found["escalation_agent"]["is_enabled"]
         and found["order_approval"]["is_enabled"]
     )
@@ -298,11 +297,11 @@ async def test_staff_email_and_hr_have_no_capability_members_and_email_inner_swi
     assert svc["hr"].inner_switch is None and svc["hr"].agents == []
     assert svc["customer_support"].inner_switch is None
     assert [a.name for a in svc["customer_support"].agents] == [
-        "kb_agent",
         "ticket_agent",
         "escalation_agent",
         "order_approval",
     ]
+    assert [a.name for a in svc["knowledge_base"].agents] == ["kb_agent"]
     assert svc["customer_support"].can_request and not svc["customer_support"].can_activate
     assert not svc["marketplaces"].can_request
     assert [
@@ -404,6 +403,11 @@ async def test_inactive_packages_block_inbox_business_kb_for_every_role(sessions
     await sessions.mutate(
         sessions.admin,
         f"/console/v1/services/customer_support/activate?client_id={t}",
+        {"reference": "Q"},
+    )
+    await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/knowledge_base/activate?client_id={t}",
         {"reference": "Q"},
     )
     reader, _ = await sessions.member(role="read_only")

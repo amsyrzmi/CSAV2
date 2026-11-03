@@ -32,8 +32,16 @@ def test_example_roster_is_valid() -> None:
     assert len(roster.platform_admins) == 3
     assert [c.slug for c in roster.companies] == ["team-jo", "kedai-mawar", "syarikat-cekap"]
     assert [c.packages for c in roster.companies] == [
-        ("customer_support", "orders_products", "subscriptions", "bookings", "hr", "staff_email"),
-        ("customer_support", "orders_products", "subscriptions"),
+        (
+            "customer_support",
+            "knowledge_base",
+            "orders_products",
+            "subscriptions",
+            "bookings",
+            "hr",
+            "staff_email",
+        ),
+        ("customer_support", "knowledge_base", "orders_products", "subscriptions"),
         ("hr",),
     ]
     assert [c.deployment_mode for c in roster.companies] == ["auto", "auto", None]

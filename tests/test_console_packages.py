@@ -44,6 +44,9 @@ def test_migration_backfill_members_match_catalogue():
     for pkg, member in pairs:
         migrated.setdefault(pkg, set()).add(member)
     catalogue = {k: set(v) for k, v in backfill_members().items() if v}
+    # 0450 is history: 0530 moved kb_agent to its own add-on, and only that differs.
+    assert catalogue.pop("knowledge_base") == {"kb_agent"}
+    catalogue["customer_support"].add("kb_agent")
     assert migrated == catalogue
 
 

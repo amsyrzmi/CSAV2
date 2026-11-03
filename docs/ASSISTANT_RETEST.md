@@ -128,6 +128,17 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Rehire a person who has left | HR owner, a Left person | Rehire with a start date says "Rehired. Invite them again from Settings to give console access."; the person is Active with no access switches | manual |
 | Open People & HR Home | HR owner | No "HR chat (assistant & voice)" block; the assistant dock is the only assistant | manual |
 
+## Knowledge base add-on
+
+| Check | Setup | Expected | Kind |
+|---|---|---|---|
+| Customer support only | A company with Customer support and no Knowledge base add-on | No Knowledge base in the menu; asking the assistant to open it says it isn't available | manual |
+| A customer question at that company | Message the company's bot with a question about a policy, in `auto` and again in `suggest` | The customer gets the handoff message straight away in both, staff get a normal-priority ticket, and the bot stays quiet for that customer until staff act | manual |
+| A mixed question, with Orders but no Knowledge base | Ask for a product's price and its warranty | The bot answers the price and says the team will follow up on the rest; no ticket opens | manual |
+| Activate the add-on | Platform admin, Services page for that company | Knowledge base shows as an add-on; after activating, the menu entry appears | manual |
+| Files after activating | Upload a file, wait for it to process, ask the bot about it | The bot answers from the file. The company must be `pilot` or `active`, or the file stays queued | manual |
+| Existing company after the rollout | A company that had Customer support before migration 0530 | Its Knowledge base entry, files and bot answers still work, and Services shows the add-on with the same status as Customer support | manual |
+
 ## Moving the HR owner
 
 The browser scenario `test_tenant_admin_moves_hr_owner` covers the panel against a stubbed API (the choice, the confirmation, a lost answer and its retry, `try_again`, `owner_changed`, `not_sent` and `repeat`). A person checks the rest on staging, with emails on and at least four members: a tenant admin who is not the HR owner, a colleague, a read-only member and the current HR owner.

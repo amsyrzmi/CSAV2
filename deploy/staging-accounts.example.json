@@ -20,6 +20,7 @@
       "timezone": "Asia/Kuala_Lumpur",
       "packages": [
         "customer_support",
+        "knowledge_base",
         "orders_products",
         "subscriptions",
         "bookings",
@@ -61,6 +62,7 @@
       "timezone": "Asia/Kuala_Lumpur",
       "packages": [
         "customer_support",
+        "knowledge_base",
         "orders_products",
         "subscriptions"
       ],
