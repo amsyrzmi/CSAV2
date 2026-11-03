@@ -210,7 +210,7 @@ async def test_auth_pages_fit_five_widths_in_three_themes(console: Console) -> N
                             banner = page.get_by_test_id("auth-banner")
                             await expect(banner).to_be_visible()
                             await expect(page.get_by_test_id("auth-panel")).to_be_hidden()
-                            logo = banner.locator("svg[viewBox='0 0 48 52']")
+                            logo = banner.get_by_test_id("mito-mark")
                             await expect(logo).to_be_visible()
                             box = await logo.bounding_box()
                             assert box is not None and 36 <= box["width"] <= 44, (where, box)
@@ -343,7 +343,9 @@ async def test_auth_logo_is_still_under_reduced_motion(console: Console) -> None
             page = await open_route(context, console, "/login")
             await page.wait_for_timeout(1200)
             assert await drop_animations(page) == []
-            await expect(page.get_by_test_id("auth-panel").locator("svg")).to_be_visible()
+            await expect(
+                page.get_by_test_id("auth-panel").get_by_test_id("mito-mark")
+            ).to_be_visible()
             await context.close()
 
             # The product's Calm motion preference.
