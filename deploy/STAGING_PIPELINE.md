@@ -585,8 +585,9 @@ It has three commands:
 
 - `plan` only reads. It changes nothing. Anyone, including an agent, may run it.
 - `wipe` backs up, wipes and rebuilds. Only the owner, at a terminal.
-- `accounts` adds the other platform admins, then the companies and their invitations.
-  Only the owner, at a terminal.
+- `accounts` adds the other platform admins, then the companies, their packages, modes and
+  profiles (status `pilot` and a brand name), and their invitations. Only the owner, at a
+  terminal.
 
 **What it wipes.** The database `csa_staging`: every account and session, all HR and
 customer data, and every Telegram, WhatsApp and Gmail connection. It also empties the two
@@ -610,11 +611,15 @@ and delivery. The console is unavailable and bot replies wait until it finishes.
    tracked tree (`git pull --ff-only origin main`).
 3. The roster file `deploy/staging-accounts.local.json` is in place, with mode 0600.
    It holds real addresses, so it is git-ignored and never goes in the repository, which
-   is public. The shape is in `deploy/staging-accounts.example.json`. To set the mode:
+   is public. Copy the example to that path and set the mode:
 
    ```bash
+   cd /home/amsyrzmi/CSAV2 && cp -n deploy/staging-accounts.example.json deploy/staging-accounts.local.json
    chmod 0600 /home/amsyrzmi/CSAV2/deploy/staging-accounts.local.json
    ```
+
+   Then edit the local file and put in the real addresses. The example's `example.test`
+   addresses pass the checks, and their invitations would go nowhere.
 
 4. Invitation mail is on (`CSA_STAGING_INVITE_MAIL=true`, section 10). `accounts` refuses
    when it is off, because it would otherwise have to print an invitation link.
@@ -629,8 +634,9 @@ output names people. They need the owner's passwords, so an agent can only run `
 
 1. Read the plan. It prints what staging holds now, what will be lost, the size of the
    backup and what `wipe` would refuse. Before the first real wipe it also checks that
-   the database container's maintenance database can be reached and that user 1000 can
-   read both volumes. If any of that fails, it refuses.
+   the database container's maintenance database can be reached, that user 1000 can read
+   both volumes, and that user 1000 owns every folder in them, the top one included,
+   because `wipe` could not empty them otherwise. If any of that fails, it refuses.
 
    ```bash
    cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset plan
@@ -640,7 +646,8 @@ output names people. They need the owner's passwords, so an agent can only run `
    run `plan` again.
 
 2. Wipe and rebuild. It asks you to type `wipe csa-staging`. No flag skips that. Later it
-   asks you for the first platform admin's initial password.
+   asks you for the first platform admin's initial password, at least 12 characters, typed
+   twice. You get three tries before it stops.
 
    ```bash
    cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset wipe
@@ -648,8 +655,10 @@ output names people. They need the owner's passwords, so an agent can only run `
 
    In order, it backs up, stops the four services, drops and creates the database, empties
    the two volumes, loads the base schema, migrates, creates the first platform admin,
-   starts the services and waits until they are ready. If it fails after the drop, it
-   says which step failed and what state staging is in. It is safe to run again.
+   starts the services and waits until they are ready. If it fails at the stop or at the
+   drop and the database is still there, nothing is lost, and it prints the command that
+   brings staging back. If it fails later, it says which step failed and what state
+   staging is in. It is safe to run again.
 
 3. Sign in to the console as the first platform admin and change the password.
    `accounts` cannot add anyone until this is done.
@@ -664,16 +673,21 @@ output names people. They need the owner's passwords, so an agent can only run `
    ```
 
    The company step runs inside the gateway, so its lines appear when it finishes. Each
-   line says `created`, `already there` or `mail not sent`, with an address but never a
-   link. Exit 2 means some mail was not sent. Use Renew invitation on that person's
-   Team page.
+   line says `created`, `already there`, `invited, mail sent` or `mail not sent`, with an
+   address but never a link. Exit 2 means some mail was not sent. Use Renew invitation on
+   that person's Team page.
+
+   It sets every company's status to `pilot` and its brand name to the company's name, and
+   says so in its lines. Background jobs visit only `pilot` and `active` companies, so
+   without this knowledge base uploads and subscriptions would silently never run, and
+   the bot would call itself "the business".
 
    - Running `accounts` again is safe. It skips what exists and sends no second email.
    - It refuses when staging holds a company outside the roster, so it refuses an
      unwiped staging. Running `seed_staging` after a reset does the same, so do not.
-   - A repeat run soon after may have to wait. Each run uses up to one `admin_add`
-     throttle attempt for every admin it adds, plus one for the company step. The limit
-     is 5 attempts per 15 minutes per address.
+   - A repeat run soon after may have to wait up to 15 minutes. Each run uses up to one
+     `admin_add` throttle attempt for every admin it adds, plus one for the company step.
+     The limit is 5 attempts per 15 minutes per address.
 
 ### After the tool
 
@@ -793,6 +807,8 @@ B=~/csa-staging-backups/<timestamp>
        --entrypoint tar "$IMAGE" -C /data -xf - < "$B/$V.tar" || break
    done
    ```
+
+   If this prints an error, stop; the volume may be empty.
 
 4. Bring the services back. First check that the restored data fits the images that will
    run it. Read the backup's schema and revision from its manifest or from the tool's

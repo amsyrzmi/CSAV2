@@ -96,7 +96,7 @@ Refuses unless all of these hold:
 - stdin is a real terminal;
 - HEAD is on `origin/main`, the tracked tree is clean, and all services run the image for HEAD, so the rebuilt schema matches what the services expect;
 - compose project `csa-staging`, database `csa_staging`, host `staging-db`, owner role `csa`, with these values fixed in code and not taken from arguments or the environment;
-- the upload volumes are exactly `csa-staging_staging-uploads` and `csa-staging_staging-hr-uploads`;
+- the upload volumes are exactly `csa-staging_staging-uploads` and `csa-staging_staging-hr-uploads`, and uid 1000 owns every folder in them, the mount itself included, because the wipe empties them as that user;
 - the roster file is present and valid;
 - there is enough free disk;
 - the owner types the exact phrase `wipe csa-staging` at the prompt. The prompt is not bypassable by a flag.
@@ -109,11 +109,11 @@ Then, in order:
 4. Empty the two upload volumes through one-off containers with no network and no secrets, keeping the mount point and its ownership.
 5. Load the base schema: confirm the new database has no tables, then pipe `db/schema_baseline.sql` from the running Python image to psql inside `staging-db`, stopping at the first error, as the first-install procedure does.
 6. Run the `migrate` service and confirm that the schema version recorded matches `EXPECTED_SCHEMA_VERSION`.
-7. Run `admin-bootstrap` for the first admin named in the roster. The owner types the initial password.
+7. Run `admin-bootstrap` for the first admin named in the roster. The owner types the initial password, with three tries, so a mistyped or short one does not cost a whole wipe.
 8. Recreate the services and wait for readiness.
 9. Print the next step: sign in as that admin, change the password, then run `accounts`.
 
-A failure from step 3 on prints the step, what state staging is in (for example, an empty database with no schema), and the recovery: fix the cause and run `wipe` again (it stays safe to repeat, because the database is about to be dropped anyway), or restore from the named backup. The restore commands are in the docs. A repeat takes a new backup.
+A failure at step 2, or at the drop in step 3 when a read then finds the database still there, says nothing is lost: fix the cause and run `wipe` again, or bring staging back with the printed `docker start` command. That advice is not given to a repeat wipe that started from a database with no accounts, since an earlier wipe already took the data. Any other failure from step 3 on, including an interrupted drop that the server may still have finished, prints the step, what state staging is in (for example, an empty database with no schema), and the recovery: fix the cause and run `wipe` again (it stays safe to repeat, because the database is about to be dropped anyway), or restore from the named backup. The restore commands are in the docs. A repeat takes a new backup.
 
 ### `accounts` (owner only, at a terminal)
 
@@ -126,6 +126,7 @@ The company step:
 - Refuses unless invitation mail is actually on, built the way `apps/gateway/main.py` builds it (`Mailer.from_settings`, then `.enabled`). Otherwise an invitation link would have to be printed, which is not allowed.
 - For each company: creates it with the same code as the console route, then activates its packages through `activate_package`, in dependency order, with reference `staging-reset`.
 - Sets the deployment mode the roster names through `set_deployment_mode`, with one `console_audit` row naming the actor. A company whose roster entry names no mode is left in `shadow`.
+- Sets every roster company's `status` to `pilot` and its `brand_name` to the company's name, with one `console_audit` row (`tenant.staging_profile_set`, naming the fields changed) when it changes something. Background jobs visit only `pilot` and `active` companies, so at the default `onboarding` knowledge base uploads and subscriptions would silently never run, while the bot still replies. With no brand name the bot calls itself "the business". The old demo companies were edited by hand, and the wipe removes that. Companies made through the console still have this gap, which the Go live project must close: a switch that only sets the mode won't be enough.
 - Invites each tenant member through `IdentityService.invite` with the same notify callback as the console, with no HR preset.
 - Prints one line per item: `created`, `already there` or `mail not sent`, with addresses but never a link or token.
 
@@ -179,7 +180,7 @@ Also in this change:
 - Every `wipe` refusal above is tested, and each one proves that no destructive command ran.
 - A wrong confirmation phrase, a non-terminal stdin, and arguments that try to name another project or database are all refused.
 - On a disposable Postgres: the drop, create, base schema and migrate sequence ends at `EXPECTED_SCHEMA_VERSION`, while the cluster roles still work with the passwords the gate sets.
-- On a disposable migrated database with a fake mailer: the company step creates the synthetic roster's companies with exactly the agreed packages active and their capabilities on, sets the named deployment modes and leaves the others in `shadow`, sends one invitation per member, prints no token, and a second run changes nothing and sends nothing.
+- On a disposable migrated database with a fake mailer: the company step creates the synthetic roster's companies with exactly the agreed packages active and their capabilities on, sets the named deployment modes and leaves the others in `shadow`, makes every company one that background jobs visit, with its brand name set, sends one invitation per member, prints no token, and a second run changes nothing and sends nothing.
 - With mail off, the company step refuses before creating anything.
 - The prompts that need a real terminal (`admin-bootstrap`, `admin-add`, the confirmation) can't be covered by the fake runner. The tests cover everything around them, and they are checked by the real run.
 - A backup restores: tested once by hand or in a disposable container, with the commands in the docs matching what was run.
