@@ -26,7 +26,7 @@ import pytest
 from playwright.async_api import Page, expect
 
 from tests import test_services_redesign_browser as services
-from tests.test_services_browser import WAIT, make_me
+from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
 from tests.test_services_redesign_browser import Site, open_event, with_browser
 
 pytestmark = pytest.mark.asyncio
@@ -139,6 +139,8 @@ class Stub:
     order_queries: list[dict[str, list[str]]] = field(default_factory=list)
     counts_queries: list[dict[str, list[str]]] = field(default_factory=list)
     other_calls: list[str] = field(default_factory=list)
+    product_queries: list[dict[str, list[str]]] = field(default_factory=list)
+    store_queries: list[dict[str, list[str]]] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
 
     def filtered(self, query: dict[str, list[str]], *, with_status: bool) -> list[dict[str, Any]]:
@@ -195,8 +197,11 @@ class Stub:
                 "items": page,
                 "next_cursor": page[-1]["id"] if more else None,
             }
+        elif path == "admin/clients" and request.method == "GET":
+            data = [TENANT_PROFILE]
         elif path == "business/products" and request.method == "GET":
             self.other_calls.append("products")
+            self.product_queries.append(query)
             data = {
                 "source": "local_catalogue",
                 "marketplace_sync": "unavailable",
@@ -205,6 +210,7 @@ class Stub:
             }
         elif path == "business/stores" and request.method == "GET":
             self.other_calls.append("stores")
+            self.store_queries.append(query)
             data = {
                 "source": "local_credential_records",
                 "marketplace_sync": "unavailable",
@@ -230,8 +236,10 @@ async def business_page(
     height: int = 1000,
     theme: str | None = None,
     wait_for_rows: bool = True,
+    path: str = "/portal/business",
+    role: str = "tenant_admin",
 ) -> AsyncIterator[Page]:
-    site.upstream.me = make_me("tenant_admin")
+    site.upstream.me = make_me(role)
     site.upstream.packages = [{"key": "orders_products", "status": "active"}]
     context = await browser.new_context(
         viewport={"width": width, "height": height}, timezone_id=ZONE
@@ -247,7 +255,7 @@ async def business_page(
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     await page.route("**/console/v1/**", stub.route)
-    await page.goto(f"{site.base}/portal/business")
+    await page.goto(f"{site.base}{path}")
     if wait_for_rows:
         await expect(order_card(page, 1)).to_be_visible(timeout=WAIT)
     try:
@@ -329,8 +337,24 @@ async def test_orders_show_cards_and_arrow_details(site: Site) -> None:
             await expect(page.get_by_test_id(f"business-order-{oid(4)}-details")).to_contain_text(
                 "Tracking: TRK00004 · Carrier: J&T"
             )
-            # Products and local store records get the same card plus arrow.
+            # The long notices and the filters stay folded; products and stores are other pages.
+            await expect(page.get_by_test_id("business-more-filters-details")).to_be_hidden()
+            await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
+            await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
+            await expect(page.get_by_test_id("business-stores")).to_have_count(0)
+            assert stub.other_calls == [], stub.other_calls
+
+    await with_browser(body)
+
+
+async def test_products_page_lists_products_with_arrow_details(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
             product = page.get_by_test_id("business-product-00000000-0000-4000-8000-000000000001")
+            await expect(product).to_be_visible(timeout=WAIT)
             await expect(product).to_contain_text("Blue mug 1")
             await expect(product).to_contain_text("RM 18.00 · 7 available")
             product_details = page.get_by_test_id(
@@ -341,10 +365,24 @@ async def test_orders_show_cards_and_arrow_details(site: Site) -> None:
             await expect(product_details).to_contain_text("MUG-1 · Blue mug 1")
             await expect(product_details).to_contain_text("MYR 18.00 · Local status: Active")
             await expect(product_details).to_contain_text("Stock: 10 · Reserved: 3 · Available: 7")
+            await expect(page.get_by_test_id("business-about-catalogue-details")).to_be_hidden()
+            await open_fold(page, "about-catalogue")
+            # Orders belong to the other page: nothing here reads them or the stores.
+            assert not stub.order_queries and not stub.counts_queries, stub.order_queries
+            assert set(stub.other_calls) == {"products"}, stub.other_calls
+            await expect(page.get_by_test_id("business-orders-list")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_stores_page_shows_store_records(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
             # The store records sit in a closed fold, with the two disabled buttons inside it.
-            await expect(page.get_by_test_id("business-stores-details")).to_be_hidden()
-            await expect(page.get_by_test_id("business-more-filters-details")).to_be_hidden()
-            await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
+            await expect(page.get_by_test_id("business-stores-details")).to_be_hidden(timeout=WAIT)
             await open_fold(page, "stores")
             store = page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
             await expect(store).to_contain_text("TikTok Shop · SHOP-A")
@@ -358,6 +396,123 @@ async def test_orders_show_cards_and_arrow_details(site: Site) -> None:
                 "Stored lifecycle: No usable local authorization evidence"
             )
             await expect(store_details).to_contain_text("Live integration: unavailable")
+            assert not stub.order_queries and set(stub.other_calls) == {"stores"}, stub.other_calls
+
+    await with_browser(body)
+
+
+async def test_section_bar_moves_between_pages_and_marks_the_current_one(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            bar = page.get_by_role("navigation", name="Business management pages")
+            await expect(bar.get_by_role("link")).to_have_text(
+                ["Orders", "Products & stock", "Store connections"]
+            )
+            await expect(page.get_by_role("heading", level=1)).to_have_text("Business management")
+            heading = page.get_by_test_id("business-page-heading")
+            await expect(heading).to_have_text("Orders")
+            await expect(page.get_by_test_id("business-subnav-orders")).to_have_attribute(
+                "aria-current", "page"
+            )
+            await page.get_by_test_id("business-subnav-products").click()
+            await expect(page).to_have_url(re.compile(r"/portal/business/products$"))
+            await expect(heading).to_have_text("Products & stock")
+            await expect(heading).to_be_focused()
+            await expect(page.get_by_test_id("business-subnav-products")).to_have_attribute(
+                "aria-current", "page"
+            )
+            await expect(page.get_by_test_id("business-subnav-orders")).not_to_have_attribute(
+                "aria-current", "page"
+            )
+            await expect(page.get_by_test_id("business-products-list")).to_be_visible()
+            await page.get_by_test_id("business-subnav-stores").click()
+            await expect(page).to_have_url(re.compile(r"/portal/business/stores$"))
+            await expect(heading).to_have_text("Store connections")
+            await expect(heading).to_be_focused()
+            await expect(page.get_by_test_id("business-subnav-stores")).to_have_attribute(
+                "aria-current", "page"
+            )
+            await page.get_by_test_id("business-subnav-orders").click()
+            await expect(page).to_have_url(re.compile(r"/portal/business$"))
+            await expect(order_card(page, 1)).to_be_visible()
+            await expect(page.get_by_test_id("business-subnav-orders")).to_have_attribute(
+                "aria-current", "page"
+            )
+
+    await with_browser(body)
+
+
+async def test_section_bar_keeps_the_admin_tenant(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/business", role="platform_admin", wait_for_rows=False
+        ) as page:
+            await expect(page.get_by_text("Select a tenant to view its business records.")).to_be_visible(
+                timeout=WAIT
+            )
+            assert not stub.order_queries
+            await expect(page.get_by_test_id("business-subnav-products")).to_have_attribute(
+                "href", "/business/products"
+            )
+            select = page.get_by_label("Tenant")
+            await expect(select.locator("option")).to_have_count(2)
+            await select.select_option(TENANT)
+            await expect(page).to_have_url(re.compile(rf"/business\?client_id={TENANT}$"))
+            await expect(order_card(page, 1)).to_be_visible()
+            assert stub.order_queries[-1].get("client_id") == [TENANT], stub.order_queries
+            await expect(page.get_by_test_id("business-subnav-products")).to_have_attribute(
+                "href", f"/business/products?client_id={TENANT}"
+            )
+            await page.get_by_test_id("business-subnav-products").click()
+            await expect(page).to_have_url(
+                re.compile(rf"/business/products\?client_id={TENANT}$")
+            )
+            await expect(page.get_by_test_id("business-products-list")).to_be_visible()
+            assert stub.product_queries[-1].get("client_id") == [TENANT], stub.product_queries
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            # A reload keeps the tenant, and the next page too.
+            await page.reload()
+            await expect(page.get_by_test_id("business-products-list")).to_be_visible()
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            assert stub.product_queries[-1].get("client_id") == [TENANT], stub.product_queries
+            await page.get_by_test_id("business-subnav-stores").click()
+            await open_fold(page, "stores")
+            await expect(
+                page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
+            ).to_be_visible()
+            assert stub.store_queries[-1].get("client_id") == [TENANT], stub.store_queries
+            # Clearing the choice removes it from the address.
+            await page.get_by_label("Tenant").select_option("")
+            await expect(page).to_have_url(re.compile(r"/business/stores$"))
+            await expect(page.get_by_text("Select a tenant to view its business records.")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_a_rail_link_without_a_tenant_lands_on_select_a_tenant(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/business/products", role="platform_admin",
+            wait_for_rows=False,
+        ) as page:
+            await expect(page.get_by_text("Select a tenant to view its business records.")).to_be_visible(
+                timeout=WAIT
+            )
+            assert not stub.product_queries and not stub.order_queries
+
+    await with_browser(body)
+
+
+async def test_unknown_page_is_not_found(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            for path in ("/portal/business/nothing", "/portal/business/products/extra"):
+                response = await page.goto(f"{site.base}{path}")
+                assert response is not None and response.status == 404, (path, response)
 
     await with_browser(body)
 
@@ -632,38 +787,57 @@ async def overflow(page: Page) -> dict[str, int]:
     )
 
 
+async def check_widths(page: Page, theme: str, where: str) -> None:
+    for width in WIDTHS:
+        await page.set_viewport_size({"width": width, "height": 900})
+        measured = await overflow(page)
+        assert measured["scroll"] <= measured["inner"], ("page", where, theme, width, measured)
+        # No card, chip row or filter sticks out of the viewport either.
+        outside = await page.evaluate(
+            """() => [...document.querySelectorAll(
+                '[data-testid^="business-"]')].filter(
+                e => {
+                    const clipped = e.parentElement?.getAttribute('role') === 'group'
+                        && getComputedStyle(e.parentElement).overflowX === 'auto';
+                    const right = e.getBoundingClientRect().right;
+                    return !clipped && right > window.innerWidth + 0.5;
+                }
+            ).map(e => e.dataset.testid)"""
+        )
+        assert not outside, (where, theme, width, outside)
+
+
 @pytest.mark.parametrize("theme", THEMES)
 async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(browser, site, stub, theme=theme) as page:
             await order_card(page, 1).get_by_role("button", name="Show details").click()
-            for name in ("more-filters", "about-catalogue", "stores", "about", "not-yet"):
+            for name in ("more-filters", "about", "not-yet"):
                 await open_fold(page, name)
+            await expect(order_card(page, 1)).to_have_attribute("data-open", "true")
+            await check_widths(page, theme, "orders")
             for width in WIDTHS:
                 await page.set_viewport_size({"width": width, "height": 900})
-                await expect(order_card(page, 1)).to_have_attribute("data-open", "true")
-                measured = await overflow(page)
-                assert measured["scroll"] <= measured["inner"], ("page", theme, width, measured)
-                # No card, chip row or filter sticks out of the viewport either.
-                outside = await page.evaluate(
-                    """() => [...document.querySelectorAll(
-                        '[data-testid^="business-"]')].filter(
-                        e => {
-                            const clipped = e.parentElement?.getAttribute('role') === 'group'
-                                && getComputedStyle(e.parentElement).overflowX === 'auto';
-                            const right = e.getBoundingClientRect().right;
-                            return !clipped && right > window.innerWidth + 0.5;
-                        }
-                    ).map(e => e.dataset.testid)"""
-                )
-                assert not outside, (theme, width, outside)
                 await page.get_by_test_id("business-date").click()
                 await expect(page.get_by_test_id("business-date-popover")).to_be_visible()
                 measured = await overflow(page)
                 assert measured["scroll"] <= measured["inner"], ("calendar", theme, width, measured)
                 await page.keyboard.press("Escape")
                 await expect(page.get_by_test_id("business-date-popover")).to_have_count(0)
+            # The section bar itself, then the other two pages.
+            await page.get_by_test_id("business-subnav-products").click()
+            product = page.get_by_test_id("business-product-00000000-0000-4000-8000-000000000001")
+            await expect(product).to_be_visible()
+            await product.get_by_role("button", name="Show details").click()
+            await open_fold(page, "about-catalogue")
+            await check_widths(page, theme, "products")
+            await page.get_by_test_id("business-subnav-stores").click()
+            await open_fold(page, "stores")
+            store = page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
+            await expect(store).to_be_visible()
+            await store.get_by_role("button", name="Show details").click()
+            await check_widths(page, theme, "stores")
 
     await with_browser(body)
 
@@ -672,7 +846,7 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(browser, site, stub) as page:
-            # The long notices and the store section are folded; their text stays reachable.
+            # The long notices are folded; their text stays reachable on the Orders page.
             await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
             await open_fold(page, "about")
             await expect(
@@ -682,12 +856,6 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
             await expect(
                 page.get_by_text("Not available in this slice", exact=True)
             ).to_be_visible()
-            await open_fold(page, "stores")
-            connect = page.get_by_role("button", name="Connect unavailable", exact=True)
-            reconnect = page.get_by_role("button", name="Reconnect unavailable", exact=True)
-            await expect(connect).to_be_disabled()
-            await expect(reconnect).to_be_disabled()
-            await expect(page.get_by_role("button", name=" unavailable")).to_have_count(2)
             before = (len(stub.order_queries), len(stub.counts_queries), list(stub.other_calls))
             await page.get_by_role("button", name="Show synthetic demo").click()
             await expect(
@@ -711,9 +879,17 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
             ) == before
             await page.get_by_role("button", name="Exit demo mode").click()
             await expect(order_card(page, 1)).to_be_visible()
+            # The demo lives on the Orders page only; the Connect buttons live on Stores.
+            await page.get_by_test_id("business-subnav-stores").click()
+            await expect(page.get_by_role("button", name="Show synthetic demo")).to_have_count(0)
             await open_fold(page, "stores")
+            connect = page.get_by_role("button", name="Connect unavailable", exact=True)
+            reconnect = page.get_by_role("button", name="Reconnect unavailable", exact=True)
             await expect(connect).to_be_disabled()
             await expect(reconnect).to_be_disabled()
+            await expect(page.get_by_role("button", name=" unavailable")).to_have_count(2)
+            await page.get_by_test_id("business-subnav-products").click()
+            await expect(page.get_by_role("button", name="Show synthetic demo")).to_have_count(0)
 
     await with_browser(body)
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import {
   appendDemoListing,
@@ -16,11 +17,11 @@ import {
 } from "@/lib/business-view";
 import { todayLocal, toInstants, type DayRange } from "@/lib/date-range";
 import type { Client, Me } from "@/lib/identity-contracts";
-import type { BusinessSection } from "@/lib/navigation";
+import { businessPages, type BusinessSection } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
 import { Fold, OrderCard, ProductCard, StoreCard, type Order, type Product } from "./business/cards";
 import { useOrderCounts, useRecords } from "./business/useRecords";
-import { DateRangeFilter, StatusChips } from "./kit";
+import { DateRangeFilter, SectionNav, StatusChips, useSectionArrivalFocus } from "./kit";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 type Store = {
@@ -30,15 +31,21 @@ type Store = {
   connection: { status: ConnectionStatus; live_integration: "unavailable" };
 };
 
-// `section` names the sub-page the route serves; the page body does not branch on it yet.
-export function BusinessWorkspace({ me }: { me: Me; section?: BusinessSection }) {
-  usePublishContext({ tab: "business" });
+export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?: BusinessSection }) {
+  usePublishContext({ tab: "business", section });
+  const search = useSearchParams();
+  const pathname = usePathname();
+  const router = useRouter();
   const platform = me.role === "platform_admin";
   const permitted = platform || me.role === "tenant_admin" || me.role === "tenant_staff";
   const [clients, setClients] = useState<Client[]>([]);
-  const [selected, setSelected] = useState("");
+  // An administrator's chosen tenant lives in the URL (?client_id=) so it survives a move
+  // between the three pages and a reload.
+  const [selected, setSelected] = useState(search.get("client_id") ?? "");
   const [error, setError] = useState("");
   const [demoMode, setDemoMode] = useState(false);
+  const pageHeading = useRef<HTMLHeadingElement>(null);
+  useSectionArrivalFocus(pageHeading);
   useEffect(() => {
     if (!platform || demoMode) return;
     const controller = new AbortController();
@@ -49,6 +56,14 @@ export function BusinessWorkspace({ me }: { me: Me; section?: BusinessSection })
   }, [platform, demoMode]);
   if (!permitted) return <Notice error>Business records require an administrator or staff role.</Notice>;
   const tenant = platform ? selected : me.active_client_id;
+  const tenantQuery = platform && tenant ? `client_id=${encodeURIComponent(tenant)}` : "";
+  const pages = businessPages(platform);
+  const pageTitle = pages.find((page) => page.key === section)?.label ?? "Orders";
+  const chooseTenant = (value: string) => {
+    setSelected(value);
+    router.replace(value ? `${pathname}?client_id=${encodeURIComponent(value)}` : pathname, { scroll: false });
+  };
+  const needsTenant = <Notice>Select a tenant to view its business records.</Notice>;
   return <>
     <Heading
       title="Business management"
@@ -56,7 +71,13 @@ export function BusinessWorkspace({ me }: { me: Me; section?: BusinessSection })
         ? "Synthetic demo only — sample listings do not connect to a seller account."
         : "Read-only local orders, tracking references, products and stock."}
     />
-    <div className="mb-5">
+    <SectionNav label="Business management pages" testId="business-subnav" items={pages}
+      current={section} query={tenantQuery || undefined} />
+    <h2 ref={pageHeading} tabIndex={-1} data-testid="business-page-heading"
+      className="mb-4 font-(family-name:--fs-font-heading) text-(length:--fs-text-xl) font-semibold focus:outline-none">
+      {pageTitle}
+    </h2>
+    {section === "orders" && <div className="mb-5">
       <button
         className={secondary}
         type="button"
@@ -65,22 +86,21 @@ export function BusinessWorkspace({ me }: { me: Me; section?: BusinessSection })
       >
         {demoMode ? "Exit demo mode" : "Show synthetic demo"}
       </button>
-    </div>
-    {demoMode && <Notice>DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok API request or
+    </div>}
+    {section === "orders" && demoMode && <Notice>DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok API request or
           listing is sent. Demo changes stay in this page&apos;s temporary state and reset when you exit
           or reload.</Notice>}
-    {!demoMode && error && <Notice error>{error}</Notice>}
-    {!demoMode && platform && <label className="my-5 block">Tenant
-      <select className={field} value={selected} onChange={(event) => setSelected(event.target.value)}>
+    {!(section === "orders" && demoMode) && error && <Notice error>{error}</Notice>}
+    {!(section === "orders" && demoMode) && platform && <label className="my-5 block">Tenant
+      <select className={field} value={selected} onChange={(event) => chooseTenant(event.target.value)}>
         <option value="">Select a tenant</option>
         {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
       </select>
     </label>}
-    {demoMode
+    {section === "orders" && (demoMode
       ? <DemoBusinessWorkspace />
       : <>
-          {tenant ? <BusinessRecords key={tenant} query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""} />
-            : <Notice>Select a tenant to view its business records.</Notice>}
+          {tenant ? <BusinessRecords key={tenant} query={tenantQuery} /> : needsTenant}
           <div className="mt-5 space-y-3">
             <Fold testId="business-about" title="About this page">
               <Notice>Local records only, not a live TikTok Shop feed. No marketplace synchronization or store
@@ -95,7 +115,16 @@ export function BusinessWorkspace({ me }: { me: Me; section?: BusinessSection })
                 Existing adapter code does not establish live seller authorization or a verified connection.</p>
             </Fold>
           </div>
-        </>}
+        </>)}
+    {section === "products" && (tenant ? <ProductRecords key={tenant} query={tenantQuery} /> : needsTenant)}
+    {section === "stores" && (tenant
+      ? <div className="mt-5">
+          <Fold testId="business-stores" title="Store connections and local store records">
+            <h3 className="mb-3 font-semibold">Local store records (not verified connections)</h3>
+            <StoreRecords key={tenantQuery} query={tenantQuery} />
+          </Fold>
+        </div>
+      : needsTenant)}
   </>;
 }
 
@@ -138,7 +167,6 @@ function BusinessRecords({ query }: { query: string }) {
   // "Today" for the default counts window; read again on every explicit refresh.
   const [today, setToday] = useState(() => new Date());
   const [refresh, setRefresh] = useState(0);
-  const products = useRecords<Product>(`/console/v1/business/products?${query}`);
   // The default window follows the calendar: when the tab comes back on a new day, move it on.
   useEffect(() => {
     const onShow = () => {
@@ -241,6 +269,12 @@ function BusinessRecords({ query }: { query: string }) {
         </Fold>
       </div>
     </section>
+  </div>;
+}
+
+function ProductRecords({ query }: { query: string }) {
+  const products = useRecords<Product>(`/console/v1/business/products?${query}`);
+  return <div className="mt-5">
     <Panel title="Local catalogue and inventory">
       <div className="mb-4">
         <Fold testId="business-about-catalogue" title="About the catalogue">
@@ -259,10 +293,6 @@ function BusinessRecords({ query }: { query: string }) {
         {products.items?.map((product) => <ProductCard key={product.id} product={product} />)}
       </ul>
     </Panel>
-    <Fold testId="business-stores" title="Store connections and local store records">
-      <h3 className="mb-3 font-semibold">Local store records (not verified connections)</h3>
-      <StoreRecords key={query} query={query} />
-    </Fold>
   </div>;
 }
 
