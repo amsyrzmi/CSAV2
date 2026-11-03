@@ -319,6 +319,11 @@ async def test_rail_toggle_persists_across_reload(console: Console) -> None:
         await toggle.click()
         await expect(rail).to_have_attribute("data-rail", "expanded")
         await expect(toggle).to_have_accessible_name("Collapse navigation")
+        # The rail's width eases over 200 ms; wait for it to arrive before measuring.
+        await page.wait_for_function(
+            "() => document.querySelector('[data-testid=shell-rail]').getBoundingClientRect().width"
+            " === 240"
+        )
         assert (await rail.bounding_box())["width"] == 240  # type: ignore[index]
         # Expanded, the label is on screen and still the link's name.
         services = page.get_by_role("link", name="Services", exact=True)
