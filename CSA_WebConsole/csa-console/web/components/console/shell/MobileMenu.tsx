@@ -6,6 +6,10 @@ import { Menu } from "lucide-react";
 import SlideOver from "@/components/console/fs/SlideOver";
 import type { NavLink } from "@/lib/navigation";
 import { navIcon } from "./icons";
+import { NavGroup, useGroupOpen } from "./NavGroup";
+
+const ITEM =
+  "flex min-h-11 items-center gap-3 rounded-[10px] px-3 text-sm font-medium text-[color:var(--fs-text-secondary)] hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] aria-[current=page]:bg-[var(--fs-surface-blue)] aria-[current=page]:font-semibold aria-[current=page]:text-[color:var(--fs-text)] aria-[current=page]:[&_svg]:text-[color:var(--fs-primary)]";
 
 /**
  * Below 1024 px the rail is hidden and this button opens the full labelled list on a native
@@ -21,6 +25,7 @@ export function MobileMenu({
 }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const groups = useGroupOpen(links, path);
 
   useEffect(() => {
     // Widening to desktop shows the rail, so a dialog left open would only hide it.
@@ -52,15 +57,31 @@ export function MobileMenu({
         returnFocusTo={buttonRef}
       >
         <nav aria-label="Main navigation" className="flex flex-col gap-1">
-          {links.map(({ href, label, key }) => {
+          {links.map((link) => {
+            const { href, label, key } = link;
             const Icon = navIcon(key);
+            if (link.children?.length)
+              return (
+                <NavGroup
+                  key={href}
+                  link={link}
+                  path={path}
+                  open={groups.isOpen(link)}
+                  onToggle={() => groups.toggle(link)}
+                  idPrefix="menu"
+                  linkClass={ITEM}
+                  icon={<Icon size={18} aria-hidden="true" />}
+                  label={label}
+                  onNavigate={() => setOpen(false)}
+                />
+              );
             return (
               <Link
                 key={href}
                 href={href}
                 aria-current={path === href ? "page" : undefined}
                 onClick={() => setOpen(false)}
-                className="flex min-h-11 items-center gap-3 rounded-[10px] px-3 text-sm font-medium text-[color:var(--fs-text-secondary)] hover:bg-[var(--fs-tile)] hover:text-[color:var(--fs-text)] aria-[current=page]:bg-[var(--fs-surface-blue)] aria-[current=page]:font-semibold aria-[current=page]:text-[color:var(--fs-text)] aria-[current=page]:[&_svg]:text-[color:var(--fs-primary)]"
+                className={ITEM}
               >
                 <Icon size={18} aria-hidden="true" />
                 {label}

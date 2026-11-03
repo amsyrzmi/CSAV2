@@ -70,6 +70,19 @@ test("the sandbox chat tab opens Overview, its home since the Sandbox entry fold
   assert.equal(view.tabForPath("/portal/chat", staff, all), null);
 });
 
+test("tabForPath resolves sub-pages to their group", () => {
+  assert.equal(view.tabForPath("/portal/business/stores", staff, all), "business");
+  assert.equal(view.tabForPath("/portal/faq/add", staff, all), "knowledge_base");
+  assert.equal(view.tabForPath("/knowledge-base/add", admin, []), "knowledge_base");
+  assert.equal(view.tabForPath("/portal/hr/people", staff, all), "hr");
+  assert.equal(view.tabForPath("/portal/hr/people/abc", staff, all), "hr");
+  assert.equal(view.tabForPath("/portal/chat", staff, all), null);
+  assert.equal(view.tabForPath("/portal/team", staff, all), null);
+  assert.equal(view.tabForPath("/portal/businessx", staff, all), null);
+  // The dock link keeps pointing at the group's first page.
+  assert.equal(view.tabHref("business", staff, all, "t1"), "/portal/business");
+});
+
 test("the route names the current tab; published context wins", () => {
   assert.equal(view.tabForPath("/portal/faq", staff, all), "knowledge_base");
   assert.equal(view.tabForPath("/hr", admin, []), "hr");

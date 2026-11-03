@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { api, del, post } from "@/lib/api";
 import type { Agent, Client, KbDocument, KbFile, KbGap, KbJob, Me } from "@/lib/identity-contracts";
 import { addedText, groupSources, looseFiles, pausedReason, pollingNeeded, type AgentState, type Card } from "@/lib/knowledge-view";
+import type { KnowledgeSection } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
 import { DetailsRow, PageIntro } from "./kit";
 import AddKnowledge from "./knowledge/AddKnowledge";
@@ -14,7 +15,8 @@ import SectionError from "./knowledge/SectionError";
 import { useKbSlot, type Slot } from "./knowledge/useKbSlot";
 import { action, field, Notice, Panel, secondary } from "./ui";
 
-export function KnowledgeWorkspace({ me }: { me: Me }) {
+// `section` names the sub-page the route serves; the page body does not branch on it yet.
+export function KnowledgeWorkspace({ me }: { me: Me; section?: KnowledgeSection }) {
   usePublishContext({ tab: "knowledge_base" });
   const search = useSearchParams();
   const platform = me.role === "platform_admin";

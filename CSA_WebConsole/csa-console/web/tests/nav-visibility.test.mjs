@@ -9,7 +9,7 @@ function moduleUrl(source) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
-const { navigationFor } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
+const { navigationFor, businessPages, knowledgePages, currentChild, entryForPath } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
 
 const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t", csrf_token: "" };
 const active = (...keys) => keys.map((key) => ({ key, status: "active" }));
@@ -88,4 +88,84 @@ test("the Sandbox assistant entry is gone for every role: Overview is the assist
     assert.equal(links[0].key, "overview", role);
     assert.equal(links[0].href, role === "platform_admin" ? "/" : "/portal", role);
   }
+});
+
+test("business and knowledge entries carry their sub-pages in order", () => {
+  const all = active("orders_products", "customer_support");
+  const brief = (items) => items.map(({ key, label, href, testId }) => [key, label, href, testId]);
+  const portal = navigationFor(staff, all);
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  for (const [links, base, kb] of [[portal, "/portal/business", "/portal/faq"], [admin, "/business", "/knowledge-base"]]) {
+    assert.deepEqual(brief(links.find((l) => l.key === "business").children), [
+      ["orders", "Orders", base, "business-subnav-orders"],
+      ["products", "Products & stock", `${base}/products`, "business-subnav-products"],
+      ["stores", "Store connections", `${base}/stores`, "business-subnav-stores"],
+    ]);
+    assert.deepEqual(brief(links.find((l) => l.key === "knowledge_base").children), [
+      ["library", "What it knows", kb, "kb-subnav-library"],
+      ["add", "Add knowledge", `${kb}/add`, "kb-subnav-add"],
+      ["questions", "Unanswered questions", `${kb}/questions`, "kb-subnav-questions"],
+      ["maintenance", "Maintenance and settings", `${kb}/maintenance`, "kb-subnav-maintenance"],
+    ]);
+  }
+  assert.deepEqual(businessPages(false).map((c) => c.href), portal.find((l) => l.key === "business").children.map((c) => c.href));
+  assert.equal(knowledgePages(true)[0].href, "/knowledge-base");
+  // The parent stays the first sub-page, so old links and bookmarks still land there.
+  assert.equal(portal.find((l) => l.key === "business").href, "/portal/business");
+  assert.equal(portal.find((l) => l.key === "knowledge_base").href, "/portal/faq");
+  assert.equal(portal.find((l) => l.key === "services").children, undefined);
+});
+
+test("children never add a top-level key", () => {
+  const all = active("orders_products", "customer_support", "hr", "staff_email", "subscriptions");
+  const keys = new Set();
+  for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
+    for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
+  assert.equal(keys.size, 13);
+});
+
+test("child literals are href-first so the contract regex never reads them", async () => {
+  const source = await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8");
+  const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
+  assert.deepEqual(keys, [
+    "activity", "business", "email", "hr", "inbox", "knowledge_base", "members", "overview",
+    "password", "services", "subscriptions", "team", "tenants",
+  ]);
+});
+
+test("currentChild picks the exact page, then the deepest sub-page, and the parent href matches exactly only", () => {
+  const kids = businessPages(false);
+  const name = (path) => currentChild(kids, path, "/portal/business")?.key ?? null;
+  assert.equal(name("/portal/business"), "orders");
+  assert.equal(name("/portal/business/products"), "products");
+  assert.equal(name("/portal/business/products/x"), "products");
+  assert.equal(name("/portal/business/stores"), "stores");
+  assert.equal(name("/portal/business/other"), null, "the parent's own page never claims a deeper path");
+  assert.equal(name("/portal/businessx"), null);
+  assert.equal(name("/portal"), null);
+  // A child href with a query compares by pathname only (HR children carry ?client_id=).
+  const hr = [
+    { href: "/hr?client_id=t", key: "hr_home", label: "Home" },
+    { href: "/hr/people?client_id=t", key: "hr_people", label: "People" },
+  ];
+  assert.equal(currentChild(hr, "/hr", "/hr")?.key, "hr_home");
+  assert.equal(currentChild(hr, "/hr/people/abc", "/hr")?.key, "hr_people");
+  assert.equal(currentChild(hr, "/hr/unknown", "/hr"), null);
+});
+
+test("entryForPath maps sub-pages to their group and never lets home claim a page", () => {
+  const links = navigationFor(staff, active("orders_products", "customer_support", "hr"));
+  const key = (path) => entryForPath(links, path)?.key ?? null;
+  assert.equal(key("/portal"), "overview");
+  assert.equal(key("/portal/business"), "business");
+  assert.equal(key("/portal/business/stores"), "business");
+  assert.equal(key("/portal/faq/add"), "knowledge_base");
+  assert.equal(key("/portal/hr/people/abc"), "hr");
+  assert.equal(key("/portal/chat"), null);
+  assert.equal(key("/portal/businessx"), null);
+  assert.equal(key("/"), null);
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  assert.equal(entryForPath(admin, "/")?.key, "overview");
+  assert.equal(entryForPath(admin, "/knowledge-base/questions")?.key, "knowledge_base");
+  assert.equal(entryForPath(admin, "/anything")?.key ?? null, null);
 });

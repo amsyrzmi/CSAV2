@@ -16,6 +16,7 @@ import {
 } from "@/lib/business-view";
 import { todayLocal, toInstants, type DayRange } from "@/lib/date-range";
 import type { Client, Me } from "@/lib/identity-contracts";
+import type { BusinessSection } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
 import { Fold, OrderCard, ProductCard, StoreCard, type Order, type Product } from "./business/cards";
 import { useOrderCounts, useRecords } from "./business/useRecords";
@@ -29,7 +30,8 @@ type Store = {
   connection: { status: ConnectionStatus; live_integration: "unavailable" };
 };
 
-export function BusinessWorkspace({ me }: { me: Me }) {
+// `section` names the sub-page the route serves; the page body does not branch on it yet.
+export function BusinessWorkspace({ me }: { me: Me; section?: BusinessSection }) {
   usePublishContext({ tab: "business" });
   const platform = me.role === "platform_admin";
   const permitted = platform || me.role === "tenant_admin" || me.role === "tenant_staff";

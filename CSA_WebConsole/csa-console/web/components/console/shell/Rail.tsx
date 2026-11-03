@@ -7,6 +7,7 @@ import type { NavLink } from "@/lib/navigation";
 import type { RailState } from "@/lib/shell-state";
 import { BrandMark } from "./BrandMark";
 import { navIcon } from "./icons";
+import { NavGroup, useGroupOpen } from "./NavGroup";
 
 interface Tip {
   label: string;
@@ -38,6 +39,7 @@ export function Rail({
   onToggle: () => void;
 }) {
   const expanded = state === "expanded";
+  const groups = useGroupOpen(links, path);
   const [tip, setTip] = useState<Tip | null>(null);
   // A fixed tooltip is not clipped by the scrolling nav and does not move the layout.
   const tipFor = (label: string) => ({
@@ -97,8 +99,23 @@ export function Rail({
           )}
         </Link>
         <nav aria-label="Main navigation" className="flex flex-col gap-1">
-          {links.map(({ href, label, key }) => {
+          {links.map((link) => {
+            const { href, label, key } = link;
             const Icon = navIcon(key);
+            if (expanded && link.children?.length)
+              return (
+                <NavGroup
+                  key={href}
+                  link={link}
+                  path={path}
+                  open={groups.isOpen(link)}
+                  onToggle={() => groups.toggle(link)}
+                  idPrefix="rail"
+                  linkClass={`${ITEM} gap-3 px-3`}
+                  icon={<Icon size={18} aria-hidden="true" />}
+                  label={text(label)}
+                />
+              );
             return (
               <Link
                 key={href}

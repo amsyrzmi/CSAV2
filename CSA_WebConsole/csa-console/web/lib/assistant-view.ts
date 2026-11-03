@@ -9,7 +9,7 @@ import {
 } from "@/lib/assistant-copy";
 import type { Me } from "@/lib/identity-contracts";
 import { formatWhen } from "@/lib/email-recipients";
-import { navigationFor } from "@/lib/navigation";
+import { entryForPath, navigationFor } from "@/lib/navigation";
 import type { PackageState } from "@/lib/services-api";
 import type {
   ClarificationOption,
@@ -73,14 +73,16 @@ export function tabHref(
   return query.size ? `${link.href}?${query}` : link.href;
 }
 
-/** The tab whose navigation link points at this pathname, if any. */
+/**
+ * The tab whose navigation entry hosts this pathname: the entry's own page or a sub-page of its
+ * group, so moving between sub-pages never reads as leaving the tab.
+ */
 export function tabForPath(
   pathname: string,
   me: Me,
   packages: PackageState[],
 ): TabKey | null {
-  const link = navigationFor(me, packages).find((item) => item.href === pathname);
-  const key = link?.key;
+  const key = entryForPath(navigationFor(me, packages), pathname)?.key;
   return TABS.find((tab) => tab === key) ?? null;
 }
 

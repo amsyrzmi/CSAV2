@@ -5,7 +5,83 @@ export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
   | "team" | "password" | "subscriptions";
-export interface NavLink { href: string; label: string; key: NavKey }
+/** A sub-page of a rail group; the testId names it for tests and the section bar. */
+export interface NavChild { key: string; label: string; href: string; testId?: string }
+export interface NavLink { href: string; label: string; key: NavKey; children?: NavChild[] }
+
+export type BusinessSection = "orders" | "products" | "stores";
+export type KnowledgeSection = "library" | "add" | "questions" | "maintenance";
+
+/**
+ * The Business management sub-pages in order; Orders keeps the group's old URL. Child literals
+ * are written href-first so the key-then-label regex in tests/test_workspace_contracts.py
+ * reads only the top-level entries.
+ */
+export function businessPages(admin: boolean): NavChild[] {
+  const base = admin ? "/business" : "/portal/business";
+  return [
+    // href-first: the contract regex must not read a child as a tab.
+    { href: base, key: "orders", label: "Orders", testId: "business-subnav-orders" },
+    // href-first: the contract regex must not read a child as a tab.
+    { href: `${base}/products`, key: "products", label: "Products & stock", testId: "business-subnav-products" },
+    // href-first: the contract regex must not read a child as a tab.
+    { href: `${base}/stores`, key: "stores", label: "Store connections", testId: "business-subnav-stores" },
+  ];
+}
+
+/** The Business knowledge sub-pages in order; "What it knows" keeps the group's old URL. */
+export function knowledgePages(admin: boolean): NavChild[] {
+  const base = admin ? "/knowledge-base" : "/portal/faq";
+  return [
+    // href-first: the contract regex must not read a child as a tab.
+    { href: base, key: "library", label: "What it knows", testId: "kb-subnav-library" },
+    // href-first: the contract regex must not read a child as a tab.
+    { href: `${base}/add`, key: "add", label: "Add knowledge", testId: "kb-subnav-add" },
+    // href-first: the contract regex must not read a child as a tab.
+    { href: `${base}/questions`, key: "questions", label: "Unanswered questions", testId: "kb-subnav-questions" },
+    // href-first: the contract regex must not read a child as a tab.
+    { href: `${base}/maintenance`, key: "maintenance", label: "Maintenance and settings", testId: "kb-subnav-maintenance" },
+  ];
+}
+
+const pathOf = (href: string) => href.split("?")[0];
+
+/**
+ * The sub-page the path is on: an exact match wins, else the deepest child whose page the path
+ * lies under. The child that is the parent's own page matches exactly only, so the parent's
+ * other pages never read as "Orders".
+ */
+export function currentChild(children: NavChild[], path: string, parentHref: string): NavChild | null {
+  const exact = children.find((child) => pathOf(child.href) === path);
+  if (exact) return exact;
+  let best: NavChild | null = null;
+  for (const child of children) {
+    const href = pathOf(child.href);
+    if (href === pathOf(parentHref) || !path.startsWith(`${href}/`)) continue;
+    if (!best || href.length > pathOf(best.href).length) best = child;
+  }
+  return best;
+}
+
+/** Home entries are prefixes of every page under them, so they only match exactly. */
+const HOME_PATHS = new Set(["/", "/portal"]);
+
+/**
+ * The top-level entry a path belongs to: the one whose href or a child href is the path, else
+ * the one with the longest href the path lies under (never a home entry).
+ */
+export function entryForPath(links: NavLink[], path: string): NavLink | null {
+  const exact = links.find(
+    (link) => link.href === path || link.children?.some((child) => pathOf(child.href) === path),
+  );
+  if (exact) return exact;
+  let best: NavLink | null = null;
+  for (const link of links) {
+    if (HOME_PATHS.has(link.href) || !path.startsWith(`${link.href}/`)) continue;
+    if (!best || link.href.length > best.href.length) best = link;
+  }
+  return best;
+}
 
 // Tab -> packages that unlock it (any one of them is enough).
 const gate: Partial<Record<NavKey, string[]>> = {
@@ -36,10 +112,10 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "services", label: "Services", href: to("services") },
     { key: "hr", label: "People & HR", href: to("hr") },
     { key: "activity", label: "Assistant activity", href: to("activity") },
-    { key: "knowledge_base", label: "Knowledge base", href: admin ? "/knowledge-base" : "/portal/faq" },
+    { key: "knowledge_base", label: "Knowledge base", href: admin ? "/knowledge-base" : "/portal/faq", children: knowledgePages(admin) },
     { key: "inbox", label: "Customer inbox", href: to("inbox"), show: writer },
     { key: "email", label: "Email assistant", href: to("email"), show: writer },
-    { key: "business", label: "Business management", href: to("business"), show: writer },
+    { key: "business", label: "Business management", href: to("business"), show: writer, children: businessPages(admin) },
     // Read-only members see the tab too; the page hides its action controls for them.
     { key: "subscriptions", label: "Subscriptions", href: to("subscriptions") },
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
@@ -53,5 +129,5 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
       const needs = gate[e.key];
       return admin || !needs || needs.some((k) => unlocked(e.key, k));
     })
-    .map(({ href, label, key }) => ({ href, label, key }));
+    .map(({ href, label, key, children }) => (children ? { href, label, key, children } : { href, label, key }));
 }

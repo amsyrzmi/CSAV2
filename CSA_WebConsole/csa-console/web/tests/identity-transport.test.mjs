@@ -247,6 +247,25 @@ test("M3 KB screens are adopted but still require a session", () => {
   }
 });
 
+test("sub-page routes require a session and unknown sub-paths stay hidden", () => {
+  const pages = [
+    "/portal/business/products", "/portal/business/stores", "/business/products", "/business/stores",
+    "/portal/faq/add", "/portal/faq/questions", "/portal/faq/maintenance",
+    "/knowledge-base/add", "/knowledge-base/questions", "/knowledge-base/maintenance",
+  ];
+  for (const route of pages) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307, route);
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 200, route);
+  }
+  for (const route of ["/portal/business/xyz", "/portal/faq/add/extra", "/business/products/1", "/portal/faq/library"]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 404, route);
+  }
+});
+
 test("M4 sandbox routes require sessions and retain the same request on uncertain retry", async () => {
   for (const route of ["/chat", "/portal/chat"]) {
     assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307);
