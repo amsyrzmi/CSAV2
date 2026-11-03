@@ -153,6 +153,86 @@ export default function DateDemo() {
 """
 
 
+PARTS_PAGE = """\"use client\";
+
+import { useState } from "react";
+import {
+  DetailsRow, SectionNav, SummaryTiles, TechDetailsProvider, TechnicalDetails, TechSwitch,
+  useTechOpen,
+} from "@/components/console/kit";
+
+const ITEMS = [
+  { href: "/kit-demo-parts", key: "one", label: "Orders", testId: "demo-nav-one" },
+  { href: "/kit-demo-parts/two", key: "two", label: "Products and stock", testId: "demo-nav-two" },
+  { href: "/kit-demo-parts#three", key: "three", label: "Store connections", testId: "demo-nav-three" },
+  { href: "/kit-demo-parts#four", key: "four", label: "Maintenance and settings", testId: "demo-nav-four" },
+];
+
+function PartsRow({ n }: { n: number }) {
+  const [open, setOpen] = useTechOpen();
+  return (
+    <li style={{ listStyle: "none", margin: "8px 0" }}>
+      <DetailsRow testId={`demo-r${n}`} open={open} onOpenChange={setOpen} toggleLabel={`row ${n}`}
+        summary={<span>Row {n}</span>}>
+        <p data-testid={`demo-r${n}-plain`}>Plain details {n}</p>
+        <TechnicalDetails testId={`demo-r${n}-tech`}>
+          <span data-testid={`demo-r${n}-raw`}>job-{n}: failed (attempts: 3) {"x".repeat(80)}</span>
+        </TechnicalDetails>
+      </DetailsRow>
+    </li>
+  );
+}
+
+export default function KitParts() {
+  const [rows, setRows] = useState([1, 2]);
+  const [pressed, setPressed] = useState(false);
+  return (
+    <main style={{ padding: 16, maxWidth: 720 }}>
+      <h1>Kit parts</h1>
+      <SectionNav label="Demo pages" testId="demo-nav" items={ITEMS} current="one" query="client_id=abc" />
+      <SummaryTiles ariaLabel="Demo tiles" tiles={[
+        { key: "a", label: "To confirm", value: 4, pressed, onPress: () => setPressed((p) => !p), testId: "demo-tile-a" },
+        { key: "b", label: "To pack", value: null, onPress: () => {}, testId: "demo-tile-b" },
+        { key: "c", label: "Out of stock", value: 0, caption: "Among your newest 50 products", href: "/kit-demo-parts/two", testId: "demo-tile-c" },
+        { key: "d", label: "On the way", value: 12, onPress: () => {}, testId: "demo-tile-d" },
+      ]} />
+      <TechDetailsProvider>
+        <div style={{ display: "flex", gap: 8, margin: "8px 0" }}>
+          <TechSwitch testId="demo-tech-all" />
+          <button type="button" data-testid="demo-add-row" onClick={() => setRows((r) => [...r, r.length + 1])}>Add row</button>
+        </div>
+        <ul style={{ padding: 0 }}>{rows.map((n) => <PartsRow key={n} n={n} />)}</ul>
+      </TechDetailsProvider>
+    </main>
+  );
+}
+"""
+
+PARTS_TWO_PAGE = """\"use client\";
+
+import { useRef } from "react";
+import { SectionNav, TechnicalDetails, useSectionArrivalFocus } from "@/components/console/kit";
+
+export default function KitPartsTwo() {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useSectionArrivalFocus(heading);
+  return (
+    <main style={{ padding: 16, maxWidth: 720 }}>
+      <h1>Kit parts two</h1>
+      <SectionNav label="Demo pages" testId="demo-nav" current="two" items={[
+        { href: "/kit-demo-parts", key: "one", label: "Orders", testId: "demo-nav-one" },
+        { href: "/kit-demo-parts/two", key: "two", label: "Products and stock", testId: "demo-nav-two" },
+      ]} />
+      <h2 ref={heading} tabIndex={-1} data-testid="demo-heading">Products and stock</h2>
+      <TechnicalDetails testId="demo-alone">
+        <span data-testid="demo-alone-raw">raw line</span>
+      </TechnicalDetails>
+    </main>
+  );
+}
+"""
+
+
 class Console:
     def __init__(self, base: str) -> None:
         self.base = base
@@ -182,15 +262,21 @@ def console(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[no-untype
     )
     (stage / "node_modules").symlink_to(WEB / "node_modules", target_is_directory=True)
     # Test-only pages and allowlist entries, in the disposable copy only.
-    for name, page_source in (("kit-demo", DEMO_PAGE), ("kit-demo-date", DATE_DEMO_PAGE)):
-        (stage / f"app/{name}").mkdir()
+    for name, page_source in (
+        ("kit-demo", DEMO_PAGE),
+        ("kit-demo-date", DATE_DEMO_PAGE),
+        ("kit-demo-parts", PARTS_PAGE),
+        ("kit-demo-parts/two", PARTS_TWO_PAGE),
+    ):
+        (stage / f"app/{name}").mkdir(parents=True)
         (stage / f"app/{name}/page.tsx").write_text(page_source)
     proxy = (stage / "proxy.ts").read_text()
     assert '  "/portal/email",\n]);' in proxy, "proxy.ts allowlist changed shape"
     (stage / "proxy.ts").write_text(
         proxy.replace(
             '  "/portal/email",\n]);',
-            '  "/portal/email",\n  "/kit-demo",\n  "/kit-demo-date",\n]);',
+            '  "/portal/email",\n  "/kit-demo",\n  "/kit-demo-date",\n'
+            '  "/kit-demo-parts",\n  "/kit-demo-parts/two",\n]);',
         )
     )
     port = free_port()
@@ -1259,3 +1345,226 @@ async def test_date_popover_vertical_placement(
             await expect(trigger).to_be_focused()
     finally:
         await close_demo(playwright, browser)
+
+
+async def open_parts(
+    console: Console, *, theme: str = "cobalt", width: int = 1024, path: str = "/kit-demo-parts",
+    ready: str = "demo-tech-all",
+) -> tuple[Any, Any, Page]:
+    return await open_demo(console, theme=theme, width=width, path=path, ready=ready)
+
+
+async def test_section_nav_marks_the_current_link_and_wraps_at_320(console: Console) -> None:
+    playwright, browser, page = await open_parts(console, width=320)
+    try:
+        nav = page.get_by_role("navigation", name="Demo pages")
+        await expect(nav).to_have_count(1)
+        links = nav.get_by_role("link")
+        await expect(links).to_have_count(4)
+        current = page.get_by_test_id("demo-nav-one")
+        await expect(current).to_have_attribute("aria-current", "page")
+        for other in ("two", "three", "four"):
+            await expect(page.get_by_test_id(f"demo-nav-{other}")).not_to_have_attribute(
+                "aria-current", "page"
+            )
+        # The query rides on every link (the administrator's tenant).
+        await expect(page.get_by_test_id("demo-nav-two")).to_have_attribute(
+            "href", "/kit-demo-parts/two?client_id=abc"
+        )
+        looks = await page.evaluate(
+            """() => ['one', 'two'].map((k) => {
+                const s = getComputedStyle(document.querySelector(`[data-testid=demo-nav-${k}]`));
+                return [s.fontWeight, s.borderBottomWidth, s.borderBottomColor];
+            })"""
+        )
+        # Not colour alone: the current link is bolder and its bar is a real border.
+        assert int(looks[0][0]) > int(looks[1][0]), looks
+        assert looks[0][1] == "3px" and looks[0][2] != looks[1][2], looks
+        measured = await page.evaluate(
+            """() => ({
+                scroll: document.documentElement.scrollWidth,
+                tops: [...document.querySelectorAll('[data-testid^=demo-nav-]')]
+                    .map((el) => Math.round(el.getBoundingClientRect().top)),
+                rights: [...document.querySelectorAll('[data-testid^=demo-nav-]')]
+                    .map((el) => Math.round(el.getBoundingClientRect().right)),
+                heights: [...document.querySelectorAll('[data-testid^=demo-nav-]')]
+                    .map((el) => Math.round(el.getBoundingClientRect().height)),
+            })"""
+        )
+        assert measured["scroll"] <= 320, measured
+        assert len(set(measured["tops"])) > 1, measured  # the row wrapped
+        assert max(measured["rights"]) <= 320 and min(measured["heights"]) >= 40, measured
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def test_section_nav_arrival_moves_focus_to_the_heading(console: Console) -> None:
+    playwright, browser, page = await open_parts(console)
+    try:
+        await page.get_by_test_id("demo-nav-two").click()
+        await expect(page.get_by_test_id("demo-heading")).to_be_focused()
+        assert page.url.endswith("/kit-demo-parts/two?client_id=abc"), page.url
+    finally:
+        await close_demo(playwright, browser)
+    # Opened directly (not from the bar), focus stays where a page load leaves it.
+    playwright, browser, page = await open_parts(
+        console, path="/kit-demo-parts/two", ready="demo-heading"
+    )
+    try:
+        await page.wait_for_timeout(300)
+        await expect(page.get_by_test_id("demo-heading")).not_to_be_focused()
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def expanded(page: Page, test_id: str) -> str | None:
+    return await page.get_by_test_id(test_id).get_attribute("aria-expanded")
+
+
+async def test_tech_switch_opens_every_row_including_rows_added_later(console: Console) -> None:
+    playwright, browser, page = await open_parts(console)
+    try:
+        switch = page.get_by_test_id("demo-tech-all")
+        await expect(switch).to_have_text("Show technical details")
+        await expect(switch).to_have_attribute("aria-pressed", "false")
+        for n in (1, 2):
+            await expect(page.get_by_test_id(f"demo-r{n}-toggle")).to_have_attribute(
+                "aria-expanded", "false"
+            )
+        await switch.click()
+        await expect(switch).to_have_attribute("aria-pressed", "true")
+        await expect(switch).to_have_text("Show technical details")  # the words never change
+        for n in (1, 2):
+            await expect(page.get_by_test_id(f"demo-r{n}-toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+            await expect(page.get_by_test_id(f"demo-r{n}-tech-toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+            await expect(page.get_by_test_id(f"demo-r{n}-raw")).to_be_visible()
+        # A row that arrives after the press starts open too.
+        await page.get_by_test_id("demo-add-row").click()
+        await expect(page.get_by_test_id("demo-r3-toggle")).to_have_attribute("aria-expanded", "true")
+        await expect(page.get_by_test_id("demo-r3-tech-toggle")).to_have_attribute(
+            "aria-expanded", "true"
+        )
+        await expect(page.get_by_test_id("demo-r3-raw")).to_be_visible()
+        # Pressing again closes every row, the new one included.
+        await switch.click()
+        await expect(switch).to_have_attribute("aria-pressed", "false")
+        for n in (1, 2, 3):
+            await expect(page.get_by_test_id(f"demo-r{n}-toggle")).to_have_attribute(
+                "aria-expanded", "false"
+            )
+            await expect(page.get_by_test_id(f"demo-r{n}-raw")).to_be_hidden()
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def test_single_row_toggles_after_the_switch(console: Console) -> None:
+    playwright, browser, page = await open_parts(console)
+    try:
+        await page.get_by_test_id("demo-tech-all").click()
+        await page.get_by_test_id("demo-r1-tech-toggle").click()
+        await expect(page.get_by_test_id("demo-r1-tech-toggle")).to_have_attribute(
+            "aria-expanded", "false"
+        )
+        await expect(page.get_by_test_id("demo-r1-raw")).to_be_hidden()
+        await page.get_by_test_id("demo-r2-toggle").click()
+        await expect(page.get_by_test_id("demo-r2-toggle")).to_have_attribute("aria-expanded", "false")
+        # The other row's inner level and the switch are untouched.
+        await expect(page.get_by_test_id("demo-r1-toggle")).to_have_attribute("aria-expanded", "true")
+        await expect(page.get_by_test_id("demo-tech-all")).to_have_attribute("aria-pressed", "true")
+    finally:
+        await close_demo(playwright, browser)
+    # Without a provider the nested arrow is plain local state.
+    playwright, browser, page = await open_parts(
+        console, path="/kit-demo-parts/two", ready="demo-heading"
+    )
+    try:
+        toggle = page.get_by_test_id("demo-alone-toggle")
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await expect(page.get_by_test_id("demo-alone-details")).to_be_hidden()
+        await toggle.click()
+        await expect(page.get_by_test_id("demo-alone-raw")).to_be_visible()
+        await expect(toggle.locator("span").first).to_contain_text("Hide details")
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def test_summary_tiles_pressed_state_and_not_available(console: Console) -> None:
+    playwright, browser, page = await open_parts(console)
+    try:
+        group = page.get_by_role("group", name="Demo tiles")
+        await expect(group).to_have_count(1)
+        tile = page.get_by_test_id("demo-tile-a")
+        await expect(tile).to_have_attribute("aria-pressed", "false")
+        await expect(page.get_by_test_id("demo-tile-a-value")).to_have_text("4")
+        await expect(tile.locator("svg")).to_have_count(0)
+        before = await tile.bounding_box()
+        await tile.click()
+        await expect(tile).to_have_attribute("aria-pressed", "true")
+        await expect(tile.locator("svg")).to_have_count(1)  # the check mark
+        after = await tile.bounding_box()
+        assert before and after and before["width"] == after["width"], (before, after)
+        assert before["height"] == after["height"], (before, after)
+        # Doubled border: the 1px border plus a 1px inset ring.
+        shadow = await tile.evaluate("(el) => getComputedStyle(el).boxShadow")
+        assert shadow != "none" and "inset" in shadow, shadow
+        # A failed read is never a zero.
+        await expect(page.get_by_test_id("demo-tile-b-value")).to_have_text("Not available")
+        await expect(page.get_by_test_id("demo-tile-b")).not_to_contain_text("0")
+        # A real zero stays a zero; its caption shows; a link tile is a link.
+        await expect(page.get_by_test_id("demo-tile-c-value")).to_have_text("0")
+        await expect(page.get_by_test_id("demo-tile-c-caption")).to_have_text(
+            "Among your newest 50 products"
+        )
+        link = page.get_by_role("link", name="0 Out of stock Among your newest 50 products")
+        await expect(link).to_have_attribute("href", "/kit-demo-parts/two")
+        # Keyboard: Enter on a focused tile presses it.
+        await tile.focus()
+        await page.keyboard.press("Enter")
+        await expect(tile).to_have_attribute("aria-pressed", "false")
+    finally:
+        await close_demo(playwright, browser)
+    # Two columns at 320, four from 768.
+    for width, columns in ((320, 2), (767, 2), (768, 4), (1024, 4)):
+        playwright, browser, page = await open_parts(console, width=width)
+        try:
+            lefts = await page.evaluate(
+                """() => new Set([...document.querySelectorAll('[data-testid^=demo-tile-]')]
+                    .filter((el) => /^demo-tile-[a-d]$/.test(el.dataset.testid))
+                    .map((el) => Math.round(el.getBoundingClientRect().left))).size"""
+            )
+            assert lefts == columns, (width, lefts)
+        finally:
+            await close_demo(playwright, browser)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_new_kit_pieces_fit_at_five_widths_in_three_themes(
+    console: Console, theme: str
+) -> None:
+    for width in (320, 390, 768, 1024, 1440):
+        playwright, browser, page = await open_parts(console, theme=theme, width=width)
+        try:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            await page.get_by_test_id("demo-tech-all").click()
+            await expect(page.get_by_test_id("demo-r2-raw")).to_be_visible()
+            await page.get_by_test_id("demo-tile-a").click()
+            measured = await page.evaluate(
+                """() => ({
+                    scroll: document.documentElement.scrollWidth,
+                    client: document.documentElement.clientWidth,
+                    out: [...document.querySelectorAll(
+                        '[data-testid^=demo-nav], [data-testid^=demo-tile-], [data-testid^=demo-r]'
+                    )].filter((el) => {
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && (r.left < -0.5 || r.right > innerWidth + 0.5);
+                    }).map((el) => el.dataset.testid),
+                })"""
+            )
+            assert measured["scroll"] <= measured["client"] == width, (width, measured)
+            assert measured["out"] == [], (width, measured)
+        finally:
+            await close_demo(playwright, browser)
