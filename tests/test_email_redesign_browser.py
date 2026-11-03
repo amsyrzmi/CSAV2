@@ -446,7 +446,7 @@ async def test_disconnect_and_switch_off_ask_first(site: Site) -> None:
             status = page.get_by_test_id("email-status")
             await expect(status).to_contain_text("Connected")
             await expect(status).to_contain_text(OWNER)
-            await expect(page.get_by_role("button", name="Check for new email")).to_have_count(1)
+            await expect(page.get_by_role("button", name="Sync inbox")).to_have_count(1)
             # Both switches sit behind the arrow; the raw line and disclosure keep their words.
             await page.get_by_test_id("email-mailbox-toggle").click()
             await expect(page.get_by_test_id("email-mailbox-line")).to_contain_text(
@@ -657,7 +657,7 @@ async def test_chosen_category_stays_in_the_list_after_a_sync_removes_it(site: S
             assert await listed(page) == ["thread-2"]
             # A sync brings a list without the only billing email.
             world.threads = [t for t in world.threads if t["thread_id"] != "thread-2"]
-            await page.get_by_role("button", name="Check for new email").click()
+            await page.get_by_role("button", name="Sync inbox").click()
             await expect(page.get_by_text("Checked Gmail: 1 conversation.")).to_be_visible(
                 timeout=WAIT
             )

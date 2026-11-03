@@ -81,7 +81,7 @@ export default function StatusBar({
             <button ref={connect} type="button" data-testid="email-connect" className={action} disabled={busy} onClick={onConnect}>Connect Gmail</button>
           )}
           {context.enabled && connected && writable && (
-            <button type="button" className={action} disabled={busy} onClick={onSync}>Check for new email</button>
+            <button type="button" className={action} disabled={busy} onClick={onSync}>Sync inbox</button>
           )}
         </div>
       </div>
