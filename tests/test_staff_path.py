@@ -435,6 +435,86 @@ async def test_expired_approvals_are_settled_by_the_sweeper(world: World, owner_
     assert await _tap_reply(world, endpoint_id, buttons["Send reply"]) == "Already handled."
 
 
+async def test_escalation_while_replies_are_off_keeps_the_ticket_and_doesnt_mute(
+    world: World,  # noqa: F811
+) -> None:
+    from csa.agents.base import AgentContext
+    from csa.agents.escalation.agent import EscalationAgent, EscalationInput
+    from csa.contracts.callbacks import PendingActionStore
+
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE clients SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+            "'{policy}', '{\"deployment_mode\": \"shadow\"}') WHERE id=%s",
+            (world.client_id,),
+        )
+    ctx = AgentContext(
+        client_id=world.client_id,
+        contact_id=world.contact_id,
+        trace_id=uuid.uuid4(),
+        conversation_id=world.conversation_id,
+        idempotency_key="esc-off",
+        channel="telegram",
+        pool=world.pool,
+        pending_actions=PendingActionStore(world.pool),
+    )
+    result = await EscalationAgent().run(ctx, EscalationInput(reason="service_off"))
+    assert result.ok
+    muted = world.q(
+        "SELECT ai_muted_until IS NOT NULL FROM conversations WHERE id=%s", world.conversation_id
+    )
+    assert muted == [(False,)], "going live later must reach this customer"
+    assert world.q("SELECT count(*) FROM escalations WHERE client_id=%s", world.client_id) == [(1,)]
+
+
+async def test_an_expired_draft_opens_an_escalation(
+    world: World,  # noqa: F811
+    owner_pool: Any,
+) -> None:
+    from csa.approval.service import expire_due
+
+    approval_id, _, _ = await _held_buttons(world, owner_pool)
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id=%s",
+            (approval_id,),
+        )
+    assert await expire_due(owner_pool, world.pool) == 1
+    assert world.q("SELECT reason FROM escalations WHERE client_id=%s", world.client_id) == [
+        ("approval_expired",)
+    ]
+    assert world.q(
+        "SELECT count(*) FROM messages WHERE client_id=%s AND direction='outbound'",
+        world.client_id,
+    ) == [(1,)]
+
+
+async def test_an_expired_draft_sends_nothing_while_replies_are_off(
+    world: World,  # noqa: F811
+    owner_pool: Any,
+) -> None:
+    from csa.approval.service import expire_due
+
+    approval_id, _, _ = await _held_buttons(world, owner_pool)
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id=%s",
+            (approval_id,),
+        )
+        conn.execute(
+            "UPDATE clients SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+            "'{policy}', '{\"deployment_mode\": \"shadow\"}') WHERE id=%s",
+            (world.client_id,),
+        )
+    assert await expire_due(owner_pool, world.pool) == 1
+    assert world.q("SELECT status FROM approvals WHERE id=%s", approval_id) == [("expired",)]
+    assert world.q(
+        "SELECT count(*) FROM messages WHERE client_id=%s AND direction='outbound'",
+        world.client_id,
+    ) == [(0,)]
+    assert world.q("SELECT count(*) FROM escalations WHERE client_id=%s", world.client_id) == [(1,)]
+
+
 async def test_open_circuit_queues_one_staff_alert(world: World) -> None:  # noqa: F811
     import time
 

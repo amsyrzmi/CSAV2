@@ -262,23 +262,31 @@ async def test_run_audits_the_profile_once_per_company(world: World) -> None:
         str(client["id"]) for client in clients.values()
     )
     names = {client["id"]: client["name"] for client in clients.values()}
+    # Activating Customer support has already made a company pilot.
+    has_support = {c.name for c in world.roster.companies if "customer_support" in c.packages}
     for row in audit:
         assert row["actor_id"] == world.admin_id
         assert row["target_id"] == str(row["client_id"])
-        assert row["details"] == {
-            "fields": ["status", "brand_name"],
+        name = names[row["client_id"]]
+        expected: dict[str, object] = {
+            "fields": ["brand_name"] if name in has_support else ["status", "brand_name"],
             "status": "pilot",
-            "brand_name": names[row["client_id"]],
-            "previous": {"status": "onboarding", "brand_name": None},
+            "brand_name": name,
+            "previous": {
+                "status": "pilot" if name in has_support else "onboarding",
+                "brand_name": None,
+            },
             "source": "staging-reset",
         }
+        assert row["details"] == expected
 
 
 @requires_docker
 async def test_output_says_what_the_profile_set(world: World) -> None:
     _, lines = await world.run()
     for company in world.roster.companies:
-        assert f"{company.slug}: status pilot: created" in lines
+        status = "already there" if "customer_support" in company.packages else "created"
+        assert f"{company.slug}: status pilot: {status}" in lines
         assert f"{company.slug}: brand name {company.name}: created" in lines
     _, again = await world.run()
     for company in world.roster.companies:

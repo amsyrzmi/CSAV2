@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { Inbox } from "./inbox/Inbox";
+import { CustomerRepliesBanner } from "./CustomerRepliesBanner";
 import { field, Heading, Notice } from "./ui";
 
 export function InboxWorkspace({ me }: { me: Me }) {
@@ -22,6 +23,8 @@ export function InboxWorkspace({ me }: { me: Me }) {
   if (!permitted) return <Notice error>Staff inbox access requires an administrator or staff role.</Notice>;
   const tenant = platform ? selected : me.active_client_id;
   return <>
+    {tenant && <CustomerRepliesBanner tenantId={platform ? tenant : null}
+      servicesHref={platform ? `/services?client_id=${encodeURIComponent(tenant)}` : "/portal/services"} />}
     <Heading title="Customer inbox" description="Conversations your customers start, with replies waiting for your review." />
     <Notice>Take over a conversation before you reply. The assistant stays paused until you release it.
       If the assistant is already sending a reply, takeover waits for it. Replies the assistant had queued are not sent.

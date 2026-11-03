@@ -22,7 +22,7 @@ from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.decide.grounding import ungrounded
 from csa.notify.notifier import notify
-from csa.staff.ownership import automation_allowed, lock_conversation
+from csa.staff.ownership import automation_allowed, lock_conversation, replies_off
 
 logger = structlog.get_logger(__name__)
 
@@ -293,6 +293,15 @@ async def _settle(
         conn=conn,
     )
     await db.q.execute("staff/close_approval_actions.sql", (client_id, approval["id"]), conn=conn)
+    if outcome == "expired":
+        # The customer is told someone will follow up, so someone has to know.
+        await db.q.execute(
+            "approval/escalate_expired.sql",
+            (approval["trace_id"], client_id, approval["conversation_id"]),
+            conn=conn,
+        )
+        if await replies_off(conn, client_id):
+            return False
     if outcome in {"rejected", "expired"} and not await automation_allowed(
         conn, client_id, approval["conversation_id"], approval["trace_id"]
     ):

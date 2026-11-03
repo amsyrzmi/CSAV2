@@ -273,6 +273,13 @@ class World:
                 "result": {"subscription_id": AISYAH, "status": "paused", "version": 2},
             }
             return 200, self.proposal
+        if path == "services/customer-replies":
+            return 200, {
+                "mode": "auto",
+                "brand_name": "Synthetic",
+                "can_manage": True,
+                "warnings": [],
+            }
         self.unexpected.append(f"{method} {path}?{params}")
         return 500, {"detail": "unexpected synthetic call"}
 

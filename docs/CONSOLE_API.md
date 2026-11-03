@@ -1506,6 +1506,21 @@ Gates: a route behind an inactive package returns 403 `package_inactive`, and ga
 
 Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Knowledge base, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
 
+
+### Customer replies (Go live)
+
+A new company starts with no replies to customers. Its tenant admin turns them on here, with no help from FourStacks.
+
+- Behind the `customer_support` gate, which accepts `active` and `suspended`.
+- `GET /console/v1/services/customer-replies`, for any member or platform admin, returns `{mode, brand_name, can_manage, warnings}`.
+- `mode` is `off`, `approve` or `auto`, which are the deployment modes `shadow`, `suggest` and `auto`. It reads `config.policy.deployment_mode`, as the turn gate does, so it reports what the bot does.
+- `warnings` holds any of: `replies_off`; `no_knowledge` (the `knowledge_base` add-on is active and no active document has chunks); `base_only` (no add-on is active, so most questions go to staff).
+- `PUT /console/v1/services/customer-replies`, for a tenant admin or platform admin, with CSRF, takes `{mode, brand_name}`. `brand_name` is trimmed, at most 120 characters, a single line; if omitted, the stored one stays.
+- Refusals: 422 `brand_name_required` for `approve` or `auto` with no name, stored or sent; 409 `package_suspended` while Customer support is suspended; 403 `tenant administrator required`.
+- Saving `approve` also sets `approval_ttl_minutes` to 1440.
+- A real change writes one `console_audit` row, `tenant.customer_replies_set`, with before and after. A repeat writes none.
+- A company still `onboarding` moves to `pilot` when Customer support is activated, or on a save, with one `tenant.status_changed` row. Background jobs visit only `pilot` and `active` companies, so its knowledge base files process before it goes live. Other statuses don't change.
+
 ## Capabilities and specialised tabs (LG13)
 Packages (see Services and packages) are the management surface; the switches below remain the enforcement.
 - `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`.
