@@ -173,6 +173,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         status, data = 200, None
         if path == "auth/csrf":
             data = {"csrf_token": "synthetic-csrf"}
+        elif path == "services/customer-replies":
+            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
         elif path == "services" and request.method == "GET":
             data = [make_service("customer_support", "Customer Support", "base", "active")]
         elif path == "channels/whatsapp" and request.method == "GET":
