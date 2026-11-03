@@ -286,6 +286,9 @@ class Stub:
                 data = list(self.services.values())
         elif path == "channels/whatsapp" and request.method == "GET":
             data = NO_WHATSAPP
+        elif path == "services/customer-replies" and request.method == "GET":
+            # Go live's panel, which sits in the Core service group while Customer support is on.
+            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
         elif path.startswith("services/") and request.method == "POST":
             key, verb = path.split("/")[1:3]
             body = request.post_data_json
@@ -689,9 +692,10 @@ async def test_headings_keep_the_page_outline_valid(site: Site) -> None:
         context, page, diagnostics = await open_services(browser, site, stub)
         await expect(page.get_by_role("heading", level=1)).to_have_text(["Services"])
         groups = page.get_by_role("heading", level=2)
-        # The WhatsApp panel (shown while Customer support is active) is a section of its own.
+        # While Customer support is active, the replies panel sits in the Core service group and
+        # the WhatsApp panel is a section of its own.
         await expect(groups).to_have_text(
-            ["Core service", "Add-ons", "Separate services", "WhatsApp number"]
+            ["Core service", "Customer replies", "Add-ons", "Separate services", "WhatsApp number"]
         )
         titles = page.get_by_role("heading", level=3)
         await expect(titles.filter(has_text="Customer support")).to_have_count(1)

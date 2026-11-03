@@ -23,7 +23,7 @@ from csa.agents.staged.models import EmailDraftInput, validate_mailbox_address
 
 MODEL_DISCLOSURE = (
     "Analyse and Draft send the selected email text to the configured model provider. "
-    "Nothing is sent to anyone; drafts are saved locally or to your own Gmail drafts."
+    "Drafts are saved locally or to your own Gmail drafts. An email is sent only after you confirm."
 )
 Category = Literal[
     "customer_request",

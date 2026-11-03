@@ -27,7 +27,7 @@ test("only a mode that replies needs a brand name", () => {
 
 test("the panel says what each warning means and leaves replies_off to its own choice", () => {
   assert.deepEqual(replies.panelWarnings(["replies_off", "no_knowledge", "base_only"]), [
-    "Your bot has nothing to answer from yet. Add files in Knowledge base.",
+    "Your bot has nothing to answer from yet. Add files in Business knowledge.",
     "With Customer support alone, most customer questions go to your team.",
   ]);
   assert.deepEqual(replies.panelWarnings(["replies_off"]), []);

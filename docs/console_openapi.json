@@ -3468,7 +3468,7 @@
             "type": "boolean"
           },
           "disclosure": {
-            "default": "Analyse and Draft send the selected email text to the configured model provider. Nothing is sent to anyone; drafts are saved locally or to your own Gmail drafts.",
+            "default": "Analyse and Draft send the selected email text to the configured model provider. Drafts are saved locally or to your own Gmail drafts. An email is sent only after you confirm.",
             "title": "Disclosure",
             "type": "string"
           },

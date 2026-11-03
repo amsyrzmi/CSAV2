@@ -458,17 +458,31 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect_navigation(page, ("Services",), GATED)
         assert any(c["path"] == "inbox/conversations" for c in calls[start:])
 
-        # (g) Replies are off: the banner shows on Overview and Inbox, and points to Services.
+        # (g) Replies are off: the banner shows on Overview (above the chat) and Inbox, and points
+        # to Services, which is where the panel lives.
         support = [{"key": "customer_support", "status": "active"}]
         upstream.me, upstream.packages = make_me("tenant_admin"), support
         banner = page.get_by_test_id("customer-replies-banner")
+        chat_heading = page.get_by_role("heading", name="How can I help today?")
         await page.goto(f"{base}/portal")
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_contain_text(
             "Your customers aren't getting replies yet.", timeout=WAIT
         )
         await expect(banner.get_by_role("link", name="Go to Services")).to_have_attribute(
             "href", "/portal/services"
         )
+        # A platform admin's link carries the chosen company, and its read names it too.
+        upstream.me = make_me("platform_admin")
+        await page.goto(f"{base}/?client_id={TENANT}")
+        await expect(banner.get_by_role("link", name="Go to Services")).to_have_attribute(
+            "href", f"/services?client_id={TENANT}", timeout=WAIT
+        )
+        assert any(
+            c["path"] == "services/customer-replies" and c["query"] == f"client_id={TENANT}"
+            for c in calls
+        )
+        upstream.me = make_me("tenant_admin")
         await page.goto(f"{base}/portal/inbox")
         await expect(banner).to_contain_text(
             "Your customers aren't getting replies yet.", timeout=WAIT
@@ -477,6 +491,15 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         # (h) The panel: exact choices, the warning, Save blocked until there is a name.
         await page.goto(f"{base}/portal/services")
         panel = page.get_by_test_id("customer-replies-panel")
+        # The panel sits in the Core service group, directly under the Customer support card.
+        base_group = page.get_by_test_id("services-group-base")
+        await expect(base_group.get_by_test_id("customer-replies-panel")).to_be_visible(
+            timeout=WAIT
+        )
+        order = await base_group.locator("> ul > *").evaluate_all(
+            "(items) => items.map((item) => item.dataset.testid)"
+        )
+        assert order == ["services-card-customer_support", "services-customer-replies"], order
         await expect(panel).to_contain_text(
             "With Customer support alone, most customer questions go to your team.", timeout=WAIT
         )
@@ -514,31 +537,30 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (j) Replies on: no banner, with no new sign-in.
         await page.goto(f"{base}/portal")
-        await expect(page.get_by_text("Account access")).to_be_visible(timeout=WAIT)
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_have_count(0)
 
         # (k) Staff see the state and no controls, and are told who can change it.
         replies.update(mode="off", can_manage=False, warnings=["replies_off"])
         upstream.me = make_me("tenant_staff")
         await page.goto(f"{base}/portal")
-        await expect(banner).to_contain_text(
-            "Ask your tenant admin to turn replies on.", timeout=WAIT
-        )
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
+        await expect(banner).to_contain_text("Ask your admin to turn replies on.", timeout=WAIT)
         await expect(banner.get_by_role("link")).to_have_count(0)
         await page.goto(f"{base}/portal/services")
         state = page.get_by_test_id("customer-replies-state")
-        await expect(state).to_contain_text("Ask your tenant admin to change this.", timeout=WAIT)
+        await expect(state).to_contain_text("Ask your admin to change this.", timeout=WAIT)
         await expect(page.get_by_test_id("customer-replies-save")).to_have_count(0)
 
         # (l) A refused or failed read shows no banner and no error, and the page still works.
         replies_status["read"] = 500
         await page.goto(f"{base}/portal")
-        await expect(page.get_by_text("Account access")).to_be_visible(timeout=WAIT)
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_have_count(0)
         upstream.packages = []
         replies_status["read"] = 200
         await page.goto(f"{base}/portal")
-        await expect(page.get_by_text("Account access")).to_be_visible(timeout=WAIT)
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_have_count(0)
 
         assert not unexpected, unexpected

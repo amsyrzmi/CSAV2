@@ -27,7 +27,7 @@ KB_ROUTES = ("/console/v1/kb/documents", "/console/v1/kb/ingest-jobs", "/console
 
 def test_catalogue_entry() -> None:
     addon = package("knowledge_base")
-    assert addon.title == "Knowledge base"
+    assert addon.title == "Business knowledge"
     assert addon.kind == "addon"
     assert addon.requires == ("customer_support",)
     assert addon.capabilities == ("kb_agent",)

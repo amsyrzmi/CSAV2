@@ -1,7 +1,7 @@
 "use client";
 
 import { Bot, CirclePause, Hourglass, Layers, Receipt, type LucideIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { avatarForPackage } from "@/lib/agent-avatars";
 import { api, ApiError, patch } from "@/lib/api";
 import type { Agent, Client, Me } from "@/lib/identity-contracts";
@@ -137,17 +137,23 @@ function ServiceList({ clientId, platform, canManage }: {
           <section key={kind} data-testid={`services-group-${kind}`} className={CARD}>
             <h2 className="px-4 pt-4 pb-3 font-(family-name:--fs-font-heading) text-base font-semibold sm:px-5">{title}</h2>
             <ul>
-              {rows.map((service) => <ServiceRow key={service.key} service={service}
-                clientId={clientId} platform={platform} onChanged={reload} />)}
+              {rows.map((service) => (
+                <Fragment key={service.key}>
+                  <ServiceRow service={service} clientId={clientId} platform={platform} onChanged={reload} />
+                  {/* Go live: the replies choice sits right under the card it belongs to. */}
+                  {service.key === "customer_support" && service.status === "active" && (
+                    <li className="px-4 pb-4 sm:px-5" data-testid="services-customer-replies">
+                      <CustomerRepliesPanel tenantId={clientId} />
+                    </li>
+                  )}
+                </Fragment>
+              ))}
             </ul>
           </section>
         );
       })}
       {services.some((service) => service.key === "customer_support" && service.status === "active") && (
-        <>
-          <CustomerRepliesPanel tenantId={clientId} />
-          <WhatsAppPanel tenantId={clientId} canManage={canManage} platform={platform} />
-        </>
+        <WhatsAppPanel tenantId={clientId} canManage={canManage} platform={platform} />
       )}
     </div>
   );

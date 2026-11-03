@@ -29,7 +29,7 @@ export const RECORDS_COPY = {
   },
   /** Plain sentences for the codes the personal, document, leaving and rehire operations answer with. */
   refusals: {
-    last_owner_leaving: "The HR owner can't be marked as leaving. Ask your tenant admin to move HR ownership to someone else first.",
+    last_owner_leaving: "The HR owner can't be marked as leaving. Ask your admin to move HR ownership to someone else first.",
     leaver_has_access: "Only the HR owner can mark someone with HR access as leaving.",
     last_day_past: "Choose a last day from today onwards.",
     leaving_final: "This person has already left. Use Rehire instead.",

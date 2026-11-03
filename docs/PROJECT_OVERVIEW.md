@@ -112,7 +112,7 @@ See [console API](./CONSOLE_API.md#services-and-packages).
 | Package | Kind | Capabilities | Console surface | Sellable |
 |---|---|---|---|---|
 | `customer_support` | base | `ticket_agent`, `escalation_agent`, `order_approval` | Inbox | yes |
-| `knowledge_base` | addon | `kb_agent` | Knowledge base | yes |
+| `knowledge_base` | addon | `kb_agent` | Business knowledge | yes |
 | `orders_products` | add-on | `order_agent`, `invoice_agent` | Business | yes |
 | `subscriptions` | add-on | `subscription_agent` | Subscriptions (plans, customers' subscriptions, request queue) | yes |
 | `bookings` | add-on | `booking_agent` | Bookings (specialised) | yes |

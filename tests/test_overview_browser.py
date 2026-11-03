@@ -142,6 +142,7 @@ class Api:
         self.requests: list[tuple[str, str]] = []
         self.unexpected: list[str] = []
         self.deliberate_failures = 0
+        self.refused_replies_reads = 0
         if turns:
             self.threads = [thread(1)]
             self.turns["thread-1"] = [turn(n, f"Question {n}") for n in range(1, turns + 1)]
@@ -171,6 +172,14 @@ class Api:
                 await self.fail(route)
                 return
             data = {"items": [], "next_cursor": None, "needs_review_count": self.review}
+        elif path == "services/customer-replies" and request.method == "GET":
+            # The Go live banner reads this and stays silent: replies are on, or Customer support
+            # is not active and the gateway refuses, which the banner swallows.
+            if {"key": "customer_support", "status": "active"} not in self.packages:
+                self.refused_replies_reads += 1
+                await route.fulfill(status=403, json={"detail": "package_inactive"})
+                return
+            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
         elif path == "admin/clients" and request.method == "GET":
             data = CLIENTS
         elif path == "hr/context" and request.method == "GET":
@@ -339,6 +348,8 @@ async def open_overview(
     assert not api.unexpected, api.unexpected
     if api.deliberate_failures:
         errors = [e for e in errors if "status of 500" not in e]
+    if api.refused_replies_reads:
+        errors = [e for e in errors if "status of 403" not in e]
     assert not errors, errors
 
 

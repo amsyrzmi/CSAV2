@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
+import { CustomerRepliesBanner } from "../CustomerRepliesBanner";
 import { SandboxWorkspace } from "../SandboxWorkspace";
 import { AssistantTile } from "../chat/ChatEmptyState";
 import { Notice } from "../ui";
@@ -50,6 +51,15 @@ export function OverviewHome({ me }: { me: Me }) {
           </div>
         )}
       </div>
+      {/* The banner is silent unless customers aren't being answered; an empty wrapper takes no room. */}
+      {tenant && (
+        <div className="shrink-0 px-4 pt-3 sm:px-6 empty:hidden">
+          <CustomerRepliesBanner
+            tenantId={platform ? tenant : null}
+            servicesHref={platform ? `/services?client_id=${encodeURIComponent(tenant)}` : "/portal/services"}
+          />
+        </div>
+      )}
       <div className="min-h-0 flex-1">{body}</div>
     </div>
   );
