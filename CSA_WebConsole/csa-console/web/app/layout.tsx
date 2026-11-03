@@ -24,7 +24,7 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "CSA Console | fourstacks",
+  title: "Mito by fourstacks",
   description: "Customer service assistant operations console",
   robots: { index: false, follow: false },
 };

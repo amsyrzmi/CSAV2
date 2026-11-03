@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { groupParentCurrent, type NavLink } from "@/lib/navigation";
 import type { RailState } from "@/lib/shell-state";
-import { BrandMark } from "./BrandMark";
+import { ByFourstacks, MitoMark, MitoWordmark } from "@/components/brand/Mito";
 import { navIcon } from "./icons";
 import { NavGroup, useGroupOpen } from "./NavGroup";
 
@@ -69,11 +69,11 @@ export function Rail({
     <aside
       data-testid="shell-rail"
       data-rail={state}
-      className={`hidden shrink-0 shadow-[inset_-1px_0_0_var(--fs-border)] bg-[var(--fs-rail)] lg:block ${expanded ? "w-60" : "w-14"}`}
+      className={`hidden shrink-0 overflow-x-clip shadow-[inset_-1px_0_0_var(--fs-border)] bg-[var(--fs-rail)] transition-[width] duration-200 ease-(--fs-ease-out) motion-reduce:transition-none lg:block ${expanded ? "w-60" : "w-14"}`}
     >
       <div
         onScroll={() => setTip(null)}
-        className="flex flex-col gap-1 p-2 lg:sticky lg:top-0 lg:max-h-dvh lg:overflow-y-auto"
+        className="flex flex-col gap-1 p-2 lg:sticky lg:top-0 lg:max-h-dvh lg:overflow-y-auto lg:overflow-x-hidden [&>*]:shrink-0"
       >
         <button
           type="button"
@@ -94,12 +94,15 @@ export function Rail({
         </button>
         <Link
           href={home}
-          aria-label="fourstacks home"
-          className={`${ITEM} h-12 ${expanded ? "w-full gap-3 px-1" : "w-10 justify-center"}`}
+          aria-label="Mito home"
+          className={`${ITEM} ${expanded ? "h-14 w-full gap-3 px-1" : "h-12 w-10 justify-center"}`}
         >
-          <BrandMark size={32} />
+          <MitoMark size={36} />
           {expanded && (
-            <span className="brand-wordmark truncate text-lg font-semibold">fourstacks.</span>
+            <span className="flex min-w-0 flex-col gap-1.5">
+              <MitoWordmark className="text-xl text-[color:var(--fs-text)]" />
+              <ByFourstacks size={11} className="text-[10.5px] font-medium text-[color:var(--fs-text-secondary)]" />
+            </span>
           )}
         </Link>
         <nav aria-label="Main navigation" className="flex flex-col gap-1">

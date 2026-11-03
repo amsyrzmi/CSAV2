@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
-import { MessageSquare, X } from "lucide-react";
+import { ArrowUp, MessageSquare, X } from "lucide-react";
 import { languageOf, panelText, PANEL, type Language } from "@/lib/assistant-copy";
 import {
   candidateAnswer,
@@ -302,6 +302,14 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     return () => clearTimeout(timer);
   }, [waitingForRoute]);
 
+  // The message box grows with what is typed (up to about six lines) and shrinks back after a send.
+  useEffect(() => {
+    const box = input.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${Math.min(box.scrollHeight, 152)}px`;
+  }, [body, open]);
+
   // The newest reply scrolls into view; an open question stays visible while the assistant works.
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -442,42 +450,26 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         <label htmlFor={`${panelId}-input`} className="block text-xs font-medium text-[color:var(--fs-text-secondary)]">
           {text.message_label}
         </label>
-        <div className="rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] shadow-[var(--fs-shadow-card)] transition-[border-color,box-shadow] duration-150 has-[textarea:focus-visible]:border-[color:var(--fs-primary)] has-[textarea:focus-visible]:outline-2 has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-[color:var(--fs-focus)] has-[textarea:disabled]:bg-[var(--fs-disabled-bg)]">
-          <textarea
-            id={`${panelId}-input`}
-            ref={input}
-            data-testid="assistant-input"
-            rows={2}
-            className="block max-h-40 min-h-12 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm leading-6 text-[color:var(--fs-text)] outline-none focus-visible:shadow-none focus-visible:outline-none! disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)]"
-            value={body}
-            maxLength={4000}
-            disabled={busy || retry}
-            onChange={(event) => setBody(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                if (body.trim()) ask(typedMessage(body, turns, origins), true);
-              }
-            }}
-          />
-          <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5">
-            {retry ? (
-              <>
-                <button type="button" className={`${sendLook} px-4`} onClick={() => pending && send(pending)}>
-                  {text.retry_same}
-                </button>
-                <button
-                  type="button"
-                  className={headerButton}
-                  onClick={() => {
-                    setPending(null);
-                    setError("");
-                  }}
-                >
-                  {text.start_new}
-                </button>
-              </>
-            ) : (
+        <div className="rounded-[var(--fs-radius-composer)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] shadow-[var(--fs-shadow-card)] transition-[border-color,box-shadow] duration-200 ease-(--fs-ease-out) motion-reduce:transition-none has-[textarea:focus-visible]:border-[color:var(--fs-primary)] has-[textarea:focus-visible]:shadow-[var(--fs-shadow-popover)] has-[textarea:focus-visible]:outline-2 has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-[color:var(--fs-focus)] has-[textarea:disabled]:bg-[var(--fs-disabled-bg)]">
+          <div className="flex items-end gap-2 py-2 pl-4 pr-2">
+            <textarea
+              id={`${panelId}-input`}
+              ref={input}
+              data-testid="assistant-input"
+              rows={1}
+              className="block max-h-[9.5rem] min-h-10 min-w-0 flex-1 resize-none bg-transparent py-2 text-sm leading-6 text-[color:var(--fs-text)] outline-none focus-visible:shadow-none focus-visible:outline-none! disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)]"
+              value={body}
+              maxLength={4000}
+              disabled={busy || retry}
+              onChange={(event) => setBody(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (body.trim()) ask(typedMessage(body, turns, origins), true);
+                }
+              }}
+            />
+            {!retry && (
               <button
                 type="submit"
                 data-testid="assistant-send"
@@ -485,9 +477,27 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
                 disabled={busy || resume !== null || !body.trim() || !loaded}
               >
                 {busy ? text.button_sending : text.button_send}
+                {!busy && <ArrowUp size={16} aria-hidden />}
               </button>
             )}
           </div>
+          {retry && (
+            <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5">
+              <button type="button" className={`${sendLook} px-4`} onClick={() => pending && send(pending)}>
+                {text.retry_same}
+              </button>
+              <button
+                type="button"
+                className={headerButton}
+                onClick={() => {
+                  setPending(null);
+                  setError("");
+                }}
+              >
+                {text.start_new}
+              </button>
+            </div>
+          )}
         </div>
       </form>
     </section>

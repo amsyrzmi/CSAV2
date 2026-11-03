@@ -285,9 +285,9 @@ async def test_rail_collapsed_links_keep_exact_names(console: Console) -> None:
         await expect(services).to_have_attribute("aria-current", "page")
         assert (await services.bounding_box())["width"] <= 56  # type: ignore[index]
         # The brand mark is the home link.
-        await expect(
-            page.get_by_role("link", name="fourstacks home", exact=True)
-        ).to_have_attribute("href", "/portal")
+        await expect(page.get_by_role("link", name="Mito home", exact=True)).to_have_attribute(
+            "href", "/portal"
+        )
     finally:
         await close_page(playwright, browser)
 

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { NavLink } from "@/lib/navigation";
 import { activeNav } from "@/lib/shell-state";
-import { BrandMark } from "./BrandMark";
+import { MitoMark } from "@/components/brand/Mito";
 import { MobileMenu } from "./MobileMenu";
 import { SignOutButton, UserMenu, type ShellAccount } from "./UserMenu";
 import { ThemeControl } from "./ThemeControl";
@@ -33,8 +33,8 @@ export function TopBar({
       className="flex items-center gap-3 border-b border-[color:var(--fs-border)] px-4 py-3 sm:px-8"
     >
       <MobileMenu links={links} path={path} />
-      <Link href={home} aria-label="fourstacks home" className="flex items-center lg:hidden">
-        <BrandMark size={28} />
+      <Link href={home} aria-label="Mito home" className="flex items-center lg:hidden">
+        <MitoMark size={32} />
       </Link>
       <p data-testid="shell-title" className="min-w-0 flex-1 truncate text-sm font-semibold">
         {title}

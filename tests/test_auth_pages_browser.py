@@ -178,7 +178,7 @@ async def test_auth_pages_show_logo_and_tagline_and_none_of_the_old_copy(
                 assert "fourstacks" in text, route
                 for old in OLD_COPY:
                     assert old not in text, f"{route} still says {old!r}"
-                logo = page.get_by_test_id("auth-panel").locator("svg[viewBox='0 0 48 52']")
+                logo = page.get_by_test_id("auth-panel").get_by_test_id("mito-mark")
                 await expect(logo).to_be_visible()
                 box = await logo.bounding_box()
                 assert box is not None and 100 <= box["width"] <= 140, (route, box)
@@ -317,10 +317,10 @@ async def test_panel_text_sits_where_the_gradient_is_dark_enough(console: Consol
 
 async def drop_animations(page: Page) -> list[str]:
     return await page.evaluate(
-        """() => [...document.querySelectorAll('[data-testid="auth-panel"] svg path')]
-          .flatMap((layer) => layer.getAnimations())
+        """() => [...document.querySelectorAll('[data-testid="auth-panel"] .mito-lobe-a')]
+          .flatMap((lobe) => lobe.getAnimations())
           .map((animation) => animation.animationName)
-          .filter((name) => name === 'fs-logo-drop')"""
+          .filter((name) => name === 'mito-apart-a')"""
     )
 
 
@@ -328,13 +328,13 @@ async def test_auth_logo_is_still_under_reduced_motion(console: Console) -> None
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
-            # Control: with motion allowed the four layers do drop in.
+            # Control: with motion allowed the Mito lobes do move apart and back.
             context = await new_context(console, browser)
             page = await open_route(context, console, "/login")
             await page.wait_for_function(
-                """() => [...document.querySelectorAll('[data-testid="auth-panel"] svg path')]
-                  .flatMap((layer) => layer.getAnimations())
-                  .filter((a) => a.animationName === 'fs-logo-drop').length === 4"""
+                """() => [...document.querySelectorAll('[data-testid="auth-panel"] .mito-lobe-a')]
+                  .flatMap((lobe) => lobe.getAnimations())
+                  .filter((a) => a.animationName === 'mito-apart-a').length >= 1"""
             )
             await context.close()
 

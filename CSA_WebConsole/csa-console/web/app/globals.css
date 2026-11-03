@@ -505,6 +505,35 @@
 }
 .fs-logo-drop[data-motion="off"] path { animation: none !important; }
 
+/* ---------- Mito mark (components/brand/Mito.tsx) ----------
+   Cell division: the two lobes ease apart along the diagonal until the waist thins to a thread,
+   hold, then draw back together; the nuclei pulse once each, a beat apart. The same motion rules
+   as the logo drop above: data-motion "auto" lets CSS animate unless reduced motion is asked for
+   or the document is Calm; "off" (set after mount for a hidden tab or a paused preference) stops
+   it; the resting shape is the unmoving mark. */
+@keyframes mito-apart-a {
+  0%, 18%, 100% { transform: translate(0, 0); }
+  46%, 56% { transform: translate(-5.5px, -6.3px); }
+  82% { transform: translate(0, 0); }
+}
+@keyframes mito-apart-b {
+  0%, 18%, 100% { transform: translate(0, 0); }
+  46%, 56% { transform: translate(5.5px, 6.3px); }
+  82% { transform: translate(0, 0); }
+}
+@keyframes mito-pulse {
+  0%, 30%, 70%, 100% { transform: scale(1); }
+  50% { transform: scale(1.22); }
+}
+.mito-nucleus { transform-box: fill-box; transform-origin: center; }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-lobe-a { animation: mito-apart-a 4.6s cubic-bezier(0.45, 0, 0.25, 1) infinite; }
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-lobe-b { animation: mito-apart-b 4.6s cubic-bezier(0.45, 0, 0.25, 1) infinite; }
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-nucleus { animation: mito-pulse 4.6s ease-in-out infinite; }
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-nucleus-b { animation-delay: 0.35s; }
+}
+.mito-mark[data-motion="off"] .mito-lobe, .mito-mark[data-motion="off"] .mito-nucleus { animation: none !important; }
+
 /* ---------- loading screen (FullPageLoading) ----------
    Five agents bob in a staggered wave over a scrolling dashed ground line, "Loading" below with
    animated dots. data-motion is "auto" on the server render (a full-screen load streams this as

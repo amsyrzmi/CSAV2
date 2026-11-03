@@ -191,6 +191,7 @@ try {
   }
   await addTree("app");
   await addTree("components/console");
+  await addTree("components/brand");
   for (const relative of files) {
     for (let parent = path.dirname(relative); parent !== "."; parent = path.dirname(parent)) {
       if ((await lstat(path.join(source, parent))).isSymbolicLink())
