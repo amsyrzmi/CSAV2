@@ -45,3 +45,6 @@ __pycache__/
 
 # Host-local Claude Code permission rules (never shared)
 /.claude/settings.local.json
+
+# Real staging roster: personal addresses, never committed (the example file is the shape).
+/deploy/staging-accounts.local.json
