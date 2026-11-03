@@ -65,7 +65,7 @@ HUE = {
     "einvoicing": 120,
 }
 # Title of each hand-drawn agent (the same text as AGENT_TITLES in lib/agent-avatars.ts).
-AGENT_TITLE = {"einvoicing": "E-invoicing agent"}
+AGENT_TITLE = {"einvoicing": "E-invoicing assistant"}
 SOURCE_HUE = 215
 KNOWLEDGE_EYE = (0.35, 0.4, 0.65, 0.7)  # its blink region: x0, y0, x1, y1 as grid fractions
 HUE_SPREAD = 0.35  # how much of the source's own hue variation survives
