@@ -71,6 +71,8 @@ const OWNED = [
   "components/console/HrAccessPanel.tsx",
   "components/console/HrAccessMore.tsx",
   "components/console/WhatsAppPanel.tsx",
+  "components/console/AssistantDock.tsx",
+  "components/console/ProposalCard.tsx",
 ];
 
 /** OWNED directories allowed to hold no scanned file. None today. */

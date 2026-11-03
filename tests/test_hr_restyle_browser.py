@@ -10,11 +10,22 @@ tasks add their checks to this file.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import pytest
+from csa.workspace.contracts import (
+    AnswerResult,
+    ClarificationOption,
+    ClarificationResult,
+    ProposalResult,
+    WorkspaceThreadOut,
+    WorkspaceTurnOut,
+)
 from playwright.async_api import Page, expect
 
 from tests import test_services_redesign_browser as services
@@ -33,6 +44,7 @@ from tests.test_hr_access_browser import (
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
 from tests.test_services_redesign_browser import Site, with_browser
 from tests.test_team_browser import THEMES, WIDTHS, overflow
+from tests.test_workspace_browser import training_proposal
 
 pytestmark = pytest.mark.asyncio
 
@@ -131,9 +143,14 @@ async def hr_page(
     width: int = 1280,
     height: int = 1000,
     theme: str | None = None,
+    assistant: bool = False,
 ) -> AsyncIterator[Page]:
-    """Open `path` as the tenant admin (the HR owner) and wait until `ready(page)` is visible."""
-    site.upstream.me, site.upstream.packages = make_me("tenant_admin"), HR_PACKAGE
+    """Open `path` as the tenant admin (the HR owner) and wait until `ready(page)` is visible.
+
+    `assistant` turns the workspace assistant on in `/auth/me`, so the real dock is mounted.
+    """
+    site.upstream.me = {**make_me("tenant_admin"), "workspace_assistant": assistant}
+    site.upstream.packages = HR_PACKAGE
     context = await browser.new_context(
         viewport={"width": width, "height": height}, timezone_id="Asia/Kuala_Lumpur"
     )
@@ -349,7 +366,8 @@ COVERED_JS = """() => {
     for (const el of buttons) {
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.bottom < 0 || r.top > innerHeight) continue;
-        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+                    const hit = document.elementFromPoint(x, y);
         if (hit && hit.id === 'dummy-dock') out.push(el.textContent.trim());
     }
     return out;
@@ -483,5 +501,395 @@ async def test_access_page_at_five_widths_in_three_themes(site: Site, theme: str
                 if theme == "night":
                     assert white["white"] == [], (width, white)
                 assert await page.evaluate(COVERED_JS) == [], (theme, width)
+
+    await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# The workspace assistant dock and its proposal card: theme tokens, phones, three themes.
+# ---------------------------------------------------------------------------------------------
+
+DOCK_THREAD = UUID("33333333-3333-4333-8333-333333333333")
+LONG_ANSWER = (
+    "Open People & HR, choose People, then Add person. Fill in the name and the job title, "
+    "pick a manager if they have one, and save. The new person appears in the list straight "
+    "away. A very long reference such as HR-2026-11-03-" + "x" * 60 + " must wrap."
+)
+DOCK_TEAM_PATH = "/portal/team"
+
+
+def dock_turns() -> list[dict[str, Any]]:
+    """An answer, a proposal card awaiting a decision, then a clarification (the live question)."""
+    now = datetime.now(UTC)
+    options = [
+        ClarificationOption(label="Aina Sofea, Operations Executive", value="aina-sofea"),
+        ClarificationOption(label="Aina Rahman, Warehouse Supervisor, Penang", value="aina-rahman"),
+    ]
+    turns = [
+        ("How do I add a person?", AnswerResult(action="answer", markdown=LONG_ANSWER)),
+        (
+            "Submit my training request",
+            ProposalResult(action="proposal", proposal=training_proposal()),
+        ),
+        (
+            "Change Aina's job title",
+            ClarificationResult(
+                action="clarification", question="Which Aina do you mean?", options=options
+            ),
+        ),
+    ]
+    return [
+        WorkspaceTurnOut(
+            id=index,
+            request_key=UUID(f"77777777-7777-4777-8777-77777777777{index}"),
+            body=body,
+            result=result,
+            created_at=now,
+        ).model_dump(mode="json")
+        for index, (body, result) in enumerate(turns, start=1)
+    ]
+
+
+class DockWorld(RestyleWorld):
+    """The restyle company plus one workspace conversation with the three turns above."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.turns = dock_turns()
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if path == "workspace/conversations" and method == "GET":
+            thread = WorkspaceThreadOut(id=DOCK_THREAD, sequence=1, created_at=datetime.now(UTC))
+            return 200, {"items": [thread.model_dump(mode="json")], "next_cursor": None}
+        if path == f"workspace/conversations/{DOCK_THREAD}/turns" and method == "GET":
+            return 200, {"items": self.turns, "next_cursor": None}
+        if path.startswith("workspace/proposals/") and path.endswith("/cancel"):
+            # Leaving the page withdraws open cards; the stub accepts that without a body check.
+            return 200, {**self.turns[1]["result"]["proposal"], "status": "cancelled"}
+        return super().answer(caller, method, path, params, body)
+
+
+# Measures the open dock panel: its colours against the theme's tokens, text contrast on the
+# surface each line sits on, pure white anywhere, and whether anything leaves the viewport.
+DOCK_MEASURE_JS = """() => {
+    const parse = (v) => v.match(/[\\d.]+/g).map(Number);
+    const channel = (v) => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = (c) => 0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]);
+    const ratio = (a, b) => {
+        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+        return (hi + 0.05) / (lo + 0.05);
+    };
+    const token = (name, property) => {
+        const probe = document.createElement('div');
+        probe.style[property] = `var(${name})`;
+        document.body.appendChild(probe);
+        const value = getComputedStyle(probe)[property];
+        probe.remove();
+        return value;
+    };
+    const opaque = (el) => {
+        for (; el; el = el.parentElement) {
+            const c = parse(getComputedStyle(el).backgroundColor);
+            if (c.length === 3 || c[3] > 0.99) return c;
+        }
+        return [255, 255, 255];
+    };
+    const panel = document.querySelector('[data-testid=assistant-panel]');
+    const style = getComputedStyle(panel);
+    const texts = [];
+    for (const el of panel.querySelectorAll('*')) {
+        if (el.closest('svg') || el.disabled || el.closest('button:disabled')) continue;
+        const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+        const box = el.getBoundingClientRect();
+        if (!own || box.width === 0) continue;
+        texts.push({
+            text: el.textContent.trim().slice(0, 40),
+            ratio: ratio(parse(getComputedStyle(el).color), opaque(el)),
+        });
+    }
+    const white = [panel, ...panel.querySelectorAll('*')].filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0
+            && getComputedStyle(el).backgroundColor === 'rgb(255, 255, 255)'
+            && !el.closest('svg');
+    }).map((el) => el.dataset.testid || el.tagName + '.' + String(el.className).slice(0, 50));
+    const rect = panel.getBoundingClientRect();
+    const scroller = panel.querySelector('[aria-live=polite]');
+    const bubble = panel.querySelector('[data-testid=assistant-turn] p');
+    return {
+        background: style.backgroundColor,
+        raised: token('--fs-surface-raised', 'background'),
+        border: style.borderTopColor,
+        borderToken: token('--fs-border', 'color'),
+        bubble: bubble ? getComputedStyle(bubble).backgroundColor : null,
+        blue: token('--fs-surface-blue', 'background'),
+        shadow: style.boxShadow,
+        texts, white,
+        rect: {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+               height: rect.height},
+        inner: {width: innerWidth, height: innerHeight},
+        sideways: [panel, scroller].filter((el) => el.scrollWidth > el.clientWidth + 0.5).length,
+        avatars: [...panel.querySelectorAll('[data-agent=assistant]')].map((el) => ({
+            state: el.dataset.state, width: el.getBoundingClientRect().width,
+        })),
+    };
+}"""
+
+
+async def open_dock(page: Page) -> Any:
+    """Open the dock and wait for its three seeded turns; returns the panel."""
+    await page.get_by_test_id("assistant-open").click()
+    panel = page.get_by_test_id("assistant-panel")
+    await expect(panel).to_be_visible()
+    await expect(page.get_by_test_id("assistant-turn")).to_have_count(3, timeout=WAIT)
+    return panel
+
+
+def dock_ready(page: Page) -> Any:
+    return page.get_by_test_id("assistant-open")
+
+
+def check_dock_measure(measured: dict[str, Any], theme: str, width: int) -> None:
+    where = (theme, width)
+    assert measured["background"] == measured["raised"], (where, measured)
+    assert measured["border"] == measured["borderToken"], (where, measured)
+    assert measured["bubble"] == measured["blue"], (where, measured)
+    assert measured["shadow"] != "none", (where, measured)
+    assert measured["texts"], where
+    for item in measured["texts"]:
+        assert item["ratio"] >= 4.5, (where, item)
+    if theme == "night":
+        assert measured["background"] != "rgb(255, 255, 255)", (where, measured)
+        assert measured["white"] == [], (where, measured)
+    rect, inner = measured["rect"], measured["inner"]
+    assert rect["left"] >= -0.5 and rect["right"] <= inner["width"] + 0.5, (where, measured)
+    assert rect["top"] >= -0.5 and rect["bottom"] <= inner["height"] + 0.5, (where, measured)
+    assert rect["height"] <= min(0.8 * inner["height"], 640) + 1, (where, measured)
+    assert measured["sideways"] == 0, (where, measured)
+    # Every reply sits beside the 32 px assistant, resting (nothing is being sent).
+    assert [a["state"] for a in measured["avatars"]] == ["rest"] * 3, (where, measured)
+    assert all(a["width"] == 32 for a in measured["avatars"]), (where, measured)
+
+
+async def test_dock_panel_readable_in_night(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser,
+            site,
+            DockWorld(),
+            DOCK_TEAM_PATH,
+            theme="night",
+            assistant=True,
+            ready=dock_ready,
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", "night")
+            await open_dock(page)
+            measured = await page.evaluate(DOCK_MEASURE_JS)
+            check_dock_measure(measured, "night", 1280)
+            # The user's question is a tinted bubble; the answer and the clarification chips
+            # are on theme surfaces too (no white box inside the night panel).
+            assert measured["white"] == [], measured
+            await expect(
+                page.get_by_role("button", name="Aina Sofea, Operations Executive")
+            ).to_be_enabled()
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("width,height", [(320, 568), (390, 664)])
+async def test_dock_panel_fits_and_composer_reachable_at_320_and_390(
+    site: Site, width: int, height: int
+) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser,
+            site,
+            DockWorld(),
+            DOCK_TEAM_PATH,
+            width=width,
+            height=height,
+            assistant=True,
+            ready=dock_ready,
+        ) as page:
+            panel = await open_dock(page)
+            measured = await page.evaluate(DOCK_MEASURE_JS)
+            check_dock_measure(measured, "cobalt", width)
+            composer = page.get_by_test_id("assistant-input")
+            send = page.get_by_test_id("assistant-send")
+            close = panel.get_by_role("button", name="Close assistant")
+            for target in (composer, send, close):
+                await expect(target).to_be_in_viewport()
+                box = await target.bounding_box()
+                assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, (width, box)
+            # The turns scroll inside the panel; the composer stays under them and is not covered.
+            scroller = panel.locator("[aria-live=polite]")
+            await scroller.evaluate("(el) => { el.scrollTop = el.scrollHeight; }")
+            await expect(composer).to_be_in_viewport()
+            owner = await composer.evaluate(
+                """(el) => {
+                    const r = el.getBoundingClientRect();
+                    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+                    const hit = document.elementFromPoint(x, y);
+                    return el.contains(hit);
+                }"""
+            )
+            assert owner, width
+            await composer.fill("Hello")
+            await expect(send).to_be_enabled()
+            # The close button is at least 44 px square (a touch target) and closes the panel.
+            close_box = await close.bounding_box()
+            assert close_box and close_box["width"] >= 44 and close_box["height"] >= 44, close_box
+            overflowing = await overflow(page)
+            assert overflowing["scroll"] <= overflowing["inner"], (width, overflowing)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_dock_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser,
+            site,
+            DockWorld(),
+            DOCK_TEAM_PATH,
+            theme=theme,
+            assistant=True,
+            ready=dock_ready,
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            await open_dock(page)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 700})
+                await page.wait_for_timeout(150)
+                check_dock_measure(await page.evaluate(DOCK_MEASURE_JS), theme, width)
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], (theme, width, measured)
+            # Closing the panel puts focus back on the launcher.
+            await page.get_by_role("button", name="Close assistant").click()
+            await expect(page.get_by_test_id("assistant-open")).to_be_focused()
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_proposal_card_uses_theme_surface(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser,
+            site,
+            DockWorld(),
+            DOCK_TEAM_PATH,
+            width=320,
+            height=700,
+            theme=theme,
+            assistant=True,
+            ready=dock_ready,
+        ) as page:
+            await open_dock(page)
+            card = page.get_by_test_id("proposal-card")
+            await expect(card).to_have_count(1)
+            await expect(card.get_by_test_id("proposal-confirm")).to_be_visible()
+            await expect(card.get_by_test_id("proposal-cancel")).to_be_visible()
+            measured = await card.evaluate(
+                """(el) => {
+                    const parse = (v) => v.match(/[\\d.]+/g).map(Number);
+                    const channel = (v) => {
+                        v /= 255;
+                        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+                    };
+                    const lum = (c) => 0.2126 * channel(c[0]) + 0.7152 * channel(c[1])
+                        + 0.0722 * channel(c[2]);
+                    const ratio = (a, b) => {
+                        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+                        return (hi + 0.05) / (lo + 0.05);
+                    };
+                    const token = (name, property) => {
+                        const probe = document.createElement('div');
+                        probe.style[property] = `var(${name})`;
+                        document.body.appendChild(probe);
+                        const value = getComputedStyle(probe)[property];
+                        probe.remove();
+                        return value;
+                    };
+                    const style = getComputedStyle(el);
+                    const bg = parse(style.backgroundColor);
+                    const texts = [...el.querySelectorAll('h3, p, dt, dd')].map((t) => ({
+                        text: t.textContent.trim().slice(0, 40),
+                        ratio: ratio(parse(getComputedStyle(t).color), bg),
+                    }));
+                    return {
+                        background: style.backgroundColor,
+                        raised: token('--fs-surface-raised', 'background'),
+                        border: style.borderTopColor,
+                        borderToken: token('--fs-border', 'color'),
+                        texts,
+                        sideways: el.scrollWidth > el.clientWidth + 0.5,
+                        inside: el.getBoundingClientRect().right
+                            <= document.querySelector('[data-testid=assistant-panel]')
+                                .getBoundingClientRect().right + 0.5,
+                    };
+                }"""
+            )
+            assert measured["background"] == measured["raised"], (theme, measured)
+            assert measured["border"] == measured["borderToken"], (theme, measured)
+            if theme == "night":
+                assert measured["background"] != "rgb(255, 255, 255)", measured
+            for item in measured["texts"]:
+                assert item["ratio"] >= 4.5, (theme, item)
+            assert not measured["sideways"] and measured["inside"], (theme, measured)
+
+    await with_browser(body)
+
+
+async def test_dock_shows_the_working_avatar_while_a_message_is_sending(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        release = asyncio.Event()
+        world = DockWorld()
+        async with hr_page(
+            browser, site, world, DOCK_TEAM_PATH, assistant=True, ready=dock_ready
+        ) as page:
+
+            async def slow_turn(route: Any) -> None:
+                request = route.request
+                if request.method != "POST":
+                    await route.fallback()
+                    return
+                await release.wait()
+                sent = request.post_data_json
+                turn = WorkspaceTurnOut(
+                    id=4,
+                    request_key=UUID(sent["request_key"]),
+                    body=sent["body"],
+                    result=AnswerResult(action="answer", markdown="Done."),
+                    created_at=datetime.now(UTC),
+                )
+                await route.fulfill(status=200, json=turn.model_dump(mode="json"))
+
+            await page.route(
+                f"**/console/v1/workspace/conversations/{DOCK_THREAD}/turns*", slow_turn
+            )
+            try:
+                panel = await open_dock(page)
+                await expect(page.get_by_test_id("assistant-working")).to_have_count(0)
+                await page.get_by_test_id("assistant-input").fill("And then?")
+                await page.get_by_test_id("assistant-send").click()
+                working = page.get_by_test_id("assistant-working")
+                await expect(working).to_be_visible()
+                await expect(working).to_contain_text("Sending…")
+                avatar = working.locator("[data-agent=assistant]")
+                await expect(avatar).to_have_attribute("data-state", "working")
+                assert (await avatar.bounding_box() or {})["width"] == 32
+                # The Overview chat's own working row is a different element and is not reused.
+                await expect(page.get_by_test_id("chat-working")).to_have_count(0)
+            finally:
+                release.set()
+            await expect(working).to_have_count(0, timeout=WAIT)
+            await expect(panel.get_by_test_id("assistant-turn")).to_have_count(4)
 
     await with_browser(body)

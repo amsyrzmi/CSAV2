@@ -40,8 +40,16 @@ import {
   type WorkspaceResult,
   type WorkspaceTurn,
 } from "@/lib/workspace-api";
+import { CopyReply } from "./chat/CopyReply";
+import { starterLook } from "./chat/ChatEmptyState";
+import AgentAvatar from "./fs/AgentAvatar";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, Notice, secondary } from "./ui";
+
+/** The corner the launcher and the panel share: 20 px in, or clear of a notch or home bar. */
+const corner = "bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-[max(1.25rem,env(safe-area-inset-right))]";
+const smallLink =
+  "rounded-[var(--fs-radius-control)] text-sm text-[color:var(--fs-text-secondary)] underline hover:text-[color:var(--fs-primary)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:opacity-50";
 
 /** How long a resumed turn waits for the new tab to publish its context. */
 const RESUME_GRACE_MS = 1000;
@@ -323,7 +331,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         aria-expanded={false}
         aria-controls={panelId}
         onClick={() => setOpen(true)}
-        className={`${action} fixed bottom-5 right-5 z-40 rounded-full shadow-lg`}
+        className={`${action} fixed ${corner} z-40 rounded-full shadow-[var(--fs-shadow-popover)]`}
       >
         <MessageSquare size={18} aria-hidden />
         {text.dock_title}
@@ -339,15 +347,15 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
       onKeyDown={(event) => {
         if (event.key === "Escape") close();
       }}
-      className="fixed bottom-5 right-5 z-40 flex max-h-[80vh] w-[min(28rem,calc(100vw-2.5rem))] flex-col rounded-lg border border-ink-200 bg-white shadow-xl"
+      className={`fixed ${corner} z-40 flex max-h-[min(80dvh,40rem)] w-[min(28rem,calc(100vw-2.5rem))] flex-col rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]`}
     >
-      <header className="flex items-center gap-2 border-b border-ink-200 px-4 py-3">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[color:var(--fs-border)] px-4 py-3">
         <h2 id={`${panelId}-title`} className="text-base font-semibold">
           {text.dock_title}
         </h2>
         <span
           data-testid="assistant-tab"
-          className="rounded-full bg-brand-50 px-2 py-0.5 text-xs text-ink-700"
+          className="rounded-full bg-[var(--fs-surface-blue)] px-2 py-0.5 text-xs text-[color:var(--fs-text)]"
         >
           {context
             ? panelText(language, "on_tab", { tab: tabLabel(context.tab, me, packages) })
@@ -355,7 +363,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         </span>
         <button
           type="button"
-          className="ml-auto text-sm text-ink-600 underline hover:text-brand-600 disabled:opacity-50"
+          className={`ml-auto ${smallLink}`}
           disabled={busy}
           onClick={newConversation}
         >
@@ -365,41 +373,55 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
           type="button"
           aria-label={text.close_assistant}
           onClick={close}
-          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md hover:bg-ink-50"
+          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-[var(--fs-radius-control)] hover:bg-[var(--fs-surface-blue)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]"
         >
           <X size={18} aria-hidden />
         </button>
       </header>
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3" aria-live="polite">
-        {!loaded && <p className="text-sm text-ink-500">{PANEL.en.loading}</p>}
+        {!loaded && <p className="text-sm text-[color:var(--fs-text-secondary)]">{PANEL.en.loading}</p>}
         {loaded && turns.length === 0 && (
-          <p className="text-sm text-ink-500">{text.empty_hint}</p>
+          <p className="text-sm text-[color:var(--fs-text-secondary)]">{text.empty_hint}</p>
         )}
         {turns.map((turn) => (
           <article key={turn.id} data-testid="assistant-turn" className="space-y-2">
-            <p className="ml-8 whitespace-pre-wrap rounded-md bg-ink-50 p-3 text-sm">{turn.body}</p>
-            <TurnResult
-              result={turn.result}
-              language={languageOf(turn)}
-              origin={originFor(turn, origins)}
-              me={me}
-              packages={packages}
-              tenant={tenant}
-              outcomes={outcomes}
-              disabled={busy || resume !== null}
-              answerable={isAnswerable(turns, turn.id)}
-              onSettled={settle}
-              onAsk={(outgoing) => ask(outgoing)}
-            />
+            <p className="ml-8 whitespace-pre-wrap break-words rounded-[var(--fs-radius-bubble)] rounded-br-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)] px-4 py-2.5 text-sm text-[color:var(--fs-text)]">{turn.body}</p>
+            <div className="flex items-start gap-2">
+              <AgentAvatar agentId="assistant" size={32} state="rest" label="" />
+              <div className="min-w-0 flex-1">
+                <TurnResult
+                  result={turn.result}
+                  language={languageOf(turn)}
+                  origin={originFor(turn, origins)}
+                  me={me}
+                  packages={packages}
+                  tenant={tenant}
+                  outcomes={outcomes}
+                  disabled={busy || resume !== null}
+                  answerable={isAnswerable(turns, turn.id)}
+                  onSettled={settle}
+                  onAsk={(outgoing) => ask(outgoing)}
+                />
+              </div>
+            </div>
           </article>
         ))}
+        {busy && (
+          <div
+            data-testid="assistant-working"
+            className="flex items-center gap-2 text-sm text-[color:var(--fs-text-secondary)]"
+          >
+            <AgentAvatar agentId="assistant" size={32} state="working" label="" />
+            <p>{text.button_sending}</p>
+          </div>
+        )}
         {resume && (
           <Notice>{panelText(language, "resume_opening", { tab: tabLabel(resume.tab, me, packages) })}</Notice>
         )}
         {error && <Notice error>{error}</Notice>}
       </div>
       <form
-        className="space-y-2 border-t border-ink-200 px-4 py-3"
+        className="space-y-2 border-t border-[color:var(--fs-border)] px-4 py-3"
         onSubmit={(event) => {
           event.preventDefault();
           if (body.trim()) ask(typedMessage(body, turns, origins), true);
@@ -486,18 +508,27 @@ function TurnResult({
 }) {
   const view = resultView(result, language);
   const text = PANEL[language];
-  const box = "rounded-md bg-brand-50 p-3 text-sm";
+  const box =
+    "rounded-[var(--fs-radius-bubble)] rounded-tl-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 text-sm text-[color:var(--fs-text)]";
+  const copy = (body: string) => (
+    <div className="mt-1 -ml-2 flex items-center gap-1">
+      <CopyReply body={body} />
+    </div>
+  );
   switch (view.kind) {
     case "notice":
       return <Notice error={view.error}>{view.text}</Notice>;
     case "guidance":
       return (
-        <div className={box}>
-          <p>{view.text}</p>
-          <p className="mt-2 text-xs text-ink-500">
-            {text.order_source}: {view.source} · {text.order_as_of} {new Date(view.asOf).toLocaleString()}
-          </p>
-        </div>
+        <>
+          <div className={box}>
+            <p>{view.text}</p>
+            <p className="mt-2 text-xs text-[color:var(--fs-text-secondary)]">
+              {text.order_source}: {view.source} · {text.order_as_of} {new Date(view.asOf).toLocaleString()}
+            </p>
+          </div>
+          {copy(view.text)}
+        </>
       );
     case "order": {
       const { order } = view.result;
@@ -514,7 +545,7 @@ function TurnResult({
             {order.tracking_no ?? text.order_not_recorded} · {text.order_carrier}:{" "}
             {order.carrier ?? text.order_not_recorded}
           </p>
-          <p className="mt-2 text-xs text-ink-500">
+          <p className="mt-2 text-xs text-[color:var(--fs-text-secondary)]">
             {text.order_source}: {view.result.source} · {text.order_marketplace_sync}:{" "}
             {view.result.marketplace_sync} · {text.order_as_of}{" "}
             {new Date(view.result.as_of).toLocaleString()}
@@ -532,13 +563,18 @@ function TurnResult({
         />
       );
     case "answer":
-      return <p className={`${box} whitespace-pre-wrap`}>{view.text}</p>;
+      return (
+        <>
+          <p className={`${box} whitespace-pre-wrap break-words`}>{view.text}</p>
+          {copy(view.text)}
+        </>
+      );
     case "navigate": {
       const shown = navigateText(view.tab, view.resume, me, packages, language);
       return shown.error ? (
         <Notice error>{shown.text}</Notice>
       ) : (
-        <p className="text-sm text-ink-600">{shown.text}</p>
+        <p className="pt-1 text-sm text-[color:var(--fs-text-secondary)]">{shown.text}</p>
       );
     }
     case "directory":
@@ -558,7 +594,7 @@ function TurnResult({
                   <span>
                     <span className="font-medium">{person.display_name}</span>
                     {(person.job_title || person.work_email) && (
-                      <span className="block text-xs text-ink-500">
+                      <span className="block text-xs text-[color:var(--fs-text-secondary)]">
                         {[person.job_title, person.work_email].filter(Boolean).join(" · ")}
                       </span>
                     )}
@@ -579,7 +615,7 @@ function TurnResult({
                 <button
                   key={option.value}
                   type="button"
-                  className={secondary}
+                  className={`${starterLook} max-w-full break-words text-left`}
                   disabled={disabled || !answerable}
                   onClick={() => onAsk(optionAnswer(option, view.question, origin))}
                 >
