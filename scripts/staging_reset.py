@@ -1,4 +1,4 @@
-"""Reset staging with real accounts: ``plan`` is read-only; ``wipe`` and ``accounts`` come later.
+"""Reset staging with real accounts: ``plan``, then ``wipe``, then ``accounts``.
 
 ``plan`` re-derives everything ``wipe`` will refuse on (a clean checkout on origin/main, every
 service running the image built from HEAD, a valid roster, every secret file present, enough
@@ -6,21 +6,31 @@ disk for the backup) and prints what is about to be lost. It runs only read comm
 ``docker inspect``, ``compose config``, ``psql`` with ``SELECT``, and one-off containers with no
 network and read-only mounts that count the files in each upload volume.
 
+``wipe`` and ``accounts`` are for the owner at a terminal; they refuse anywhere else. ``wipe``
+backs staging up, drops and rebuilds the database, empties the upload volumes and creates the
+first platform admin. It stays safe to repeat after a failure, and a repeat takes a new backup.
+``accounts`` adds the other platform admins and runs ``scripts.staging_accounts`` inside the
+gateway, with the first admin's password and the roster on stdin, never in argv or the
+environment.
+
 The targets are constants. Nothing here takes the project, the database, the host or a volume
-from an argument or the environment, and the roster's addresses are never printed.
+from an argument or the environment. ``plan`` never prints the roster's addresses.
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -28,13 +38,20 @@ from scripts.migrate import MigrationError, discover_migrations
 from scripts.staging_rollout import (
     APP_SERVICES,
     FLAGS_FILE,
+    IMAGE_ENV,
+    MIGRATION_APPROVAL,
+    PROJECT,
     REPO_ROOT,
     SERVICE_APP,
+    STOP_SERVICES,
     RolloutError,
     Runner,
     RunningImage,
     SubprocessRunner,
+    _await_ready,
+    _recreate,
     _report_stop,
+    _run_step,
     build_env,
     compose_base,
     docker_base,
@@ -70,7 +87,42 @@ LOST = (
     "Telegram, WhatsApp and Gmail connections",
 )
 WIPE_COMMAND = ".venv/bin/python -m scripts.staging_reset wipe"
+ACCOUNTS_COMMAND = ".venv/bin/python -m scripts.staging_reset accounts"
 PLACEHOLDER_IMAGE = "unused-until-the-running-images-are-read"
+PG_DUMP_COMMAND = ("pg_dump", "-U", "csa", "-d", DATABASE, "-Fc")
+DUMP_FILE = f"{DATABASE}.dump"
+BOOTSTRAP_APPROVAL = ("CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL", "approved-isolated-staging")
+ADMIN_ADD_APPROVAL = ("CSA_STAGING_ADMIN_ADD_APPROVAL", "approved-isolated-staging")
+GATEWAY_CONTAINER = f"{PROJECT}-gateway-1"
+# One-off containers: no network, nothing writable but a mount, no secrets, no capabilities.
+SEALED_RUN = (
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges:true",
+)
+BASELINE_IN_IMAGE = "/app/db/schema_baseline.sql"
+EMPTY_VOLUME_SCRIPT = "find /data -mindepth 1 -delete"
+# As the first-install procedure asks in deploy/RELEASE.md, before it loads the base schema.
+NO_TABLES_SQL = (
+    "SELECT to_regclass('public.schema_migrations') IS NULL "
+    "AND to_regclass('public.contacts') IS NULL"
+)
+UNCHANGED = "Nothing on staging was changed."
+SERVICES_STOPPED = "services are stopped"
+UPLOADS_EMPTY = "the upload volumes are empty"
+RECOVERY = (
+    'Run wipe again, or restore from the backup (deploy/STAGING_PIPELINE.md, "Resetting staging").'
+)
+MOVED_HEAD = (
+    "If HEAD has moved since this wipe started, restore the backup and roll out before "
+    "wiping again."
+)
 
 
 class ResetRunner(Runner, Protocol):
@@ -150,24 +202,24 @@ def _home_free() -> int:
     return shutil.disk_usage(Path.home()).free
 
 
+def _psql_argv(database: str, *arguments: str) -> list[str]:
+    return [
+        *compose_base(),
+        "exec",
+        "-T",
+        "staging-db",
+        "psql",
+        "-U",
+        "csa",
+        "-d",
+        database,
+        *arguments,
+    ]
+
+
 def _psql(runner: Runner, env: Mapping[str, str], database: str, sql: str) -> str:
     result = runner.run(
-        [
-            *compose_base(),
-            "exec",
-            "-T",
-            "staging-db",
-            "psql",
-            "-U",
-            "csa",
-            "-d",
-            database,
-            "-tA",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            sql,
-        ],
+        _psql_argv(database, "-tA", "-v", "ON_ERROR_STOP=1", "-c", sql),
         env=env,
     )
     if result.returncode != 0:
@@ -184,6 +236,22 @@ def _integer(text: str, what: str) -> int:
         raise RolloutError("state", f"staging returned an unreadable {what}") from None
 
 
+def _volume_run(image: str, mount: str, entrypoint: str, *arguments: str) -> list[str]:
+    """A sealed one-off container on one upload volume, as the UID the services write it with."""
+    return [
+        *docker_base(),
+        *SEALED_RUN,
+        "--user",
+        "1000:1000",
+        "-v",
+        mount,
+        "--entrypoint",
+        entrypoint,
+        image,
+        *arguments,
+    ]
+
+
 def _volume_usage(
     runner: Runner, env: Mapping[str, str], python_image: str, volume: str
 ) -> tuple[int, int]:
@@ -193,28 +261,7 @@ def _volume_usage(
     if exists.returncode != 0:
         raise RolloutError("state", f"volume {volume} does not exist")
     result = runner.run(
-        [
-            *docker_base(),
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges:true",
-            "--user",
-            "1000:1000",
-            "-v",
-            f"{volume}:/data:ro",
-            "--entrypoint",
-            "sh",
-            python_image,
-            "-c",
-            VOLUME_SCRIPT,
-        ],
-        env=env,
+        _volume_run(python_image, f"{volume}:/data:ro", "sh", "-c", VOLUME_SCRIPT), env=env
     )
     lines = result.stdout.split("\n")
     if result.returncode != 0 or len(lines) < 2 or not lines[1].split():
@@ -397,6 +444,429 @@ def format_plan(context: ResetContext) -> str:
     return "\n".join(lines)
 
 
+@dataclass
+class _Stage:
+    """How far a wipe has got: what a stop says about staging, and where the backups are."""
+
+    state: str = UNCHANGED
+    backup: Path | None = None
+    earlier: tuple[Path, ...] = ()  # backups already on disk when this wipe started, newest first
+
+
+def _report_wipe_stop(error: RolloutError, stage: _Stage, out: Callable[[str], None]) -> None:
+    _report_stop(error, out)
+    out(stage.state)
+    if stage.backup is not None:
+        out(f"This run's backup: {stage.backup}")
+    if stage.earlier:
+        out(f"Earlier backups, kept as they were: {', '.join(map(str, stage.earlier))}")
+        out(
+            "A backup taken after a failed wipe holds only what that wipe left. To get the old "
+            "data back, restore the newest backup from before the first wipe."
+        )
+    if stage.state == UNCHANGED:
+        out("Fix the cause and run wipe again.")
+        return
+    out(RECOVERY)
+    out(MOVED_HEAD)
+
+
+def _backup_to_file(
+    runner: ResetRunner, env: Mapping[str, str], argv: Sequence[str], path: Path
+) -> None:
+    code = runner.run_to_file(argv, env=env, path=path)
+    if code != 0:
+        raise RolloutError("backup", f"writing {path.name} failed (exit {code})")
+    if path.stat().st_size == 0:
+        raise RolloutError("backup", f"{path.name} came out empty")
+
+
+def _back_up(
+    runner: ResetRunner,
+    context: ResetContext,
+    stage: _Stage,
+    clock: Callable[[], datetime],
+    out: Callable[[str], None],
+) -> None:
+    """Write a new directory of backups. An existing directory is never reused or touched."""
+    root = BACKUP_ROOT
+    directory = root / clock().strftime("%Y%m%dT%H%M%SZ")
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stage.earlier = tuple(sorted((p for p in root.iterdir() if p.is_dir()), reverse=True))
+        directory.mkdir(mode=0o700)
+    except OSError as error:
+        raise RolloutError("backup", f"could not create {directory}: {error.strerror}") from error
+    stage.backup = directory
+    out(f"Backing up to {directory}…")
+    if context.state.database_exists:
+        _backup_to_file(
+            runner,
+            context.env,
+            [*compose_base(), "exec", "-T", "staging-db", *PG_DUMP_COMMAND],
+            directory / DUMP_FILE,
+        )
+    else:
+        out(f"{DATABASE} does not exist, so there is nothing to dump; skipping pg_dump.")
+    for volume in UPLOAD_VOLUMES:
+        _backup_to_file(
+            runner,
+            context.env,
+            _volume_run(
+                context.python_image, f"{volume}:/data:ro", "tar", "-C", "/data", "-cf", "-", "."
+            ),
+            directory / f"{volume}.tar",
+        )
+    if stage.earlier:
+        out(f"Earlier backups are kept: {', '.join(map(str, stage.earlier))}")
+
+
+def _load_baseline(
+    runner: ResetRunner, env: Mapping[str, str], python_image: str, stage: _Stage
+) -> None:
+    """Load the base schema from the running image, into a database proven to have no tables."""
+    stage.state = (
+        f"{SERVICES_STOPPED}; {DATABASE} has no schema, or tables nobody expected; {UPLOADS_EMPTY}"
+    )
+    if _psql(runner, env, DATABASE, NO_TABLES_SQL) != "t":
+        raise RolloutError(
+            "baseline", f"{DATABASE} already has tables, so the base schema was not loaded"
+        )
+    baseline = _run_step(
+        runner,
+        [*docker_base(), *SEALED_RUN, "--entrypoint", "cat", python_image, BASELINE_IN_IMAGE],
+        env,
+        "baseline",
+        "reading the base schema from the image",
+    )
+    if not baseline.stdout.strip():
+        raise RolloutError("baseline", "the image's base schema is empty")
+    stage.state = (
+        f"{SERVICES_STOPPED}; {DATABASE} has no schema, or only part of the base schema; "
+        f"{UPLOADS_EMPTY}"
+    )
+    _run_step(
+        runner,
+        _psql_argv(DATABASE, "-v", "ON_ERROR_STOP=1", "-q", "-f", "-"),
+        env,
+        "baseline",
+        "loading the base schema",
+        input=baseline.stdout,
+    )
+
+
+def _migrate_and_confirm(
+    runner: ResetRunner,
+    context: ResetContext,
+    stage: _Stage,
+    out: Callable[[str], None],
+) -> None:
+    stage.state = (
+        f"{SERVICES_STOPPED}; {DATABASE} has the base schema, and its migrations may be "
+        f"unfinished; {UPLOADS_EMPTY}"
+    )
+    out(f"Migrating {DATABASE}…")
+    result = runner.run(
+        [*compose_base(), "--profile", "migration-approved", "run", "--rm", "--no-deps", "migrate"],
+        env={**context.env, MIGRATION_APPROVAL[0]: MIGRATION_APPROVAL[1]},
+    )
+    if result.stdout.strip():
+        out(result.stdout.rstrip())
+    if result.returncode != 0:
+        raise RolloutError("migrate", f"migrate exited {result.returncode}")
+    found = _psql(runner, context.env, DATABASE, "SELECT max(version) FROM schema_migrations")
+    if found != context.newest_migration:
+        raise RolloutError(
+            "version",
+            f"schema_migrations stops at {found or 'nothing'}; "
+            f"the services expect {context.newest_migration}",
+        )
+
+
+def _rebuild(
+    runner: ResetRunner,
+    context: ResetContext,
+    stage: _Stage,
+    clock: Callable[[], datetime],
+    sleep: Callable[[float], None],
+    out: Callable[[str], None],
+) -> None:
+    """Every step after the confirmation, in the fixed order. Each sets the state a stop reports."""
+    env = context.env
+    first = context.roster.platform_admins[0]
+    _back_up(runner, context, stage, clock, out)
+
+    stage.state = (
+        "some of gateway, frontend, worker and delivery may still be running; check compose ps. "
+        f"{DATABASE} and the upload volumes are as they were"
+    )
+    out(f"Stopping {', '.join(STOP_SERVICES)}…")
+    _run_step(runner, [*compose_base(), "stop", *STOP_SERVICES], env, "stop", "compose stop")
+
+    stage.state = (
+        f"{SERVICES_STOPPED}; {DATABASE} was not dropped; the upload volumes are as they were"
+    )
+    out(f"Dropping and creating {DATABASE}…")
+    _run_step(
+        runner,
+        _psql_argv(MAINTENANCE_DATABASE, "-v", "ON_ERROR_STOP=1", "-c", DROP_DATABASE_SQL),
+        env,
+        "drop",
+        "DROP DATABASE",
+    )
+    stage.state = (
+        f"{SERVICES_STOPPED}; {DATABASE} does not exist; the upload volumes are as they were"
+    )
+    _run_step(
+        runner,
+        _psql_argv(MAINTENANCE_DATABASE, "-v", "ON_ERROR_STOP=1", "-c", CREATE_DATABASE_SQL),
+        env,
+        "create",
+        "CREATE DATABASE",
+    )
+
+    stage.state = (
+        f"{SERVICES_STOPPED}; {DATABASE} has no schema; the upload volumes may be partly emptied"
+    )
+    out("Emptying the upload volumes…")
+    for volume in UPLOAD_VOLUMES:
+        _run_step(
+            runner,
+            _volume_run(context.python_image, f"{volume}:/data", "sh", "-c", EMPTY_VOLUME_SCRIPT),
+            env,
+            "empty volumes",
+            f"emptying {volume}",
+        )
+
+    out("Loading the base schema…")
+    _load_baseline(runner, env, context.python_image, stage)
+    _migrate_and_confirm(runner, context, stage, out)
+
+    stage.state = (
+        f"{SERVICES_STOPPED}; {DATABASE} is at {context.newest_migration} with no platform admin; "
+        f"{UPLOADS_EMPTY}"
+    )
+    out("Creating the first platform admin; type an initial password when asked.")
+    code = runner.run_tty(
+        [
+            *compose_base(),
+            "--profile",
+            "admin-bootstrap-approved",
+            "run",
+            "--rm",
+            "--no-deps",
+            "admin-bootstrap",
+            "--email",
+            first.email,
+            "--display-name",
+            first.display_name,
+            "--create-first-platform-admin",
+        ],
+        env={**env, BOOTSTRAP_APPROVAL[0]: BOOTSTRAP_APPROVAL[1]},
+    )
+    if code != 0:
+        raise RolloutError("bootstrap", f"admin-bootstrap exited {code}")
+
+    stage.state = (
+        f"{DATABASE} is at {context.newest_migration} with its first platform admin; "
+        f"{UPLOADS_EMPTY}"
+    )
+    out(f"Starting {', '.join(APP_SERVICES)}…")
+    for service in APP_SERVICES:
+        expected = env[IMAGE_ENV[SERVICE_APP[service]]]
+        _recreate(runner, env, service, expected, sleep, out, stopped=True)
+    _await_ready(runner, env, sleep)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def wipe(
+    runner: ResetRunner,
+    repo: Path,
+    *,
+    docker_config: Path,
+    read_line: Callable[[str], str] = input,
+    is_terminal: Callable[[], bool] = sys.stdin.isatty,
+    free_bytes: Callable[[], int] = _home_free,
+    clock: Callable[[], datetime] = _utc_now,
+    sleep: Callable[[float], None] = time.sleep,
+    out: Callable[[str], None] = print,
+) -> int:
+    """Back staging up, then drop and rebuild it. Only the typed phrase lets it past reading."""
+    if not is_terminal():
+        out("wipe must be run by the owner at a real terminal. Nothing on staging was changed.")
+        return 1
+    try:
+        context = prepare(
+            runner,
+            repo,
+            docker_config=docker_config,
+            roster_path=ROSTER_PATH,
+            free_bytes=free_bytes,
+        )
+    except RolloutError as error:
+        _report_stop(error, out)
+        return 1
+    out(format_plan(context))
+    try:
+        typed = read_line(f"Type {CONFIRM_PHRASE} to go ahead: ")
+    except EOFError:
+        typed = ""
+    if typed != CONFIRM_PHRASE:
+        out("That is not the phrase.")
+        out(UNCHANGED)
+        return 1
+    stage = _Stage()
+    try:
+        _rebuild(runner, context, stage, clock, sleep, out)
+    except RolloutError as error:
+        _report_wipe_stop(error, stage, out)
+        return 1
+    except KeyboardInterrupt:
+        _report_wipe_stop(RolloutError("interrupt", "the wipe was interrupted"), stage, out)
+        return 1
+    first = context.roster.platform_admins[0]
+    out(f"Staging is rebuilt at {context.newest_migration}. The backup is in {stage.backup}.")
+    out(
+        f"Next: sign in as {first.email}, change the password, then run, at a terminal: "
+        f"{ACCOUNTS_COMMAND}"
+    )
+    return 0
+
+
+def _on_a_terminal() -> bool:
+    """Input and output both: what ``accounts`` prints names people, so it must not be piped."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def company_step_input(password: str, roster: Roster) -> str:
+    """What ``scripts.staging_accounts`` reads on stdin: a line of password, then the roster."""
+    return f"{password}\n{roster.model_dump_json()}"
+
+
+def _admin_exists(runner: Runner, env: Mapping[str, str], email: str) -> bool:
+    quoted = email.replace("'", "''")
+    count = _psql(
+        runner,
+        env,
+        DATABASE,
+        f"SELECT count(*) FROM console_users WHERE email = '{quoted}' AND is_platform_admin",
+    )
+    return _integer(count, "admin count") > 0
+
+
+def _add_admins(runner: ResetRunner, context: ResetContext, out: Callable[[str], None]) -> None:
+    """Add each further admin. One already there costs no prompt and no throttled attempt."""
+    first, *further = context.roster.platform_admins
+    for admin in further:
+        if _admin_exists(runner, context.env, admin.email):
+            out(f"platform admin {admin.email}: already there")
+            continue
+        out(
+            f"Adding platform admin {admin.email}: type {first.email}'s password, "
+            "then an initial password for them to change at first sign-in."
+        )
+        code = runner.run_tty(
+            [
+                *compose_base(),
+                "--profile",
+                "admin-add-approved",
+                "run",
+                "--rm",
+                "--no-deps",
+                "admin-add",
+                "--approver-email",
+                first.email,
+                "--email",
+                admin.email,
+                "--display-name",
+                admin.display_name,
+                "--add-platform-admin",
+            ],
+            env={**context.env, ADMIN_ADD_APPROVAL[0]: ADMIN_ADD_APPROVAL[1]},
+        )
+        if code != 0:
+            raise RolloutError(
+                "admin-add",
+                f"admin-add exited {code}. The first platform admin must have signed in and "
+                "changed their password before another admin can be added, and that password "
+                "must be typed correctly (5 attempts per 15 minutes). The address must also be "
+                "free. No company was created; fix this and run accounts again.",
+            )
+
+
+def _company_step(
+    runner: Runner,
+    context: ResetContext,
+    password: str,
+    out: Callable[[str], None],
+) -> int:
+    """Run the company step in the gateway; its stdout goes to the terminal, nowhere else."""
+    out("Creating the companies inside the gateway; the lines come when it has finished.")
+    result = runner.run(
+        [
+            *docker_base(),
+            "exec",
+            "-i",
+            GATEWAY_CONTAINER,
+            "python",
+            "-m",
+            "scripts.staging_accounts",
+        ],
+        env=context.env,
+        input=company_step_input(password, context.roster),
+    )
+    if result.stdout.strip():
+        out(result.stdout.rstrip())
+    if result.returncode == 2:
+        out("Use Renew invitation on the Team page for each invitation that was not mailed.")
+    elif result.returncode != 0:
+        # Its stderr is not shown: that process was handed the password.
+        out(
+            f"The company step exited {result.returncode}. If no reason is shown above, check "
+            f"that {GATEWAY_CONTAINER} is running."
+        )
+    return result.returncode
+
+
+def accounts(
+    runner: ResetRunner,
+    repo: Path,
+    *,
+    docker_config: Path,
+    is_terminal: Callable[[], bool] = _on_a_terminal,
+    read_password: Callable[[str], str] = getpass.getpass,
+    out: Callable[[str], None] = print,
+) -> int:
+    """Add the further platform admins, then create the roster's companies inside the gateway."""
+    if not is_terminal():
+        out("accounts must be run by the owner at a real terminal. Nothing was created.")
+        return 1
+    try:
+        context = prepare(
+            runner,
+            repo,
+            docker_config=docker_config,
+            roster_path=ROSTER_PATH,
+            free_bytes=_home_free,
+        )
+        if not context.state.has_schema:
+            raise RolloutError("state", f"{DATABASE} has no schema; run wipe first")
+        first = context.roster.platform_admins[0]
+        password = read_password(f"Password of {first.email}: ")
+        # A control character or undecodable byte could not arrive as one line of stdin, and
+        # an encoding error would quote part of it. The text here never repeats the password.
+        if not password or not password.isprintable():
+            raise RolloutError("password", "the password is empty or cannot be sent as one line")
+        _add_admins(runner, context, out)
+        return _company_step(runner, context, password, out)
+    except RolloutError as error:
+        _report_stop(error, out)
+        return 1
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scripts.staging_reset", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -409,13 +879,27 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, runner: ResetRunner | None = None) -> int:
     """Run a command; the targets are fixed, so the only arguments are the command names."""
     args = _parser().parse_args(argv)
-    if args.command != "plan":
-        print(f"{args.command} is not available in this version.")
-        return 1
     runner = runner or SubprocessResetRunner(cwd=REPO_ROOT)
     docker_config = Path(tempfile.mkdtemp(prefix="csa-reset-docker-"))
     try:
         docker_config.chmod(0o700)
+        if args.command == "wipe":
+            return wipe(
+                runner,
+                REPO_ROOT,
+                docker_config=docker_config,
+                read_line=input,
+                is_terminal=sys.stdin.isatty,
+                free_bytes=_home_free,
+            )
+        if args.command == "accounts":
+            return accounts(
+                runner,
+                REPO_ROOT,
+                docker_config=docker_config,
+                is_terminal=_on_a_terminal,
+                read_password=getpass.getpass,
+            )
         context = prepare(
             runner,
             REPO_ROOT,

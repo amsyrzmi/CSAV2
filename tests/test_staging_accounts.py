@@ -25,6 +25,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from scripts import staging_accounts
 from scripts.staging_accounts import AccountsStop
+from scripts.staging_reset import company_step_input
 from scripts.staging_roster import Roster, load_roster, parse_roster
 
 from tests.conftest import requires_docker
@@ -475,3 +476,38 @@ def test_main_stops_on_a_broken_roster_without_echoing_it(
     output = capsys.readouterr()
     assert "roster" in output.out + output.err
     assert "synthetic-secret-password" not in output.out + output.err
+
+
+def test_read_input_accepts_what_the_reset_tool_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    roster = load_roster(EXAMPLE)
+    assert any(company.deployment_mode is None for company in roster.companies)
+    stdin = company_step_input("synthetic secret 'password\"", roster)
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
+    assert staging_accounts._read_input() == ("synthetic secret 'password\"", roster)
+
+
+@pytest.mark.parametrize("exit_code", [0, 2])
+def test_main_runs_the_step_from_what_the_reset_tool_writes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], exit_code: int
+) -> None:
+    roster = load_roster(EXAMPLE)
+    domain = "postgresql://csa_app:pw@staging-db/csa_staging"
+    identity = "postgresql://csa_identity:pw@staging-db/csa_staging"
+    settings = SimpleNamespace(
+        DATABASE_URL=domain, IDENTITY_DATABASE_URL=identity, CONSOLE_ALLOWED_ORIGIN=ORIGIN
+    )
+    mailer = Mailer(FakeTransport(), SENDER)
+    seen: list[tuple[object, ...]] = []
+
+    async def run_all(*args: object) -> int:
+        seen.append(args)
+        return exit_code
+
+    monkeypatch.setattr(staging_accounts, "get_settings", lambda: settings)
+    monkeypatch.setattr(staging_accounts.Mailer, "from_settings", lambda _: mailer)
+    monkeypatch.setattr(staging_accounts, "_run_all", run_all)
+    monkeypatch.setattr("sys.stdin", io.StringIO(company_step_input(FIRST_PASSWORD, roster)))
+    assert staging_accounts.main() == exit_code
+    assert seen == [(domain, identity, ORIGIN, mailer, FIRST_PASSWORD, roster)]
+    output = capsys.readouterr()
+    assert FIRST_PASSWORD not in output.out + output.err

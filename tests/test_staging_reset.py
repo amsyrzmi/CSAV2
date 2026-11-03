@@ -1,10 +1,12 @@
-"""Staging reset script: the read-only ``plan`` and its refusals, driven by a fake runner."""
+"""Staging reset script: ``plan``, ``wipe`` and ``accounts``, driven by a fake runner."""
 
 from __future__ import annotations
 
+import io
 import json
 import stat
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +14,7 @@ import pytest
 from scripts import staging_reset as rs
 from scripts.migrate import discover_migrations
 from scripts.staging_rollout import SOCKET, Completed, RolloutError
-from scripts.staging_roster import load_roster
+from scripts.staging_roster import load_roster, parse_roster
 
 from tests.test_staging_rollout import (
     FLAGS_TEXT,
@@ -47,14 +49,37 @@ class ResetFake(FakeRunner):
         super().__init__(rules)
         self.tty_calls: list[list[str]] = []
         self.file_calls: list[list[str]] = []
+        self.order: list[list[str]] = []  # every call to all three, as it happened
+        self.envs: list[Mapping[str, str] | None] = []  # the env of every tty and file call
+        self.files: list[Path] = []
+        self.tty_answer: Callable[[list[str]], int] = lambda argv: 0
+        self.file_answer: Callable[[list[str]], int] = lambda argv: 0
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        input: str | None = None,  # noqa: A002
+    ) -> Completed:
+        self.order.append(list(argv))
+        return super().run(argv, env=env, input=input)
 
     def run_tty(self, argv: Sequence[str], *, env: Mapping[str, str] | None) -> int:
         self.tty_calls.append(list(argv))
-        return 0
+        self.order.append(list(argv))
+        self.envs.append(env)
+        return self.tty_answer(list(argv))
 
     def run_to_file(self, argv: Sequence[str], *, env: Mapping[str, str] | None, path: Path) -> int:
         self.file_calls.append(list(argv))
-        return 0
+        self.order.append(list(argv))
+        self.envs.append(env)
+        self.files.append(path)
+        code = self.file_answer(list(argv))
+        if code == 0:
+            path.write_bytes(b"synthetic backup of " + path.name.encode())
+        return code
 
     @property
     def every_argv(self) -> list[list[str]]:
@@ -140,6 +165,7 @@ def reset_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(rs, "REPO_ROOT", repo)
     monkeypatch.setattr(rs, "ROSTER_PATH", roster)
     monkeypatch.setattr(rs, "_home_free", lambda: 50 * GIB)
+    monkeypatch.setattr(rs, "BACKUP_ROOT", tmp_path / "backups")  # never the real home
     return repo
 
 
@@ -478,3 +504,784 @@ def test_subprocess_runner_returns_the_exit_code_of_a_terminal_child(tmp_path: P
     assert runner.run_tty(["sh", "-c", "exit 3"], env=None) == 3
     with pytest.raises(RolloutError):
         runner.run_tty(["definitely-not-a-command-here"], env=None)
+
+
+# --- wipe ---------------------------------------------------------------------------------
+
+BASELINE = "-- synthetic baseline\nCREATE TABLE synthetic (id int);\n"
+PASSWORD = "synthetic-terminal-password"
+T0 = datetime(2026, 11, 3, 8, 30, 15, tzinfo=UTC)
+RECOVERY = (
+    'Run wipe again, or restore from the backup (deploy/STAGING_PIPELINE.md, "Resetting staging").'
+)
+MOVED_HEAD = (
+    "If HEAD has moved since this wipe started, restore the backup and roll out before "
+    "wiping again."
+)
+PG_DUMP = "pg_dump -U csa -d csa_staging -Fc"
+STOP = "stop gateway frontend worker delivery"
+EMPTY_VOLUME = "find /data -mindepth 1 -delete"
+EMPTINESS = "to_regclass('public.schema_migrations') IS NULL"
+CAT_BASELINE = (
+    "run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true "
+    "--entrypoint cat"
+)
+LOAD_BASELINE = "-d csa_staging -v ON_ERROR_STOP=1 -q -f -"
+MIGRATE = "--profile migration-approved run --rm --no-deps migrate"
+READ_VERSION = "max(version)"
+BOOTSTRAP = "--profile admin-bootstrap-approved run --rm --no-deps admin-bootstrap"
+UP = "up --detach --wait"
+READY = "exec csa-staging-gateway-1 python -c"
+COMPANY_STEP = "exec -i csa-staging-gateway-1 python -m scripts.staging_accounts"
+
+
+def wipe_runner(
+    *,
+    failing: str | None = None,
+    tables_present: bool = False,
+    version: str = NEWEST,
+    **kwargs: Any,
+) -> ResetFake:
+    """A fake that answers every wipe step; ``failing`` names the one that goes wrong."""
+    runner = reset_runner(**kwargs)
+
+    def step(name: str, answer: Completed | None = None) -> Completed:
+        return fail(3) if failing == name else (answer or ok())
+
+    def read_version(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        migrated = any(MIGRATE in " ".join(call) for call in runner.order)
+        return ok((version if migrated else "0520") + "\n")
+
+    def up(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        return fail(1) if failing == f"recreate {argv[-1]}" else ok()
+
+    runner.rules[:0] = [
+        (has(STOP), step("stop")),
+        (has(rs.DROP_DATABASE_SQL), step("drop")),
+        (has(rs.CREATE_DATABASE_SQL), step("create")),
+        (has(EMPTY_VOLUME), step("empty volume")),
+        (has(EMPTINESS), ok("f\n" if tables_present else "t\n")),
+        (has("--entrypoint cat"), step("read baseline", ok(BASELINE))),
+        (has(LOAD_BASELINE), step("baseline")),
+        (has(MIGRATE), step("migrate", ok("applied\n"))),
+        (has(READ_VERSION), read_version),
+        (has(UP), up),
+        (has("{{.State.Health.Status}}"), fail(1)),
+        (has(READY), step("readiness")),
+    ]
+    if failing == "bootstrap":
+        runner.tty_answer = lambda argv: 4
+    return runner
+
+
+def _wipe(
+    runner: ResetFake,
+    repo: Path,
+    tmp_path: Path,
+    *,
+    typed: str = rs.CONFIRM_PHRASE,
+    at: datetime = T0,
+) -> tuple[int, list[str]]:
+    lines: list[str] = []
+    code = rs.wipe(
+        runner,
+        repo,
+        docker_config=tmp_path / "dc",
+        read_line=lambda prompt: typed,
+        is_terminal=lambda: True,
+        free_bytes=lambda: 50 * GIB,
+        clock=lambda: at,
+        sleep=lambda seconds: None,
+        out=lines.append,
+    )
+    return code, lines
+
+
+def _ran(runner: ResetFake, fragment: str) -> bool:
+    return any(fragment in " ".join(argv) for argv in runner.order)
+
+
+def _assert_in_order(runner: ResetFake, steps: Sequence[tuple[str, ...]]) -> None:
+    calls = [" ".join(argv) for argv in runner.order]
+    position = -1
+    for fragments in steps:
+        later = [
+            index
+            for index, text in enumerate(calls)
+            if index > position and all(fragment in text for fragment in fragments)
+        ]
+        assert later, f"{fragments} not found after call {position}"
+        position = later[0]
+
+
+def test_wipe_refuses_without_a_terminal(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    lines: list[str] = []
+
+    def no_prompt(prompt: str) -> str:
+        raise AssertionError("must not prompt")
+
+    code = rs.wipe(
+        runner,
+        reset_env,
+        docker_config=tmp_path / "dc",
+        read_line=no_prompt,
+        is_terminal=lambda: False,
+        free_bytes=lambda: 50 * GIB,
+        clock=lambda: T0,
+        sleep=lambda seconds: None,
+        out=lines.append,
+    )
+    assert code != 0
+    assert "terminal" in "\n".join(lines)
+    assert runner.every_argv == []
+    assert not rs.BACKUP_ROOT.exists()
+
+
+@pytest.mark.parametrize("typed", ["", "yes", "WIPE CSA-STAGING", "wipe csa-staging "])
+def test_wipe_refuses_a_wrong_phrase(reset_env: Path, tmp_path: Path, typed: str) -> None:
+    runner = wipe_runner()
+    code, lines = _wipe(runner, reset_env, tmp_path, typed=typed)
+    assert code != 0
+    assert "Nothing on staging was changed." in lines
+    _assert_read_only(runner)
+    assert not rs.BACKUP_ROOT.exists()
+
+
+def test_wipe_treats_end_of_input_as_a_wrong_phrase(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+
+    def closed(prompt: str) -> str:
+        raise EOFError
+
+    code = rs.wipe(
+        runner,
+        reset_env,
+        docker_config=tmp_path / "dc",
+        read_line=closed,
+        is_terminal=lambda: True,
+        free_bytes=lambda: 50 * GIB,
+        clock=lambda: T0,
+        sleep=lambda seconds: None,
+        out=lambda line: None,
+    )
+    assert code != 0
+    _assert_read_only(runner)
+
+
+def test_wipe_refuses_what_prepare_refuses_before_it_prompts(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = wipe_runner(dirty=True)
+
+    def no_prompt(prompt: str) -> str:
+        raise AssertionError("must not prompt")
+
+    lines: list[str] = []
+    code = rs.wipe(
+        runner,
+        reset_env,
+        docker_config=tmp_path / "dc",
+        read_line=no_prompt,
+        is_terminal=lambda: True,
+        free_bytes=lambda: 50 * GIB,
+        clock=lambda: T0,
+        sleep=lambda seconds: None,
+        out=lines.append,
+    )
+    assert code != 0
+    assert "tracked changes" in "\n".join(lines)
+    _assert_read_only(runner)
+
+
+def test_wipe_runs_the_steps_in_order(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 0
+    uploads, hr_uploads = rs.UPLOAD_VOLUMES
+    first = load_roster(rs.ROSTER_PATH).platform_admins[0]
+    _assert_in_order(
+        runner,
+        [
+            (PG_DUMP,),
+            ("--entrypoint tar", f"{uploads}:/data:ro"),
+            ("--entrypoint tar", f"{hr_uploads}:/data:ro"),
+            (STOP,),
+            ("-d postgres", rs.DROP_DATABASE_SQL),
+            ("-d postgres", rs.CREATE_DATABASE_SQL),
+            ("--network none", f"{uploads}:/data ", EMPTY_VOLUME),
+            ("--network none", f"{hr_uploads}:/data ", EMPTY_VOLUME),
+            ("-d csa_staging", EMPTINESS),
+            (CAT_BASELINE, "/app/db/schema_baseline.sql"),
+            (LOAD_BASELINE,),
+            (MIGRATE,),
+            (READ_VERSION,),
+            (BOOTSTRAP, first.email, "--create-first-platform-admin"),
+            (UP, "gateway"),
+            (UP, "worker"),
+            (UP, "delivery"),
+            (UP, "frontend"),
+            (READY,),
+        ],
+    )
+    # Backups go through run_to_file, the bootstrap's prompts through run_tty.
+    assert [" ".join(argv) for argv in runner.file_calls][0].endswith(PG_DUMP)
+    assert all("tar" in argv for argv in runner.file_calls[1:])
+    assert len(runner.file_calls) == 3
+    assert len(runner.tty_calls) == 1
+    bootstrap_env = runner.envs[-1]
+    assert bootstrap_env is not None
+    assert bootstrap_env["CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL"] == "approved-isolated-staging"
+    # The baseline text goes in on stdin, from the image; migrate carries its approval.
+    loaded = [call for call in runner.calls if LOAD_BASELINE in " ".join(call[0])]
+    assert [call[2] for call in loaded] == [BASELINE]
+    migrated = [call for call in runner.calls if MIGRATE in " ".join(call[0])]
+    assert migrated[0][1] is not None
+    assert migrated[0][1]["CSA_STAGING_MIGRATION_APPROVAL"] == "approved-isolated-staging"
+    assert "CSA_STAGING_MIGRATION_APPROVAL" not in (bootstrap_env or {})
+    for argv in runner.order:
+        if EMPTY_VOLUME in " ".join(argv) or "--entrypoint tar" in " ".join(argv):
+            assert argv[3:6] == ["run", "--rm", "--network"] and argv[6] == "none"
+            assert "--read-only" in argv and "ALL" in argv
+    text = "\n".join(lines)
+    assert "sign in" in text and first.email in text and "change the password" in text
+    assert "scripts.staging_reset accounts" in text
+
+
+def test_the_volume_is_emptied_not_removed(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    assert _wipe(runner, reset_env, tmp_path)[0] == 0
+    assert not any(
+        "volume rm" in " ".join(argv) or " rm " in " ".join(argv) for argv in runner.order
+    )
+    emptied = [
+        next(arg.split(":")[0] for arg in argv if arg.endswith(":/data"))
+        for argv in runner.order
+        if EMPTY_VOLUME in " ".join(argv)
+    ]
+    assert emptied == list(rs.UPLOAD_VOLUMES)
+
+
+def test_backup_directory_and_files(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 0
+    directory = rs.BACKUP_ROOT / "20261103T083015Z"
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert {path.parent for path in runner.files} == {directory}
+    assert sorted(path.name for path in directory.iterdir()) == sorted(
+        ["csa_staging.dump", *(f"{volume}.tar" for volume in rs.UPLOAD_VOLUMES)]
+    )
+    assert str(directory) in "\n".join(lines)
+
+
+def test_backup_failure_changes_nothing(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    runner.file_answer = lambda argv: 1 if "pg_dump" in argv else 0
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    text = "\n".join(lines)
+    assert "Stopped at backup" in text
+    assert "Nothing on staging was changed." in lines
+    assert RECOVERY not in lines
+    assert not _ran(runner, " stop ")
+    assert not _ran(runner, "DROP")
+    assert not _ran(runner, EMPTY_VOLUME)
+
+
+def test_a_volume_backup_failure_changes_nothing(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    runner.file_answer = lambda argv: 2 if "tar" in argv else 0
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    assert "Nothing on staging was changed." in lines
+    assert not _ran(runner, " stop ")
+
+
+def test_an_empty_backup_file_stops_the_wipe(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    real = runner.run_to_file
+
+    def write_nothing(argv: Sequence[str], *, env: Mapping[str, str] | None, path: Path) -> int:
+        code = real(argv, env=env, path=path)
+        path.write_bytes(b"")
+        return code
+
+    runner.run_to_file = write_nothing  # type: ignore[method-assign]
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    assert "Stopped at backup" in "\n".join(lines)
+    assert not _ran(runner, " stop ")
+
+
+LATER_THAN = (
+    ("stop", STOP),
+    ("drop", rs.DROP_DATABASE_SQL),
+    ("create", rs.CREATE_DATABASE_SQL),
+    ("empty volume", EMPTY_VOLUME),
+    ("baseline", LOAD_BASELINE),
+    ("migrate", MIGRATE),
+    ("bootstrap", BOOTSTRAP),
+    ("recreate", UP),
+    ("readiness", READY),
+)
+
+
+def _later_fragments(stage: str) -> list[str]:
+    names = [name for name, _ in LATER_THAN]
+    return [fragment for _, fragment in LATER_THAN[names.index(stage) + 1 :]]
+
+
+@pytest.mark.parametrize(
+    ("failing", "stage", "step", "state"),
+    [
+        ("stop", "stop", "stop", "may still be running"),
+        ("drop", "drop", "drop", "services are stopped; csa_staging was not dropped"),
+        ("create", "create", "create", "services are stopped; csa_staging does not exist"),
+        ("empty volume", "empty volume", "empty volumes", "csa_staging has no schema"),
+        ("read baseline", "empty volume", "baseline", "csa_staging has no schema"),
+        ("baseline", "baseline", "baseline", "csa_staging has no schema"),
+        ("migrate", "migrate", "migrate", "services are stopped"),
+        ("version", "migrate", "version", "services are stopped"),
+        ("bootstrap", "bootstrap", "bootstrap", "no platform admin"),
+        ("recreate gateway", "recreate", "recreate gateway", "gateway did not start"),
+        ("recreate frontend", "recreate", "recreate frontend", "frontend did not start"),
+        ("readiness", "readiness", "readiness", "/readyz is failing"),
+    ],
+)
+def test_each_failure_reports_its_state(
+    reset_env: Path, tmp_path: Path, failing: str, stage: str, step: str, state: str
+) -> None:
+    runner = wipe_runner(failing=failing, version="0001" if failing == "version" else NEWEST)
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    text = "\n".join(lines)
+    assert f"Stopped at {step}" in text
+    assert state in text
+    assert str(rs.BACKUP_ROOT / "20261103T083015Z") in text
+    assert RECOVERY in lines
+    assert MOVED_HEAD in lines
+    if failing == "version":
+        assert "services are stopped" in text and NEWEST in text and "0001" in text
+    if stage == "recreate":
+        started = [argv[-1] for argv in runner.order if UP in " ".join(argv)]
+        service = failing.split()[1]
+        assert started == list(SERVICES[: SERVICES.index(service) + 1])
+    if failing == "read baseline":
+        assert not _ran(runner, LOAD_BASELINE)
+    for fragment in _later_fragments(stage):
+        if failing in {"version", "read baseline"} and fragment in {MIGRATE, LOAD_BASELINE}:
+            continue
+        assert not _ran(runner, fragment), fragment
+
+
+def test_a_slow_start_is_waited_for(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner(failing="recreate gateway")
+    runner.rules.insert(0, (has("{{.State.Health.Status}}"), ok("healthy\n")))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 0, lines
+    assert any("waiting for it to become healthy" in line for line in lines)
+
+
+def test_an_interrupted_wipe_reports_its_state(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+
+    def interrupt(argv: list[str]) -> int:
+        raise KeyboardInterrupt
+
+    runner.tty_answer = interrupt
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    assert "no platform admin" in "\n".join(lines)
+    assert RECOVERY in lines
+    assert not _ran(runner, UP)
+
+
+def test_baseline_refuses_a_database_with_tables(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner(tables_present=True)
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    assert "Stopped at baseline" in "\n".join(lines)
+    assert "already has tables" in "\n".join(lines)
+    assert not _ran(runner, "--entrypoint cat")
+    assert not _ran(runner, LOAD_BASELINE)
+    assert not _ran(runner, MIGRATE)
+
+
+def _earlier_backup() -> tuple[Path, Path]:
+    earlier = rs.BACKUP_ROOT / "20261102T010000Z"
+    earlier.mkdir(parents=True, mode=0o700)
+    dump = earlier / "csa_staging.dump"
+    dump.write_bytes(b"the first, good backup")
+    return earlier, dump
+
+
+def test_wipe_after_a_partial_wipe(reset_env: Path, tmp_path: Path) -> None:
+    earlier, dump = _earlier_backup()
+    runner = wipe_runner(database="missing")
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 0, lines
+    text = "\n".join(lines)
+    assert "skipping pg_dump" in text
+    assert not any("pg_dump" in argv for argv in runner.file_calls)
+    assert [argv.count("tar") for argv in runner.file_calls] == [1, 1]
+    assert _ran(runner, rs.DROP_DATABASE_SQL)
+    assert _ran(runner, BOOTSTRAP)
+    assert sorted(p.name for p in (rs.BACKUP_ROOT / "20261103T083015Z").iterdir()) == sorted(
+        f"{volume}.tar" for volume in rs.UPLOAD_VOLUMES
+    )
+    # The first, good backup is untouched and still named.
+    assert dump.read_bytes() == b"the first, good backup"
+    assert str(earlier) in text
+
+
+def test_a_failure_after_a_partial_wipe_points_at_the_earlier_backup(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    earlier, _ = _earlier_backup()
+    runner = wipe_runner(database="empty", failing="baseline")
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    text = "\n".join(lines)
+    assert str(rs.BACKUP_ROOT / "20261103T083015Z") in text
+    assert str(earlier) in text
+    assert "before the first wipe" in text
+    # A database with no schema is still dumped as it is.
+    assert any("pg_dump" in argv for argv in runner.file_calls)
+
+
+def test_second_wipe_keeps_the_first_backup(reset_env: Path, tmp_path: Path) -> None:
+    assert _wipe(wipe_runner(), reset_env, tmp_path)[0] == 0
+    first = rs.BACKUP_ROOT / "20261103T083015Z"
+    contents = {path.name: path.read_bytes() for path in first.iterdir()}
+    modified = {path.name: path.stat().st_mtime_ns for path in first.iterdir()}
+    later = T0 + timedelta(minutes=5)
+    assert _wipe(wipe_runner(), reset_env, tmp_path, at=later)[0] == 0
+    second = rs.BACKUP_ROOT / "20261103T083515Z"
+    assert sorted(path.name for path in rs.BACKUP_ROOT.iterdir()) == [first.name, second.name]
+    assert {path.name: path.read_bytes() for path in first.iterdir()} == contents
+    assert {path.name: path.stat().st_mtime_ns for path in first.iterdir()} == modified
+    assert stat.S_IMODE(first.stat().st_mode) == 0o700
+    assert stat.S_IMODE(second.stat().st_mode) == 0o700
+
+
+def test_a_backup_directory_is_never_reused(reset_env: Path, tmp_path: Path) -> None:
+    assert _wipe(wipe_runner(), reset_env, tmp_path)[0] == 0
+    runner = wipe_runner()
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code != 0
+    assert "Stopped at backup" in "\n".join(lines)
+    assert runner.file_calls == []
+    assert not _ran(runner, " stop ")
+
+
+# --- accounts -----------------------------------------------------------------------------
+
+
+def accounts_runner(
+    *,
+    existing: Sequence[str] = (),
+    company_code: int = 0,
+    company_output: str = "team-jo: company: created\n",
+    **kwargs: Any,
+) -> ResetFake:
+    """A fake staging after a wipe; ``existing`` lists the platform admins already there."""
+    runner = reset_runner(**kwargs)
+
+    def admin_read(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        return ok("1\n" if any(f"'{email}'" in argv[-1] for email in existing) else "0\n")
+
+    runner.rules[:0] = [
+        (has("FROM console_users WHERE email"), admin_read),
+        (has(COMPANY_STEP), Completed(company_code, company_output, "")),
+    ]
+    return runner
+
+
+def _accounts(
+    runner: ResetFake,
+    repo: Path,
+    tmp_path: Path,
+    *,
+    password: str = PASSWORD,
+) -> tuple[int, list[str]]:
+    lines: list[str] = []
+    code = rs.accounts(
+        runner,
+        repo,
+        docker_config=tmp_path / "dc",
+        is_terminal=lambda: True,
+        read_password=lambda prompt: password,
+        out=lines.append,
+    )
+    return code, lines
+
+
+def _company_calls(runner: ResetFake) -> list[tuple[list[str], Any, str | None]]:
+    return [call for call in runner.calls if COMPANY_STEP in " ".join(call[0])]
+
+
+def test_accounts_adds_admins_then_runs_the_company_step(reset_env: Path, tmp_path: Path) -> None:
+    roster = load_roster(rs.ROSTER_PATH)
+    first, *further = roster.platform_admins
+    output = "team-jo: members[0] (tenant_admin) jo.admin@example.test: invited, mail sent\n"
+    runner = accounts_runner(company_output=output)
+    code, lines = _accounts(runner, reset_env, tmp_path)
+    assert code == 0
+    assert len(runner.tty_calls) == len(further) == 2
+    for argv, admin in zip(runner.tty_calls, further, strict=True):
+        text = " ".join(argv)
+        assert "--profile admin-add-approved run --rm --no-deps admin-add" in text
+        assert f"--approver-email {first.email}" in text
+        assert f"--email {admin.email}" in text
+        assert argv[argv.index("--display-name") + 1] == admin.display_name
+        assert "--add-platform-admin" in text
+    for env in runner.envs:
+        assert env is not None
+        assert env["CSA_STAGING_ADMIN_ADD_APPROVAL"] == "approved-isolated-staging"
+    _assert_in_order(
+        runner,
+        [
+            ("FROM console_users WHERE email", further[0].email),
+            ("--email", further[0].email),
+            ("FROM console_users WHERE email", further[1].email),
+            ("--email", further[1].email),
+            (COMPANY_STEP,),
+        ],
+    )
+    calls = _company_calls(runner)
+    assert len(calls) == 1
+    argv, env, stdin = calls[0]
+    assert argv[:3] == ["docker", "--host", SOCKET]
+    assert " ".join(argv[3:]) == COMPANY_STEP
+    assert stdin is not None
+    line, _, rest = stdin.partition("\n")
+    assert line == PASSWORD
+    assert parse_roster(json.loads(rest)) == roster
+    # The password is in no argv, no env and no message.
+    for argv, env, _ in runner.calls:
+        assert PASSWORD not in " ".join(argv)
+        assert PASSWORD not in (env or {}).values()
+    for argv in runner.every_argv:
+        assert PASSWORD not in " ".join(argv)
+    for env in runner.envs:
+        assert PASSWORD not in (env or {}).values()
+    assert not any(PASSWORD in line for line in lines)
+    # The child's stdout reaches the owner.
+    assert output.rstrip() in lines
+
+
+@pytest.mark.parametrize("code", [1, 2, 125])
+def test_accounts_returns_the_company_steps_exit_code(
+    reset_env: Path, tmp_path: Path, code: int
+) -> None:
+    runner = accounts_runner(company_code=code, company_output="line from the child\n")
+    got, lines = _accounts(runner, reset_env, tmp_path)
+    assert got == code
+    assert "line from the child" in lines
+    text = "\n".join(lines)
+    assert ("Renew invitation on the Team page" in text) is (code == 2)
+    assert PASSWORD not in text
+
+
+def test_accounts_does_not_show_the_company_steps_stderr(reset_env: Path, tmp_path: Path) -> None:
+    runner = accounts_runner()
+    runner.rules.insert(0, (has(COMPANY_STEP), Completed(1, "", f"traceback with {PASSWORD}")))
+    code, lines = _accounts(runner, reset_env, tmp_path)
+    assert code == 1
+    assert not any(PASSWORD in line for line in lines)
+    assert any("exited 1" in line for line in lines)
+
+
+def test_accounts_stops_when_admin_add_fails(reset_env: Path, tmp_path: Path) -> None:
+    runner = accounts_runner()
+    runner.tty_answer = lambda argv: 1
+    code, lines = _accounts(runner, reset_env, tmp_path)
+    assert code != 0
+    text = "\n".join(lines)
+    assert "must have signed in and changed their password" in text
+    assert PASSWORD not in text
+    assert len(runner.tty_calls) == 1
+    assert _company_calls(runner) == []
+
+
+def test_accounts_skips_an_admin_who_already_exists(reset_env: Path, tmp_path: Path) -> None:
+    roster = load_roster(rs.ROSTER_PATH)
+    second, third = roster.platform_admins[1:]
+    runner = accounts_runner(existing=[second.email])
+    code, lines = _accounts(runner, reset_env, tmp_path)
+    assert code == 0
+    assert [argv[argv.index("--email") + 1] for argv in runner.tty_calls] == [third.email]
+    assert any(second.email in line and "already there" in line for line in lines)
+    reads = [argv for argv in runner.argvs if "FROM console_users WHERE email" in " ".join(argv)]
+    assert len(reads) == 2
+    assert all("is_platform_admin" in argv[-1] for argv in reads)
+    # Every admin there: a re-run prompts for nobody and still runs the company step.
+    runner = accounts_runner(existing=[second.email, third.email])
+    assert _accounts(runner, reset_env, tmp_path)[0] == 0
+    assert runner.tty_calls == []
+    assert len(_company_calls(runner)) == 1
+
+
+def test_an_address_is_quoted_in_the_admin_read(reset_env: Path, tmp_path: Path) -> None:
+    data = json.loads(EXAMPLE_ROSTER.read_text())
+    data["platform_admins"][1]["email"] = "o'brien@example.test"
+    rs.ROSTER_PATH.write_text(json.dumps(data))
+    runner = accounts_runner()
+    assert _accounts(runner, reset_env, tmp_path)[0] == 0
+    assert any("email = 'o''brien@example.test'" in argv[-1] for argv in runner.argvs)
+
+
+def test_accounts_refuses_without_a_terminal(reset_env: Path, tmp_path: Path) -> None:
+    runner = accounts_runner()
+
+    def no_prompt(prompt: str) -> str:
+        raise AssertionError("must not prompt")
+
+    lines: list[str] = []
+    code = rs.accounts(
+        runner,
+        reset_env,
+        docker_config=tmp_path / "dc",
+        is_terminal=lambda: False,
+        read_password=no_prompt,
+        out=lines.append,
+    )
+    assert code != 0
+    assert "terminal" in "\n".join(lines)
+    assert runner.every_argv == []
+
+
+def test_accounts_output_needs_a_terminal_as_well_as_its_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Stream(io.StringIO):
+        def __init__(self, tty: bool) -> None:
+            super().__init__()
+            self.tty = tty
+
+        def isatty(self) -> bool:
+            return self.tty
+
+    monkeypatch.setattr("sys.stdin", Stream(True))
+    monkeypatch.setattr("sys.stdout", Stream(False))  # a pipe would carry addresses elsewhere
+    assert not rs._on_a_terminal()
+    monkeypatch.setattr("sys.stdout", Stream(True))
+    assert rs._on_a_terminal()
+    monkeypatch.setattr("sys.stdin", Stream(False))
+    assert not rs._on_a_terminal()
+
+
+def test_accounts_refuses_a_staging_with_no_schema(reset_env: Path, tmp_path: Path) -> None:
+    runner = accounts_runner(database="empty")
+
+    def no_prompt(prompt: str) -> str:
+        raise AssertionError("must not prompt")
+
+    lines: list[str] = []
+    code = rs.accounts(
+        runner,
+        reset_env,
+        docker_config=tmp_path / "dc",
+        is_terminal=lambda: True,
+        read_password=no_prompt,
+        out=lines.append,
+    )
+    assert code != 0
+    assert "run wipe first" in "\n".join(lines)
+    assert runner.tty_calls == []
+    assert _company_calls(runner) == []
+
+
+def test_accounts_refuses_what_prepare_refuses(reset_env: Path, tmp_path: Path) -> None:
+    runner = accounts_runner(off_main=True)
+    code, lines = _accounts(runner, reset_env, tmp_path)
+    assert code != 0
+    assert "not on origin/main" in "\n".join(lines)
+    assert runner.tty_calls == []
+    assert _company_calls(runner) == []
+
+
+@pytest.mark.parametrize("password", ["", "broken-\udcff-bytes"])
+def test_accounts_refuses_a_password_it_cannot_send(
+    reset_env: Path, tmp_path: Path, password: str
+) -> None:
+    runner = accounts_runner()
+    code, lines = _accounts(runner, reset_env, tmp_path, password=password)
+    assert code != 0
+    assert runner.tty_calls == []
+    assert _company_calls(runner) == []
+    assert any("password" in line for line in lines)
+    assert not any(password and password in line for line in lines)
+
+
+def test_the_real_runner_cannot_echo_its_input(tmp_path: Path) -> None:
+    runner = rs.SubprocessResetRunner(cwd=tmp_path)
+    with pytest.raises(RolloutError) as caught:
+        runner.run(["definitely-not-a-command-here"], input=PASSWORD)
+    assert PASSWORD not in str(caught.value)
+    assert PASSWORD not in caught.value.message
+    not_executable = tmp_path / "not-executable"
+    not_executable.write_text("")
+    with pytest.raises(RolloutError) as caught:
+        runner.run([str(not_executable)], input=PASSWORD)
+    assert PASSWORD not in caught.value.message
+    # A child that exits at once, without reading its stdin, costs no error at all.
+    finished = runner.run(["sh", "-c", "exit 3"], input=PASSWORD * 100_000)
+    assert finished.returncode == 3
+    assert PASSWORD not in repr(finished)
+
+
+def test_company_step_input_round_trips(reset_env: Path) -> None:
+    roster = load_roster(rs.ROSTER_PATH)
+    assert any(company.deployment_mode is None for company in roster.companies)
+    line, _, rest = rs.company_step_input(PASSWORD, roster).partition("\n")
+    assert line == PASSWORD
+    assert parse_roster(json.loads(rest)) == roster
+
+
+# --- main ---------------------------------------------------------------------------------
+
+
+class _Terminal(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize("command", ["wipe", "accounts"])
+def test_main_refuses_without_a_terminal(
+    reset_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO())
+    runner = reset_runner()
+    assert rs.main([command], runner) == 1
+    assert "terminal" in capsys.readouterr().out
+    assert runner.every_argv == []
+
+
+def test_main_runs_wipe(
+    reset_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("sys.stdin", _Terminal())
+    monkeypatch.setattr("builtins.input", lambda prompt="": rs.CONFIRM_PHRASE)
+    runner = wipe_runner()
+    assert rs.main(["wipe"], runner) == 0
+    assert _ran(runner, rs.DROP_DATABASE_SQL)
+    assert "scripts.staging_reset accounts" in capsys.readouterr().out
+    assert len(list(rs.BACKUP_ROOT.iterdir())) == 1
+
+
+def test_main_runs_accounts(
+    reset_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(rs, "_on_a_terminal", lambda: True)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
+    runner = accounts_runner(company_code=2, company_output="mail not sent\n")
+    assert rs.main(["accounts"], runner) == 2
+    out = capsys.readouterr().out
+    assert "mail not sent" in out
+    assert PASSWORD not in out
+    assert _company_calls(runner)[0][2].startswith(PASSWORD + "\n")  # type: ignore[union-attr]
