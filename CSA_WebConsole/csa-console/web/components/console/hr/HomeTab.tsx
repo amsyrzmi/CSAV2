@@ -6,6 +6,7 @@ import { hrHref, type HrRoute } from "@/lib/hr-paths";
 import { emptyText, homeItems, homeQuickActions, runsHomeMaintenance } from "@/lib/hr-people";
 import { peopleClient, type HrHome, type Interview, type Person } from "@/lib/hr-people-api";
 import { isDenied } from "@/lib/hr-pickers";
+import GetStarted, { useNoPeopleYet } from "../hr-guide/GetStarted";
 import { secondary, Notice, Panel } from "../ui";
 import type { HrTabProps } from "./HrShell";
 import { MyHr } from "./MyHr";
@@ -28,7 +29,7 @@ export function HomeTab(props: HrTabProps) {
 /** What "Needs you today" is built from, besides the reminders and interviews Home already reads. */
 type Today = { home: HrHome; starting: Person[] } | { failed: true } | null;
 
-function HrHomePage({ tenant, context, readonly, platform, refreshContext }: HrTabProps) {
+function HrHomePage({ tenant, context, readonly, platform, admin, refreshContext }: HrTabProps) {
   const client = useMemo(() => hrClient(tenant), [tenant]);
   const people = useMemo(() => peopleClient(tenant), [tenant]);
   const runner = useHrRunner();
@@ -69,17 +70,20 @@ function HrHomePage({ tenant, context, readonly, platform, refreshContext }: HrT
     : [], [today, appointments, unread]);
   const quick = homeQuickActions(context, readonly);
   const href = (route: HrRoute) => hrHref(route, platform, tenant);
+  const canAdd = quick.some(item => item.key === "add-person");
+  const owner = context.client_owner;
+  const noPeople = useNoPeopleYet(tenant) === true && (canAdd || owner || admin === true);
   return <div className="space-y-5" aria-busy={busy}>
-    <Panel title="Needs you today">
-      {!today ? <Notice>Loading what needs you today…</Notice>
-        : "failed" in today ? <Notice error>We could not load what needs you today. Reload the page and try again.</Notice>
-          : items.length === 0 ? <p className="text-sm text-ink-500">{emptyText("home")}</p>
-            : <ul className="space-y-2 text-sm">{items.map(item => <li key={item.key}>
-              <Link className="underline" href={href(item.href)}>{item.label}</Link></li>)}</ul>}
-    </Panel>
     {quick.length > 0 && <nav aria-label="Quick actions" className="flex flex-wrap gap-2">
       {quick.map(item => <Link key={item.key} className={secondary} href={href(item.href)}>{item.label}</Link>)}
     </nav>}
+    <Panel title="Needs you today">
+      {!today ? <Notice>Loading what needs you today…</Notice>
+        : "failed" in today ? <Notice error>We could not load what needs you today. Reload the page and try again.</Notice>
+          : items.length === 0 ? (noPeople ? <GetStarted tenant={tenant} platform={platform} owner={owner} canAdd={canAdd} admin={admin === true} /> : <p className="text-sm text-ink-500">{emptyText("home")}</p>)
+            : <ul className="space-y-2 text-sm">{items.map(item => <li key={item.key}>
+              <Link className="underline" href={href(item.href)}>{item.label}</Link></li>)}</ul>}
+    </Panel>
     {message && <Notice>{message}</Notice>}{error && <Notice error>{error}. Check saved records before retrying an uncertain write.</Notice>}
     <Panel title="Local HR reminders"><p className="mb-4 text-sm">{maintains && "Maintenance runs every five minutes while this page is open. "}Reminders are deduplicated daily; expired candidate content is erased. No external messages are sent.</p>
       <button className={secondary} disabled={busy || readonly} onClick={() => void run(async () => { if (maintains) await client.operation({ operation: "automation.run" }); await load(); })}>Refresh reminders</button>

@@ -1323,3 +1323,194 @@ async def test_hr_lists_at_five_widths_in_three_themes(site: Site, theme: str) -
                     await check_list(page, name, width, width >= 768, theme)
 
     await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# Stage 4, idea 2: the Home "Get started" checklist.
+# ---------------------------------------------------------------------------------------------
+
+HOME = "/portal/hr"
+NOTHING_NEEDS_YOU = "Nothing needs you today."
+GET_STARTED_STEPS = {
+    "add": ("Add your first person", "/portal/hr/people/new"),
+    "calendar": ("Set your work calendar", "/portal/hr/settings"),
+    "access": ("Choose who can do what", "/portal/hr/settings"),
+    "invite": ("Invite your team", "/portal/team"),
+}
+
+# Every visible text in a part of the page against the first opaque background behind it, and the
+# outline of the focused element against the background behind that.
+CONTRAST_JS = """(selector) => {
+    const parse = (v) => (v.match(/[\\d.]+/g) || [0, 0, 0, 0]).map(Number);
+    const channel = (v) => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = (c) => 0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]);
+    const ratio = (a, b) => {
+        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+        return (hi + 0.05) / (lo + 0.05);
+    };
+    const backdrop = (el) => {
+        for (let node = el; node; node = node.parentElement) {
+            const c = parse(getComputedStyle(node).backgroundColor);
+            if (c.length < 4 || c[3] > 0.98) return c;
+        }
+        return [255, 255, 255];
+    };
+    const root = document.querySelector(selector);
+    const own = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+    const texts = [root, ...root.querySelectorAll('*')].filter((el) => {
+        const r = el.getBoundingClientRect();
+        return own(el) && r.width > 0 && getComputedStyle(el).visibility === 'visible';
+    }).map((el) => ({
+        text: el.textContent.trim().slice(0, 40),
+        ratio: ratio(parse(getComputedStyle(el).color), backdrop(el)),
+    }));
+    const focused = document.activeElement;
+    const style = focused ? getComputedStyle(focused) : null;
+    const outline = style ? {
+        style: style.outlineStyle,
+        width: parseFloat(style.outlineWidth),
+        ratio: ratio(parse(style.outlineColor), backdrop(focused)),
+    } : null;
+    const box = root.getBoundingClientRect();
+    return {
+        texts, outline,
+        inside: box.left >= -0.5 && box.right <= innerWidth + 0.5,
+        sideways: [...root.querySelectorAll('*')].filter((el) => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && (r.left < -0.5 || r.right > innerWidth + 0.5);
+        }).map((el) => el.dataset.testid || el.tagName),
+    };
+}"""
+
+
+class HomeWorld(RestyleWorld):
+    """The restyle company as HR Home reads it: nothing waiting, and no one at all if `empty`."""
+
+    def __init__(self, *, empty: bool) -> None:
+        super().__init__()
+        self.empty = empty
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if params.get("client_id") == TENANT and method == "GET":
+            if path == "hr/home":
+                return 200, {"training_waiting": 0, "requests_waiting": 0}
+            if path in {"hr/records/notifications", "hr/records/my_interviews"}:
+                return 200, {"items": []}
+            if path == "hr/people" and (self.empty or params.get("status") == "starting"):
+                return 200, {"items": [], "next_cursor": None, "total": 0}
+        return super().answer(caller, method, path, params, body)
+
+
+def get_started(page: Page) -> Any:
+    return page.get_by_test_id("hr-get-started")
+
+
+def quick_actions(page: Page) -> Any:
+    return page.get_by_role("navigation", name="Quick actions")
+
+
+async def test_get_started_shows_for_a_company_without_people(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = HomeWorld(empty=True)
+        async with hr_page(browser, site, world, HOME, ready=get_started) as page:
+            card = get_started(page)
+            await expect(card.get_by_role("heading", name="Get started")).to_be_visible()
+            # It stands where "Nothing needs you today." stood.
+            await expect(page.get_by_text(NOTHING_NEEDS_YOU)).to_have_count(0)
+            # The signed-in user is the HR owner and a tenant admin, so all four steps show.
+            await expect(card.get_by_role("listitem")).to_have_count(len(GET_STARTED_STEPS))
+            for label, href in GET_STARTED_STEPS.values():
+                await expect(card.get_by_role("link", name=label, exact=True)).to_have_attribute(
+                    "href", href
+                )
+            reads = [c for c in world.calls if c["path"] == "hr/people"]
+            assert reads and not world.unexpected, world.calls
+
+    await with_browser(body)
+
+
+async def test_get_started_steps_are_keyboard_links_with_a_visible_focus_ring(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(browser, site, HomeWorld(empty=True), HOME, ready=get_started) as page:
+            first = get_started(page).get_by_role("link", name="Add your first person")
+            for _ in range(40):
+                await page.keyboard.press("Tab")
+                if await first.evaluate("(el) => el === document.activeElement"):
+                    break
+            await expect(first).to_be_focused()
+            measured = await page.evaluate(CONTRAST_JS, "[data-testid=hr-get-started]")
+            assert measured["outline"]["style"] != "none", measured["outline"]
+            assert measured["outline"]["width"] >= 2, measured["outline"]
+            assert measured["outline"]["ratio"] >= 3, measured["outline"]
+            # Tab moves on to the next step, in reading order.
+            await page.keyboard.press("Tab")
+            await expect(
+                get_started(page).get_by_role("link", name="Set your work calendar")
+            ).to_be_focused()
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_get_started_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, HomeWorld(empty=True), HOME, theme=theme, ready=get_started
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 900})
+                await page.wait_for_timeout(150)
+                where = (theme, width)
+                scrolled = await overflow(page)
+                assert scrolled["scroll"] <= scrolled["inner"], (where, scrolled)
+                measured = await page.evaluate(CONTRAST_JS, "[data-testid=hr-get-started]")
+                assert measured["inside"] and measured["sideways"] == [], (where, measured)
+                assert len(measured["texts"]) >= len(GET_STARTED_STEPS) * 2, (where, measured)
+                for item in measured["texts"]:
+                    assert item["ratio"] >= 4.5, (where, item)
+                # The links are big enough to touch: the row is at least 40 px tall.
+                heights = (
+                    await get_started(page)
+                    .get_by_role("link")
+                    .evaluate_all("(els) => els.map((el) => el.getBoundingClientRect().height)")
+                )
+                assert min(heights) >= 40, (where, heights)
+
+    await with_browser(body)
+
+
+async def test_get_started_hidden_once_someone_exists(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = HomeWorld(empty=False)
+        async with hr_page(browser, site, world, HOME, ready=quick_actions) as page:
+            await expect(page.get_by_text(NOTHING_NEEDS_YOU)).to_be_visible(timeout=WAIT)
+            await expect(get_started(page)).to_have_count(0)
+            # The one extra read happened and found people.
+            assert [c for c in world.calls if c["path"] == "hr/people"], world.calls
+
+    await with_browser(body)
+
+
+async def test_quick_actions_sit_above_needs_you_today(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        for empty in (True, False):
+            async with hr_page(
+                browser, site, HomeWorld(empty=empty), HOME, ready=quick_actions
+            ) as page:
+                heading = page.get_by_role("heading", name="Needs you today")
+                await expect(heading).to_be_visible(timeout=WAIT)
+                nav = await quick_actions(page).bounding_box()
+                title = await heading.bounding_box()
+                assert nav and title and nav["y"] + nav["height"] <= title["y"], (empty, nav, title)
+                add = quick_actions(page).get_by_role("link", name="Add person")
+                await expect(add).to_be_visible()
+
+    await with_browser(body)
