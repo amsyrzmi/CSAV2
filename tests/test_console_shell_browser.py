@@ -596,7 +596,7 @@ async def test_user_menu_shows_identity_and_closes_with_escape(console: Console)
         await trigger.click()
         panel = page.get_by_test_id("shell-user-menu-panel")
         await expect(panel).to_contain_text("Synthetic User")
-        await expect(panel).to_contain_text("Tenant admin")
+        await expect(panel).to_contain_text("Admin")
         await page.keyboard.press("Escape")
         await expect(panel).to_have_count(0)
         await expect(trigger).to_be_focused()
@@ -615,7 +615,7 @@ async def test_user_menu_shows_name_email_role_and_tenant(console: Console) -> N
         await expect(panel.get_by_test_id("shell-user-email")).to_have_text(
             "synthetic@example.test"
         )
-        await expect(panel).to_contain_text("Tenant admin")
+        await expect(panel).to_contain_text("Admin")
         await expect(panel.get_by_test_id("shell-user-tenant")).to_have_text("Synthetic Tenant")
         # The "Reduce animations" switch is still there, below the account lines.
         await expect(panel.get_by_test_id("shell-motion-toggle")).to_be_visible()

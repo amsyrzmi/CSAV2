@@ -305,9 +305,9 @@ async def test_member_cards_show_role_and_status(site: Site) -> None:
                 3
             )
             expected = {
-                AIMAN: ("AY", "Aiman Yusof", "aiman@example.test", "Tenant admin", "Active"),
-                SITI: ("SA", "Siti Aminah", "siti@example.test", "Tenant staff", "Active"),
-                OMAR: ("OL", "Omar Lee", "omar@example.test", "Read only", "Disabled"),
+                AIMAN: ("AY", "Aiman Yusof", "aiman@example.test", "Admin", "Active"),
+                SITI: ("SA", "Siti Aminah", "siti@example.test", "Staff", "Active"),
+                OMAR: ("OL", "Omar Lee", "omar@example.test", "View only", "Disabled"),
             }
             for user_id, (initials, name, email, role, status) in expected.items():
                 one = card(page, user_id)
@@ -407,7 +407,7 @@ async def test_role_change_asks_first_and_cancel_changes_nothing(site: Site) -> 
             await select.select_option("read_only")
             await expect(confirm).to_be_visible()
             await expect(confirm).to_contain_text("Siti Aminah")
-            await expect(confirm).to_contain_text("Read only")
+            await expect(confirm).to_contain_text("View only")
             await expect(confirm).to_contain_text(
                 f"Siti Aminah {SIGNED_OUT} and will need to sign in again."
             )
@@ -452,7 +452,7 @@ async def test_role_change_asks_first_and_cancel_changes_nothing(site: Site) -> 
             await select.select_option("read_only")
             await page.get_by_test_id(f"team-confirm-{SITI}-yes").click()
             await expect(confirm).to_have_count(0)
-            await expect(page.get_by_test_id(f"team-card-{SITI}-role")).to_have_text("Read only")
+            await expect(page.get_by_test_id(f"team-card-{SITI}-role")).to_have_text("View only")
             sent = world.sent("PATCH", "team/")
             assert [(c["path"], c["body"]) for c in sent] == [
                 (f"team/{SITI}", {"role": "read_only"})
@@ -474,7 +474,7 @@ async def test_role_change_asks_first_and_cancel_changes_nothing(site: Site) -> 
                 "tenant_admin"
             )
             await expect(page.get_by_test_id(f"team-card-{AIMAN}-role")).to_have_text(
-                "Tenant admin"
+                "Admin"
             )
 
     await with_browser(body)
@@ -655,7 +655,7 @@ async def test_platform_members_page_uses_the_same_cards(site: Site) -> None:
             await expect(page.get_by_test_id("team-members").get_by_role("listitem")).to_have_count(
                 3
             )
-            await expect(page.get_by_test_id(f"team-card-{SITI}-role")).to_have_text("Tenant staff")
+            await expect(page.get_by_test_id(f"team-card-{SITI}-role")).to_have_text("Staff")
             await expect(page.get_by_test_id(f"team-card-{OMAR}-status")).to_have_text("Disabled")
             details = await open_card(page, SITI)
             # The platform tools sit in the same arrow, with their original labels.

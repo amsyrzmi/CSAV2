@@ -82,7 +82,7 @@ export function AppShell({
     name: me.user.display_name || me.user.email,
     email: me.user.email,
     tenant: tenantName ?? null,
-    role: me.role ? roleLabels[me.role] : "No active membership",
+    role: me.role ? roleLabels[me.role] : "Not linked to a company yet",
     busy,
     onSignOut: signOut,
   };

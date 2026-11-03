@@ -174,7 +174,7 @@ export function homeFor(me: Me): string {
 }
 export const roleLabels: Record<ConsoleRole, string> = {
   platform_admin: "Platform admin",
-  tenant_admin: "Tenant admin",
-  tenant_staff: "Tenant staff",
-  read_only: "Read only",
+  tenant_admin: "Admin",
+  tenant_staff: "Staff",
+  read_only: "View only",
 };
