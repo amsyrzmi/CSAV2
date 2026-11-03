@@ -14,6 +14,7 @@ from uuid import UUID
 
 import psycopg
 import pytest
+from csa.console.contracts import MemberPatchIn
 from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.mailer import Mailer, OutgoingMail
 from csa.console.packages import PACKAGES
@@ -24,7 +25,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from scripts import staging_accounts
 from scripts.staging_accounts import AccountsStop
-from scripts.staging_roster import Roster, load_roster
+from scripts.staging_roster import Roster, load_roster, parse_roster
 
 from tests.conftest import requires_docker
 
@@ -193,8 +194,10 @@ async def test_output_has_no_token_or_link(world: World) -> None:
     assert len(tokens) == MEMBERS
     for line in lines:
         assert "http" not in line
-        assert "@" not in line
         assert not any(token in line for token in tokens)
+    for company in world.roster.companies:
+        for member in company.members:
+            assert sum(member.email in line for line in lines) == 1
 
 
 @requires_docker
@@ -305,7 +308,7 @@ async def test_one_mail_failure_continues_and_reports(world: World) -> None:
     failed = [line for line in lines if "mail not sent" in line]
     assert len(failed) == 1
     assert failed[0].startswith("team-jo: members[2]")
-    assert FAILING not in " ".join(lines)
+    assert FAILING in failed[0]
     tokens = [_token_of(mail) for mail in world.transport.sent]
     assert not any(token in " ".join(lines) for token in tokens)
 
@@ -316,6 +319,101 @@ async def test_one_mail_failure_continues_and_reports(world: World) -> None:
     assert all("already there" in line for line in lines)
     line = next(line for line in lines if line.startswith("team-jo: members[2]"))
     assert "Team page" in line
+
+
+async def _token_ids(world: World, email: str) -> list[UUID]:
+    rows = await world.query(
+        "SELECT t.id FROM console_tokens t JOIN console_users u ON u.id = t.user_id "
+        "WHERE u.email = %s ORDER BY t.created_at",
+        email,
+    )
+    return [row["id"] for row in rows]
+
+
+def _line_for(lines: list[str], email: str) -> str:
+    (line,) = [line for line in lines if email in line]
+    return line
+
+
+@requires_docker
+async def test_expired_and_revoked_invitations_are_reported_as_such(world: World) -> None:
+    assert (await world.run())[0] == 0
+    expired, revoked = world.roster.companies[0].members[2:4]
+    await world.query(
+        "UPDATE console_tokens SET expires_at = now() - interval '1 hour' "
+        "WHERE user_id IN (SELECT id FROM console_users WHERE email = %s)",
+        expired.email,
+    )
+    await world.query(
+        "UPDATE console_tokens SET revoked_at = now() "
+        "WHERE user_id IN (SELECT id FROM console_users WHERE email = %s)",
+        revoked.email,
+    )
+    sent = len(world.transport.sent)
+    code, lines = await world.run()
+    assert code == 0
+    assert len(world.transport.sent) == sent
+    assert "invitation expired" in _line_for(lines, expired.email)
+    assert "Renew invitation" in _line_for(lines, expired.email)
+    assert "invitation revoked" in _line_for(lines, revoked.email)
+    assert "Renew invitation" in _line_for(lines, revoked.email)
+    other = world.roster.companies[0].members[1]
+    assert "invitation pending" in _line_for(lines, other.email)
+
+
+@requires_docker
+async def test_a_renewed_invitation_is_pending_again(world: World) -> None:
+    assert (await world.run())[0] == 0
+    member = world.roster.companies[0].members[2]
+    (token_id,) = await _token_ids(world, member.email)
+    await world.query("UPDATE console_tokens SET expires_at = now() - interval '1 hour'")
+    actor = await world.identity.verify_platform_admin(
+        world.roster.platform_admins[0].email, ADMIN_PASSWORD
+    )
+    await world.identity.renew_invitation(actor, token_id)
+    assert len(await _token_ids(world, member.email)) == 2
+    code, lines = await world.run()
+    assert code == 0
+    assert "invitation pending" in _line_for(lines, member.email)
+
+
+@requires_docker
+async def test_address_that_belongs_to_another_company_stops(world: World) -> None:
+    assert (await world.run())[0] == 0
+    data = json.loads(EXAMPLE.read_text())
+    data["companies"][0]["members"][3]["email"] = "jo.new@example.test"
+    data["companies"][1]["members"][0]["email"] = "jo.staff@example.test"
+    moved = parse_roster(data)
+    sent, tokens = len(world.transport.sent), await world.count("console_tokens")
+    with pytest.raises(AccountsStop, match=r"companies\[1\]\.members\[0\]") as stop:
+        await world.run(roster=moved)
+    assert "jo.staff@example.test" not in str(stop.value)
+    assert len(world.transport.sent) == sent
+    assert await world.count("console_tokens") == tokens
+
+
+@requires_docker
+async def test_member_whose_role_changed_stops(world: World) -> None:
+    assert (await world.run())[0] == 0
+    member = world.roster.companies[0].members[3]
+    assert member.role == "tenant_staff"
+    mail = next(mail for mail in world.transport.sent if mail.to == member.email)
+    await world.identity.accept_token(_token_of(mail), "synthetic-member-password-4")
+    actor = await world.identity.verify_platform_admin(
+        world.roster.platform_admins[0].email, ADMIN_PASSWORD
+    )
+    clients = await _clients(world)
+    users = await world.query("SELECT id FROM console_users WHERE email = %s", member.email)
+    await world.identity.patch_member(
+        actor,
+        clients["team-jo"]["id"],
+        users[0]["id"],
+        MemberPatchIn(role="read_only"),
+    )
+    sent = len(world.transport.sent)
+    with pytest.raises(AccountsStop, match=r"companies\[0\]\.members\[3\]"):
+        await world.run()
+    assert len(world.transport.sent) == sent
 
 
 @pytest.mark.parametrize(

@@ -3,8 +3,8 @@
 Runs inside the staging gateway container, because only the gateway can send mail. It uses the
 console's own code, as the first platform admin of the roster, and only ever adds: a second run
 changes nothing and sends nothing. The password and the roster arrive on stdin, one line of
-password and then the roster as JSON. Output names companies, packages and roster positions,
-never an address, a link or a token.
+password and then the roster as JSON. Output lines name companies, packages and members by
+address; a stop message names a roster position. No output carries a link or a token.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -108,11 +109,23 @@ def _place(index: int, member_index: int) -> str:
 async def _members_there(
     identity: IdentityService, actor: ConsoleActor, client_id: UUID
 ) -> dict[tuple[str, str], str]:
-    """(address, role) -> "member" or "invited" for one company."""
+    """(address, role) -> "member", "pending", "expired" or "revoked" for one company.
+
+    An accepted invitation is skipped: the account is a member under its current role, which
+    may have changed since. Of the rest, the newest invitation per address and role decides.
+    """
     there: dict[tuple[str, str], str] = {}
-    for row in await identity.invitations(actor, client_id, LISTING_LIMIT):
-        if row["kind"] == "invite":
-            there[(row["email"], row["role"])] = "invited"
+    now = datetime.now(UTC)
+    for row in await identity.invitations(actor, client_id, LISTING_LIMIT):  # newest first
+        key = (row["email"], row["role"])
+        if row["kind"] != "invite" or row["consumed_at"] is not None or key in there:
+            continue
+        if row["revoked_at"] is not None:
+            there[key] = "revoked"
+        elif row["expires_at"] <= now:
+            there[key] = "expired"
+        else:
+            there[key] = "pending"
     for row in await identity.members(actor, client_id):
         there[(row["email"], row["role"])] = "member"
     return there
@@ -223,14 +236,19 @@ async def _invite_members(
     """Invite each member who is not there yet; returns how many invitations were not mailed."""
     unsent = 0
     for m_index, member in enumerate(company.members):
-        label = f"{company.slug}: members[{m_index}] ({member.role})"
+        label = f"{company.slug}: members[{m_index}] ({member.role}) {member.email}"
         state = there.get((member.email, member.role))
         if state == "member":
             out(f"{label}: already there")
-        elif state == "invited":
+        elif state == "pending":
             out(
                 f"{label}: already there (invitation pending; "
                 "if its mail was never sent, resend it from the Team page)"
+            )
+        elif state in ("expired", "revoked"):
+            out(
+                f"{label}: already there (invitation {state}; "
+                "use Renew invitation on the Team page)"
             )
         elif await _invite(pool, identity, mailer, actor, member, client_id) == "email":
             out(f"{label}: invited, mail sent")
