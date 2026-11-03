@@ -125,7 +125,7 @@ TENANT_LABELS = (
     "Services",
     "People & HR",
     "Assistant activity",
-    "Knowledge base",
+    "Business knowledge",
     "Customer inbox",
     "Email assistant",
     "Business management",
@@ -296,7 +296,7 @@ async def test_rail_tooltip_shows_on_hover_and_keyboard_focus(console: Console) 
         await expect(tip).to_have_count(0)
         await page.get_by_role("link", name="Assistant activity", exact=True).focus()
         await page.keyboard.press("Tab")
-        await expect(tip).to_have_text("Knowledge base")
+        await expect(tip).to_have_text("Business knowledge")
         await page.keyboard.press("Escape")
         await expect(tip).to_have_count(0)
     finally:

@@ -38,7 +38,7 @@ TENANT_PROFILE = {
 WAIT = 60_000  # First visit to each route compiles it in `next dev`.
 GATED = (
     "Customer inbox",
-    "Knowledge base",
+    "Business knowledge",
     "Business management",
     "People & HR",
     "Email assistant",
@@ -341,7 +341,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await page.reload()
         await expect_navigation(
             page,
-            ("Customer inbox", "Knowledge base", "Services"),
+            ("Customer inbox", "Business knowledge", "Services"),
             ("Business management", "People & HR", "Email assistant", "Agents"),
         )
 

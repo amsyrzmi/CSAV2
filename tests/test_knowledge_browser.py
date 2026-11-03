@@ -1,4 +1,4 @@
-"""Real browser acceptance for the calmer Knowledge base page.
+"""Real browser acceptance for the Business knowledge pages (library, add, questions, maintenance).
 
 The real Next.js shell runs unmodified from the disposable staged copy that
 `test_services_redesign_browser.site` builds. Its layouts fetch `/auth/me` and
@@ -17,13 +17,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.async_api import Page, expect
 
 from tests import test_services_redesign_browser as services
-from tests.test_services_browser import WAIT, make_me
+from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
 from tests.test_services_redesign_browser import Site, with_browser
 
 pytestmark = pytest.mark.asyncio
@@ -38,6 +38,13 @@ PACKAGE_SENTENCE = (
     "Ask your administrator to activate it in Services."
 )
 LISTS = ("agents", "files", "documents", "jobs", "gaps")
+# The four pages of Business knowledge: (section key, portal path, the testid that shows it loaded).
+PAGES = (
+    ("library", "/portal/faq", "kb-library"),
+    ("add", "/portal/faq/add", "kb-add"),
+    ("questions", "/portal/faq/questions", "kb-gaps"),
+    ("maintenance", "/portal/faq/maintenance", "kb-maintenance"),
+)
 RESOURCES = {
     "agents": "agents",
     "kb/files": "files",
@@ -216,14 +223,18 @@ class Stub:
     posts: list[str] = field(default_factory=list)
     upload_keys: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
+    queries: dict[str, list[dict[str, list[str]]]] = field(default_factory=dict)
 
     async def route(self, request_route: Any) -> None:
         request = request_route.request
         parts = urlsplit("http://x/" + request.url.split("/console/v1/")[1])
         path = parts.path.lstrip("/")
         status, data = 200, None
+        self.queries.setdefault(path, []).append(parse_qs(parts.query))
         if path == "auth/csrf":
             data = {"csrf_token": "synthetic-csrf"}
+        elif path == "admin/clients" and request.method == "GET":
+            data = [TENANT_PROFILE]
         elif path in RESOURCES and request.method == "GET":
             name = RESOURCES[path]
             self.reads[name] += 1
@@ -286,6 +297,7 @@ async def knowledge_page(
     theme: str | None = None,
     role: str = "tenant_admin",
     wait: str | None = "kb-library",
+    path: str = "/portal/faq",
 ) -> AsyncIterator[Page]:
     site.upstream.me = make_me(role)
     site.upstream.packages = [{"key": "customer_support", "status": "active"}]
@@ -300,7 +312,7 @@ async def knowledge_page(
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     await page.route("**/console/v1/**", stub.route)
-    await page.goto(f"{site.base}/portal/faq")
+    await page.goto(f"{site.base}{path}")
     if wait:
         await expect(page.get_by_test_id(wait)).to_be_visible(timeout=WAIT)
     try:
@@ -346,9 +358,7 @@ async def test_one_failing_list_does_not_blank_the_page(site: Site) -> None:
             error = page.get_by_test_id("kb-error-documents")
             await expect(error).to_be_visible()
             await expect(error).to_contain_text("synthetic documents outage")
-            await expect(page.get_by_test_id("kb-add")).to_be_visible()
             await expect(card(page, "job-failed")).to_be_visible()
-            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
             for other in ("agents", "files", "jobs", "gaps"):
                 await expect(page.get_by_test_id(f"kb-error-{other}")).to_have_count(0)
             # A failed load is never shown as an empty library.
@@ -366,13 +376,38 @@ async def test_one_failing_list_does_not_blank_the_page(site: Site) -> None:
                 assert stub.reads[other] == before[other], (other, stub.reads, before)
 
             # A list failing later keeps what is on screen and says so quietly.
-            stub.fail["gaps"] = (500, {})
-            await page.get_by_role("button", name="Refresh knowledge base").click()
-            gaps_error = page.get_by_test_id("kb-error-gaps")
-            await expect(gaps_error).to_be_visible()
-            await expect(gaps_error).to_contain_text("Something went wrong on our side. Try again.")
-            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
+            stub.fail["files"] = (500, {})
+            await page.get_by_role("button", name="Refresh business knowledge").click()
+            files_error = page.get_by_test_id("kb-error-files")
+            await expect(files_error).to_be_visible()
+            await expect(files_error).to_contain_text(
+                "Something went wrong on our side. Try again."
+            )
             await expect(card(page, "doc-hours")).to_be_visible()
+
+        # On the Add page a failing jobs list leaves the upload area where it is.
+        failing = Stub()
+        failing.fail["jobs"] = (503, {"detail": "synthetic jobs outage"})
+        async with knowledge_page(
+            browser, site, failing, path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            await expect(page.get_by_test_id("kb-error-jobs")).to_contain_text(
+                "synthetic jobs outage"
+            )
+            await expect(page.get_by_test_id("kb-add")).to_be_visible()
+            await expect(page.locator("#kb-files")).to_be_enabled()
+
+        # On the Questions page a failing gaps list says so and keeps the page.
+        gaps_failing = Stub()
+        gaps_failing.fail["gaps"] = (503, {"detail": "synthetic gaps outage"})
+        async with knowledge_page(
+            browser, site, gaps_failing, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
+            await expect(page.get_by_test_id("kb-error-gaps")).to_contain_text(
+                "synthetic gaps outage"
+            )
+            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_have_count(0)
+            await expect(page.get_by_text("No recorded unresolved gaps.")).to_have_count(0)
 
     await with_browser(body)
 
@@ -488,14 +523,19 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
                 "href", re.compile(r"/kb/files/file-failed/download")
             )
             await expect(failed.get_by_role("button", name="Delete source")).to_be_enabled()
-            # The retry: add the file again with the upload control.
-            await (
-                card(page, "job-failed").get_by_role("button", name="Choose the file again").click()
-            )
-            await expect(page.locator("#kb-files")).to_be_focused()
+            # The retry: add the file again, on the Add page.
+            await card(page, "job-failed").get_by_role("link", name="Choose the file again").click()
+            await expect(page).to_have_url(re.compile(r"/portal/faq/add$"), timeout=WAIT)
+            await expect(page.get_by_test_id("kb-add")).to_be_visible()
+            await page.go_back()
+            await expect(page).to_have_url(re.compile(r"/portal/faq$"), timeout=WAIT)
+            await expect(card(page, "job-failed")).to_be_visible()
+            loose_toggle = page.get_by_test_id("kb-other-files-toggle")
+            await loose_toggle.click()
 
             # Files no card shows still have their download and delete.
-            loose = await open_fold(page, "kb-other-files")
+            loose = page.get_by_test_id("kb-other-files-details")
+            await expect(loose).to_be_visible()
             await expect(loose).to_contain_text("old-notes.pdf")
             await expect(loose.get_by_role("link", name="Download original")).to_have_count(1)
 
@@ -503,20 +543,23 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
 
 
 async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: Site) -> None:
+    maintenance_path = "/portal/faq/maintenance"
+
     async def body(browser: Any) -> None:
         stub = Stub()
-        async with knowledge_page(browser, site, stub) as page:
+        async with knowledge_page(
+            browser, site, stub, path=maintenance_path, wait="kb-maintenance"
+        ) as page:
+            # Both disclosures are open on arrival: this page is for them.
             maintenance = page.get_by_test_id("kb-maintenance-details")
-            await expect(maintenance).to_be_hidden()
-            for text in (
-                "Reconcile orphaned storage",
-                "Embedding compatibility",
-                "Polling every 5 seconds",
-            ):
-                await expect(page.get_by_text(text, exact=False).first).to_be_hidden()
+            await expect(maintenance).to_be_visible()
+            await expect(page.get_by_test_id("kb-maintenance-toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+            await expect(page.get_by_test_id("kb-settings-toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
             await expect(page.get_by_test_id("kb-maintenance")).to_contain_text("Maintenance")
-
-            await open_fold(page, "kb-maintenance")
             await expect(
                 maintenance.get_by_role("heading", name="Embedding compatibility")
             ).to_be_visible()
@@ -532,6 +575,7 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
                 "documents/gaps, 20 jobs and 100 sources."
             )
             await expect(maintenance).not_to_contain_text("Writes require both KB subscription")
+            files_before = stub.reads["files"]
             await maintenance.get_by_role("button", name="Reconcile orphaned storage").click()
             await expect(
                 page.get_by_text(
@@ -540,38 +584,62 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
                 )
             ).to_be_visible()
             assert stub.posts == ["kb/storage/reconcile"]
+            await until(
+                lambda: stub.reads["files"] > files_before, "files not read after reconcile"
+            )
 
-            # The settings fold says whether the knowledge assistant is on.
-            settings = await open_fold(page, "kb-settings")
+            # The settings say whether the knowledge assistant is on.
+            settings = page.get_by_test_id("kb-settings-details")
             await expect(settings).to_contain_text("The knowledge assistant is on.")
+            # A disclosure can still be closed by hand.
+            await page.get_by_test_id("kb-maintenance-toggle").click()
+            await expect(maintenance).to_be_hidden()
 
-        # Switched off: uploads are disabled and the original sentence sits in Maintenance.
+        # Switched off: the original sentence sits in Maintenance, uploads are paused on Add.
         off = Stub(agent_active=False)
-        async with knowledge_page(browser, site, off) as page:
+        async with knowledge_page(
+            browser, site, off, path=maintenance_path, wait="kb-maintenance"
+        ) as page:
+            maintenance = page.get_by_test_id("kb-maintenance-details")
+            await expect(maintenance).to_contain_text(
+                "Writes require both KB subscription and tenant switch on."
+            )
+            await expect(page.get_by_test_id("kb-settings-details")).to_contain_text(
+                "The knowledge assistant is off."
+            )
+        async with knowledge_page(
+            browser, site, off, path="/portal/faq/add", wait="kb-add"
+        ) as page:
             await expect(page.locator("#kb-files")).to_be_disabled()
             await expect(page.get_by_test_id("kb-add")).to_contain_text("switched off")
+        async with knowledge_page(browser, site, off) as page:
             # The failed card says why choosing the file again is paused, with the same reason.
             paused = page.get_by_test_id("kb-card-job-failed-paused")
             await expect(paused).to_contain_text("switched off")
             await expect(
                 card(page, "job-failed").get_by_role("button", name="Choose the file again")
             ).to_be_disabled()
-            maintenance = await open_fold(page, "kb-maintenance")
-            await expect(maintenance).to_contain_text(
-                "Writes require both KB subscription and tenant switch on."
-            )
-            settings = await open_fold(page, "kb-settings")
-            await expect(settings).to_contain_text("The knowledge assistant is off.")
 
         # Read-only members see the lists and downloads, never the controls.
         async with knowledge_page(browser, site, Stub(), role="read_only") as page:
-            await expect(page.get_by_test_id("kb-add")).to_have_count(0)
             await open_card(page, "doc-hours")
             await expect(page.get_by_role("link", name="Download original")).to_have_count(1)
             await expect(page.get_by_role("button", name="Delete source")).to_have_count(0)
             await expect(page.get_by_role("button", name="Delete document")).to_have_count(0)
+        async with knowledge_page(
+            browser, site, Stub(), role="read_only", path="/portal/faq/add", wait="kb-page-heading"
+        ) as page:
+            await expect(page.get_by_test_id("kb-add")).to_have_count(0)
+            await expect(page.locator("#kb-files")).to_have_count(0)
+        async with knowledge_page(
+            browser, site, Stub(), role="read_only", path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
+            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
             await expect(page.get_by_role("button", name="Mark resolved")).to_have_count(0)
-            maintenance = await open_fold(page, "kb-maintenance")
+        async with knowledge_page(
+            browser, site, Stub(), role="read_only", path=maintenance_path, wait="kb-maintenance"
+        ) as page:
+            maintenance = page.get_by_test_id("kb-maintenance-details")
             await expect(maintenance).to_contain_text(
                 "Read-only access: upload, deletion and gap resolution are unavailable."
             )
@@ -582,17 +650,23 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
     await with_browser(body)
 
 
-async def test_package_inactive_sentence_unchanged(site: Site) -> None:
+@pytest.mark.parametrize(("section", "path", "_loaded"), PAGES)
+async def test_package_inactive_sentence_unchanged(
+    site: Site, section: str, path: str, _loaded: str
+) -> None:
     async def body(browser: Any) -> None:
         stub = Stub()
-        for name in ("documents", "jobs", "gaps"):
+        for name in ("documents", "jobs", "gaps", "files"):
             stub.fail[name] = (403, {"detail": "package_inactive"})
-        async with knowledge_page(browser, site, stub, wait="kb-locked") as page:
+        async with knowledge_page(browser, site, stub, wait="kb-locked", path=path) as page:
             locked = page.get_by_test_id("kb-locked")
             await expect(locked).to_have_text(PACKAGE_SENTENCE)
             await expect(page.get_by_text(PACKAGE_SENTENCE)).to_have_count(1)
-            await expect(page.get_by_role("heading", name="Knowledge base")).to_be_visible()
+            await expect(page.get_by_role("heading", level=1)).to_have_text("Business knowledge")
             await expect(page.get_by_test_id("kb-add")).to_have_count(0)
+            await expect(
+                page.get_by_role("button", name="Refresh business knowledge")
+            ).to_be_visible()
 
     await with_browser(body)
 
@@ -602,7 +676,9 @@ async def test_upload_queues_a_file_and_shows_it_as_reading(site: Site, tmp_path
         stub = Stub()
         sample = tmp_path / "new-upload.pdf"
         sample.write_bytes(b"%PDF-1.4 synthetic")
-        async with knowledge_page(browser, site, stub) as page:
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/add", wait="kb-add"
+        ) as page:
             add = page.get_by_test_id("kb-add")
             steps = add.get_by_role("list").locator("li")
             await expect(steps).to_have_text(
@@ -619,9 +695,12 @@ async def test_upload_queues_a_file_and_shows_it_as_reading(site: Site, tmp_path
             await expect(
                 page.get_by_text("Queued job job-new. Queued is not yet searchable.")
             ).to_be_visible()
+            assert len(stub.upload_keys) == 1 and stub.upload_keys[0]
+            # The reading file shows as a card on the library page.
+            await page.get_by_test_id("kb-subnav-library").click()
+            await expect(page).to_have_url(re.compile(r"/portal/faq$"), timeout=WAIT)
             await expect(card(page, "job-new")).to_be_visible()
             await expect(page.get_by_test_id("kb-card-job-new-chip")).to_have_text("Reading")
-            assert len(stub.upload_keys) == 1 and stub.upload_keys[0]
 
     await with_browser(body)
 
@@ -634,46 +713,67 @@ async def overflow(page: Page) -> dict[str, int]:
 
 @pytest.mark.parametrize("theme", THEMES)
 async def test_knowledge_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def check(page: Page, label: str) -> None:
+        for width in WIDTHS:
+            await page.set_viewport_size({"width": width, "height": 900})
+            measured = await overflow(page)
+            assert measured["scroll"] <= measured["inner"], (theme, label, width, measured)
+            outside = await page.evaluate(
+                """() => [...document.querySelectorAll('[data-testid^="kb-"]')].filter(
+                    e => e.getBoundingClientRect().right > window.innerWidth + 0.5
+                ).map(e => e.dataset.testid)"""
+            )
+            assert not outside, (theme, label, width, outside)
+
     async def body(browser: Any) -> None:
         stub = Stub()
-        stub.fail["gaps"] = (503, {"detail": "synthetic gaps outage"})
+        stub.fail["files"] = (503, {"detail": "synthetic files outage"})
         async with knowledge_page(browser, site, stub, theme=theme) as page:
             await open_card(page, "doc-hours")
             await open_card(page, "job-failed")
-            await open_fold(page, "kb-maintenance")
-            await open_fold(page, "kb-settings")
             await open_fold(page, "kb-other-files")
-            await expect(page.get_by_test_id("kb-error-gaps")).to_be_visible()
-            for width in WIDTHS:
-                await page.set_viewport_size({"width": width, "height": 900})
-                await expect(card(page, "doc-hours")).to_have_attribute("data-open", "true")
-                measured = await overflow(page)
-                assert measured["scroll"] <= measured["inner"], (theme, width, measured)
-                outside = await page.evaluate(
-                    """() => [...document.querySelectorAll('[data-testid^="kb-"]')].filter(
-                        e => e.getBoundingClientRect().right > window.innerWidth + 0.5
-                    ).map(e => e.dataset.testid)"""
-                )
-                assert not outside, (theme, width, outside)
+            await expect(page.get_by_test_id("kb-error-files")).to_be_visible()
+            await check(page, "library")
+        async with knowledge_page(
+            browser, site, Stub(), theme=theme, path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            await check(page, "add")
+        async with knowledge_page(
+            browser, site, Stub(), theme=theme, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
+            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
+            await check(page, "questions")
+        async with knowledge_page(
+            browser,
+            site,
+            Stub(),
+            theme=theme,
+            path="/portal/faq/maintenance",
+            wait="kb-maintenance",
+        ) as page:
+            await expect(page.get_by_test_id("kb-maintenance-details")).to_be_visible()
+            await check(page, "maintenance")
 
     await with_browser(body)
 
 
-async def test_first_screen_at_390_leads_with_adding_knowledge(site: Site) -> None:
+async def test_add_page_first_screen_at_390_leads_with_the_upload_area(site: Site) -> None:
     async def body(browser: Any) -> None:
-        async with knowledge_page(browser, site, Stub(), width=390, height=844) as page:
-            await expect(page.get_by_role("heading", name="Knowledge base")).to_be_in_viewport()
+        async with knowledge_page(
+            browser, site, Stub(), width=390, height=844, path="/portal/faq/add", wait="kb-add"
+        ) as page:
+            await expect(page.get_by_role("heading", level=1)).to_be_in_viewport()
             await expect(page.get_by_test_id("kb-add")).to_be_in_viewport()
             await expect(page.locator("#kb-files")).to_be_in_viewport()
-            # No technical block above the first card: those sit behind Maintenance and Settings.
+            # Nothing technical sits above the upload area.
             for text in (
                 "Embedding compatibility",
                 "Reconcile orphaned storage",
                 "Polling every 5 seconds",
             ):
-                await expect(page.get_by_text(text, exact=False).first).to_be_hidden()
+                await expect(page.get_by_text(text, exact=False).first).to_have_count(0)
             order = await page.evaluate(
-                """() => ['kb-add', 'kb-library', 'kb-gaps', 'kb-maintenance', 'kb-settings'].map(
+                """() => ['kb-subnav', 'kb-page-heading', 'kb-add'].map(
                     id => document.querySelector(`[data-testid="${id}"]`)
                         .getBoundingClientRect().top
                 )"""
@@ -686,16 +786,26 @@ async def test_first_screen_at_390_leads_with_adding_knowledge(site: Site) -> No
 async def test_missing_assistant_row_keeps_the_old_sentence_and_pauses_writes(site: Site) -> None:
     async def body(browser: Any) -> None:
         stub = Stub(agent_missing=True)
-        async with knowledge_page(browser, site, stub) as page:
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/add", wait="kb-add"
+        ) as page:
             await expect(page.locator("#kb-files")).to_be_disabled()
             await expect(page.get_by_test_id("kb-add-unknown")).to_contain_text("not available")
-            # The lists still load: only the writes wait.
-            await expect(card(page, "doc-hours")).to_be_visible()
             await expect(page.get_by_test_id("kb-error-agents")).to_have_count(0)
-            maintenance = await open_fold(page, "kb-maintenance")
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/maintenance", wait="kb-maintenance"
+        ) as page:
+            maintenance = page.get_by_test_id("kb-maintenance-details")
             await expect(maintenance).to_contain_text("KB capability metadata is unavailable.")
             await expect(maintenance).not_to_contain_text("We could not load the assistant details")
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
             await expect(page.get_by_role("button", name="Mark resolved").first).to_be_disabled()
+        # The lists still load: only the writes wait.
+        async with knowledge_page(browser, site, stub) as page:
+            await expect(card(page, "doc-hours")).to_be_visible()
+            await expect(page.get_by_test_id("kb-error-agents")).to_have_count(0)
 
     await with_browser(body)
 
@@ -721,12 +831,12 @@ async def test_figures_say_unknown_when_their_list_failed(site: Site) -> None:
         async with knowledge_page(browser, site, stub) as page:
             # Loaded, nothing matches: the original words stay.
             stub.jobs = []
-            await page.get_by_role("button", name="Refresh knowledge base").click()
+            await page.get_by_role("button", name="Refresh business knowledge").click()
             await expect(card(page, "job-failed")).to_have_count(0)
             details = await open_card(page, "doc-hours")
             await expect(details).to_contain_text("Not recorded")
             stub.fail["jobs"] = (503, {"detail": "synthetic jobs outage"})
-            await page.get_by_role("button", name="Refresh knowledge base").click()
+            await page.get_by_role("button", name="Refresh business knowledge").click()
             await expect(page.get_by_test_id("kb-error-jobs")).to_be_visible()
             # The rows already loaded keep their loaded figures.
             await expect(details).to_contain_text("Not recorded")
@@ -744,7 +854,9 @@ async def test_figures_say_unknown_when_their_list_failed(site: Site) -> None:
 async def test_mark_resolved_posts_and_the_question_leaves_the_list(site: Site) -> None:
     async def body(browser: Any) -> None:
         stub = Stub()
-        async with knowledge_page(browser, site, stub) as page:
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/questions", wait="kb-gaps"
+        ) as page:
             row = page.get_by_test_id("kb-gap-gap-sunday")
             await expect(row).to_contain_text("Do you deliver on Sundays?")
             await expect(row).to_contain_text("4 hits. Last seen:")
@@ -763,7 +875,9 @@ async def test_upload_failure_keeps_the_retry_message_and_the_same_key(
         stub = Stub(upload_failures=1)
         sample = tmp_path / "retry-me.pdf"
         sample.write_bytes(b"%PDF-1.4 synthetic")
-        async with knowledge_page(browser, site, stub) as page:
+        async with knowledge_page(
+            browser, site, stub, path="/portal/faq/add", wait="kb-add"
+        ) as page:
             await page.locator("#kb-files").set_input_files(str(sample))
             queue = page.get_by_role("button", name="Queue upload / retry")
             await queue.click()
@@ -776,7 +890,139 @@ async def test_upload_failure_keeps_the_retry_message_and_the_same_key(
             # The chosen file stays chosen and the retry sends the same key.
             await expect(page.get_by_test_id("kb-add")).to_contain_text("retry-me.pdf")
             await queue.click()
-            await expect(card(page, "job-new")).to_be_visible()
+            await expect(
+                page.get_by_text("Queued job job-new. Queued is not yet searchable.")
+            ).to_be_visible()
             assert len(stub.upload_keys) == 2 and stub.upload_keys[0] == stub.upload_keys[1]
+
+    await with_browser(body)
+
+
+async def test_section_bar_names_the_four_pages(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with knowledge_page(browser, site, Stub()) as page:
+            await expect(page.get_by_role("heading", level=1)).to_have_text("Business knowledge")
+            bar = page.get_by_role("navigation", name="Business knowledge pages")
+            await expect(bar.get_by_role("link")).to_have_text(
+                [
+                    "What it knows",
+                    "Add knowledge",
+                    "Unanswered questions",
+                    "Maintenance and settings",
+                ]
+            )
+            heading = page.get_by_test_id("kb-page-heading")
+            await expect(heading).to_have_text("What your assistant knows")
+            await expect(page.get_by_test_id("kb-subnav-library")).to_have_attribute(
+                "aria-current", "page"
+            )
+            for key, path, title in (
+                ("add", r"/portal/faq/add$", "Add knowledge"),
+                ("questions", r"/portal/faq/questions$", "Unanswered questions"),
+                ("maintenance", r"/portal/faq/maintenance$", "Maintenance and settings"),
+                ("library", r"/portal/faq$", "What your assistant knows"),
+            ):
+                await page.get_by_test_id(f"kb-subnav-{key}").click()
+                await expect(page).to_have_url(re.compile(path), timeout=WAIT)
+                await expect(heading).to_have_text(title)
+                await expect(heading).to_be_focused()
+                await expect(page.get_by_test_id(f"kb-subnav-{key}")).to_have_attribute(
+                    "aria-current", "page"
+                )
+
+    await with_browser(body)
+
+
+async def test_choose_the_file_again_links_to_the_add_page(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with knowledge_page(browser, site, Stub()) as page:
+            link = card(page, "job-failed").get_by_role("link", name="Choose the file again")
+            await expect(link).to_have_attribute("href", "/portal/faq/add")
+            await link.click()
+            await expect(page).to_have_url(re.compile(r"/portal/faq/add$"), timeout=WAIT)
+            await expect(page.get_by_test_id("kb-add")).to_be_visible()
+        # The empty library points at the same page.
+        async with knowledge_page(browser, site, Stub(documents=[], jobs=[], files=[])) as page:
+            await expect(page.get_by_text("No ingested documents.")).to_be_visible()
+            await expect(page.get_by_test_id("kb-ready")).to_contain_text(
+                "Add a file and your assistant will read it."
+            )
+            await expect(page.get_by_test_id("kb-empty-add-link")).to_have_attribute(
+                "href", "/portal/faq/add"
+            )
+
+    await with_browser(body)
+
+
+async def test_knowledge_section_bar_keeps_the_admin_tenant(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with knowledge_page(
+            browser, site, stub, path="/knowledge-base", role="platform_admin", wait=None
+        ) as page:
+            await expect(page.get_by_text("Select a tenant to continue.")).to_be_visible(
+                timeout=WAIT
+            )
+            assert "kb/documents" not in stub.queries
+            await expect(page.get_by_test_id("kb-subnav-add")).to_have_attribute(
+                "href", "/knowledge-base/add"
+            )
+            select = page.get_by_label("Tenant")
+            await expect(select.locator("option")).to_have_count(2)
+            await select.select_option(TENANT)
+            await expect(page).to_have_url(
+                re.compile(rf"/knowledge-base\?client_id={TENANT}$"), timeout=WAIT
+            )
+            await expect(page.get_by_test_id("kb-library")).to_be_visible()
+            assert stub.queries["kb/documents"][-1].get("client_id") == [TENANT], stub.queries
+            for key, suffix in (
+                ("add", "/add"),
+                ("questions", "/questions"),
+                ("maintenance", "/maintenance"),
+            ):
+                await expect(page.get_by_test_id(f"kb-subnav-{key}")).to_have_attribute(
+                    "href", f"/knowledge-base{suffix}?client_id={TENANT}"
+                )
+            await expect(page.get_by_test_id("kb-subnav-library")).to_have_attribute(
+                "href", f"/knowledge-base?client_id={TENANT}"
+            )
+            await page.get_by_test_id("kb-subnav-add").click()
+            await expect(page).to_have_url(
+                re.compile(rf"/knowledge-base/add\?client_id={TENANT}$"), timeout=WAIT
+            )
+            await expect(page.get_by_test_id("kb-add")).to_be_visible()
+            assert stub.queries["kb/ingest-jobs"][-1].get("client_id") == [TENANT]
+            assert stub.queries["agents"][-1].get("client_id") == [TENANT]
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            # A reload keeps the tenant, and the next page too.
+            await page.reload()
+            await expect(page.get_by_test_id("kb-add")).to_be_visible()
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            assert stub.queries["kb/ingest-jobs"][-1].get("client_id") == [TENANT]
+            await page.get_by_test_id("kb-subnav-questions").click()
+            await expect(page).to_have_url(
+                re.compile(rf"/knowledge-base/questions\?client_id={TENANT}$"), timeout=WAIT
+            )
+            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
+            assert stub.queries["kb/gaps"][-1].get("client_id") == [TENANT]
+            await page.get_by_test_id("kb-subnav-maintenance").click()
+            await expect(page).to_have_url(
+                re.compile(rf"/knowledge-base/maintenance\?client_id={TENANT}$"), timeout=WAIT
+            )
+            await expect(page.get_by_test_id("kb-maintenance")).to_be_visible()
+            assert stub.queries["kb/files"][-1].get("client_id") == [TENANT]
+            await page.reload()
+            await expect(page.get_by_test_id("kb-maintenance")).to_be_visible()
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            assert stub.queries["kb/files"][-1].get("client_id") == [TENANT]
+            await expect(page).to_have_url(
+                re.compile(rf"/knowledge-base/maintenance\?client_id={TENANT}$")
+            )
+            # Clearing the choice removes it from the address.
+            await page.get_by_label("Tenant").select_option("")
+            await expect(page).to_have_url(
+                re.compile(r"/knowledge-base/maintenance$"), timeout=WAIT
+            )
+            await expect(page.get_by_text("Select a tenant to continue.")).to_be_visible()
 
     await with_browser(body)

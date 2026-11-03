@@ -112,7 +112,7 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "services", label: "Services", href: to("services") },
     { key: "hr", label: "People & HR", href: to("hr") },
     { key: "activity", label: "Assistant activity", href: to("activity") },
-    { key: "knowledge_base", label: "Knowledge base", href: admin ? "/knowledge-base" : "/portal/faq", children: knowledgePages(admin) },
+    { key: "knowledge_base", label: "Business knowledge", href: admin ? "/knowledge-base" : "/portal/faq", children: knowledgePages(admin) },
     { key: "inbox", label: "Customer inbox", href: to("inbox"), show: writer },
     { key: "email", label: "Email assistant", href: to("email"), show: writer },
     { key: "business", label: "Business management", href: to("business"), show: writer, children: businessPages(admin) },

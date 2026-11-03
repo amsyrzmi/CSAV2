@@ -31,7 +31,6 @@ export default function AddKnowledge({
   const reason = pausedReason(agent, writable);
   return (
     <section data-testid="kb-add" className="card rounded-[14px] p-5 sm:p-6">
-      <h2 className="mb-4 font-(family-name:--fs-font-heading) text-base font-semibold">Add knowledge</h2>
       <div className="grid gap-6 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <div className="min-w-0">
           <label htmlFor="kb-files" className="mb-2 block text-sm">One to three PDF, DOCX or CSV files, at most 10 MB each</label>

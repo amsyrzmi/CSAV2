@@ -1538,7 +1538,7 @@ Gates: a route behind an inactive package returns 403 `package_inactive`, and ga
 - The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
 - Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.
 
-Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Knowledge base, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
+Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Business knowledge, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
 
 ## Capabilities and specialised tabs (LG13)
 Packages (see Services and packages) are the management surface; the switches below remain the enforcement.

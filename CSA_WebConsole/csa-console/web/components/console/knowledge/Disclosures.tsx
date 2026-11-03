@@ -8,11 +8,11 @@ import { Notice, secondary } from "../ui";
 const box =
   "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 
-/** A quiet, closed-by-default row at the bottom of the page. */
-function Quiet({ testId, title, children }: { testId: string; title: string; children: React.ReactNode }) {
+/** A quiet row, closed unless the page opens it on arrival. */
+function Quiet({ testId, title, defaultOpen = false, children }: { testId: string; title: string; defaultOpen?: boolean; children: React.ReactNode }) {
   return (
     <div className={box}>
-      <DetailsRow testId={testId} toggleLabel={title} summary={<p className="font-medium">{title}</p>}>
+      <DetailsRow testId={testId} toggleLabel={title} defaultOpen={defaultOpen} summary={<p className="font-medium">{title}</p>}>
         {children}
       </DetailsRow>
     </div>
@@ -42,7 +42,7 @@ export function Maintenance({
   onRetryAgent: () => void;
 }) {
   return (
-    <Quiet testId="kb-maintenance" title="Maintenance">
+    <Quiet testId="kb-maintenance" title="Maintenance" defaultOpen>
       <div className="space-y-4">
         <Notice>Polling every 5 seconds while a file is being read. Lists show the latest 50 documents/gaps, 20 jobs and 100 sources.
           Uploads need configured storage and an ingestion worker. A queued job is not proof the worker is running.</Notice>
@@ -90,7 +90,7 @@ export function Settings({
 }) {
   const on = agent?.capability?.active === true;
   return (
-    <Quiet testId="kb-settings" title="Settings">
+    <Quiet testId="kb-settings" title="Settings" defaultOpen>
       {agent ? (
         <div className="space-y-2">
           <p>The knowledge assistant is {on ? "on" : "off"}.</p>

@@ -1,5 +1,5 @@
 /**
- * Pure rules for the Knowledge base page: which cards the sources make, what chip each one
+ * Pure rules for the Business knowledge pages: which cards the sources make, what chip each one
  * carries, whether anything is still being read (so the page keeps refreshing), and the plain
  * words and figures shown in the opened details. The raw server values stay on the page,
  * inside the details, exactly as they always were.

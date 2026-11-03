@@ -124,7 +124,7 @@ TENANT_LABELS = (
     "Services",
     "People & HR",
     "Assistant activity",
-    "Knowledge base",
+    "Business knowledge",
     "Customer inbox",
     "Email assistant",
     "Business management",
@@ -269,7 +269,7 @@ GROUPS = {
         {"orders": "Orders", "products": "Products & stock", "stores": "Store connections"},
     ),
     "knowledge_base": (
-        "Knowledge base",
+        "Business knowledge",
         {
             "library": "What it knows",
             "add": "Add knowledge",

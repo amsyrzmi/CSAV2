@@ -163,7 +163,7 @@ TAB_LABELS: dict[str, str] = {
     "overview": "Overview",
     "services": "Services",
     "inbox": "Customer inbox",
-    "knowledge_base": "Knowledge base",
+    "knowledge_base": "Business knowledge",
     "business": "Business management",
     "hr": "People & HR",
     "email": "Email assistant",

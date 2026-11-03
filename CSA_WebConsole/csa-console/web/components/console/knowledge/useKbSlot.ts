@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api, ApiError } from "@/lib/api";
+import type { Agent } from "@/lib/identity-contracts";
+import type { AgentState } from "@/lib/knowledge-view";
 
 /**
  * One list of the page. `data` is null until the first read succeeds; a later failure keeps
@@ -40,4 +42,16 @@ export function useKbSlot<T>(resource: string, query: string): { slot: Slot<T>; 
     return () => current.current?.abort();
   }, [load]);
   return { slot, load };
+}
+
+/** The knowledge assistant row of the agents list as a state: a loaded list without the row is "missing", not a failed fetch. */
+export function agentStateOf(slot: Slot<Agent[]>, row: Agent | undefined): AgentState {
+  if (row) return "ready";
+  if (slot.data) return "missing";
+  return slot.error ? "failed" : "loading";
+}
+
+/** The first slot the server refused because the package is off, if any. */
+export function lockedSlot(...slots: Slot<unknown>[]): Slot<unknown> | undefined {
+  return slots.find((slot) => slot.code === "package_inactive");
 }

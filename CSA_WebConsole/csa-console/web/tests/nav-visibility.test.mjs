@@ -17,15 +17,15 @@ const labels = (me, packages) => navigationFor(me, packages).map((l) => l.label)
 
 test("tenant member sees only package-active tabs; platform admin sees all", () => {
   const none = labels(staff, []);
-  assert.deepEqual(none.filter((l) => ["Customer inbox", "Knowledge base", "Business management", "People & HR", "Email assistant"].includes(l)), []);
+  assert.deepEqual(none.filter((l) => ["Customer inbox", "Business knowledge", "Business management", "People & HR", "Email assistant"].includes(l)), []);
   const some = labels(staff, active("customer_support", "hr"));
-  assert.ok(some.includes("Customer inbox") && some.includes("Knowledge base") && some.includes("People & HR"));
+  assert.ok(some.includes("Customer inbox") && some.includes("Business knowledge") && some.includes("People & HR"));
   assert.ok(!some.includes("Business management") && !some.includes("Email assistant"));
   assert.ok(some.includes("Services") && !some.includes("Agents"));
   const admin = labels({ ...staff, role: "platform_admin" }, []);
-  for (const l of ["Customer inbox", "Knowledge base", "Business management", "People & HR", "Email assistant", "Services"]) assert.ok(admin.includes(l), l);
+  for (const l of ["Customer inbox", "Business knowledge", "Business management", "People & HR", "Email assistant", "Services"]) assert.ok(admin.includes(l), l);
   const reader = labels({ ...staff, role: "read_only" }, active("customer_support", "staff_email"));
-  assert.ok(reader.includes("Knowledge base") && !reader.includes("Customer inbox") && !reader.includes("Email assistant"));
+  assert.ok(reader.includes("Business knowledge") && !reader.includes("Customer inbox") && !reader.includes("Email assistant"));
 });
 
 test("business accepts either package, inactive statuses hide, hrefs follow the portal pattern", () => {
@@ -34,7 +34,7 @@ test("business accepts either package, inactive statuses hide, hrefs follow the 
   assert.ok(!labels(staff, [{ key: "hr", status: "suspended" }]).includes("People & HR"));
   const suspended = labels(staff, [{ key: "customer_support", status: "suspended" }]);
   assert.ok(suspended.includes("Customer inbox"), "suspended Customer Support keeps the Inbox link");
-  assert.ok(!suspended.includes("Knowledge base"), "but the Knowledge base stays locked");
+  assert.ok(!suspended.includes("Business knowledge"), "but the Business knowledge stays locked");
   assert.ok(!labels(staff, [{ key: "customer_support", status: "requested" }]).includes("Customer inbox"));
   const portal = navigationFor(staff, active("staff_email"));
   assert.equal(portal.find((l) => l.label === "Services").href, "/portal/services");

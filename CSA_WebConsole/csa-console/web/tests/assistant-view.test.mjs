@@ -293,7 +293,7 @@ test("a navigate to a hidden tab prints only the notice, never Opened", () => {
   assert.deepEqual(view.navigateText("inbox", true, staff, all), { text: "Opened Customer inbox and continued there.", error: false });
   assert.deepEqual(view.navigateText("email", false, staff, []), { text: "Email assistant is not available to you.", error: true });
   assert.deepEqual(view.navigateText("hr", false, staff, []), { text: "People & HR is not available to you.", error: true });
-  assert.deepEqual(view.navigateText("knowledge_base", false, staff, []), { text: "Knowledge base is not available to you.", error: true });
+  assert.deepEqual(view.navigateText("knowledge_base", false, staff, []), { text: "Business knowledge is not available to you.", error: true });
 });
 
 test("a hidden tab is named as the sidebar names it", async () => {

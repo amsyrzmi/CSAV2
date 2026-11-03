@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { KbDocument, KbFile, KbJob } from "@/lib/identity-contracts";
 import { addedText, chipLabel, jobStateText, type Card, type Chip } from "@/lib/knowledge-view";
 import StatusLabel, { type StatusTone } from "../fs/StatusLabel";
@@ -18,7 +19,8 @@ export type CardActions = {
   busy: boolean;
   downloadHref: (fileId: string) => string;
   onDelete: (type: "files" | "documents", id: string, name: string) => void;
-  onAddAgain: () => void;
+  /** Where "Choose the file again" goes: the Add page, with the tenant query for an administrator. */
+  addHref: string;
   /** Why adding files is paused, in plain words, or null. */
   pausedReason: string | null;
 };
@@ -65,9 +67,11 @@ export default function KnowledgeCard({
                 <StatusLabel tone={TONES[card.chip]}>{chipLabel(card.chip)}</StatusLabel>
               </span>
               {card.chip === "needs_attention" && canWrite && (
-                <button type="button" className={secondary} disabled={busy || !writable} onClick={actions.onAddAgain}>
-                  Choose the file again
-                </button>
+                busy || !writable ? (
+                  <button type="button" className={secondary} disabled>Choose the file again</button>
+                ) : (
+                  <Link className={secondary} href={actions.addHref} data-testid={`${testId}-add-again`}>Choose the file again</Link>
+                )
               )}
             </div>
             {card.chip === "needs_attention" && canWrite && actions.pausedReason && (
