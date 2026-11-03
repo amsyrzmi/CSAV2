@@ -1368,7 +1368,8 @@ CONTRAST_JS = """(selector) => {
     const own = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
     const texts = [root, ...root.querySelectorAll('*')].filter((el) => {
         const r = el.getBoundingClientRect();
-        return own(el) && r.width > 0 && getComputedStyle(el).visibility === 'visible';
+        return own(el) && el.tagName !== 'OPTION' && r.width > 0
+            && getComputedStyle(el).visibility === 'visible';
     }).map((el) => ({
         text: el.textContent.trim().slice(0, 40),
         ratio: ratio(parse(getComputedStyle(el).color), backdrop(el)),
@@ -1753,5 +1754,256 @@ async def test_role_cards_at_five_widths_in_three_themes(site: Site, theme: str)
                     "(els) => els.map((el) => el.getBoundingClientRect().height)"
                 )
                 assert len(heights) == len(ROLES) and min(heights) >= 44, (where, heights)
+
+    await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# Stage 4, idea 4: Add person in two steps.
+# ---------------------------------------------------------------------------------------------
+
+NEW_PERSON = "/portal/hr/people/new"
+STEP_ONE = ("Name", "Job title", "Start date", "Manager", "Department")
+STEP_TWO = ("Work email (optional)", "Work phone (optional)", "Employment type (optional)")
+PAYROLL = ("Region", "Legal entity", "Employment category")
+ALL_OR_NONE = "Employment details for payroll (optional; fill in all three or none)"
+PROFILE_INCOMPLETE = "Fill in all three employment details, or leave all three empty."
+
+
+class PersonWorld(RestyleWorld):
+    """The restyle company; the person being edited has contact and payroll details, or none."""
+
+    def __init__(self, *, filled: bool) -> None:
+        super().__init__()
+        self.filled = filled
+
+    def full_person(self, user: str) -> dict[str, Any]:
+        person = super().full_person(user)
+        if user == LEAVER:
+            if self.filled:
+                person["work_email"] = "farid@example.test"
+                person["employment_profile"] = {
+                    "region": "sabah",
+                    "legal_entity_reference": "Syarikat Cekap",
+                    "employment_category": "permanent",
+                }
+            else:
+                person["employment_type"] = None
+        return person
+
+
+class RefusingWorld(RestyleWorld):
+    """Refuses every HR operation, so a saved person never leaves the form (the body is kept)."""
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if path == "hr/operations" and method == "POST":
+            return 409, {"detail": "employee_exists"}
+        return super().answer(caller, method, path, params, body)
+
+
+def person_more(page: Page) -> Any:
+    return page.get_by_test_id("hr-person-more")
+
+
+def person_payroll(page: Page) -> Any:
+    return page.get_by_test_id("hr-person-payroll")
+
+
+def operation_posts(world: RestyleWorld) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["method"] == "POST" and c["path"] == "hr/operations"]
+
+
+async def fill_first_step(page: Page) -> None:
+    await page.get_by_label("Name", exact=True).fill("Aisyah Karim")
+    await page.get_by_label("Job title", exact=True).fill("Cashier")
+
+
+async def test_add_person_shows_five_fields_first(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, NEW_PERSON, ready=person_more) as page:
+            for label in STEP_ONE:
+                await expect(page.get_by_label(label, exact=True)).to_be_visible()
+            for label in (*STEP_TWO, *PAYROLL):
+                await expect(page.get_by_label(label, exact=True)).to_be_hidden()
+            # Start date already holds today's date where the browser is (Kuala Lumpur).
+            today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
+            await expect(page.get_by_label("Start date", exact=True)).to_have_value(today)
+            toggle = page.get_by_test_id("hr-person-more-toggle")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            region_id = await toggle.get_attribute("aria-controls")
+            assert region_id and await page.locator(f"#{region_id}").count() == 1, region_id
+            await expect(person_more(page)).to_have_attribute("data-open", "false")
+            # One press opens the second step.
+            await toggle.click()
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            for label in STEP_TWO:
+                await expect(page.get_by_label(label, exact=True)).to_be_visible()
+            # Payroll details are one step further in, and still folded.
+            await expect(person_payroll(page)).to_have_attribute("data-open", "false")
+            await expect(page.get_by_label("Region", exact=True)).to_be_hidden()
+            await page.get_by_test_id("hr-person-payroll-toggle").click()
+            for label in PAYROLL:
+                await expect(page.get_by_label(label, exact=True)).to_be_visible()
+            # The form works from the keyboard: the toggle takes Enter and Space.
+            await toggle.focus()
+            await page.keyboard.press("Enter")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            await page.keyboard.press("Space")
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            assert operation_posts(world) == []
+
+    await with_browser(body)
+
+
+async def test_folded_fields_are_still_sent_with_the_person(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RefusingWorld()
+        async with hr_page(browser, site, world, NEW_PERSON, ready=person_more) as page:
+            await fill_first_step(page)
+            await page.get_by_test_id("hr-person-more-toggle").click()
+            await page.get_by_label("Work email (optional)", exact=True).fill("aisyah@example.test")
+            await page.get_by_test_id("hr-person-more-toggle").click()
+            await expect(person_more(page)).to_have_attribute("data-open", "false")
+            await page.get_by_role("button", name="Add person", exact=True).click()
+            for _ in range(50):
+                if operation_posts(world):
+                    break
+                await page.wait_for_timeout(100)
+            assert operation_posts(world), world.calls
+            values = operation_posts(world)[0]["body"]["values"]
+            assert values["work_email"] == "aisyah@example.test", values
+            today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
+            assert values["start_date"] == today, values
+
+    await with_browser(body)
+
+
+async def test_more_details_opens_on_a_hidden_invalid_field(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, NEW_PERSON, ready=person_more) as page:
+            await fill_first_step(page)
+            toggle = page.get_by_test_id("hr-person-more-toggle")
+            await toggle.click()
+            email = page.get_by_label("Work email (optional)", exact=True)
+            await email.fill("not an email")
+            await toggle.click()
+            await expect(email).to_be_hidden()
+            # The browser's own check fails on a hidden field: the section opens on the field.
+            await page.get_by_role("button", name="Add person", exact=True).click()
+            await expect(person_more(page)).to_have_attribute("data-open", "true")
+            await expect(email).to_be_visible()
+            await expect(email).to_be_focused()
+            assert operation_posts(world) == []
+
+    await with_browser(body)
+
+
+async def test_payroll_all_or_none_hint_unchanged(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, NEW_PERSON, ready=person_more) as page:
+            await fill_first_step(page)
+            await page.get_by_test_id("hr-person-more-toggle").click()
+            await page.get_by_test_id("hr-person-payroll-toggle").click()
+            # The hint keeps its words, and now sits inside the payroll section.
+            legend = person_payroll(page).get_by_text(ALL_OR_NONE, exact=True)
+            await expect(legend).to_be_visible()
+            await page.get_by_label("Region", exact=True).select_option("sabah")
+            # Fold both sections again, then save with one of the three filled in.
+            await page.get_by_test_id("hr-person-payroll-toggle").click()
+            await page.get_by_test_id("hr-person-more-toggle").click()
+            await expect(person_more(page)).to_have_attribute("data-open", "false")
+            await page.get_by_role("button", name="Add person", exact=True).click()
+            # The same sentence as before, and the section holding the empty field opens on it.
+            await expect(page.get_by_text(PROFILE_INCOMPLETE, exact=True)).to_be_visible()
+            await expect(person_more(page)).to_have_attribute("data-open", "true")
+            await expect(person_payroll(page)).to_have_attribute("data-open", "true")
+            await expect(page.get_by_label("Legal entity", exact=True)).to_be_focused()
+            assert operation_posts(world) == []
+
+    await with_browser(body)
+
+
+async def test_edit_opens_more_details_when_filled(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        for filled in (True, False):
+            world = PersonWorld(filled=filled)
+            async with hr_page(
+                browser, site, world, PROFILE, ready=lambda p: profile_tab(p, "Overview")
+            ) as page:
+                await page.get_by_role("button", name="Edit", exact=True).click()
+                await expect(person_more(page)).to_be_visible()
+                state = "true" if filled else "false"
+                await expect(person_more(page)).to_have_attribute("data-open", state)
+                await expect(person_payroll(page)).to_have_attribute("data-open", state)
+                email = page.get_by_label("Work email (optional)", exact=True)
+                if filled:
+                    await expect(email).to_have_value("farid@example.test")
+                    await expect(page.get_by_label("Legal entity", exact=True)).to_have_value(
+                        "Syarikat Cekap"
+                    )
+                else:
+                    await expect(email).to_be_hidden()
+                # Editing leaves the start date as it was stored, and an empty one empty.
+                await expect(page.get_by_label("Start date (optional)", exact=True)).to_have_value(
+                    "2025-01-06"
+                )
+
+    await with_browser(body)
+
+
+async def test_more_details_opens_without_a_height_animation_under_reduced_motion(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), NEW_PERSON, ready=person_more, reduced_motion=True
+        ) as page:
+            details = page.get_by_test_id("hr-person-more-details")
+            await page.get_by_test_id("hr-person-more-toggle").click()
+            durations = await details.evaluate(
+                "(el) => getComputedStyle(el).transitionDuration.split(', ')"
+            )
+            assert set(durations) <= {"0s"}, durations
+            rows = await details.evaluate("(el) => getComputedStyle(el).gridTemplateRows")
+            assert rows != "0px", rows
+            await page.get_by_label("Work phone (optional)", exact=True).fill("+60 12 345 6789")
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_add_person_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), NEW_PERSON, theme=theme, ready=person_more
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            await page.get_by_test_id("hr-person-more-toggle").click()
+            await page.get_by_test_id("hr-person-payroll-toggle").click()
+            await expect(page.get_by_label("Legal entity", exact=True)).to_be_visible()
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 900})
+                await page.wait_for_timeout(150)
+                where = (theme, width)
+                scrolled = await overflow(page)
+                assert scrolled["scroll"] <= scrolled["inner"], (where, scrolled)
+                measured = await page.evaluate(CONTRAST_JS, "[data-testid=hr-person-more]")
+                assert measured["inside"] and measured["sideways"] == [], (where, measured)
+                assert len(measured["texts"]) >= 8, (where, measured)
+                for item in measured["texts"]:
+                    assert item["ratio"] >= 4.5, (where, item)
+                for test_id in ("hr-person-more-toggle", "hr-person-payroll-toggle"):
+                    box = await page.get_by_test_id(test_id).bounding_box()
+                    assert box and box["height"] >= 40, (where, test_id, box)
+            # The toggle shows a visible focus ring.
+            await page.get_by_test_id("hr-person-more-toggle").focus()
+            measured = await page.evaluate(CONTRAST_JS, "[data-testid=hr-person-more]")
+            assert measured["outline"]["style"] != "none", (theme, measured["outline"])
+            assert measured["outline"]["ratio"] >= 3, (theme, measured["outline"])
 
     await with_browser(body)
