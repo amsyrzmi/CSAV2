@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict
 
 from csa.console.contracts import (
@@ -109,14 +110,14 @@ def _mail_on(mailer: Mailer | None) -> bool:
     return mailer is not None and mailer.enabled
 
 
-async def _invite_facts(
-    request: Request, actor: ConsoleActor, client_id: UUID, *, mail_on: bool
+async def invite_facts(
+    pool: AsyncConnectionPool, actor: ConsoleActor, client_id: UUID, *, mail_on: bool
 ) -> InviteFacts:
     """Read the tenant facts on the app pool; the identity pool may not read clients or HR.
 
     The tenant's zone only matters for a message that is sent, so it is checked only then.
     """
-    async with tx(request.app.state.pool, str(client_id)) as conn:
+    async with tx(pool, str(client_id)) as conn:
         # A platform session never carries a tenant HR owner's right to grant presets.
         if not actor.platform_admin:
             await db.q.execute("console/invite_facts_context.sql", (str(actor.user_id),), conn=conn)
@@ -140,7 +141,13 @@ async def _invite_facts(
     )
 
 
-def _invitation_notify(
+async def _invite_facts(
+    request: Request, actor: ConsoleActor, client_id: UUID, *, mail_on: bool
+) -> InviteFacts:
+    return await invite_facts(request.app.state.pool, actor, client_id, mail_on=mail_on)
+
+
+def invitation_notify(
     mailer: Mailer | None,
     actor: ConsoleActor,
     facts: InviteFacts,
@@ -181,7 +188,7 @@ async def _invite(
             raise HTTPException(422, "hr_not_available") from None
     mailer = _mailer(request)
     facts = await _invite_facts(request, actor, body.client_id, mail_on=_mail_on(mailer))
-    notify = _invitation_notify(mailer, actor, facts, to=body.email, invitee_name=body.display_name)
+    notify = invitation_notify(mailer, actor, facts, to=body.email, invitee_name=body.display_name)
     return await service.invite(actor, body, may_grant_hr=facts.may_grant_hr, notify=notify)
 
 
@@ -350,7 +357,7 @@ def build_identity_router() -> APIRouter:
         if recipient.client_id is None:
             raise HTTPException(404, "pending invitation not found")
         facts = await _invite_facts(request, actor, recipient.client_id, mail_on=_mail_on(mailer))
-        notify = _invitation_notify(
+        notify = invitation_notify(
             mailer, actor, facts, to=recipient.email, invitee_name=recipient.display_name
         )
         return await service.renew_invitation(actor, token_id, notify=notify)
