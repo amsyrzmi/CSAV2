@@ -784,7 +784,7 @@ async def test_rls_and_role_privileges_fail_closed(world: HrWorld) -> None:
         "SELECT relrowsecurity,relforcerowsecurity FROM pg_class "
         "WHERE relname LIKE 'hr_%' AND relkind='r'"
     )
-    assert len(staged) == 29 and all(
+    assert len(staged) == 32 and all(
         r["relrowsecurity"] and not r["relforcerowsecurity"] for r in staged
     )
 
@@ -1034,6 +1034,11 @@ async def test_api_contract_exposes_only_bounded_hr_operations(world: HrWorld) -
         "/console/v1/hr/people/{employee_id}",
         "/console/v1/hr/people/{employee_id}/history",
         "/console/v1/hr/people/{employee_id}/access",
+        "/console/v1/hr/people/{employee_id}/personal",
+        "/console/v1/hr/people/{employee_id}/personal/reveal",
+        "/console/v1/hr/people/{employee_id}/documents",
+        "/console/v1/hr/documents/{document_id}/download",
+        "/console/v1/hr/documents/{document_id}/remove",
         "/console/v1/hr/org-chart",
         "/console/v1/hr/departments",
         "/console/v1/hr/home",

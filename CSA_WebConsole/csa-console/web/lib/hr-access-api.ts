@@ -7,6 +7,7 @@ export type SwitchId =
   | "approves_team"
   | "hr_team"
   | "manage_people"
+  | "sensitive_details"
   | "recruitment"
   | "attendance"
   | "payroll_prepare"
@@ -21,7 +22,7 @@ export type WarningKind =
 
 export const SWITCH_IDS: readonly SwitchId[] = [
   "directory", "own_requests", "approves_team", "hr_team", "manage_people",
-  "recruitment", "attendance", "payroll_prepare", "payroll_review",
+  "sensitive_details", "recruitment", "attendance", "payroll_prepare", "payroll_review",
 ];
 
 export interface AccessPerson {
@@ -73,13 +74,18 @@ export interface AccessChangeResult {
 }
 export interface AccessEvent {
   occurred_at: string;
-  /** "invitation" when the access was set on an invitation and applied when it was accepted. */
-  source: "page" | "invitation";
+  /** "invitation" when the access was set on an invitation and applied when it was accepted;
+   *  "owner_move" when the HR owner changed (the target is the new owner). */
+  source: "page" | "invitation" | "owner_move";
   preset: PresetId | null;
   actor_user_id: string;
   actor_name: string | null;
   target_user_id: string;
   target_name: string | null;
+  /** The owner an "owner_move" replaced; null for a first owner or once they are gone. */
+  previous_owner_name: string | null;
+  /** Whether an "owner_move" replaced someone, even once they can no longer be named. */
+  replaced_owner: boolean;
   turned_on: SwitchId[];
   turned_off: SwitchId[];
   area: string | null;

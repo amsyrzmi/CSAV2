@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     TEI_PASSAGE_PREFIX: str = "passage: "
     # Console uploads land in KB_UPLOAD_ROOT/<client_id>/ and are queued in kb_ingest_jobs.
     KB_UPLOAD_ROOT: Path | None = None
+    # HR document files land in HR_UPLOAD_ROOT/<client_id>/; without it the routes answer 503.
+    HR_UPLOAD_ROOT: Path | None = None
     KB_INGEST_ENABLED: bool = False
     KB_INGEST_POLL_SECONDS: float = Field(default=10.0, gt=0)
     KB_MAX_FILES_PER_JOB: int = Field(default=3, ge=1, le=20)
@@ -273,6 +275,22 @@ class Settings(BaseSettings):
             raise ValueError("KB_INGEST_ENABLED requires KB_UPLOAD_ROOT")
         if self.ENV == "prod" and self.KB_INGEST_ENABLED and self.TEI_ENDPOINT is None:
             raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
+        return self
+
+    @field_validator("KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT", mode="before")
+    @classmethod
+    def _blank_upload_root_is_unset(cls, value: object) -> object:
+        # .env.example leaves these empty; Path("") would be the current folder.
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @model_validator(mode="after")
+    def _validate_upload_roots(self) -> Settings:
+        # KB and HR both store <root>/<client_id>/<uuid>.<ext>, and each cleanup deletes the
+        # uuid-named files it does not know, so neither root may be, or sit inside, the other.
+        if self.KB_UPLOAD_ROOT is not None and self.HR_UPLOAD_ROOT is not None:
+            kb, hr = self.KB_UPLOAD_ROOT.resolve(), self.HR_UPLOAD_ROOT.resolve()
+            if kb == hr or kb.is_relative_to(hr) or hr.is_relative_to(kb):
+                raise ValueError("HR_UPLOAD_ROOT must not be, contain or sit inside KB_UPLOAD_ROOT")
         return self
 
     @field_validator("WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN", mode="before")

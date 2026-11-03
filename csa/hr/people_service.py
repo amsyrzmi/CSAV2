@@ -111,8 +111,21 @@ class HrPeople:
             await self.core._access(conn, session)
             viewer, people = await self._load(conn, session)
             person = self._person(people, employee_id)
+            row = await sql.fetch_one(
+                "hr/personal_access.sql", (session.tenant_id, employee_id), conn=conn
+            )
+            personal = row["access"] if row else None
             await self.core._session(conn, session)
-        return PersonProfile(person=person, sections=sections_for(viewer), can_edit=viewer == "hr")
+        return PersonProfile(
+            person=person,
+            sections=sections_for(
+                viewer,
+                personal=personal is not None,
+                # Task 4 settles who reads documents; for now HR viewers and the person themself.
+                documents=viewer == "hr" or personal == "self",
+            ),
+            can_edit=viewer == "hr",
+        )
 
     async def _hr_person(
         self, conn: AsyncConnection, session: HrSession, employee_id: UUID

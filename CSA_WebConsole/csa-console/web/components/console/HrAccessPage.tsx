@@ -271,7 +271,8 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
                 <span className="block font-medium">{name}</span>
                 <span className="mt-1 flex flex-wrap gap-1">
                   {desired.map((id) => <span key={id} className="rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-700">{SWITCH_COPY[id].tag}</span>)}
-                  {desired.length === 0 && <span className="text-xs text-ink-500">No HR access</span>}
+                  {person.is_owner && <span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-700">HR owner</span>}
+                  {desired.length === 0 && !person.is_owner && <span className="text-xs text-ink-500">No HR access</span>}
                   {person.custom.length > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800">Custom access</span>}
                   {flagged && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800">Warning</span>}
                   {pending[person.user_id] && <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs text-brand-800">Not saved yet</span>}

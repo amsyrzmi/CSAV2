@@ -105,6 +105,7 @@ class HrAction(StrEnum):
     TRAINING_WITHDRAW = "training.withdraw"
     TRAINING_DECIDE = "training.decide"
     PEOPLE_MANAGE = "people.manage"  # the Manage people switch; never part of HR guidance
+    PEOPLE_SENSITIVE = "people.sensitive"  # the Sensitive details switch; never part of guidance
 
 
 class GrantScope(StrEnum):
@@ -128,7 +129,7 @@ class ResolvedGrant(HrModel):
             GrantScope.SELF: reads
             | {HrAction.TRAINING_DRAFT, HrAction.TRAINING_SUBMIT, HrAction.TRAINING_WITHDRAW},
             GrantScope.TEAM: reads | {HrAction.TRAINING_DECIDE},
-            GrantScope.HR: reads | {HrAction.PEOPLE_MANAGE},
+            GrantScope.HR: reads | {HrAction.PEOPLE_MANAGE, HrAction.PEOPLE_SENSITIVE},
             GrantScope.CLIENT_OWNER: {HrAction.TRAINING_DECIDE},
         }
         if self.action not in supported[self.scope]:

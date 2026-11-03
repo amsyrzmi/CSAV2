@@ -33,7 +33,13 @@ FEATURES = (
     "attention",
     "training",
     "dont_send",
+    "hr_add",
+    "hr_update",
+    "hr_leave",
+    "people_query",
+    "hr_open",
 )
+PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
 SCRIPTED_BODY = "SCRIPTED-BODY-91c2 the scripted wording"
 SCRIPTED_TEXT = "SCRIPTED-TEXT-55d0"
@@ -149,6 +155,9 @@ class ScriptedModel:
                 "title": SCRIPTED_TEXT,
                 "learning_objective": SCRIPTED_TEXT,
             }
+        if action in (*PEOPLE_ACTIONS, "hr_person_open"):
+            # The expected fields, as the model would write them from the message.
+            return {"action": action, **case.expect.fields}
         return {"action": "clarification", "question": SCRIPTED_TEXT, "options": []}
 
     async def json_completion(
@@ -461,3 +470,40 @@ def test_owner_training_phrase_is_a_smoke_case() -> None:
         case.expect.not_actions
     )
     assert not set(case.expect.actions) & set(case.expect.not_actions)
+
+
+def test_smoke_checks_the_expected_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    """A people action's fields are compared with the case's (case-insensitive); a wrong value
+    fails ``fields`` and is never printed."""
+    case = next(case for case in smoke.load_cases() if case.id == "hr_update-en-1")
+    assert case.expect.fields == {"person": "Siti", "manager": "Razak"}
+
+    class FieldsModel(ScriptedModel):
+        def __init__(self, manager: str) -> None:
+            super().__init__()
+            self.manager = manager
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            return {**super()._proposal(case), "manager": self.manager}
+
+    assert smoke.main(["--case", case.id], client=FieldsModel("RAZAK")) == 0
+    assert f"PASS {case.id} action=hr_person_update" in capsys.readouterr().out
+    assert smoke.main(["--case", case.id], client=FieldsModel("Zulkifli")) == 1
+    out = capsys.readouterr().out
+    assert f"FAIL {case.id} action=hr_person_update fields" in out
+    assert "Zulkifli" not in out and "Razak" not in out
+
+
+def test_people_cases_use_the_people_presets() -> None:
+    """Changing people is for HR managers; staff_basic only has the directory view."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id, case in cases.items():
+        if (
+            case_id.split("-")[0] in ("hr_add", "hr_update", "hr_leave")
+            and case_id != "hr_add-en-2"
+        ):
+            assert case.facts.preset == "hr_people_manager", case_id
+            assert smoke.build_facts(case).people_access == "hr", case_id
+    refused = cases["hr_add-en-2"]
+    assert refused.facts.preset == "staff_basic" and refused.expect.actions == ["answer"]
+    assert smoke.build_facts(refused).people_access == "directory"

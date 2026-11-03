@@ -113,6 +113,7 @@ test("every switch has the agreed label, an explanation and a group", () => {
     approves_team: "Approves training, leave and attendance for their team",
     hr_team: "HR team member",
     manage_people: "Manage people",
+    sensitive_details: "Sensitive details",
     recruitment: "Works on recruitment",
     attendance: "Works on attendance",
     payroll_prepare: "Prepares payroll",
@@ -125,9 +126,21 @@ test("every switch has the agreed label, an explanation and a group", () => {
   assert.deepEqual(Object.keys(copy.PRESET_COPY), ["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"]);
 });
 
-test("manage_people is the ninth switch, right after hr_team", () => {
-  assert.equal(access.SWITCH_IDS.length, 9);
-  assert.deepEqual(access.SWITCH_IDS.slice(3, 6), ["hr_team", "manage_people", "recruitment"]);
+test("sensitive_details follows manage_people and is in no preset", () => {
+  assert.equal(access.SWITCH_IDS.indexOf("sensitive_details"), access.SWITCH_IDS.indexOf("manage_people") + 1);
+  assert.equal(copy.SWITCH_COPY.sensitive_details.label, "Sensitive details");
+  assert.equal(copy.SWITCH_COPY.sensitive_details.tag, "Sensitive details");
+  assert.equal(copy.SWITCH_COPY.sensitive_details.group, "Responsibilities");
+  assert.equal(copy.SWITCH_COPY.sensitive_details.explanation,
+    "See and edit IC or passport, bank, tax, EPF and SOCSO numbers, home address, personal phone and emergency contact.");
+  for (const preset of ["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"])
+    assert.equal(access.applyPreset([], preset).includes("sensitive_details"), false, preset);
+  assert.deepEqual(access.setSwitch(["directory"], "sensitive_details", true, ["directory"]), ["directory", "sensitive_details"]);
+});
+
+test("manage_people is right after hr_team", () => {
+  assert.equal(access.SWITCH_IDS.length, 10);
+  assert.deepEqual(access.SWITCH_IDS.slice(3, 6), ["hr_team", "manage_people", "sensitive_details"]);
   assert.equal(copy.SWITCH_COPY.manage_people.tag, "Manage people");
   assert.equal(copy.SWITCH_COPY.manage_people.group, "Responsibilities");
   assert.equal(copy.SWITCH_COPY.manage_people.explanation,
@@ -246,7 +259,7 @@ test("an invitation that was already handled keeps its code and reads as a sente
 
 const event = (extra) => ({
   occurred_at: "2026-10-29T01:00:00Z", source: "invitation", preset: "manager", actor_user_id: MANAGER,
-  actor_name: "Daniel Lim", target_user_id: USER, target_name: "Aina Rahman",
+  actor_name: "Daniel Lim", target_user_id: USER, target_name: "Aina Rahman", previous_owner_name: null, replaced_owner: false,
   turned_on: ["approves_team"], turned_off: [], area: null, area_enabled: null, ...extra,
 });
 
@@ -256,6 +269,22 @@ test("an invitation event names who chose the access and the preset", () => {
   assert.match(copy.eventText(event({ actor_name: null })), /Set on invitation by Former member/);
   assert.equal(copy.eventText(event({ source: "page", preset: null, turned_on: ["recruitment"] })),
     'Daniel Lim turned on "Works on recruitment" for Aina Rahman');
+});
+
+test("an owner move names who made whom the HR owner, and who it replaced", () => {
+  const move = (extra) => event({ source: "owner_move", preset: null, turned_on: [], ...extra });
+  assert.equal(copy.eventText(move({ previous_owner_name: "Siti Aminah", replaced_owner: true })),
+    "Daniel Lim made Aina Rahman the HR owner, replacing Siti Aminah");
+  assert.equal(copy.eventText(move({ replaced_owner: true })),
+    "Daniel Lim made Aina Rahman the HR owner, replacing Former member");
+  assert.equal(copy.eventText(move({})), "Daniel Lim made Aina Rahman the HR owner");
+  assert.equal(copy.eventText(move({ actor_name: "FourStacks admin", target_name: null })),
+    "FourStacks admin made Former member the HR owner");
+});
+
+test("the HR owner's access reads as one plain line", () => {
+  assert.equal(copy.OWNER_ACCESS_LINE,
+    "HR owner: full control of HR access, plus recruitment, attendance, leave and training decisions.");
 });
 
 test("the pending line names the preset and who chose it", () => {

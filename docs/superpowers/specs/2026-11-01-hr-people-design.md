@@ -29,6 +29,22 @@ The order the owner accepted:
 5. Payroll: runs, payslips and statutory items.
 6. Claims, performance reviews and announcements.
 
+**Revised order (owner, 2026-11-02),** after the owner asked for payroll forms (TP1, EA, PCB II,
+CP58), attendance (overtime, attendance report, shifts where a company uses them) and claims
+(apply, claim report, claim detailed report, claim entitlement report). Overtime and approved
+claims feed pay, so they come before payroll:
+1. HR home, navigation and employee management (1a shipped; 1b next, now carrying the statutory
+   numbers payroll forms need).
+2. Attendance: overtime, the attendance report and optional shifts.
+3. Claims: apply, approve, entitlements and the three claim reports.
+4. Payroll with the statutory forms: TP1, EA, PCB II and CP58.
+5. Recruitment, then onboarding and the offboarding checklist, then leave self-service, reviews
+   and announcements.
+
+Projects 2 to 4 each get their own design round. The first payroll question is whether the
+console calculates PCB, EPF, SOCSO and EIS itself or takes the figures from the company's
+accountant or payroll software.
+
 **The workspace assistant is part of every project, not a separate one** (owner, 2026-11-01):
 - **One assistant.** The dock is the only assistant, and the separate HR chat goes away.
 - **Anything you can do on an HR screen, you can ask for.** The assistant prepares a card, and
@@ -141,12 +157,15 @@ For staff without HR duties, Home is **My HR** (Goal 6).
   - home address;
   - personal phone;
   - emergency contact (name, relationship, phone);
-  - bank name and account number for payroll.
+  - bank name and account number for payroll;
+  - statutory numbers for payroll forms (owner, 2026-11-02): income tax number, EPF number and
+    SOCSO number. EA, PCB II and the other payroll forms need them.
 
-  Kept apart from the directory data, because PDPA applies. The IC or passport number and the
-  bank account number are also encrypted at rest with the existing `csa/core/crypto.py` AES-GCM
-  key (my call). So they can't be searched, and they are shown masked until "Show" is pressed;
-  each Show is audited.
+  Kept apart from the directory data, because PDPA applies. The IC or passport number, the bank
+  account number and the three statutory numbers are also encrypted at rest with the existing
+  `csa/core/crypto.py` AES-GCM key (my call). The SOCSO number is often the IC number, so all
+  five are treated alike. So they can't be searched, and they are shown masked until "Show" is
+  pressed; each Show is audited.
 - **Documents** (1b):
   - **What can be uploaded:** files of kind Contract, Identity, Certificate or Other, as PDF, JPG,
     PNG or DOCX, at most 10 MB each.
@@ -166,8 +185,8 @@ For staff without HR duties, Home is **My HR** (Goal 6).
   record version; a stale save is refused with "Someone changed this person since you opened it.
   Reload to see their change."
 - **Personal fields:** edited by Sensitive details holders and the HR owner. The person may edit
-  their own home address, personal phone and emergency contact (1b). Bank details and IC are
-  HR-only edits, because they feed payroll.
+  their own home address, personal phone and emergency contact (1b). Bank details, IC and the
+  statutory numbers are HR-only edits, because they feed payroll.
 
 ### 6. My HR (staff without HR duties)
 
@@ -349,7 +368,7 @@ same authority as the screen:
 5. **The assistant's name search stays company-wide,** as today (name, title, work email from the
    company directory). "Who reports to" and "who is in a department" answers follow the person's
    People access.
-6. **IC or passport and bank account numbers are encrypted at rest** with the existing crypto key,
+6. **IC or passport, bank account, tax, EPF and SOCSO numbers are encrypted at rest** with the existing crypto key,
    masked until shown, and every Show is audited. Uploaded documents are stored like KB uploads,
    not encrypted on disk and with no virus scan. This is noted as a known limit.
 7. **The leaving reason and employment profile are HR-only.** The last day is visible to managers.

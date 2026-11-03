@@ -7,6 +7,8 @@ import { emptyText, myBalanceLines, myTrainingLines, PEOPLE_COPY } from "@/lib/h
 import { peopleClient, type Person } from "@/lib/hr-people-api";
 import { isDenied } from "@/lib/hr-pickers";
 import { action, Notice, Panel } from "../ui";
+import { DocumentsSection } from "./DocumentsSection";
+import { PersonalSection } from "./PersonalSection";
 import { PersonOverview } from "./PersonProfile";
 
 type Balance = { employee_id: string; year: number; leave_type: string; remaining: string; days: string };
@@ -26,8 +28,8 @@ function useRead<T>(load: (() => Promise<T>) | null): Read<T> {
 }
 
 /**
- * Home for staff without HR duties: their own profile, leave balances and training requests.
- * Personal details and My documents come with project 1b.
+ * Home for staff without HR duties: their own profile, personal details (contact fields only), documents
+ * (read-only), leave balances and training requests.
  */
 export function MyHr({ tenant, context, readonly, platform }: {
   tenant: string; context: HrContext; readonly: boolean; platform: boolean;
@@ -53,6 +55,8 @@ export function MyHr({ tenant, context, readonly, platform }: {
           : "hidden" in profile ? <p className="text-sm">{PEOPLE_COPY.profileUnavailable}</p>
             : <Notice error>We could not load your profile. Reload the page and try again.</Notice>}
     </Panel>
+    <PersonalSection tenant={tenant} employeeId={own} readonly={readonly} title="My personal details" />
+    <DocumentsSection tenant={tenant} employeeId={own} canManage={false} title="My documents" />
     {!(balances && "hidden" in balances) && <Panel title="My leave balances">
       {!balances ? <Notice>Loading your leave balances…</Notice>
         : "failed" in balances ? <Notice error>We could not load your leave balances. Reload the page and try again.</Notice>

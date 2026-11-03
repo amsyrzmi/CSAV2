@@ -13,6 +13,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -32,6 +33,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -127,7 +129,7 @@
       },
       "AccessEvent": {
         "additionalProperties": false,
-        "description": "One change: a save on this page, or access set on an invitation when it was accepted.\n\nFor an invitation the actor is whoever chose the preset, and `turned_on` is the switches the\npreset added to what the person already had. A platform admin's name is \"FourStacks admin\";\na name is None once that person is no longer an enabled member.",
+        "description": "One change: a save on this page, access set on an invitation when it was accepted, or a\nmove of the HR owner.\n\nFor an invitation the actor is whoever chose the preset, and `turned_on` is the switches the\npreset added to what the person already had. For a move the actor is whoever moved the title\n(a tenant admin or a platform admin), the target is the new owner, `replaced_owner` says\nwhether there was an owner before, and `previous_owner_name` is that owner (None for a first\nowner, or once they are no longer an enabled member); no switches change. A platform admin's\nname is \"FourStacks admin\"; a name is None once that person is no longer an enabled member.",
         "properties": {
           "actor_name": {
             "anyOf": [
@@ -190,10 +192,27 @@
             ],
             "title": "Preset"
           },
+          "previous_owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Owner Name"
+          },
+          "replaced_owner": {
+            "default": false,
+            "title": "Replaced Owner",
+            "type": "boolean"
+          },
           "source": {
             "enum": [
               "page",
-              "invitation"
+              "invitation",
+              "owner_move"
             ],
             "title": "Source",
             "type": "string"
@@ -222,6 +241,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -240,6 +260,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -310,6 +331,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -411,6 +433,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -425,6 +448,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -458,6 +482,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -3015,6 +3040,85 @@
         "title": "DirectoryValues",
         "type": "object"
       },
+      "DocumentList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentOut"
+            },
+            "maxItems": 500,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "DocumentList",
+        "type": "object"
+      },
+      "DocumentOut": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_size": {
+            "maximum": 10485760.0,
+            "minimum": 1.0,
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "contract",
+              "identity",
+              "certificate",
+              "other"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "uploaded_at": {
+            "format": "date-time",
+            "title": "Uploaded At",
+            "type": "string"
+          },
+          "uploaded_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By Name"
+          }
+        },
+        "required": [
+          "document_id",
+          "kind",
+          "file_name",
+          "media_type",
+          "byte_size",
+          "uploaded_at",
+          "uploaded_by_name"
+        ],
+        "title": "DocumentOut",
+        "type": "object"
+      },
       "DraftOut": {
         "additionalProperties": false,
         "properties": {
@@ -3597,9 +3701,24 @@
               "start_date",
               "employment_type",
               "active",
+              "last_day",
+              "leaving_reason",
               "region",
               "legal_entity_reference",
-              "employment_category"
+              "employment_category",
+              "date_of_birth",
+              "home_address",
+              "personal_phone",
+              "emergency_name",
+              "emergency_relationship",
+              "emergency_phone",
+              "bank_name",
+              "ic_or_passport",
+              "bank_account",
+              "tax_number",
+              "epf_number",
+              "socso_number",
+              "document"
             ],
             "title": "Field",
             "type": "string"
@@ -3767,7 +3886,8 @@
           "training.submit",
           "training.withdraw",
           "training.decide",
-          "people.manage"
+          "people.manage",
+          "people.sensitive"
         ],
         "title": "HrAction",
         "type": "string"
@@ -3981,6 +4101,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -4064,6 +4185,113 @@
           "requests_waiting"
         ],
         "title": "HrHome",
+        "type": "object"
+      },
+      "HrOwnerMoveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "expected_owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Owner Id"
+          },
+          "new_owner_id": {
+            "format": "uuid",
+            "title": "New Owner Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "new_owner_id",
+          "expected_owner_id"
+        ],
+        "title": "HrOwnerMoveIn",
+        "type": "object"
+      },
+      "HrOwnerMoveOut": {
+        "additionalProperties": false,
+        "properties": {
+          "mail": {
+            "enum": [
+              "sent",
+              "not_sent",
+              "repeat"
+            ],
+            "title": "Mail",
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/HrOwnerPerson"
+          }
+        },
+        "required": [
+          "owner",
+          "mail"
+        ],
+        "title": "HrOwnerMoveOut",
+        "type": "object"
+      },
+      "HrOwnerOut": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HrOwnerPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "available",
+          "owner"
+        ],
+        "title": "HrOwnerOut",
+        "type": "object"
+      },
+      "HrOwnerPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "usable": {
+            "title": "Usable",
+            "type": "boolean"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "display_name",
+          "usable"
+        ],
+        "title": "HrOwnerPerson",
         "type": "object"
       },
       "HrPersonOut": {
@@ -4150,6 +4378,28 @@
             ],
             "title": "Job Title"
           },
+          "last_day": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Day"
+          },
+          "leaving": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeavingOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "manager_id": {
             "anyOf": [
               {
@@ -4189,6 +4439,7 @@
             "enum": [
               "active",
               "starting",
+              "leaving",
               "left"
             ],
             "title": "Status",
@@ -5806,6 +6057,39 @@
         "title": "LeaveInput",
         "type": "object"
       },
+      "LeavingOut": {
+        "additionalProperties": false,
+        "description": "Why a person is leaving. HR viewers only.",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "enum": [
+              "resigned",
+              "contract_ended",
+              "dismissed",
+              "retired",
+              "other"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "LeavingOut",
+        "type": "object"
+      },
       "LinkedAccount": {
         "additionalProperties": false,
         "properties": {
@@ -6309,6 +6593,17 @@
             "const": "navigate",
             "title": "Action",
             "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
           },
           "record": {
             "anyOf": [
@@ -7474,6 +7769,7 @@
                 "approves_team",
                 "hr_team",
                 "manage_people",
+                "sensitive_details",
                 "recruitment",
                 "attendance",
                 "payroll_prepare",
@@ -7588,6 +7884,107 @@
         "title": "PersonHistory",
         "type": "object"
       },
+      "PersonLeave": {
+        "additionalProperties": false,
+        "description": "Mark an active person as leaving: the last day (today or later, in Kuala Lumpur), the reason\nand the direct reports' new manager (None: no manager). The database checks the day, the\nmanager and the HR owner rule.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "last_day": {
+            "format": "date",
+            "title": "Last Day",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "operation": {
+            "const": "person.leave",
+            "title": "Operation",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "resigned",
+              "contract_ended",
+              "dismissed",
+              "retired",
+              "other"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "reports_new_manager": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reports New Manager"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version",
+          "last_day",
+          "reason"
+        ],
+        "title": "PersonLeave",
+        "type": "object"
+      },
+      "PersonLeaveUndo": {
+        "additionalProperties": false,
+        "description": "Undo \"Mark as leaving\", until the end of the last day.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "person.leave_undo",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version"
+        ],
+        "title": "PersonLeaveUndo",
+        "type": "object"
+      },
       "PersonOut": {
         "additionalProperties": false,
         "properties": {
@@ -7646,6 +8043,8 @@
             "items": {
               "enum": [
                 "overview",
+                "personal",
+                "documents",
                 "access",
                 "history"
               ],
@@ -7661,6 +8060,41 @@
           "can_edit"
         ],
         "title": "PersonProfile",
+        "type": "object"
+      },
+      "PersonRehire": {
+        "additionalProperties": false,
+        "description": "Make a left person active again from a new start date. No access comes back.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "person.rehire",
+            "title": "Operation",
+            "type": "string"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version",
+          "start_date"
+        ],
+        "title": "PersonRehire",
         "type": "object"
       },
       "PersonUpdate": {
@@ -7825,6 +8259,385 @@
           "display_name"
         ],
         "title": "PersonValues",
+        "type": "object"
+      },
+      "PersonalOut": {
+        "additionalProperties": false,
+        "properties": {
+          "bank_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account"
+          },
+          "bank_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Name"
+          },
+          "can_edit": {
+            "enum": [
+              "all",
+              "contact"
+            ],
+            "title": "Can Edit",
+            "type": "string"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "emergency_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Name"
+          },
+          "emergency_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Phone"
+          },
+          "emergency_relationship": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Relationship"
+          },
+          "epf_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epf Number"
+          },
+          "home_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Address"
+          },
+          "ic_or_passport": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ic Or Passport"
+          },
+          "personal_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Phone"
+          },
+          "socso_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Socso Number"
+          },
+          "tax_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Number"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "date_of_birth",
+          "home_address",
+          "personal_phone",
+          "emergency_name",
+          "emergency_relationship",
+          "emergency_phone",
+          "bank_name",
+          "ic_or_passport",
+          "bank_account",
+          "tax_number",
+          "epf_number",
+          "socso_number",
+          "version",
+          "can_edit"
+        ],
+        "title": "PersonalOut",
+        "type": "object"
+      },
+      "PersonalReveal": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "PersonalReveal",
+        "type": "object"
+      },
+      "PersonalRevealIn": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "enum": [
+              "ic_or_passport",
+              "bank_account",
+              "tax_number",
+              "epf_number",
+              "socso_number"
+            ],
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "PersonalRevealIn",
+        "type": "object"
+      },
+      "PersonalSave": {
+        "additionalProperties": false,
+        "description": "Save a person's personal details. The numbers arrive as secrets: the service encrypts them,\nand nothing logs, stores or returns them. An absent key keeps the stored value; null clears it.\nThe database decides who may save which field.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "encrypted": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "format": "password",
+                  "type": "string",
+                  "writeOnly": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "propertyNames": {
+              "enum": [
+                "ic_or_passport",
+                "bank_account",
+                "tax_number",
+                "epf_number",
+                "socso_number"
+              ]
+            },
+            "title": "Encrypted",
+            "type": "object"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "operation": {
+            "const": "personal.save",
+            "title": "Operation",
+            "type": "string"
+          },
+          "values": {
+            "$ref": "#/components/schemas/PersonalValues"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "values"
+        ],
+        "title": "PersonalSave",
+        "type": "object"
+      },
+      "PersonalValues": {
+        "additionalProperties": false,
+        "description": "The plain personal fields. A key that is absent keeps the stored value and null clears it,\nso read `model_fields_set` (or dump with `exclude_unset`), never the defaults.",
+        "properties": {
+          "bank_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Name"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "emergency_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Name"
+          },
+          "emergency_phone": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9+() -]{3,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Phone"
+          },
+          "emergency_relationship": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Relationship"
+          },
+          "home_address": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Address"
+          },
+          "personal_phone": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9+() -]{3,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Phone"
+          }
+        },
+        "title": "PersonalValues",
         "type": "object"
       },
       "PlanIn": {
@@ -8140,7 +8953,8 @@
               "email_send",
               "training_submit",
               "inbox_decision",
-              "subscription_action"
+              "subscription_action",
+              "hr_person"
             ],
             "title": "Kind",
             "type": "string"
@@ -8207,7 +9021,8 @@
               "email_send",
               "training_submit",
               "inbox_decision",
-              "subscription_action"
+              "subscription_action",
+              "hr_person"
             ],
             "title": "Kind",
             "type": "string"
@@ -16649,6 +17464,7 @@
                     "approves_team",
                     "hr_team",
                     "manage_people",
+                    "sensitive_details",
                     "recruitment",
                     "attendance",
                     "payroll_prepare",
@@ -17360,6 +18176,148 @@
         ]
       }
     },
+    "/console/v1/hr/documents/{document_id}/download": {
+      "get": {
+        "operationId": "document_download_console_v1_hr_documents__document_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Document Download",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/documents/{document_id}/remove": {
+      "post": {
+        "operationId": "document_remove_console_v1_hr_documents__document_id__remove_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Document Remove",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
     "/console/v1/hr/employees": {
       "get": {
         "operationId": "directory_page_console_v1_hr_employees_get",
@@ -17656,7 +18614,11 @@
                     "payroll.rules": "#/components/schemas/PayrollRules-Input",
                     "payroll.snapshot": "#/components/schemas/PayrollSnapshot",
                     "person.add": "#/components/schemas/PersonAdd",
+                    "person.leave": "#/components/schemas/PersonLeave",
+                    "person.leave_undo": "#/components/schemas/PersonLeaveUndo",
+                    "person.rehire": "#/components/schemas/PersonRehire",
                     "person.update": "#/components/schemas/PersonUpdate",
+                    "personal.save": "#/components/schemas/PersonalSave",
                     "private_access.save": "#/components/schemas/PrivateAccessSave",
                     "shift.cancel": "#/components/schemas/ScheduleCancel",
                     "shift.schedule": "#/components/schemas/ShiftSchedule"
@@ -17725,10 +18687,22 @@
                     "$ref": "#/components/schemas/PersonUpdate"
                   },
                   {
+                    "$ref": "#/components/schemas/PersonLeave"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonLeaveUndo"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonRehire"
+                  },
+                  {
                     "$ref": "#/components/schemas/DepartmentSave"
                   },
                   {
                     "$ref": "#/components/schemas/AccountLink"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonalSave"
                   }
                 ],
                 "title": "Body"
@@ -17880,6 +18854,7 @@
                   "enum": [
                     "active",
                     "starting",
+                    "leaving",
                     "left"
                   ],
                   "type": "string"
@@ -18074,6 +19049,168 @@
         ]
       }
     },
+    "/console/v1/hr/people/{employee_id}/documents": {
+      "get": {
+        "operationId": "person_documents_console_v1_hr_people__employee_id__documents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Documents",
+        "tags": [
+          "HR"
+        ]
+      },
+      "post": {
+        "operationId": "person_document_upload_console_v1_hr_people__employee_id__documents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "contract",
+                "identity",
+                "certificate",
+                "other"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Document Upload",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
     "/console/v1/hr/people/{employee_id}/history": {
       "get": {
         "operationId": "person_history_console_v1_hr_people__employee_id__history_get",
@@ -18129,6 +19266,136 @@
           }
         },
         "summary": "Person History",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people/{employee_id}/personal": {
+      "get": {
+        "operationId": "person_personal_console_v1_hr_people__employee_id__personal_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Personal",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/people/{employee_id}/personal/reveal": {
+      "post": {
+        "operationId": "person_personal_reveal_console_v1_hr_people__employee_id__personal_reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalRevealIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalReveal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Personal Reveal",
         "tags": [
           "HR"
         ]
@@ -22689,6 +23956,100 @@
         ]
       }
     },
+    "/console/v1/team/hr-owner": {
+      "get": {
+        "operationId": "hr_owner_console_v1_team_hr_owner_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Client Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HrOwnerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hr Owner",
+        "tags": [
+          "console identity"
+        ]
+      },
+      "post": {
+        "operationId": "hr_owner_move_console_v1_team_hr_owner_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HrOwnerMoveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HrOwnerMoveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hr Owner Move",
+        "tags": [
+          "console identity"
+        ]
+      }
+    },
     "/console/v1/team/invites": {
       "post": {
         "operationId": "team_invite_console_v1_team_invites_post",
@@ -23622,7 +24983,8 @@
                       "email_send",
                       "training_submit",
                       "inbox_decision",
-                      "subscription_action"
+                      "subscription_action",
+                      "hr_person"
                     ],
                     "title": "Kind",
                     "type": "string"

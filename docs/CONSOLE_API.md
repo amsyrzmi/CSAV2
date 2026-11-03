@@ -93,8 +93,10 @@ access.
 - Each person carries `on` (every switch whose rows are all present),
   `included` (a switch whose rows sit inside another switch that is on, which
   cannot be turned off on its own), `custom` (the rows no switch describes, in
-  plain words), `team_size` and `is_owner`. Every save keeps the `custom` rows,
-  so the owner's own decision rows on `client_owner` are never dropped here.
+  plain words; for the HR owner, without the standard set a move of the title gives,
+  which the page sums up in one line), `team_size` and `is_owner`. Every save keeps
+  the rows no switch describes, so the owner's own decision rows on `client_owner`
+  are never dropped here.
 - `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
   page showed, `dry_run` and 1–50 `changes`, each `{user_id, on, base}`: the
   member's full desired switch set (`on`) and the `on` set the page loaded them
@@ -138,16 +140,20 @@ access.
 - Warnings (`AccessWarningOut`, names resolved by the server): `no_approver`,
   `no_manager`, `no_payroll_reviewer`, `manager_without_team` and
   `prepares_and_reviews`. They warn; they never block a save.
-- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`
-  and `private_access.save` events, newest first, with an opaque cursor. Each
+- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`,
+  `private_access.save` and `owner.move` events, newest first, with an opaque cursor. Each
   `access.save` lists `turned_on` and `turned_off` against that person's previous
   `access.save`; a private-area event gives `area` and `area_enabled`. A member who
   is no longer enabled has `actor_name` or `target_name` `null` ("Former member").
-  Each event has a `source`: `page` for a save on this page, or `invitation` for access
-  set on an invitation when it was accepted. An `invitation` event carries the `preset`
+  Each event has a `source`: `page` for a save on this page, `invitation` for access
+  set on an invitation when it was accepted, or `owner_move`. An `invitation` event carries the `preset`
   (otherwise `null`); its actor is whoever chose the preset (a platform admin shows as
   "FourStacks admin"), and `turned_on` is only what the preset added to what the person
-  already had.
+  already had. An `owner_move` event is a change of HR owner: its actor is whoever moved
+  it (a platform admin shows as "FourStacks admin"), its target is the new owner,
+  `replaced_owner` is true when there was an owner before, and `previous_owner_name` is that
+  owner (`null` for a first owner or once they are no longer an enabled member, when the page
+  says "replacing Former member"); it changes no switches.
 - **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
   below) is applied when the invitation is accepted. If it is not, it waits for the HR
   owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an
@@ -262,6 +268,97 @@ for the caller, in switch order), `workflows` (the caller's `domain.action` work
 and unique) and `hr_duties` (true for the HR owner and for anyone holding a switch beyond
 directory and own requests). The console uses them to hide tabs the caller cannot use; they
 never grant anything.
+
+### Personal details, documents and leaving (project 1b, migration 0521)
+
+Every route below takes only `client_id` (the upload also takes `kind`) and answers no-store. A
+caller the route does not serve gets 404 `resource_unavailable`, never 403. Writes need CSRF; the
+upload, the removal and the operations also need an `Idempotency-Key`.
+
+**The Sensitive details switch.** `sensitive_details` is a new access switch (`people.sensitive`
+on the `hr_operator` scope, in no preset). It appears in `SwitchId`, in `HrContext.switches` and on
+the access page like the others, counts as an HR duty, and changes no access: only the HR owner
+changes access.
+
+**People and profiles.** `HrPersonOut.status` gains `leaving` (active with a last day that has not
+passed in Asia/Kuala_Lumpur), and `HrPersonOut` gains `last_day` (HR viewers, the person and their
+direct manager; `null` for everyone else) and `leaving` (`{reason, note}`, HR viewers only).
+`GET /people?status=leaving` lists them; with no `status` the list shows Active, Starting and
+Leaving people. `PersonProfile.sections` is now, in this order, `overview`; `personal` (the HR
+owner, Sensitive details holders and the person themself); `documents` (the HR owner, Manage people
+holders and the person themself); then `access` and `history` for `hr` viewers. History fields gain
+`last_day`, `leaving_reason`, the twelve personal field names (with `old` and `new` always `null`)
+and `document` (`old` or `new` reads like `Contract: offer.pdf`). A history row with no actor (the
+leaver finish) has `actor_name` `System`.
+
+**Personal details.**
+
+- `GET /people/{employee_id}/personal` returns `PersonalOut`: `ic_or_passport`, `date_of_birth`,
+  `home_address`, `personal_phone`, `emergency_name`, `emergency_relationship`, `emergency_phone`,
+  `bank_name`, `bank_account`, `tax_number`, `epf_number`, `socso_number`, `version` (`null` until
+  the first save) and `can_edit` (`all` for the HR owner and Sensitive details holders, `contact`
+  for the person). The five numbers are masked: `•••• ` and the last 4 characters, or `••••` for 4
+  characters or fewer.
+- `POST /people/{employee_id}/personal/reveal` `{field}` (one of `ic_or_passport`, `bank_account`,
+  `tax_number`, `epf_number`, `socso_number`) returns `{value}` in full, or `null` when none is
+  stored. Every call is recorded in `hr_personal_reveals` (who, whose, which, when).
+- `personal.save` on `POST /operations` `{employee_id, expected_version, values, encrypted}`.
+  `values` holds the plain fields and `encrypted` the numbers; a key that is absent keeps the
+  stored value and `null` clears it. The person may send only `home_address`, `personal_phone` and
+  the three emergency fields (anything else is 409 `personal_field_refused`). A stale version is
+  409 `person_changed`. A number equal to the stored one is not a change. The receipt's
+  `version` is 0 when nothing was saved and no record exists. A same-key retry returns the first
+  receipt. The numbers are encrypted with `CREDENTIALS_KEY`, and the request fingerprint is an
+  HMAC keyed from it, so it never holds a plain hash of a number. A 422 is `invalid_hr_input` and
+  never repeats a submitted value.
+
+**Documents.** The gateway needs `HR_UPLOAD_ROOT`; without it these routes answer 503
+`hr_documents_unavailable`.
+
+- `GET /people/{employee_id}/documents` returns `DocumentList`: `items` of `DocumentOut`
+  (`document_id`, `kind`, `file_name`, `media_type`, `byte_size`, `uploaded_at`,
+  `uploaded_by_name`), newest first. The HR owner and Manage people holders see every document;
+  the person sees their own `contract`, `identity` and `certificate` documents, not `other`. A
+  person outside the tenant is 404.
+- `POST /people/{employee_id}/documents?kind=` (`contract`, `identity`, `certificate` or `other`)
+  takes one multipart field `file`: PDF, JPG, PNG or DOCX, at most 10 MB (413 `file exceeds 10
+  MB`; more than one file is 422 `upload one file`). It returns 201 `DocumentOut`; a retry with the
+  same `Idempotency-Key` returns the first document and stores one file. The content must match
+  the extension (409 `hr_document_type_unsupported`); an empty file is 409 `hr_document_empty` and
+  an unusable name 409 `hr_document_name_invalid`. HR owner and Manage people holders only.
+- `GET /documents/{document_id}/download` streams the file with a safe `Content-Disposition`
+  name. A file missing from the volume is 503 `hr_document_file_unavailable`.
+- `POST /documents/{document_id}/remove` (`{}`) answers 204. Removal is soft: the record and its
+  History entry stay and the file is deleted. Removing twice is harmless. HR owner and Manage
+  people holders only.
+
+**Leaving and rehire** on `POST /operations` (the HR owner or a Manage people holder):
+
+- `person.leave` `{employee_id, expected_version, last_day, reason, note?, reports_new_manager}`:
+  `reason` is `resigned`, `contract_ended`, `dismissed`, `retired` or `other` (`other` needs a
+  `note`, at most 200 characters); `reports_new_manager` is an employee id or `null` (no manager).
+  Marking again replaces the plan.
+- `person.leave_undo` `{employee_id, expected_version}`: until the end of the last day.
+- `person.rehire` `{employee_id, expected_version, start_date}`: someone who has left becomes
+  active again. A manager who has left is dropped. No access comes back.
+
+New refusals (409 with the code as `detail`): `last_owner_leaving` (the HR owner cannot be marked
+as leaving; a company has one HR owner, so ownership must move first, which a tenant admin does
+on the Team page), `leaver_has_access` (only
+the HR owner marks someone whose account holds HR duties beyond the staff switches or an enabled
+`tenant_admin` membership of the company; marking yourself is allowed), `last_day_past`,
+`leaving_final` (already left, or nothing to undo),
+`not_left` (rehire of someone who has not left), `person_not_active`, and, as for `person.update`,
+`person_changed`, `manager_unavailable` and `manager_loop` (the new manager is the leaver or sits
+under them).
+
+**The finish.** The worker's `hr_leavers_round` (every 900 seconds) and HR Home's `automation.run`
+call `hr_finish_leaver` for each due person. On the last day it moves the direct reports to
+`reports_new_manager` (or to no manager when that person has left or now reports to the leaver).
+The day after, the person becomes inactive, the linked account's HR grants, workflow rows, private
+areas and HR owner row for the tenant are deleted, its membership is disabled and its sessions
+revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
+Each step happens once, whoever runs it.
 
 ## Authentication, tenancy and settings
 
@@ -841,7 +938,7 @@ Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 | Action | Requires |
 |---|---|
 | Inbox decision | `customer_support` package `active` or `suspended` |
-| Training submit | `hr` package active; training proposals created by the assistant (planner or HR chat) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
+| Training submit | `hr` package active; training proposals created by an assistant (the workspace planner, or the deprecated `POST /console/v1/hr/assistant` route) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
 | People search and `people/me` | `hr` package active (`people/me` reports `package_inactive` as a `reason`, not an error) |
 | Email export, compose and send | `staff_email` package active and `email_settings.enabled` |
 | Email my team | The above, the `hr` package, and the HR access switch "approves team" |
@@ -955,6 +1052,10 @@ turn offered, or `my_manager`; any other id is refused, corrected once, then met
 no-option question asking the user to type the address.
 
 ### HR assistant delegation
+
+**Deprecated.** `POST /console/v1/hr/assistant` is kept for one release, removed in a cleanup
+PR. The console no longer calls it: the separate HR chat left People & HR Home in project 1b,
+and the workspace assistant dock is the only assistant.
 
 `POST /console/v1/hr/assistant` keeps its HR planner and plan replay (`hr_chat_plans` is
 still written). A training submit no longer executes: it returns a `ProposalOut` with 201
@@ -1269,6 +1370,8 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 | POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement (keeps `hr_preset` and who chose it); same scoped authorization |
 | DELETE `/admin/invites/{id}` | — | Revoke invitation; reset-token revocation requires platform admin |
 | GET `/team` | `client_id=UUID` | Selected tenant admin/platform; member list |
+| GET `/team/hr-owner` | `client_id=UUID` | Selected tenant admin/platform; `{available,owner}`, where `owner` is `{user_id,display_name,usable}` or `null`; package off gives 200 with `available=false` and `owner=null` |
+| POST `/team/hr-owner` | `Idempotency-Key`; `{client_id,new_owner_id,expected_owner_id}` | Selected tenant admin/platform; moves the HR owner at once and emails the people affected; `{owner,mail}`. See [Moving the HR owner](#moving-the-hr-owner) |
 | PATCH `/team/{user_id}` | query `client_id`; `{role?,is_enabled?}` | Scoped member change; revoke affected tenant sessions; protect last admin |
 | GET `/admin/users` | bounded `limit` | Platform admin; safe user metadata |
 | PATCH `/admin/users/{id}` | `{is_enabled}` | Platform admin; disable revokes sessions/tokens; protect last admins |
@@ -1320,6 +1423,41 @@ instead. This prevents reset acceptance from bypassing the membership-creation s
 Tenant creation atomically writes the tenant, nine disabled registry rows with current
 Pydantic input schemas, and an actor-attributed audit event. It starts no channel, provider,
 worker or external operation. Deliberate subscription/tenant enablement is separate.
+
+### Moving the HR owner
+
+A tenant admin of the company or a platform admin, who needs no membership, can read and move the
+HR owner. A tenant admin gains no HR data by holding that role: they learn who the owner is and
+nothing else. `usable` is false when the owner's account or membership is disabled or their role is
+`read_only`.
+
+`POST /team/hr-owner` runs `hr_owner_move` (migration 0522) on the app pool. `expected_owner_id` is
+required, and `null` means "no owner yet". A new owner gets no payroll access.
+
+| Answer | Detail | When |
+|---|---|---|
+| 403 | `tenant administrator required` | The caller isn't a tenant admin of this company or a platform admin |
+| 422 | `hr_not_available` | The company's HR package isn't active |
+| 409 | `owner_read_only` | The person chosen is a read-only member |
+| 409 | `owner_leaving` | The person chosen is marked as leaving, or their linked person isn't active |
+| 409 | `owner_unavailable` | The person chosen isn't an enabled member, or is still on their first password |
+| 409 | `owner_unchanged` | The person chosen is already the owner |
+| 409 | `owner_changed` | `expected_owner_id` is not the current owner |
+| 409 | `idempotency_conflict` | The key was already used for something else: another person, another expected owner or another operation |
+| 409 | `try_again` | A rare deadlock with another HR action; nothing changed, so the same request can be sent again |
+
+A 200 means the move has committed. `owner` is who holds the title now, so a retry after a later
+move names the later owner. `mail` is one of:
+
+- `sent`: every email went out.
+- `not_sent`: mail is off, or at least one email failed. The move stands, and the page asks the
+  admin to tell the people affected. Logs carry a failure category only.
+- `repeat`: this key already ran with this request. Nothing changed and no email went out.
+
+One email goes to the old owner (even if they're disabled), the new owner and each enabled tenant
+admin, once per address. It names the company, who made the change, the old and new owner and the
+time in the company's timezone, or the console's default zone if that timezone is invalid. A
+platform admin appears as "FourStacks admin". There is no link and no HR data.
 
 ## Endpoints
 ### `GET /console/v1/traces?limit=50&before=<ISO time>`

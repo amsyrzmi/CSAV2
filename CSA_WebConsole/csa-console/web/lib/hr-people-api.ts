@@ -2,19 +2,28 @@ import { api } from "./api";
 import type { SwitchId } from "./hr-access-api";
 
 /** Mirrors of csa/hr/people_contracts.py. HR-only fields are null for every other viewer. */
-export type PersonStatus = "active" | "starting" | "left";
+export type PersonStatus = "active" | "starting" | "leaving" | "left";
+export type LeavingReason = "resigned" | "contract_ended" | "dismissed" | "retired" | "other";
 export type EmploymentType = "full_time" | "part_time" | "contract" | "intern";
 export type Region = "peninsular_labuan" | "sabah" | "sarawak";
-export type ProfileSection = "overview" | "access" | "history";
+export type ProfileSection = "overview" | "personal" | "documents" | "access" | "history";
 export type HistoryField =
   | "display_name" | "job_title" | "department" | "manager" | "work_email" | "work_phone"
-  | "start_date" | "employment_type" | "active" | "region" | "legal_entity_reference" | "employment_category";
+  | "start_date" | "employment_type" | "active" | "last_day" | "leaving_reason" | "region" | "legal_entity_reference"
+  | "employment_category"
+  // Personal details: the history says a field changed, never its value.
+  | "date_of_birth" | "home_address" | "personal_phone" | "emergency_name" | "emergency_relationship"
+  | "emergency_phone" | "bank_name" | "ic_or_passport" | "bank_account" | "tax_number" | "epf_number" | "socso_number"
+  // Old and new read like "Contract: offer.pdf".
+  | "document";
 
 export interface EmploymentProfile {
   region: Region;
   legal_entity_reference: string;
   employment_category: string;
 }
+/** Why a person is leaving. HR viewers only (null for everyone else). */
+export interface Leaving { reason: LeavingReason; note: string | null }
 export interface Person {
   employee_id: string;
   display_name: string;
@@ -29,6 +38,9 @@ export interface Person {
   start_date: string | null;
   employment_type: EmploymentType | null;
   status: PersonStatus;
+  /** The last working day, `YYYY-MM-DD`: HR viewers, the person and their direct manager. */
+  last_day: string | null;
+  leaving: Leaving | null;
   employment_profile: EmploymentProfile | null;
   version: number | null;
   account_linked: boolean | null;

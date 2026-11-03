@@ -589,5 +589,189 @@
       "draft_valid": true,
       "recipient": "aina.rahman@example.com"
     }
+  },
+  {
+    "id": "hr_add-en-1",
+    "language": "en",
+    "message": "Add Danial Hakim as Sales Executive in Sales starting 1 December 2026 under Razak",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_add"
+      ],
+      "fields": {
+        "display_name": "Danial Hakim",
+        "job_title": "Sales Executive",
+        "department": "Sales",
+        "manager": "Razak"
+      }
+    }
+  },
+  {
+    "id": "hr_add-ms-1",
+    "language": "ms",
+    "message": "Tolong tambah Danial Hakim sebagai Sales Executive dalam jabatan Sales bermula 1 Disember 2026 di bawah Razak",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_add"
+      ],
+      "fields": {
+        "display_name": "Danial Hakim",
+        "job_title": "Sales Executive",
+        "department": "Sales",
+        "manager": "Razak"
+      }
+    }
+  },
+  {
+    "id": "hr_add-en-2",
+    "language": "en",
+    "message": "Add Danial as Sales Executive",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "not_actions": [
+        "hr_person_add"
+      ]
+    }
+  },
+  {
+    "id": "hr_update-en-1",
+    "language": "en",
+    "message": "Change Siti's manager to Razak",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_update"
+      ],
+      "fields": {
+        "person": "Siti",
+        "manager": "Razak"
+      }
+    }
+  },
+  {
+    "id": "hr_update-ms-1",
+    "language": "ms",
+    "message": "Tukar pengurus Siti kepada Razak",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_update"
+      ],
+      "fields": {
+        "person": "Siti",
+        "manager": "Razak"
+      }
+    }
+  },
+  {
+    "id": "hr_leave-en-1",
+    "language": "en",
+    "message": "Mark Aina as leaving, last day 30 November 2026, she resigned",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_leave"
+      ],
+      "fields": {
+        "reason": "resigned"
+      }
+    }
+  },
+  {
+    "id": "hr_leave-ms-1",
+    "language": "ms",
+    "message": "Tandakan Aina akan berhenti, hari terakhir 30 November 2026, dia letak jawatan",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_leave"
+      ],
+      "fields": {
+        "reason": "resigned"
+      }
+    }
+  },
+  {
+    "id": "people_query-en-1",
+    "language": "en",
+    "message": "Who reports to Razak?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "people_query"
+      ],
+      "fields": {
+        "reports_to": "Razak"
+      }
+    }
+  },
+  {
+    "id": "people_query-ms-1",
+    "language": "ms",
+    "message": "Siapa yang melapor kepada Razak?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "people_query"
+      ],
+      "fields": {
+        "reports_to": "Razak"
+      }
+    }
+  },
+  {
+    "id": "hr_open-en-1",
+    "language": "en",
+    "message": "Open Siti's profile",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_open"
+      ],
+      "fields": {
+        "person": "Siti"
+      }
+    }
+  },
+  {
+    "id": "hr_open-ms-1",
+    "language": "ms",
+    "message": "Buka profil Siti",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_open"
+      ],
+      "fields": {
+        "person": "Siti"
+      }
+    }
   }
 ]

@@ -59,7 +59,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0520"
+EXPECTED_SCHEMA_VERSION = "0522"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -420,7 +420,7 @@ def create_app() -> FastAPI:
     # --- lane registrations: one line per lane; add your one line directly under your
     # lane's comment; no other edits here ---
     app.include_router(build_marketplace_router())
-    app.include_router(build_hr_router())
+    app.include_router(build_hr_router(hr_upload_root=settings.HR_UPLOAD_ROOT))
     app.include_router(build_email_router())
     # lane A (customer-facing): WhatsApp router registers here
     app.include_router(build_channels_router())

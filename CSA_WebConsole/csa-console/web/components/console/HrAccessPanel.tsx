@@ -4,7 +4,7 @@ import {
   type AccessPerson, type AccessPersonResult, type AccessWarningOut, type PresetId, type SwitchId,
 } from "@/lib/hr-access-api";
 import {
-  CUSTOM_COPY, GROUPS, PRESET_COPY, refusalText, SWITCH_COPY, warningText,
+  CUSTOM_COPY, GROUPS, OWNER_ACCESS_LINE, PRESET_COPY, refusalText, SWITCH_COPY, warningText,
 } from "@/lib/hr-access-copy";
 import { ApiError } from "@/lib/api";
 import { field, secondary } from "./ui";
@@ -93,6 +93,7 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
         </label>;
       })}
     </fieldset>)}
+    {person.is_owner && <p className="text-sm">{OWNER_ACCESS_LINE}</p>}
     {person.custom.length > 0 && <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
       <h3 className="font-semibold">{CUSTOM_COPY.title}</h3>
       <p>{CUSTOM_COPY.intro}</p>

@@ -145,6 +145,12 @@ test("settled proposals summarise their receipts", () => {
   assert.equal(view.resultSummary(proposal("p", { kind: "inbox_decision", status: "executed", result: { outcome: "already_handled", queued: false } })), "Already handled. Nothing was changed.");
   assert.equal(view.resultSummary(proposal("p", { kind: "subscription_action", status: "executed", result: { status: "paused", version: 2 } })), "Subscription updated. It is now paused.");
   assert.equal(view.resultSummary(proposal("p", { kind: "subscription_action", status: "executed", result: null })), "Subscription updated.");
+  // csa/workspace/hr_people.py HrPersonExecutor: the receipt is the HR operation's, so the line
+  // repeats the card's own title.
+  const person = (extra) => proposal("p", { kind: "hr_person", status: "executed", result: { operation: "person.add", resource_id: "e1", version: 1, status: "applied" }, ...extra });
+  const card = (title) => ({ card: { ...proposal("p").card, kind: "hr_person", title } });
+  assert.equal(view.resultSummary(person(card("Add Danial Hakim to People"))), "Done: Add Danial Hakim to People.");
+  assert.equal(view.resultSummary(person(card("Kemas kini Siti Aminah")), "ms"), "Selesai: Kemas kini Siti Aminah.");
   assert.match(view.resultSummary(proposal("p", { status: "cancelled" })), /Nothing was changed/);
   assert.match(view.resultSummary(proposal("p", { status: "expired" })), /expired/);
 });

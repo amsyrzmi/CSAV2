@@ -22,6 +22,7 @@ SwitchId = Literal[
     "approves_team",
     "hr_team",
     "manage_people",
+    "sensitive_details",
     "recruitment",
     "attendance",
     "payroll_prepare",
@@ -42,6 +43,7 @@ SWITCH_IDS: tuple[SwitchId, ...] = (
     "approves_team",
     "hr_team",
     "manage_people",
+    "sensitive_details",
     "recruitment",
     "attendance",
     "payroll_prepare",
@@ -155,6 +157,10 @@ SWITCHES: Mapping[SwitchId, AccessRows] = {
     # Add and edit people and departments, and see Left people and employment profiles. It never
     # changes access: that stays with the HR owner.
     "manage_people": _rows([_grant("people.manage", "hr_operator")]),
+    # See and edit the sensitive personal details of people (IC or passport, bank, tax, EPF and
+    # SOCSO numbers, home address, personal phone, emergency contact). In no preset: the owner
+    # turns it on person by person.
+    "sensitive_details": _rows([_grant("people.sensitive", "hr_operator")]),
     "recruitment": _rows(areas=["recruitment"]),
     "attendance": _rows(areas=["attendance"]),
     "payroll_prepare": _rows(
@@ -165,6 +171,21 @@ SWITCHES: Mapping[SwitchId, AccessRows] = {
         workflows=_workflows(("payroll",), ("decide",), "payroll_reviewer"), areas=["payroll"]
     ),
 }
+
+# The rows a move of the HR owner gives (migration 0522): the title explains them, so the access
+# page doesn't list them as custom for the person who holds it. Display only: a save keeps them like
+# any other uncovered row. tests/test_hr_owner_move.py compares this with what a move writes.
+OWNER_ROWS = _rows(
+    [
+        _grant("directory.read", "hr_operator", BASIC_FIELDS),
+        _grant("training.read", "hr_operator"),
+        _grant("training.decide", "client_owner"),
+    ],
+    _workflows(
+        ("recruitment", "attendance", "leave"), ("read", "prepare", "decide"), "client_owner"
+    ),
+    ["recruitment", "attendance"],
+)
 
 
 def switch_set(*ids: SwitchId) -> frozenset[SwitchId]:

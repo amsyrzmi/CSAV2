@@ -122,3 +122,34 @@ def test_interactive_voice_requires_explicit_complete_secure_configuration() -> 
     )
     with pytest.raises(ValidationError, match="requires WSS"):
         _settings(**{**configured, "ENV": "prod", "VOICE_LIVEKIT_URL": "ws://127.0.0.1:7880"})
+
+
+@pytest.mark.parametrize(
+    ("kb", "hr"),
+    [
+        ("/srv/uploads", "/srv/uploads"),
+        ("/srv/uploads", "/srv/uploads/"),
+        ("/srv/uploads", "/srv/kb/../uploads"),
+        ("/srv/uploads", "/srv/uploads/hr"),
+        ("/srv/uploads/kb", "/srv/uploads"),
+    ],
+)
+def test_hr_upload_root_must_be_apart_from_kb_upload_root(kb: str, hr: str) -> None:
+    # Both name files <uuid>.<ext> under <root>/<client_id>/, so a shared or nested root would
+    # let one side's cleanup delete the other's files.
+    with pytest.raises(ValidationError, match="HR_UPLOAD_ROOT"):
+        _settings(KB_UPLOAD_ROOT=kb, HR_UPLOAD_ROOT=hr)
+
+
+def test_hr_upload_root_apart_from_kb_upload_root_is_accepted() -> None:
+    s = _settings(KB_UPLOAD_ROOT="/srv/kb-uploads", HR_UPLOAD_ROOT="/srv/hr-uploads")
+    assert str(s.HR_UPLOAD_ROOT) == "/srv/hr-uploads"
+    assert _settings(HR_UPLOAD_ROOT="/srv/hr-uploads").KB_UPLOAD_ROOT is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_upload_roots_are_unset(blank: str) -> None:
+    # .env.example leaves both empty. A blank path would otherwise be the current folder for both.
+    s = _settings(KB_UPLOAD_ROOT=blank, HR_UPLOAD_ROOT=blank)
+    assert s.KB_UPLOAD_ROOT is None
+    assert s.HR_UPLOAD_ROOT is None

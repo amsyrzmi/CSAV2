@@ -14,6 +14,7 @@ import contextlib
 import os
 import shutil
 import subprocess
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,12 @@ TOKEN_ID = "66666666-6666-4666-8666-000000000001"
 RAW_TOKEN = "synthetic-raw-token-not-a-credential"
 PRESET_VALUES = ["none", "staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"]
 FAILED_NOTE = "We couldn't send the email. Copy this link and send it yourself."
+MANAGER_ID = "44444444-4444-4444-8444-111111111111"
+READ_ONLY_ID = "44444444-4444-4444-8444-333333333333"
+DISABLED_ID = "44444444-4444-4444-8444-444444444444"
+TRY_AGAIN = "Someone else changed HR records at the same moment. Please try again."
+OWNER_CHANGED = "The HR owner changed since you opened this page. Reload to see who it is now."
+LOST = 599  # the stub's word for "the answer never arrived": the route aborts the request
 
 
 class InviteWorld(World):
@@ -79,6 +86,9 @@ class InviteWorld(World):
             return 200, TENANT_PROFILE
         if path == "team" and method == "GET" and params.get("client_id") == TENANT:
             return 200, []
+        if path == "team/hr-owner" and method == "GET" and params.get("client_id") == TENANT:
+            owner = {"user_id": OWNER, "display_name": "Omar Lee", "usable": True}
+            return 200, {"available": True, "owner": owner}
         if path == "admin/invites" and method == "GET" and params.get("client_id") == TENANT:
             return 200, list(self.invites)
         if path == "team/invites" and method == "POST" and body["client_id"] == TENANT:
@@ -115,9 +125,94 @@ class InviteWorld(World):
         return super().answer(caller, method, path, params, body)
 
 
-async def test_invite_chooses_hr_access_shows_delivery_and_owner_applies_pending(
-    tmp_path: Path,
-) -> None:
+class OwnerMoveWorld(InviteWorld):
+    """The team page with five members and a movable HR owner, answering as a script says.
+
+    `moves` holds one directive per expected POST, in order: "lost" (the request reaches the
+    server's side of the stub but the answer never comes back, and nothing moves), ("refuse", code)
+    (a 409), "sent" or "not_sent" (the move happens and the mail outcome is that), or ("repeat", id)
+    (a retry answered with whoever holds the title now).
+    """
+
+    NAMES = {
+        OWNER: "Omar Lee",
+        STAFF: "Lina Wong",
+        MANAGER_ID: "Aiman Yusof",
+        READ_ONLY_ID: "Rina Ali",
+        DISABLED_ID: "Dan Tan",
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.owner = OWNER
+        self.moves: list[Any] = []
+
+    def owner_out(self, user_id: str) -> dict[str, Any]:
+        return {"user_id": user_id, "display_name": self.NAMES[user_id], "usable": True}
+
+    def members(self) -> list[dict[str, Any]]:
+        roles = {OWNER: "tenant_admin", READ_ONLY_ID: "read_only"}
+        return [
+            {
+                "user_id": user_id,
+                "client_id": TENANT,
+                "email": f"{name.split()[0].lower()}@example.test",
+                "display_name": name,
+                "role": roles.get(user_id, "tenant_staff"),
+                "is_enabled": user_id != DISABLED_ID,
+            }
+            for user_id, name in self.NAMES.items()
+        ]
+
+    def route_for(self, caller: str) -> Any:
+        inner = super().route_for(caller)
+
+        async def handle(request_route: Any) -> None:
+            class Answer:
+                """The route as the base handler sees it, turning the LOST status into an abort."""
+
+                request = request_route.request
+
+                @staticmethod
+                async def fulfill(*, status: int, json: Any) -> None:
+                    if status == LOST:
+                        await request_route.abort("connectionreset")
+                    else:
+                        await request_route.fulfill(status=status, json=json)
+
+            await inner(Answer)
+
+        return handle
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if path == "team" and method == "GET" and params.get("client_id") == TENANT:
+            return 200, self.members()
+        if path == "team/hr-owner" and params.get("client_id") == TENANT and method == "GET":
+            return 200, {"available": True, "owner": self.owner_out(self.owner)}
+        if path == "team/hr-owner" and method == "POST" and body["client_id"] == TENANT:
+            if not self.moves:
+                self.unexpected.append(f"POST {path} with nothing scripted: {body}")
+                return 500, {"detail": "unscripted"}
+            move = self.moves.pop(0)
+            if move == "lost":
+                return LOST, {}
+            if isinstance(move, tuple) and move[0] == "refuse":
+                return 409, {"detail": move[1]}
+            if isinstance(move, tuple) and move[0] == "repeat":
+                self.owner = move[1]
+                return 200, {"owner": self.owner_out(self.owner), "mail": "repeat"}
+            if body["expected_owner_id"] != self.owner:
+                return 409, {"detail": "owner_changed"}
+            self.owner = body["new_owner_id"]
+            return 200, {"owner": self.owner_out(self.owner), "mail": move}
+        return super().answer(caller, method, path, params, body)
+
+
+@contextlib.asynccontextmanager
+async def served(tmp_path: Path) -> AsyncIterator[tuple[Any, str, Upstream]]:
+    """The staged console on a free port and a Chromium to drive it, both gone afterwards."""
     node = shutil.which("node")
     assert node, "Node is required for browser invitation acceptance"
     assert (WEB / "node_modules/next/dist/bin/next").is_file(), (
@@ -175,7 +270,7 @@ async def test_invite_chooses_hr_access_shows_delivery_and_owner_applies_pending
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch()
                 try:
-                    await exercise(browser, f"http://127.0.0.1:{port}", upstream, tmp_path)
+                    yield browser, f"http://127.0.0.1:{port}", upstream
                 finally:
                     await browser.close()
         finally:
@@ -186,6 +281,17 @@ async def test_invite_chooses_hr_access_shows_delivery_and_owner_applies_pending
                 process.kill()
                 process.wait(timeout=5)
             log.close()
+
+
+async def test_invite_chooses_hr_access_shows_delivery_and_owner_applies_pending(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path) as (browser, base, upstream):
+        await exercise(browser, base, upstream, tmp_path)
+
+
+def option_label(person: str) -> str:
+    return f"{person} \u00b7 {person.split()[0].lower()}@example.test"
 
 
 async def option_values(page: Page) -> list[str]:
@@ -232,6 +338,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(select.locator("option")).to_have_count(6, timeout=WAIT)
         assert await option_values(page) == PRESET_VALUES
         await expect(select).to_have_value("staff")
+        await expect(page.get_by_test_id("hr-owner-name")).to_have_text(
+            "HR owner: Omar Lee", timeout=WAIT
+        )
 
         # (b) Choosing Manager emails the invitation: no link or copy box is shown.
         await select.select_option("manager")
@@ -295,4 +404,152 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         (tmp_path / "invite-access-browser.log").write_text("\n".join(diagnostics))
         with contextlib.suppress(Exception):  # Preserve the original failure if Chromium crashed.
             await context.tracing.stop(path=tmp_path / "invite-access-trace.zip")
+        await context.close()
+
+
+async def test_tenant_admin_moves_hr_owner(tmp_path: Path) -> None:
+    async with served(tmp_path) as (browser, base, upstream):
+        await exercise_owner_move(browser, base, upstream, tmp_path)
+
+
+async def exercise_owner_move(browser: Any, base: str, upstream: Upstream, tmp_path: Path) -> None:
+    context = await browser.new_context(timezone_id="Asia/Kuala_Lumpur")
+    context.set_default_navigation_timeout(WAIT)
+    await context.add_cookies([{"name": "csa_session", "value": "synthetic-session", "url": base}])
+    await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+    page = await context.new_page()
+    diagnostics: list[str] = []
+    page.on("crash", lambda: diagnostics.append("Chromium page crashed"))
+    page.on("pageerror", lambda error: diagnostics.append(str(error)))
+    page.on("console", lambda message: diagnostics.append(f"{message.type}: {message.text}"))
+    world = OwnerMoveWorld()
+    try:
+        await context.route("**/console/v1/**", world.route_for(OWNER))
+        upstream.me, upstream.packages = make_me("tenant_admin"), HR_PACKAGE
+        panel = page.get_by_test_id("hr-owner-panel")
+        name = page.get_by_test_id("hr-owner-name")
+        change = panel.get_by_role("button", name="Change", exact=True)
+        choice = page.get_by_label("New HR owner")
+        confirm = page.get_by_role("button", name="Change HR owner", exact=True)
+        confirmation = page.get_by_test_id("hr-owner-confirm")
+
+        def moves() -> list[dict[str, Any]]:
+            return [
+                c for c in world.calls if c["path"] == "team/hr-owner" and c["method"] == "POST"
+            ]
+
+        async def pick(person: str) -> None:
+            await change.click()
+            await choice.select_option(
+                label=f"{person} \u00b7 {person.split()[0].lower()}@example.test"
+            )
+
+        # (a) The panel names the owner. The picker leaves out the owner, a read-only member and a
+        # disabled account.
+        await page.goto(f"{base}/portal/team")
+        await expect(name).to_have_text("HR owner: Omar Lee", timeout=WAIT)
+        await change.click()
+        labels = await choice.locator("option").all_text_contents()
+        assert labels == [
+            "Choose a member",
+            "Aiman Yusof \u00b7 aiman@example.test",
+            "Lina Wong \u00b7 lina@example.test",
+        ], labels
+        await expect(confirm).to_be_disabled()
+
+        # (b) Choosing a member shows what happens; the answer is lost on the way back. Nothing is
+        # assumed: the panel reads the owner again and says so, and still names Omar.
+        world.moves = ["lost", ("refuse", "try_again"), "sent"]
+        await choice.select_option(label=option_label("Lina Wong"))
+        await expect(confirmation).to_have_text(
+            "They get full control of who has HR access and can see sensitive employee details. "
+            "Omar Lee loses HR owner powers straight away. "
+            "Payroll stays off until they turn it on. Everyone affected gets an email."
+        )
+        await confirm.click()
+        await expect(panel).to_contain_text(
+            "We couldn't confirm the change. Check who the HR owner is above, then try again.",
+            timeout=WAIT,
+        )
+        await expect(name).to_have_text("HR owner: Omar Lee")
+        assert len(moves()) == 1
+        first = moves()[0]
+        assert first["key"], first
+        assert first["body"] == {
+            "client_id": TENANT,
+            "new_owner_id": STAFF,
+            "expected_owner_id": OWNER,
+        }, first
+
+        # (c) The same choice again: the server says someone else changed HR records at that
+        # moment (409 try_again), the sentence shows, and the next try carries the same key.
+        await pick("Lina Wong")
+        await confirm.click()
+        await expect(page.get_by_text(TRY_AGAIN)).to_be_visible(timeout=WAIT)
+        await expect(name).to_have_text("HR owner: Omar Lee")
+        await confirm.click()
+        await expect(name).to_have_text("HR owner: Lina Wong", timeout=WAIT)
+        await expect(panel).to_contain_text("HR owner changed.")
+        await expect(confirm).to_have_count(0)
+        assert len(moves()) == 3
+        assert [c["key"] for c in moves()] == [first["key"]] * 3, [c["key"] for c in moves()]
+        assert moves()[2]["body"] == first["body"]
+        assert world.owner == STAFF
+
+        # (d) Someone else moves the title behind this page: the move is refused with the
+        # "changed since you opened this page" sentence, the panel reads the owner again, and the
+        # new request used a new key. Choosing yourself says so.
+        world.moves = ["sent"]
+        world.owner = MANAGER_ID
+        await pick("Omar Lee")
+        await expect(confirmation).to_contain_text("You are making yourself the HR owner.")
+        await confirm.click()
+        await expect(page.get_by_text(OWNER_CHANGED)).to_be_visible(timeout=WAIT)
+        await expect(name).to_have_text("HR owner: Aiman Yusof", timeout=WAIT)
+        refused = moves()[3]
+        assert refused["body"] == {
+            "client_id": TENANT,
+            "new_owner_id": OWNER,
+            "expected_owner_id": STAFF,
+        }, refused
+        assert refused["key"] and refused["key"] != first["key"]
+        await page.get_by_role("button", name="Cancel").click()
+        await expect(confirm).to_have_count(0)
+
+        # (e) The move happens but the mail relay is down: the panel says to tell the people.
+        world.moves = ["not_sent"]
+        await pick("Lina Wong")
+        await confirm.click()
+        await expect(name).to_have_text("HR owner: Lina Wong", timeout=WAIT)
+        # An alert, not a calm note: the admin has to act, and nothing else tells those people.
+        await expect(panel.get_by_role("alert")).to_have_text(
+            "HR owner changed, but we couldn't send the emails. Please tell the people affected."
+        )
+        assert moves()[4]["body"]["expected_owner_id"] == MANAGER_ID
+
+        # (f) A retry the server answers as a repeat names whoever holds the title now, which is
+        # not the person picked; the panel shows the owner from the answer.
+        world.moves = [("repeat", MANAGER_ID)]
+        await pick("Omar Lee")
+        await confirm.click()
+        await expect(name).to_have_text("HR owner: Aiman Yusof", timeout=WAIT)
+        await expect(panel).to_contain_text(
+            "HR owner changed. If you're not sure the emails went out, "
+            "please tell the people affected."
+        )
+        assert moves()[5]["body"]["new_owner_id"] == OWNER
+        assert world.moves == []
+
+        assert not world.unexpected, world.unexpected
+        assert not upstream.unexpected, upstream.unexpected
+    except Exception as exc:
+        exc.add_note(
+            f"Browser diagnostics: {diagnostics}; trace: {tmp_path / 'owner-move-trace.zip'}; "
+            f"frontend log: {tmp_path / 'frontend.log'}"
+        )
+        raise
+    finally:
+        (tmp_path / "owner-move-browser.log").write_text("\n".join(diagnostics))
+        with contextlib.suppress(Exception):  # Preserve the original failure if Chromium crashed.
+            await context.tracing.stop(path=tmp_path / "owner-move-trace.zip")
         await context.close()

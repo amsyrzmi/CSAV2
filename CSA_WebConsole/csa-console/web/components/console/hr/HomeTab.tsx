@@ -6,7 +6,6 @@ import { hrHref, type HrRoute } from "@/lib/hr-paths";
 import { emptyText, homeItems, homeQuickActions, runsHomeMaintenance } from "@/lib/hr-people";
 import { peopleClient, type HrHome, type Interview, type Person } from "@/lib/hr-people-api";
 import { isDenied } from "@/lib/hr-pickers";
-import { HrAssistant } from "../HrAssistant";
 import { secondary, Notice, Panel } from "../ui";
 import type { HrTabProps } from "./HrShell";
 import { MyHr } from "./MyHr";
@@ -18,18 +17,12 @@ const MAINTENANCE_MS = 300000;
 
 /**
  * Home. Staff with HR duties get "Needs you today", quick actions and the reminders; everyone else
- * gets My HR. Until 1b the separate HR chat stays here, collapsed.
+ * gets My HR. The workspace dock is the only assistant.
  */
 export function HomeTab(props: HrTabProps) {
   const { tenant, context, readonly, platform } = props;
-  return <div className="space-y-5">
-    {context.hr_duties ? <HrHomePage {...props} />
-      : <MyHr tenant={tenant} context={context} readonly={readonly} platform={platform} />}
-    <details className="card rounded-[14px] p-5 sm:p-6">
-      <summary className="cursor-pointer text-base font-semibold">HR chat (assistant & voice)</summary>
-      <div className="mt-5"><HrAssistant tenant={tenant} readonly={readonly} /></div>
-    </details>
-  </div>;
+  return context.hr_duties ? <HrHomePage {...props} />
+    : <MyHr tenant={tenant} context={context} readonly={readonly} platform={platform} />;
 }
 
 /** What "Needs you today" is built from, besides the reminders and interviews Home already reads. */

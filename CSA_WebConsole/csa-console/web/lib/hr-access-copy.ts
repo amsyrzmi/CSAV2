@@ -35,6 +35,12 @@ export const SWITCH_COPY: Record<SwitchId, { label: string; tag: string; explana
     explanation: "Adds people and edits their profiles and departments. Sees people who have left and employment profiles.",
     group: "Responsibilities",
   },
+  sensitive_details: {
+    label: "Sensitive details",
+    tag: "Sensitive details",
+    explanation: "See and edit IC or passport, bank, tax, EPF and SOCSO numbers, home address, personal phone and emergency contact.",
+    group: "Responsibilities",
+  },
   payroll_prepare: {
     label: "Prepares payroll",
     tag: "Prepares payroll",
@@ -75,6 +81,10 @@ export const CUSTOM_COPY = {
   intro: "The switches don't describe this access. It came from earlier settings, and saving here keeps it.",
   link: "Change custom access in Advanced",
 };
+
+/** Stands in for the rows the title gives, which the server leaves off the owner's custom list. */
+export const OWNER_ACCESS_LINE =
+  "HR owner: full control of HR access, plus recruitment, attendance, leave and training decisions.";
 
 export const PAGE_COPY = {
   title: "Who can do what",
@@ -153,6 +163,10 @@ const quoted = (ids: SwitchId[]) => ids.map((id) => `"${SWITCH_COPY[id].label}"`
 export function eventText(e: AccessEvent): string {
   const actor = formerMember(e.actor_name);
   const target = formerMember(e.target_name);
+  if (e.source === "owner_move")
+    return e.replaced_owner
+      ? `${actor} made ${target} the HR owner, replacing ${formerMember(e.previous_owner_name)}`
+      : `${actor} made ${target} the HR owner`;
   if (e.source === "invitation" && e.preset)
     return `Set on invitation by ${actor}: ${PRESET_COPY[e.preset].label} for ${target}`;
   if (e.area) {

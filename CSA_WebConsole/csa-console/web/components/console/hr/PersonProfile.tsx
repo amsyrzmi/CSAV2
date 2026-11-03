@@ -11,7 +11,11 @@ import {
   type ProfileSection,
 } from "@/lib/hr-people-api";
 import { isDenied, shortWhen } from "@/lib/hr-pickers";
+import { canMarkLeaving, canRehire, canUndoLeaving, leavingSummary } from "@/lib/hr-records";
 import { action, secondary, Notice, Panel } from "../ui";
+import { DocumentsSection } from "./DocumentsSection";
+import { LeavingForm, RehireForm, UndoLeaving } from "./LeavingForm";
+import { PersonalSection } from "./PersonalSection";
 import { PersonForm } from "./PersonForm";
 import { MemberSelect, useMemberOptions } from "./Pickers";
 import { peopleWriteError } from "./refusal";
@@ -29,8 +33,8 @@ export function PersonOverview({ person }: { person: Person }) {
 }
 
 /**
- * A person's profile: Overview for everyone who may see them, plus Access and History for HR
- * viewers (the HR owner and Manage people holders), as the server lists the sections. Editors
+ * A person's profile: Overview for everyone who may see them, plus Personal, Documents, Access and
+ * History where the server lists them (HR viewers, and the person themself for Personal). Editors
  * get Edit; only the HR owner gets the access page link and account linking.
  */
 export function PersonProfile({ tenant, context, readonly, platform, employeeId }: {
@@ -41,6 +45,7 @@ export function PersonProfile({ tenant, context, readonly, platform, employeeId 
   const [tab, setTab] = useState<ProfileSection>("overview");
   const [editing, setEditing] = useState<Department[] | null>(null);
   const [opening, setOpening] = useState(false);
+  const [leaving, setLeaving] = useState<"leave" | "rehire" | null>(null);
   const [message, setMessage] = useState("");
   const [reloadFailed, setReloadFailed] = useState(false);
   const fetchProfile = useCallback(async (): Promise<Loaded> => {
@@ -64,6 +69,7 @@ export function PersonProfile({ tenant, context, readonly, platform, employeeId 
   if ("failed" in loaded) return <div className="space-y-4">{back}
     <Notice error>We could not load this person. Reload the page and try again.</Notice></div>;
   const { person, sections, can_edit: canEdit } = loaded.profile;
+  const profile = loaded.profile;
   const tabs = profileTabs(sections);
   const shown = tabs.some(item => item.value === tab) ? tab : "overview";
 
@@ -76,20 +82,41 @@ export function PersonProfile({ tenant, context, readonly, platform, employeeId 
     finally { setOpening(false); }
   }
 
+  const summary = leavingSummary(person);
+  const done = (text: string) => { setLeaving(null); setMessage(text); void reload(); };
+  const overview = <Panel title={person.display_name}>
+    <PersonOverview person={person} />
+    {summary && <p className="mt-4 text-sm font-medium">{summary}</p>}
+    <div className="mt-5 flex flex-wrap gap-2">
+      {canEdit && !readonly && <button type="button" className={action} disabled={opening}
+        onClick={() => void startEditing()}>Edit</button>}
+      {canMarkLeaving(profile, readonly) && <button type="button" className={secondary}
+        onClick={() => { setMessage(""); setLeaving("leave"); }}>Mark as leaving</button>}
+      {canRehire(profile, readonly) && <button type="button" className={secondary}
+        onClick={() => { setMessage(""); setLeaving("rehire"); }}>Rehire</button>}
+    </div>
+    {canUndoLeaving(profile, readonly) && <UndoLeaving key={person.version ?? 0} tenant={tenant} person={person}
+      onDone={done} onReload={() => void reload()} />}
+  </Panel>;
+
   return <div className="space-y-5">
     {back}
     {message && <Notice>{message}</Notice>}
     {reloadFailed && <Notice error>We could not reload this person. Reload the page and try again.</Notice>}
     {tabs.length > 1 && <Tabs value={shown} onChange={value => { setTab(value); setMessage(""); }} items={tabs} />}
-    {shown === "overview" && (editing
-      ? <PersonForm key={person.version ?? 0} tenant={tenant} context={context} platform={platform} mode="update"
-        person={person} departments={editing} onCancel={() => setEditing(null)} onReload={() => void reload()}
-        onSaved={() => { setEditing(null); setMessage("Changes saved."); void reload(); }} />
-      : <Panel title={person.display_name}>
-        <PersonOverview person={person} />
-        {canEdit && !readonly && <button type="button" className={`${action} mt-5`} disabled={opening}
-          onClick={() => void startEditing()}>Edit</button>}
-      </Panel>)}
+    {shown === "overview" && (leaving === "leave"
+      ? <LeavingForm key={person.version ?? 0} tenant={tenant} person={person} onCancel={() => setLeaving(null)}
+        onReload={() => { setLeaving(null); void reload(); }} onDone={() => done("Marked as leaving.")} />
+      : leaving === "rehire"
+        ? <RehireForm key={person.version ?? 0} tenant={tenant} person={person} onCancel={() => setLeaving(null)}
+          onReload={() => { setLeaving(null); void reload(); }} onDone={done} />
+        : editing
+          ? <PersonForm key={person.version ?? 0} tenant={tenant} context={context} platform={platform} mode="update"
+            person={person} departments={editing} onCancel={() => setEditing(null)} onReload={() => void reload()}
+            onSaved={() => { setEditing(null); setMessage("Changes saved."); void reload(); }} />
+          : overview)}
+    {shown === "personal" && <PersonalSection tenant={tenant} employeeId={person.employee_id} readonly={readonly} />}
+    {shown === "documents" && <DocumentsSection tenant={tenant} employeeId={person.employee_id} canManage={canEdit && !readonly} />}
     {shown === "access" && <AccessSection tenant={tenant} employeeId={person.employee_id} owner={context.client_owner}
       readonly={readonly} platform={platform} onLinked={() => void reload()} />}
     {shown === "history" && <HistorySection tenant={tenant} employeeId={person.employee_id} version={person.version} />}

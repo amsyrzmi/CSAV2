@@ -151,6 +151,32 @@ class MemberOut(Contract):
     is_enabled: bool
 
 
+class HrOwnerPerson(Contract):
+    user_id: UUID
+    display_name: str
+    # False when their account or membership is disabled or their role is read_only.
+    usable: bool
+
+
+class HrOwnerOut(Contract):
+    # False when the company's HR package isn't active; owner is then null too.
+    available: bool
+    owner: HrOwnerPerson | None
+
+
+class HrOwnerMoveIn(Contract):
+    client_id: UUID
+    new_owner_id: UUID
+    # Required: null says "no owner yet" on purpose, it is never a field left out.
+    expected_owner_id: UUID | None
+
+
+class HrOwnerMoveOut(Contract):
+    # Who holds the title now. A retry after a later move names the later owner.
+    owner: HrOwnerPerson
+    mail: Literal["sent", "not_sent", "repeat"]
+
+
 class AuditOut(Contract):
     id: UUID
     actor_id: UUID | None

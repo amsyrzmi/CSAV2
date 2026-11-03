@@ -23,7 +23,7 @@ export interface PeopleTabProps {
   view: PeopleListView;
 }
 
-const STATUS_TONES: Record<PersonStatus, StatusTone> = { active: "success", starting: "info", left: "neutral" };
+const STATUS_TONES: Record<PersonStatus, StatusTone> = { active: "success", starting: "info", leaving: "attention", left: "neutral" };
 
 /** The People tab: a switcher between the list, the org chart and (for editors) departments. */
 export function PeopleTab({ tenant, context, readonly, platform, view }: PeopleTabProps) {
@@ -137,6 +137,7 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
         <select className={`${field} mt-1`} name="status" defaultValue="all">
           <option value="all">Active and starting</option>
           <option value="active">{STATUS_LABELS.active}</option><option value="starting">{STATUS_LABELS.starting}</option>
+          {canEdit && <option value="leaving">{STATUS_LABELS.leaving}</option>}
           {canEdit && <option value="left">{STATUS_LABELS.left}</option>}
         </select></label>
       {filtered && <div className="flex items-end">

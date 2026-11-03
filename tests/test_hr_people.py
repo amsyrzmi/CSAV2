@@ -59,6 +59,9 @@ PEOPLE_COLUMNS = [
     "employment_category",
     "version",
     "account_user_id",
+    "last_day",
+    "leaving_reason",
+    "leaving_note",
 ]
 HR_ONLY = ("region", "legal_entity_reference", "employment_category", "version", "account_user_id")
 READ_FUNCTIONS = (
@@ -449,7 +452,8 @@ async def test_history_records_directory_field_changes_with_old_and_new(world: H
     # The HR read: newest first, named actors, a platform admin as "FourStacks admin".
     history = await read_as(world, "owner", "hr/employee_changes.sql", (world.tenant, staff, 10))
     assert [row["changes"] for row in history] == [row["changes"] for row in reversed(rows)]
-    assert [row["actor_name"] for row in history] == ["FourStacks admin", names["owner"], None]
+    # The fixture's insert ran without an HR user: a system write, shown as "System".
+    assert [row["actor_name"] for row in history] == ["FourStacks admin", names["owner"], "System"]
     assert history == sorted(history, key=lambda row: row["changed_at"], reverse=True)
     assert (
         len(await read_as(world, "owner", "hr/employee_changes.sql", (world.tenant, staff, 2))) == 2
@@ -1676,7 +1680,8 @@ async def test_left_people_are_hr_only(world: HrWorld) -> None:
 async def test_self_viewer_has_no_people_list_but_sees_own_profile(world: HrWorld) -> None:
     await get_refused(world, "staff", PEOPLE, 404, "resource_unavailable")
     profile = await get_ok(world, "staff", f"{PEOPLE}/{world.employees['staff']}")
-    assert profile["sections"] == ["overview"] and profile["can_edit"] is False
+    assert profile["sections"] == ["overview", "personal", "documents"]
+    assert profile["can_edit"] is False
     assert profile["person"]["employee_id"] == str(world.employees["staff"])
     assert profile["person"]["version"] is None and profile["person"]["account_linked"] is None
     for other in ("manager", "owner", "outsider"):
@@ -1709,7 +1714,8 @@ async def test_profile_sections_and_editing_by_viewer(world: HrWorld) -> None:
         (world.tenant, staff),
     )
     owner = await get_ok(world, "owner", f"{PEOPLE}/{staff}")
-    assert owner["sections"] == ["overview", "access", "history"] and owner["can_edit"] is True
+    assert owner["sections"] == ["overview", "personal", "documents", "access", "history"]
+    assert owner["can_edit"] is True
     assert isinstance(owner["person"]["version"], int)
     assert owner["person"]["employment_profile"] == {
         "region": "sabah",
@@ -1741,7 +1747,8 @@ async def test_profile_sections_and_editing_by_viewer(world: HrWorld) -> None:
     # A people manager is an HR viewer who can edit.
     await make_people_manager(world)
     holder = await get_ok(world, "operator", f"{PEOPLE}/{staff}")
-    assert holder["sections"] == ["overview", "access", "history"] and holder["can_edit"] is True
+    assert holder["sections"] == ["overview", "documents", "access", "history"]
+    assert holder["can_edit"] is True
 
 
 async def test_history_and_access_reads_are_hr_only(world: HrWorld) -> None:
@@ -1753,7 +1760,7 @@ async def test_history_and_access_reads_are_hr_only(world: HrWorld) -> None:
     latest, created = history["items"]
     assert latest["actor_name"] == names["owner"]
     assert latest["fields"] == [{"field": "job_title", "old": "Trainer", "new": "Lead Trainer"}]
-    assert created["actor_name"] is None
+    assert created["actor_name"] == "System"  # the fixture's insert ran without an HR user
     assert {f["field"] for f in created["fields"]} >= {"display_name", "job_title", "department"}
     assert latest["changed_at"] >= created["changed_at"]
 

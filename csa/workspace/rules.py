@@ -141,7 +141,8 @@ CORRECTION_NOTES: dict[str, str] = {
     OPTION_TOO_LONG: "Keep every clarification option short, with a label under 100 "
     "characters, a value under 200 characters and no email addresses.",
     CONTRACT_INVALID: "Return one JSON object that matches the schema exactly; for "
-    "email_compose set exactly one of recipient_employee_id and recipient_address.",
+    "email_compose set exactly one of recipient_employee_id and recipient_address; for "
+    "people_query set reports_to or department.",
 }
 
 

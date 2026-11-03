@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
+from csa.hr.automation_models import PersonalSave, PersonalValues, PersonLeave
 from csa.hr.people_contracts import HrPersonOut
 from csa.hr.people_rules import (
     history_fields,
@@ -19,6 +21,7 @@ from csa.hr.people_rules import (
     sections_for,
     select,
 )
+from csa.hr.personal import mask
 from csa.hr.policy import HrPolicyError
 from pydantic import ValidationError
 
@@ -35,6 +38,17 @@ def test_status_active_starting_left():
     assert person_status(True, D, D) == "active"
     assert person_status(True, D + timedelta(days=1), D) == "starting"
     assert person_status(False, D - timedelta(days=9), D) == "left"
+
+
+def test_person_status_leaving_until_last_day():
+    assert person_status(True, None, D, D + timedelta(days=3)) == "leaving"
+    assert person_status(True, None, D, D) == "leaving"  # all of the last day
+    # The day after, the person stays active until the maintenance finishes them.
+    assert person_status(True, None, D, D - timedelta(days=1)) == "active"
+    assert person_status(False, None, D, D) == "left"
+    # Leaving wins over starting; no last day keeps the 1a statuses.
+    assert person_status(True, D + timedelta(days=2), D, D + timedelta(days=9)) == "leaving"
+    assert person_status(True, D + timedelta(days=2), D, None) == "starting"
 
 
 def test_kl_today_uses_malaysia_time():
@@ -178,9 +192,192 @@ def test_history_fields_fixed_order_drops_unknown():
 
 
 def test_sections_for_viewer():
-    assert sections_for("hr") == ["overview", "access", "history"]
-    assert sections_for("directory") == ["overview"]
-    assert sections_for("self") == ["overview"]
+    assert sections_for("hr", personal=False, documents=False) == ["overview", "access", "history"]
+    assert sections_for("directory", personal=False, documents=False) == ["overview"]
+    assert sections_for("self", personal=False, documents=False) == ["overview"]
+
+
+def test_sections_for_orders_personal_and_documents():
+    assert sections_for("hr", personal=True, documents=True) == [
+        "overview",
+        "personal",
+        "documents",
+        "access",
+        "history",
+    ]
+    # A Manage people holder without Sensitive details sees documents but not personal details.
+    assert sections_for("hr", personal=False, documents=True) == [
+        "overview",
+        "documents",
+        "access",
+        "history",
+    ]
+    assert sections_for("self", personal=True, documents=True) == [
+        "overview",
+        "personal",
+        "documents",
+    ]
+    assert sections_for("directory", personal=False, documents=False) == ["overview"]
+
+
+def test_history_fields_keep_personal_names_without_values():
+    out = history_fields(
+        {
+            "tax_number": {"old": None, "new": None},
+            "home_address": {"old": None, "new": None},
+            "ic_or_passport": {},
+            "job_title": {"old": "A", "new": "B"},
+        }
+    )
+    assert [f.field for f in out] == ["job_title", "home_address", "ic_or_passport", "tax_number"]
+    assert all(f.old is None and f.new is None for f in out[1:])
+
+
+def test_mask_shows_last_four_only():
+    assert mask("900101145678") == "•••• 5678"
+    assert mask("12345") == "•••• 2345"
+    assert mask("1234") == "••••"
+    assert mask("") == "••••"
+    assert mask(None) is None
+
+
+def numbers(**kw: str | None) -> dict[str, Any]:
+    return {
+        "operation": "personal.save",
+        "employee_id": str(uuid4()),
+        "expected_version": None,
+        "values": {},
+        "encrypted": kw,
+    }
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("ic_or_passport", "AB1"),  # too short
+        ("ic_or_passport", "A" * 21),
+        ("ic_or_passport", "BAD!!VALUE"),
+        ("ic_or_passport", "900101 14 5678"),  # spaces are not allowed
+        ("bank_account", "1234"),
+        ("bank_account", "1" * 35),
+        ("bank_account", "ABCDE12345"),
+        ("tax_number", "SG1"),
+        ("tax_number", "SG-1234567"),
+        ("tax_number", "x" * 21),
+        ("epf_number", "1234"),
+        ("epf_number", "12345A"),
+        ("epf_number", "1" * 21),
+        ("socso_number", "A-1"),
+        ("socso_number", "AB 12345"),
+        ("socso_number", "1" * 21),
+        ("ic_or_passport", ""),
+    ],
+)
+def test_personal_values_reject_bad_numbers(field: str, value: str):
+    with pytest.raises(ValidationError) as caught:
+        PersonalSave(**numbers(**{field: value}))
+    # The refusal never repeats the submitted value.
+    if value:
+        assert value not in str(caught.value)
+        assert value not in repr(caught.value.errors(include_input=False))
+
+
+def test_home_address_keeps_line_breaks_and_nothing_else_is_a_control():
+    two = PersonalValues(home_address="1 Road\r\nTaman X\nKL")
+    assert two.home_address == "1 Road\nTaman X\nKL"
+    # The limit counts the normalised text.
+    assert PersonalValues(home_address="a" * 250 + "\r\n" + "a" * 249).home_address is not None
+    with pytest.raises(ValidationError):
+        PersonalValues(home_address="a" * 250 + "\r\n" + "a" * 250)
+    for bad in ("1 Road\tTaman", "1 Road\x00", "1 Road\rTaman", "1 Road\x1b[0m", "1\x7fRoad"):
+        with pytest.raises(ValidationError) as caught:
+            PersonalValues(home_address=bad)
+        assert "Road" not in str(caught.value.errors(include_input=False))
+    # Only the address may hold a line break.
+    for field in ("emergency_name", "emergency_relationship", "bank_name"):
+        with pytest.raises(ValidationError):
+            PersonalValues.model_validate({field: "a\nb"})
+
+
+def test_every_number_is_uppercased_on_the_way_in():
+    body = PersonalSave(
+        **numbers(
+            ic_or_passport="ab-12345",
+            tax_number=" sg 12345678 ",
+            socso_number="a-12345",
+            epf_number="12345678",
+        )
+    )
+    shown = {k: v.get_secret_value() for k, v in body.encrypted.items() if v is not None}
+    assert shown == {
+        "ic_or_passport": "AB-12345",
+        "tax_number": "SG 12345678",
+        "socso_number": "A-12345",
+        "epf_number": "12345678",
+    }
+
+
+def test_personal_numbers_are_normalised_and_hidden():
+    body = PersonalSave(
+        **numbers(
+            ic_or_passport=" ab-12345 ",
+            bank_account="1234 5678-90",
+            tax_number="SG 12345",
+            epf_number="12345678",
+            socso_number="A-12345",
+        )
+    )
+    shown = {k: v.get_secret_value() for k, v in body.encrypted.items() if v is not None}
+    assert shown["ic_or_passport"] == "AB-12345"
+    assert shown["bank_account"] == "1234 5678-90"
+    assert "AB-12345" not in repr(body) and "AB-12345" not in str(body.model_dump())
+    # null clears a number and is allowed for every field.
+    cleared = PersonalSave(**numbers(tax_number=None, epf_number=None))
+    assert cleared.encrypted == {"tax_number": None, "epf_number": None}
+    # Another key is not a number.
+    with pytest.raises(ValidationError):
+        PersonalSave(**numbers(home_address="1 Road"))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"home_address": "x" * 501},
+        {"personal_phone": "call me"},
+        {"personal_phone": "12"},
+        {"emergency_name": "x" * 121},
+        {"emergency_relationship": "x" * 61},
+        {"emergency_phone": "+60 12 abc"},
+        {"bank_name": "x" * 101},
+        {"home_address": ""},
+        {"date_of_birth": "2999-01-01"},
+        {"nickname": "x"},
+    ],
+)
+def test_personal_values_reject_bad_plain_fields(values: dict[str, Any]):
+    with pytest.raises(ValidationError):
+        PersonalValues(**values)
+
+
+def test_personal_values_accept_the_limits_and_track_which_keys_were_sent():
+    values = PersonalValues(
+        home_address="x" * 500,
+        personal_phone="+60 (12) 345-6789",
+        emergency_name="x" * 120,
+        emergency_relationship="x" * 60,
+        emergency_phone="999",
+        bank_name="x" * 100,
+        date_of_birth=date(1990, 2, 3),
+    )
+    assert values.date_of_birth == date(1990, 2, 3)
+    only = PersonalValues(home_address=None)
+    assert only.model_fields_set == {"home_address"} and only.home_address is None
+    assert PersonalValues().model_fields_set == set()
+    # Born today is allowed; tomorrow is not.
+    today = datetime.now(UTC).astimezone(ZoneInfo("Asia/Kuala_Lumpur")).date()
+    assert PersonalValues(date_of_birth=today).date_of_birth == today
+    with pytest.raises(ValidationError):
+        PersonalValues(date_of_birth=today + timedelta(days=1))
 
 
 def _row(**kw: Any) -> dict[str, Any]:
@@ -230,3 +427,106 @@ def test_person_from_row_hr_view_profile_and_account_flag():
 def test_contracts_forbid_extra_fields():
     with pytest.raises(ValidationError):
         HrPersonOut.model_validate({**person().model_dump(), "ic_number": "x"})
+
+
+def test_history_fields_carry_a_document_change_in_its_place() -> None:
+    changes = {
+        "document": {"old": None, "new": "Contract: offer.pdf"},
+        "job_title": {"old": "A", "new": "B"},
+    }
+    assert [(f.field, f.old, f.new) for f in history_fields(changes)] == [
+        ("job_title", "A", "B"),
+        ("document", None, "Contract: offer.pdf"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "expected"),
+    [
+        ("a.pdf", b"%PDF-1.7 x", "pdf"),
+        ("A.JPEG", b"\xff\xd8\xff\xe0x", "jpg"),
+        ("a.jpg", b"\xff\xd8\xffx", "jpg"),
+        ("a.png", b"\x89PNG\r\n\x1a\nx", "png"),
+    ],
+)
+def test_sniff_accepts_content_that_matches_the_extension(
+    name: str, data: bytes, expected: str
+) -> None:
+    from csa.hr.documents import sniff
+
+    assert sniff(data, name) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "code"),
+    [
+        ("a.pdf", b"\x89PNG\r\n\x1a\nx", "hr_document_type_unsupported"),
+        ("a.pdf", b"", "hr_document_empty"),
+        ("a.gif", b"GIF89a", "hr_document_type_unsupported"),
+        ("a.docx", b"PK\x03\x04 truncated", "hr_document_type_unsupported"),
+        ("pdf", b"%PDF-", "hr_document_type_unsupported"),
+    ],
+)
+def test_sniff_refuses_content_that_lies_or_is_empty(name: str, data: bytes, code: str) -> None:
+    from csa.hr.documents import sniff
+
+    with pytest.raises(HrPolicyError, match=code):
+        sniff(data, name)
+
+
+def _leave(**kw: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "operation": "person.leave",
+        "employee_id": str(uuid4()),
+        "expected_version": 2,
+        "last_day": "2026-11-30",
+        "reason": "resigned",
+    }
+    return {**base, **kw}
+
+
+def test_leave_body_requires_note_for_other() -> None:
+    plain = PersonLeave.model_validate(_leave())
+    assert plain.note is None and plain.reports_new_manager is None
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="other"))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="other", note="   "))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="other", note="x" * 201))
+    other = PersonLeave.model_validate(_leave(reason="other", note=" Moving abroad "))
+    assert (other.reason, other.note) == ("other", "Moving abroad")
+    assert PersonLeave.model_validate(_leave(note="x" * 200)).note == "x" * 200
+    for reason in ("resigned", "contract_ended", "dismissed", "retired", "other"):
+        PersonLeave.model_validate(_leave(reason=reason, note="Synthetic note"))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(reason="fired"))
+    with pytest.raises(ValidationError):
+        PersonLeave.model_validate(_leave(expected_version=None))
+
+
+def test_person_from_row_leaving_fields_by_what_the_row_holds() -> None:
+    last = D + timedelta(days=5)
+    hr = person_from_row(
+        _row(last_day=last, leaving_reason="other", leaving_note="Moving abroad", version=1), D, {}
+    )
+    assert (hr.status, hr.last_day) == ("leaving", last)
+    assert hr.leaving is not None and (hr.leaving.reason, hr.leaving.note) == (
+        "other",
+        "Moving abroad",
+    )
+    # A manager's row: the last day, no reason.
+    managed = person_from_row(_row(last_day=last, leaving_reason=None, leaving_note=None), D, {})
+    assert (managed.status, managed.last_day, managed.leaving) == ("leaving", last, None)
+    # A colleague's row (and every 1a-shaped row): active, nothing about leaving.
+    colleague = person_from_row(_row(), D, {})
+    assert (colleague.status, colleague.last_day, colleague.leaving) == ("active", None, None)
+
+
+def test_history_fields_place_the_leaving_fields() -> None:
+    changes = {
+        "leaving_reason": {"old": None, "new": "resigned"},
+        "last_day": {"old": None, "new": "2026-11-30"},
+        "active": {"old": "true", "new": "false"},
+    }
+    assert [f.field for f in history_fields(changes)] == ["active", "last_day", "leaving_reason"]

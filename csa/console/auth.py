@@ -9,7 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from csa.console.contracts import (
@@ -17,6 +17,9 @@ from csa.console.contracts import (
     AuditOut,
     ConsoleActor,
     EmailInput,
+    HrOwnerMoveIn,
+    HrOwnerMoveOut,
+    HrOwnerOut,
     InvitationOut,
     InviteIn,
     IssuedTokenOut,
@@ -206,6 +209,9 @@ LifecycleActor = Annotated[ConsoleActor, Depends(_lifecycle_actor)]
 
 
 def build_identity_router() -> APIRouter:
+    # Here, not at the top: csa.console.hr_owner reads the mail helpers above from this module.
+    from csa.console.hr_owner import move_hr_owner, read_hr_owner
+
     router = APIRouter(
         prefix="/console/v1", tags=["console identity"], dependencies=[Depends(_no_store)]
     )
@@ -356,6 +362,22 @@ def build_identity_router() -> APIRouter:
     @router.get("/team", response_model=list[MemberOut])
     async def team(actor: Actor, service: Service, client_id: UUID) -> list[Any]:
         return await service.members(actor, client_id)
+
+    @router.get("/team/hr-owner", response_model=HrOwnerOut)
+    async def hr_owner(
+        request: Request, actor: Actor, service: Service, client_id: UUID
+    ) -> HrOwnerOut:
+        return await read_hr_owner(request, actor, service, client_id)
+
+    @router.post("/team/hr-owner", response_model=HrOwnerMoveOut)
+    async def hr_owner_move(
+        body: HrOwnerMoveIn,
+        request: Request,
+        actor: Mutation,
+        service: Service,
+        request_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+    ) -> HrOwnerMoveOut:
+        return await move_hr_owner(request, body, actor, service, request_key)
 
     @router.patch("/team/{user_id}", status_code=204)
     async def member_patch(

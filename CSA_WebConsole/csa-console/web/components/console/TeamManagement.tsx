@@ -20,6 +20,7 @@ import { servicesClient } from "@/lib/services-api";
 import { formatDateTime } from "@/lib/subscriptions-api";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 import SlideOver from "./fs/SlideOver";
+import { HrOwnerPanel } from "./HrOwnerPanel";
 import { InvitationList } from "./InvitationList";
 import MemberCard from "./team/MemberCard";
 
@@ -41,12 +42,12 @@ interface Shown {
 export function TeamManagement({
   platform = false,
   clientId = null,
-  selfId,
+  currentUserId,
 }: {
   platform?: boolean;
   clientId?: string | null;
   /** The signed-in user's id, so a change to one's own access says "You will be signed out". */
-  selfId?: string;
+  currentUserId?: string;
 }) {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [selected, setSelected] = useState(clientId ?? "");
@@ -405,6 +406,7 @@ export function TeamManagement({
         // One calm column: an opened card pushes the next one down instead of leaving a gap beside it.
         // The bottom padding keeps the last row clear of the floating assistant button on phones.
         <div className="max-w-3xl space-y-5 pb-20 md:pb-0">
+          <HrOwnerPanel key={selected} clientId={selected} members={members ?? []} currentUserId={currentUserId} />
           {shown && (
             <div
               ref={linkPanel}
@@ -507,7 +509,7 @@ export function TeamManagement({
                     key={member.user_id}
                     member={member}
                     platform={platform}
-                    selfId={selfId}
+                    selfId={currentUserId}
                     busy={busy}
                     onChange={update}
                     onReset={(target) => void reset(target)}

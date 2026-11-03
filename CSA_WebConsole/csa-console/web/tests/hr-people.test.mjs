@@ -25,7 +25,7 @@ test("the pinned labels and sentinels", () => {
   assert.deepEqual(EMPLOYMENT_TYPES, [
     ["full_time", "Full-time"], ["part_time", "Part-time"], ["contract", "Contract"], ["intern", "Intern"],
   ]);
-  assert.deepEqual(STATUS_LABELS, { active: "Active", starting: "Starting", left: "Left" });
+  assert.deepEqual(STATUS_LABELS, { active: "Active", starting: "Starting", leaving: "Leaving", left: "Left" });
   assert.equal(NO_MANAGER, "");
   assert.equal(NEW_DEPARTMENT, "__new__");
   assert.equal(PEOPLE_COPY.noManager, "No manager (top of company)");
@@ -331,7 +331,9 @@ test("profileTabs labels the server's sections in the server's order", () => {
   ]);
   assert.deepEqual(profileTabs(["overview"]), [{ value: "overview", label: "Overview" }]);
   assert.deepEqual(profileTabs(["history", "overview"]).map((tab) => tab.value), ["history", "overview"]);
-  assert.deepEqual(profileTabs(["overview", "personal"]), [{ value: "overview", label: "Overview" }]);
+  assert.deepEqual(profileTabs(["overview", "personal", "documents", "access", "history"]).map((tab) => tab.label),
+    ["Overview", "Personal", "Documents", "Access", "History"]);
+  assert.deepEqual(profileTabs(["overview", "payroll", "__proto__"]), [{ value: "overview", label: "Overview" }]);
 });
 
 test("personFormValues prefills every field and the employment profile from the person (full replace)", () => {

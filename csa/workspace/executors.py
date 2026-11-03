@@ -100,6 +100,37 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "approve_value": "approve",
         "reject_value": "reject",
         "label_reply": "Reply",
+        "hr_add_title": "Add {name} to People",
+        "hr_add_summary": "Add a new person. Nothing changes until you select Confirm.",
+        "hr_update_title": "Update {name}",
+        "hr_update_summary": "Change {name}'s details.",
+        "hr_leave_title": "Mark {name} as leaving",
+        "hr_leave_summary": "{name}'s last day is {day}. Their direct reports move to the new "
+        "manager on that day.",
+        "label_name": "Name",
+        "label_job_title": "Job title",
+        "label_department": "Department",
+        "label_manager": "Manager",
+        "label_work_phone": "Work phone",
+        "label_work_email": "Work email",
+        "label_employment_type": "Employment type",
+        "label_start_date": "Start date",
+        "label_last_day": "Last day",
+        "label_reason": "Reason",
+        "label_reports_manager": "Reports' new manager",
+        "change": "{old} → {new}",
+        "none": "None",
+        "no_manager": "No manager",
+        "new_department": "{name} (new)",
+        "type_full_time": "Full time",
+        "type_part_time": "Part time",
+        "type_contract": "Contract",
+        "type_intern": "Intern",
+        "reason_resigned": "Resigned",
+        "reason_contract_ended": "Contract ended",
+        "reason_dismissed": "Dismissed",
+        "reason_retired": "Retired",
+        "reason_other": "Other",
     },
     "ms": {
         "training_new_title": "Hantar permohonan latihan baharu",
@@ -130,6 +161,38 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "approve_value": "Lulus",
         "reject_value": "Tolak",
         "label_reply": "Balasan",
+        "hr_add_title": "Tambah {name} ke People",
+        "hr_add_summary": "Tambah orang baharu. Tiada apa-apa berubah sehingga anda memilih "
+        "Sahkan.",
+        "hr_update_title": "Kemas kini {name}",
+        "hr_update_summary": "Tukar butiran {name}.",
+        "hr_leave_title": "Tandakan {name} akan berhenti",
+        "hr_leave_summary": "Hari terakhir {name} ialah {day}. Orang bawahan langsungnya "
+        "berpindah kepada pengurus baharu pada hari itu.",
+        "label_name": "Nama",
+        "label_job_title": "Jawatan",
+        "label_department": "Jabatan",
+        "label_manager": "Pengurus",
+        "label_work_phone": "Telefon kerja",
+        "label_work_email": "E-mel kerja",
+        "label_employment_type": "Jenis pekerjaan",
+        "label_start_date": "Tarikh mula",
+        "label_last_day": "Hari terakhir",
+        "label_reason": "Sebab",
+        "label_reports_manager": "Pengurus baharu orang bawahan",
+        "change": "{old} → {new}",
+        "none": "Tiada",
+        "no_manager": "Tiada pengurus",
+        "new_department": "{name} (baharu)",
+        "type_full_time": "Sepenuh masa",
+        "type_part_time": "Separuh masa",
+        "type_contract": "Kontrak",
+        "type_intern": "Pelatih",
+        "reason_resigned": "Letak jawatan",
+        "reason_contract_ended": "Kontrak tamat",
+        "reason_dismissed": "Diberhentikan",
+        "reason_retired": "Bersara",
+        "reason_other": "Lain-lain",
     },
 }
 
@@ -591,6 +654,9 @@ class InboxDecisionExecutor:
 
 
 def build_proposal_registry() -> ProposalRegistry:
+    # Imported here: csa.workspace.hr_people uses this module's card text and keys.
+    from csa.workspace.hr_people import HrPersonExecutor
+
     return ProposalRegistry(
         {
             "training_submit": TrainingSubmitExecutor(),
@@ -598,5 +664,6 @@ def build_proposal_registry() -> ProposalRegistry:
             "email_send": EmailSendExecutor(),
             "inbox_decision": InboxDecisionExecutor(),
             "subscription_action": SubscriptionActionExecutor(),
+            "hr_person": HrPersonExecutor(),
         }
     )

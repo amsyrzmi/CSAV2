@@ -1,12 +1,13 @@
-"""Real browser acceptance for the HR "Who can do what" page.
+"""Real browser acceptance for the HR "Who can do what" page and a person's profile.
 
 The real Next.js shell runs unmodified from a disposable staged copy, as in
 `test_subscriptions_browser.py`: its layouts fetch `/auth/me` and `/services/active`
 server-side from a loopback stub, and Playwright answers every browser-side
 `/console/v1/**` call from a synthetic company. The stub applies the owner's saved
 switches to what each member's HR context and directory then show, so the second
-browser context proves the change is visible to the member. Any call the stub does
-not expect fails the test.
+browser context proves the change is visible to the member. The second scenario has
+the HR owner use a profile's Personal and Documents sections and mark the person as
+leaving, then undo it. Any call the stub does not expect fails the test.
 """
 
 from __future__ import annotations
@@ -16,10 +17,12 @@ import contextlib
 import os
 import shutil
 import subprocess
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -52,6 +55,7 @@ SWITCHES = [
     "approves_team",
     "hr_team",
     "manage_people",
+    "sensitive_details",
     "recruitment",
     "attendance",
     "payroll_prepare",
@@ -59,6 +63,10 @@ SWITCHES = [
 ]
 DIRECTORY_LABEL = "See everyone's basic details"
 TITLE = "Warehouse supervisor"
+OWNER_LINE = (
+    "HR owner: full control of HR access, plus recruitment, attendance, leave "
+    "and training decisions."
+)
 
 
 class World:
@@ -150,7 +158,12 @@ class World:
             request = request_route.request
             path, _, query = request.url.split("/console/v1/")[1].partition("?")
             params = {key: values[0] for key, values in parse_qs(query).items()}
-            body = request.post_data_json if request.method in {"POST", "PUT"} else None
+            body: Any = None
+            if request.method in {"POST", "PUT"}:
+                # An upload is multipart: its raw bytes are kept for the stub to check.
+                json_body = "application/json" in request.headers.get("content-type", "")
+                body = request.post_data_json if json_body else request.post_data_buffer
+            key = request.headers.get("idempotency-key")
             self.calls.append(
                 {
                     "caller": caller,
@@ -158,6 +171,7 @@ class World:
                     "path": path,
                     "params": params,
                     "body": body,
+                    "key": key,
                 }
             )
             status, data = self.answer(caller, request.method, path, params, body)
@@ -280,7 +294,166 @@ class World:
         return 500, {"detail": "unexpected synthetic call"}
 
 
-async def test_hr_access_owner_changes_two_people_and_staff_sees_it(tmp_path: Path) -> None:
+LEAVER = STAFF  # Lina Wong, whose profile the HR owner works on
+IC_MASK = "\u2022\u2022\u2022\u2022 5678"
+IC_NUMBER = "900101-14-5678"  # synthetic
+FILE_NAME = "offer-letter.pdf"
+PDF = b"%PDF-1.4\n% synthetic contract for the browser scenario\n%%EOF\n"
+DOCUMENT_ID = "66666666-6666-4666-8666-000000000001"
+DOWNLOAD_PATH = f"/console/v1/hr/documents/{DOCUMENT_ID}/download"
+SECTIONS = ["overview", "personal", "documents", "access", "history"]
+LEAVING_OPERATIONS = {"person.leave", "person.leave_undo"}
+
+
+class RecordsWorld(World):
+    """The same company, plus one person's personal details, documents and leaving date."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.person_version = 3
+        self.last_day: str | None = None
+        self.documents: list[dict[str, Any]] = []
+        self.uploads: list[dict[str, Any]] = []
+        self.reveals: list[str] = []
+
+    def full_person(self, user: str) -> dict[str, Any]:
+        row = self.people[user]
+        boss = next((other for other in self.people if EMPLOYEE[other] == row["manager"]), None)
+        leaving = user == LEAVER and self.last_day is not None
+        return {
+            "employee_id": EMPLOYEE[user],
+            "display_name": row["name"],
+            "job_title": row["title"],
+            "department_id": None,
+            "department": row["department"],
+            "manager_id": row["manager"],
+            "manager_name": self.people[boss]["name"] if boss else None,
+            "work_email": None,
+            "work_phone": None,
+            "start_date": "2025-01-06",
+            "employment_type": "full_time",
+            "status": "leaving" if leaving else "active",
+            "last_day": self.last_day if user == LEAVER else None,
+            "leaving": {"reason": "resigned", "note": None} if leaving else None,
+            "employment_profile": None,
+            "version": self.person_version if user == LEAVER else 1,
+            "account_linked": True,
+        }
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if caller != OWNER or params.get("client_id") != TENANT:
+            return super().answer(caller, method, path, params, body)
+        person = f"hr/people/{EMPLOYEE[LEAVER]}"
+        if path == "hr/people" and method == "GET":
+            items = [self.full_person(user) for user in self.people]
+            return 200, {"items": items, "next_cursor": None, "total": len(items)}
+        if path == person and method == "GET":
+            return 200, {"person": self.full_person(LEAVER), "sections": SECTIONS, "can_edit": True}
+        if path == f"{person}/personal" and method == "GET":
+            return 200, {
+                "ic_or_passport": IC_MASK,
+                "date_of_birth": "1990-01-01",
+                "home_address": None,
+                "personal_phone": None,
+                "emergency_name": None,
+                "emergency_relationship": None,
+                "emergency_phone": None,
+                "bank_name": None,
+                "bank_account": None,
+                "tax_number": None,
+                "epf_number": None,
+                "socso_number": None,
+                "version": 2,
+                "can_edit": "all",
+            }
+        if path == f"{person}/personal/reveal" and method == "POST":
+            self.reveals.append(body["field"])
+            return 200, {"value": IC_NUMBER if body == {"field": "ic_or_passport"} else None}
+        if path == f"{person}/documents" and method == "GET":
+            return 200, {"items": self.documents}
+        if path == f"{person}/documents" and method == "POST":
+            self.uploads.append({"kind": params.get("kind"), "body": body})
+            document = {
+                "document_id": DOCUMENT_ID,
+                "kind": params.get("kind"),
+                "file_name": FILE_NAME,
+                "media_type": "application/pdf",
+                "byte_size": len(PDF),
+                "uploaded_at": "2026-11-02T02:00:00Z",
+                "uploaded_by_name": self.people[OWNER]["name"],
+            }
+            self.documents = [document]
+            return 201, document
+        if path == "hr/org-chart" and method == "GET":
+            nodes = [
+                {
+                    key: self.full_person(user)[key]
+                    for key in (
+                        "employee_id",
+                        "display_name",
+                        "job_title",
+                        "department",
+                        "manager_id",
+                    )
+                }
+                for user in self.people
+            ]
+            return 200, {"nodes": nodes, "looped": []}
+        if path == "hr/operations" and method == "POST" and body["operation"] in LEAVING_OPERATIONS:
+            if body["employee_id"] != EMPLOYEE[LEAVER]:
+                return 404, {"detail": "resource_unavailable"}
+            if body["expected_version"] != self.person_version:
+                return 409, {"detail": "person_changed"}
+            self.last_day = body["last_day"] if body["operation"] == "person.leave" else None
+            self.person_version += 1
+            return 200, {
+                "operation": body["operation"],
+                "resource_id": EMPLOYEE[LEAVER],
+                "version": self.person_version,
+                "status": "ok",
+                "duplicate": False,
+            }
+        return super().answer(caller, method, path, params, body)
+
+
+class RecordsUpstream(Upstream):
+    """The server-side stub, which also serves the document download. Chromium sends an
+    `<a download>` request past Playwright's routes, so it goes through the console's
+    `/console/v1` proxy to this origin, as it would to the gateway."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.downloads: list[str] = []  # the cookie header of each download request
+        upstream = self
+        server: Any = self.server  # its handler class is built inside Upstream
+        base: Any = server.RequestHandlerClass
+
+        class Handler(base):
+            def do_GET(self) -> None:
+                path, _, query = self.path.partition("?")
+                if path != DOWNLOAD_PATH:
+                    return super().do_GET()
+                if parse_qs(query).get("client_id") != [TENANT]:
+                    upstream.unexpected.append(f"GET {self.path}")
+                upstream.downloads.append(self.headers.get("cookie", ""))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition", f'attachment; filename="{FILE_NAME}"')
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(PDF)))
+                self.end_headers()
+                self.wfile.write(PDF)
+
+        server.RequestHandlerClass = Handler
+
+
+@contextlib.asynccontextmanager
+async def console_frontend(
+    tmp_path: Path, stub: Upstream | None = None
+) -> AsyncIterator[tuple[str, Upstream]]:
+    """The staged console under `next dev`, with its server-side upstream stub."""
     node = shutil.which("node")
     assert node, "Node is required for browser HR access acceptance"
     assert (WEB / "node_modules/next/dist/bin/next").is_file(), (
@@ -288,7 +461,7 @@ async def test_hr_access_owner_changes_two_people_and_staff_sees_it(tmp_path: Pa
         "CSA_WebConsole/csa-console/web before browser HR access acceptance"
     )
     stage = tmp_path / "web"
-    with Upstream() as upstream:
+    with stub or Upstream() as upstream:
         environment = {
             "PATH": os.environ["PATH"],
             "NEXT_TELEMETRY_DISABLED": "1",
@@ -335,12 +508,7 @@ async def test_hr_access_owner_changes_two_people_and_staff_sees_it(tmp_path: Pa
                     await asyncio.sleep(0.5)
                 else:
                     pytest.fail(f"Synthetic HR access frontend did not start; log: {log_path}")
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch()
-                try:
-                    await exercise(browser, f"http://127.0.0.1:{port}", upstream, tmp_path)
-                finally:
-                    await browser.close()
+            yield f"http://127.0.0.1:{port}", upstream
         finally:
             process.terminate()
             try:
@@ -349,6 +517,16 @@ async def test_hr_access_owner_changes_two_people_and_staff_sees_it(tmp_path: Pa
                 process.kill()
                 process.wait(timeout=5)
             log.close()
+
+
+async def test_hr_access_owner_changes_two_people_and_staff_sees_it(tmp_path: Path) -> None:
+    async with console_frontend(tmp_path) as (base, upstream):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                await exercise(browser, base, upstream, tmp_path)
+            finally:
+                await browser.close()
 
 
 async def open_access_page(page: Page, base: str) -> None:
@@ -415,6 +593,11 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         # (d) The owner ticks both, then gives only the manager the Manager preset.
         await page.get_by_test_id("hr-access-search").fill("")
         await expect(page.locator("[data-testid^='hr-access-row-']")).to_have_count(3, timeout=WAIT)
+        await expect(panel).not_to_contain_text(OWNER_LINE)
+        await expect(row(OWNER)).to_contain_text("HR owner")
+        await expect(row(STAFF)).not_to_contain_text("HR owner")
+        await row(OWNER).get_by_role("button").click()
+        await expect(panel).to_contain_text(OWNER_LINE)
         await page.get_by_test_id(f"hr-access-tick-{MANAGER}").check()
         await page.get_by_test_id(f"hr-access-tick-{STAFF}").check()
         await expect(page.get_by_test_id("hr-access-bulk")).to_contain_text("2 members ticked")
@@ -517,3 +700,132 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             await owner_context.tracing.stop(path=tmp_path / "hr-access-trace.zip")
         await owner_context.close()
         await staff_context.close()
+
+
+async def test_hr_owner_personal_documents_and_leaving(tmp_path: Path) -> None:
+    stub = RecordsUpstream()
+    async with console_frontend(tmp_path, stub) as (base, _):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            try:
+                await exercise_records(browser, base, stub, tmp_path)
+            finally:
+                await browser.close()
+
+
+async def exercise_records(
+    browser: Any, base: str, upstream: RecordsUpstream, tmp_path: Path
+) -> None:
+    context = await browser.new_context(timezone_id="Asia/Kuala_Lumpur", accept_downloads=True)
+    context.set_default_navigation_timeout(WAIT)
+    await context.add_cookies([{"name": "csa_session", "value": "synthetic-session", "url": base}])
+    await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+    page = await context.new_page()
+    diagnostics: list[str] = []
+    page.on("crash", lambda: diagnostics.append("Chromium page crashed"))
+    page.on("pageerror", lambda error: diagnostics.append(str(error)))
+    page.on("console", lambda message: diagnostics.append(f"{message.type}: {message.text}"))
+    world = RecordsWorld()
+    profile = f"{base}/portal/hr/people/{EMPLOYEE[LEAVER]}"
+    tab = lambda name: page.get_by_role("tab", name=name, exact=True)  # noqa: E731
+    operations = lambda: [c for c in world.calls if c["path"] == "hr/operations"]  # noqa: E731
+    try:
+        await context.route("**/console/v1/**", world.route_for(OWNER))
+        upstream.me, upstream.packages = make_me("tenant_admin"), HR_PACKAGE
+
+        # (a) Personal shows the IC number masked; Show asks the server for it, and Hide drops it.
+        await page.goto(profile)
+        await tab("Personal").click(timeout=WAIT)
+        await expect(page.get_by_text(IC_MASK, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_text(IC_NUMBER)).to_have_count(0)
+        assert world.reveals == []
+        await page.get_by_role("button", name="Show IC or passport number").click()
+        await expect(page.get_by_text(IC_NUMBER, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_text(IC_MASK, exact=True)).to_have_count(0)
+        assert world.reveals == ["ic_or_passport"]
+        await page.get_by_role("button", name="Hide IC or passport number").click()
+        await expect(page.get_by_text(IC_MASK, exact=True)).to_be_visible()
+        await expect(page.get_by_text(IC_NUMBER)).to_have_count(0)
+
+        # (b) Documents: upload a small PDF, see it listed, download the same bytes.
+        await tab("Documents").click()
+        await expect(page.get_by_text("No documents yet.")).to_be_visible(timeout=WAIT)
+        await page.locator("input[type='file']").set_input_files(
+            {"name": FILE_NAME, "mimeType": "application/pdf", "buffer": PDF}
+        )
+        await page.get_by_role("button", name="Upload", exact=True).click()
+        await expect(page.get_by_text("Document uploaded.")).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_role("cell", name=FILE_NAME, exact=True)).to_be_visible()
+        [upload] = world.uploads
+        assert upload["kind"] == "contract", upload["kind"]
+        assert f'filename="{FILE_NAME}"'.encode() in upload["body"] and PDF in upload["body"]
+        [sent] = [
+            c for c in world.calls if c["method"] == "POST" and c["path"].endswith("documents")
+        ]
+        assert sent["key"], "the upload carries an Idempotency-Key"
+        async with page.expect_download() as downloading:
+            await page.get_by_role("link", name=f"Download {FILE_NAME}").click()
+        download = await downloading.value
+        assert download.suggested_filename == FILE_NAME
+        saved = tmp_path / "downloaded.pdf"
+        await download.save_as(saved)
+        assert saved.read_bytes() == PDF
+        assert upstream.downloads == ["csa_session=synthetic-session"], upstream.downloads
+
+        # (c) Mark as leaving with a last day a week ahead (Kuala Lumpur).
+        last_day = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date() + timedelta(days=7)
+        months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+        last_day_text = f"{last_day.day} {months[last_day.month - 1]} {last_day.year}"
+        await tab("Overview").click()
+        await page.get_by_role("button", name="Mark as leaving", exact=True).click()
+        await expect(page.get_by_text("Mark Lina Wong as leaving")).to_be_visible(timeout=WAIT)
+        await page.locator("input[name='last_day']").fill(last_day.isoformat())
+        await page.get_by_role("button", name="Mark as leaving", exact=True).click()
+        await expect(page.get_by_text("Marked as leaving.")).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_text(f"Leaving on {last_day_text} (Resigned)")).to_be_visible()
+        [leave] = operations()
+        assert leave["body"] == {
+            "operation": "person.leave",
+            "employee_id": EMPLOYEE[LEAVER],
+            "expected_version": 3,
+            "last_day": last_day.isoformat(),
+            "reason": "resigned",
+            "reports_new_manager": None,
+        }, leave["body"]
+        assert leave["key"], "the leave carries an Idempotency-Key"
+
+        # (d) The People list shows them as Leaving.
+        await page.goto(f"{base}/portal/hr/people")
+        lina = page.get_by_role("row").filter(has=page.get_by_role("link", name="Lina Wong"))
+        await expect(lina).to_contain_text("Leaving", timeout=WAIT)
+        farid = page.get_by_role("row").filter(has=page.get_by_role("link", name="Farid Ismail"))
+        await expect(farid).to_contain_text("Active")
+
+        # (e) Undo from the profile: they stay on and can be marked again.
+        await page.get_by_role("link", name="Lina Wong").click()
+        await page.get_by_role("button", name="Undo leaving").click(timeout=WAIT)
+        await expect(page.get_by_text("Leaving undone. They stay on.")).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_role("button", name="Mark as leaving", exact=True)).to_be_visible()
+        await expect(page.get_by_text("Leaving on")).to_have_count(0)
+        assert [c["body"] for c in operations()][1:] == [
+            {
+                "operation": "person.leave_undo",
+                "employee_id": EMPLOYEE[LEAVER],
+                "expected_version": 4,
+            }
+        ]
+        assert world.last_day is None and world.person_version == 5
+
+        assert not world.unexpected, world.unexpected
+        assert not upstream.unexpected, upstream.unexpected
+    except Exception as exc:
+        exc.add_note(
+            f"Browser diagnostics: {diagnostics}; trace: {tmp_path / 'hr-records-trace.zip'}; "
+            f"frontend log: {tmp_path / 'frontend.log'}"
+        )
+        raise
+    finally:
+        (tmp_path / "hr-records-browser.log").write_text("\n".join(diagnostics))
+        with contextlib.suppress(Exception):  # Preserve the original failure if Chromium crashed.
+            await context.tracing.stop(path=tmp_path / "hr-records-trace.zip")
+        await context.close()

@@ -411,5 +411,8 @@ export function resultSummary(proposal: ProposalOut, language: Language = "en"):
         ? say("summary_subscription_status", { status: statusText(status, language) })
         : say("summary_subscription");
     }
+    case "hr_person":
+      // csa/workspace/hr_people.py: the receipt is the HR operation's, so the card says what.
+      return say("summary_hr_person", { title: proposal.card.title });
   }
 }
