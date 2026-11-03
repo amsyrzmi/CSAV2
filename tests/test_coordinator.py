@@ -422,7 +422,7 @@ async def test_question_without_the_knowledge_base_runs_the_handoff() -> None:
 
     assert deps.executed_tasks == ["kb_agent", "escalation_agent"]
     assert result.handoff is not None and result.handoff.required
-    assert result.handoff.reason == "knowledge_base_off"
+    assert result.handoff.reason == "service_off"
     assert deps.fallbacks == []
 
 

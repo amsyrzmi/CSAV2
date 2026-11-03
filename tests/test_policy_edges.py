@@ -112,17 +112,36 @@ def _unavailable(agent: str) -> AgentResult:
     return result
 
 
-def test_question_at_a_company_without_the_knowledge_base_goes_to_staff() -> None:
-    plan = Plan(
+def _plan() -> Plan:
+    return Plan(
         tasks=[], reply_strategy="auto_reply", intent=Intent.OTHER, confidence=1, source="policy"
     )
-    handoff = decide_handoff(plan, [_unavailable("kb_agent")], context=None, signals=None)
+
+
+@pytest.mark.parametrize("agent", ["kb_agent", "order_agent"])
+def test_a_question_only_a_switched_off_service_could_answer_goes_to_staff(agent: str) -> None:
+    handoff = decide_handoff(_plan(), [_unavailable(agent)], context=None, signals=None)
     assert handoff is not None and handoff.required
-    assert handoff.reason == "knowledge_base_off"
+    assert handoff.reason == "service_off"
 
 
-def test_other_switched_off_agents_keep_their_behaviour() -> None:
-    plan = Plan(
-        tasks=[], reply_strategy="auto_reply", intent=Intent.OTHER, confidence=1, source="policy"
-    )
-    assert decide_handoff(plan, [_unavailable("order_agent")], context=None, signals=None) is None
+def test_a_routine_question_for_staff_is_not_high_priority() -> None:
+    handoff = decide_handoff(_plan(), [_unavailable("kb_agent")], context=None, signals=None)
+    assert handoff is not None and handoff.priority == "normal"
+    urgent = make_signals(Intent.OTHER, answers={"urgency": "urgent"})
+    handoff = decide_handoff(_plan(), [_unavailable("kb_agent")], context=None, signals=urgent)
+    assert handoff is not None and handoff.priority == "urgent"
+
+
+def test_an_answer_from_another_agent_is_not_thrown_away() -> None:
+    answered = make_result(Task(task_id="o", agent="order_agent", input={}))
+    results = [answered, _unavailable("kb_agent")]
+    assert decide_handoff(_plan(), results, context=None, signals=None) is None
+
+
+def test_a_hard_failure_stays_an_agent_failure() -> None:
+    failed = make_result(Task(task_id="o", agent="order_agent", input={}), error=True)
+    results = [failed, _unavailable("kb_agent")]
+    handoff = decide_handoff(_plan(), results, context=None, signals=None)
+    assert handoff is not None and handoff.reason == "agent_failure"
+    assert handoff.priority == "high"

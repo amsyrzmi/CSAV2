@@ -1500,7 +1500,7 @@ Errors: 409 on state conflicts (already active, requirements inactive, dependent
 
 Gates: a route behind an inactive package returns 403 `package_inactive`, and gates run before role checks, so every role sees it.
 - Inbox requires `customer_support` in status `active` **or `suspended`**, so staff can still resolve held replies and escalations while a client is suspended (the required safety capabilities keep running); Business requires `orders_products` or `marketplaces` active.
-- All `/kb/*` routes (uploads, files and downloads for every role) require `knowledge_base`; `/invoices*` require `orders_products`.
+- All `/kb/*` routes (uploads, files and downloads for every role) require `knowledge_base`, which migration `0530` gave to each company with a `customer_support` row, with the same status; `/invoices*` require `orders_products`.
 - The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
 - Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.
 

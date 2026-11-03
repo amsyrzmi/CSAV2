@@ -609,7 +609,10 @@ and delivery. The console is unavailable and bot replies wait until it finishes.
    the image for HEAD.
 2. You are in the main checkout `/home/amsyrzmi/CSAV2`, on `origin/main`, with a clean
    tracked tree (`git pull --ff-only origin main`).
-3. The roster file `deploy/staging-accounts.local.json` is in place, with mode 0600.
+3. The roster file `deploy/staging-accounts.local.json` is in place, with mode 0600. If the
+   running code has the `knowledge_base` add-on (migration 0530), a company's list must name it
+   beside `customer_support`, or that company's bot hands every question to staff. The example
+   file shows it. On older code the name is refused as an unknown package.
    It holds real addresses, so it is git-ignored and never goes in the repository, which
    is public. Copy the example to that path and set the mode:
 

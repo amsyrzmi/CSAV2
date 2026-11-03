@@ -76,6 +76,10 @@ The owner wants the knowledge base agent to be a feature a client can choose to 
 - Activating `knowledge_base` without active Customer support is refused. Suspending Customer support while the add-on is active is refused, by the existing rule. Activating the add-on switches on `kb_agent`, and suspending it switches `kb_agent` off.
 - The Services page shows Knowledge base as an add-on with both new summaries.
 
+## Added after the final review
+
+- A question that only a switched-off service could answer goes to staff with reason `service_off`, for any customer-facing agent, unless another agent returned facts. Its priority is normal unless urgent, and its reply is sent straight away outside `shadow`.
+
 ## Left to the builder
 
 - The exact SQL of the backfill, and how the `0450` comparison test allows for the move.
