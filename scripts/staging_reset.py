@@ -4,7 +4,8 @@
 service running the image built from HEAD, a valid roster, every secret file present, enough
 disk for the backup) and prints what is about to be lost. It runs only read commands: git,
 ``docker inspect``, ``compose config``, ``psql`` with ``SELECT``, and one-off containers with no
-network and read-only mounts that count the files in each upload volume.
+network and read-only mounts that count the files in each upload volume and the folders user
+1000 does not own, since a wipe could not empty those.
 
 ``wipe`` and ``accounts`` are for the owner at a terminal; they refuse anywhere else. ``wipe``
 backs staging up, drops and rebuilds the database, empties the upload volumes and creates the
@@ -22,6 +23,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -45,6 +47,7 @@ from scripts.staging_rollout import (
     MIGRATION_APPROVAL,
     PROJECT,
     REPO_ROOT,
+    RESTART_COMMAND,
     SERVICE_APP,
     STOP_SERVICES,
     Completed,
@@ -55,7 +58,6 @@ from scripts.staging_rollout import (
     _await_ready,
     _recreate,
     _report_stop,
-    _run_step,
     build_env,
     compose_base,
     docker_base,
@@ -72,6 +74,7 @@ UPLOAD_VOLUMES = ("csa-staging_staging-uploads", "csa-staging_staging-hr-uploads
 CONFIRM_PHRASE = "wipe csa-staging"
 DROP_DATABASE_SQL = "DROP DATABASE IF EXISTS csa_staging WITH (FORCE)"
 CREATE_DATABASE_SQL = "CREATE DATABASE csa_staging OWNER csa"
+DATABASE_COUNT_SQL = "SELECT count(*) FROM pg_database WHERE datname = 'csa_staging'"
 BACKUP_ROOT = Path.home() / "csa-staging-backups"
 DISK_MARGIN = 1 << 30  # kept free beyond the backup itself
 MAINTENANCE_DATABASE = "postgres"
@@ -83,7 +86,10 @@ TABLE_PROBE = (
     "to_regclass('public.schema_migrations') IS NOT NULL"
 )
 # One-off containers read an upload volume with no network, no secrets and a read-only mount.
-VOLUME_SCRIPT = "find /data -type f | wc -l; du -sb /data"
+# Files; folders user 1000 does not own, starting at /data so the mount itself counts; bytes. du
+# is last because the script exits with its last command's code, and a pipe into wc hides failure.
+VOLUME_SCRIPT = "find /data -type f | wc -l; find /data -type d ! -user 1000 | wc -l; du -sb /data"
+VOLUME_OUTPUT = re.compile(r"([0-9]+)\n([0-9]+)\n([0-9]+)\t/data\n")
 LOST = (
     "every account and session",
     "all HR and customer data",
@@ -92,6 +98,7 @@ LOST = (
 )
 WIPE_COMMAND = ".venv/bin/python -m scripts.staging_reset wipe"
 ACCOUNTS_COMMAND = ".venv/bin/python -m scripts.staging_reset accounts"
+ROLLOUT_PLAN_COMMAND = ".venv/bin/python -m scripts.staging_rollout plan"
 PLACEHOLDER_IMAGE = "unused-until-the-running-images-are-read"
 PG_DUMP_COMMAND = ("pg_dump", "-U", "csa", "-d", DATABASE, "-Fc")
 DUMP_FILE = f"{DATABASE}.dump"
@@ -100,6 +107,7 @@ INCOMPLETE = "(incomplete, do not restore)"
 STDERR_TAIL_LINES = 5
 MIGRATION_ERROR_PREFIX = "migration error:"  # scripts/migrate.py; its texts name no connection
 BOOTSTRAP_APPROVAL = ("CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL", "approved-isolated-staging")
+BOOTSTRAP_TRIES = 3  # safe to repeat: bootstrap closes for good once one admin exists
 ADMIN_ADD_APPROVAL = ("CSA_STAGING_ADMIN_ADD_APPROVAL", "approved-isolated-staging")
 GATEWAY_CONTAINER = f"{PROJECT}-gateway-1"
 # One-off containers: no network, nothing writable but a mount, no secrets, no capabilities.
@@ -124,6 +132,12 @@ NO_TABLES_SQL = (
 UNCHANGED = "Nothing on staging was changed."
 SERVICES_STOPPED = "services are stopped"
 UPLOADS_EMPTY = "the upload volumes are empty"
+NOT_DROPPED = f"{SERVICES_STOPPED}; {DATABASE} was not dropped; the upload volumes are as they were"
+DROPPED = f"{SERVICES_STOPPED}; {DATABASE} does not exist; the upload volumes are as they were"
+MAYBE_DROPPED = (
+    f"{SERVICES_STOPPED}; {DATABASE} may not exist any more; the upload volumes are as they were"
+)
+INTACT = "Nothing is lost. Fix the cause and run wipe again, or bring staging back with:"
 RECOVERY = (
     'Run wipe again, or restore from the backup (deploy/STAGING_PIPELINE.md, "Resetting staging").'
 )
@@ -286,10 +300,17 @@ def _volume_usage(
     result = runner.run(
         _volume_run(python_image, f"{volume}:/data:ro", "sh", "-c", VOLUME_SCRIPT), env=env
     )
-    lines = result.stdout.split("\n")
-    if result.returncode != 0 or len(lines) < 2 or not lines[1].split():
+    found = VOLUME_OUTPUT.fullmatch(result.stdout)
+    if result.returncode != 0 or found is None:
         raise RolloutError("state", f"could not read volume {volume} (exit {result.returncode})")
-    return _integer(lines[0].strip(), "file count"), _integer(lines[1].split()[0], "volume size")
+    files, foreign_folders, size = (int(number) for number in found.groups())
+    if foreign_folders:
+        raise RolloutError(
+            "state",
+            f"volume {volume} has {foreign_folders} folder(s) not owned by user 1000, so the "
+            "wipe could not empty it. Give them to user 1000 first.",
+        )
+    return files, size
 
 
 def read_state(runner: Runner, env: Mapping[str, str], python_image: str) -> StagingState:
@@ -349,7 +370,9 @@ def _check_images(sha: str, images: Mapping[str, RunningImage | None]) -> None:
     if problems:
         raise RolloutError(
             "images",
-            "the services must run the image for HEAD; " + "; ".join(problems),
+            "the services must run the image for HEAD; "
+            + "; ".join(problems)
+            + f". Roll out HEAD first: {ROLLOUT_PLAN_COMMAND}, then apply.",
         )
 
 
@@ -474,6 +497,7 @@ class _Stage:
     state: str = UNCHANGED
     backup: Path | None = None
     earlier: tuple[Path, ...] = ()  # backups already on disk when this wipe started, newest first
+    intact: bool = False  # services are all that was touched, so starting them brings staging back
 
 
 class BackupManifest(BaseModel):
@@ -550,7 +574,11 @@ def _report_backups(stage: _Stage, out: Callable[[str], None]) -> None:
         out("Earlier backups, kept as they were:")
         for directory in stage.earlier:
             out(f"  {_backup_line(directory)}")
-    if stage.state == UNCHANGED or (stage.backup is not None and _holds_real_data(stage.backup)):
+    if (
+        stage.state == UNCHANGED
+        or stage.intact
+        or (stage.backup is not None and _holds_real_data(stage.backup))
+    ):
         return  # staging still has its data, or this run's backup does
     found = next((path for path in stage.earlier if _holds_real_data(path)), None)
     if found is None:
@@ -570,6 +598,10 @@ def _report_wipe_stop(error: RolloutError, stage: _Stage, out: Callable[[str], N
     _report_backups(stage, out)
     if stage.state == UNCHANGED:
         out("Fix the cause and run wipe again.")
+        return
+    if stage.intact:
+        out(INTACT)
+        out(RESTART_COMMAND)
         return
     out(RECOVERY)
     out(MOVED_HEAD)
@@ -677,6 +709,79 @@ def _load_baseline(
     )
 
 
+def _database_count(runner: Runner, env: Mapping[str, str]) -> str | None:
+    """How many databases have the name, as read; ``None`` when the read itself fails."""
+    try:
+        return _psql(runner, env, MAINTENANCE_DATABASE, DATABASE_COUNT_SQL)
+    except RolloutError:
+        return None
+
+
+def _drop_database(runner: Runner, env: Mapping[str, str], stage: _Stage) -> None:
+    """Drop the database. An unclear end may still have finished it on the server.
+
+    So staging counts as intact again only if the drop failed with an exit code and a read then
+    finds the database. An interrupt skips the read: the server could still be working on it.
+    """
+    intact = stage.intact
+    stage.intact = False
+    stage.state = MAYBE_DROPPED
+    try:
+        _step_with_reason(
+            runner,
+            _psql_argv(MAINTENANCE_DATABASE, "-v", "ON_ERROR_STOP=1", "-c", DROP_DATABASE_SQL),
+            env,
+            "drop",
+            "DROP DATABASE",
+        )
+    except RolloutError:
+        count = _database_count(runner, env)
+        if count == "1":
+            stage.intact = intact
+            stage.state = NOT_DROPPED
+        elif count == "0":
+            stage.state = DROPPED
+        raise
+    stage.state = DROPPED
+
+
+def _create_first_admin(
+    runner: ResetRunner,
+    env: Mapping[str, str],
+    email: str,
+    display_name: str,
+    out: Callable[[str], None],
+) -> None:
+    """Run the bootstrap's prompts. A mistyped or short password need not cost a whole wipe."""
+    argv = [
+        *compose_base(),
+        "--profile",
+        "admin-bootstrap-approved",
+        "run",
+        "--rm",
+        "--no-deps",
+        "admin-bootstrap",
+        "--email",
+        email,
+        "--display-name",
+        display_name,
+        "--create-first-platform-admin",
+    ]
+    approved = {**env, BOOTSTRAP_APPROVAL[0]: BOOTSTRAP_APPROVAL[1]}
+    code = runner.run_tty(argv, env=approved)
+    for attempt in range(2, BOOTSTRAP_TRIES + 1):
+        if code == 0:
+            return
+        out(
+            f"The first platform admin was not created (exit {code}); try again, attempt "
+            f"{attempt} of {BOOTSTRAP_TRIES}. The password needs at least 12 characters, typed "
+            "the same both times."
+        )
+        code = runner.run_tty(argv, env=approved)
+    if code != 0:
+        raise RolloutError("bootstrap", f"admin-bootstrap exited {code}")
+
+
 def _migrate_argv() -> list[str]:
     return [
         *compose_base(),
@@ -777,27 +882,21 @@ def _rebuild(
     first = context.roster.platform_admins[0]
     _back_up(runner, context, stage, clock, out)
 
+    # An earlier wipe that stopped before its first admin left no account and no data: starting
+    # the services would not bring anything back, so a stop still gives the restore advice.
+    stage.intact = context.state.accounts > 0
     stage.state = (
         "some of gateway, frontend, worker and delivery may still be running; check compose ps. "
         f"{DATABASE} and the upload volumes are as they were"
     )
     out(f"Stopping {', '.join(STOP_SERVICES)}…")
-    _run_step(runner, [*compose_base(), "stop", *STOP_SERVICES], env, "stop", "compose stop")
-
-    stage.state = (
-        f"{SERVICES_STOPPED}; {DATABASE} was not dropped; the upload volumes are as they were"
-    )
-    out(f"Dropping and creating {DATABASE}…")
     _step_with_reason(
-        runner,
-        _psql_argv(MAINTENANCE_DATABASE, "-v", "ON_ERROR_STOP=1", "-c", DROP_DATABASE_SQL),
-        env,
-        "drop",
-        "DROP DATABASE",
+        runner, [*compose_base(), "stop", *STOP_SERVICES], env, "stop", "compose stop"
     )
-    stage.state = (
-        f"{SERVICES_STOPPED}; {DATABASE} does not exist; the upload volumes are as they were"
-    )
+
+    stage.state = NOT_DROPPED
+    out(f"Dropping and creating {DATABASE}…")
+    _drop_database(runner, env, stage)
     _step_with_reason(
         runner,
         _psql_argv(MAINTENANCE_DATABASE, "-v", "ON_ERROR_STOP=1", "-c", CREATE_DATABASE_SQL),
@@ -828,25 +927,7 @@ def _rebuild(
         f"{UPLOADS_EMPTY}"
     )
     out("Creating the first platform admin; type an initial password when asked.")
-    code = runner.run_tty(
-        [
-            *compose_base(),
-            "--profile",
-            "admin-bootstrap-approved",
-            "run",
-            "--rm",
-            "--no-deps",
-            "admin-bootstrap",
-            "--email",
-            first.email,
-            "--display-name",
-            first.display_name,
-            "--create-first-platform-admin",
-        ],
-        env={**env, BOOTSTRAP_APPROVAL[0]: BOOTSTRAP_APPROVAL[1]},
-    )
-    if code != 0:
-        raise RolloutError("bootstrap", f"admin-bootstrap exited {code}")
+    _create_first_admin(runner, env, first.email, first.display_name, out)
 
     stage.state = (
         f"{DATABASE} is at {context.newest_migration} with its first platform admin; "

@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from scripts import staging_reset as rs
 from scripts.migrate import discover_migrations
-from scripts.staging_rollout import SOCKET, Completed, RolloutError
+from scripts.staging_rollout import RESTART_COMMAND, SOCKET, Completed, RolloutError
 from scripts.staging_roster import load_roster, parse_roster
 
 from tests.test_staging_rollout import (
@@ -101,6 +101,7 @@ def reset_runner(
     database: str = "schema",  # schema, none or empty
     volumes_present: bool = True,
     secret_files: Mapping[str, Path] | None = None,
+    foreign_folders: Mapping[str, int] | None = None,
 ) -> ResetFake:
     revision = {service: SHA for service in SERVICES} | dict(revisions or {})
 
@@ -133,7 +134,7 @@ def reset_runner(
     def volume(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
         name = next(arg for arg in argv if arg.endswith(":/data:ro")).split(":")[0]
         files, size = VOLUME_FILES[name]
-        return ok(f"{files}\n{size}\t/data\n")
+        return ok(f"{files}\n{(foreign_folders or {}).get(name, 0)}\n{size}\t/data\n")
 
     rules: list[tuple[Predicate, Any]] = [
         (has("rev-parse HEAD"), ok(SHA + "\n")),
@@ -230,7 +231,9 @@ def _assert_read_only(runner: ResetFake) -> None:
             assert "--read-only" in rest and "--cap-drop" in rest, text
             mounts = [arg for arg in rest if ":/data" in arg]
             assert len(mounts) == 1 and mounts[0].endswith(":/data:ro"), text
-            assert rest[-1] == "find /data -type f | wc -l; du -sb /data", text
+            assert rest[-1] == (
+                "find /data -type f | wc -l; find /data -type d ! -user 1000 | wc -l; du -sb /data"
+            ), text
         elif rest[0] == "compose":
             assert (
                 "--project-name" in rest and rest[rest.index("--project-name") + 1] == "csa-staging"
@@ -375,6 +378,14 @@ def test_refusals(
         assert data["platform_admins"][0]["email"] not in caught.value.message.lower()
 
 
+def test_the_image_refusal_says_to_roll_out_first(reset_env: Path, tmp_path: Path) -> None:
+    runner = reset_runner(revisions={"worker": "f" * 40})
+    with pytest.raises(RolloutError) as caught:
+        _prepare(runner, reset_env, tmp_path)
+    assert "Roll out HEAD first" in caught.value.message
+    assert ".venv/bin/python -m scripts.staging_rollout plan" in caught.value.message
+
+
 def test_a_refusal_before_the_state_is_read_touches_nothing_on_staging(
     reset_env: Path, tmp_path: Path
 ) -> None:
@@ -429,6 +440,95 @@ def test_a_missing_volume_is_refused_not_created(reset_env: Path, tmp_path: Path
         _prepare(runner, reset_env, tmp_path)
     assert "csa-staging_staging-uploads does not exist" in caught.value.message
     assert not any(argv[3] == "run" for argv in runner.argvs if argv[0] == "docker")
+
+
+@pytest.mark.parametrize("volume", rs.UPLOAD_VOLUMES)
+def test_a_volume_user_1000_cannot_empty_is_refused(
+    reset_env: Path, tmp_path: Path, volume: str
+) -> None:
+    runner = reset_runner(foreign_folders={volume: 2})
+    with pytest.raises(RolloutError) as caught:
+        _prepare(runner, reset_env, tmp_path)
+    assert caught.value.step == "state"
+    assert volume in caught.value.message
+    assert "2 folder(s) not owned by user 1000" in caught.value.message
+    assert "could not empty it" in caught.value.message
+    _assert_read_only(runner)
+
+
+def test_wipe_refuses_a_volume_it_could_not_empty_before_it_prompts(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = wipe_runner(foreign_folders={rs.UPLOAD_VOLUMES[0]: 1})
+
+    def no_prompt(prompt: str) -> str:
+        raise AssertionError("must not prompt")
+
+    lines: list[str] = []
+    code = rs.wipe(
+        runner,
+        reset_env,
+        docker_config=tmp_path / "dc",
+        read_line=no_prompt,
+        is_terminal=lambda: True,
+        free_bytes=lambda: 50 * GIB,
+        clock=lambda: T0,
+        sleep=lambda seconds: None,
+        out=lines.append,
+    )
+    assert code == 1
+    assert "not owned by user 1000" in "\n".join(lines)
+    _assert_read_only(runner)
+    assert not rs.BACKUP_ROOT.exists()
+
+
+def test_the_ownership_check_covers_the_mount_itself_and_keeps_du_exit_code() -> None:
+    assert "find /data -type d ! -user 1000 | wc -l" in rs.VOLUME_SCRIPT
+    assert "-writable" not in rs.VOLUME_SCRIPT  # the mount is :ro, so every folder reads unwritable
+    assert "-mindepth" not in rs.VOLUME_SCRIPT
+    # The script's exit code is its last command's. A pipe into wc hides a failure, du doesn't.
+    assert rs.VOLUME_SCRIPT.endswith("; du -sb /data")
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "\n",
+        "12\n",
+        "12\n0\n",
+        "12\n4096\t/data\n",
+        "x\n0\n4096\t/data\n",
+        "12\nx\n4096\t/data\n",
+        "12\n0\nx\t/data\n",
+        "12\n0\n4096\n",
+        "12\n0\n4096\t/elsewhere\n",
+        "12\n0\n4096\t/data\nmore\n",
+        "-1\n0\n4096\t/data\n",
+        "12\n-1\n4096\t/data\n",
+        "12\n\n4096\t/data\n",
+    ],
+)
+def test_malformed_volume_output_is_refused(reset_env: Path, tmp_path: Path, stdout: str) -> None:
+    runner = reset_runner()
+    runner.rules.insert(0, (has(" run --rm --network none"), ok(stdout)))
+    with pytest.raises(RolloutError) as caught:
+        _prepare(runner, reset_env, tmp_path)
+    assert caught.value.step == "state"
+    assert "could not read volume csa-staging_staging-uploads" in caught.value.message
+
+
+def test_a_failing_volume_read_is_refused_even_with_good_output(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = reset_runner()
+    runner.rules.insert(
+        0, (has(" run --rm --network none"), Completed(1, "12\n0\n4096\t/data\n", ""))
+    )
+    with pytest.raises(RolloutError) as caught:
+        _prepare(runner, reset_env, tmp_path)
+    assert "could not read volume" in caught.value.message
+    assert "(exit 1)" in caught.value.message
 
 
 def test_a_failing_psql_is_a_refusal(reset_env: Path, tmp_path: Path) -> None:
@@ -520,6 +620,7 @@ MOVED_HEAD = (
     "If HEAD has moved since this wipe started, restore the backup and roll out before "
     "wiping again."
 )
+INTACT = "Nothing is lost. Fix the cause and run wipe again, or bring staging back with:"
 PG_DUMP = "pg_dump -U csa -d csa_staging -Fc"
 STOP = "stop gateway frontend worker delivery"
 EMPTY_VOLUME = "find /data -mindepth 1 -delete"
@@ -542,6 +643,7 @@ def wipe_runner(
     failing: str | None = None,
     tables_present: bool = False,
     version: str = NEWEST,
+    after_drop: str = "present",  # what a read finds after a failed drop: or gone, or unreadable
     **kwargs: Any,
 ) -> ResetFake:
     """A fake that answers every wipe step; ``failing`` names the one that goes wrong."""
@@ -558,6 +660,12 @@ def wipe_runner(
         return fail(1) if failing == f"recreate {argv[-1]}" else ok()
 
     runner.rules[:0] = [
+        (
+            has(rs.DATABASE_COUNT_SQL),
+            fail(2, "synthetic read failure\n")
+            if after_drop == "unreadable"
+            else ok("1\n" if after_drop == "present" else "0\n"),
+        ),
         (has(STOP), step("stop")),
         (has(rs.DROP_DATABASE_SQL), step("drop")),
         (has(rs.CREATE_DATABASE_SQL), step("create")),
@@ -875,8 +983,6 @@ def _later_fragments(stage: str) -> list[str]:
 @pytest.mark.parametrize(
     ("failing", "stage", "step", "state"),
     [
-        ("stop", "stop", "stop", "may still be running"),
-        ("drop", "drop", "drop", "services are stopped; csa_staging was not dropped"),
         ("create", "create", "create", "services are stopped; csa_staging does not exist"),
         ("empty volume", "empty volume", "empty volumes", "csa_staging has no schema"),
         ("read baseline", "empty volume", "baseline", "csa_staging has no schema"),
@@ -913,6 +1019,170 @@ def test_each_failure_reports_its_state(
         if failing in {"version", "read baseline"} and fragment in {MIGRATE, LOAD_BASELINE}:
             continue
         assert not _ran(runner, fragment), fragment
+
+
+def _assert_nothing_is_lost(lines: list[str]) -> None:
+    assert lines[lines.index(INTACT) + 1] == RESTART_COMMAND
+    assert RECOVERY not in lines
+    assert MOVED_HEAD not in lines
+    assert "real data" not in "\n".join(lines)
+
+
+def _assert_post_drop_recovery(lines: list[str]) -> None:
+    assert INTACT not in lines
+    assert RESTART_COMMAND not in lines
+    assert RECOVERY in lines
+    assert MOVED_HEAD in lines
+
+
+def test_a_failed_stop_says_nothing_is_lost(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner(failing="stop")
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    text = "\n".join(lines)
+    assert "Stopped at stop" in text
+    assert "synthetic reason for stop" in text
+    assert "may still be running" in text
+    assert str(rs.BACKUP_ROOT / "20261103T083015Z") in text
+    _assert_nothing_is_lost(lines)
+    for fragment in _later_fragments("stop"):
+        assert not _ran(runner, fragment), fragment
+
+
+def test_a_failed_drop_with_the_database_present_says_nothing_is_lost(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = wipe_runner(failing="drop", after_drop="present")
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    text = "\n".join(lines)
+    assert "Stopped at drop" in text
+    assert "synthetic reason for drop" in text
+    assert "services are stopped; csa_staging was not dropped" in text
+    _assert_nothing_is_lost(lines)
+    assert _ran(runner, rs.DATABASE_COUNT_SQL)
+    for fragment in _later_fragments("drop"):
+        assert not _ran(runner, fragment), fragment
+
+
+def test_a_failed_drop_with_the_database_gone_gives_the_recovery(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = wipe_runner(failing="drop", after_drop="gone")
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    text = "\n".join(lines)
+    assert "Stopped at drop" in text
+    assert "services are stopped; csa_staging does not exist" in text
+    assert "was not dropped" not in text
+    _assert_post_drop_recovery(lines)
+    assert not _ran(runner, rs.CREATE_DATABASE_SQL)
+
+
+def test_a_failed_drop_with_no_answer_from_the_read_gives_the_recovery(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = wipe_runner(failing="drop", after_drop="unreadable")
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    text = "\n".join(lines)
+    assert "Stopped at drop" in text
+    assert "synthetic reason for drop" in text
+    assert "csa_staging may not exist any more" in text
+    assert "was not dropped" not in text
+    _assert_post_drop_recovery(lines)
+
+
+def test_an_unreadable_answer_after_a_failed_drop_gives_the_recovery(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = wipe_runner(failing="drop")
+    runner.rules.insert(0, (has(rs.DATABASE_COUNT_SQL), ok("not a number\n")))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    assert "csa_staging may not exist any more" in "\n".join(lines)
+    _assert_post_drop_recovery(lines)
+
+
+def _interrupt(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+    raise KeyboardInterrupt
+
+
+def test_an_interrupted_stop_says_nothing_is_lost(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    runner.rules.insert(0, (has(STOP), _interrupt))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    assert "may still be running" in "\n".join(lines)
+    _assert_nothing_is_lost(lines)
+
+
+def test_an_interrupted_drop_is_never_called_harmless(reset_env: Path, tmp_path: Path) -> None:
+    # The server may finish a drop its client gave up on, so a read now would prove nothing.
+    runner = wipe_runner()
+    runner.rules.insert(0, (has(rs.DROP_DATABASE_SQL), _interrupt))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    assert "csa_staging may not exist any more" in "\n".join(lines)
+    _assert_post_drop_recovery(lines)
+    assert not _ran(runner, rs.DATABASE_COUNT_SQL)
+
+
+@pytest.mark.parametrize("failing", ["stop", "drop"])
+@pytest.mark.parametrize("database", ["missing", "empty"])
+def test_a_repeat_wipe_that_stops_early_does_not_offer_the_restart(
+    reset_env: Path, tmp_path: Path, failing: str, database: str
+) -> None:
+    # An earlier wipe already took the data, so starting the services would bring back nothing.
+    earlier, _ = _earlier_backup()
+    runner = wipe_runner(failing=failing, database=database)
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    _assert_post_drop_recovery(lines)
+    assert f"most recent complete backup with real data is {earlier}" in "\n".join(lines)
+
+
+def test_a_repeat_wipe_with_a_schema_but_no_admin_does_not_offer_the_restart(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    # An earlier wipe that stopped at the first admin leaves a full schema and no account.
+    runner = wipe_runner(failing="stop")
+    runner.rules.insert(0, (has("count(*) FROM console_users"), ok("0\n")))
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    _assert_post_drop_recovery(lines)
+
+
+def test_a_mistyped_bootstrap_password_gets_another_try(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    codes = iter([2, 0])
+    runner.tty_answer = lambda argv: next(codes)
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 0, lines
+    assert len(runner.tty_calls) == 2
+    assert all(BOOTSTRAP in " ".join(argv) for argv in runner.tty_calls)
+    (retry,) = [line for line in lines if "was not created" in line]
+    assert "try again" in retry
+    assert "at least 12 characters" in retry
+    assert _ran(runner, UP)
+    # The rebuild isn't repeated, and only one backup was taken.
+    assert sum(rs.DROP_DATABASE_SQL in " ".join(argv) for argv in runner.order) == 1
+    assert len(runner.file_calls) == 3
+
+
+def test_three_failed_bootstrap_tries_stop_as_before(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    codes = iter([2, 2, 2])
+    runner.tty_answer = lambda argv: next(codes)
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 1
+    assert len(runner.tty_calls) == 3
+    text = "\n".join(lines)
+    assert "Stopped at bootstrap: admin-bootstrap exited 2" in text
+    assert "no platform admin" in text
+    assert sum("was not created" in line for line in lines) == 2  # no "try again" after the last
+    _assert_post_drop_recovery(lines)
+    assert not _ran(runner, UP)
 
 
 def test_a_slow_start_is_waited_for(reset_env: Path, tmp_path: Path) -> None:
