@@ -1,4 +1,4 @@
-"""The staging reset's company step: companies, packages, deployment modes and invitations.
+"""The staging reset's company step: companies, packages, modes, profiles and invitations.
 
 Runs inside the staging gateway container, because only the gateway can send mail. It uses the
 console's own code, as the first platform admin of the roster, and only ever adds: a second run
@@ -38,6 +38,8 @@ STAGING_HOST = "staging-db"
 STAGING_DATABASE = "/csa_staging"
 PACKAGE_REFERENCE = "staging-reset"
 LISTING_LIMIT = 1000
+# Background jobs visit only pilot and active companies (jobs/list_active_clients.sql).
+STAGING_STATUS = "pilot"
 
 _MAIL_OFF = (
     "mail is not switched on in this gateway; the accounts step sends the invitations, "
@@ -45,7 +47,7 @@ _MAIL_OFF = (
 )
 _ADMIN_REFUSED = (
     "the first platform admin of the roster was not accepted: check the password, and if "
-    "this admin has never signed in, sign in and change the password first. Nothing was created"
+    "this admin has never signed in, sign in and change the password first. No company was created"
 )
 
 
@@ -75,7 +77,7 @@ async def _verified_actor(identity: IdentityService, roster: Roster, password: s
     except HTTPException as exc:
         if exc.status_code == 429:
             raise AccountsStop(
-                "too many password attempts; wait a few minutes and try again"
+                "too many password attempts; wait up to 15 minutes and try again"
             ) from None
         raise
 
@@ -223,6 +225,48 @@ async def _ensure_mode(
     out(f"{company.slug}: deployment mode {mode}: created")
 
 
+async def _ensure_profile(
+    pool: AsyncConnectionPool,
+    actor: ConsoleActor,
+    company: Company,
+    client_id: UUID,
+    out: Callable[[str], None],
+) -> None:
+    """Set what a company made through the console lacks, or background work never visits it."""
+    wanted = {"status": STAGING_STATUS, "brand_name": company.name}
+    async with tx(pool, str(client_id)) as conn:
+        row = await db.q.fetch_one("console/client_staging_profile.sql", (client_id,), conn=conn)
+        assert row is not None  # _ensure_company has just found or made it
+        changed = [field for field, value in wanted.items() if row[field] != value]
+        if changed:
+            await db.q.execute(
+                "console/client_staging_profile_set.sql",
+                (STAGING_STATUS, company.name, client_id),
+                conn=conn,
+            )
+            await db.q.execute(
+                "console/audit.sql",
+                (
+                    actor.user_id,
+                    client_id,
+                    "tenant.staging_profile_set",
+                    str(client_id),
+                    Jsonb(
+                        {
+                            "fields": changed,
+                            **wanted,
+                            "previous": {field: row[field] for field in wanted},
+                            "source": PACKAGE_REFERENCE,
+                        }
+                    ),
+                ),
+                conn=conn,
+            )
+    for field, label in (("status", "status"), ("brand_name", "brand name")):
+        result = "created" if field in changed else "already there"
+        out(f"{company.slug}: {label} {wanted[field]}: {result}")
+
+
 async def _invite_members(
     pool: AsyncConnectionPool,
     identity: IdentityService,
@@ -304,6 +348,7 @@ async def run(
             client_id = await _ensure_company(pool, actor, company, existing, out)
             await _ensure_packages(pool, actor, company, client_id, out)
             await _ensure_mode(pool, actor, company, client_id, out)
+            await _ensure_profile(pool, actor, company, client_id, out)
             unsent += await _invite_members(
                 pool, identity, mailer, actor, company, client_id, there[company.slug], out
             )

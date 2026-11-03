@@ -19,6 +19,7 @@ from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.mailer import Mailer, OutgoingMail
 from csa.console.packages import PACKAGES
 from csa.core import db
+from fastapi import HTTPException
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
@@ -38,6 +39,7 @@ ORIGIN = "https://console.example.test"
 SENDER = "FourStacks <no-reply@fourstacks.example.test>"
 MEMBERS = 7  # five at team-jo, one each at the other two companies
 FAILING = "jo.manager@example.test"  # companies[0].members[2]
+PROFILE_ACTION = "tenant.staging_profile_set"
 
 
 class FakeTransport:
@@ -224,6 +226,104 @@ async def test_second_run_changes_nothing_and_sends_nothing(world: World) -> Non
     )
 
 
+async def _active_slugs(world: World) -> set[str]:
+    """What the background jobs visit, read the way they read it."""
+    async with world.pool.connection() as conn:
+        rows = await db.q.fetch_all("jobs/list_active_clients.sql", conn=conn)
+    return {row["slug"] for row in rows}
+
+
+async def _profile_audit(world: World) -> list[dict[str, Any]]:
+    return await world.query(
+        "SELECT client_id, actor_id, target_id, details FROM console_audit WHERE action = %s",
+        PROFILE_ACTION,
+    )
+
+
+@requires_docker
+async def test_run_makes_the_companies_visible_to_background_jobs(world: World) -> None:
+    assert await _active_slugs(world) == set()
+    code, _ = await world.run()
+    assert code == 0
+    assert await _active_slugs(world) == {company.slug for company in world.roster.companies}
+    rows = await world.query("SELECT slug, name, status, brand_name FROM clients")
+    assert len(rows) == len(world.roster.companies)
+    for row in rows:
+        assert row["status"] == "pilot"
+        assert row["brand_name"] == row["name"]
+
+
+@requires_docker
+async def test_run_audits_the_profile_once_per_company(world: World) -> None:
+    assert (await world.run())[0] == 0
+    clients = await _clients(world)
+    audit = await _profile_audit(world)
+    assert sorted(str(row["client_id"]) for row in audit) == sorted(
+        str(client["id"]) for client in clients.values()
+    )
+    names = {client["id"]: client["name"] for client in clients.values()}
+    for row in audit:
+        assert row["actor_id"] == world.admin_id
+        assert row["target_id"] == str(row["client_id"])
+        assert row["details"] == {
+            "fields": ["status", "brand_name"],
+            "status": "pilot",
+            "brand_name": names[row["client_id"]],
+            "previous": {"status": "onboarding", "brand_name": None},
+            "source": "staging-reset",
+        }
+
+
+@requires_docker
+async def test_output_says_what_the_profile_set(world: World) -> None:
+    _, lines = await world.run()
+    for company in world.roster.companies:
+        assert f"{company.slug}: status pilot: created" in lines
+        assert f"{company.slug}: brand name {company.name}: created" in lines
+    _, again = await world.run()
+    for company in world.roster.companies:
+        assert f"{company.slug}: status pilot: already there" in again
+        assert f"{company.slug}: brand name {company.name}: already there" in again
+
+
+@requires_docker
+async def test_second_run_leaves_the_profile_alone(world: World) -> None:
+    assert (await world.run())[0] == 0
+    select = "SELECT slug, status, brand_name, updated_at FROM clients ORDER BY slug"
+    rows = await world.query(select)
+    audit = await _profile_audit(world)
+    assert (await world.run())[0] == 0
+    assert await world.query(select) == rows
+    assert await _profile_audit(world) == audit
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("column", "value", "field", "changed", "unchanged"),
+    [
+        ("status", "onboarding", "status", "status pilot", "brand name Team Jo"),
+        ("brand_name", "Hand Edited", "brand_name", "brand name Team Jo", "status pilot"),
+    ],
+)
+async def test_only_the_field_that_differs_is_set_and_named(
+    world: World, column: str, value: str, field: str, changed: str, unchanged: str
+) -> None:
+    assert (await world.run())[0] == 0
+    await world.query(f"UPDATE clients SET {column} = %s WHERE slug = 'team-jo'", value)
+    audit = await _profile_audit(world)
+    code, lines = await world.run()
+    assert code == 0
+    assert f"team-jo: {changed}: created" in lines
+    assert f"team-jo: {unchanged}: already there" in lines
+    assert await _active_slugs(world) == {company.slug for company in world.roster.companies}
+    (row,) = await world.query("SELECT status, brand_name FROM clients WHERE slug = 'team-jo'")
+    assert row == {"status": "pilot", "brand_name": "Team Jo"}
+    added = [row for row in await _profile_audit(world) if row not in audit]
+    assert len(added) == 1
+    assert added[0]["details"]["fields"] == [field]
+    assert added[0]["details"]["previous"][field] == value
+
+
 @requires_docker
 @pytest.mark.parametrize("off", ["none", "disabled"])
 async def test_refuses_with_mail_off(world: World, off: str) -> None:
@@ -245,9 +345,22 @@ async def test_refuses_wrong_password(world: World) -> None:
 @requires_docker
 async def test_refuses_admin_who_must_change_password(world: World) -> None:
     await world.query("UPDATE console_users SET must_change_password = true")
-    with pytest.raises(AccountsStop, match="sign in and change the password first"):
+    with pytest.raises(AccountsStop, match="sign in and change the password first") as stop:
         await world.run()
     assert await world.count("clients") == 0
+    # accounts may already have added the further admins, so "nothing" would overstate it.
+    assert "No company was created" in str(stop.value)
+    assert "Nothing was created" not in str(stop.value)
+
+
+async def test_the_throttle_message_gives_the_real_wait() -> None:
+    class Throttled:
+        async def verify_platform_admin(self, email: str, password: str) -> None:
+            raise HTTPException(status_code=429, detail="too many attempts")
+
+    roster = load_roster(EXAMPLE)
+    with pytest.raises(AccountsStop, match="wait up to 15 minutes"):
+        await staging_accounts._verified_actor(cast(Any, Throttled()), roster, FIRST_PASSWORD)
 
 
 @requires_docker
