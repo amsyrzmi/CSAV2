@@ -672,7 +672,7 @@ HOME_SENTENCE = "Ask the assistant at the side of the screen."
 
 async def test_a_company_without_customer_support_gets_the_small_home(console: Console) -> None:
     api = Api(packages=[package("hr"), package("staff_email", "suspended")], review=7)
-    me = make_me("tenant_admin")
+    me = make_me("tenant_admin", assistant=True)
     async with open_overview(console, api, "/portal", me=me, rail="expanded") as page:
         home = page.get_by_test_id("workspace-home")
         await expect(home).to_be_visible()
@@ -684,7 +684,9 @@ async def test_a_company_without_customer_support_gets_the_small_home(console: C
         )
         # Suspended Email assistant is not something the company has.
         await expect(home.get_by_role("link", name="Email assistant")).to_have_count(0)
+        # The sentence points at the dock, and with the assistant on the dock is there.
         await expect(home.get_by_text(HOME_SENTENCE, exact=True)).to_be_visible()
+        await expect(page.get_by_test_id("assistant-open")).to_be_visible()
         await expect(composer(page)).to_have_count(0)
         await expect(page.get_by_role("heading", name="How can I help today?")).to_have_count(0)
         await expect(page.locator("h1")).to_have_count(1)
@@ -699,6 +701,48 @@ async def test_a_company_without_customer_support_gets_the_small_home(console: C
         assert len(api.paths("services/active")) == len(api.paths("hr/context")), api.requests
         assert not [p for _, p in api.requests if p.startswith(("chat/", "inbox/"))]
         assert not api.paths("services/customer-replies"), api.requests
+
+
+async def test_the_small_home_has_no_assistant_sentence_for_a_read_only_member(
+    console: Console,
+) -> None:
+    # No dock for a read-only member, even with the assistant on: the links stay, the sentence goes.
+    api = Api(packages=[package("hr")], review=None)
+    me = make_me("read_only", assistant=True)
+    async with open_overview(console, api, "/portal", me=me) as page:
+        home = page.get_by_test_id("workspace-home")
+        await expect(home).to_be_visible()
+        await expect(home.get_by_role("link", name="Services", exact=True)).to_have_attribute(
+            "href", "/portal/services"
+        )
+        await expect(page.get_by_text(HOME_SENTENCE, exact=True)).to_have_count(0)
+        await expect(page.get_by_test_id("assistant-open")).to_have_count(0)
+
+
+async def test_the_small_home_has_no_assistant_sentence_when_the_assistant_is_off(
+    console: Console,
+) -> None:
+    api = Api(packages=[package("hr")])
+    me = make_me("tenant_admin", assistant=False)
+    async with open_overview(console, api, "/portal", me=me) as page:
+        home = page.get_by_test_id("workspace-home")
+        await expect(home).to_be_visible()
+        await expect(home.get_by_role("link", name="Services", exact=True)).to_be_visible()
+        await expect(page.get_by_text(HOME_SENTENCE, exact=True)).to_have_count(0)
+        await expect(page.get_by_test_id("assistant-open")).to_have_count(0)
+
+
+async def test_a_platform_admin_sees_the_assistant_sentence_where_the_dock_is(
+    console: Console,
+) -> None:
+    # The chosen company has no Customer support; the dock is there because ?client_id= names it.
+    api = Api(packages=[package("hr")])
+    me = make_me("platform_admin", assistant=True)
+    async with open_overview(console, api, "/?client_id=tenant-b", me=me) as page:
+        home = page.get_by_test_id("workspace-home")
+        await expect(home).to_be_visible()
+        await expect(home.get_by_text(HOME_SENTENCE, exact=True)).to_be_visible()
+        await expect(page.get_by_test_id("assistant-open")).to_be_visible()
 
 
 async def test_a_company_with_customer_support_gets_the_chat_and_the_banner(
