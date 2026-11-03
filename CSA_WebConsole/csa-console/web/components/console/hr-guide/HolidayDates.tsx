@@ -25,7 +25,8 @@ export default function HolidayDates({ name, label }: { name: string; label: str
         onChange={event => { setList(event.target.value); setStatus(""); }} /></label>
     <div className="flex flex-wrap items-end gap-2">
       <label className="block w-full min-w-0 text-sm sm:w-56">Pick a holiday date
-        <input ref={date} className={`${field} mt-1`} type="date" data-testid="hr-holiday-date-input" aria-describedby={statusId} /></label>
+        <input ref={date} className={`${field} mt-1`} type="date" data-testid="hr-holiday-date-input" aria-describedby={statusId}
+          onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); add(); } }} /></label>
       <button type="button" className={secondary} data-testid="hr-holiday-add" onClick={add}>Add date</button>
     </div>
     <p id={statusId} role="status" className="min-h-5 text-sm text-[color:var(--fs-text-secondary)]">{status}</p>

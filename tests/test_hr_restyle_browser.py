@@ -2196,6 +2196,13 @@ async def test_holiday_date_input_appends_to_the_list(site: Site) -> None:
             await picker.fill("2026-05-05")
             await add.click()
             await expect(holidays).to_have_value("2026-03-03, 2026-04-04, 2026-05-05")
+            # Enter in the date picker adds the date; it does not save the whole calendar.
+            saves_before = len(calendar_saves(world))
+            await picker.fill("2026-06-06")
+            await picker.press("Enter")
+            await expect(holidays).to_have_value("2026-03-03, 2026-04-04, 2026-05-05, 2026-06-06")
+            await page.wait_for_timeout(300)
+            assert len(calendar_saves(world)) == saves_before, world.calls
             await panel.get_by_role("button", name="Save work calendar").click()
             for _ in range(50):
                 if calendar_saves(world):
@@ -2203,7 +2210,12 @@ async def test_holiday_date_input_appends_to_the_list(site: Site) -> None:
                 await page.wait_for_timeout(100)
             saved = calendar_saves(world)
             assert saved, world.calls
-            assert saved[0]["holidays"] == ["2026-03-03", "2026-04-04", "2026-05-05"], saved[0]
+            assert saved[0]["holidays"] == [
+                "2026-03-03",
+                "2026-04-04",
+                "2026-05-05",
+                "2026-06-06",
+            ], saved[0]
 
     await with_browser(body)
 
