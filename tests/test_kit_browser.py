@@ -1693,6 +1693,15 @@ async def inside_dialog(page: Page) -> bool:
     )
 
 
+async def never_behind_dialog(page: Page) -> bool:
+    """Focus is in the dialog, or has left the page for the browser (Tab past the last control
+    hands focus to the browser's own interface, so the document's active element is the body)."""
+    return await page.evaluate(
+        "() => !!document.activeElement?.closest('[data-testid=demo-dialog]')"
+        " || document.activeElement === document.body"
+    )
+
+
 async def test_dialog_traps_focus_closes_on_escape_and_returns_focus(console: Console) -> None:
     playwright, browser, page = await open_dialog_demo(console)
     try:
@@ -1710,10 +1719,10 @@ async def test_dialog_traps_focus_closes_on_escape_and_returns_focus(console: Co
         # The page behind is inert: Tab and Shift+Tab never leave the dialog.
         for _ in range(6):
             await page.keyboard.press("Tab")
-            assert await inside_dialog(page)
+            assert await never_behind_dialog(page)
         for _ in range(6):
             await page.keyboard.press("Shift+Tab")
-            assert await inside_dialog(page)
+            assert await never_behind_dialog(page)
         await page.keyboard.press("Escape")
         await expect(dialog).to_be_hidden()
         await expect(opener).to_be_focused()
