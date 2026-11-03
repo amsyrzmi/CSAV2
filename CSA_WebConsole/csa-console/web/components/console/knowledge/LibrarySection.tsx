@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { del } from "@/lib/api";
 import type { Agent, KbDocument, KbFile, KbGap, KbJob } from "@/lib/identity-contracts";
-import { groupSources, looseFiles, pausedReason, pollingNeeded, type Card } from "@/lib/knowledge-view";
-import { DetailsRow } from "../kit";
+import { groupSources, kbStatusLine, LIBRARY_PREVIEW, looseFiles, pausedReason, pollingNeeded, type Card } from "@/lib/knowledge-view";
+import { DetailsRow, TechDetailsProvider, TechSwitch } from "../kit";
 import { action, Notice, Panel, secondary } from "../ui";
 import KnowledgeCard, { type CardActions, type Source } from "./KnowledgeCard";
 import LockedNotice from "./LockedNotice";
@@ -26,10 +26,12 @@ export default function LibrarySection({
   query,
   canWrite,
   addHref,
+  questionsHref,
 }: {
   query: string;
   canWrite: boolean;
   addHref: string;
+  questionsHref: string;
 }) {
   const agents = useKbSlot<Agent[]>("agents", query);
   const files = useKbSlot<KbFile[]>("kb/files", query);
@@ -40,6 +42,8 @@ export default function LibrarySection({
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const readyList = useId();
   const feedback = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const path = (resource: string) => `/console/v1/${resource}?${query}`;
@@ -116,10 +120,15 @@ export default function LibrarySection({
     <SectionError name={name} what={what} message={slot.error} stale={slot.data !== null} onRetry={() => void load()} />
   );
   const loose = looseFiles(fileRows, groups);
+  const counting = documents.slot.data === null && !documents.slot.error;
+  const known = documents.slot.data ? documents.slot.data.filter((row) => row.is_active).length : null;
+  const attention = jobs.slot.data ? groups.attention.length : null;
+  const questions = gaps.slot.data ? gaps.slot.data.length : null;
+  const shownLibrary = showAll ? groups.library : groups.library.slice(0, LIBRARY_PREVIEW);
 
   if (locked) return <LockedNotice slot={locked} onRefresh={reloadAll} />;
 
-  return <div className="space-y-6">
+  return <TechDetailsProvider><div className="space-y-6">
     {confirm && <Panel title="Confirm deletion">
       <div data-testid="kb-confirm">
         <p>Delete {confirm.name}? Deleting a source with a linked document removes that document, its searchable chunks and every duplicate source linked to it. An already-authorized download may finish.</p>
@@ -135,9 +144,19 @@ export default function LibrarySection({
     </div>
 
     <section data-testid="kb-library" className="space-y-5">
-      <div className="flex flex-wrap items-center justify-end gap-3">
+      <p data-testid="kb-status" className="text-[length:var(--fs-text-lg)] font-medium">
+        {counting ? "Counting what your assistant knows..." : kbStatusLine({ known, attention, questions })}
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        {canWrite && <Link data-testid="kb-add-knowledge" className={action} href={addHref}>Add knowledge</Link>}
         <button className={secondary} disabled={busy} onClick={reloadAll}>Refresh business knowledge</button>
+        <TechSwitch testId="kb-tech-all" />
       </div>
+      {questions !== null && questions > 0 && <div data-testid="kb-questions-callout"
+        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface-blue)] p-3">
+        <p className="font-medium">Questions your assistant couldn&apos;t answer: {questions}</p>
+        <Link className={secondary} href={questionsHref}>Add an answer</Link>
+      </div>}
       {retry(jobs.slot, "jobs", "the files being read", jobs.load)}
       {groups.attention.length > 0 && <div data-testid="kb-attention" className="space-y-3">
         <h3 className="font-semibold">Needs attention</h3>
@@ -157,7 +176,12 @@ export default function LibrarySection({
             <Link data-testid="kb-empty-add-link" className="font-medium text-[color:var(--fs-primary)] underline" href={addHref}>Add a file</Link> and your assistant will read it.
           </p>}
         </div>}
-        {cardList(groups.library, "document")}
+        <div id={readyList}>{cardList(shownLibrary, "document")}</div>
+        {groups.library.length > LIBRARY_PREVIEW && <button type="button" className={secondary}
+          data-testid="kb-ready-show-all" aria-expanded={showAll} aria-controls={readyList}
+          onClick={() => setShowAll((current) => !current)}>
+          {showAll ? "Show fewer" : `Show all ${groups.library.length}`}
+        </button>}
       </div>
       {retry(files.slot, "files", "the original files", files.load)}
       <div className={box}>
@@ -176,5 +200,5 @@ export default function LibrarySection({
         </DetailsRow>
       </div>
     </section>
-  </div>;
+  </div></TechDetailsProvider>;
 }

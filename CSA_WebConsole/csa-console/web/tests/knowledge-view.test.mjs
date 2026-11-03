@@ -12,7 +12,7 @@ async function load(name) {
 }
 const {
   groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, kindText,
-  looseFiles, pausedReason,
+  looseFiles, pausedReason, kbStatusLine, LIBRARY_PREVIEW,
 } = await import(await load("knowledge-view.ts"));
 
 const file = (id, extra = {}) => ({
@@ -182,4 +182,49 @@ test("pausedReason gives one plain reason for every paused state", () => {
   assert.match(pausedReason("failed", false), /could not check/);
   assert.match(pausedReason("missing", false), /not available/);
   assert.match(pausedReason("loading", false), /Checking/);
+});
+
+test("kbStatusLine counts and never shows 0 for a failed list", () => {
+  assert.equal(kbStatusLine({ known: null, attention: 2, questions: 3 }), "We couldn't count everything just now.");
+  assert.equal(kbStatusLine({ known: null, attention: null, questions: null }), "We couldn't count everything just now.");
+  assert.equal(kbStatusLine({ known: 4, attention: 1, questions: 2 }), "Your assistant knows 4 things. 3 need your attention.");
+  // A failed attention or questions list drops the second sentence rather than saying 0.
+  assert.equal(kbStatusLine({ known: 4, attention: null, questions: 2 }), "Your assistant knows 4 things.");
+  assert.equal(kbStatusLine({ known: 4, attention: 1, questions: null }), "Your assistant knows 4 things.");
+  assert.equal(kbStatusLine({ known: 4, attention: 0, questions: 0 }), "Your assistant knows 4 things. Nothing needs your attention.");
+  assert.equal(kbStatusLine({ known: 0, attention: 0, questions: 0 }), "Your assistant knows 0 things. Nothing needs your attention.");
+});
+
+test("kbStatusLine singular and plural", () => {
+  assert.equal(kbStatusLine({ known: 1, attention: 1, questions: 0 }), "Your assistant knows 1 thing. 1 needs your attention.");
+  assert.equal(kbStatusLine({ known: 2, attention: 0, questions: 1 }), "Your assistant knows 2 things. 1 needs your attention.");
+  assert.equal(kbStatusLine({ known: 1, attention: 1, questions: 1 }), "Your assistant knows 1 thing. 2 need your attention.");
+});
+
+test("card plain rows for documents, reading and failed jobs", () => {
+  const files = [file("f1", { document_id: "d1" }), file("f2"), file("f3")];
+  const documents = [document("d1", { chunk_count: 12 }), document("d2", { chunk_count: 1, file_name: null })];
+  const jobs = [
+    job("j1", "queued", { files: [{ name: "j1.pdf", file_id: "f2" }] }),
+    job("j3", "failed", { error: "bad pdf", files: [{ name: "j3.pdf", file_id: "f3" }] }),
+  ];
+  const groups = groupSources(files, documents, jobs);
+  const rows = (card) => Object.fromEntries(card.plain.map((r) => [r.label, r.value]));
+  assert.deepEqual(groups.library[0].plain.map((r) => r.label), ["Added", "Size", "What your assistant can use"]);
+  assert.equal(rows(groups.library[0]).Added, addedText("2026-11-02T02:00:00Z"));
+  assert.equal(rows(groups.library[0]).Size, "2 KB");
+  assert.equal(rows(groups.library[0])["What your assistant can use"], "12 parts your assistant can look up");
+  assert.equal(rows(groups.library[1])["What your assistant can use"], "1 part your assistant can look up");
+  assert.equal(rows(groups.library[1]).Size, "Not stored");
+  assert.equal(rows(groups.reading[0])["What your assistant can use"], "Nothing yet. It is still reading.");
+  assert.equal(rows(groups.attention[0])["What your assistant can use"], "Nothing. It could not read this file.");
+  // The details rows are untouched.
+  assert.deepEqual(groups.library[0].details.map((r) => r.label), ["Size", "Searchable pieces", "Reading job"]);
+  // A list that did not load says Unknown for the size.
+  const unknown = groupSources(files, documents, jobs, { files: false, jobs: true });
+  assert.equal(rows(unknown.library[0]).Size, "Unknown");
+});
+
+test("the library shows five cards before Show all", () => {
+  assert.equal(LIBRARY_PREVIEW, 5);
 });

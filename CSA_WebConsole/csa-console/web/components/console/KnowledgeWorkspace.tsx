@@ -51,7 +51,8 @@ export function KnowledgeWorkspace({ me, section = "library" }: { me: Me; sectio
   };
   const canWrite = me.role !== null && me.role !== "read_only";
   const servicesHref = platform ? "/services" : "/portal/services";
-  const addHref = query ? `${pages[1].href}?${query}` : pages[1].href;
+  const withQuery = (href: string) => (query ? `${href}?${query}` : href);
+  const addHref = withQuery(pages[1].href);
   return <>
     <h1 className="page-title mb-2 font-(family-name:--fs-font-heading) text-(length:--fs-text-page) font-semibold">Business knowledge</h1>
     <PageIntro>Tenant documents, original sources, ingestion jobs and unanswered questions.</PageIntro>
@@ -70,7 +71,7 @@ export function KnowledgeWorkspace({ me, section = "library" }: { me: Me; sectio
       </select>
     </div>}
     {clientId ? <div key={clientId}>
-      {section === "library" && <LibrarySection query={query} canWrite={canWrite} addHref={addHref} />}
+      {section === "library" && <LibrarySection query={query} canWrite={canWrite} addHref={addHref} questionsHref={withQuery(pages[2].href)} />}
       {section === "add" && <AddSection query={query} canWrite={canWrite} />}
       {section === "questions" && <QuestionsSection query={query} canWrite={canWrite} />}
       {section === "maintenance" && <MaintenanceSection query={query} canWrite={canWrite} servicesHref={servicesHref} />}

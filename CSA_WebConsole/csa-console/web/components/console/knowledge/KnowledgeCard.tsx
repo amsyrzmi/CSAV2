@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { KbDocument, KbFile, KbJob } from "@/lib/identity-contracts";
 import { addedText, chipLabel, jobStateText, type Card, type Chip } from "@/lib/knowledge-view";
 import StatusLabel, { type StatusTone } from "../fs/StatusLabel";
-import { DetailsRow } from "../kit";
+import { DetailsRow, TechnicalDetails, useTechOpen } from "../kit";
 import { secondary } from "../ui";
 
 const TONES: Record<Chip, StatusTone> = { ready: "success", reading: "info", needs_attention: "attention" };
@@ -50,11 +50,14 @@ export default function KnowledgeCard({
   const note = summaryLine(card, source);
   const testId = `kb-card-${card.id}`;
   const { canWrite, writable, busy } = actions;
+  const [open, setOpen] = useTechOpen();
   return (
     <li className={box}>
       <DetailsRow
         testId={testId}
         toggleLabel={card.title}
+        open={open}
+        onOpenChange={setOpen}
         summary={
           <div className="min-w-0">
             <p data-testid={`${testId}-title`} className="font-medium">{card.title}</p>
@@ -80,39 +83,49 @@ export default function KnowledgeCard({
           </div>
         }
       >
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
-          {card.details.map((row) => (
+        <dl data-testid={`${testId}-plain`} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
+          {card.plain.map((row) => (
             <div key={row.label} className="contents">
               <dt className="text-[color:var(--fs-text-secondary)]">{row.label}</dt>
               <dd>{row.value}</dd>
             </div>
           ))}
         </dl>
-        <div className="mt-3 space-y-1 border-t border-[color:var(--fs-border)] pt-3 text-[color:var(--fs-text-secondary)]">
-          {source.type === "document" ? <DocumentLines document={source.document} /> : <JobLines job={source.job} />}
-          {source.type === "document" && source.foldedJobs.map((job) => <div key={job.id} className="pt-2"><JobLines job={job} /></div>)}
-          {own.length > 0 && <p className="pt-2 font-semibold text-[color:var(--fs-text)]">Original sources</p>}
-          {own.map((file) => (
-            <div key={file.id} className="pt-1">
-              <p className="font-semibold text-[color:var(--fs-text)]">{file.name}</p>
-              <p>
-                {file.media_type}, {file.size_bytes.toLocaleString()} bytes.{" "}
-                {file.document_id ? `Document ${file.document_id}` : "No linked document yet."}
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <a className={secondary} href={actions.downloadHref(file.id)}>Download original</a>
-                {canWrite && (
-                  <button type="button" className={secondary} disabled={busy || !writable}
-                    onClick={() => actions.onDelete("files", file.id, file.name)}>Delete source</button>
-                )}
+        <TechnicalDetails testId={`${testId}-tech`}>
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
+            {card.details.map((row) => (
+              <div key={row.label} className="contents">
+                <dt className="text-[color:var(--fs-text-secondary)]">{row.label}</dt>
+                <dd>{row.value}</dd>
               </div>
-            </div>
-          ))}
-          {source.type === "document" && canWrite && (
-            <button type="button" className={`${secondary} mt-3`} disabled={busy || !writable}
-              onClick={() => actions.onDelete("documents", source.document.id, source.document.title)}>Delete document</button>
-          )}
-        </div>
+            ))}
+          </dl>
+          <div className="mt-3 space-y-1 border-t border-[color:var(--fs-border)] pt-3 text-[color:var(--fs-text-secondary)]">
+            {source.type === "document" ? <DocumentLines document={source.document} /> : <JobLines job={source.job} />}
+            {source.type === "document" && source.foldedJobs.map((job) => <div key={job.id} className="pt-2"><JobLines job={job} /></div>)}
+            {own.length > 0 && <p className="pt-2 font-semibold text-[color:var(--fs-text)]">Original sources</p>}
+            {own.map((file) => (
+              <div key={file.id} className="pt-1">
+                <p className="font-semibold text-[color:var(--fs-text)]">{file.name}</p>
+                <p>
+                  {file.media_type}, {file.size_bytes.toLocaleString()} bytes.{" "}
+                  {file.document_id ? `Document ${file.document_id}` : "No linked document yet."}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <a className={secondary} href={actions.downloadHref(file.id)}>Download original</a>
+                  {canWrite && (
+                    <button type="button" className={secondary} disabled={busy || !writable}
+                      onClick={() => actions.onDelete("files", file.id, file.name)}>Delete source</button>
+                  )}
+                </div>
+              </div>
+            ))}
+            {source.type === "document" && canWrite && (
+              <button type="button" className={`${secondary} mt-3`} disabled={busy || !writable}
+                onClick={() => actions.onDelete("documents", source.document.id, source.document.title)}>Delete document</button>
+            )}
+          </div>
+        </TechnicalDetails>
       </DetailsRow>
     </li>
   );

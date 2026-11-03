@@ -335,7 +335,18 @@ def card(page: Page, item: str) -> Any:
 
 
 async def open_card(page: Page, item: str) -> Any:
-    await page.get_by_test_id(f"kb-card-{item}-toggle").click()
+    """Open a card and its Technical details; returns the technical region."""
+    await open_plain(page, item)
+    await page.get_by_test_id(f"kb-card-{item}-tech-toggle").click()
+    details = page.get_by_test_id(f"kb-card-{item}-tech-details")
+    await expect(details).to_be_visible()
+    return details
+
+
+async def open_plain(page: Page, item: str) -> Any:
+    """Open a card's Details (the plain level only)."""
+    if await page.get_by_test_id(f"kb-card-{item}-toggle").get_attribute("aria-expanded") != "true":
+        await page.get_by_test_id(f"kb-card-{item}-toggle").click()
     details = page.get_by_test_id(f"kb-card-{item}-details")
     await expect(details).to_be_visible()
     return details
@@ -729,8 +740,9 @@ async def test_knowledge_at_five_widths_in_three_themes(site: Site, theme: str) 
         stub = Stub()
         stub.fail["files"] = (503, {"detail": "synthetic files outage"})
         async with knowledge_page(browser, site, stub, theme=theme) as page:
-            await open_card(page, "doc-hours")
-            await open_card(page, "job-failed")
+            await page.get_by_test_id("kb-tech-all").click()
+            for item in ("doc-hours", "job-failed"):
+                await expect(page.get_by_test_id(f"kb-card-{item}-tech-details")).to_be_visible()
             await open_fold(page, "kb-other-files")
             await expect(page.get_by_test_id("kb-error-files")).to_be_visible()
             await check(page, "library")
@@ -894,6 +906,177 @@ async def test_upload_failure_keeps_the_retry_message_and_the_same_key(
                 page.get_by_text("Queued job job-new. Queued is not yet searchable.")
             ).to_be_visible()
             assert len(stub.upload_keys) == 2 and stub.upload_keys[0] == stub.upload_keys[1]
+
+    await with_browser(body)
+
+
+async def test_status_line_and_add_knowledge_lead_the_page(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with knowledge_page(browser, site, Stub()) as page:
+            status = page.get_by_test_id("kb-status")
+            # Two active documents; one failed upload and two questions need attention.
+            await expect(status).to_have_text(
+                "Your assistant knows 2 things. 3 need your attention."
+            )
+            add = page.get_by_test_id("kb-add-knowledge")
+            await expect(add).to_have_text("Add knowledge")
+            await expect(add).to_have_attribute("href", "/portal/faq/add")
+            order = await page.evaluate(
+                """() => ['kb-status', 'kb-add-knowledge', 'kb-tech-all', 'kb-ready'].map(
+                    id => document.querySelector(`[data-testid="${id}"]`)
+                        .getBoundingClientRect().top
+                )"""
+            )
+            assert order == sorted(order), order
+            await add.click()
+            await expect(page).to_have_url(re.compile(r"/portal/faq/add$"), timeout=WAIT)
+            await expect(page.get_by_test_id("kb-add")).to_be_visible()
+
+        # Nothing wrong: the second sentence says so.
+        calm = Stub(jobs=[job for job in default_jobs() if job["status"] == "done"], gaps=[])
+        async with knowledge_page(browser, site, calm) as page:
+            await expect(page.get_by_test_id("kb-status")).to_have_text(
+                "Your assistant knows 2 things. Nothing needs your attention."
+            )
+
+        # A list that did not load is never written as 0.
+        broken = Stub()
+        broken.fail["gaps"] = (503, {"detail": "synthetic gaps outage"})
+        async with knowledge_page(browser, site, broken) as page:
+            await expect(page.get_by_test_id("kb-status")).to_have_text(
+                "Your assistant knows 2 things."
+            )
+        lost = Stub()
+        lost.fail["documents"] = (503, {"detail": "synthetic documents outage"})
+        async with knowledge_page(browser, site, lost) as page:
+            await expect(page.get_by_test_id("kb-status")).to_have_text(
+                "We couldn't count everything just now."
+            )
+
+        # Members who cannot add are not offered the link.
+        async with knowledge_page(browser, site, Stub(), role="read_only") as page:
+            await expect(page.get_by_test_id("kb-status")).to_be_visible()
+            await expect(page.get_by_test_id("kb-add-knowledge")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_questions_callout_links_to_the_questions_page(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with knowledge_page(browser, site, Stub()) as page:
+            callout = page.get_by_test_id("kb-questions-callout")
+            await expect(callout).to_contain_text("Questions your assistant couldn't answer: 2")
+            link = callout.get_by_role("link", name="Add an answer")
+            await expect(link).to_have_attribute("href", "/portal/faq/questions")
+            await link.click()
+            await expect(page).to_have_url(re.compile(r"/portal/faq/questions$"), timeout=WAIT)
+            await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
+        # Hidden when there are none, and when the list could not be read.
+        async with knowledge_page(browser, site, Stub(gaps=[])) as page:
+            await expect(page.get_by_test_id("kb-status")).to_be_visible()
+            await expect(page.get_by_test_id("kb-questions-callout")).to_have_count(0)
+        broken = Stub()
+        broken.fail["gaps"] = (503, {"detail": "synthetic gaps outage"})
+        async with knowledge_page(browser, site, broken) as page:
+            await expect(page.get_by_test_id("kb-status")).to_be_visible()
+            await expect(page.get_by_test_id("kb-questions-callout")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_library_shows_five_then_show_all(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        documents = [make_document(f"doc-{n}", f"Guide {n}", None, n) for n in range(1, 8)]
+        stub = Stub(documents=documents, files=[], jobs=[], gaps=[])
+        async with knowledge_page(browser, site, stub) as page:
+            ready = page.get_by_test_id("kb-ready")
+            shown = ready.locator('[data-testid^="kb-card-doc-"][data-testid$="-title"]')
+            await expect(shown).to_have_count(5)
+            button = page.get_by_test_id("kb-ready-show-all")
+            await expect(button).to_have_text("Show all 7")
+            await expect(button).to_have_attribute("aria-expanded", "false")
+            controls = await button.get_attribute("aria-controls")
+            assert controls and await page.locator(f"#{controls}").count() == 1
+            await button.click()
+            await expect(shown).to_have_count(7)
+            await expect(button).to_have_text("Show fewer")
+            await expect(button).to_have_attribute("aria-expanded", "true")
+            await button.click()
+            await expect(shown).to_have_count(5)
+
+        # Five or fewer: no button.
+        few = Stub(documents=documents[:5], files=[], jobs=[], gaps=[])
+        async with knowledge_page(browser, site, few) as page:
+            await expect(page.get_by_test_id("kb-card-doc-5")).to_be_visible()
+            await expect(page.get_by_test_id("kb-ready-show-all")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_card_has_details_and_technical_details(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with knowledge_page(browser, site, Stub()) as page:
+            plain = await open_plain(page, "doc-hours")
+            rows = page.get_by_test_id("kb-card-doc-hours-plain")
+            await expect(rows).to_contain_text("Added")
+            await expect(rows).to_contain_text("2 Nov 2026")
+            await expect(rows).to_contain_text("Size")
+            await expect(rows).to_contain_text("2 MB")
+            await expect(rows).to_contain_text("What your assistant can use")
+            await expect(rows).to_contain_text("12 parts your assistant can look up")
+            # The exact lines and the source actions wait behind Technical details.
+            tech = page.get_by_test_id("kb-card-doc-hours-tech-details")
+            await expect(tech).to_be_hidden()
+            await expect(page.get_by_test_id("kb-card-doc-hours-tech-toggle")).to_have_attribute(
+                "aria-expanded", "false"
+            )
+            await expect(plain.get_by_role("link", name="Download original")).to_have_count(0)
+            await page.get_by_test_id("kb-card-doc-hours-tech-toggle").click()
+            await expect(tech).to_be_visible()
+            await expect(tech).to_contain_text("Version 1, active, 12 chunks.")
+            await expect(tech.get_by_role("link", name="Download original")).to_have_count(1)
+            await expect(tech.get_by_role("button", name="Delete document")).to_be_enabled()
+
+            reading = page.get_by_test_id("kb-card-job-running-plain")
+            await open_plain(page, "job-running")
+            await expect(reading).to_contain_text("Nothing yet. It is still reading.")
+            await open_plain(page, "job-failed")
+            await expect(page.get_by_test_id("kb-card-job-failed-plain")).to_contain_text(
+                "Nothing. It could not read this file."
+            )
+
+    await with_browser(body)
+
+
+async def test_show_technical_details_opens_every_card(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with knowledge_page(browser, site, Stub()) as page:
+            switch = page.get_by_test_id("kb-tech-all")
+            await expect(switch).to_have_attribute("aria-pressed", "false")
+            await expect(switch).to_have_text("Show technical details")
+            await switch.click()
+            await expect(switch).to_have_attribute("aria-pressed", "true")
+            for item in ("doc-hours", "doc-faq", "job-failed", "job-running", "job-queued"):
+                await expect(page.get_by_test_id(f"kb-card-{item}-toggle")).to_have_attribute(
+                    "aria-expanded", "true"
+                )
+                await expect(page.get_by_test_id(f"kb-card-{item}-tech-toggle")).to_have_attribute(
+                    "aria-expanded", "true"
+                )
+            await expect(page.get_by_test_id("kb-card-doc-hours-tech-details")).to_contain_text(
+                "Version 1, active, 12 chunks."
+            )
+            # One card can still be closed by hand, and the switch closes the rest.
+            await page.get_by_test_id("kb-card-doc-faq-toggle").click()
+            await expect(page.get_by_test_id("kb-card-doc-faq-toggle")).to_have_attribute(
+                "aria-expanded", "false"
+            )
+            await switch.click()
+            await expect(switch).to_have_attribute("aria-pressed", "false")
+            for item in ("doc-hours", "job-failed"):
+                await expect(page.get_by_test_id(f"kb-card-{item}-toggle")).to_have_attribute(
+                    "aria-expanded", "false"
+                )
 
     await with_browser(body)
 

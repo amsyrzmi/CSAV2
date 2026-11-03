@@ -15,6 +15,8 @@ export type Card = {
   addedAt: string | null;
   chip: Chip;
   details: { label: string; value: string }[];
+  /** The three plain lines of the first level: when it was added, how big it is, what the assistant can use of it. */
+  plain: { label: string; value: string }[];
   /** The uploaded originals that belong to this card, newest first as the files list sends them. */
   fileIds: string[];
   /** Jobs that failed or finished in part for a file already in this library card; their note sits in the details. */
@@ -45,6 +47,25 @@ const CHIP_LABELS: Record<Chip, string> = {
   reading: "Reading",
   needs_attention: "Needs attention",
 };
+
+/** How many cards of "In your library" show before "Show all". */
+export const LIBRARY_PREVIEW = 5;
+
+/**
+ * The one sentence under the page title. `known` is the count of active documents, `attention`
+ * the cards needing attention and `questions` the unanswered questions; a count whose list did
+ * not load is null and is never written as 0.
+ */
+export function kbStatusLine(input: { known: number | null; attention: number | null; questions: number | null }): string {
+  const { known, attention, questions } = input;
+  if (known === null) return "We couldn't count everything just now.";
+  const first = `Your assistant knows ${known} thing${known === 1 ? "" : "s"}.`;
+  if (attention === null || questions === null) return first;
+  const need = attention + questions;
+  return need > 0
+    ? `${first} ${need} need${need === 1 ? "s" : ""} your attention.`
+    : `${first} Nothing needs your attention.`;
+}
 
 export function chipLabel(chip: Chip): string {
   return CHIP_LABELS[chip];
@@ -103,6 +124,14 @@ function sizeOf(files: KbFile[], loaded: boolean): string {
   return files.length ? formatBytes(files.reduce((sum, file) => sum + file.size_bytes, 0)) : "Not stored";
 }
 
+function plainRows(addedAt: string | null, size: string, use: string): { label: string; value: string }[] {
+  return [
+    { label: "Added", value: addedText(addedAt) },
+    { label: "Size", value: size },
+    { label: "What your assistant can use", value: use },
+  ];
+}
+
 function documentCard(document: KbDocument, files: KbFile[], jobs: KbJob[], loaded: Loaded): Card {
   const own = files.filter((file) => file.document_id === document.id);
   const job = jobs.find((row) => row.meta.results.some((result) => result.document_id === document.id));
@@ -112,6 +141,8 @@ function documentCard(document: KbDocument, files: KbFile[], jobs: KbJob[], load
     kind: kindText(document.file_name ?? own[0]?.name, document.kind),
     addedAt: document.created_at,
     chip: "ready",
+    plain: plainRows(document.created_at, sizeOf(own, loaded.files),
+      `${document.chunk_count} part${document.chunk_count === 1 ? "" : "s"} your assistant can look up`),
     details: [
       { label: "Size", value: sizeOf(own, loaded.files) },
       { label: "Searchable pieces", value: String(document.chunk_count) },
@@ -134,8 +165,9 @@ function jobCard(job: KbJob, chip: Chip, files: KbFile[], loaded: Loaded, covere
   const own = job.files.flatMap((entry) => (entry.file_id && known.has(entry.file_id) ? [known.get(entry.file_id)!] : []));
   const names = job.files.map((entry) => entry.name);
   const pieces = job.meta.results.reduce((sum, result) => sum + (result.chunks ?? 0), 0);
+  const size = sizeOf(own.filter((file) => !covered.has(file.id)), loaded.files);
   const details = [
-    { label: "Size", value: sizeOf(own.filter((file) => !covered.has(file.id)), loaded.files) },
+    { label: "Size", value: size },
     { label: "Job state", value: jobStateText(job.status) },
     { label: "Searchable pieces", value: pieces ? String(pieces) : "None yet" },
   ];
@@ -147,6 +179,8 @@ function jobCard(job: KbJob, chip: Chip, files: KbFile[], loaded: Loaded, covere
     kind: kindText(names[0], null),
     addedAt: job.created_at,
     chip,
+    plain: plainRows(job.created_at, size,
+      chip === "reading" ? "Nothing yet. It is still reading." : "Nothing. It could not read this file."),
     details,
     fileIds: own.map((file) => file.id).filter((id) => !covered.has(id)),
     foldedJobIds: [],
