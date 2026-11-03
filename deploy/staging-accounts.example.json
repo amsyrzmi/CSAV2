@@ -1,0 +1,94 @@
+{
+  "platform_admins": [
+    {
+      "email": "platform.admin.one@example.test",
+      "display_name": "Platform Admin One"
+    },
+    {
+      "email": "platform.admin.two@example.test",
+      "display_name": "Platform Admin Two"
+    },
+    {
+      "email": "platform.admin.three@example.test",
+      "display_name": "Platform Admin Three"
+    }
+  ],
+  "companies": [
+    {
+      "slug": "team-jo",
+      "name": "Team Jo",
+      "timezone": "Asia/Kuala_Lumpur",
+      "packages": [
+        "customer_support",
+        "knowledge_base",
+        "orders_products",
+        "subscriptions",
+        "bookings",
+        "hr",
+        "staff_email"
+      ],
+      "deployment_mode": "auto",
+      "members": [
+        {
+          "email": "jo.admin@example.test",
+          "display_name": "Team Jo Tenant Admin",
+          "role": "tenant_admin"
+        },
+        {
+          "email": "jo.hr.owner@example.test",
+          "display_name": "Team Jo HR Owner",
+          "role": "tenant_staff"
+        },
+        {
+          "email": "jo.manager@example.test",
+          "display_name": "Team Jo Manager",
+          "role": "tenant_staff"
+        },
+        {
+          "email": "jo.staff@example.test",
+          "display_name": "Team Jo Staff",
+          "role": "tenant_staff"
+        },
+        {
+          "email": "jo.readonly@example.test",
+          "display_name": "Team Jo Read Only",
+          "role": "read_only"
+        }
+      ]
+    },
+    {
+      "slug": "kedai-mawar",
+      "name": "Kedai Mawar",
+      "timezone": "Asia/Kuala_Lumpur",
+      "packages": [
+        "customer_support",
+        "knowledge_base",
+        "orders_products",
+        "subscriptions"
+      ],
+      "deployment_mode": "auto",
+      "members": [
+        {
+          "email": "mawar.admin@example.test",
+          "display_name": "Kedai Mawar Tenant Admin",
+          "role": "tenant_admin"
+        }
+      ]
+    },
+    {
+      "slug": "syarikat-cekap",
+      "name": "Syarikat Cekap",
+      "timezone": "Asia/Kuala_Lumpur",
+      "packages": [
+        "hr"
+      ],
+      "members": [
+        {
+          "email": "cekap.admin@example.test",
+          "display_name": "Syarikat Cekap Tenant Admin",
+          "role": "tenant_admin"
+        }
+      ]
+    }
+  ]
+}
