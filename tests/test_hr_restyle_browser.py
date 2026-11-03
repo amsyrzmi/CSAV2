@@ -42,6 +42,7 @@ from tests.test_hr_access_browser import (
     PDF,
     STAFF,
     RecordsWorld,
+    open_fine_tune,
 )
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me, make_service
 from tests.test_services_redesign_browser import Site, with_browser
@@ -146,15 +147,19 @@ async def hr_page(
     height: int = 1000,
     theme: str | None = None,
     assistant: bool = False,
+    reduced_motion: bool = False,
 ) -> AsyncIterator[Page]:
     """Open `path` as the tenant admin (the HR owner) and wait until `ready(page)` is visible.
 
     `assistant` turns the workspace assistant on in `/auth/me`, so the real dock is mounted.
+    `reduced_motion` makes the browser ask for reduced motion.
     """
     site.upstream.me = {**make_me("tenant_admin"), "workspace_assistant": assistant}
     site.upstream.packages = HR_PACKAGE
     context = await browser.new_context(
-        viewport={"width": width, "height": height}, timezone_id="Asia/Kuala_Lumpur"
+        viewport={"width": width, "height": height},
+        timezone_id="Asia/Kuala_Lumpur",
+        reduced_motion="reduce" if reduced_motion else "no-preference",
     )
     context.set_default_navigation_timeout(WAIT)
     context.set_default_timeout(15_000)
@@ -384,6 +389,7 @@ async def make_access_change(page: Page) -> None:
     """Select Lina Wong and turn the directory switch on: one pending change, so the bar shows."""
     await page.get_by_test_id(f"hr-access-row-{STAFF}").get_by_role("button").click()
     panel = page.get_by_test_id("hr-access-panel")
+    await open_fine_tune(panel)
     await panel.get_by_test_id("hr-access-switch-directory").check()
     await expect(page.get_by_test_id("hr-access-save")).to_be_visible()
 
@@ -1512,5 +1518,240 @@ async def test_quick_actions_sit_above_needs_you_today(site: Site) -> None:
                 assert nav and title and nav["y"] + nav["height"] <= title["y"], (empty, nav, title)
                 add = quick_actions(page).get_by_role("link", name="Add person")
                 await expect(add).to_be_visible()
+
+    await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# Stage 4, idea 3: the Access page leads with five roles.
+# ---------------------------------------------------------------------------------------------
+
+ROLES = {
+    "staff": ("Staff", "Basic details and their own requests."),
+    "manager": ("Manager", "Staff, plus approves for their team."),
+    "hr_team": (
+        "HR team",
+        "Staff, plus HR team member, manage people, recruitment and attendance.",
+    ),
+    "payroll_preparer": ("Payroll preparer", "Staff, plus prepares payroll."),
+    "payroll_reviewer": ("Payroll reviewer", "Staff, plus reviews payroll."),
+}
+# The tick-boxes behind Fine-tune: one per access switch the page knows (ten today).
+PERMISSION_IDS = (
+    "directory",
+    "own_requests",
+    "approves_team",
+    "hr_team",
+    "manage_people",
+    "sensitive_details",
+    "payroll_prepare",
+    "payroll_review",
+    "recruitment",
+    "attendance",
+)
+
+
+async def open_member(page: Page, user: str = STAFF) -> Any:
+    """Select a member on the access page and return the panel."""
+    await page.get_by_test_id(f"hr-access-row-{user}").get_by_role("button").click()
+    panel = page.get_by_test_id("hr-access-panel")
+    await expect(panel).to_be_visible()
+    return panel
+
+
+def role_card(panel: Any, role: str) -> Any:
+    return panel.get_by_test_id(f"hr-role-card-{role}")
+
+
+def access_changes(world: RestyleWorld) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["path"] == "hr/access/changes"]
+
+
+async def test_role_card_applies_its_preset_and_shows_one_change(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, ACCESS, ready=access_ready) as page:
+            panel = await open_member(page)
+            cards = panel.get_by_test_id("hr-role-cards")
+            await expect(cards.get_by_role("heading", name="Start from a role")).to_be_visible()
+            # Five roles, each with its preset's label and description, in this order.
+            await expect(cards.locator("[data-testid^=hr-role-card-]")).to_have_count(len(ROLES))
+            for role, (label, description) in ROLES.items():
+                await expect(role_card(panel, role)).to_contain_text(label)
+                await expect(role_card(panel, role)).to_contain_text(description)
+            order = await cards.locator("[data-testid^=hr-role-card-]").evaluate_all(
+                "(els) => els.map((el) => el.dataset.testid.replace('hr-role-card-', ''))"
+            )
+            assert order == list(ROLES), order
+            # Lina has "own requests" only, so Staff turns on one permission: Directory.
+            await expect(role_card(panel, "staff")).to_contain_text("Turns on 1 permission")
+            await role_card(panel, "staff").click()
+            await expect(page.get_by_text("1 change for 1 person", exact=True)).to_be_visible()
+            await expect(page.get_by_test_id(f"hr-access-row-{STAFF}")).to_contain_text(
+                "Not saved yet"
+            )
+            # Nothing was sent: the change waits in the bar.
+            assert access_changes(world) == []
+            # The role is now on, so its card says so and cannot be used again.
+            await expect(role_card(panel, "staff")).to_contain_text("Already has these permissions")
+            await expect(role_card(panel, "staff")).to_be_disabled()
+            await open_fine_tune(panel)
+            await expect(panel.get_by_test_id("hr-access-switch-directory")).to_be_checked()
+            await expect(panel.get_by_test_id("hr-access-switch-approves_team")).not_to_be_checked()
+            # Another role adds only what it needs: Manager is one permission more.
+            await role_card(panel, "manager").click()
+            await expect(page.get_by_text("2 changes for 1 person", exact=True)).to_be_visible()
+            await expect(panel.get_by_test_id("hr-access-switch-approves_team")).to_be_checked()
+
+    await with_browser(body)
+
+
+async def test_role_cards_work_from_the_keyboard(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, ACCESS, ready=access_ready) as page:
+            panel = await open_member(page)
+            manager = role_card(panel, "manager")
+            await role_card(panel, "staff").focus()
+            await page.keyboard.press("Tab")
+            await expect(manager).to_be_focused()
+            measured = await page.evaluate(CONTRAST_JS, "[data-testid=hr-role-cards]")
+            assert measured["outline"]["style"] != "none", measured["outline"]
+            assert measured["outline"]["width"] >= 2, measured["outline"]
+            assert measured["outline"]["ratio"] >= 3, measured["outline"]
+            await page.keyboard.press("Enter")
+            await expect(page.get_by_text("2 changes for 1 person", exact=True)).to_be_visible()
+            # The Fine-tune toggle is the next stop after the Preset and Copy lists.
+            toggle = panel.get_by_test_id("hr-access-fine-tune-toggle")
+            await toggle.focus()
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            await page.keyboard.press("Space")
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            await page.keyboard.press("Enter")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+
+    await with_browser(body)
+
+
+async def test_fine_tune_holds_the_nine_permissions(site: Site) -> None:
+    """The brief says nine; the page has ten permissions since "Sensitive details", all inside."""
+
+    async def body(browser: Any) -> None:
+        async with hr_page(browser, site, RestyleWorld(), ACCESS, ready=access_ready) as page:
+            panel = await open_member(page)
+            row = panel.get_by_test_id("hr-access-fine-tune")
+            toggle = panel.get_by_test_id("hr-access-fine-tune-toggle")
+            details = panel.get_by_test_id("hr-access-fine-tune-details")
+            await expect(row).to_contain_text("Fine-tune")
+            # Closed to start with: the tick-boxes exist but nobody can reach them.
+            await expect(row).to_have_attribute("data-open", "false")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            controls = await toggle.get_attribute("aria-controls")
+            assert controls and await details.get_attribute("id") == controls
+            await expect(panel.get_by_test_id("hr-access-switch-directory")).to_be_hidden()
+            # Every permission tick-box is inside the row, and none is outside it.
+            ids = await details.locator("[data-testid^=hr-access-switch-]").evaluate_all(
+                "(els) => els.map((el) => el.dataset.testid.replace('hr-access-switch-', ''))"
+            )
+            assert sorted(ids) == sorted(PERMISSION_IDS), ids
+            assert await panel.locator("[data-testid^=hr-access-switch-]").count() == len(ids)
+            await toggle.click()
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            await expect(panel.get_by_test_id("hr-access-switch-directory")).to_be_visible()
+            for group in ("Everyday", "Responsibilities", "Private areas"):
+                await expect(details.get_by_text(group, exact=True)).to_be_visible()
+            # The page copy says permission, not switch.
+            await expect(page.get_by_label("Has permission")).to_be_visible()
+            await expect(page.get_by_text("Presets only turn permissions on.")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_review_dialog_unchanged(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, ACCESS, ready=access_ready) as page:
+            panel = await open_member(page)
+            await role_card(panel, "staff").click()
+            await page.get_by_test_id("hr-access-save").click()
+            dialog = page.get_by_role("dialog")
+            await expect(dialog).to_contain_text("Save 1 change for 1 person?", timeout=WAIT)
+            await expect(dialog).to_contain_text("This change adds no new warnings.")
+            await expect(dialog.get_by_role("button", name="Go back")).to_be_visible()
+            await expect(dialog.get_by_test_id("hr-access-confirm")).to_have_text("Save changes")
+            # Reviewing sent a dry run, not a save.
+            assert [c["body"]["dry_run"] for c in access_changes(world)] == [True]
+            assert world.people[STAFF]["on"] == ["own_requests"]
+            await dialog.get_by_test_id("hr-access-confirm").click()
+            await expect(page.get_by_test_id(f"hr-access-result-{STAFF}")).to_have_text(
+                "Saved", timeout=WAIT
+            )
+            assert world.people[STAFF]["on"] == ["directory", "own_requests"]
+            assert [c["body"]["dry_run"] for c in access_changes(world)] == [True, False]
+
+    await with_browser(body)
+
+
+async def test_fine_tune_opens_without_a_height_animation_under_reduced_motion(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), ACCESS, ready=access_ready, reduced_motion=True
+        ) as page:
+            panel = await open_member(page)
+            details = panel.get_by_test_id("hr-access-fine-tune-details")
+            await panel.get_by_test_id("hr-access-fine-tune-toggle").click()
+            durations = await details.evaluate(
+                "(el) => getComputedStyle(el).transitionDuration.split(', ')"
+            )
+            assert set(durations) <= {"0s"}, durations
+            # The row is fully open at once; the tick-boxes can be clicked straight away.
+            rows = await details.evaluate("(el) => getComputedStyle(el).gridTemplateRows")
+            assert rows != "0px", rows
+            await panel.get_by_test_id("hr-access-switch-directory").check()
+            await expect(page.get_by_text("1 change for 1 person", exact=True)).to_be_visible()
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_role_cards_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), ACCESS, theme=theme, ready=access_ready
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            panel = await open_member(page)
+            await open_fine_tune(panel)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 900})
+                await page.wait_for_timeout(150)
+                where = (theme, width)
+                scrolled = await overflow(page)
+                assert scrolled["scroll"] <= scrolled["inner"], (where, scrolled)
+                for selector in (
+                    "[data-testid=hr-role-cards]",
+                    "[data-testid=hr-access-fine-tune]",
+                ):
+                    measured = await page.evaluate(CONTRAST_JS, selector)
+                    assert measured["inside"] and measured["sideways"] == [], (
+                        where,
+                        selector,
+                        measured,
+                    )
+                    for item in measured["texts"]:
+                        assert item["ratio"] >= 4.5, (where, selector, item)
+                # Five cards, none cut off by its own box.
+                clipped = await page.evaluate(
+                    """() => [...document.querySelectorAll('[data-testid^=hr-role-card-]')]
+                        .filter((el) => el.scrollWidth > el.clientWidth + 0.5)
+                        .map((el) => el.dataset.testid)"""
+                )
+                assert clipped == [], (where, clipped)
+                heights = await panel.locator("[data-testid^=hr-role-card-]").evaluate_all(
+                    "(els) => els.map((el) => el.getBoundingClientRect().height)"
+                )
+                assert len(heights) == len(ROLES) and min(heights) >= 44, (where, heights)
 
     await with_browser(body)

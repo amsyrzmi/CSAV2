@@ -7,6 +7,8 @@ import {
   CUSTOM_COPY, GROUPS, OWNER_ACCESS_LINE, PRESET_COPY, refusalText, SWITCH_COPY, warningText,
 } from "@/lib/hr-access-copy";
 import { ApiError } from "@/lib/api";
+import { DetailsRow } from "./kit";
+import RoleCards from "./hr-guide/RoleCards";
 import { field, secondary } from "./ui";
 
 /** An explained server sentence, or the fallback; raw codes stay off the screen. */
@@ -25,7 +27,7 @@ export function warningsFor(person: AccessPerson, warnings: AccessWarningOut[]):
     || (person.employee_id !== null && w.employee_id === person.employee_id));
 }
 
-/** The selected member: their switches, grouped, with presets, copy-from, custom access and warnings. */
+/** The selected member: their permissions, grouped, with presets, copy-from, custom access and warnings. */
 export function HrAccessPanel({ person, desired, others, warnings, result, disabled, onChange, onBack, onAdvanced }: {
   person: AccessPerson;
   desired: SwitchId[];
@@ -54,6 +56,7 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
     </header>
     {result?.outcome === "refused" && <p role="alert" className="rounded-md border border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] p-3 text-sm text-[color:var(--fs-danger)]">
       Not saved. {refusalText(result.reason)}</p>}
+    <RoleCards desired={desired} disabled={disabled} onChange={onChange} />
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="block text-sm">Preset
         <select className={`${field} mt-1`} data-testid="hr-access-preset" value="" disabled={disabled}
@@ -74,8 +77,11 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
         </select>
       </label>
     </div>
-    <p className="text-xs text-ink-500">Presets only turn switches on. Copying replaces the switches but keeps custom access.</p>
-    {GROUPS.map((group) => <fieldset key={group} className="space-y-3" disabled={disabled}>
+    <p className="text-xs text-ink-500">Presets only turn permissions on. Copying replaces the permissions but keeps custom access.</p>
+    <DetailsRow testId="hr-access-fine-tune" toggleLabel="permissions" summary={<>
+      <span className="block text-sm font-semibold">Fine-tune</span>
+      <span className="block text-sm text-[color:var(--fs-text-secondary)]">Turn single permissions on or off.</span>
+    </>}><div className="space-y-5">{GROUPS.map((group) => <fieldset key={group} className="space-y-3" disabled={disabled}>
       <legend className="mb-2 text-sm font-semibold">{group}</legend>
       {SWITCH_IDS.filter((id) => SWITCH_COPY[id].group === group).map((id) => {
         const on = desired.includes(id);
@@ -92,7 +98,7 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
           </span>
         </label>;
       })}
-    </fieldset>)}
+    </fieldset>)}</div></DetailsRow>
     {person.is_owner && <p className="text-sm">{OWNER_ACCESS_LINE}</p>}
     {person.custom.length > 0 && <div className="space-y-2 rounded-md border border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm">
       <h3 className="font-semibold">{CUSTOM_COPY.title}</h3>

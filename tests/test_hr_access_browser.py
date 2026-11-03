@@ -535,6 +535,14 @@ async def open_access_page(page: Page, base: str) -> None:
     await expect(page.get_by_test_id(f"hr-access-row-{STAFF}")).to_be_visible(timeout=WAIT)
 
 
+async def open_fine_tune(scope: Any) -> None:
+    """Open the panel's Fine-tune row (closed for each member): it holds the tick-boxes."""
+    row = scope.get_by_test_id("hr-access-fine-tune")
+    if await row.get_attribute("data-open") != "true":
+        await row.get_by_test_id("hr-access-fine-tune-toggle").click()
+    await expect(row).to_have_attribute("data-open", "true")
+
+
 async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) -> None:
     owner_context = await browser.new_context(timezone_id="Asia/Kuala_Lumpur")
     staff_context = await browser.new_context(timezone_id="Asia/Kuala_Lumpur")
@@ -586,6 +594,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await row(STAFF).get_by_role("button").click()
         panel = page.get_by_test_id("hr-access-panel")
         await expect(panel).to_contain_text("Lina Wong")
+        await open_fine_tune(panel)
         await expect(panel.get_by_text(DIRECTORY_LABEL, exact=True)).to_be_visible()
         await panel.get_by_test_id("hr-access-switch-directory").check()
         await expect(row(STAFF)).to_contain_text("Not saved yet")
@@ -656,6 +665,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (h) The stale tab, opened before the save, is told access changed and keeps its change.
         await stale.get_by_test_id(f"hr-access-row-{STAFF}").get_by_role("button").click()
+        await open_fine_tune(stale.get_by_test_id("hr-access-panel"))
         await stale.get_by_test_id("hr-access-switch-payroll_prepare").check()
         await stale.get_by_test_id("hr-access-save").click()
         await expect(stale.get_by_test_id("hr-access-conflict")).to_be_visible(timeout=WAIT)

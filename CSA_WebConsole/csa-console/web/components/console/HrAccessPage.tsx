@@ -221,9 +221,9 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
               <option value="">Anyone</option>{managers.map((m) => <option key={m.employee_id} value={m.employee_id}>{m.display_name}</option>)}
             </select>
           </label>
-          <label className="block text-sm">Has switch
+          <label className="block text-sm">Has permission
             <select className={`${field} mt-1`} value={filters.has} onChange={(event) => filter({ has: event.target.value as SwitchId | "" })}>
-              <option value="">Any switch</option>
+              <option value="">Any permission</option>
               {SWITCH_IDS.map((id) => <option key={id} value={id}>{SWITCH_COPY[id].label} ({page?.counts[id] ?? 0})</option>)}
             </select>
           </label>
@@ -240,7 +240,7 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
               onClick={() => edit(ticked.map((person) => ({ person, desired: applyPreset(desiredOf(person), bulkPreset) })))}>Apply preset</button>
           </div>
           <div className="flex flex-wrap items-end gap-2">
-            <label className="block grow">Switch
+            <label className="block grow">Permission
               <select className={`${field} mt-1`} value={bulkSwitch} onChange={(event) => setBulkSwitch(event.target.value as SwitchId)}>
                 {SWITCH_IDS.map((id) => <option key={id} value={id}>{SWITCH_COPY[id].label}</option>)}
               </select>
