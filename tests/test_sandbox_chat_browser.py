@@ -393,7 +393,7 @@ async def test_send_shows_reply_and_keeps_one_honesty_line(server: str) -> None:
         log = page.get_by_role("log", name="Chat messages")
         await expect(log.get_by_text(REPLY)).to_be_visible()
         await expect(log.get_by_text("What are your opening hours?")).to_be_visible()
-        await expect(log.get_by_text("Available privately in this sandbox")).to_be_visible()
+        await expect(log.get_by_text("Answered - only you can see this")).to_be_visible()
         assert api.posts == ["chat/conversations", "chat/conversations/thread-1/turns"]
         await expect(composer).to_have_value("")
         await expect(page.get_by_test_id("chat-honesty-line")).to_have_text(HONESTY)
@@ -842,9 +842,9 @@ async def test_queued_turn_shows_no_working_row(server: str) -> None:
     api.turns["thread-2"] = [seeded_turn(1, status="awaiting_delivery")]
     api.turns["thread-3"] = [seeded_turn(1, status="held")]
     labels = {
-        1: "Queued - not delivered",
-        2: "Reply queued - not available yet",
-        3: "Held by tenant policy",
+        1: "Waiting to start",
+        2: "Reply on its way",
+        3: "Held for a staff check by your company's rules.",
     }
     async with open_chat(server, api) as page:
         for number, label in labels.items():

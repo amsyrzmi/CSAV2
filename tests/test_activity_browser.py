@@ -395,7 +395,7 @@ async def test_arrow_opens_details_with_original_text_and_survives_refresh(site:
         details = page.get_by_test_id("activity-run-12-details")
         # Plain words first: the technical text is hidden and nothing about it is requested.
         await expect(row).to_contain_text(
-            re.compile(r"Invoice lookup agent finished \d+ minutes? ago")
+            re.compile(r"Invoice lookup assistant finished \d+ minutes? ago")
         )
         await expect(row.get_by_test_id("activity-run-12-outcome")).to_have_text("Worked")
         await expect(toggle).to_have_attribute("aria-expanded", "false")
@@ -548,8 +548,8 @@ async def test_assistant_select_sends_agent(site: Site) -> None:
         labels = await select.locator("option").all_text_contents()
         assert labels[0] == "All assistants"
         assert len(labels) == 10 and len(set(labels)) == 10
-        assert "Ticketing & handoff agent: escalation" in labels
-        assert "Order management agent: approvals" in labels
+        assert "Support cases & hand-over assistant: escalation" in labels
+        assert "Order management assistant: approvals" in labels
         assert "Knowledge base agent" in labels
 
         await select.select_option("escalation_agent")
@@ -598,7 +598,7 @@ async def test_last_assistants_strip_dedupes_and_labels_outcomes(site: Site) -> 
                 "Worked"
             )
         await expect(strip.get_by_test_id("activity-card-tickets")).to_contain_text(
-            "Ticketing & handoff agent"
+            "Support cases & hand-over assistant"
         )
         await expect(strip.get_by_test_id("activity-card-tickets")).to_contain_text(
             re.compile(r"finished \d+ minutes? ago")
@@ -660,16 +660,16 @@ async def test_strip_empty_state(site: Site) -> None:
         await expect(strip.get_by_text("Nothing has run yet.", exact=True)).to_be_visible()
         assert await strip.locator("[data-agent]").count() == 0
         await expect(
-            page.get_by_text("Nothing has run yet. Runs appear here as your assistants work.")
+            page.get_by_text("Nothing yet. Tasks appear here as your assistants work.")
         ).to_be_visible()
         await expect(page.get_by_test_id("activity-newer")).to_be_disabled()
         await expect(page.get_by_test_id("activity-older")).to_be_disabled()
 
         # A failed read is its own message, never "nothing has run" and never a zero.
         stub.fail_runs = True
-        await expect(page.get_by_text("Runtime data unavailable.", exact=True)).to_be_visible(
-            timeout=12_000
-        )
+        await expect(
+            page.get_by_text("We couldn't load the activity. Try again.", exact=True)
+        ).to_be_visible(timeout=12_000)
         await expect(
             page.get_by_role("alert").filter(has_text="synthetic transient failure")
         ).to_have_count(1)
@@ -705,7 +705,9 @@ async def test_failed_read_then_recovery_keeps_polling(site: Site) -> None:
         stub.fail_runs = True
         alert = page.get_by_role("alert").filter(has_text="synthetic transient failure")
         await expect(alert).to_have_count(1, timeout=12_000)
-        await expect(page.get_by_text("Runtime data unavailable.", exact=True)).to_be_visible()
+        await expect(
+            page.get_by_text("We couldn't load the activity. Try again.", exact=True)
+        ).to_be_visible()
         stub.fail_runs = False
         await expect(run_row(page, 12)).to_be_visible(timeout=12_000)
         await expect(alert).to_have_count(0)
@@ -830,7 +832,7 @@ async def test_unchanged_filter_is_a_no_op(site: Site) -> None:
         async def nothing_happened() -> None:
             await page.wait_for_timeout(700)
             assert len(stub.list_requests) == seen, stub.list_requests[seen:]
-            await expect(page.get_by_text("Loading runs...")).to_have_count(0)
+            await expect(page.get_by_text("Loading tasks...")).to_have_count(0)
             assert await row_ids(page) == [7, 6, 5, 4, 3]
             await expect(page.get_by_test_id("activity-newer")).to_be_enabled()
             await expect(older).to_be_enabled()
@@ -855,7 +857,7 @@ async def test_unchanged_filter_is_a_no_op(site: Site) -> None:
         await first.click()
         await page.wait_for_timeout(700)
         assert len(stub.list_requests) == seen
-        await expect(page.get_by_text("Loading runs...")).to_have_count(0)
+        await expect(page.get_by_text("Loading tasks...")).to_have_count(0)
         assert not diagnostics, diagnostics
         await context.close()
 
@@ -999,7 +1001,7 @@ async def test_a_slow_earlier_answer_never_replaces_a_newer_filter(site: Site) -
         # The first (Needed attention) read is held back; the reader moves on to Worked.
         stub.holds.append(({"status": "error"}, gate))
         await page.get_by_test_id("activity-status-error").click()
-        await expect(page.get_by_text("Loading runs...")).to_be_visible()
+        await expect(page.get_by_text("Loading tasks...")).to_be_visible()
         await page.get_by_test_id("activity-status-ok").click()
         await expect(run_row(page, 12)).to_be_visible()
         assert await row_ids(page) == [12, 11, 9, 8, 7]
@@ -1050,7 +1052,7 @@ async def test_a_filtered_or_older_view_does_not_refresh_every_five_seconds(site
         await expect(notice).to_contain_text("newest page with no filter")
         # With a filter on, nothing is read again by the timer (counts, over more than one tick).
         await page.get_by_test_id("activity-status-error").click()
-        await expect(page.get_by_text("Loading runs...")).to_have_count(0)
+        await expect(page.get_by_text("Loading tasks...")).to_have_count(0)
         await expect(run_row(page, 10)).to_be_visible()
         counts = (len(stub.list_requests), len(stub.strip_requests), len(stub.overview_requests))
         await page.wait_for_timeout(6500)

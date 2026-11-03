@@ -12,11 +12,11 @@ const { sandboxStatus, sandboxDelayed } = await import(
 );
 
 test("sandbox delivery labels distinguish queued, held, failed and available", () => {
-  assert.match(sandboxStatus.queued, /not delivered/);
-  assert.match(sandboxStatus.awaiting_delivery, /not available/);
-  assert.match(sandboxStatus.held, /not delivered/);
+  assert.match(sandboxStatus.queued, /^Waiting to start$/);
+  assert.match(sandboxStatus.awaiting_delivery, /^Reply on its way$/);
+  assert.match(sandboxStatus.held, /Held for a staff check.*can't release it/);
   assert.match(sandboxStatus.failed, /do not assume/);
-  assert.match(sandboxStatus.available, /privately/);
+  assert.match(sandboxStatus.available, /only you can see this/);
   assert.match(sandboxStatus.no_reply, /without a reply/);
 });
 

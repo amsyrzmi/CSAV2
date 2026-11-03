@@ -246,7 +246,7 @@ Object.defineProperty(window,"speechSynthesis",{value:{getVoices:()=>[
             "Apakah waktu operasi?"
         )
         if scenario == "discard":
-            await voice.get_by_role("button", name="Discard local recovery").click()
+            await voice.get_by_role("button", name="Forget the unsent voice message").click()
             await expect(page.get_by_label("Your question", exact=False)).to_have_value(
                 "Preserved typed draft"
             )

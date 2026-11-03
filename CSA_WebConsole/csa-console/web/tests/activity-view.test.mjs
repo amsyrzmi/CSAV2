@@ -41,7 +41,7 @@ test("lastAssistants dedupes ticket and escalation under the tickets avatar", ()
   // and order_approval (error) over the older order_agent.
   assert.equal(cards[0].outcome, "needs_attention");
   assert.equal(cards[0].runId, 4);
-  assert.equal(cards[0].title, "Ticketing & handoff agent");
+  assert.equal(cards[0].title, "Support cases & hand-over assistant");
   assert.equal(cards[0].finishedAt, rows[0].created_at);
   assert.equal(cards[1].outcome, "needs_attention");
   assert.equal(cards[1].runId, 3);
@@ -98,7 +98,7 @@ test("plainSummary relative times", () => {
   assert.equal(whenText(at(2).toISOString(), now), "2 minutes ago");
   // An unknown capability keeps its own name rather than a made-up title.
   assert.equal(plainSummary(made(at(3)), now), "customer_support_unknown finished 3 minutes ago");
-  assert.equal(titleOf("escalation_agent"), "Ticketing & handoff agent");
+  assert.equal(titleOf("escalation_agent"), "Support cases & hand-over assistant");
   assert.equal(titleOf("mystery_agent"), "mystery_agent");
 });
 
@@ -121,14 +121,14 @@ test("agentOptions labels are unique", () => {
   assert.equal(new Set(options.map((option) => option.value)).size, 9);
   assert.equal(new Set(options.map((option) => option.label)).size, 9);
   const labels = Object.fromEntries(options.map((option) => [option.value, option.label]));
-  assert.equal(labels.escalation_agent, "Ticketing & handoff agent: escalation");
-  assert.equal(labels.ticket_agent, "Ticketing & handoff agent: tickets");
-  assert.equal(labels.order_agent, "Order management agent: orders");
-  assert.equal(labels.order_approval, "Order management agent: approvals");
+  assert.equal(labels.escalation_agent, "Support cases & hand-over assistant: escalation");
+  assert.equal(labels.ticket_agent, "Support cases & hand-over assistant: tickets");
+  assert.equal(labels.order_agent, "Order management assistant: orders");
+  assert.equal(labels.order_approval, "Order management assistant: approvals");
   // A title that only one capability has stays plain.
   assert.equal(labels.kb_agent, "Knowledge base agent");
-  assert.equal(labels.invoice_agent, "Invoice lookup agent");
-  assert.equal(labels.booking_agent, "Bookings agent");
+  assert.equal(labels.invoice_agent, "Invoice lookup assistant");
+  assert.equal(labels.booking_agent, "Bookings assistant");
   assert.ok(!Object.keys(labels).includes("lhdn_agent"), "nothing runs for lhdn_agent");
 });
 

@@ -1304,7 +1304,9 @@ async def test_packaged_m2_browser_acceptance(
                 .filter(has_text="synthetic transient failure")
                 .wait_for(timeout=15_000)
             )
-            await admin_page.get_by_text("Runtime data unavailable.", exact=True).wait_for()
+            await admin_page.get_by_text(
+                "We couldn't load the activity. Try again.", exact=True
+            ).wait_for()
             fail_run_list = False
             await invoice_row.wait_for(timeout=15_000)
             await (

@@ -23,11 +23,11 @@ export type PendingSandboxTurn = {
 };
 
 export const sandboxStatus: Record<SandboxTurn["status"], string> = {
-  queued: "Queued - not delivered",
+  queued: "Waiting to start",
   processing: "Processing",
-  awaiting_delivery: "Reply queued - not available yet",
-  held: "Held by tenant policy - not delivered; release is unavailable in this sandbox",
-  available: "Available privately in this sandbox",
+  awaiting_delivery: "Reply on its way",
+  held: "Held for a staff check by your company's rules. This practice chat can't release it.",
+  available: "Answered - only you can see this",
   failed: "Failed - do not assume a reply or business action completed",
   no_reply: "Completed without a reply",
 };

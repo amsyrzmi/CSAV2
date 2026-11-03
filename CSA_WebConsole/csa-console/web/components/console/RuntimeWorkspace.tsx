@@ -306,9 +306,9 @@ function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent:
       <Notice>This list refreshes every 5 seconds. It shows when each run happened, not what was said.
         An empty list only means nothing has run yet; it does not mean everything is healthy.
         It only refreshes by itself on the newest page with no filter on.</Notice>
-      <Panel title="Recorded runs">
-        {!page ? <p>{error ? "Runtime data unavailable." : "Loading runs..."}</p> :
-          page.items.length === 0 ? <p>{filtered ? "Nothing has been recorded for this selection." : "Nothing has run yet. Runs appear here as your assistants work."}</p> :
+      <Panel title="Recent tasks">
+        {!page ? <p>{error ? "We couldn't load the activity. Try again." : "Loading tasks..."}</p> :
+          page.items.length === 0 ? <p>{filtered ? "Nothing has been recorded for this selection." : "Nothing yet. Tasks appear here as your assistants work."}</p> :
             <ul data-testid="activity-list" className="divide-y divide-[color:var(--fs-border)]">
               {page.items.map((run: AgentRun) => <li key={run.id} className="py-3 first:pt-0 last:pb-0">
                 <RunRow run={run} query={query} now={now} open={openIds.has(run.id)}

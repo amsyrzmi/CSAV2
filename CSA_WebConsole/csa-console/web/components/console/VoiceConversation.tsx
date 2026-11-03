@@ -126,7 +126,7 @@ export function VoiceConversation({ conversation, query, disabled, onBusy, onPen
     {enabled ? <>
       <button type="button" className={secondary} disabled={running || disabled || !consent} onClick={() => void start()}>{recoverable ? "Resume same request" : "Start voice chat"}</button>
       <button type="button" className={secondary} disabled={!running} onClick={stop}>Stop voice chat / mute</button>
-      {recoverable && !running && <button type="button" className={secondary} onClick={() => { pending.current = null; onPending(null); setRecoverable(false); setError("Local recovery discarded. Previously accepted messages remain in history."); }}>Discard local recovery</button>}
-    </> : <p>Transcription is not configured.</p>}
+      {recoverable && !running && <button type="button" className={secondary} onClick={() => { pending.current = null; onPending(null); setRecoverable(false); setError("Local recovery discarded. Previously accepted messages remain in history."); }}>Forget the unsent voice message</button>}
+    </> : <p>Voice chat isn&apos;t set up for your company yet.</p>}
   </section>;
 }

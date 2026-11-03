@@ -17,18 +17,18 @@ export const AGENT_IDS = [
 export type AgentId = (typeof AGENT_IDS)[number];
 
 export const AGENT_TITLES: Record<AgentId, string> = {
-  support: "Customer support agent",
+  support: "Customer support assistant",
   knowledge: "Knowledge base agent",
-  orders: "Order management agent",
-  tickets: "Ticketing & handoff agent",
-  ecommerce: "E-commerce operations agent",
-  invoices: "Invoice lookup agent",
+  orders: "Order management assistant",
+  tickets: "Support cases & hand-over assistant",
+  ecommerce: "E-commerce operations assistant",
+  invoices: "Invoice lookup assistant",
   assistant: "Workspace assistant",
   hr: "HR assistant",
   email: "Email assistant",
-  subscriptions: "Subscriptions agent",
-  bookings: "Bookings agent",
-  einvoicing: "E-invoicing agent",
+  subscriptions: "Subscriptions assistant",
+  bookings: "Bookings assistant",
+  einvoicing: "E-invoicing assistant",
 };
 
 const CAPABILITY_AVATARS = new Map<string, AgentId>([

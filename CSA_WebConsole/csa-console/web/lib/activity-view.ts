@@ -79,7 +79,7 @@ export function whenText(iso: string, now: Date): string {
   return `on ${at.getDate()} ${MONTHS[at.getMonth()]} ${at.getFullYear()}, ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
 
-/** "Customer support agent finished 3 minutes ago". */
+/** "Customer support assistant finished 3 minutes ago". */
 export function plainSummary(run: AgentRun, now: Date): string {
   return `${titleOf(run.agent)} finished ${whenText(run.created_at, now)}`;
 }
