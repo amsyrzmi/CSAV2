@@ -1763,9 +1763,10 @@ async def test_role_cards_at_five_widths_in_three_themes(site: Site, theme: str)
 # ---------------------------------------------------------------------------------------------
 
 NEW_PERSON = "/portal/hr/people/new"
-STEP_ONE = ("Name", "Job title", "Start date", "Manager", "Department")
-STEP_TWO = ("Work email (optional)", "Work phone (optional)", "Employment type (optional)")
-PAYROLL = ("Region", "Legal entity", "Employment category")
+# Controls are found by their form names: a label that wraps a select also holds its options.
+STEP_ONE = ("display_name", "job_title", "start_date", "manager_id", "department_id")
+STEP_TWO = ("work_email", "work_phone", "employment_type")
+PAYROLL = ("region", "legal_entity_reference", "employment_category")
 ALL_OR_NONE = "Employment details for payroll (optional; fill in all three or none)"
 PROFILE_INCOMPLETE = "Fill in all three employment details, or leave all three empty."
 
@@ -1803,6 +1804,10 @@ class RefusingWorld(RestyleWorld):
         return super().answer(caller, method, path, params, body)
 
 
+def control(page: Page, name: str) -> Any:
+    return page.locator(f"[name={name}]")
+
+
 def person_more(page: Page) -> Any:
     return page.get_by_test_id("hr-person-more")
 
@@ -1816,8 +1821,8 @@ def operation_posts(world: RestyleWorld) -> list[dict[str, Any]]:
 
 
 async def fill_first_step(page: Page) -> None:
-    await page.get_by_label("Name", exact=True).fill("Aisyah Karim")
-    await page.get_by_label("Job title", exact=True).fill("Cashier")
+    await control(page, "display_name").fill("Aisyah Karim")
+    await control(page, "job_title").fill("Cashier")
 
 
 async def test_add_person_shows_five_fields_first(site: Site) -> None:
@@ -1825,28 +1830,28 @@ async def test_add_person_shows_five_fields_first(site: Site) -> None:
         world = RestyleWorld()
         async with hr_page(browser, site, world, NEW_PERSON, ready=person_more) as page:
             for label in STEP_ONE:
-                await expect(page.get_by_label(label, exact=True)).to_be_visible()
+                await expect(control(page, label)).to_be_visible()
             for label in (*STEP_TWO, *PAYROLL):
-                await expect(page.get_by_label(label, exact=True)).to_be_hidden()
+                await expect(control(page, label)).to_be_hidden()
             # Start date already holds today's date where the browser is (Kuala Lumpur).
             today = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date().isoformat()
-            await expect(page.get_by_label("Start date", exact=True)).to_have_value(today)
+            await expect(control(page, "start_date")).to_have_value(today)
             toggle = page.get_by_test_id("hr-person-more-toggle")
             await expect(toggle).to_have_attribute("aria-expanded", "false")
             region_id = await toggle.get_attribute("aria-controls")
-            assert region_id and await page.locator(f"#{region_id}").count() == 1, region_id
+            assert region_id and await page.locator(f'[id="{region_id}"]').count() == 1, region_id
             await expect(person_more(page)).to_have_attribute("data-open", "false")
             # One press opens the second step.
             await toggle.click()
             await expect(toggle).to_have_attribute("aria-expanded", "true")
             for label in STEP_TWO:
-                await expect(page.get_by_label(label, exact=True)).to_be_visible()
+                await expect(control(page, label)).to_be_visible()
             # Payroll details are one step further in, and still folded.
             await expect(person_payroll(page)).to_have_attribute("data-open", "false")
-            await expect(page.get_by_label("Region", exact=True)).to_be_hidden()
+            await expect(control(page, "region")).to_be_hidden()
             await page.get_by_test_id("hr-person-payroll-toggle").click()
             for label in PAYROLL:
-                await expect(page.get_by_label(label, exact=True)).to_be_visible()
+                await expect(control(page, label)).to_be_visible()
             # The form works from the keyboard: the toggle takes Enter and Space.
             await toggle.focus()
             await page.keyboard.press("Enter")
@@ -1864,7 +1869,7 @@ async def test_folded_fields_are_still_sent_with_the_person(site: Site) -> None:
         async with hr_page(browser, site, world, NEW_PERSON, ready=person_more) as page:
             await fill_first_step(page)
             await page.get_by_test_id("hr-person-more-toggle").click()
-            await page.get_by_label("Work email (optional)", exact=True).fill("aisyah@example.test")
+            await control(page, "work_email").fill("aisyah@example.test")
             await page.get_by_test_id("hr-person-more-toggle").click()
             await expect(person_more(page)).to_have_attribute("data-open", "false")
             await page.get_by_role("button", name="Add person", exact=True).click()
@@ -1888,7 +1893,7 @@ async def test_more_details_opens_on_a_hidden_invalid_field(site: Site) -> None:
             await fill_first_step(page)
             toggle = page.get_by_test_id("hr-person-more-toggle")
             await toggle.click()
-            email = page.get_by_label("Work email (optional)", exact=True)
+            email = control(page, "work_email")
             await email.fill("not an email")
             await toggle.click()
             await expect(email).to_be_hidden()
@@ -1912,7 +1917,7 @@ async def test_payroll_all_or_none_hint_unchanged(site: Site) -> None:
             # The hint keeps its words, and now sits inside the payroll section.
             legend = person_payroll(page).get_by_text(ALL_OR_NONE, exact=True)
             await expect(legend).to_be_visible()
-            await page.get_by_label("Region", exact=True).select_option("sabah")
+            await control(page, "region").select_option("sabah")
             # Fold both sections again, then save with one of the three filled in.
             await page.get_by_test_id("hr-person-payroll-toggle").click()
             await page.get_by_test_id("hr-person-more-toggle").click()
@@ -1922,7 +1927,7 @@ async def test_payroll_all_or_none_hint_unchanged(site: Site) -> None:
             await expect(page.get_by_text(PROFILE_INCOMPLETE, exact=True)).to_be_visible()
             await expect(person_more(page)).to_have_attribute("data-open", "true")
             await expect(person_payroll(page)).to_have_attribute("data-open", "true")
-            await expect(page.get_by_label("Legal entity", exact=True)).to_be_focused()
+            await expect(control(page, "legal_entity_reference")).to_be_focused()
             assert operation_posts(world) == []
 
     await with_browser(body)
@@ -1940,18 +1945,16 @@ async def test_edit_opens_more_details_when_filled(site: Site) -> None:
                 state = "true" if filled else "false"
                 await expect(person_more(page)).to_have_attribute("data-open", state)
                 await expect(person_payroll(page)).to_have_attribute("data-open", state)
-                email = page.get_by_label("Work email (optional)", exact=True)
+                email = control(page, "work_email")
                 if filled:
                     await expect(email).to_have_value("farid@example.test")
-                    await expect(page.get_by_label("Legal entity", exact=True)).to_have_value(
+                    await expect(control(page, "legal_entity_reference")).to_have_value(
                         "Syarikat Cekap"
                     )
                 else:
                     await expect(email).to_be_hidden()
                 # Editing leaves the start date as it was stored, and an empty one empty.
-                await expect(page.get_by_label("Start date (optional)", exact=True)).to_have_value(
-                    "2025-01-06"
-                )
+                await expect(control(page, "start_date")).to_have_value("2025-01-06")
 
     await with_browser(body)
 
@@ -1971,7 +1974,7 @@ async def test_more_details_opens_without_a_height_animation_under_reduced_motio
             assert set(durations) <= {"0s"}, durations
             rows = await details.evaluate("(el) => getComputedStyle(el).gridTemplateRows")
             assert rows != "0px", rows
-            await page.get_by_label("Work phone (optional)", exact=True).fill("+60 12 345 6789")
+            await control(page, "work_phone").fill("+60 12 345 6789")
 
     await with_browser(body)
 
@@ -1985,7 +1988,7 @@ async def test_add_person_at_five_widths_in_three_themes(site: Site, theme: str)
             await expect(page.locator("html")).to_have_attribute("data-theme", theme)
             await page.get_by_test_id("hr-person-more-toggle").click()
             await page.get_by_test_id("hr-person-payroll-toggle").click()
-            await expect(page.get_by_label("Legal entity", exact=True)).to_be_visible()
+            await expect(control(page, "legal_entity_reference")).to_be_visible()
             for width in WIDTHS:
                 await page.set_viewport_size({"width": width, "height": 900})
                 await page.wait_for_timeout(150)
@@ -2000,10 +2003,288 @@ async def test_add_person_at_five_widths_in_three_themes(site: Site, theme: str)
                 for test_id in ("hr-person-more-toggle", "hr-person-payroll-toggle"):
                     box = await page.get_by_test_id(test_id).bounding_box()
                     assert box and box["height"] >= 40, (where, test_id, box)
-            # The toggle shows a visible focus ring.
+            # The toggle shows a visible focus ring when it is reached from the keyboard.
             await page.get_by_test_id("hr-person-more-toggle").focus()
+            await page.keyboard.press("Shift+Tab")
+            await page.keyboard.press("Tab")
+            await expect(page.get_by_test_id("hr-person-more-toggle")).to_be_focused()
             measured = await page.evaluate(CONTRAST_JS, "[data-testid=hr-person-more]")
             assert measured["outline"]["style"] != "none", (theme, measured["outline"])
             assert measured["outline"]["ratio"] >= 3, (theme, measured["outline"])
+
+    await with_browser(body)
+
+
+# ---------------------------------------------------------------------------------------------
+# Stage 4, idea 5: Settings in short sections and one intro line per tab.
+# ---------------------------------------------------------------------------------------------
+
+SETTINGS = "/portal/hr/settings"
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+SETTINGS_SECTIONS = ("Work calendar", "Automatic reminders", "Who can open private areas")
+HOLIDAY_LABEL = "Reviewed holiday dates, separated by commas (YYYY-MM-DD)"
+TAB_INTROS = {
+    "home": "What needs you today, and quick ways to start.",
+    "people": "People in your company, their details and who they report to.",
+    "recruitment": "Candidates, their CVs and notes, and interview times.",
+    "leave": "Leave balances, work calendars and, where you have access, attendance and shifts.",
+    "payroll": "Prepare payroll figures for a second person to check.",
+    "training": "Training requests and decisions.",
+    "requests": "HR requests waiting for a decision, and the ones already decided.",
+    "settings": "How People & HR works for your company.",
+}
+
+
+class TabsWorld(HomeWorld):
+    """The HR owner who also holds every private area and workflow, so all eight tabs show."""
+
+    def __init__(self) -> None:
+        super().__init__(empty=False)
+
+    def answer(
+        self, caller: str, method: str, path: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if params.get("client_id") == TENANT and method == "GET":
+            if path == "hr/context":
+                status, data = super().answer(caller, method, path, params, body)
+                if status == 200:
+                    data = {
+                        **data,
+                        "private_areas": ["recruitment", "attendance", "payroll"],
+                        "workflows": ["leave.read", "payroll.read", "recruitment.read"],
+                    }
+                return status, data
+            if path.removeprefix("hr/records/") in {
+                "candidates",
+                "interviews",
+                "balances",
+                "shifts",
+                "interviewers",
+            }:
+                return 200, {"items": []}
+            if path == "hr/workflows":
+                return 200, {"items": [], "next_cursor": None}
+        return super().answer(caller, method, path, params, body)
+
+
+def calendar_panel(page: Page) -> Any:
+    return page.locator("section").filter(
+        has=page.get_by_role("heading", name="Work calendar", exact=True)
+    )
+
+
+def calendar_ready(page: Page) -> Any:
+    return page.get_by_test_id("hr-weekday-ticks")
+
+
+def calendar_saves(world: RestyleWorld) -> list[dict[str, Any]]:
+    return [
+        c["body"]
+        for c in world.calls
+        if c["method"] == "POST"
+        and c["path"] == "hr/operations"
+        and c["body"].get("operation") == "calendar.save"
+    ]
+
+
+async def fill_calendar(page: Page, *, year: str = "2026") -> Any:
+    panel = calendar_panel(page)
+    await panel.locator("select[name=region]").select_option("sabah")
+    await panel.locator("input[name=year]").fill(year)
+    return panel
+
+
+async def test_weekday_tickboxes_submit_the_same_value_as_the_old_select(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, SETTINGS, ready=calendar_ready) as page:
+            panel = await fill_calendar(page)
+            ticks = panel.get_by_test_id("hr-weekday-ticks")
+            await expect(ticks.get_by_role("checkbox")).to_have_count(len(WEEKDAYS))
+            # Seven plain days, none ticked to start with (the old select started empty too).
+            for day in WEEKDAYS:
+                await expect(
+                    ticks.get_by_role("checkbox", name=day, exact=True)
+                ).not_to_be_checked()
+            # With no day ticked the form cannot be sent, as with the old required select.
+            await panel.get_by_role("button", name="Save work calendar").click()
+            first = ticks.get_by_role("checkbox", name="Monday", exact=True)
+            assert await first.evaluate("(el) => el.validationMessage") != ""
+            assert calendar_saves(world) == []
+            # Tick Sunday, then Tuesday, then Monday: the value is still in weekday order,
+            # as numbers 0 (Monday) to 6 (Sunday), exactly what the select sent.
+            await ticks.get_by_role("checkbox", name="Sunday", exact=True).check()
+            await ticks.get_by_role("checkbox", name="Tuesday", exact=True).check()
+            await first.check()
+            assert await first.evaluate("(el) => el.validationMessage") == ""
+            await panel.get_by_role("button", name="Save work calendar").click()
+            for _ in range(50):
+                if calendar_saves(world):
+                    break
+                await page.wait_for_timeout(100)
+            saved = calendar_saves(world)
+            assert saved, world.calls
+            assert saved[0]["working_weekdays"] == [0, 1, 6], saved[0]
+            assert saved[0]["region"] == "sabah" and saved[0]["year"] == 2026, saved[0]
+            assert saved[0]["holidays"] == [], saved[0]
+
+    await with_browser(body)
+
+
+async def test_weekday_tickboxes_work_from_the_keyboard(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(browser, site, RestyleWorld(), SETTINGS, ready=calendar_ready) as page:
+            monday = page.get_by_test_id("hr-weekday-ticks").get_by_role(
+                "checkbox", name="Monday", exact=True
+            )
+            for _ in range(60):
+                await page.keyboard.press("Tab")
+                if await monday.evaluate("(el) => el === document.activeElement"):
+                    break
+            await expect(monday).to_be_focused()
+            await page.keyboard.press("Space")
+            await expect(monday).to_be_checked()
+            # The ring is drawn on the pill around the tick-box and passes 3:1.
+            ring = await monday.evaluate(
+                """(el) => {
+                    const style = getComputedStyle(el.closest('label'));
+                    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+                }"""
+            )
+            assert ring["style"] != "none" and ring["width"] >= 2, ring
+            await page.keyboard.press("Tab")
+            await expect(
+                page.get_by_test_id("hr-weekday-ticks").get_by_role(
+                    "checkbox", name="Tuesday", exact=True
+                )
+            ).to_be_focused()
+
+    await with_browser(body)
+
+
+async def test_holiday_date_input_appends_to_the_list(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RestyleWorld()
+        async with hr_page(browser, site, world, SETTINGS, ready=calendar_ready) as page:
+            panel = await fill_calendar(page)
+            await panel.get_by_role("checkbox", name="Monday", exact=True).check()
+            holidays = panel.locator("input[name=holidays]")
+            picker = panel.get_by_test_id("hr-holiday-date-input")
+            add = panel.get_by_role("button", name="Add date", exact=True)
+            # An empty picker adds nothing and says so.
+            await add.click()
+            await expect(panel.get_by_role("status")).to_have_text("Choose a date first.")
+            await expect(holidays).to_have_value("")
+            # The first date starts the list; the second is appended with a comma.
+            await picker.fill("2026-01-01")
+            await add.click()
+            await expect(holidays).to_have_value("2026-01-01")
+            await expect(picker).to_have_value("")
+            await picker.fill("2026-02-01")
+            await add.click()
+            await expect(holidays).to_have_value("2026-01-01, 2026-02-01")
+            await expect(panel.get_by_role("status")).to_have_text("Date added to the list.")
+            # The same date twice is refused, not added again.
+            await picker.fill("2026-02-01")
+            await add.click()
+            await expect(holidays).to_have_value("2026-01-01, 2026-02-01")
+            await expect(panel.get_by_role("status")).to_have_text(
+                "That date is already in the list."
+            )
+            # The list stays editable by hand, and new dates go on the end of what is there.
+            await holidays.fill("2026-03-03,2026-04-04")
+            await picker.fill("2026-05-05")
+            await add.click()
+            await expect(holidays).to_have_value("2026-03-03, 2026-04-04, 2026-05-05")
+            await panel.get_by_role("button", name="Save work calendar").click()
+            for _ in range(50):
+                if calendar_saves(world):
+                    break
+                await page.wait_for_timeout(100)
+            saved = calendar_saves(world)
+            assert saved, world.calls
+            assert saved[0]["holidays"] == ["2026-03-03", "2026-04-04", "2026-05-05"], saved[0]
+
+    await with_browser(body)
+
+
+async def test_settings_sections_are_named_and_advanced_stays_folded(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(browser, site, RestyleWorld(), SETTINGS, ready=calendar_ready) as page:
+            for title in SETTINGS_SECTIONS:
+                await expect(page.get_by_role("heading", name=title, exact=True)).to_be_visible()
+            for old in ("Background maintenance", "Private access"):
+                await expect(page.get_by_role("heading", name=old, exact=True)).to_have_count(0)
+            advanced = page.locator("summary").filter(has_text=re.compile(r"^Advanced$"))
+            await expect(advanced).to_be_visible()
+            assert await advanced.evaluate("(el) => el.parentElement.open") is False
+            await expect(page.get_by_role("heading", name="Access profile")).to_be_hidden()
+
+    await with_browser(body)
+
+
+async def test_each_tab_has_one_intro_line(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser,
+            site,
+            TabsWorld(),
+            HOME,
+            ready=lambda p: p.get_by_test_id("hr-tab-intro"),
+        ) as page:
+            for tab, sentence in TAB_INTROS.items():
+                link = page.get_by_test_id(f"hr-nav-{tab}")
+                await link.click()
+                await expect(link).to_have_attribute("aria-current", "page")
+                intro = page.get_by_test_id("hr-tab-intro")
+                await expect(intro).to_have_count(1)
+                await expect(intro).to_have_text(sentence)
+                # It sits right under the tab bar, above the tab's own content.
+                bar = await page.get_by_role(
+                    "navigation", name="HR sections", exact=True
+                ).bounding_box()
+                line = await intro.bounding_box()
+                assert bar and line and bar["y"] + bar["height"] <= line["y"], (tab, bar, line)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_settings_calendar_and_intro_at_five_widths_in_three_themes(
+    site: Site, theme: str
+) -> None:
+    async def body(browser: Any) -> None:
+        async with hr_page(
+            browser, site, RestyleWorld(), SETTINGS, theme=theme, ready=calendar_ready
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 900})
+                await page.wait_for_timeout(150)
+                where = (theme, width)
+                scrolled = await overflow(page)
+                assert scrolled["scroll"] <= scrolled["inner"], (where, scrolled)
+                for selector in (
+                    "[data-testid=hr-tab-intro]",
+                    "[data-testid=hr-weekday-ticks]",
+                    "[data-testid=hr-holiday-dates]",
+                ):
+                    measured = await page.evaluate(CONTRAST_JS, selector)
+                    assert measured["inside"] and measured["sideways"] == [], (
+                        where,
+                        selector,
+                        measured,
+                    )
+                    assert measured["texts"], (where, selector)
+                    for item in measured["texts"]:
+                        assert item["ratio"] >= 4.5, (where, selector, item)
+                boxes = (
+                    await page.get_by_test_id("hr-weekday-ticks")
+                    .locator("label")
+                    .evaluate_all("(els) => els.map((el) => el.getBoundingClientRect().height)")
+                )
+                assert len(boxes) == len(WEEKDAYS) and min(boxes) >= 40, (where, boxes)
+                add = await page.get_by_test_id("hr-holiday-add").bounding_box()
+                assert add and add["height"] >= 40, (where, add)
 
     await with_browser(body)
