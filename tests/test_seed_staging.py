@@ -182,6 +182,7 @@ async def test_seed_creates_roles_hr_and_records_idempotently(migrated_dsn: str)
         ).fetchall()
         assert {row[1] for row in packages if row[0] == seed_staging.MERANTI} == {
             "customer_support",
+            "knowledge_base",
             "orders_products",
             "subscriptions",
             "bookings",
@@ -213,4 +214,4 @@ async def test_seed_creates_roles_hr_and_records_idempotently(migrated_dsn: str)
     async with await psycopg.AsyncConnection.connect(migrated_dsn) as conn:
         assert await _count(conn, "SELECT count(*) FROM order_items") == 8
         assert await _count(conn, "SELECT count(*) FROM hr_employees") == 3
-        assert await _count(conn, "SELECT count(*) FROM console_service_packages") == 6
+        assert await _count(conn, "SELECT count(*) FROM console_service_packages") == 7

@@ -151,7 +151,7 @@ ACTIVE = frozenset({"active"})
 # Tab -> (packages that unlock it, accepted statuses).
 TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "inbox": (frozenset({"customer_support"}), frozenset({"active", "suspended"})),
-    "knowledge_base": (frozenset({"customer_support"}), ACTIVE),
+    "knowledge_base": (frozenset({"knowledge_base"}), ACTIVE),
     "business": (frozenset({"orders_products", "marketplaces"}), ACTIVE),
     "hr": (frozenset({"hr"}), ACTIVE),
     "email": (frozenset({"staff_email"}), ACTIVE),

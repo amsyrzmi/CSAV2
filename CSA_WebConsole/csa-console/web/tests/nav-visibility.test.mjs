@@ -18,13 +18,15 @@ const labels = (me, packages) => navigationFor(me, packages).map((l) => l.label)
 test("tenant member sees only package-active tabs; platform admin sees all", () => {
   const none = labels(staff, []);
   assert.deepEqual(none.filter((l) => ["Customer inbox", "Business knowledge", "Business management", "People & HR", "Email assistant"].includes(l)), []);
-  const some = labels(staff, active("customer_support", "hr"));
+  const base = labels(staff, active("customer_support"));
+  assert.ok(base.includes("Customer inbox") && !base.includes("Business knowledge"), "Customer support alone has no Business knowledge");
+  const some = labels(staff, active("customer_support", "knowledge_base", "hr"));
   assert.ok(some.includes("Customer inbox") && some.includes("Business knowledge") && some.includes("People & HR"));
   assert.ok(!some.includes("Business management") && !some.includes("Email assistant"));
   assert.ok(some.includes("Services") && !some.includes("Agents"));
   const admin = labels({ ...staff, role: "platform_admin" }, []);
   for (const l of ["Customer inbox", "Business knowledge", "Business management", "People & HR", "Email assistant", "Services"]) assert.ok(admin.includes(l), l);
-  const reader = labels({ ...staff, role: "read_only" }, active("customer_support", "staff_email"));
+  const reader = labels({ ...staff, role: "read_only" }, active("customer_support", "knowledge_base", "staff_email"));
   assert.ok(reader.includes("Business knowledge") && !reader.includes("Customer inbox") && !reader.includes("Email assistant"));
 });
 
@@ -32,7 +34,10 @@ test("business accepts either package, inactive statuses hide, hrefs follow the 
   assert.ok(labels(staff, active("marketplaces")).includes("Business management"));
   assert.ok(labels(staff, active("orders_products")).includes("Business management"));
   assert.ok(!labels(staff, [{ key: "hr", status: "suspended" }]).includes("People & HR"));
-  const suspended = labels(staff, [{ key: "customer_support", status: "suspended" }]);
+  const suspended = labels(staff, [
+    { key: "customer_support", status: "suspended" },
+    { key: "knowledge_base", status: "suspended" },
+  ]);
   assert.ok(suspended.includes("Customer inbox"), "suspended Customer Support keeps the Inbox link");
   assert.ok(!suspended.includes("Business knowledge"), "but the Business knowledge stays locked");
   assert.ok(!labels(staff, [{ key: "customer_support", status: "requested" }]).includes("Customer inbox"));
@@ -91,7 +96,7 @@ test("the Sandbox assistant entry is gone for every role: Overview is the assist
 });
 
 test("business and knowledge entries carry their sub-pages in order", () => {
-  const all = active("orders_products", "customer_support");
+  const all = active("orders_products", "customer_support", "knowledge_base");
   const brief = (items) => items.map(({ key, label, href, testId }) => [key, label, href, testId]);
   const portal = navigationFor(staff, all);
   const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
@@ -117,7 +122,7 @@ test("business and knowledge entries carry their sub-pages in order", () => {
 });
 
 test("children never add a top-level key", () => {
-  const all = active("orders_products", "customer_support", "hr", "staff_email", "subscriptions");
+  const all = active("orders_products", "customer_support", "knowledge_base", "hr", "staff_email", "subscriptions");
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
@@ -154,7 +159,7 @@ test("currentChild picks the exact page, then the deepest sub-page, and the pare
 });
 
 test("entryForPath maps sub-pages to their group and never lets home claim a page", () => {
-  const links = navigationFor(staff, active("orders_products", "customer_support", "hr"));
+  const links = navigationFor(staff, active("orders_products", "customer_support", "knowledge_base", "hr"));
   const key = (path) => entryForPath(links, path)?.key ?? null;
   assert.equal(key("/portal"), "overview");
   assert.equal(key("/portal/business"), "business");

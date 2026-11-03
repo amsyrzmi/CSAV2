@@ -318,7 +318,10 @@ async def knowledge_page(
     rail_expanded: bool = False,
 ) -> AsyncIterator[Page]:
     site.upstream.me = make_me(role)
-    site.upstream.packages = [{"key": "customer_support", "status": "active"}]
+    site.upstream.packages = [
+        {"key": "customer_support", "status": "active"},
+        {"key": "knowledge_base", "status": "active"},
+    ]
     context = await browser.new_context(viewport={"width": width, "height": height})
     context.set_default_navigation_timeout(WAIT)
     context.set_default_timeout(15_000)

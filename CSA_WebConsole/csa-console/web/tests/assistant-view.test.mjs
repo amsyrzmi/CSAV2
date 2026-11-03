@@ -22,7 +22,7 @@ const view = await import(await load("assistant-view.ts", {
 
 const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t1", csrf_token: "", workspace_assistant: true };
 const admin = { ...staff, role: "platform_admin", active_client_id: null };
-const all = ["customer_support", "hr", "staff_email", "orders_products"].map((key) => ({ key, status: "active" }));
+const all = ["customer_support", "knowledge_base", "hr", "staff_email", "orders_products"].map((key) => ({ key, status: "active" }));
 const proposal = (id, extra = {}) => ({
   id, kind: "email_export", status: "requested", result: null, created_at: "2026-10-26T00:00:00Z",
   expires_at: "2026-10-26T01:00:00Z",

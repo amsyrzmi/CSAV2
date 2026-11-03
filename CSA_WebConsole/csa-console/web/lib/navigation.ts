@@ -97,7 +97,7 @@ export function entryForPath(links: NavLink[], path: string): NavLink | null {
 // Tab -> packages that unlock it (any one of them is enough).
 const gate: Partial<Record<NavKey, string[]>> = {
   inbox: ["customer_support"],
-  knowledge_base: ["customer_support"],
+  knowledge_base: ["knowledge_base"],
   business: ["orders_products", "marketplaces"],
   hr: ["hr"],
   email: ["staff_email"],

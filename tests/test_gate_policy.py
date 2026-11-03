@@ -81,6 +81,37 @@ def test_agent_failure_lowers_confidence_and_triggers_partial_result_review() ->
     assert _decide({"always_review_if": ["requires_human"]}, _state(handoff=True))[0] == "approve"
 
 
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"deployment_mode": "suggest"},
+        {"auto_send": {"default": False}},
+        {"never_auto": ["product_info"]},
+        {"always_review_if": ["requires_human"]},
+        {"auto_send": {"by_intent": {"product_info": 0.99}}},
+    ],
+)
+def test_the_handoff_for_a_switched_off_service_never_waits_for_a_human(policy: dict) -> None:
+    state = _state().model_copy(
+        update={"handoff": Handoff(required=True, reason="service_off", priority="normal")}
+    )
+    assert _decide(policy, state) == ("send", "system_reply")
+
+
+def test_shadow_mode_still_holds_the_handoff_for_a_switched_off_service() -> None:
+    state = _state().model_copy(
+        update={"handoff": Handoff(required=True, reason="service_off", priority="normal")}
+    )
+    assert _decide({"deployment_mode": "shadow"}, state) == ("reject", "shadow_mode")
+
+
+def test_other_handoffs_still_wait_in_suggest_mode() -> None:
+    assert _decide({"deployment_mode": "suggest"}, _state(handoff=True)) == (
+        "approve",
+        "suggest_mode",
+    )
+
+
 def test_has_attachment_review_is_a_per_client_policy_choice() -> None:
     plain = _state()
     attached = plain.model_copy(

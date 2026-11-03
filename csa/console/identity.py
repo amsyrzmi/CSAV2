@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, Literal, NoReturn
 from urllib.parse import quote
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psycopg
 import structlog
@@ -232,20 +232,7 @@ class IdentityService:
         email = EmailInput(email=email).email
         if not 1 <= len(display_name) <= 120:
             raise ValueError("display name must contain between 1 and 120 characters")
-        await self._throttle(approver_email, ip, purpose="admin_add")
-        async with self.pool.connection() as conn:
-            approver = await self._one(conn, "user_email", (approver_email,))
-        valid = await verify_password(
-            approver_password, approver["password_hash"] if approver else None
-        )
-        if not (
-            approver
-            and valid
-            and approver["is_enabled"]
-            and approver["is_platform_admin"]
-            and not approver["must_change_password"]
-        ):
-            await self._refuse_admin_add(approver_email)
+        approver = await self._verified_admin(approver_email, approver_password, ip)
         password_hash = await hash_password(password)
         try:
             async with self.pool.connection() as conn, conn.transaction():
@@ -276,6 +263,56 @@ class IdentityService:
             # The transaction has rolled back and released its connection (the operator
             # script's pool holds one), so audit on a fresh one.
             await self._refuse_admin_add(approver_email)
+
+    async def _verified_admin(self, email: str, password: str, ip: str) -> Any:
+        """The enabled platform admin who re-proved their password; otherwise a refusal.
+
+        Callers pass a normalised address. Holds no pooled connection when it refuses.
+        """
+        await self._throttle(email, ip, purpose="admin_add")
+        async with self.pool.connection() as conn:
+            admin = await self._one(conn, "user_email", (email,))
+        valid = await verify_password(password, admin["password_hash"] if admin else None)
+        if not (
+            admin
+            and valid
+            and admin["is_enabled"]
+            and admin["is_platform_admin"]
+            and not admin["must_change_password"]
+        ):
+            await self._refuse_admin_add(email)
+        return admin
+
+    async def verify_platform_admin(
+        self, email: str, password: str, *, ip: str = "operator-cli"
+    ) -> ConsoleActor:
+        """An actor for an operator script, once an enabled platform admin re-proves their password.
+
+        Same throttle and checks as approving a new admin; no session is created or persisted.
+        """
+        from csa.console.contracts import EmailInput
+
+        email = EmailInput(email=email).email
+        admin = await self._verified_admin(email, password, ip)
+        return ConsoleActor(
+            user_id=admin["id"],
+            email=admin["email"],
+            display_name=admin["display_name"],
+            platform_admin=True,
+            must_change_password=False,
+            session_id=uuid4(),
+            client_id=None,
+            role=None,
+            memberships=[],
+            csrf_hash="0" * 64,
+        )
+
+    async def account_exists(self, email: str) -> bool:
+        from csa.console.contracts import EmailInput
+
+        email = EmailInput(email=email).email
+        async with self.pool.connection() as conn:
+            return await self._one(conn, "user_email", (email,)) is not None
 
     async def _refuse_admin_add(self, approver_email: str) -> NoReturn:
         # Callers must hold no pooled connection: the one-connection operator pool would stall.

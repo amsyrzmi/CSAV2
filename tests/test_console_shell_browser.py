@@ -117,7 +117,14 @@ class Upstream:
 
 ALL_PACKAGES = [
     {"key": key, "status": "active"}
-    for key in ("customer_support", "orders_products", "hr", "staff_email", "subscriptions")
+    for key in (
+        "customer_support",
+        "knowledge_base",
+        "orders_products",
+        "hr",
+        "staff_email",
+        "subscriptions",
+    )
 ]
 # Every label a tenant admin with all packages gets, in navigation order.
 TENANT_LABELS = (
