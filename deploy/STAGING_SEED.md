@@ -19,7 +19,7 @@ fabricate deliveries, approvals or runtime traces.
 Service packages: for a capability-enabled tenant (`demo-meranti`) the seed also
 writes `active` rows in `console_service_packages` (reference `staging-seed-v1`,
 activated by the seeding platform administrator) for every package whose
-capabilities it enables: `customer_support`, `orders_products`, `subscriptions`,
+capabilities it enables: `customer_support`, `knowledge_base`, `orders_products`, `subscriptions`,
 `bookings` and `marketplaces`. It activates `hr` for every tenant it assigns an
 HR owner (`demo-meranti`), in the same transaction as the HR step.
 `e_invoicing` is not activated because onboarding provisions no `lhdn_agent`

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from csa.contracts.facts import AgentError, AgentResult
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import Context, TurnState
 from csa.graph.policy.handoff import decide_handoff
@@ -98,3 +99,30 @@ def test_handoff_prioritizes_human_request_over_agent_failure() -> None:
     handoff = decide_handoff(plan, [result], context=None, signals=signals)
     assert handoff is not None and handoff.required
     assert handoff.reason == "human_requested" and handoff.priority == "urgent"
+
+
+def _unavailable(agent: str) -> AgentResult:
+    result = make_result(Task(task_id="t", agent=agent, input={}), error=True)
+    assert result.error is not None
+    result.error = AgentError(
+        code="capability_unavailable",
+        category="validation",
+        message="Capability is missing or disabled.",
+    )
+    return result
+
+
+def test_question_at_a_company_without_the_knowledge_base_goes_to_staff() -> None:
+    plan = Plan(
+        tasks=[], reply_strategy="auto_reply", intent=Intent.OTHER, confidence=1, source="policy"
+    )
+    handoff = decide_handoff(plan, [_unavailable("kb_agent")], context=None, signals=None)
+    assert handoff is not None and handoff.required
+    assert handoff.reason == "knowledge_base_off"
+
+
+def test_other_switched_off_agents_keep_their_behaviour() -> None:
+    plan = Plan(
+        tasks=[], reply_strategy="auto_reply", intent=Intent.OTHER, confidence=1, source="policy"
+    )
+    assert decide_handoff(plan, [_unavailable("order_agent")], context=None, signals=None) is None

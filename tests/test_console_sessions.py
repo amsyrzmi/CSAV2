@@ -769,7 +769,7 @@ async def test_m2_kb_console_execution_cannot_bypass_disabled_switch(
 
     # The package is active, so the 409 comes from the switch, not the package gate.
     tenant = sessions.tenants[0]
-    await activate(sessions, tenant, "customer_support")
+    await activate(sessions, tenant, "knowledge_base")
     off = await sessions.mutate(
         sessions.admin,
         f"/console/v1/capabilities/kb_agent?client_id={tenant}",

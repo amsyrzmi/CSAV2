@@ -378,6 +378,54 @@ async def test_coordinator_routes_compose_failure_to_fail_safe() -> None:
     assert deps.emitted == []
 
 
+class KnowledgeBaseOff(FakeDependencies):
+    """A company with Customer support only: kb_agent's switch is off."""
+
+    known_agents = frozenset({"kb_agent", "escalation_agent"})
+
+    async def signals(self, envelope: Envelope, context: Context) -> Signals:
+        return Signals(
+            intent=Intent.PRODUCT_INFO,
+            capability_scores={"kb_agent": 0.9},
+            answers={"needs:kb_agent": True},
+            provider="policy",
+            version="test",
+        )
+
+    async def plan_args(self, envelope: Envelope, context: Context, signals: Signals) -> Plan:
+        return Plan(
+            tasks=[Task(task_id="kb-1", agent="kb_agent", input={})],
+            reply_strategy="auto_reply",
+            intent=Intent.PRODUCT_INFO,
+            confidence=0.9,
+            source="jev",
+        )
+
+    async def execute_spoke(self, task: Task, envelope: Envelope, context: Context) -> AgentResult:
+        result = await super().execute_spoke(task, envelope, context)
+        if task.agent != "kb_agent":
+            return result
+        failed = make_result(task, error=True)
+        failed.error = AgentError(
+            code="capability_unavailable",
+            category="validation",
+            message="Capability is missing or disabled.",
+        )
+        return failed
+
+
+@pytest.mark.asyncio
+async def test_question_without_the_knowledge_base_runs_the_handoff() -> None:
+    deps = KnowledgeBaseOff()
+
+    result = await run_turn(make_envelope("What is your return window?"), deps)
+
+    assert deps.executed_tasks == ["kb_agent", "escalation_agent"]
+    assert result.handoff is not None and result.handoff.required
+    assert result.handoff.reason == "knowledge_base_off"
+    assert deps.fallbacks == []
+
+
 @pytest.mark.asyncio
 async def test_angry_customer_runs_escalation_agent() -> None:
     deps = FakeDependencies(angry=True)

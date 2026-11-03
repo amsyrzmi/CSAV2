@@ -173,8 +173,8 @@ async def cleanup_storage(pool: AsyncConnectionPool, root: Path, client_id: UUID
 
 
 def build_upload_router(root: Path | None) -> APIRouter:
-    # Every KB file route, reads and downloads included, belongs to customer_support.
-    router = APIRouter(dependencies=[Depends(package_gate("customer_support"))])
+    # Every KB file route, reads and downloads included, belongs to the knowledge base add-on.
+    router = APIRouter(dependencies=[Depends(package_gate("knowledge_base"))])
 
     def storage() -> Path:
         if root is None:

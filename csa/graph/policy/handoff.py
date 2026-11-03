@@ -9,6 +9,14 @@ from csa.contracts.state import Context, Handoff, Signals
 _HARD_FAILURES = {"conflict", "dependency_unmet", "upstream", "internal"}
 
 
+def _knowledge_base_off(result: AgentResult) -> bool:
+    return (
+        result.agent == "kb_agent"
+        and result.error is not None
+        and result.error.code == "capability_unavailable"
+    )
+
+
 def decide_handoff(
     plan: Plan,
     results: list[AgentResult],
@@ -23,6 +31,9 @@ def decide_handoff(
         reason = "angry_customer"
     elif plan.reply_strategy == "escalate":
         reason = "plan_escalated"
+    elif any(_knowledge_base_off(result) for result in results):
+        # A company without the add-on: the customer's question is for its team.
+        reason = "knowledge_base_off"
     elif any(
         result.requires_human
         or result.error is not None
