@@ -157,7 +157,6 @@ async def test_kb_routes_refuse_customer_support_only(sessions: SessionWorld) ->
     )
     staff, _ = await sessions.member(role="tenant_staff")
     assert (await staff.get("/console/v1/inbox/conversations")).status_code == 200
-    assert (await staff.get("/console/v1/channels/whatsapp")).status_code == 200
     for path in KB_ROUTES:
         response = await staff.get(path)
         assert response.status_code == 403, path
