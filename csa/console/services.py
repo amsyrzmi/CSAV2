@@ -16,6 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from csa.console.access import tenant
 from csa.console.agents import REQUIRED, AgentOut, list_agents
 from csa.console.contracts import ConsoleActor, Role
+from csa.console.customer_replies import (
+    CustomerRepliesIn,
+    CustomerRepliesOut,
+    promote_to_pilot,
+    read_replies,
+    save_replies,
+)
 from csa.console.packages import BY_KEY, PACKAGES, Package
 from csa.core import db
 from csa.core.tenancy import tx
@@ -332,6 +339,8 @@ async def activate_package(
                 conn, client_id, name, is_enabled=True, client_enabled=True, actor_id=actor.user_id
             )
         await _audit(conn, client_id, actor, "service.activated", key, before, row)
+        if key == "customer_support":
+            await promote_to_pilot(conn, client_id, actor.user_id)
     return await _service(pool, client_id, key, actor)
 
 
@@ -474,6 +483,20 @@ def build_services_router(kb_model: str | None, kb_tei_configured: bool) -> APIR
         if client_id is None:
             return {"packages": []}
         return {"packages": await active_packages(db_pool, client_id)}
+
+    replies_gate = Depends(package_gate("customer_support", statuses=("active", "suspended")))
+
+    @router.get("/customer-replies", response_model=CustomerRepliesOut, dependencies=[replies_gate])
+    async def get_customer_replies(
+        actor: Human, client_id: Tenant, db_pool: Pool
+    ) -> CustomerRepliesOut:
+        return await read_replies(db_pool, client_id, actor)
+
+    @router.put("/customer-replies", response_model=CustomerRepliesOut, dependencies=[replies_gate])
+    async def put_customer_replies(
+        body: CustomerRepliesIn, actor: Human, client_id: Tenant, db_pool: Pool
+    ) -> CustomerRepliesOut:
+        return await save_replies(db_pool, client_id, body, actor)
 
     @router.post("/{key}/request", response_model=ServiceOut)
     async def post_request(key: str, actor: Human, client_id: Tenant, db_pool: Pool) -> ServiceOut:
