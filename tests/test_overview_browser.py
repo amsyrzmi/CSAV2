@@ -9,6 +9,7 @@ test, as do page errors and console errors. One dev server serves every test in 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -142,6 +143,7 @@ class Api:
         self.by_tenant = by_tenant or {}
         self.warnings = warnings or []
         self.packages_fail = False
+        self.packages_delay = 0.0
         self.review = review
         self.threads: list[dict[str, Any]] = []
         self.turns: dict[str, list[dict[str, Any]]] = {}
@@ -175,6 +177,8 @@ class Api:
             if self.packages_fail:
                 await self.fail(route)
                 return
+            if self.packages_delay:
+                await asyncio.sleep(self.packages_delay)
             data = {"packages": self.packages_for(tail)}
         elif path == "inbox/conversations" and request.method == "GET":
             if self.review is None:
@@ -737,3 +741,16 @@ async def test_a_platform_admin_switching_companies_follows_the_choice(console: 
         await select.select_option("tenant-a")
         await expect(composer(page)).to_be_enabled()
         await expect(home).to_have_count(0)
+
+
+async def test_a_packages_read_that_never_answers_does_not_leave_the_page_waiting(
+    console: Console,
+) -> None:
+    api = Api()
+    api.packages_delay = 11.0  # the page gives up after 8 seconds
+    async with open_overview(console, api, "/portal") as page:
+        await expect(page.locator('p[role="status"]', has_text="Loading")).to_have_count(1)
+        await expect(composer(page)).to_be_enabled()
+        await expect(page.get_by_test_id("workspace-home")).to_have_count(0)
+        # The read carried on: its late answer still reaches the status strip.
+        await expect(page.get_by_test_id("overview-strip-services")).to_contain_text("2")

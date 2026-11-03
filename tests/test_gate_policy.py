@@ -137,6 +137,15 @@ def test_the_handoff_for_a_switched_off_service_never_waits_for_a_human(policy: 
     assert _decide(policy, state) == ("send", "system_reply")
 
 
+def test_the_sandbox_gets_the_switched_off_service_reply_where_customers_do_not() -> None:
+    state = _state().model_copy(
+        update={"handoff": Handoff(required=True, reason="service_off", priority="normal")}
+    )
+    shadow = {"deployment_mode": "shadow"}
+    assert _decide(shadow, _web(state)) == ("send", "system_reply")
+    assert _decide(shadow, state) == ("reject", "shadow_mode")
+
+
 def test_shadow_mode_still_holds_the_handoff_for_a_switched_off_service() -> None:
     state = _state().model_copy(
         update={"handoff": Handoff(required=True, reason="service_off", priority="normal")}

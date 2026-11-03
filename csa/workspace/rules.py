@@ -151,6 +151,8 @@ ACTIVE = frozenset({"active"})
 # Tab -> (packages that unlock it, accepted statuses).
 TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "inbox": (frozenset({"customer_support"}), frozenset({"active", "suspended"})),
+    # An employee-only company has no customer conversations, so its rail has no activity page.
+    "activity": (frozenset({"customer_support"}), frozenset({"active", "suspended"})),
     "knowledge_base": (frozenset({"knowledge_base"}), ACTIVE),
     "business": (frozenset({"orders_products", "marketplaces"}), ACTIVE),
     "hr": (frozenset({"hr"}), ACTIVE),
