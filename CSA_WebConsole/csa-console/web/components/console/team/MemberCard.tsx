@@ -275,7 +275,7 @@ export default function MemberCard({
                 className={secondary}
                 onClick={() => onReset(member)}
               >
-                Issue reset
+                Create password reset link
               </button>
               <button
                 ref={revokeRef}
@@ -285,7 +285,7 @@ export default function MemberCard({
                 className={secondary}
                 onClick={() => void revoke()}
               >
-                Revoke sessions
+                Sign out everywhere
               </button>
             </>
           )}

@@ -306,7 +306,7 @@ export function TeamManagement({
       </div>
       <div>
         <label htmlFor="member-role" className="mb-2 block text-sm">
-          Tenant role
+          Role
         </label>
         <select
           id="member-role"
@@ -362,7 +362,7 @@ export function TeamManagement({
     <>
       <Heading
         title={platform ? "Tenant members" : "Your team"}
-        description="Invite people and manage their access to the selected tenant."
+        description="Invite people and choose what they can do."
       />
       {error && !inviteOpen && (
         <div ref={errorBox} className="mb-5">
@@ -468,7 +468,7 @@ export function TeamManagement({
                     className={secondary}
                     onClick={() => void revokeLink()}
                   >
-                    Revoke link
+                    Cancel link
                   </button>
                 </div>
               </Panel>
@@ -499,8 +499,7 @@ export function TeamManagement({
               <p className="text-sm text-ink-500">Loading members…</p>
             ) : members.length === 0 ? (
               <p className="text-sm text-ink-500">
-                No accepted memberships yet. Create an invitation to get
-                started.
+                No one has joined yet. Invite someone to get started.
               </p>
             ) : (
               <ul data-testid="team-members" className="grid gap-3">

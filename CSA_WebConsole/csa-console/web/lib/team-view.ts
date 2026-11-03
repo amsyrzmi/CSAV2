@@ -66,7 +66,7 @@ export function signOutSentence(name: string, change: "role" | "disable", email?
     : `${who} will be signed out of this company straight away and will not be let back in until you enable access again.`;
 }
 
-/** The message after Revoke sessions: the server ends every session that person has. */
+/** The message after Sign out everywhere: the server ends every session that person has. */
 export function revokedMessage(name: string, email?: string): string {
   return `${called(name, email)} has been signed out everywhere and will need to sign in again.`;
 }

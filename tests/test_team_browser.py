@@ -298,7 +298,7 @@ async def test_member_cards_show_role_and_status(site: Site) -> None:
         async with team_page(browser, site, World()) as page:
             await expect(page.get_by_role("heading", name="Your team")).to_be_visible()
             await expect(
-                page.get_by_text("Invite people and manage their access to the selected tenant.")
+                page.get_by_text("Invite people and choose what they can do.")
             ).to_be_visible()
             await expect(page.get_by_role("heading", name="Members", exact=True)).to_be_visible()
             await expect(page.get_by_test_id("team-members").get_by_role("listitem")).to_have_count(
@@ -336,8 +336,10 @@ async def test_member_cards_show_role_and_status(site: Site) -> None:
             )
             await expect(details.get_by_role("button", name="Disable access")).to_be_visible()
             # A tenant administrator does not see the platform-only tools.
-            await expect(details.get_by_role("button", name="Issue reset")).to_have_count(0)
-            await expect(details.get_by_role("button", name="Revoke sessions")).to_have_count(0)
+            await expect(
+                details.get_by_role("button", name="Create password reset link")
+            ).to_have_count(0)
+            await expect(details.get_by_role("button", name="Sign out everywhere")).to_have_count(0)
             details = await open_card(page, OMAR)
             await expect(details).to_contain_text("Membership disabled")
             await expect(details.get_by_role("button", name="Enable access")).to_be_visible()
@@ -368,8 +370,8 @@ async def test_member_cards_show_role_and_status(site: Site) -> None:
             await expect(
                 lina_details.get_by_role("button", name="Renew invitation")
             ).to_be_visible()
-            await expect(lina_details.get_by_role("button", name="Revoke link")).to_be_visible()
-            # Expired: renew and revoke. Cancelled: renew only. Joined: neither.
+            await expect(lina_details.get_by_role("button", name="Cancel link")).to_be_visible()
+            # Expired: renew and cancel. Cancelled: renew only. Joined: neither.
             farah = "77777777-7777-4777-8777-000000000002"
             zack = "77777777-7777-4777-8777-000000000003"
             hana = "77777777-7777-4777-8777-000000000004"
@@ -379,7 +381,7 @@ async def test_member_cards_show_role_and_status(site: Site) -> None:
             details = lambda invite_id: page.get_by_test_id(f"team-invitation-{invite_id}-details")  # noqa: E731
             await expect(details(farah)).to_contain_text("Invitation · Expired")
             await expect(details(zack)).to_contain_text("Invitation · Revoked")
-            await expect(details(zack).get_by_role("button", name="Revoke link")).to_have_count(0)
+            await expect(details(zack).get_by_role("button", name="Cancel link")).to_have_count(0)
             await expect(details(hana)).to_contain_text("Invitation · Accepted")
             await expect(details(hana).get_by_role("button")).to_have_count(0)
             await expect(details(reset)).to_contain_text("Password reset · Pending")
@@ -549,7 +551,7 @@ async def test_revoke_sessions_shows_confirmation(site: Site) -> None:
         world = World()
         async with team_page(browser, site, world, platform=True) as page:
             details = await open_card(page, SITI)
-            revoke = details.get_by_role("button", name="Revoke sessions")
+            revoke = details.get_by_role("button", name="Sign out everywhere")
             await expect(page.get_by_test_id(f"team-notice-{SITI}")).to_have_count(0)
             await revoke.click()
             notice = page.get_by_test_id(f"team-notice-{SITI}")
@@ -589,7 +591,7 @@ async def test_invite_opens_in_a_drawer_and_the_form_still_works(site: Site) -> 
             # The existing form, unchanged, with its labels.
             await expect(drawer.get_by_label("Display name")).to_be_visible()
             await expect(drawer.get_by_label("Email", exact=True)).to_be_visible()
-            await expect(drawer.get_by_label("Tenant role")).to_have_value("tenant_staff")
+            await expect(drawer.get_by_label("Role", exact=True)).to_have_value("tenant_staff")
             await expect(drawer.get_by_role("button", name="Create invitation")).to_be_enabled()
             # No HR package here, so no HR access choice appears.
             await expect(drawer.get_by_test_id("invite-hr-access")).to_have_count(0)
@@ -628,7 +630,7 @@ async def test_invite_opens_in_a_drawer_and_the_form_still_works(site: Site) -> 
             }
             await expect(page.get_by_text("nora@example.test").first).to_be_visible()
             await expect(page.get_by_role("button", name="Hide message")).to_be_visible()
-            await expect(page.get_by_role("button", name="Revoke link").first).to_be_visible()
+            await expect(page.get_by_role("button", name="Cancel link").first).to_be_visible()
             # The form starts empty again.
             await open_button.click()
             await expect(drawer.get_by_label("Display name")).to_have_value("")
@@ -657,12 +659,14 @@ async def test_platform_members_page_uses_the_same_cards(site: Site) -> None:
             await expect(page.get_by_test_id(f"team-card-{OMAR}-status")).to_have_text("Disabled")
             details = await open_card(page, SITI)
             # The platform tools sit in the same arrow, with their original labels.
-            await expect(details.get_by_role("button", name="Issue reset")).to_be_visible()
-            await expect(details.get_by_role("button", name="Revoke sessions")).to_be_visible()
+            await expect(
+                details.get_by_role("button", name="Create password reset link")
+            ).to_be_visible()
+            await expect(details.get_by_role("button", name="Sign out everywhere")).to_be_visible()
             await expect(details.get_by_role("button", name="Disable access")).to_be_visible()
 
-            # Issue reset shows its link at the top, where the page can see it.
-            await details.get_by_role("button", name="Issue reset").click()
+            # Create password reset link shows its link at the top, where the page can see it.
+            await details.get_by_role("button", name="Create password reset link").click()
             await expect(page.get_by_test_id("invite-delivery")).to_contain_text(
                 "siti@example.test"
             )
@@ -808,16 +812,16 @@ async def test_focus_stays_on_a_control_that_remains_after_revoke_link_and_hide(
         world = World()
         lina = "77777777-7777-4777-8777-000000000001"
         async with team_page(browser, site, world) as page:
-            # Revoke link in the invitations list: the arrow of the same row keeps focus.
+            # Cancel link in the invitations list: the arrow of the same row keeps focus.
             await page.get_by_test_id(f"team-invitation-{lina}-toggle").click()
             await (
                 page.get_by_test_id(f"team-invitation-{lina}-details")
-                .get_by_role("button", name="Revoke link")
+                .get_by_role("button", name="Cancel link")
                 .click()
             )
             await expect(page.get_by_test_id(f"team-invitation-{lina}-toggle")).to_be_focused()
             assert world.sent("DELETE", "admin/invites/")
-            # The link panel just shown: Hide message and Revoke link hand focus to Invite someone.
+            # The link panel just shown: Hide message and Cancel link hand focus to Invite someone.
             await page.get_by_test_id("team-invite-open").click()
             await page.get_by_label("Display name").fill("Nora Hassan")
             await page.get_by_label("Email", exact=True).fill("nora@example.test")
@@ -832,7 +836,7 @@ async def test_focus_stays_on_a_control_that_remains_after_revoke_link_and_hide(
             await page.get_by_role("button", name="Create invitation").click()
             panel = page.get_by_test_id("team-link-panel")
             await expect(panel).to_be_visible()
-            await panel.get_by_role("button", name="Revoke link").click()
+            await panel.get_by_role("button", name="Cancel link").click()
             await expect(panel).to_have_count(0)
             assert await focused(page) == "team-invite-open"
 
