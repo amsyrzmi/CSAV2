@@ -406,7 +406,7 @@ export function TeamManagement({
         // One calm column: an opened card pushes the next one down instead of leaving a gap beside it.
         // The bottom padding keeps the last row clear of the floating assistant button on phones.
         <div className="max-w-3xl space-y-5 pb-20 md:pb-0">
-          <HrOwnerPanel key={selected} clientId={selected} members={members ?? []} currentUserId={currentUserId} />
+          <HrOwnerPanel key={`hr-owner-${selected}`} clientId={selected} members={members ?? []} currentUserId={currentUserId} />
           {shown && (
             <div
               ref={linkPanel}
