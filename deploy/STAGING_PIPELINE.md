@@ -690,10 +690,15 @@ Do these in order:
    admin of the company can change it. Activating the Staff email package does not do it.
 5. Bind the test bot. Do not paste section 5 as it stands: it pins old image digests, and
    the code in an old image does not fit the rebuilt schema. Use the images that are
-   running now. Run `plan` again (it only reads); it prints them under "Running images":
-   the `python` line and the `frontend` line. Put each full reference, starting `ghcr.io/`, in place of the two
-   `<...>` below, then run the command. The wipe removed the old binding, so the bot is
-   free.
+   running now. Run the reset tool's plan again (it only reads):
+
+   ```bash
+   cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset plan
+   ```
+
+   It prints them under "Running images": the `python` line and the `frontend` line. Put
+   each full reference, starting `ghcr.io/`, in place of the two `<...>` below, then run
+   the command. The wipe removed the old binding, so the bot is free.
 
    ```bash
    (
@@ -795,7 +800,7 @@ B=~/csa-staging-backups/<timestamp>
 
    ```bash
    cat "$B/manifest.json"
-   ls /home/amsyrzmi/CSAV2/db/migrations | tail -1
+   ls /home/amsyrzmi/CSAV2/db/migrations/*.sql | tail -n 1
    git -C /home/amsyrzmi/CSAV2 rev-parse HEAD
    ```
 
