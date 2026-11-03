@@ -13,15 +13,19 @@ import {
   type DemoListing,
 } from "@/lib/business";
 import {
-  channelLabel, chipGroupLabel, effectiveCountsRange, orderChipOptions, paymentOptions, whenText,
+  activeFilters, channelLabel, chipGroupLabel, effectiveCountsRange, orderChipOptions, orderStatusLabel,
+  orderTiles, outOfStock, whenText,
 } from "@/lib/business-view";
 import { todayLocal, toInstants, type DayRange } from "@/lib/date-range";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { businessPages, type BusinessSection } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
 import { Fold, OrderCard, ProductCard, StoreCard, type Order, type Product } from "./business/cards";
+import OrderFilters from "./business/OrderFilters";
 import { useOrderCounts, useRecords } from "./business/useRecords";
-import { DateRangeFilter, SectionNav, StatusChips, useSectionArrivalFocus } from "./kit";
+import {
+  DetailsRow, SectionNav, StatusChips, SummaryTiles, TechDetailsProvider, TechSwitch, useSectionArrivalFocus,
+} from "./kit";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 type Store = {
@@ -64,7 +68,7 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
     router.replace(value ? `${pathname}?client_id=${encodeURIComponent(value)}` : pathname, { scroll: false });
   };
   const needsTenant = <Notice>Select a tenant to view its business records.</Notice>;
-  return <>
+  return <TechDetailsProvider>
     <Heading
       title="Business management"
       description={demoMode
@@ -74,17 +78,12 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
     <SectionNav label="Business management pages" testId="business-subnav" items={pages}
       current={section} query={tenantQuery || undefined} />
     <h2 ref={pageHeading} tabIndex={-1} data-testid="business-page-heading"
-      className="mb-4 font-(family-name:--fs-font-heading) text-(length:--fs-text-xl) font-semibold focus:outline-none">
+      className="mb-3 font-(family-name:--fs-font-heading) text-(length:--fs-text-xl) font-semibold focus:outline-none">
       {pageTitle}
     </h2>
-    {section === "orders" && <div className="mb-5">
-      <button
-        className={secondary}
-        type="button"
-        aria-pressed={demoMode}
-        onClick={() => setDemoMode((value) => !value)}
-      >
-        {demoMode ? "Exit demo mode" : "Show synthetic demo"}
+    {section === "orders" && demoMode && <div className="mb-5">
+      <button className={secondary} type="button" aria-pressed={demoMode} onClick={() => setDemoMode(false)}>
+        Exit demo mode
       </button>
     </div>}
     {section === "orders" && demoMode && <Notice>DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok API request or
@@ -100,7 +99,7 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
     {section === "orders" && (demoMode
       ? <DemoBusinessWorkspace />
       : <>
-          {tenant ? <BusinessRecords key={tenant} query={tenantQuery} /> : needsTenant}
+          {tenant ? <BusinessRecords key={tenant} query={tenantQuery} productsHref={pages[1].href} /> : needsTenant}
           <div className="mt-5 space-y-3">
             <Fold testId="business-about" title="About this page">
               <Notice>Local records only, not a live TikTok Shop feed. No marketplace synchronization or store
@@ -115,17 +114,15 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
                 Existing adapter code does not establish live seller authorization or a verified connection.</p>
             </Fold>
           </div>
+          <div className="mt-5">
+            <button className={secondary} type="button" aria-pressed={demoMode} onClick={() => setDemoMode(true)}>
+              See an example
+            </button>
+          </div>
         </>)}
     {section === "products" && (tenant ? <ProductRecords key={tenant} query={tenantQuery} /> : needsTenant)}
-    {section === "stores" && (tenant
-      ? <div className="mt-5">
-          <Fold testId="business-stores" title="Store connections and local store records">
-            <h3 className="mb-3 font-semibold">Local store records (not verified connections)</h3>
-            <StoreRecords key={tenantQuery} query={tenantQuery} />
-          </Fold>
-        </div>
-      : needsTenant)}
-  </>;
+    {section === "stores" && (tenant ? <StoreRecords key={tenantQuery} query={tenantQuery} /> : needsTenant)}
+  </TechDetailsProvider>;
 }
 
 function DemoBusinessWorkspace() {
@@ -156,7 +153,7 @@ function DemoBusinessWorkspace() {
   </div>;
 }
 
-function BusinessRecords({ query }: { query: string }) {
+function BusinessRecords({ query, productsHref }: { query: string; productsHref: string }) {
   const [channel, setChannel] = useState("");
   const [shopId, setShopId] = useState("");
   const [applied, setApplied] = useState({ channel: "", shopId: "" });
@@ -167,6 +164,8 @@ function BusinessRecords({ query }: { query: string }) {
   // "Today" for the default counts window; read again on every explicit refresh.
   const [today, setToday] = useState(() => new Date());
   const [refresh, setRefresh] = useState(0);
+  // The out-of-stock tile counts the newest 50 products: one read, no paging.
+  const stock = useRecords<Product>(`/console/v1/business/products?${query ? `${query}&` : ""}limit=50`);
   // The default window follows the calendar: when the tab comes back on a new day, move it on.
   useEffect(() => {
     const onShow = () => {
@@ -186,32 +185,40 @@ function BusinessRecords({ query }: { query: string }) {
   const orders = useRecords<Order>(listPath);
   const refreshOrders = () => { orders.newest(); setToday(new Date()); setRefresh((value) => value + 1); };
   const { counts, failed } = useOrderCounts(orderCountsPath(query, { ...narrowed, ...counted }), refresh);
-  return <div className="mt-5 space-y-5">
+  const countsLoading = counts === null && !failed;
+  const stockRead = stock.items ? outOfStock(stock.items, stock.next !== null) : null;
+  const tiles = [
+    ...orderTiles(counts, status).map((tile) => ({
+      key: tile.key,
+      label: tile.label,
+      value: tile.value,
+      loading: countsLoading,
+      pressed: tile.pressed,
+      onPress: () => setStatus(tile.pressed ? "all" : tile.status),
+      testId: `business-tile-${tile.key.replaceAll("_", "-")}`,
+    })),
+    {
+      key: "out_of_stock",
+      label: "Out of stock",
+      value: stockRead ? stockRead.value : null,
+      loading: stock.items === null && !stock.error,
+      caption: stockRead?.caption ?? undefined,
+      href: `${productsHref}?stock=out${query ? `&${query}` : ""}`,
+      testId: "business-tile-out-of-stock",
+    },
+  ];
+  const filters = activeFilters({ range, payment, status });
+  const removeFilter = (key: "date" | "payment" | "status") => {
+    if (key === "date") { setRange({ from: null, to: null }); setAllTime(false); }
+    else if (key === "payment") setPayment("");
+    else setStatus("all");
+  };
+  return <div className="space-y-5">
     <section className="card rounded-[14px] p-3 sm:p-6">
       <h2 className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold sm:mb-5">Orders and tracking references</h2>
-      <div className="mb-3 flex flex-wrap items-end gap-3">
-        <div className="shrink-0">
-          <p aria-hidden="true" className="mb-1 text-sm">Order date</p>
-          <DateRangeFilter testId="business-date" label="Order date" value={range}
-            onChange={(next) => { setRange(next); setAllTime(false); }} />
-        </div>
-        <div className="min-w-0 flex-1 basis-40 sm:w-64 sm:flex-none">
-          <label htmlFor="business-payment" className="mb-1 block text-sm">Payment status</label>
-          <select id="business-payment" data-testid="business-payment" className={field} value={payment}
-            onChange={(event) => setPayment(event.target.value)}>
-            <option value="">Any payment status</option>
-            {paymentOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </div>
-      </div>
-      {/* One scrolling row on phones (a part of the next chip shows as the hint), wrapping from 640 px. */}
-      <div className="min-w-0 max-sm:[&>[role=group]]:flex-nowrap max-sm:[&>[role=group]]:overflow-x-auto max-sm:[&>[role=group]]:overscroll-x-contain max-sm:[&>[role=group]]:py-1 max-sm:[&>[role=group]]:[scroll-snap-type:x_mandatory] max-sm:[&>[role=group]>button]:shrink-0 max-sm:[&>[role=group]>button]:[scroll-snap-align:start]">
-        <StatusChips mode="single" testId="business-status" ariaLabel={chipGroupLabel(scope.kind)}
-          options={orderChipOptions(counts)} value={status}
-          onChange={(next) => setStatus(next as string)} />
-      </div>
+      <SummaryTiles ariaLabel="Orders at a glance" testId="business-tiles" tiles={tiles} />
       <div data-testid="business-counts-note"
-        className="my-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[color:var(--fs-text-secondary)]">
+        className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[color:var(--fs-text-secondary)]">
         {failed
           ? <span data-testid="business-counts-failed" role="status">The order numbers could not be
               loaded just now. The list below still works.</span>
@@ -228,15 +235,8 @@ function BusinessRecords({ query }: { query: string }) {
         <button type="button" className={secondary} disabled={orders.loading}
           data-testid="business-orders-refresh-top" onClick={refreshOrders}>Refresh newest orders</button>
       </div>
-      {(applied.channel || applied.shopId) && <div data-testid="business-source-filter"
-        className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-        <span>Showing orders from {channelLabel(applied.channel)} only{applied.shopId ? `, store ${applied.shopId}` : ""}</span>
-        <button type="button" className={secondary} data-testid="business-source-clear" onClick={() => {
-          setChannel(""); setShopId(""); setApplied({ channel: "", shopId: "" });
-        }}>Show all sources</button>
-      </div>}
-      <OrderRecords orders={orders} onRefresh={refreshOrders} />
-      <div className="mt-4">
+      <OrderFilters range={range} onRange={(next) => { setRange(next); setAllTime(false); }}
+        payment={payment} onPayment={setPayment}>
         <Fold testId="business-more-filters" title="More filters"
           hint={applied.channel ? `Source: ${channelLabel(applied.channel)}` : undefined}>
           <form className="space-y-3" onSubmit={(event) => {
@@ -267,13 +267,46 @@ function BusinessRecords({ query }: { query: string }) {
           <p className="mt-3 text-sm">Applied source: {applied.channel || "All local sources"}
             {" · "}Applied store ID: {applied.shopId || "All stores / not recorded"}</p>
         </Fold>
+      </OrderFilters>
+      {(filters.length > 0 || applied.channel || applied.shopId) && <div data-testid="business-active-filters"
+        className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+        {filters.map((filter) => <span key={filter.key} data-testid={`business-active-${filter.key}`}
+          className="inline-flex min-h-10 items-center gap-1 rounded-[var(--fs-radius-round)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] py-0.5 pr-1 pl-3">
+          {filter.label}
+          <button type="button" aria-label={`Remove ${filter.label} filter`}
+            data-testid={`business-active-${filter.key}-remove`} onClick={() => removeFilter(filter.key)}
+            className="inline-flex size-8 items-center justify-center rounded-[var(--fs-radius-round)] hover:bg-[var(--fs-surface-blue)] pointer-coarse:size-10">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+              strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </span>)}
+        {(applied.channel || applied.shopId) && <div data-testid="business-source-filter"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>Showing orders from {channelLabel(applied.channel)} only{applied.shopId ? `, store ${applied.shopId}` : ""}</span>
+          <button type="button" className={secondary} data-testid="business-source-clear" onClick={() => {
+            setChannel(""); setShopId(""); setApplied({ channel: "", shopId: "" });
+          }}>Show all sources</button>
+        </div>}
+      </div>}
+      <div className="mb-3 rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3">
+        <DetailsRow testId="business-all-statuses" toggleLabel="all statuses"
+          summary={<p className="font-medium">Showing: {status === "all" ? "All orders" : orderStatusLabel(status)}</p>}>
+          <StatusChips mode="single" testId="business-status" ariaLabel={chipGroupLabel(scope.kind)}
+            options={orderChipOptions(counts)} value={status}
+            onChange={(next) => setStatus(next as string)} />
+        </DetailsRow>
       </div>
+      <OrderRecords orders={orders} onRefresh={refreshOrders} />
     </section>
   </div>;
 }
 
 function ProductRecords({ query }: { query: string }) {
   const products = useRecords<Product>(`/console/v1/business/products?${query}`);
+  // The Out of stock tile on the Orders page links here with ?stock=out.
+  const search = useSearchParams();
+  const [stock, setStock] = useState(() => (search.get("stock") === "out" ? "out" : "all"));
+  const shown = stock === "out" ? products.items?.filter((product) => product.available_qty <= 0) : products.items;
   return <div className="mt-5">
     <Panel title="Local catalogue and inventory">
       <div className="mb-4">
@@ -282,15 +315,25 @@ function ProductRecords({ query }: { query: string }) {
             these products; verified store listing mappings are not available in this slice.</p>
         </Fold>
       </div>
-      <div className="mb-4 flex gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <button className={secondary} disabled={products.loading} onClick={products.newest}>Refresh newest products</button>
         {products.next && <button className={secondary} disabled={products.loading} onClick={products.older}>Older products</button>}
+        <TechSwitch testId="business-tech-all" />
+      </div>
+      <div className="mb-4">
+        <StatusChips mode="single" testId="business-stock-filter" ariaLabel="Stock filter" value={stock}
+          options={[{ value: "all", label: "All products" }, { value: "out", label: "Out of stock" }]}
+          onChange={(next) => setStock(next as string)} />
+        {stock === "out" && <p data-testid="business-stock-note" className="mt-2 text-sm text-[color:var(--fs-text-secondary)]">
+          Out of stock among the products loaded so far.</p>}
       </div>
       {products.error && <Notice error>{products.error}</Notice>}
       {products.loading && <p>Loading local products...</p>}
       {products.items?.length === 0 && !products.loading && <p>No local products found. Marketplace listings are not imported by this view.</p>}
+      {stock === "out" && products.items && products.items.length > 0 && shown?.length === 0 && <p>
+        None of the products loaded so far are out of stock.</p>}
       <ul data-testid="business-products-list" className="space-y-3">
-        {products.items?.map((product) => <ProductCard key={product.id} product={product} />)}
+        {shown?.map((product) => <ProductCard key={product.id} product={product} />)}
       </ul>
     </Panel>
   </div>;
@@ -301,39 +344,45 @@ function StoreRecords({ query }: { query: string }) {
   const params = new URLSearchParams(query);
   if (platform) params.set("platform", platform);
   const path = `/console/v1/business/stores?${params}`;
-  return <>
-    <Notice>These are local records and stored lifecycle evidence, not a live connection check.
-      Token contents, shop ciphers and permission scope values are not returned. Current provider
-      authorization and permissions remain unverified; provider reads are unavailable.
-      Recorded authorization or a future expiry does not prove a working connection.</Notice>
-    <p className="my-3 text-sm">Live TikTok authorization requires an eligible Partner Center app
-      and seller authorization. Account registration alone does not establish eligibility;
-      review/publishing or an independently verified testing route is still required.
-      Live authorization is not enabled in this workspace.</p>
-    <div className="mb-3 flex gap-3">
-      <button className={secondary} type="button" disabled>Connect unavailable</button>
-      <button className={secondary} type="button" disabled>Reconnect unavailable</button>
-    </div>
-    <label className="my-3 block">Store-record platform
-      <select className={field} value={platform} onChange={(event) => setPlatform(event.target.value)}>
-        <option value="">All local marketplace records</option>
-        <option value="tiktok_shop">TikTok Shop</option>
-        <option value="shopee">Shopee</option>
-        <option value="lazada">Lazada</option>
-      </select>
-    </label>
-    <StorePage key={path} path={path} />
-  </>;
+  return <div className="mt-5 space-y-5">
+    <Panel title="Local store records">
+      <div className="mb-3 flex flex-wrap gap-3">
+        <button className={secondary} type="button" disabled>Connect unavailable</button>
+        <button className={secondary} type="button" disabled>Reconnect unavailable</button>
+      </div>
+      <label className="my-3 block">Store-record platform
+        <select className={field} value={platform} onChange={(event) => setPlatform(event.target.value)}>
+          <option value="">All local marketplace records</option>
+          <option value="tiktok_shop">TikTok Shop</option>
+          <option value="shopee">Shopee</option>
+          <option value="lazada">Lazada</option>
+        </select>
+      </label>
+      <h3 className="mb-3 font-semibold">Local store records (not verified connections)</h3>
+      <StorePage key={path} path={path} />
+    </Panel>
+    <Fold testId="business-stores" title="Store connections and local store records">
+      <Notice>These are local records and stored lifecycle evidence, not a live connection check.
+        Token contents, shop ciphers and permission scope values are not returned. Current provider
+        authorization and permissions remain unverified; provider reads are unavailable.
+        Recorded authorization or a future expiry does not prove a working connection.</Notice>
+      <p className="my-3 text-sm">Live TikTok authorization requires an eligible Partner Center app
+        and seller authorization. Account registration alone does not establish eligibility;
+        review/publishing or an independently verified testing route is still required.
+        Live authorization is not enabled in this workspace.</p>
+      <p className="text-sm">Pages follow stable local record IDs, not connection or update recency.</p>
+    </Fold>
+  </div>;
 }
 
 function StorePage({ path }: { path: string }) {
   const stores = useRecords<Store>(path);
   return <>
-    <div className="mb-4 flex gap-3">
+    <div className="mb-4 flex flex-wrap items-center gap-3">
       <button className={secondary} disabled={stores.loading} onClick={stores.newest}>Refresh local store records</button>
       {stores.next && <button className={secondary} disabled={stores.loading} onClick={stores.older}>Next store records</button>}
+      <TechSwitch testId="business-tech-all" />
     </div>
-    <p className="mb-3 text-sm">Pages follow stable local record IDs, not connection or update recency.</p>
     {stores.error && <Notice error>{stores.error}</Notice>}
     {stores.loading && <p>Loading local store records...</p>}
     {stores.items?.length === 0 && !stores.loading && <p>No matching local store records. This does not prove the marketplace has no authorized stores.</p>}

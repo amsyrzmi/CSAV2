@@ -164,8 +164,10 @@ import {
 const ITEMS = [
   { href: "/kit-demo-parts", key: "one", label: "Orders", testId: "demo-nav-one" },
   { href: "/kit-demo-parts/two", key: "two", label: "Products and stock", testId: "demo-nav-two" },
-  { href: "/kit-demo-parts#three", key: "three", label: "Store connections", testId: "demo-nav-three" },
-  { href: "/kit-demo-parts#four", key: "four", label: "Maintenance and settings", testId: "demo-nav-four" },
+  { href: "/kit-demo-parts#three", key: "three", label: "Store connections",
+    testId: "demo-nav-three" },
+  { href: "/kit-demo-parts#four", key: "four", label: "Maintenance and settings",
+    testId: "demo-nav-four" },
 ];
 
 function PartsRow({ n }: { n: number }) {
@@ -189,17 +191,21 @@ export default function KitParts() {
   return (
     <main style={{ padding: 16, maxWidth: 720 }}>
       <h1>Kit parts</h1>
-      <SectionNav label="Demo pages" testId="demo-nav" items={ITEMS} current="one" query="client_id=abc" />
+      <SectionNav label="Demo pages" testId="demo-nav" items={ITEMS} current="one"
+        query="client_id=abc" />
       <SummaryTiles ariaLabel="Demo tiles" tiles={[
-        { key: "a", label: "To confirm", value: 4, pressed, onPress: () => setPressed((p) => !p), testId: "demo-tile-a" },
+        { key: "a", label: "To confirm", value: 4, pressed,
+          onPress: () => setPressed((p) => !p), testId: "demo-tile-a" },
         { key: "b", label: "To pack", value: null, onPress: () => {}, testId: "demo-tile-b" },
-        { key: "c", label: "Out of stock", value: 0, caption: "Among your newest 50 products", href: "/kit-demo-parts/two", testId: "demo-tile-c" },
+        { key: "c", label: "Out of stock", value: 0, caption: "Among your newest 50 products",
+          href: "/kit-demo-parts/two", testId: "demo-tile-c" },
         { key: "d", label: "On the way", value: 12, onPress: () => {}, testId: "demo-tile-d" },
       ]} />
       <TechDetailsProvider>
         <div style={{ display: "flex", gap: 8, margin: "8px 0" }}>
           <TechSwitch testId="demo-tech-all" />
-          <button type="button" data-testid="demo-add-row" onClick={() => setRows((r) => [...r, r.length + 1])}>Add row</button>
+          <button type="button" data-testid="demo-add-row"
+            onClick={() => setRows((r) => [...r, r.length + 1])}>Add row</button>
         </div>
         <ul style={{ padding: 0 }}>{rows.map((n) => <PartsRow key={n} n={n} />)}</ul>
       </TechDetailsProvider>
@@ -221,7 +227,8 @@ export default function KitPartsTwo() {
       <h1>Kit parts two</h1>
       <SectionNav label="Demo pages" testId="demo-nav" current="two" items={[
         { href: "/kit-demo-parts", key: "one", label: "Orders", testId: "demo-nav-one" },
-        { href: "/kit-demo-parts/two", key: "two", label: "Products and stock", testId: "demo-nav-two" },
+        { href: "/kit-demo-parts/two", key: "two", label: "Products and stock",
+          testId: "demo-nav-two" },
       ]} />
       <h2 ref={heading} tabIndex={-1} data-testid="demo-heading">Products and stock</h2>
       <TechnicalDetails testId="demo-alone">
@@ -1348,7 +1355,11 @@ async def test_date_popover_vertical_placement(
 
 
 async def open_parts(
-    console: Console, *, theme: str = "cobalt", width: int = 1024, path: str = "/kit-demo-parts",
+    console: Console,
+    *,
+    theme: str = "cobalt",
+    width: int = 1024,
+    path: str = "/kit-demo-parts",
     ready: str = "demo-tech-all",
 ) -> tuple[Any, Any, Page]:
     return await open_demo(console, theme=theme, width=width, path=path, ready=ready)
@@ -1444,7 +1455,9 @@ async def test_tech_switch_opens_every_row_including_rows_added_later(console: C
             await expect(page.get_by_test_id(f"demo-r{n}-raw")).to_be_visible()
         # A row that arrives after the press starts open too.
         await page.get_by_test_id("demo-add-row").click()
-        await expect(page.get_by_test_id("demo-r3-toggle")).to_have_attribute("aria-expanded", "true")
+        await expect(page.get_by_test_id("demo-r3-toggle")).to_have_attribute(
+            "aria-expanded", "true"
+        )
         await expect(page.get_by_test_id("demo-r3-tech-toggle")).to_have_attribute(
             "aria-expanded", "true"
         )
@@ -1471,9 +1484,13 @@ async def test_single_row_toggles_after_the_switch(console: Console) -> None:
         )
         await expect(page.get_by_test_id("demo-r1-raw")).to_be_hidden()
         await page.get_by_test_id("demo-r2-toggle").click()
-        await expect(page.get_by_test_id("demo-r2-toggle")).to_have_attribute("aria-expanded", "false")
+        await expect(page.get_by_test_id("demo-r2-toggle")).to_have_attribute(
+            "aria-expanded", "false"
+        )
         # The other row's inner level and the switch are untouched.
-        await expect(page.get_by_test_id("demo-r1-toggle")).to_have_attribute("aria-expanded", "true")
+        await expect(page.get_by_test_id("demo-r1-toggle")).to_have_attribute(
+            "aria-expanded", "true"
+        )
         await expect(page.get_by_test_id("demo-tech-all")).to_have_attribute("aria-pressed", "true")
     finally:
         await close_demo(playwright, browser)

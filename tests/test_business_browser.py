@@ -88,7 +88,7 @@ def make_order(n: int) -> dict[str, Any]:
     }
 
 
-def make_products() -> list[dict[str, Any]]:
+def make_products(available: tuple[int, ...] = (7, 7)) -> list[dict[str, Any]]:
     return [
         {
             "id": f"00000000-0000-4000-8000-00000000000{n}",
@@ -98,12 +98,12 @@ def make_products() -> list[dict[str, Any]]:
             "currency": "MYR",
             "stock_qty": 10,
             "reserved_qty": 3,
-            "available_qty": 7,
+            "available_qty": available[n - 1],
             "is_active": n == 1,
             "created_at": "2026-10-01T00:00:00Z",
             "updated_at": "2026-10-02T00:00:00Z",
         }
-        for n in (1, 2)
+        for n in range(1, len(available) + 1)
     ]
 
 
@@ -130,6 +130,9 @@ class Stub:
         default_factory=lambda: [make_order(n) for n in range(1, ORDERS_TOTAL + 1)]
     )
     counts_fail: bool = False
+    # Available quantity of each product, and whether a further products page exists.
+    availability: tuple[int, ...] = (7, 7)
+    products_more: bool = False
     counts_gate: asyncio.Event = field(default_factory=open_event)
     list_gate: asyncio.Event = field(default_factory=open_event)
     older_gate: asyncio.Event = field(default_factory=open_event)
@@ -202,11 +205,12 @@ class Stub:
         elif path == "business/products" and request.method == "GET":
             self.other_calls.append("products")
             self.product_queries.append(query)
+            items = make_products(self.availability)
             data = {
                 "source": "local_catalogue",
                 "marketplace_sync": "unavailable",
-                "items": make_products(),
-                "next_cursor": None,
+                "items": items,
+                "next_cursor": items[-1]["id"] if self.products_more else None,
             }
         elif path == "business/stores" and request.method == "GET":
             self.other_calls.append("stores")
@@ -281,6 +285,32 @@ async def open_fold(page: Page, name: str) -> None:
     await expect(page.get_by_test_id(f"business-{name}-details")).to_be_visible()
 
 
+async def open_filters(page: Page) -> None:
+    """Open the Filters panel (date, payment, source)."""
+    if (
+        await page.get_by_test_id("business-filters-toggle").get_attribute("aria-expanded")
+        != "true"
+    ):
+        await page.get_by_test_id("business-filters-toggle").click()
+    await expect(page.get_by_test_id("business-filters")).to_be_visible()
+
+
+async def open_statuses(page: Page) -> None:
+    """Open the All statuses arrow so the status chips can be used."""
+    if (
+        await page.get_by_test_id("business-all-statuses-toggle").get_attribute("aria-expanded")
+        != "true"
+    ):
+        await page.get_by_test_id("business-all-statuses-toggle").click()
+    await expect(page.get_by_test_id("business-status")).to_be_visible()
+
+
+async def open_tech(page: Page, test_id: str) -> None:
+    """Open a row's Technical details arrow (the row itself must already be open)."""
+    await page.get_by_test_id(f"{test_id}-tech-toggle").click()
+    await expect(page.get_by_test_id(f"{test_id}-tech-details")).to_be_visible()
+
+
 def order_card(page: Page, n: int) -> Any:
     return page.get_by_test_id(f"business-order-{oid(n)}")
 
@@ -320,29 +350,46 @@ async def test_orders_show_cards_and_arrow_details(site: Site) -> None:
             await expect(details).to_be_hidden()
             await first.get_by_test_id(f"business-order-{oid(1)}-toggle").click()
             await expect(details).to_be_visible()
-            await expect(details).to_contain_text(oid(1))
-            await expect(details).to_contain_text(
+            # The plain groups come first; the exact lines wait behind Technical details.
+            await expect(details).to_contain_text("Total: RM 1,001.50")
+            await expect(details).to_contain_text("Courier: not added yet")
+            await expect(details).to_contain_text("Source: Shopee")
+            await expect(details).to_contain_text("Last changed here: 2 Nov 2026, 09:58")
+            raw = page.get_by_test_id(f"business-order-{oid(1)}-tech-details")
+            await expect(raw).to_be_hidden()
+            await open_tech(page, f"business-order-{oid(1)}")
+            await expect(raw).to_contain_text(oid(1))
+            await expect(raw).to_contain_text(
                 "pending_confirmation · Payment: unpaid · MYR 1001.50"
             )
-            await expect(details).to_contain_text("Source: shopee · Store: SHOP-A")
-            await expect(details).to_contain_text("Platform order: EXT-0001")
-            await expect(details).to_contain_text("Tracking: Not recorded · Carrier: Not recorded")
-            await expect(details).to_contain_text("Created: 2 Nov 2026, 09:58")
-            await expect(details).to_contain_text("Placed: 2 Nov 2026, 09:58")
-            await expect(details).to_contain_text("Shipped: Not recorded")
-            await expect(details).to_contain_text("not a marketplace sync timestamp")
-            # A shipped order shows its tracking inside its own details.
+            await expect(raw).to_contain_text("Source: shopee · Store: SHOP-A")
+            await expect(raw).to_contain_text("Platform order: EXT-0001")
+            await expect(raw).to_contain_text("Tracking: Not recorded · Carrier: Not recorded")
+            await expect(raw).to_contain_text("Created: 2 Nov 2026, 09:58")
+            await expect(raw).to_contain_text("Placed: 2 Nov 2026, 09:58")
+            await expect(raw).to_contain_text("Shipped: Not recorded")
+            await expect(raw).to_contain_text("not a marketplace sync timestamp")
+            # A shipped order shows its tracking in its own details, and the line under technical.
             shipped = order_card(page, 4)
             await shipped.get_by_test_id(f"business-order-{oid(4)}-toggle").click()
             await expect(page.get_by_test_id(f"business-order-{oid(4)}-details")).to_contain_text(
-                "Tracking: TRK00004 · Carrier: J&T"
+                "Tracking number: TRK00004"
             )
+            await expect(page.get_by_test_id(f"business-order-{oid(4)}-details")).to_contain_text(
+                "Courier: J&T"
+            )
+            await open_tech(page, f"business-order-{oid(4)}")
+            await expect(
+                page.get_by_test_id(f"business-order-{oid(4)}-tech-details")
+            ).to_contain_text("Tracking: TRK00004 · Carrier: J&T")
             # The long notices and the filters stay folded; products and stores are other pages.
             await expect(page.get_by_test_id("business-more-filters-details")).to_be_hidden()
             await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
             await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
             await expect(page.get_by_test_id("business-stores")).to_have_count(0)
-            assert stub.other_calls == [], stub.other_calls
+            # Only the out-of-stock tile reads products here: one read of the newest 50.
+            assert set(stub.other_calls) == {"products"}, stub.other_calls
+            assert all(q == {"limit": ["50"]} for q in stub.product_queries), stub.product_queries
 
     await with_browser(body)
 
@@ -362,14 +409,23 @@ async def test_products_page_lists_products_with_arrow_details(site: Site) -> No
             )
             await expect(product_details).to_be_hidden()
             await product.get_by_role("button", name="Show details").click()
-            await expect(product_details).to_contain_text("MUG-1 · Blue mug 1")
-            await expect(product_details).to_contain_text("MYR 18.00 · Local status: Active")
-            await expect(product_details).to_contain_text("Stock: 10 · Reserved: 3 · Available: 7")
+            await expect(product_details).to_contain_text("In stock: 10")
+            await expect(product_details).to_contain_text("Set aside for orders: 3")
+            await expect(product_details).to_contain_text("Available: 7")
+            await expect(product_details).to_contain_text("Price: RM 18.00")
+            await expect(product_details).to_contain_text("Status: For sale")
+            product_id = "business-product-00000000-0000-4000-8000-000000000001"
+            await open_tech(page, product_id)
+            raw = page.get_by_test_id(f"{product_id}-tech-details")
+            await expect(raw).to_contain_text("MUG-1 · Blue mug 1")
+            await expect(raw).to_contain_text("MYR 18.00 · Local status: Active")
+            await expect(raw).to_contain_text("Stock: 10 · Reserved: 3 · Available: 7")
             await expect(page.get_by_test_id("business-about-catalogue-details")).to_be_hidden()
             await open_fold(page, "about-catalogue")
             # Orders belong to the other page: nothing here reads them or the stores.
             assert not stub.order_queries and not stub.counts_queries, stub.order_queries
             assert set(stub.other_calls) == {"products"}, stub.other_calls
+            assert all("limit" not in q for q in stub.product_queries), stub.product_queries
             await expect(page.get_by_test_id("business-orders-list")).to_have_count(0)
 
     await with_browser(body)
@@ -381,10 +437,22 @@ async def test_stores_page_shows_store_records(site: Site) -> None:
         async with business_page(
             browser, site, stub, path="/portal/business/stores", wait_for_rows=False
         ) as page:
-            # The store records sit in a closed fold, with the two disabled buttons inside it.
-            await expect(page.get_by_test_id("business-stores-details")).to_be_hidden(timeout=WAIT)
-            await open_fold(page, "stores")
+            # The buttons, the platform choice and the records are on the page itself.
             store = page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
+            await expect(store).to_be_visible(timeout=WAIT)
+            await expect(
+                page.get_by_role("button", name="Connect unavailable", exact=True)
+            ).to_be_disabled()
+            await expect(page.get_by_label("Store-record platform")).to_be_visible()
+            # The long notices stay in the fold.
+            await expect(page.get_by_test_id("business-stores-details")).to_be_hidden()
+            await open_fold(page, "stores")
+            await expect(page.get_by_test_id("business-stores-details")).to_contain_text(
+                "Account registration alone does not establish eligibility"
+            )
+            await expect(page.get_by_test_id("business-stores-details")).to_contain_text(
+                "Pages follow stable local record IDs"
+            )
             await expect(store).to_contain_text("TikTok Shop · SHOP-A")
             await expect(store).to_contain_text("Not verified")
             store_details = page.get_by_test_id(
@@ -392,10 +460,18 @@ async def test_stores_page_shows_store_records(site: Site) -> None:
             )
             await expect(store_details).to_be_hidden()
             await store.get_by_role("button", name="Show details").click()
-            await expect(store_details).to_contain_text(
+            await expect(store_details).to_contain_text("Marketplace: TikTok Shop")
+            await expect(store_details).to_contain_text("Store ID: SHOP-A")
+            await expect(store_details).to_contain_text("Status: Not verified")
+            await expect(store_details).to_contain_text("Last changed here: 3 Oct 2026, 08:00")
+            await open_tech(page, "business-store-00000000-0000-4000-8000-0000000000aa")
+            raw = page.get_by_test_id(
+                "business-store-00000000-0000-4000-8000-0000000000aa-tech-details"
+            )
+            await expect(raw).to_contain_text(
                 "Stored lifecycle: No usable local authorization evidence"
             )
-            await expect(store_details).to_contain_text("Live integration: unavailable")
+            await expect(raw).to_contain_text("Live integration: unavailable")
             assert not stub.order_queries and set(stub.other_calls) == {"stores"}, stub.other_calls
 
     await with_browser(body)
@@ -416,7 +492,7 @@ async def test_section_bar_moves_between_pages_and_marks_the_current_one(site: S
                 "aria-current", "page"
             )
             await page.get_by_test_id("business-subnav-products").click()
-            await expect(page).to_have_url(re.compile(r"/portal/business/products$"))
+            await expect(page).to_have_url(re.compile(r"/portal/business/products$"), timeout=WAIT)
             await expect(heading).to_have_text("Products & stock")
             await expect(heading).to_be_focused()
             await expect(page.get_by_test_id("business-subnav-products")).to_have_attribute(
@@ -427,14 +503,14 @@ async def test_section_bar_moves_between_pages_and_marks_the_current_one(site: S
             )
             await expect(page.get_by_test_id("business-products-list")).to_be_visible()
             await page.get_by_test_id("business-subnav-stores").click()
-            await expect(page).to_have_url(re.compile(r"/portal/business/stores$"))
+            await expect(page).to_have_url(re.compile(r"/portal/business/stores$"), timeout=WAIT)
             await expect(heading).to_have_text("Store connections")
             await expect(heading).to_be_focused()
             await expect(page.get_by_test_id("business-subnav-stores")).to_have_attribute(
                 "aria-current", "page"
             )
             await page.get_by_test_id("business-subnav-orders").click()
-            await expect(page).to_have_url(re.compile(r"/portal/business$"))
+            await expect(page).to_have_url(re.compile(r"/portal/business$"), timeout=WAIT)
             await expect(order_card(page, 1)).to_be_visible()
             await expect(page.get_by_test_id("business-subnav-orders")).to_have_attribute(
                 "aria-current", "page"
@@ -449,9 +525,9 @@ async def test_section_bar_keeps_the_admin_tenant(site: Site) -> None:
         async with business_page(
             browser, site, stub, path="/business", role="platform_admin", wait_for_rows=False
         ) as page:
-            await expect(page.get_by_text("Select a tenant to view its business records.")).to_be_visible(
-                timeout=WAIT
-            )
+            await expect(
+                page.get_by_text("Select a tenant to view its business records.")
+            ).to_be_visible(timeout=WAIT)
             assert not stub.order_queries
             await expect(page.get_by_test_id("business-subnav-products")).to_have_attribute(
                 "href", "/business/products"
@@ -459,7 +535,9 @@ async def test_section_bar_keeps_the_admin_tenant(site: Site) -> None:
             select = page.get_by_label("Tenant")
             await expect(select.locator("option")).to_have_count(2)
             await select.select_option(TENANT)
-            await expect(page).to_have_url(re.compile(rf"/business\?client_id={TENANT}$"))
+            await expect(page).to_have_url(
+                re.compile(rf"/business\?client_id={TENANT}$"), timeout=WAIT
+            )
             await expect(order_card(page, 1)).to_be_visible()
             assert stub.order_queries[-1].get("client_id") == [TENANT], stub.order_queries
             await expect(page.get_by_test_id("business-subnav-products")).to_have_attribute(
@@ -467,7 +545,7 @@ async def test_section_bar_keeps_the_admin_tenant(site: Site) -> None:
             )
             await page.get_by_test_id("business-subnav-products").click()
             await expect(page).to_have_url(
-                re.compile(rf"/business/products\?client_id={TENANT}$")
+                re.compile(rf"/business/products\?client_id={TENANT}$"), timeout=WAIT
             )
             await expect(page.get_by_test_id("business-products-list")).to_be_visible()
             assert stub.product_queries[-1].get("client_id") == [TENANT], stub.product_queries
@@ -485,8 +563,10 @@ async def test_section_bar_keeps_the_admin_tenant(site: Site) -> None:
             assert stub.store_queries[-1].get("client_id") == [TENANT], stub.store_queries
             # Clearing the choice removes it from the address.
             await page.get_by_label("Tenant").select_option("")
-            await expect(page).to_have_url(re.compile(r"/business/stores$"))
-            await expect(page.get_by_text("Select a tenant to view its business records.")).to_be_visible()
+            await expect(page).to_have_url(re.compile(r"/business/stores$"), timeout=WAIT)
+            await expect(
+                page.get_by_text("Select a tenant to view its business records.")
+            ).to_be_visible()
 
     await with_browser(body)
 
@@ -495,12 +575,16 @@ async def test_a_rail_link_without_a_tenant_lands_on_select_a_tenant(site: Site)
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(
-            browser, site, stub, path="/business/products", role="platform_admin",
+            browser,
+            site,
+            stub,
+            path="/business/products",
+            role="platform_admin",
             wait_for_rows=False,
         ) as page:
-            await expect(page.get_by_text("Select a tenant to view its business records.")).to_be_visible(
-                timeout=WAIT
-            )
+            await expect(
+                page.get_by_text("Select a tenant to view its business records.")
+            ).to_be_visible(timeout=WAIT)
             assert not stub.product_queries and not stub.order_queries
 
     await with_browser(body)
@@ -553,6 +637,12 @@ async def test_date_range_status_and_payment_filters_send_the_right_query(site: 
             await expect(page.get_by_test_id("business-status-all")).to_have_text(
                 f"All orders ({ORDERS_TOTAL})"
             )
+
+            # The chips sit behind the All statuses arrow, the rest behind Filters.
+            await expect(page.get_by_test_id("business-status")).to_be_hidden()
+            await expect(page.get_by_test_id("business-payment")).to_be_hidden()
+            await open_statuses(page)
+            await open_filters(page)
 
             # A status chip filters the list and does not ask for new counts.
             counts_before = len(stub.counts_queries)
@@ -644,6 +734,7 @@ async def test_counts_request_is_aborted_when_a_filter_changes(site: Site) -> No
             assert stub.counts_queries
             await expect(page.get_by_test_id("business-status-all")).to_have_text("All orders")
             seen = len(stub.counts_queries)
+            await open_filters(page)
             failed: list[str] = []
             page.on("requestfailed", lambda request: failed.append(request.url))
             await page.get_by_test_id("business-payment").select_option("refunded")
@@ -664,6 +755,7 @@ async def test_status_counts_show_and_hide_when_the_counts_read_fails(site: Site
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(browser, site, stub) as page:
+            await open_statuses(page)
             # Counts read fine: every chip carries its number and the sum is the "All" figure.
             await expect(page.get_by_test_id("business-status-all")).to_have_text(
                 f"All orders ({ORDERS_TOTAL})"
@@ -692,6 +784,286 @@ async def test_status_counts_show_and_hide_when_the_counts_read_fails(site: Site
             await page.get_by_test_id("business-orders-refresh").click()
             await expect(page.get_by_test_id("business-status-shipped")).to_have_text("Shipped (3)")
             await expect(page.get_by_test_id("business-counts-failed")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_tiles_show_counts_and_filter_the_list(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            group = page.get_by_role("group", name="Orders at a glance")
+            await expect(group).to_have_count(1)
+            # Statuses cycle: orders 1, 9, 17, 25 wait for confirmation; 3 are confirmed; 3 shipped.
+            for tile, number in (("to-confirm", "4"), ("to-pack", "3"), ("on-the-way", "3")):
+                await expect(page.get_by_test_id(f"business-tile-{tile}-value")).to_have_text(
+                    number
+                )
+            tile = page.get_by_test_id("business-tile-to-confirm")
+            await expect(tile).to_have_attribute("aria-pressed", "false")
+            counts_before = len(stub.counts_queries)
+            await tile.click()
+            await wait_for_orders(page, 4)
+            assert stub.order_queries[-1] == {"status": ["pending_confirmation"]}
+            await expect(tile).to_have_attribute("aria-pressed", "true")
+            assert len(stub.counts_queries) == counts_before  # a status never asks for new counts
+            await expect(page.get_by_test_id("business-all-statuses")).to_contain_text(
+                "Showing: Waiting for confirmation"
+            )
+            # Pressing the pressed tile drops the filter.
+            await tile.click()
+            await until(lambda: "status" not in stub.order_queries[-1])
+            await wait_for_orders(page, PAGE_SIZE)
+            await expect(tile).to_have_attribute("aria-pressed", "false")
+            await page.get_by_test_id("business-tile-on-the-way").click()
+            await wait_for_orders(page, 3)
+            assert stub.order_queries[-1] == {"status": ["shipped"]}
+
+    await with_browser(body)
+
+
+async def test_tiles_say_not_available_when_the_counts_read_fails(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(counts_fail=True)
+        async with business_page(browser, site, stub) as page:
+            for tile in ("to-confirm", "to-pack", "on-the-way"):
+                value = page.get_by_test_id(f"business-tile-{tile}-value")
+                await expect(value).to_have_text("Not available")
+            for tile in ("to-confirm", "to-pack", "on-the-way"):
+                text = await page.get_by_test_id(f"business-tile-{tile}").inner_text()
+                assert "0" not in text, text
+            # The list and the products tile still work.
+            await expect(page.get_by_test_id("business-tile-out-of-stock-value")).to_have_text("0")
+            await page.get_by_test_id("business-tile-on-the-way").click()
+            await wait_for_orders(page, 3)
+
+    await with_browser(body)
+
+
+async def test_out_of_stock_tile_counts_the_newest_50_and_opens_products_filtered(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(availability=(7, 0, -1, 2), products_more=True)
+        async with business_page(browser, site, stub) as page:
+            tile = page.get_by_test_id("business-tile-out-of-stock")
+            await expect(page.get_by_test_id("business-tile-out-of-stock-value")).to_have_text("2")
+            await expect(page.get_by_test_id("business-tile-out-of-stock-caption")).to_have_text(
+                "Among your newest 50 products"
+            )
+            assert all(q == {"limit": ["50"]} for q in stub.product_queries), stub.product_queries
+            await expect(tile).to_have_attribute("href", "/portal/business/products?stock=out")
+            await tile.click()
+            await expect(page).to_have_url(
+                re.compile(r"/portal/business/products\?stock=out$"), timeout=WAIT
+            )
+            chip = page.get_by_test_id("business-stock-filter-out")
+            await expect(chip).to_have_attribute("aria-pressed", "true")
+            await expect(page.get_by_test_id("business-stock-note")).to_have_text(
+                "Out of stock among the products loaded so far."
+            )
+            products = page.get_by_test_id("business-products-list").locator("> li")
+            await expect(products).to_have_count(2)
+            await page.get_by_test_id("business-stock-filter-all").click()
+            await expect(products).to_have_count(4)
+            await expect(page.get_by_test_id("business-stock-note")).to_have_count(0)
+
+    await with_browser(body)
+
+    # Fewer than 50 products: no caption.
+    async def plain(browser: Any) -> None:
+        stub = Stub(availability=(0, 3))
+        async with business_page(browser, site, stub) as page:
+            await expect(page.get_by_test_id("business-tile-out-of-stock-value")).to_have_text("1")
+            await expect(page.get_by_test_id("business-tile-out-of-stock-caption")).to_have_count(0)
+
+    await with_browser(plain)
+
+
+async def test_all_statuses_arrow_holds_the_status_chips(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            row = page.get_by_test_id("business-all-statuses")
+            await expect(row).to_contain_text("Showing: All orders")
+            toggle = page.get_by_test_id("business-all-statuses-toggle")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            await expect(page.get_by_test_id("business-status")).to_be_hidden()
+            await toggle.click()
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            await expect(page.get_by_test_id("business-status")).to_be_visible()
+            await expect(page.get_by_test_id("business-status").locator("button")).to_have_count(9)
+            await page.get_by_test_id("business-status-processing").click()
+            await wait_for_orders(page, 3)
+            await expect(row).to_contain_text("Showing: Being prepared")
+
+    await with_browser(body)
+
+
+async def test_filters_button_holds_date_payment_and_source(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            toggle = page.get_by_test_id("business-filters-toggle")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            panel_id = await toggle.get_attribute("aria-controls")
+            assert (
+                panel_id
+                and await page.get_by_test_id("business-filters").get_attribute("id") == panel_id
+            )
+            for testid in ("business-date", "business-payment", "business-more-filters-toggle"):
+                await expect(page.get_by_test_id(testid)).to_be_hidden()
+            await toggle.click()
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            for testid in ("business-date", "business-payment", "business-more-filters-toggle"):
+                await expect(page.get_by_test_id(testid)).to_be_visible()
+            await page.get_by_test_id("business-payment").select_option("paid")
+            # Closing the panel keeps what was chosen.
+            await toggle.click()
+            await expect(page.get_by_test_id("business-payment")).to_be_hidden()
+            await expect(page.get_by_test_id("business-active-payment")).to_contain_text("Paid")
+            await toggle.click()
+            await expect(page.get_by_test_id("business-payment")).to_have_value("paid")
+
+    await with_browser(body)
+
+
+async def test_active_filters_show_as_removable_chips(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            await expect(page.get_by_test_id("business-active-filters")).to_have_count(0)
+            await open_filters(page)
+            await page.get_by_test_id("business-payment").select_option("refunded")
+            await page.get_by_test_id("business-date").click()
+            await page.get_by_test_id("business-date-preset-last7").click()
+            await page.get_by_test_id("business-date-done").click()
+            await page.get_by_test_id("business-tile-to-confirm").click()
+            row = page.get_by_test_id("business-active-filters")
+            await expect(row).to_be_visible()
+            await expect(page.get_by_test_id("business-active-payment")).to_contain_text(
+                "Payment refunded"
+            )
+            await expect(page.get_by_test_id("business-active-date")).to_contain_text("2 Nov 2026")
+            await expect(page.get_by_test_id("business-active-status")).to_contain_text(
+                "Waiting for confirmation"
+            )
+            await until(lambda: stub.order_queries[-1].get("status") == ["pending_confirmation"])
+            await page.get_by_role("button", name="Remove Payment refunded filter").click()
+            await expect(page.get_by_test_id("business-active-payment")).to_have_count(0)
+            await until(lambda: "payment_status" not in stub.order_queries[-1])
+            await page.get_by_role("button", name="Remove Waiting for confirmation filter").click()
+            await until(lambda: "status" not in stub.order_queries[-1])
+            await expect(page.get_by_test_id("business-tile-to-confirm")).to_have_attribute(
+                "aria-pressed", "false"
+            )
+            await page.get_by_test_id("business-active-date-remove").click()
+            await until(lambda: "from" not in stub.order_queries[-1])
+            await expect(row).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_order_row_has_details_and_technical_details(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            row_id = f"business-order-{oid(4)}"  # a shipped order
+            await page.get_by_test_id(f"{row_id}-toggle").click()
+            details = page.get_by_test_id(f"{row_id}-details")
+            for title in ("Payment", "Delivery", "Record"):
+                await expect(details.get_by_role("heading", name=title, level=4)).to_be_visible()
+            await expect(details).to_contain_text("Tracking number: TRK00004")
+            await expect(details).to_contain_text("Courier: J&T")
+            await expect(details).to_contain_text("Shipped: 2 Nov 2026")
+            await expect(details).to_contain_text("Marketplace order no.: EXT-0004")
+            await expect(details).to_contain_text("Source: Manual")
+            # The second level: closed, then the seven original lines.
+            toggle = page.get_by_test_id(f"{row_id}-tech-toggle")
+            await expect(toggle).to_have_attribute("aria-expanded", "false")
+            await expect(toggle).to_contain_text("technical details")
+            raw = page.get_by_test_id(f"{row_id}-tech-details")
+            await expect(raw).to_be_hidden()
+            await toggle.click()
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            await expect(raw.locator("p")).to_have_count(7)
+            await expect(raw).to_contain_text(oid(4))
+            await expect(raw).to_contain_text("Tracking: TRK00004 · Carrier: J&T")
+            await expect(raw).to_contain_text("Local update:")
+
+    await with_browser(body)
+
+
+async def test_show_technical_details_opens_every_row(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            switch = page.get_by_test_id("business-tech-all")
+            await expect(switch).to_have_text("Show technical details")
+            await expect(switch).to_have_attribute("aria-pressed", "false")
+            await switch.click()
+            await expect(switch).to_have_attribute("aria-pressed", "true")
+            for n in (1, 2, PAGE_SIZE):
+                row_id = f"business-order-{oid(n)}"
+                await expect(page.get_by_test_id(f"{row_id}-toggle")).to_have_attribute(
+                    "aria-expanded", "true"
+                )
+                await expect(page.get_by_test_id(f"{row_id}-tech-toggle")).to_have_attribute(
+                    "aria-expanded", "true"
+                )
+                await expect(page.get_by_test_id(f"{row_id}-tech-details")).to_contain_text(oid(n))
+            # Rows that arrive later open too.
+            await page.get_by_role("button", name="Older orders").click()
+            await expect(cards(page)).to_have_count(ORDERS_TOTAL)
+            late = f"business-order-{oid(ORDERS_TOTAL)}"
+            await expect(page.get_by_test_id(f"{late}-toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+            await expect(page.get_by_test_id(f"{late}-tech-toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+            # One row can still be closed by hand; pressing the switch again closes them all.
+            await page.get_by_test_id(f"business-order-{oid(1)}-tech-toggle").click()
+            await expect(
+                page.get_by_test_id(f"business-order-{oid(1)}-tech-details")
+            ).to_be_hidden()
+            await expect(
+                page.get_by_test_id(f"business-order-{oid(2)}-tech-details")
+            ).to_be_visible()
+            await switch.click()
+            await expect(switch).to_have_attribute("aria-pressed", "false")
+            for n in (1, 2, ORDERS_TOTAL):
+                await expect(
+                    page.get_by_test_id(f"business-order-{oid(n)}-toggle")
+                ).to_have_attribute("aria-expanded", "false")
+
+    await with_browser(body)
+
+
+async def test_see_an_example_opens_the_demo(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            example = page.get_by_role("button", name="See an example")
+            await expect(example).to_have_attribute("aria-pressed", "false")
+            # It is a quiet button at the bottom, under the orders and the two folds.
+            example_top = (await example.bounding_box() or {})["y"]
+            list_top = (await page.get_by_test_id("business-orders-list").bounding_box() or {})["y"]
+            assert example_top > list_top, (example_top, list_top)
+            await expect(page.get_by_text("Show synthetic demo")).to_have_count(0)
+            await example.click()
+            await expect(
+                page.get_by_text("DEMO MODE — fictional sample data only.", exact=False)
+            ).to_be_visible()
+            await expect(page.get_by_test_id("business-tiles")).to_have_count(0)
+            exit_button = page.get_by_role("button", name="Exit demo mode")
+            await expect(exit_button).to_have_attribute("aria-pressed", "true")
+            await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
+            exit_top = (await exit_button.bounding_box() or {})["y"]
+            assert exit_top < 500, exit_top  # at the top while in demo
+            await exit_button.click()
+            await expect(order_card(page, 1)).to_be_visible()
+            await expect(page.get_by_role("button", name="See an example")).to_be_visible()
 
     await with_browser(body)
 
@@ -812,8 +1184,21 @@ async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(browser, site, stub, theme=theme) as page:
+            await expect(page.get_by_test_id("business-tiles")).to_be_visible()
+            await page.get_by_test_id("business-tile-to-confirm").click()
+            await expect(page.get_by_test_id("business-tile-to-confirm")).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            await open_filters(page)
+            await open_statuses(page)
+            await open_fold(page, "more-filters")
+            await page.get_by_test_id("business-payment").select_option("unpaid")
+            await wait_for_orders(page, 1)
+            await expect(page.get_by_test_id("business-active-filters")).to_be_visible()
+            first_id = f"business-order-{oid(1)}"
             await order_card(page, 1).get_by_role("button", name="Show details").click()
-            for name in ("more-filters", "about", "not-yet"):
+            await open_tech(page, first_id)
+            for name in ("about", "not-yet"):
                 await open_fold(page, name)
             await expect(order_card(page, 1)).to_have_attribute("data-open", "true")
             await check_widths(page, theme, "orders")
@@ -830,6 +1215,7 @@ async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -
             product = page.get_by_test_id("business-product-00000000-0000-4000-8000-000000000001")
             await expect(product).to_be_visible()
             await product.get_by_role("button", name="Show details").click()
+            await open_tech(page, "business-product-00000000-0000-4000-8000-000000000001")
             await open_fold(page, "about-catalogue")
             await check_widths(page, theme, "products")
             await page.get_by_test_id("business-subnav-stores").click()
@@ -837,6 +1223,7 @@ async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -
             store = page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
             await expect(store).to_be_visible()
             await store.get_by_role("button", name="Show details").click()
+            await open_tech(page, "business-store-00000000-0000-4000-8000-0000000000aa")
             await check_widths(page, theme, "stores")
 
     await with_browser(body)
@@ -857,7 +1244,7 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
                 page.get_by_text("Not available in this slice", exact=True)
             ).to_be_visible()
             before = (len(stub.order_queries), len(stub.counts_queries), list(stub.other_calls))
-            await page.get_by_role("button", name="Show synthetic demo").click()
+            await page.get_by_role("button", name="See an example").click()
             await expect(
                 page.get_by_text(
                     "DEMO MODE — fictional sample data only. Not connected to TikTok; no TikTok "
@@ -881,64 +1268,63 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
             await expect(order_card(page, 1)).to_be_visible()
             # The demo lives on the Orders page only; the Connect buttons live on Stores.
             await page.get_by_test_id("business-subnav-stores").click()
-            await expect(page.get_by_role("button", name="Show synthetic demo")).to_have_count(0)
-            await open_fold(page, "stores")
+            await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
             connect = page.get_by_role("button", name="Connect unavailable", exact=True)
             reconnect = page.get_by_role("button", name="Reconnect unavailable", exact=True)
             await expect(connect).to_be_disabled()
             await expect(reconnect).to_be_disabled()
             await expect(page.get_by_role("button", name=" unavailable")).to_have_count(2)
             await page.get_by_test_id("business-subnav-products").click()
-            await expect(page.get_by_role("button", name="Show synthetic demo")).to_have_count(0)
+            await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
 
     await with_browser(body)
 
 
-async def test_first_screen_at_390_shows_filters_and_the_first_orders(site: Site) -> None:
+async def test_first_screen_at_390_shows_tiles_the_filters_button_and_the_first_orders(
+    site: Site,
+) -> None:
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(browser, site, stub, width=390, height=844) as page:
             await expect(
                 page.get_by_role("heading", name="Business management")
             ).to_be_in_viewport()
-            for testid in ("business-date", "business-payment", "business-status-all"):
+            for testid in (
+                "business-tile-to-confirm",
+                "business-tile-to-pack",
+                "business-tile-on-the-way",
+                "business-tile-out-of-stock",
+                "business-filters-toggle",
+                "business-tech-all",
+            ):
                 await expect(page.get_by_test_id(testid)).to_be_in_viewport()
-            # The whole first order card is on the first screen, with no technical paragraph above.
-            bottom = await order_card(page, 1).evaluate(
-                "el => el.closest('li').getBoundingClientRect().bottom"
+            # The first order's summary is on the first screen, with no technical paragraph above.
+            top = await order_card(page, 1).evaluate(
+                "el => el.closest('li').getBoundingClientRect().top"
             )
-            assert bottom <= 844, bottom
+            assert top < 844, top  # the first order card starts on the first screen
             for text in ("Local records only", "Connect unavailable", "Exact store ID"):
                 await expect(page.get_by_text(text, exact=False).first).to_be_hidden()
-            # Phones get one scrolling row of chips with the next chip partly showing.
-            measure = """el => {
-                const box = el.getBoundingClientRect();
-                const chips = [...el.children].map(b => b.getBoundingClientRect());
-                return {
-                    overflowX: getComputedStyle(el).overflowX,
-                    scrolls: el.scrollWidth > el.clientWidth,
-                    tops: [...new Set(chips.map(c => Math.round(c.top)))].length,
-                    cut: chips.some(c => c.left < box.right - 8 && c.right > box.right + 8),
-                    page: document.documentElement.scrollWidth <= window.innerWidth,
-                };
-            }"""
-            row = await page.get_by_test_id("business-status").evaluate(measure)
-            assert row == {
-                "overflowX": "auto",
-                "scrolls": True,
-                "tops": 1,
-                "cut": True,
-                "page": True,
-            }, row
-            await page.get_by_test_id("business-status-shipped").focus()
-            await page.get_by_test_id("business-status-refunded").focus()
-            assert await page.get_by_test_id("business-status-refunded").evaluate(
-                "el => el.getBoundingClientRect().right <= window.innerWidth"
+            # Everything behind the Filters button and the All statuses arrow is closed.
+            for testid in ("business-date", "business-payment", "business-status-all"):
+                await expect(page.get_by_test_id(testid)).to_be_hidden()
+            await expect(page.get_by_test_id("business-all-statuses-toggle")).to_have_attribute(
+                "aria-expanded", "false"
             )
-            # From 640 px up the chips wrap and nothing scrolls.
-            await page.set_viewport_size({"width": 700, "height": 900})
-            row = await page.get_by_test_id("business-status").evaluate(measure)
-            assert row["overflowX"] == "visible" and not row["scrolls"] and row["page"], row
+            await expect(page.get_by_test_id("business-filters-toggle")).to_have_attribute(
+                "aria-expanded", "false"
+            )
+            assert (await overflow(page))["scroll"] <= 390
+            # Open, the status chips wrap inside the page (no sideways scrolling row).
+            await open_statuses(page)
+            row = await page.get_by_test_id("business-status").evaluate(
+                """el => ({
+                    scrolls: el.scrollWidth > el.clientWidth,
+                    page: document.documentElement.scrollWidth <= window.innerWidth,
+                    right: Math.max(...[...el.children].map(b => b.getBoundingClientRect().right)),
+                })"""
+            )
+            assert not row["scrolls"] and row["page"] and row["right"] <= 390, row
 
     await with_browser(body)
 
@@ -952,6 +1338,7 @@ async def test_active_source_filter_shows_outside_the_closed_fold(site: Site) ->
                 "to": [instant(TODAY + timedelta(days=1))],
             }
             await expect(page.get_by_test_id("business-source-filter")).to_have_count(0)
+            await open_filters(page)
             await open_fold(page, "more-filters")
             await page.get_by_label("Source/platform (local orders)").select_option("shopee")
             await page.get_by_role("button", name="Apply order filters").click()
@@ -990,6 +1377,7 @@ async def test_a_slow_earlier_list_response_never_replaces_the_newer_list(site: 
         async with business_page(browser, site, stub, wait_for_rows=False) as page:
             # The unfiltered list is still on its way when a newer filter is chosen.
             await expect(page.get_by_text("Loading local orders...")).to_be_visible()
+            await open_statuses(page)
             await page.get_by_test_id("business-status-shipped").click()
             await wait_for_orders(page, 3)
             stub.list_gate.set()

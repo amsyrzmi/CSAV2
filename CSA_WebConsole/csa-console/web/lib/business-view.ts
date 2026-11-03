@@ -5,7 +5,7 @@
  * kept for the opened details; nothing here changes a code or invents a field the order read
  * does not return.
  */
-import { presets, todayLocal, type DayRange } from "@/lib/date-range";
+import { describeRange, presets, todayLocal, type DayRange } from "@/lib/date-range";
 
 export type Tone = "neutral" | "info" | "attention" | "success" | "error";
 
@@ -221,4 +221,125 @@ export function chipGroupLabel(kind: CountsScope["kind"]): string {
 export function mergeRows<T extends { id: string }>(current: readonly T[], incoming: readonly T[]): T[] {
   const seen = new Set(current.map((row) => row.id));
   return [...current, ...incoming.filter((row) => !seen.has(row.id))];
+}
+
+/** The three order tiles: each is exactly one server status, so a tile's number is its list. */
+export const TILE_STATUSES: readonly {
+  key: "to_confirm" | "to_pack" | "on_the_way";
+  status: string;
+  label: string;
+}[] = [
+  { key: "to_confirm", status: "pending_confirmation", label: "To confirm" },
+  { key: "to_pack", status: "confirmed", label: "To pack" },
+  { key: "on_the_way", status: "shipped", label: "On the way" },
+];
+
+/** A tile's number comes from the counts read; with no counts it is null, never a zero. */
+export function orderTiles(
+  counts: OrderCounts | null,
+  status: string,
+): { key: string; label: string; value: number | null; pressed: boolean; status: string }[] {
+  return TILE_STATUSES.map((tile) => ({
+    key: tile.key,
+    label: tile.label,
+    value: counts?.by_status[tile.status] ?? null,
+    pressed: status === tile.status,
+    status: tile.status,
+  }));
+}
+
+/** Products with nothing left to sell among those loaded; `more` says the read was only a page. */
+export function outOfStock(
+  products: { available_qty: number }[],
+  more: boolean,
+): { value: number; caption: string | null } {
+  return {
+    value: products.filter((product) => product.available_qty <= 0).length,
+    caption: more ? "Among your newest 50 products" : null,
+  };
+}
+
+export type DetailGroup = { title: string; rows: { label: string; value: string }[] };
+
+type OrderDetailLike = {
+  payment_status: string; total: string | number; currency: string;
+  tracking_no: string | null; carrier: string | null; shipped_at: string | null;
+  external_order_id: string | null; channel: string;
+  placed_at: string | null; created_at: string; updated_at: string;
+};
+
+const NOT_ADDED = "not added yet";
+
+/** The plain groups shown first in an opened order; the exact lines stay under Technical details. */
+export function orderDetailGroups(order: OrderDetailLike): DetailGroup[] {
+  return [
+    {
+      title: "Payment",
+      rows: [
+        { label: "Payment", value: paymentLabel(order.payment_status) },
+        { label: "Total", value: formatRm(order.total, order.currency) },
+      ],
+    },
+    {
+      title: "Delivery",
+      rows: [
+        { label: "Tracking number", value: order.tracking_no || NOT_ADDED },
+        { label: "Courier", value: order.carrier || NOT_ADDED },
+        { label: "Shipped", value: order.shipped_at ? whenText(order.shipped_at) : "Not shipped yet" },
+      ],
+    },
+    {
+      title: "Record",
+      rows: [
+        { label: "Marketplace order no.", value: order.external_order_id || NOT_ADDED },
+        { label: "Source", value: channelLabel(order.channel) },
+        { label: "Placed", value: whenText(order.placed_at) },
+        { label: "Created", value: whenText(order.created_at) },
+        { label: "Last changed here", value: whenText(order.updated_at) },
+      ],
+    },
+  ];
+}
+
+type ProductDetailLike = ProductLike & { stock_qty: number; reserved_qty: number; is_active: boolean };
+
+export function productDetailGroups(product: ProductDetailLike): DetailGroup[] {
+  return [
+    {
+      title: "Stock",
+      rows: [
+        { label: "In stock", value: String(product.stock_qty) },
+        { label: "Set aside for orders", value: String(product.reserved_qty) },
+        { label: "Available", value: String(product.available_qty) },
+      ],
+    },
+    { title: "Price", rows: [{ label: "Price", value: formatRm(product.price, product.currency) }] },
+    { title: "Status", rows: [{ label: "Status", value: product.is_active ? "For sale" : "Not for sale" }] },
+  ];
+}
+
+type StoreDetailLike = StoreLike & { updated_at: string };
+
+export function storeDetailGroups(store: StoreDetailLike): DetailGroup[] {
+  return [
+    { title: "Marketplace", rows: [{ label: "Marketplace", value: channelLabel(store.platform) }] },
+    { title: "Store ID", rows: [{ label: "Store ID", value: store.shop_id ?? "not recorded" }] },
+    { title: "Status", rows: [{ label: "Status", value: storeSummary(store).status }] },
+    { title: "Last changed here", rows: [{ label: "Last changed here", value: whenText(store.updated_at) }] },
+  ];
+}
+
+/** One removable chip per filter that is narrowing the list. */
+export function activeFilters(
+  state: { range: DayRange; payment: string; status: string },
+): { key: "date" | "payment" | "status"; label: string }[] {
+  const chips: { key: "date" | "payment" | "status"; label: string }[] = [];
+  if (state.range.from !== null || state.range.to !== null) {
+    chips.push({ key: "date", label: describeRange(state.range) });
+  }
+  if (state.payment !== "") chips.push({ key: "payment", label: paymentLabel(state.payment) });
+  if (state.status !== "all" && state.status !== "") {
+    chips.push({ key: "status", label: orderStatusLabel(state.status) });
+  }
+  return chips;
 }

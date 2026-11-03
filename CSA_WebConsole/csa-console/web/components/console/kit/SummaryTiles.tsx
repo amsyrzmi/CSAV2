@@ -6,6 +6,8 @@ type Tile = {
   key: string;
   label: string;
   value: number | null;
+  /** True while the read is still on its way: the tile says so instead of "Not available". */
+  loading?: boolean;
   caption?: string;
   pressed?: boolean;
   onPress?: () => void;
@@ -14,8 +16,8 @@ type Tile = {
 };
 
 const base =
-  "relative flex min-h-20 min-w-0 flex-col items-start justify-center gap-0.5 rounded-[var(--fs-radius-panel)] border bg-[var(--fs-surface)] p-3 text-left " +
-  "text-[color:var(--fs-text)] pointer-coarse:min-h-24 " +
+  "relative flex min-h-16 min-w-0 flex-col items-start justify-center rounded-[var(--fs-radius-panel)] border bg-[var(--fs-surface)] px-3 py-2 text-left " +
+  "text-[color:var(--fs-text)] pointer-coarse:min-h-16 " +
   "transition-[background-color,border-color] duration-150 ease-(--fs-ease-out) motion-reduce:transition-none " +
   "focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
 const idle = "border-[color:var(--fs-border-control)] hover:border-[color:var(--fs-primary)]";
@@ -34,7 +36,10 @@ function Body({ tile }: { tile: Tile }) {
         </svg>
       ) : null}
       {/* Sized on spans: the tokens' unlayered `font: inherit` on buttons beats utilities. */}
-      {tile.value === null ? (
+      {tile.loading ? (
+        <span data-testid={`${tile.testId}-value`}
+          className="text-[length:var(--fs-text-md)] text-[color:var(--fs-text-secondary)]">Loading...</span>
+      ) : tile.value === null ? (
         <span data-testid={`${tile.testId}-value`}
           className="text-[length:var(--fs-text-md)] font-semibold">Not available</span>
       ) : (
@@ -59,9 +64,9 @@ function Body({ tile }: { tile: Tile }) {
  * is a toggle button (`aria-pressed`, a check mark and a doubled border when pressed), one with
  * `href` is a link, and a tile whose read failed (`value` null) says "Not available", never 0.
  */
-export default function SummaryTiles({ ariaLabel, tiles }: { ariaLabel: string; tiles: Tile[] }) {
+export default function SummaryTiles({ ariaLabel, tiles, testId }: { ariaLabel: string; tiles: Tile[]; testId?: string }) {
   return (
-    <div role="group" aria-label={ariaLabel} className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+    <div role="group" aria-label={ariaLabel} data-testid={testId} className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
       {tiles.map((tile) => {
         const className = `${base} ${tile.pressed ? pressedClass : idle}`;
         if (tile.href && !tile.onPress) {

@@ -47,7 +47,7 @@ export default function SectionNav({
     <nav
       aria-label={label}
       data-testid={testId}
-      className="mb-5 flex flex-wrap gap-x-1 gap-y-1 border-b border-[color:var(--fs-border)]"
+      className="mb-4 flex flex-wrap gap-x-1 gap-y-1 border-b border-[color:var(--fs-border)]"
     >
       {items.map((item) => {
         const on = item.key === currentKey;

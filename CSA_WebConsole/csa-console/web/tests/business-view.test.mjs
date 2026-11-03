@@ -18,7 +18,8 @@ const {
   ORDER_STATUSES, PAYMENT_STATUSES, orderStatusChips, orderStatusLabel, orderStatusTone,
   paymentLabel, paymentTone, paymentOptions, formatRm, orderSummary, channelLabel, whenText,
   parseOrderCounts, orderChipOptions, effectiveCountsRange, productSummary, storeSummary,
-  storeStatusTone, mergeRows, chipGroupLabel,
+  storeStatusTone, mergeRows, chipGroupLabel, TILE_STATUSES, orderTiles, outOfStock,
+  orderDetailGroups, productDetailGroups, storeDetailGroups, activeFilters,
 } = await import(await load("business-view.ts", {
   '"@/lib/date-range"': JSON.stringify(await load("date-range.ts")),
 }));
@@ -213,4 +214,98 @@ test("the chip group names the window its numbers cover", () => {
   assert.equal(chipGroupLabel("default"), "Orders, last 30 days");
   assert.equal(chipGroupLabel("all"), "Orders, all dates");
   assert.equal(chipGroupLabel("chosen"), "Orders, dates you chose");
+});
+
+test("orderTiles maps one status per tile and marks the pressed one", () => {
+  assert.deepEqual(TILE_STATUSES.map((t) => [t.key, t.status, t.label]), [
+    ["to_confirm", "pending_confirmation", "To confirm"],
+    ["to_pack", "confirmed", "To pack"],
+    ["on_the_way", "shipped", "On the way"],
+  ]);
+  const counts = { total: 9, by_status: { pending_confirmation: 4, confirmed: 0, shipped: 3, draft: 2 } };
+  assert.deepEqual(orderTiles(counts, "confirmed"), [
+    { key: "to_confirm", label: "To confirm", value: 4, pressed: false, status: "pending_confirmation" },
+    { key: "to_pack", label: "To pack", value: 0, pressed: true, status: "confirmed" },
+    { key: "on_the_way", label: "On the way", value: 3, pressed: false, status: "shipped" },
+  ]);
+  assert.ok(orderTiles(counts, "all").every((tile) => tile.pressed === false));
+});
+
+test("orderTiles shows null values when counts are missing", () => {
+  for (const tile of orderTiles(null, "all")) assert.equal(tile.value, null);
+  // A well-formed read without one status is also not a zero.
+  assert.equal(orderTiles({ total: 1, by_status: { shipped: 1 } }, "all")[0].value, null);
+});
+
+test("outOfStock counts zero and negative availability and captions a partial read", () => {
+  const rows = [{ available_qty: 0 }, { available_qty: -2 }, { available_qty: 1 }, { available_qty: 7 }];
+  assert.deepEqual(outOfStock(rows, false), { value: 2, caption: null });
+  assert.deepEqual(outOfStock(rows, true), { value: 2, caption: "Among your newest 50 products" });
+  assert.deepEqual(outOfStock([], false), { value: 0, caption: null });
+});
+
+const ORDER = {
+  id: "00000001-0000-4000-8000-000000000000", status: "shipped", payment_status: "paid",
+  total: "1001.50", currency: "MYR", channel: "tiktok_shop", external_order_id: "EXT-1",
+  tracking_no: "TRK1", carrier: "J&T", placed_at: "2026-11-02T01:58:00Z",
+  shipped_at: "2026-11-02T02:30:00Z", created_at: "2026-11-02T01:58:00Z", updated_at: "2026-11-02T03:00:00Z",
+};
+
+test("orderDetailGroups uses Courier not added yet, Source with the channel name and Last changed here", () => {
+  const groups = orderDetailGroups(ORDER);
+  assert.deepEqual(groups.map((g) => g.title), ["Payment", "Delivery", "Record"]);
+  assert.deepEqual(groups[0].rows, [
+    { label: "Payment", value: "Paid" }, { label: "Total", value: "RM 1,001.50" },
+  ]);
+  assert.deepEqual(groups[1].rows.map((r) => r.label), ["Tracking number", "Courier", "Shipped"]);
+  assert.deepEqual(groups[1].rows.map((r) => r.value), ["TRK1", "J&T", "2 Nov 2026, 10:30"]);
+  assert.deepEqual(groups[2].rows.map((r) => r.label), [
+    "Marketplace order no.", "Source", "Placed", "Created", "Last changed here",
+  ]);
+  assert.equal(groups[2].rows[1].value, "TikTok Shop");
+  assert.equal(groups[2].rows[4].value, "2 Nov 2026, 11:00");
+  const bare = orderDetailGroups({
+    ...ORDER, tracking_no: null, carrier: null, shipped_at: null, external_order_id: null, placed_at: null,
+  });
+  assert.deepEqual(bare[1].rows.map((r) => r.value), ["not added yet", "not added yet", "Not shipped yet"]);
+  assert.equal(bare[2].rows[0].value, "not added yet");
+  assert.equal(bare[2].rows[2].value, "Not recorded");
+});
+
+test("productDetailGroups and storeDetailGroups", () => {
+  const product = {
+    name: "Blue mug", price: "18.00", currency: "MYR", stock_qty: 10, reserved_qty: 3,
+    available_qty: 7, is_active: true,
+  };
+  const groups = productDetailGroups(product);
+  assert.deepEqual(groups.map((g) => g.title), ["Stock", "Price", "Status"]);
+  assert.deepEqual(groups[0].rows, [
+    { label: "In stock", value: "10" }, { label: "Set aside for orders", value: "3" },
+    { label: "Available", value: "7" },
+  ]);
+  assert.equal(groups[1].rows[0].value, "RM 18.00");
+  assert.equal(groups[2].rows[0].value, "For sale");
+  assert.equal(productDetailGroups({ ...product, is_active: false })[2].rows[0].value, "Not for sale");
+  const store = {
+    platform: "tiktok_shop", shop_id: "SHOP-A", connection: { status: "unverified" },
+    updated_at: "2026-10-03T00:00:00Z",
+  };
+  const stores = storeDetailGroups(store);
+  assert.deepEqual(stores.map((g) => g.title), ["Marketplace", "Store ID", "Status", "Last changed here"]);
+  assert.deepEqual(stores.map((g) => g.rows[0].value), ["TikTok Shop", "SHOP-A", "Not verified", "3 Oct 2026, 08:00"]);
+  assert.equal(storeDetailGroups({ ...store, shop_id: null })[1].rows[0].value, "not recorded");
+});
+
+test("activeFilters lists only active filters", () => {
+  const none = { range: { from: null, to: null }, payment: "", status: "all" };
+  assert.deepEqual(activeFilters(none), []);
+  assert.deepEqual(
+    activeFilters({ range: { from: "2026-10-26", to: "2026-11-01" }, payment: "unpaid", status: "shipped" }),
+    [
+      { key: "date", label: "26 Oct to 1 Nov 2026" },
+      { key: "payment", label: "Not paid yet" },
+      { key: "status", label: "Shipped" },
+    ],
+  );
+  assert.deepEqual(activeFilters({ ...none, payment: "failed" }), [{ key: "payment", label: "Payment failed" }]);
 });
