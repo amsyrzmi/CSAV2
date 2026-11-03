@@ -549,7 +549,7 @@ async def test_stat_cards_show_real_counts(site: Site) -> None:
         context, page, diagnostics = await open_services(browser, site, stub)
         for kind, label, figure in (
             ("active", "Active services", "3"),
-            ("agents", "Agents on", "5"),
+            ("agents", "Assistants switched on", "5"),
             ("waiting", "Waiting for activation", "1"),
             ("suspended", "Suspended", "1"),
         ):
@@ -571,7 +571,7 @@ async def test_stat_cards_show_real_counts(site: Site) -> None:
         assert (await stat_text(page, "active")).startswith("Active services 4 ")
         assert (await stat_text(page, "waiting")).startswith("Waiting for activation 0 ")
         assert (await stat_text(page, "suspended")).startswith("Suspended 1 ")
-        assert (await stat_text(page, "agents")).startswith("Agents on 5 ")
+        assert (await stat_text(page, "agents")).startswith("Assistants switched on 5 ")
 
         # Suspend another: active falls back, suspended rises.
         row = row_of(page, "hr")
@@ -1031,10 +1031,10 @@ async def test_agent_switch_reloads_the_list_and_updates_the_line(site: Site) ->
         # The reload that every confirmed action already does is the only fetch: no extra ones.
         await page.wait_for_timeout(500)
         assert stub.list_gets == loads + 1, (loads, stub.list_gets)
-        # The card's labelled values still read exactly as before.
+        # The card's labelled values read in plain words: in the plan, but turned off here.
         card = page.get_by_test_id("agent-card-kb_agent")
-        await expect(card.get_by_text("Subscribed", exact=True)).to_have_count(1)
-        await expect(card.get_by_text("Off", exact=True)).to_have_count(1)
+        await expect(card.get_by_test_id("agent-plan-kb_agent")).to_have_text("Yes")
+        await expect(card.get_by_test_id("agent-company-kb_agent")).to_have_text("No")
         assert not diagnostics, diagnostics
         await context.close()
 

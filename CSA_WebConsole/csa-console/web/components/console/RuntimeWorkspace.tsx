@@ -17,7 +17,7 @@ import LastAssistants from "./activity/LastAssistants";
 import RunRow from "./activity/RunRow";
 import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
-import { DateRangeFilter, PageIntro, StatusChips } from "./kit";
+import { DateRangeFilter, PageIntro, StatusChips, TechnicalDetails } from "./kit";
 import { field, Notice, Panel, secondary } from "./ui";
 
 type SwitchName = "is_enabled" | "client_enabled";
@@ -147,33 +147,35 @@ export function AgentCard({ agent, busy, onToggle, pending = null, failed = null
         </div>
       </header>
       <dl className="grid grid-cols-2 gap-3 text-sm">
-        <div><dt className="text-ink-500">Subscription</dt><dd>{subscribed ? "Subscribed" : "Not subscribed"}</dd></div>
-        <div><dt className="text-ink-500">Company switch</dt><dd>{switchOn ? "On" : "Off"}</dd></div>
-        <div><dt className="text-ink-500">Build</dt><dd>{buildText(agent.implementation)}</dd></div>
+        <div><dt className="text-ink-500">Included in your plan</dt><dd data-testid={`agent-plan-${name}`}>{subscribed ? "Yes" : "No"}</dd></div>
+        <div><dt className="text-ink-500">Turned on for your company</dt><dd data-testid={`agent-company-${name}`}>{switchOn ? "Yes" : "No"}</dd></div>
+        <div><dt className="text-ink-500">Availability</dt><dd>{buildText(agent.implementation)}</dd></div>
         <div><dt className="text-ink-500">Setup</dt><dd>{setupText(agent.readiness)}</dd></div>
-        <div><dt className="text-ink-500">Failure guard</dt><dd>{agent.capability ? connectionText(agent.capability.circuit_state) : "No record yet"}</dd></div>
+        <div><dt className="text-ink-500">Automatic safety pause</dt><dd>{agent.capability ? connectionText(agent.capability.circuit_state) : "No record yet"}</dd></div>
         <div><dt className="text-ink-500">Recent failures</dt><dd>{agent.capability?.fail_count ?? "No record yet"}</dd></div>
       </dl>
       <p className="my-4 text-sm text-ink-600">{agent.detail}</p>
-      {agent.embedding_model && <p className="mb-4 text-sm">
-        Embeddings: {agent.embedding_model}. Compatible chunks: {agent.compatible_chunks ?? "Unknown"};
-        incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
-      </p>}
-      {agent.required_system && <p className="mb-3 text-sm">Required safety capability; disabling is prohibited.</p>}
+      {agent.required_system && <p className="mb-3 text-sm">Always on for safety. This can&apos;t be turned off.</p>}
       {failed && <div className="mb-3"><Notice error>{failed}</Notice></div>}
       {saved && !failed && <div className="mb-3"><Notice warning>{SAVED_NOT_REFRESHED}</Notice></div>}
       <div className="flex flex-wrap gap-2">
         {agent.can_subscribe && <button className={secondary} disabled={busy}
           data-testid={`agent-subscribe-${name}`}
           onClick={() => onToggle(agent, "is_enabled")}>
-          {subscribed ? "Remove subscription" : "Subscribe"}
+          {subscribed ? "Remove from my plan" : "Add to my plan"}
         </button>}
         {agent.can_toggle && <button className={secondary} disabled={busy}
           data-testid={`agent-switch-${name}`}
           onClick={() => onToggle(agent, "client_enabled")}>
-          Turn company switch {switchOn ? "off" : "on"}
+          Turn {switchOn ? "off" : "on"}
         </button>}
       </div>
+      {agent.embedding_model && <TechnicalDetails testId={`agent-tech-${name}`}>
+        <p className="text-sm">
+          Embeddings: {agent.embedding_model}. Compatible chunks: {agent.compatible_chunks ?? "Unknown"};
+          incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
+        </p>
+      </TechnicalDetails>}
     </article>
   );
 }

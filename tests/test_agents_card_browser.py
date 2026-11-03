@@ -357,7 +357,9 @@ async def test_agent_switch_shows_pending_then_confirms(site: Site) -> None:
             context, page, diagnostics = await open_agents(browser, site, stub)
             card = card_of(page, "ticket_agent")
             avatar = card.locator("[data-agent]")
-            await expect(card.get_by_text("Not subscribed")).to_be_visible(timeout=WAIT)
+            await expect(card.get_by_test_id("agent-plan-ticket_agent")).to_have_text(
+                "No", timeout=WAIT
+            )
             await expect(avatar).to_have_attribute("data-state", "still")
             await expect(avatar).to_have_attribute("data-agent", "tickets")
             steady = card_of(page, "kb_agent").locator("[data-agent]")
@@ -367,23 +369,25 @@ async def test_agent_switch_shows_pending_then_confirms(site: Site) -> None:
             # The status region exists before anything happens, so a screen reader announces it.
             await expect(card.get_by_role("status")).to_be_empty()
 
-            await card.get_by_role("button", name="Subscribe", exact=True).click()
+            await card.get_by_role("button", name="Add to my plan", exact=True).click()
 
             # In flight: a pending label, the clicked button disabled, a still dimmed avatar.
             await expect(card.get_by_test_id("agent-pending-ticket_agent")).to_have_text(
                 "Saving..."
             )
-            await expect(card.get_by_role("button", name="Subscribe", exact=True)).to_be_disabled()
+            await expect(
+                card.get_by_role("button", name="Add to my plan", exact=True)
+            ).to_be_disabled()
             await expect(avatar).to_have_attribute("data-state", "pending")
             assert await frames(card) == (1, "none")
-            await expect(card.get_by_text("Not subscribed")).to_be_visible()
+            await expect(card.get_by_test_id("agent-plan-ticket_agent")).to_have_text("No")
             assert len(stub.patches) == 1
             assert stub.patches[0]["body"] == {"is_enabled": True}
 
             stub.gate.set()
 
             # Only now, with the server answer and the reloaded list, does the card change and wake.
-            await expect(card.get_by_text("Subscribed", exact=True)).to_be_visible()
+            await expect(card.get_by_test_id("agent-plan-ticket_agent")).to_have_text("Yes")
             await expect(card.get_by_test_id("agent-pending-ticket_agent")).to_be_empty()
             await expect(avatar).to_have_attribute("data-state", "wake", timeout=5_000)
             count, animation = await frames(card)
@@ -414,16 +418,18 @@ async def test_agent_switch_failure_keeps_old_state_and_shows_reason(site: Site)
             await expect(avatar).to_have_attribute("data-state", "still", timeout=WAIT)
             await watch_states(card)
 
-            await card.get_by_role("button", name="Subscribe", exact=True).click()
+            await card.get_by_role("button", name="Add to my plan", exact=True).click()
             await expect(avatar).to_have_attribute("data-state", "pending")
             stub.gate.set()
 
             alert = card.get_by_role("alert")
             await expect(alert).to_have_text(REASON)
-            await expect(card.get_by_text("Not subscribed")).to_be_visible()
+            await expect(card.get_by_test_id("agent-plan-ticket_agent")).to_have_text("No")
             await expect(avatar).to_have_attribute("data-state", "still")
             await expect(card.get_by_test_id("agent-pending-ticket_agent")).to_be_empty()
-            await expect(card.get_by_role("button", name="Subscribe", exact=True)).to_be_enabled()
+            await expect(
+                card.get_by_role("button", name="Add to my plan", exact=True)
+            ).to_be_enabled()
             await page.wait_for_timeout(1_800)  # a wake would have started and ended by now
             assert await frames(card) == (1, "none")
             seen = await seen_states(card)
@@ -443,15 +449,17 @@ async def test_double_click_sends_one_request(site: Site) -> None:
         try:
             context, page, _ = await open_agents(browser, site, stub)
             card = card_of(page, "ticket_agent")
-            button = card.get_by_role("button", name="Subscribe", exact=True)
+            button = card.get_by_role("button", name="Add to my plan", exact=True)
             await expect(button).to_be_enabled(timeout=WAIT)
             # Two clicks inside one task: the second lands before any request has been answered.
             await button.evaluate("el => { el.click(); el.click(); }")
             await expect(button).to_be_disabled()
-            for other in await page.get_by_role("button", name="Turn company switch").all():
+            for other in await page.get_by_role(
+                "button", name=re.compile(r"^Turn (on|off)$")
+            ).all():
                 await expect(other).to_be_disabled()
             stub.gate.set()
-            await expect(card.get_by_text("Subscribed", exact=True)).to_be_visible()
+            await expect(card.get_by_test_id("agent-plan-ticket_agent")).to_have_text("Yes")
             await page.wait_for_timeout(500)
             assert len(stub.patches) == 1, stub.patches
             await context.close()
@@ -484,20 +492,20 @@ async def test_unlinked_agents_page_still_renders(site: Site) -> None:
                 await expect(card_of(page, name)).to_be_visible()
             kb = card_of(page, "kb_agent")
             await expect(
-                kb.get_by_role("button", name="Remove subscription", exact=True)
+                kb.get_by_role("button", name="Remove from my plan", exact=True)
             ).to_be_enabled()
+            await expect(kb.get_by_role("button", name="Turn off", exact=True)).to_be_enabled()
             await expect(
-                kb.get_by_role("button", name="Turn company switch off", exact=True)
-            ).to_be_enabled()
-            await expect(
-                card_of(page, "ticket_agent").get_by_role("button", name="Subscribe", exact=True)
+                card_of(page, "ticket_agent").get_by_role(
+                    "button", name="Add to my plan", exact=True
+                )
             ).to_be_enabled()
             for label in (
-                "Subscription",
-                "Company switch",
-                "Build",
+                "Included in your plan",
+                "Turned on for your company",
+                "Availability",
                 "Setup",
-                "Failure guard",
+                "Automatic safety pause",
                 "Recent failures",
             ):
                 await expect(kb.locator("dt", has_text=label).first).to_be_visible()
@@ -533,10 +541,10 @@ async def test_agent_activation_under_reduced_motion_never_animates(site: Site) 
             avatar = card.locator("[data-agent]")
             await expect(avatar).to_have_attribute("data-state", "still", timeout=WAIT)
             await watch_states(card)
-            await card.get_by_role("button", name="Subscribe", exact=True).click()
+            await card.get_by_role("button", name="Add to my plan", exact=True).click()
             await expect(avatar).to_have_attribute("data-state", "pending")
             stub.gate.set()
-            await expect(card.get_by_text("Subscribed", exact=True)).to_be_visible()
+            await expect(card.get_by_test_id("agent-plan-ticket_agent")).to_have_text("Yes")
             await expect(avatar).to_have_attribute("data-state", "idle")
             await page.wait_for_timeout(1_800)
             assert await frames(card) == (1, "none")

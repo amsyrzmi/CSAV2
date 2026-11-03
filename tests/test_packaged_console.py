@@ -1042,6 +1042,12 @@ async def test_packaged_m2_browser_acceptance(
         agents = page.get_by_test_id("services-agents-orders_products")
         return agents.get_by_test_id("agent-card-invoice_agent")
 
+    def agent_value(card: Locator, field: str, value: str) -> Locator:
+        # "plan" is Included in your plan; "company" is Turned on for your company (Yes or No).
+        return card.get_by_test_id(f"agent-{field}-invoice_agent").filter(
+            has_text=re.compile(f"^{value}$")
+        )
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
 
@@ -1184,32 +1190,31 @@ async def test_packaged_m2_browser_acceptance(
             await admin_page.goto(f"{w.origin}/services?client_id={tenants[0]}")
             await admin_page.get_by_test_id("services-tenant").select_option(tenants[0])
             admin_invoice = await invoice_card(admin_page)
-            await admin_invoice.get_by_role("button", name="Subscribe", exact=True).click()
-            await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
-            await admin_invoice.get_by_text("Off", exact=True).wait_for()
+            await admin_invoice.get_by_role("button", name="Add to my plan", exact=True).click()
+            await agent_value(admin_invoice, "plan", "Yes").wait_for()
+            await agent_value(admin_invoice, "company", "No").wait_for()
 
             await admin_page.reload()
             await admin_page.get_by_test_id("services-tenant").select_option(tenants[0])
             admin_invoice = await invoice_card(admin_page)
-            await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
+            await agent_value(admin_invoice, "plan", "Yes").wait_for()
             await admin_page.get_by_test_id("services-tenant").select_option(tenants[1])
             other_invoice = await invoice_card(admin_page)
-            await other_invoice.get_by_text("Not subscribed", exact=True).wait_for()
+            await agent_value(other_invoice, "plan", "No").wait_for()
 
             _, tenant_page = await new_page()
             await login(tenant_page, tenant_admin_email, member_password, "/portal")
             await tenant_page.goto(f"{w.origin}/portal/services")
             tenant_invoice = await invoice_card(tenant_page)
             assert (
-                await tenant_page.get_by_role("button", name="Subscribe", exact=True).count() == 0
+                await tenant_page.get_by_role("button", name="Add to my plan", exact=True).count()
+                == 0
             )
-            await tenant_invoice.get_by_role(
-                "button", name="Turn company switch on", exact=True
-            ).click()
-            await tenant_invoice.get_by_text("On", exact=True).wait_for()
+            await tenant_invoice.get_by_role("button", name="Turn on", exact=True).click()
+            await agent_value(tenant_invoice, "company", "Yes").wait_for()
             await tenant_page.reload()
             tenant_invoice = await invoice_card(tenant_page)
-            await tenant_invoice.get_by_text("On", exact=True).wait_for()
+            await agent_value(tenant_invoice, "company", "Yes").wait_for()
             forbidden_tenant = await tenant_page.evaluate(
                 """async (clientId) => (await fetch(
                   `/console/v1/agents?client_id=${encodeURIComponent(clientId)}`
@@ -1319,10 +1324,11 @@ async def test_packaged_m2_browser_acceptance(
             await login(reader_page, reader_email, member_password, "/portal")
             await reader_page.goto(f"{w.origin}/portal/services")
             reader_invoice = await invoice_card(reader_page)
-            await reader_invoice.get_by_text("Not subscribed", exact=True).wait_for()
+            await agent_value(reader_invoice, "plan", "No").wait_for()
             assert (
                 await reader_page.get_by_role(
-                    "button", name=re.compile(r"Subscribe|Turn company switch")
+                    "button",
+                    name=re.compile(r"Add to my plan|Remove from my plan|Turn on|Turn off"),
                 ).count()
                 == 0
             )

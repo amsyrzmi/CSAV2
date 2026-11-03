@@ -54,7 +54,7 @@ export function WhatsAppPanel({ tenantId, canManage, platform }: {
     <Panel title="WhatsApp number">
       {error && <div className="mb-3"><Notice error>{error}</Notice></div>}
       {!number ? (error ? null : <Notice>Loading WhatsApp number...</Notice>) : <>
-        {!number.callback_url && <Notice>WhatsApp is not switched on for this deployment yet.</Notice>}
+        {!number.callback_url && <Notice>WhatsApp isn&apos;t available yet. Contact fourstacks support.</Notice>}
         {number.connected ? (
           <div className="space-y-3">
             <p className="text-sm" data-testid="whatsapp-connected">

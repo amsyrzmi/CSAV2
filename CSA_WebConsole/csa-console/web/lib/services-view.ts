@@ -46,10 +46,10 @@ export function statusLabel(service: Service): { text: string; tone: StatusTone 
   return { ...LABELS[service.status] };
 }
 
-/** "No agents", "1 agent" or "4 agents". */
+/** "No assistants", "1 assistant" or "4 assistants". */
 export function agentCountLabel(count: number): string {
-  if (count <= 0) return "No agents";
-  return count === 1 ? "1 agent" : `${count} agents`;
+  if (count <= 0) return "No assistants";
+  return count === 1 ? "1 assistant" : `${count} assistants`;
 }
 
 /** Plain words for the agent card's build, setup and connection values (the raw codes stay in the API). */
@@ -65,9 +65,9 @@ const SETUP_WORDS: Record<string, string> = {
   reindex_required: "Knowledge base needs re-indexing",
 };
 const CONNECTION_WORDS: Record<string, string> = {
-  closed: "Not triggered",
-  open: "Paused after repeated failures",
-  half_open: "Testing again",
+  closed: "Running normally",
+  open: "Paused after errors",
+  half_open: "Trying again",
 };
 const spaced = (code: string) => code.replaceAll("_", " ");
 export const buildText = (code: string) => BUILD_WORDS[code] ?? spaced(code);

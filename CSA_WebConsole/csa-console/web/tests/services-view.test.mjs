@@ -109,9 +109,9 @@ test("an unsellable service in any other status follows its status", () => {
 });
 
 test("agentCountLabel reads as a short phrase", () => {
-  assert.equal(agentCountLabel(0), "No agents");
-  assert.equal(agentCountLabel(1), "1 agent");
-  assert.equal(agentCountLabel(4), "4 agents");
+  assert.equal(agentCountLabel(0), "No assistants");
+  assert.equal(agentCountLabel(1), "1 assistant");
+  assert.equal(agentCountLabel(4), "4 assistants");
 });
 
 const AT = "2026-10-20T12:00:00Z";
@@ -239,9 +239,9 @@ test("the agent card words build, setup and connection in plain language, never 
   assert.equal(setupText("setup_required"), "Setup needed");
   assert.equal(setupText("configured_unverified"), "Set up, not yet checked");
   assert.equal(setupText("reindex_required"), "Knowledge base needs re-indexing");
-  assert.equal(connectionText("closed"), "Not triggered");
-  assert.equal(connectionText("open"), "Paused after repeated failures");
-  assert.equal(connectionText("half_open"), "Testing again");
+  assert.equal(connectionText("closed"), "Running normally");
+  assert.equal(connectionText("open"), "Paused after errors");
+  assert.equal(connectionText("half_open"), "Trying again");
   // A code the table does not know still reads as words, not as an underscored identifier.
   assert.equal(connectionText("some_new_state"), "some new state");
 });

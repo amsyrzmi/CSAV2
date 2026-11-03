@@ -37,7 +37,7 @@ const STATS: {
 }[] = [
   { id: "active", label: "Active services", footer: "Services switched on", icon: Layers,
     figure: (stats) => stats.active },
-  { id: "agents", label: "Agents on", footer: "Counted across all services", icon: Bot,
+  { id: "agents", label: "Assistants switched on", footer: "Counted across all services", icon: Bot,
     figure: (stats) => stats.agentsOn },
   { id: "waiting", label: "Waiting for activation", footer: "Requests to activate", icon: Hourglass,
     figure: (stats) => stats.waiting },
@@ -271,9 +271,9 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
             {lastChange && <p className="mt-1 text-sm text-ink-600 [overflow-wrap:anywhere]"
               data-testid={`services-last-change-${service.key}`}>{lastChange}</p>}
             {service.key === "staff_email" && service.inner_switch !== null && <p className="mt-1 text-sm text-ink-600">
-              Enabled by your tenant admin in the Email tab: currently {service.inner_switch ? "on" : "off"}.</p>}
+              Your admin turns this on in Email assistant. It is now {service.inner_switch ? "on" : "off"}.</p>}
             {service.key === "hr" && <p className="mt-1 text-sm text-ink-600">
-              HR modules are enabled by your HR owner inside the HR tab.</p>}
+              Your HR owner chooses which HR features to use in People &amp; HR.</p>}
           </div>
         </div>
         <div className="flex items-start gap-x-5 text-sm">
@@ -299,7 +299,7 @@ function ServiceRow({ service, clientId, platform, onChanged }: {
           {service.agents.length > 0 && <button className={secondary} aria-expanded={open} disabled={busy}
             data-testid={`services-agents-toggle-${service.key}`}
             onClick={() => setOpen((value) => !value)}>
-            {open ? "Hide agents" : `Show agents (${service.agents.length})`}</button>}
+            {open ? "Hide assistants" : `Show assistants (${service.agents.length})`}</button>}
         </div>
       </div>
       {platform && !service.consistent && <div className="mt-3"><Notice error>
