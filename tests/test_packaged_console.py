@@ -1301,8 +1301,11 @@ async def test_packaged_m2_browser_acceptance(
                 "browser_poll_followup / invoice_agent / ok / 23 ms"
             ).wait_for(timeout=12_000)
 
-            # The list refreshes itself every 5 seconds on the newest page: a failed read shows
-            # the error and recovers on a later refresh (there is no refresh button any more).
+            # The list refreshes itself every 5 seconds on the newest page with no filter on: a
+            # failed read shows the error and recovers on a later refresh (there is no refresh
+            # button any more). The Assistant filter above stops that, so clear it first.
+            await admin_page.get_by_test_id("activity-agent").select_option("")
+            await booking_row.wait_for()
             fail_run_list = True
             await (
                 admin_page.get_by_role("alert")
