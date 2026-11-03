@@ -241,6 +241,9 @@ def test_plan_shows_what_will_go(reset_env: Path, tmp_path: Path) -> None:
     )
     text = rs.format_plan(context)
     assert SHA[:7] in text
+    assert "all four services run its image" in text
+    assert f"python (gateway, worker, delivery): {context.python_image}" in text
+    assert f"frontend: ghcr.io/amsyrzmi/csa-frontend@sha256:{'f' * 64}" in text
     assert f"now 0520; the rebuild will create it up to {NEWEST}" in text
     assert "Companies (2): kedai-mawar, team-jo" in text
     assert "Accounts: 7" in text

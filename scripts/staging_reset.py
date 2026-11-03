@@ -358,6 +358,9 @@ def format_plan(context: ResetContext) -> str:
         "Staging reset plan (read-only; nothing was changed).",
         f"Target SHA: {context.sha[:7]}; HEAD is on origin/main, clean, and all four services "
         "run its image.",
+        "Running images (the rebuilt schema must fit them):",
+        f"  python (gateway, worker, delivery): {context.python_image}",
+        f"  frontend: {context.env['CSA_STAGING_FRONTEND_IMAGE']}",
     ]
     if not state.database_exists:
         lines.append(f"Database {DATABASE}: does not exist (a wipe that stopped part way?).")
