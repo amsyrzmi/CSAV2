@@ -473,9 +473,7 @@ async def test_role_change_asks_first_and_cancel_changes_nothing(site: Site) -> 
             await expect(page.get_by_label("Role for aiman@example.test")).to_have_value(
                 "tenant_admin"
             )
-            await expect(page.get_by_test_id(f"team-card-{AIMAN}-role")).to_have_text(
-                "Admin"
-            )
+            await expect(page.get_by_test_id(f"team-card-{AIMAN}-role")).to_have_text("Admin")
 
     await with_browser(body)
 
