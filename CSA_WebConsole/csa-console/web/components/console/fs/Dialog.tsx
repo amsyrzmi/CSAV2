@@ -73,7 +73,14 @@ export default function Dialog({
       }}
       onClose={() => {
         // The browser closed it by itself (for example a second Escape) while still "open".
-        if (openRef.current) onClose();
+        if (!openRef.current) return;
+        onClose();
+        // A parent that refuses (it is busy) leaves `open` true, so the native dialog must come
+        // back or it cannot reopen. Checked after React has applied a parent that did close.
+        window.setTimeout(() => {
+          const dialog = dialogRef.current;
+          if (openRef.current && dialog && !dialog.open) dialog.showModal();
+        }, 0);
       }}
       onPointerDown={(event) => {
         // Remember whether this press began on the backdrop (the dialog itself).
