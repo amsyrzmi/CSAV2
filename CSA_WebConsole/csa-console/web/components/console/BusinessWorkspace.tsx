@@ -43,9 +43,10 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
   const platform = me.role === "platform_admin";
   const permitted = platform || me.role === "tenant_admin" || me.role === "tenant_staff";
   const [clients, setClients] = useState<Client[]>([]);
-  // An administrator's chosen tenant lives in the URL (?client_id=) so it survives a move
-  // between the three pages and a reload.
-  const [selected, setSelected] = useState(search.get("client_id") ?? "");
+  // An administrator's chosen tenant lives in the URL (?client_id=) and nowhere else, so the
+  // screen always agrees with the address: a section-bar click, a reload, Back and a rail link
+  // without a tenant all show what the URL says.
+  const selected = search.get("client_id") ?? "";
   const [error, setError] = useState("");
   const [demoMode, setDemoMode] = useState(false);
   const pageHeading = useRef<HTMLHeadingElement>(null);
@@ -64,7 +65,6 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
   const pages = businessPages(platform);
   const pageTitle = pages.find((page) => page.key === section)?.label ?? "Orders";
   const chooseTenant = (value: string) => {
-    setSelected(value);
     router.replace(value ? `${pathname}?client_id=${encodeURIComponent(value)}` : pathname, { scroll: false });
   };
   const needsTenant = <Notice>Select a tenant to view its business records.</Notice>;
@@ -125,6 +125,11 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
   </TechDetailsProvider>;
 }
 
+/** The newest 50 products: the Out of stock tile counts them and the products page lists them. */
+function productsPath(query: string): string {
+  return `/console/v1/business/products?${query ? `${query}&` : ""}limit=50`;
+}
+
 function DemoBusinessWorkspace() {
   const [listings, setListings] = useState<DemoListing[]>(() => [...demoListings]);
   return <div className="mt-5 space-y-5">
@@ -165,7 +170,7 @@ function BusinessRecords({ query, productsHref }: { query: string; productsHref:
   const [today, setToday] = useState(() => new Date());
   const [refresh, setRefresh] = useState(0);
   // The out-of-stock tile counts the newest 50 products: one read, no paging.
-  const stock = useRecords<Product>(`/console/v1/business/products?${query ? `${query}&` : ""}limit=50`);
+  const stock = useRecords<Product>(productsPath(query));
   // The default window follows the calendar: when the tab comes back on a new day, move it on.
   useEffect(() => {
     const onShow = () => {
@@ -302,7 +307,7 @@ function BusinessRecords({ query, productsHref }: { query: string; productsHref:
 }
 
 function ProductRecords({ query }: { query: string }) {
-  const products = useRecords<Product>(`/console/v1/business/products?${query}`);
+  const products = useRecords<Product>(productsPath(query));
   // The Out of stock tile on the Orders page links here with ?stock=out.
   const search = useSearchParams();
   const [stock, setStock] = useState(() => (search.get("stock") === "out" ? "out" : "all"));
@@ -345,7 +350,7 @@ function StoreRecords({ query }: { query: string }) {
   if (platform) params.set("platform", platform);
   const path = `/console/v1/business/stores?${params}`;
   return <div className="mt-5 space-y-5">
-    <Panel title="Local store records">
+    <section className="card rounded-[14px] p-5 sm:p-6">
       <div className="mb-3 flex flex-wrap gap-3">
         <button className={secondary} type="button" disabled>Connect unavailable</button>
         <button className={secondary} type="button" disabled>Reconnect unavailable</button>
@@ -360,7 +365,7 @@ function StoreRecords({ query }: { query: string }) {
       </label>
       <h3 className="mb-3 font-semibold">Local store records (not verified connections)</h3>
       <StorePage key={path} path={path} />
-    </Panel>
+    </section>
     <Fold testId="business-stores" title="Store connections and local store records">
       <Notice>These are local records and stored lifecycle evidence, not a live connection check.
         Token contents, shop ciphers and permission scope values are not returned. Current provider

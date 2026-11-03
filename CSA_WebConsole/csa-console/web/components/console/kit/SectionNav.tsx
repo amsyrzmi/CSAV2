@@ -57,7 +57,12 @@ export default function SectionNav({
             href={query ? `${item.href}?${query}` : item.href}
             data-testid={item.testId}
             aria-current={on ? "page" : undefined}
-            onClick={() => { arrivedBySectionBar = true; }}
+            onClick={(event) => {
+              // Only a plain left click that really moves to another page asks for the focus move.
+              const plain = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey
+                && !event.altKey && !event.defaultPrevented;
+              arrivedBySectionBar = plain && !on;
+            }}
             className={`${link} ${on ? current : idle}`}
           >
             {item.label}

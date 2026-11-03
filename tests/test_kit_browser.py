@@ -1413,7 +1413,7 @@ async def test_section_nav_arrival_moves_focus_to_the_heading(console: Console) 
     playwright, browser, page = await open_parts(console)
     try:
         await page.get_by_test_id("demo-nav-two").click()
-        await expect(page.get_by_test_id("demo-heading")).to_be_focused()
+        await expect(page.get_by_test_id("demo-heading")).to_be_focused(timeout=WAIT)
         assert page.url.endswith("/kit-demo-parts/two?client_id=abc"), page.url
     finally:
         await close_demo(playwright, browser)
@@ -1544,8 +1544,8 @@ async def test_summary_tiles_pressed_state_and_not_available(console: Console) -
         await expect(tile).to_have_attribute("aria-pressed", "false")
     finally:
         await close_demo(playwright, browser)
-    # Two columns at 320, four from 768.
-    for width, columns in ((320, 2), (767, 2), (768, 4), (1024, 4)):
+    # Two columns below 375, four from 375.
+    for width, columns in ((320, 2), (374, 2), (375, 4), (390, 4), (1024, 4)):
         playwright, browser, page = await open_parts(console, width=width)
         try:
             lefts = await page.evaluate(

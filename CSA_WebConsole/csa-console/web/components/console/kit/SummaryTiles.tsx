@@ -16,7 +16,7 @@ type Tile = {
 };
 
 const base =
-  "relative flex min-h-16 min-w-0 flex-col items-start justify-center rounded-[var(--fs-radius-panel)] border bg-[var(--fs-surface)] px-3 py-2 text-left " +
+  "relative flex min-h-16 min-w-0 flex-col items-start justify-center rounded-[var(--fs-radius-panel)] border bg-[var(--fs-surface)] px-2 py-2 text-left md:px-3 " +
   "text-[color:var(--fs-text)] pointer-coarse:min-h-16 " +
   "transition-[background-color,border-color] duration-150 ease-(--fs-ease-out) motion-reduce:transition-none " +
   "focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
@@ -38,17 +38,17 @@ function Body({ tile }: { tile: Tile }) {
       {/* Sized on spans: the tokens' unlayered `font: inherit` on buttons beats utilities. */}
       {tile.loading ? (
         <span data-testid={`${tile.testId}-value`}
-          className="text-[length:var(--fs-text-md)] text-[color:var(--fs-text-secondary)]">Loading...</span>
+          className="text-[length:var(--fs-text-xs)] text-[color:var(--fs-text-secondary)] md:text-[length:var(--fs-text-md)]">Loading...</span>
       ) : tile.value === null ? (
         <span data-testid={`${tile.testId}-value`}
-          className="text-[length:var(--fs-text-md)] font-semibold">Not available</span>
+          className="text-[length:var(--fs-text-xs)] font-semibold md:text-[length:var(--fs-text-md)]">Not available</span>
       ) : (
         <span data-testid={`${tile.testId}-value`}
           className="font-(family-name:--fs-font-heading) text-[length:var(--fs-text-xl)] leading-tight font-semibold">
           {tile.value}
         </span>
       )}
-      <span className="text-[length:var(--fs-text-md)] [overflow-wrap:anywhere]">{tile.label}</span>
+      <span className="text-[length:var(--fs-text-sm)] [overflow-wrap:anywhere] md:text-[length:var(--fs-text-md)]">{tile.label}</span>
       {tile.caption ? (
         <span data-testid={`${tile.testId}-caption`}
           className="text-[length:var(--fs-text-sm)] text-[color:var(--fs-text-secondary)] [overflow-wrap:anywhere]">
@@ -60,13 +60,13 @@ function Body({ tile }: { tile: Tile }) {
 }
 
 /**
- * A row of large-number tiles: two columns on phones, four from 768 px. A tile with `onPress`
+ * A row of large-number tiles: two columns below 375 px, four from 375 px. A tile with `onPress`
  * is a toggle button (`aria-pressed`, a check mark and a doubled border when pressed), one with
  * `href` is a link, and a tile whose read failed (`value` null) says "Not available", never 0.
  */
 export default function SummaryTiles({ ariaLabel, tiles, testId }: { ariaLabel: string; tiles: Tile[]; testId?: string }) {
   return (
-    <div role="group" aria-label={ariaLabel} data-testid={testId} className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+    <div role="group" aria-label={ariaLabel} data-testid={testId} className="mb-3 grid grid-cols-2 gap-2 min-[375px]:grid-cols-4 md:gap-3">
       {tiles.map((tile) => {
         const className = `${base} ${tile.pressed ? pressedClass : idle}`;
         if (tile.href && !tile.onPress) {

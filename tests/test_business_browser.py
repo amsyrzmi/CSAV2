@@ -242,6 +242,7 @@ async def business_page(
     wait_for_rows: bool = True,
     path: str = "/portal/business",
     role: str = "tenant_admin",
+    rail_expanded: bool = False,
 ) -> AsyncIterator[Page]:
     site.upstream.me = make_me(role)
     site.upstream.packages = [{"key": "orders_products", "status": "active"}]
@@ -252,6 +253,8 @@ async def business_page(
     context.set_default_timeout(15_000)
     await context.clock.set_fixed_time(NOW)
     cookies = [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
+    if rail_expanded:
+        cookies.append({"name": "fs-rail", "value": "expanded", "url": site.base})
     if theme:
         cookies.append({"name": "fs-theme", "value": theme, "url": site.base})
     await context.add_cookies(cookies)
@@ -425,7 +428,7 @@ async def test_products_page_lists_products_with_arrow_details(site: Site) -> No
             # Orders belong to the other page: nothing here reads them or the stores.
             assert not stub.order_queries and not stub.counts_queries, stub.order_queries
             assert set(stub.other_calls) == {"products"}, stub.other_calls
-            assert all("limit" not in q for q in stub.product_queries), stub.product_queries
+            assert all(q == {"limit": ["50"]} for q in stub.product_queries), stub.product_queries
             await expect(page.get_by_test_id("business-orders-list")).to_have_count(0)
 
     await with_browser(body)
@@ -567,6 +570,41 @@ async def test_section_bar_keeps_the_admin_tenant(site: Site) -> None:
             await expect(
                 page.get_by_text("Select a tenant to view its business records.")
             ).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_a_rail_link_without_a_tenant_drops_the_tenant_on_screen(site: Site) -> None:
+    """A soft move from ?client_id=A to the same page without it must not keep A's data."""
+
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser,
+            site,
+            stub,
+            path=f"/business/products?client_id={TENANT}",
+            role="platform_admin",
+            wait_for_rows=False,
+            rail_expanded=True,
+        ) as page:
+            await expect(page.get_by_test_id("business-products-list")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            await page.get_by_test_id("rail-child-business-products").click()
+            await expect(page).to_have_url(re.compile(r"/business/products$"), timeout=WAIT)
+            await expect(
+                page.get_by_text("Select a tenant to view its business records.")
+            ).to_be_visible()
+            await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
+            await expect(page.get_by_label("Tenant")).to_have_value("")
+            await expect(page.get_by_test_id("business-subnav-orders")).to_have_attribute(
+                "href", "/business"
+            )
+            # Back returns to the first tenant and its data.
+            await page.go_back()
+            await expect(page).to_have_url(re.compile(rf"client_id={TENANT}$"), timeout=WAIT)
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            await expect(page.get_by_test_id("business-products-list")).to_be_visible()
 
     await with_browser(body)
 
@@ -1213,15 +1251,15 @@ async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -
             # The section bar itself, then the other two pages.
             await page.get_by_test_id("business-subnav-products").click()
             product = page.get_by_test_id("business-product-00000000-0000-4000-8000-000000000001")
-            await expect(product).to_be_visible()
+            await expect(product).to_be_visible(timeout=WAIT)
             await product.get_by_role("button", name="Show details").click()
             await open_tech(page, "business-product-00000000-0000-4000-8000-000000000001")
             await open_fold(page, "about-catalogue")
             await check_widths(page, theme, "products")
             await page.get_by_test_id("business-subnav-stores").click()
-            await open_fold(page, "stores")
             store = page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
-            await expect(store).to_be_visible()
+            await expect(store).to_be_visible(timeout=WAIT)
+            await open_fold(page, "stores")
             await store.get_by_role("button", name="Show details").click()
             await open_tech(page, "business-store-00000000-0000-4000-8000-0000000000aa")
             await check_widths(page, theme, "stores")
@@ -1302,7 +1340,20 @@ async def test_first_screen_at_390_shows_tiles_the_filters_button_and_the_first_
             top = await order_card(page, 1).evaluate(
                 "el => el.closest('li').getBoundingClientRect().top"
             )
-            assert top < 844, top  # the first order card starts on the first screen
+            title = (
+                await order_card(page, 1)
+                .get_by_test_id(f"business-order-{oid(1)}-title")
+                .evaluate("el => el.getBoundingClientRect().bottom")
+            )
+            # The first order's title is on the first screen with room to spare, and the four
+            # tiles share one row.
+            assert top < 844 - 60 and title < 844 - 30, (top, title)
+            rows = await page.evaluate(
+                """() => new Set([...document.querySelectorAll('[data-testid^=business-tile-]')]
+                    .filter((el) => el.tagName !== 'SPAN')
+                    .map((el) => Math.round(el.getBoundingClientRect().top))).size"""
+            )
+            assert rows == 1, rows
             for text in ("Local records only", "Connect unavailable", "Exact store ID"):
                 await expect(page.get_by_text(text, exact=False).first).to_be_hidden()
             # Everything behind the Filters button and the All statuses arrow is closed.
