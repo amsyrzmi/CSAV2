@@ -462,6 +462,7 @@ function DraftEditor({ draft, busy, writable, onSave, onSend, onExport, onDelete
       <span>{formatWhen(draft.updated_at)}</span>
     </div>
     {draft.status === "sent" && draft.sent_at && <p data-testid="email-sent-at" className="font-medium">Sent at {formatWhen(draft.sent_at)}</p>}
+    {draft.status === "exported" && draft.gmail_draft_id && <p data-testid="email-gmail-draft-id" className="text-xs text-ink-500 [overflow-wrap:anywhere]">Gmail draft ID: {draft.gmail_draft_id}</p>}
     {draft.status === "sending" && <div className="space-y-2">
       <Notice error>{emailErrorSentence({ code: "send_outcome_unknown" })}</Notice>
       {writable && <button type="button" data-testid="email-release" className={secondary} disabled={busy} onClick={onRelease}>
