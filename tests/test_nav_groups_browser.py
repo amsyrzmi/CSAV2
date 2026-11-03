@@ -573,7 +573,7 @@ async def test_chevron_does_not_animate_under_reduced_motion(console: Console) -
     try:
         chevron = "[data-testid='rail-group-business-toggle'] svg"
         await page.wait_for_function(
-            "(s) => getComputedStyle(document.querySelector(s)).transitionDuration === '0.15s'",
+            "(s) => getComputedStyle(document.querySelector(s)).transitionDuration === '0.2s'",
             arg=chevron,
         )
         await page.emulate_media(reduced_motion="reduce")
