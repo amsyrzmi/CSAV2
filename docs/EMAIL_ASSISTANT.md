@@ -303,9 +303,11 @@ configure the OAuth consent screen, add the redirect URI above to the OAuth
 client (web application type), and request only the two scopes listed. Sending
 needs no third scope.
 
-- **Staging** uses an **Internal** client in the fourstacks.my Google Cloud
-  project. Only fourstacks.my accounts can connect, so there are no test users
-  and no seven-day refresh-token expiry.
+- **Staging** uses an **External** client, in testing, in the fourstacks.my
+  Google Cloud project. Only the test users listed there can connect, at most
+  100, and each one's access expires every 7 days. Any Google account can be a
+  test user. Going past testing needs Google's verification and a yearly
+  security assessment.
 - **Production for client tenants** needs an **External** client with Google
   verification, because the scopes are restricted (`gmail.readonly` and
   `gmail.compose`). The owner decided on 2026-10-29 to keep inbox reading.

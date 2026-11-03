@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from csa.agents.ecommerce.agent import EcommerceAgent
@@ -20,6 +21,7 @@ from csa.agents.orders.agent import OrderAgent
 from csa.agents.staged.service import BookingAgent, SubscriptionAgent
 from csa.agents.tickets.agent import TicketAgent
 from csa.console.access import authenticate, human_admin, tenant
+from csa.console.contracts import ConsoleActor
 from csa.core import db
 from csa.core.tenancy import tx
 
@@ -66,6 +68,48 @@ async def session(request: Request) -> None:
     await authenticate(request, None, frozenset())
 
 
+async def create_client(
+    pool: AsyncConnectionPool, actor: ConsoleActor, body: ClientIn
+) -> ClientOut:
+    """Create a tenant with its capability rows and audit entry.
+
+    Raises UniqueViolation when the slug exists; the route turns that into its 409.
+    """
+    client_id = uuid4()
+    async with tx(pool, str(client_id)) as conn:
+        row = await db.q.fetch_one(
+            "console/client_create.sql",
+            (client_id, body.slug, body.name, body.timezone),
+            conn=conn,
+        )
+        for agent_class in _AGENTS:
+            agent = agent_class()
+            await db.q.execute(
+                "console/provision_capabilities.sql",
+                (
+                    client_id,
+                    agent.name,
+                    agent.name.removesuffix("_agent").replace("_", " ").title(),
+                    "CSAV2 capability; enable deliberately after configuration",
+                    f"python:{agent.name}",
+                    Jsonb(agent.Input.model_json_schema()),
+                ),
+                conn=conn,
+            )
+        await db.q.execute(
+            "console/audit.sql",
+            (
+                actor.user_id,
+                client_id,
+                "tenant.created",
+                str(client_id),
+                Jsonb({"slug": body.slug, "capabilities_enabled": False}),
+            ),
+            conn=conn,
+        )
+    return ClientOut.model_validate(row)
+
+
 def build_onboarding_router() -> APIRouter:
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(session)])
 
@@ -76,45 +120,13 @@ def build_onboarding_router() -> APIRouter:
             rows = await db.q.fetch_all("console/client_list.sql", conn=conn)
         return [ClientOut.model_validate(row) for row in rows]
 
-    @router.post("/admin/clients", response_model=ClientOut, status_code=201)
-    async def create_client(body: ClientIn, request: Request) -> ClientOut:
+    @router.post("/admin/clients", response_model=ClientOut, status_code=201, name="create_client")
+    async def create_client_route(body: ClientIn, request: Request) -> ClientOut:
         actor = human_admin(request)
-        client_id = uuid4()
         try:
-            async with tx(request.app.state.pool, str(client_id)) as conn:
-                row = await db.q.fetch_one(
-                    "console/client_create.sql",
-                    (client_id, body.slug, body.name, body.timezone),
-                    conn=conn,
-                )
-                for agent_class in _AGENTS:
-                    agent = agent_class()
-                    await db.q.execute(
-                        "console/provision_capabilities.sql",
-                        (
-                            client_id,
-                            agent.name,
-                            agent.name.removesuffix("_agent").replace("_", " ").title(),
-                            "CSAV2 capability; enable deliberately after configuration",
-                            f"python:{agent.name}",
-                            Jsonb(agent.Input.model_json_schema()),
-                        ),
-                        conn=conn,
-                    )
-                await db.q.execute(
-                    "console/audit.sql",
-                    (
-                        actor.user_id,
-                        client_id,
-                        "tenant.created",
-                        str(client_id),
-                        Jsonb({"slug": body.slug, "capabilities_enabled": False}),
-                    ),
-                    conn=conn,
-                )
+            return await create_client(request.app.state.pool, actor, body)
         except UniqueViolation as exc:
             raise HTTPException(409, "tenant slug already exists") from exc
-        return ClientOut.model_validate(row)
 
     @router.get("/profile", response_model=ClientOut)
     async def profile(request: Request, client_id: Annotated[UUID, Depends(tenant)]) -> ClientOut:
