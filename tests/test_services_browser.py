@@ -557,10 +557,16 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await page.goto(f"{base}/portal")
         await expect(chat_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_have_count(0)
+        # A company without Customer support has no customer chat: Overview is the small home,
+        # and the replies banner stays out of it.
         upstream.packages = []
         replies_status["read"] = 200
         await page.goto(f"{base}/portal")
-        await expect(chat_heading).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_role("heading", name="Your workspace")).to_be_visible(timeout=WAIT)
+        await expect(
+            page.get_by_text("Ask the assistant at the side of the screen.")
+        ).to_be_visible()
+        await expect(chat_heading).to_have_count(0)
         await expect(banner).to_have_count(0)
 
         assert not unexpected, unexpected
