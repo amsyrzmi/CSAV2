@@ -65,6 +65,10 @@ const OWNED = [
   "app/portal/loading.tsx",
   "app/(admin)/chat/page.tsx",
   "app/portal/chat/page.tsx",
+  "components/console/hr/",
+  "components/console/HrOwnerPanel.tsx",
+  "components/console/HrAccessMore.tsx",
+  "components/console/WhatsAppPanel.tsx",
 ];
 
 /** OWNED directories allowed to hold no scanned file. None today. */

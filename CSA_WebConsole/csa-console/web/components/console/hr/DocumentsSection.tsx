@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Modal } from "@/components/ui/kit";
+import Dialog from "../fs/Dialog";
 import { ApiError } from "@/lib/api";
 import { isDenied, shortWhen } from "@/lib/hr-pickers";
 import { documentIssue, fileSizeText, RECORDS_COPY, recordsErrorText } from "@/lib/hr-records";
@@ -140,7 +140,7 @@ export function DocumentsSection({ tenant, employeeId, canManage, title = "Docum
           </tr>)}</tbody>
         </table></div>}
     </div>
-    <Modal isOpen={removing !== null} onClose={() => { if (!busy) setRemoving(null); }} title="Remove this document?">
+    <Dialog open={removing !== null} onClose={() => { if (!busy) setRemoving(null); }} title="Remove this document?">
       {removing && <div className="space-y-4 text-sm">
         <p>Remove {removing.file_name} from this person&apos;s documents?</p>
         <div className="flex flex-wrap gap-2">
@@ -148,6 +148,6 @@ export function DocumentsSection({ tenant, employeeId, canManage, title = "Docum
           <button type="button" className={secondary} disabled={busy} onClick={() => setRemoving(null)}>Cancel</button>
         </div>
       </div>}
-    </Modal>
+    </Dialog>
   </Panel>;
 }

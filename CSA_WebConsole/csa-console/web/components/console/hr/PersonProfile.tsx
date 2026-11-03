@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pill, Tabs } from "@/components/ui/kit";
+import StatusLabel from "../fs/StatusLabel";
+import TabList from "../fs/TabList";
 import { SWITCH_COPY } from "@/lib/hr-access-copy";
 import { hrClient, type HrContext } from "@/lib/hr-api";
 import { hrHref } from "@/lib/hr-paths";
@@ -103,7 +104,7 @@ export function PersonProfile({ tenant, context, readonly, platform, employeeId 
     {back}
     {message && <Notice>{message}</Notice>}
     {reloadFailed && <Notice error>We could not reload this person. Reload the page and try again.</Notice>}
-    {tabs.length > 1 && <Tabs value={shown} onChange={value => { setTab(value); setMessage(""); }} items={tabs} />}
+    {tabs.length > 1 && <TabList ariaLabel="Person sections" value={shown} onChange={value => { setTab(value); setMessage(""); }} items={tabs} />}
     {shown === "overview" && (leaving === "leave"
       ? <LeavingForm key={person.version ?? 0} tenant={tenant} person={person} onCancel={() => setLeaving(null)}
         onReload={() => { setLeaving(null); void reload(); }} onDone={() => done("Marked as leaving.")} />
@@ -148,7 +149,7 @@ function AccessSection({ tenant, employeeId, owner, readonly, platform, onLinked
         <p>Console account: <span className="font-medium">{access.account.display_name ?? "A member"}</span></p>
         {tags.length === 0 ? <p className="text-ink-500">No HR access is switched on for this person.</p>
           : <ul className="flex flex-wrap gap-2" aria-label="Access switched on">
-            {tags.map(tag => <li key={tag}><Pill tone="brand" className="normal-case">{tag}</Pill></li>)}</ul>}
+            {tags.map(tag => <li key={tag}><StatusLabel tone="info">{tag}</StatusLabel></li>)}</ul>}
       </div>}
     {owner && <div className="mt-5 space-y-5">
       <Link className="text-sm underline" href={hrHref({ tab: "settings" }, platform, tenant)}>Change on the access page</Link>

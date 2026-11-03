@@ -240,6 +240,52 @@ export default function KitPartsTwo() {
 """
 
 
+DIALOG_PAGE = """\"use client\";
+
+import { useState } from "react";
+import Dialog from "@/components/console/fs/Dialog";
+import TabList from "@/components/console/fs/TabList";
+
+export default function DialogDemo() {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState("overview");
+  return (
+    <main style={{ padding: 16, maxWidth: 720 }}>
+      <h1>Dialog demo</h1>
+      <button type="button" data-testid="demo-dialog-before">Before</button>{" "}
+      <button type="button" data-testid="demo-dialog-open" onClick={() => setOpen(true)}>
+        Open dialog
+      </button>{" "}
+      <button type="button" data-testid="demo-dialog-after">After</button>
+      <div style={{ margin: "16px 0" }}>
+        <TabList
+          ariaLabel="Demo tabs"
+          value={tab}
+          onChange={setTab}
+          items={[
+            { value: "overview", label: "Overview" },
+            { value: "personal", label: "Personal" },
+            { value: "documents", label: "Documents", count: 2 },
+            { value: "access", label: "Access" },
+            { value: "history", label: "History" },
+          ]}
+        />
+      </div>
+      <p data-testid="demo-tab-value">{tab}</p>
+      <button type="button" data-testid="demo-tab-after">After the tabs</button>
+      <Dialog open={open} onClose={() => setOpen(false)} title="Demo dialog" testId="demo-dialog">
+        <p data-testid="demo-dialog-text">Remove this thing from the list?</p>
+        <p>
+          <button type="button" data-testid="demo-dialog-first">First action</button>{" "}
+          <button type="button" data-testid="demo-dialog-second">Second action</button>
+        </p>
+      </Dialog>
+    </main>
+  );
+}
+"""
+
+
 class Console:
     def __init__(self, base: str) -> None:
         self.base = base
@@ -274,6 +320,7 @@ def console(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[no-untype
         ("kit-demo-date", DATE_DEMO_PAGE),
         ("kit-demo-parts", PARTS_PAGE),
         ("kit-demo-parts/two", PARTS_TWO_PAGE),
+        ("kit-demo-dialog", DIALOG_PAGE),
     ):
         (stage / f"app/{name}").mkdir(parents=True)
         (stage / f"app/{name}/page.tsx").write_text(page_source)
@@ -283,7 +330,7 @@ def console(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[no-untype
         proxy.replace(
             '  "/portal/email",\n]);',
             '  "/portal/email",\n  "/kit-demo",\n  "/kit-demo-date",\n'
-            '  "/kit-demo-parts",\n  "/kit-demo-parts/two",\n]);',
+            '  "/kit-demo-parts",\n  "/kit-demo-parts/two",\n  "/kit-demo-dialog",\n]);',
         )
     )
     port = free_port()
@@ -1585,3 +1632,189 @@ async def test_new_kit_pieces_fit_at_five_widths_in_three_themes(
             assert measured["out"] == [], (width, measured)
         finally:
             await close_demo(playwright, browser)
+
+
+# ---------------------------------------------------------------------------------------------
+# Dialog and TabList (task 10 of phase 4): a centred token dialog and a wrapping tab row.
+# ---------------------------------------------------------------------------------------------
+
+DIALOG_JS = """() => {
+    const parse = (v) => v.match(/[\\d.]+/g).map(Number);
+    const channel = (v) => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = (c) => 0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]);
+    const ratio = (a, b) => {
+        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+        return (hi + 0.05) / (lo + 0.05);
+    };
+    const dialog = document.querySelector('[data-testid=demo-dialog]');
+    const background = getComputedStyle(dialog).backgroundColor;
+    const probe = document.createElement('div');
+    probe.style.background = 'var(--fs-surface-raised)';
+    document.body.appendChild(probe);
+    const token = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const bg = parse(background);
+    const texts = ['h2', '[data-testid=demo-dialog-text]'].map((selector) => {
+        const el = dialog.querySelector(selector);
+        return { selector, ratio: ratio(parse(getComputedStyle(el).color), bg) };
+    });
+    return {
+        background, token, texts, radius: getComputedStyle(dialog).borderTopLeftRadius,
+        scrim: getComputedStyle(dialog, '::backdrop').backgroundColor,
+    };
+}"""
+
+
+async def open_dialog_demo(
+    console: Console,
+    *,
+    theme: str = "cobalt",
+    width: int = 1024,
+    height: int = 900,
+    reduced_motion: bool = False,
+) -> tuple[Any, Any, Page]:
+    return await open_demo(
+        console,
+        theme=theme,
+        width=width,
+        height=height,
+        reduced_motion=reduced_motion,
+        path="/kit-demo-dialog",
+        ready="demo-dialog-open",
+    )
+
+
+async def inside_dialog(page: Page) -> bool:
+    return await page.evaluate(
+        "() => !!document.activeElement?.closest('[data-testid=demo-dialog]')"
+    )
+
+
+async def test_dialog_traps_focus_closes_on_escape_and_returns_focus(console: Console) -> None:
+    playwright, browser, page = await open_dialog_demo(console)
+    try:
+        opener = page.get_by_test_id("demo-dialog-open")
+        dialog = page.get_by_test_id("demo-dialog")
+        await expect(dialog).to_be_hidden()
+        await opener.focus()
+        await page.keyboard.press("Enter")
+        await expect(dialog).to_be_visible()
+        await expect(page.get_by_role("dialog", name="Demo dialog")).to_be_visible()
+        await expect(dialog.get_by_role("heading", level=2, name="Demo dialog")).to_be_visible()
+        await expect(dialog.get_by_role("button", name="Close", exact=True)).to_be_visible()
+        assert await inside_dialog(page)
+        assert await page.evaluate("() => document.body.style.overflow") == "hidden"
+        # The page behind is inert: Tab and Shift+Tab never leave the dialog.
+        for _ in range(6):
+            await page.keyboard.press("Tab")
+            assert await inside_dialog(page)
+        for _ in range(6):
+            await page.keyboard.press("Shift+Tab")
+            assert await inside_dialog(page)
+        await page.keyboard.press("Escape")
+        await expect(dialog).to_be_hidden()
+        await expect(opener).to_be_focused()
+        assert await page.evaluate("() => document.body.style.overflow") == ""
+
+        # The Close button, then a click on the backdrop, close it and return focus too.
+        await opener.click()
+        await expect(dialog).to_be_visible()
+        await dialog.get_by_role("button", name="Close", exact=True).click()
+        await expect(dialog).to_be_hidden()
+        await expect(opener).to_be_focused()
+        await opener.click()
+        await expect(dialog).to_be_visible()
+        await page.mouse.click(4, 4)
+        await expect(dialog).to_be_hidden()
+        await expect(opener).to_be_focused()
+        # A click inside the panel does not close it.
+        await opener.click()
+        await page.get_by_test_id("demo-dialog-text").click()
+        await expect(dialog).to_be_visible()
+    finally:
+        await close_demo(playwright, browser)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_dialog_is_readable_in_night(console: Console, theme: str) -> None:
+    playwright, browser, page = await open_dialog_demo(console, theme=theme)
+    try:
+        await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+        await page.get_by_test_id("demo-dialog-open").click()
+        await expect(page.get_by_test_id("demo-dialog")).to_be_visible()
+        measured = await page.evaluate(DIALOG_JS)
+        # The panel paints the theme's raised surface, never a literal white.
+        assert measured["background"] == measured["token"], (theme, measured)
+        if theme == "night":
+            assert measured["background"] != "rgb(255, 255, 255)", measured
+        for item in measured["texts"]:
+            assert item["ratio"] >= 4.5, (theme, item)
+        assert measured["scrim"] != "rgba(0, 0, 0, 0)", (theme, measured)
+        assert measured["radius"] != "0px" or theme == "bureau", (theme, measured)
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def test_dialog_has_no_fade_when_motion_is_reduced(console: Console) -> None:
+    playwright, browser, page = await open_dialog_demo(console, reduced_motion=True)
+    try:
+        await page.get_by_test_id("demo-dialog-open").click()
+        await expect(page.get_by_test_id("demo-dialog")).to_be_visible()
+        names = await page.evaluate(
+            "() => [...document.querySelector('[data-testid=demo-dialog]').querySelectorAll('*')]"
+            ".map((el) => getComputedStyle(el).animationName).filter((n) => n !== 'none')"
+        )
+        assert names == [], names
+    finally:
+        await close_demo(playwright, browser)
+
+
+async def test_tab_list_wraps_at_320_and_moves_with_arrows(console: Console) -> None:
+    playwright, browser, page = await open_dialog_demo(console, width=320)
+    try:
+        tabs = page.get_by_role("tablist", name="Demo tabs").get_by_role("tab")
+        await expect(tabs).to_have_count(5)
+        await expect(tabs.nth(0)).to_have_attribute("aria-selected", "true")
+        measured = await page.evaluate(
+            """() => {
+                const tabs = [...document.querySelectorAll('[role=tab]')];
+                return {
+                    scroll: document.documentElement.scrollWidth,
+                    tops: tabs.map((el) => Math.round(el.getBoundingClientRect().top)),
+                    rights: tabs.map((el) => Math.round(el.getBoundingClientRect().right)),
+                    heights: tabs.map((el) => Math.round(el.getBoundingClientRect().height)),
+                };
+            }"""
+        )
+        assert measured["scroll"] <= 320, measured
+        assert len(set(measured["tops"])) > 1, measured  # the row wrapped
+        assert max(measured["rights"]) <= 320 and min(measured["heights"]) >= 40, measured
+
+        value = page.get_by_test_id("demo-tab-value")
+        await tabs.nth(0).focus()
+        await page.keyboard.press("ArrowRight")
+        await expect(tabs.nth(1)).to_be_focused()
+        await expect(tabs.nth(1)).to_have_attribute("aria-selected", "true")
+        await expect(tabs.nth(0)).to_have_attribute("aria-selected", "false")
+        await expect(value).to_have_text("personal")
+        await page.keyboard.press("ArrowLeft")
+        await expect(tabs.nth(0)).to_be_focused()
+        await page.keyboard.press("ArrowLeft")  # wraps to the last
+        await expect(tabs.nth(4)).to_be_focused()
+        await expect(value).to_have_text("history")
+        await page.keyboard.press("Home")
+        await expect(tabs.nth(0)).to_be_focused()
+        await page.keyboard.press("End")
+        await expect(tabs.nth(4)).to_be_focused()
+        # Only the selected tab is in the tab order: Tab leaves the row.
+        await page.keyboard.press("Tab")
+        await expect(page.get_by_test_id("demo-tab-after")).to_be_focused()
+        # A click selects too.
+        await tabs.nth(2).click()
+        await expect(tabs.nth(2)).to_have_attribute("aria-selected", "true")
+        await expect(value).to_have_text("documents")
+    finally:
+        await close_demo(playwright, browser)
