@@ -698,7 +698,8 @@ def test_tab_available_ports_the_console_rule() -> None:
     every = [
         state(key)
         for key in (
-            "customer_support", "orders_products", "hr", "staff_email", "subscriptions",
+            "customer_support", "knowledge_base", "orders_products", "hr", "staff_email",
+            "subscriptions",
         )
     ]  # fmt: skip
     assert tab_available("email", Role.TENANT_STAFF, [state("staff_email")])
@@ -707,6 +708,10 @@ def test_tab_available_ports_the_console_rule() -> None:
     # The Inbox stays open while Customer Support is suspended.
     assert tab_available("inbox", Role.TENANT_STAFF, [state("customer_support", "suspended")])
     assert not tab_available("knowledge_base", Role.TENANT_STAFF, [])
+    # The Knowledge base is its own add-on: Customer Support alone doesn't open it.
+    assert not tab_available("knowledge_base", Role.TENANT_STAFF, [state("customer_support")])
+    assert tab_available("inbox", Role.TENANT_STAFF, [state("customer_support")])
+    assert tab_available("knowledge_base", Role.TENANT_STAFF, [state("knowledge_base")])
     assert tab_available("business", Role.TENANT_ADMIN, [state("marketplaces")])
     assert not tab_available("business", Role.TENANT_ADMIN, [])
     # Ungated tabs are always there; platform admins skip the package gate.

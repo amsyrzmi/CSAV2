@@ -330,14 +330,26 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect_navigation(page, ("Overview", "Services"), (*GATED, "Agents"))
         assert ("/console/v1/services/active", "csa_session=synthetic-session") in upstream.seen
 
-        # (b) Customer Support active unlocks exactly its tabs.
+        # (b) Customer Support active unlocks exactly its tabs; the Knowledge base is an add-on.
         upstream.packages = [{"key": "customer_support", "status": "active"}]
+        await page.reload()
+        await expect_navigation(
+            page,
+            ("Customer inbox", "Services"),
+            ("Knowledge base", "Business management", "People & HR", "Email assistant", "Agents"),
+        )
+        upstream.packages = [
+            {"key": "customer_support", "status": "active"},
+            {"key": "knowledge_base", "status": "active"},
+        ]
         await page.reload()
         await expect_navigation(
             page,
             ("Customer inbox", "Knowledge base", "Services"),
             ("Business management", "People & HR", "Email assistant", "Agents"),
         )
+        upstream.packages = [{"key": "customer_support", "status": "active"}]
+        await page.reload()
 
         # (c) Requesting a package posts with CSRF and the card follows the returned Service.
         await page.goto(f"{base}/portal/services")
