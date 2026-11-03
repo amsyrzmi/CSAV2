@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import shlex
 import stat
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -1094,22 +1095,92 @@ def test_a_failed_migrate_shows_only_its_migration_error(reset_env: Path, tmp_pa
     assert "synthetic-dsn-secret" not in text
     assert "Traceback" not in text
     assert "not shown" not in text
+    assert "Exception:" not in text
+    assert not any(MIGRATE in line for line in lines)
     assert "Stopped at migrate" in text
 
 
-def test_a_failed_migrate_with_no_migration_error_says_it_withheld_the_rest(
-    reset_env: Path, tmp_path: Path
-) -> None:
+def _failed_migrate(reset_env: Path, tmp_path: Path, stderr: str) -> tuple[ResetFake, list[str]]:
     runner = wipe_runner()
-    stderr = f"Traceback (most recent call last):\npsycopg.OperationalError: {SYNTHETIC_DSN}\n"
     runner.rules.insert(0, (has(MIGRATE), Completed(1, "applied 0100_roles.sql\n", stderr)))
     code, lines = _wipe(runner, reset_env, tmp_path)
     assert code != 0
+    return runner, lines
+
+
+def _assert_gives_the_manual_command(runner: ResetFake, lines: list[str]) -> None:
+    """The printed line, as a shell would read it, is the command wipe ran, from the repo."""
     text = "\n".join(lines)
-    assert "synthetic-dsn-secret" not in text
-    assert "OperationalError" not in text
     assert "not shown" in text
     assert "last migration applied" in text
+    assert "can be re-run safely" in text and "already applied are skipped" in text
+    assert "wipe again" in text
+    command = next(line for line in text.splitlines() if MIGRATE in line)
+    words = shlex.split(command)
+    assert words[:3] == ["cd", str(rs.REPO_ROOT), "&&"]
+    words = words[3:]
+    docker = words.index("docker")
+    assignments = dict(word.split("=", 1) for word in words[:docker])
+    ran_argv, ran_env, _ = next(call for call in runner.calls if MIGRATE in " ".join(call[0]))
+    assert words[docker:] == ran_argv
+    assert assignments["CSA_STAGING_MIGRATION_APPROVAL"] == "approved-isolated-staging"
+    assert ran_env is not None
+    assert assignments.items() <= ran_env.items()
+    assert {"CSA_STAGING_PYTHON_IMAGE", "CSA_STAGING_SECRET_DIR"} <= assignments.keys()
+    # Not worth repeating, and this run's docker config is a temp directory that won't outlive it.
+    assert not {"PATH", "HOME", "DOCKER_CONFIG"} & assignments.keys()
+
+
+def test_a_failed_migrate_names_the_exception_class_and_nothing_after_the_colon(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    last = (
+        'psycopg.OperationalError: connection to server at "staging-db", '
+        "password=synthetic-secret failed"
+    )
+    stderr = f"Traceback (most recent call last):\n  {SYNTHETIC_DSN}\n{last}\n\n"
+    runner, lines = _failed_migrate(reset_env, tmp_path, stderr)
+    text = "\n".join(lines)
+    assert "Exception: psycopg.OperationalError" in text.splitlines()
+    assert "synthetic-secret" not in text
+    assert "synthetic-dsn-secret" not in text
+    assert "connection to server" not in text
+    assert "password=" not in text
+    assert "Traceback" not in text
+    _assert_gives_the_manual_command(runner, lines)
+
+
+@pytest.mark.parametrize(
+    "last",
+    [
+        "synthetic-secret: not an identifier",
+        "two words.here: synthetic-secret",
+        "postgresql://csa:synthetic-secret@staging-db/csa_staging",
+        "NotDotted: synthetic-secret",
+        "psycopg.1bad: synthetic-secret",
+        "psycopg.Error",
+        "LINE 1: SELECT synthetic-secret",
+        "        ^",
+    ],
+)
+def test_a_failed_migrate_with_no_valid_class_prints_nothing_from_the_line(
+    reset_env: Path, tmp_path: Path, last: str
+) -> None:
+    runner, lines = _failed_migrate(reset_env, tmp_path, f"Traceback\npsycopg.Earlier: x\n{last}\n")
+    text = "\n".join(lines)
+    assert "Exception:" not in text
+    assert "synthetic-secret" not in text
+    assert "psycopg." not in text
+    assert last.strip() not in text
+    _assert_gives_the_manual_command(runner, lines)
+
+
+def test_a_failed_migrate_with_no_stderr_still_gives_the_command(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner, lines = _failed_migrate(reset_env, tmp_path, "")
+    assert not any("Exception:" in line for line in lines)
+    _assert_gives_the_manual_command(runner, lines)
 
 
 def _t1_partial(reset_env: Path, tmp_path: Path) -> tuple[Path, list[str]]:

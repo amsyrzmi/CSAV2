@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -676,6 +677,63 @@ def _load_baseline(
     )
 
 
+def _migrate_argv() -> list[str]:
+    return [
+        *compose_base(),
+        "--profile",
+        "migration-approved",
+        "run",
+        "--rm",
+        "--no-deps",
+        "migrate",
+    ]
+
+
+def _exception_class(stderr: str) -> str | None:
+    """The class on stderr's last line, when it is a dotted identifier. Never what follows it."""
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return None
+    name, colon, _ = lines[-1].partition(":")
+    parts = name.split(".")
+    if colon and len(parts) > 1 and all(part.isidentifier() for part in parts):
+        return name
+    return None
+
+
+def _manual_migrate_command(env: Mapping[str, str]) -> str:
+    """One copy-ready line that runs migrate as ``wipe`` did, printing to the owner's terminal.
+
+    It spells out the non-secret environment, since the docs' ``csa_pipeline_compose`` exists
+    only in a shell that ran their setup. This run's docker config is left out: it is a temp
+    directory gone when ``wipe`` exits, and no pull is needed.
+    """
+    assignments = {MIGRATION_APPROVAL[0]: MIGRATION_APPROVAL[1]} | {
+        name: value for name, value in env.items() if name not in {"PATH", "HOME", "DOCKER_CONFIG"}
+    }
+    words = [f"{name}={shlex.quote(value)}" for name, value in assignments.items()]
+    return f"cd {shlex.quote(str(REPO_ROOT))} && {' '.join(words)} {shlex.join(_migrate_argv())}"
+
+
+def _migrate_failure(stderr: str, env: Mapping[str, str]) -> str:
+    """What a failed migrate may say. Its stderr can hold a connection string, so almost nothing."""
+    reasons = [line for line in stderr.splitlines() if line.startswith(MIGRATION_ERROR_PREFIX)]
+    if reasons:
+        return "\n".join(reasons)
+    name = _exception_class(stderr)
+    return "\n".join(
+        [
+            *([f"Exception: {name}"] if name else []),
+            "Its other error output is not shown, because it can carry connection details. "
+            "The lines above show the last migration applied.",
+            "To see the full error at this terminal, run:",
+            _manual_migrate_command(env),
+            "A failed migrate can be re-run safely: migrations already applied are skipped. "
+            "That only shows the error; run wipe again to finish the rebuild.",
+        ]
+    )
+
+
 def _migrate_and_confirm(
     runner: ResetRunner,
     context: ResetContext,
@@ -688,23 +746,15 @@ def _migrate_and_confirm(
     )
     out(f"Migrating {DATABASE}…")
     result = runner.run(
-        [*compose_base(), "--profile", "migration-approved", "run", "--rm", "--no-deps", "migrate"],
-        env={**context.env, MIGRATION_APPROVAL[0]: MIGRATION_APPROVAL[1]},
+        _migrate_argv(), env={**context.env, MIGRATION_APPROVAL[0]: MIGRATION_APPROVAL[1]}
     )
     if result.stdout.strip():
         out(result.stdout.rstrip())
     if result.returncode != 0:
-        # Only scripts/migrate.py's own lines: the rest of its stderr can hold a connection string.
-        reasons = [
-            line for line in result.stderr.splitlines() if line.startswith(MIGRATION_ERROR_PREFIX)
-        ]
-        detail = (
-            "\n".join(reasons)
-            if reasons
-            else "Its other error output is not shown, because it can carry connection details. "
-            "The lines above show the last migration applied."
+        raise RolloutError(
+            "migrate",
+            f"migrate exited {result.returncode}\n{_migrate_failure(result.stderr, context.env)}",
         )
-        raise RolloutError("migrate", f"migrate exited {result.returncode}\n{detail}")
     found = _psql(runner, context.env, DATABASE, "SELECT max(version) FROM schema_migrations")
     if found != context.newest_migration:
         raise RolloutError(
