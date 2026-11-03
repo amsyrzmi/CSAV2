@@ -255,6 +255,9 @@ class Stub:
             data = {"csrf_token": "synthetic-csrf"}
         elif path == "services" and request.method == "GET":
             data = [make_service(list(self.agents.values()))]
+        elif path == "services/customer-replies" and request.method == "GET":
+            # The Services page's banner reads it; replies are on, so the banner stays silent.
+            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
         elif path == "channels/whatsapp" and request.method == "GET":
             data = {
                 "connected": False,
