@@ -5,7 +5,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { del } from "@/lib/api";
 import type { Agent, KbDocument, KbFile, KbGap, KbJob } from "@/lib/identity-contracts";
 import {
-  formatBytes, groupSources, kbStatusLine, kindText, LIBRARY_PREVIEW, looseFiles, pausedReason, pollingNeeded, type Card,
+  atLimit, countText, formatBytes, groupSources, kbStatusLine, kindText, LIBRARY_PREVIEW, LIST_LIMITS, looseFiles, pausedReason,
+  pollingNeeded, type Card,
 } from "@/lib/knowledge-view";
 import { DetailsRow, TechDetailsProvider, TechnicalDetails, TechSwitch } from "../kit";
 import { action, Notice, Panel, secondary } from "../ui";
@@ -126,6 +127,10 @@ export default function LibrarySection({
   const known = documents.slot.data ? documents.slot.data.filter((row) => row.is_active).length : null;
   const attention = jobs.slot.data ? groups.attention.length : null;
   const questions = gaps.slot.data ? gaps.slot.data.length : null;
+  // Each list is read with a limit; a list exactly at it may hold more than it shows.
+  const knownCapped = atLimit(documents.slot.data?.length ?? null, LIST_LIMITS.documents);
+  const questionsCapped = atLimit(gaps.slot.data?.length ?? null, LIST_LIMITS.gaps);
+  const needCapped = atLimit(jobs.slot.data?.length ?? null, LIST_LIMITS.jobs) || questionsCapped;
   const shownLibrary = showAll ? groups.library : groups.library.slice(0, LIBRARY_PREVIEW);
 
   if (locked) return <LockedNotice slot={locked} onRefresh={reloadAll} />;
@@ -147,7 +152,7 @@ export default function LibrarySection({
 
     <section data-testid="kb-library" className="space-y-5">
       <p data-testid="kb-status" className="text-[length:var(--fs-text-lg)] font-medium">
-        {counting ? "Counting what your assistant knows..." : kbStatusLine({ known, attention, questions })}
+        {counting ? "Counting what your assistant knows..." : kbStatusLine({ known, attention, questions }, { known: knownCapped, need: needCapped })}
       </p>
       <div className="flex flex-wrap items-center gap-3">
         {canWrite && <Link data-testid="kb-add-knowledge" className={action} href={addHref}>Add knowledge</Link>}
@@ -156,8 +161,8 @@ export default function LibrarySection({
       </div>
       {questions !== null && questions > 0 && <div data-testid="kb-questions-callout"
         className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface-blue)] p-3">
-        <p className="font-medium">Questions your assistant couldn&apos;t answer: {questions}</p>
-        <Link className={secondary} href={questionsHref}>Add an answer</Link>
+        <p className="font-medium">Questions your assistant couldn&apos;t answer: {countText(questions, questionsCapped)}</p>
+        <Link className={secondary} href={questionsHref}>{canWrite ? "Add an answer" : "See the questions"}</Link>
       </div>}
       {retry(jobs.slot, "jobs", "the files being read", jobs.load)}
       {groups.attention.length > 0 && <div data-testid="kb-attention" className="space-y-3">
@@ -182,7 +187,7 @@ export default function LibrarySection({
         {groups.library.length > LIBRARY_PREVIEW && <button type="button" className={secondary}
           data-testid="kb-ready-show-all" aria-expanded={showAll} aria-controls={readyList}
           onClick={() => setShowAll((current) => !current)}>
-          {showAll ? "Show fewer" : `Show all ${groups.library.length}`}
+          {showAll ? "Show fewer" : `Show all ${countText(groups.library.length, knownCapped)}`}
         </button>}
       </div>
       {retry(files.slot, "files", "the original files", files.load)}

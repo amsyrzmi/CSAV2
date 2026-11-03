@@ -13,6 +13,7 @@ async function load(name) {
 const {
   groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, couldNotReadText, kindText,
   looseFiles, pausedReason, kbStatusLine, LIBRARY_PREVIEW, validateSelection, progressWord, SELECTION_MESSAGE,
+  atLimit, countText, answerTitle, LIST_LIMITS,
 } = await import(await load("knowledge-view.ts"));
 
 const file = (id, extra = {}) => ({
@@ -259,4 +260,35 @@ test("couldNotReadText says how many tries a failed file had", () => {
   assert.equal(couldNotReadText(1), "Could not be read after 1 try");
   assert.equal(couldNotReadText(0), "Could not be read");
   assert.equal(couldNotReadText(Number.NaN), "Could not be read");
+});
+
+test("a list exactly at its limit is counted as 'at least' and never as an exact number", () => {
+  assert.equal(LIST_LIMITS.documents, 50);
+  assert.equal(LIST_LIMITS.jobs, 20);
+  assert.equal(atLimit(49, 50), false);
+  assert.equal(atLimit(50, 50), true);
+  assert.equal(atLimit(null, 50), false);
+  assert.equal(countText(50, true), "at least 50");
+  assert.equal(countText(7, false), "7");
+  assert.equal(
+    kbStatusLine({ known: 50, attention: 0, questions: 0 }, { known: true }),
+    "Your assistant knows at least 50 things. Nothing needs your attention.",
+  );
+  assert.equal(
+    kbStatusLine({ known: 50, attention: 20, questions: 3 }, { known: true, need: true }),
+    "Your assistant knows at least 50 things. At least 23 need your attention.",
+  );
+  assert.equal(
+    kbStatusLine({ known: 4, attention: 1, questions: 2 }, { known: false, need: false }),
+    "Your assistant knows 4 things. 3 need your attention.",
+  );
+});
+
+test("an answer title is cut by characters, so an emoji is never split", () => {
+  assert.equal(answerTitle("short"), "short");
+  const query = `${"a".repeat(254)}\u{1F600}tail`;
+  const title = answerTitle(query);
+  assert.equal(Array.from(title).length, 255);
+  assert.equal(title.endsWith("\u{1F600}"), true);
+  assert.equal(/[\uD800-\uDBFF]$/.test(title), false);
 });

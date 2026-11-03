@@ -3,6 +3,7 @@
 import { useId, useRef, useState } from "react";
 import { post } from "@/lib/api";
 import type { KbGap } from "@/lib/identity-contracts";
+import { answerTitle } from "@/lib/knowledge-view";
 import { action, field, Notice, secondary } from "../ui";
 
 /**
@@ -35,7 +36,7 @@ export default function AnswerForm({
     pressed.current = true;
     setSaving(true); setError("");
     try {
-      await post(path("kb/documents"), { title: gap.query.slice(0, 255), content: answer.trim() });
+      await post(path("kb/documents"), { title: answerTitle(gap.query), content: answer.trim() });
       setSaved(true); setOpen(false);
       onSaved();
     } catch (cause) {

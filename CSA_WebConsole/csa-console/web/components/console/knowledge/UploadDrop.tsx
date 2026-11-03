@@ -23,10 +23,11 @@ export default function UploadDrop({
   onFiles: (files: File[]) => void;
 }) {
   const [dragging, setDragging] = useState(false);
+  // Always cancel the browser's own handling, or a file dropped on a disabled area would open in
+  // the browser and take the person out of the console; only an enabled area takes the files.
   const over = (event: DragEvent<HTMLDivElement>) => {
-    if (disabled) return;
     event.preventDefault();
-    setDragging(true);
+    if (!disabled) setDragging(true);
   };
   const drop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();

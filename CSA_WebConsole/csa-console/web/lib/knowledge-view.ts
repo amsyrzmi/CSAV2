@@ -72,20 +72,42 @@ export function progressWord(status: string | null): ProgressWord {
 /** How many cards of "In your library" show before "Show all". */
 export const LIBRARY_PREVIEW = 5;
 
+/** The title of an answer saved for a question: its first 255 characters, never cutting a character in two. */
+export function answerTitle(query: string): string {
+  return Array.from(query).slice(0, 255).join("");
+}
+
+/** How many rows each list read returns at most; a list exactly this long may hold more. */
+export const LIST_LIMITS = { documents: 50, gaps: 50, jobs: 20 } as const;
+
+/** True when a list is exactly at its limit, so a count taken from it may understate. */
+export function atLimit(rows: number | null, limit: number): boolean {
+  return rows !== null && rows >= limit;
+}
+
+/** A count that is only a lower bound is written "at least N". */
+export function countText(count: number, atLeast: boolean): string {
+  return atLeast ? `at least ${count}` : String(count);
+}
+
 /**
  * The one sentence under the page title. `known` is the count of active documents, `attention`
  * the cards needing attention and `questions` the unanswered questions; a count whose list did
- * not load is null and is never written as 0.
+ * not load is null and is never written as 0. `known` and `need` come from lists capped at
+ * `LIST_LIMITS`; when such a list is exactly full, `atLeast` says so ("at least 50").
  */
-export function kbStatusLine(input: { known: number | null; attention: number | null; questions: number | null }): string {
+export function kbStatusLine(
+  input: { known: number | null; attention: number | null; questions: number | null },
+  atLeast: { known?: boolean; need?: boolean } = {},
+): string {
   const { known, attention, questions } = input;
   if (known === null) return "We couldn't count everything just now.";
-  const first = `Your assistant knows ${known} thing${known === 1 ? "" : "s"}.`;
+  const first = `Your assistant knows ${countText(known, atLeast.known === true)} thing${known === 1 && !atLeast.known ? "" : "s"}.`;
   if (attention === null || questions === null) return first;
   const need = attention + questions;
-  return need > 0
-    ? `${first} ${need} need${need === 1 ? "s" : ""} your attention.`
-    : `${first} Nothing needs your attention.`;
+  if (need === 0) return `${first} Nothing needs your attention.`;
+  if (atLeast.need) return `${first} At least ${need} need your attention.`;
+  return `${first} ${need} need${need === 1 ? "s" : ""} your attention.`;
 }
 
 export function chipLabel(chip: Chip): string {

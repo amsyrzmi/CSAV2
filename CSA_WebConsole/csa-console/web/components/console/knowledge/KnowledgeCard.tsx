@@ -35,7 +35,7 @@ function summaryLine(card: Card, source: Source): string | null {
   return `${state}. Add the file again to try once more.`;
 }
 
-/** One document or job as a card: plain words and a chip, with the original lines and actions behind the arrow. */
+/** One document or job as a card: plain words and a chip, the file actions in its Details and the exact lines in Technical details. */
 export default function KnowledgeCard({
   card,
   source,
@@ -92,6 +92,24 @@ export default function KnowledgeCard({
             </div>
           ))}
         </dl>
+        {(own.length > 0 || (source.type === "document" && canWrite)) && (
+          <div data-testid={`${testId}-actions`} className="mt-3 space-y-2">
+            {own.map((file) => (
+              <div key={file.id} className="flex flex-wrap items-center gap-2">
+                <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{file.name}</span>
+                <a className={secondary} href={actions.downloadHref(file.id)}>Download original</a>
+                {canWrite && (
+                  <button type="button" className={secondary} disabled={busy || !writable}
+                    onClick={() => actions.onDelete("files", file.id, file.name)}>Delete source</button>
+                )}
+              </div>
+            ))}
+            {source.type === "document" && canWrite && (
+              <button type="button" className={secondary} disabled={busy || !writable}
+                onClick={() => actions.onDelete("documents", source.document.id, source.document.title)}>Delete document</button>
+            )}
+          </div>
+        )}
         <TechnicalDetails testId={`${testId}-tech`}>
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
             {card.details.map((row) => (
@@ -112,19 +130,8 @@ export default function KnowledgeCard({
                   {file.media_type}, {file.size_bytes.toLocaleString()} bytes.{" "}
                   {file.document_id ? `Document ${file.document_id}` : "No linked document yet."}
                 </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <a className={secondary} href={actions.downloadHref(file.id)}>Download original</a>
-                  {canWrite && (
-                    <button type="button" className={secondary} disabled={busy || !writable}
-                      onClick={() => actions.onDelete("files", file.id, file.name)}>Delete source</button>
-                  )}
-                </div>
               </div>
             ))}
-            {source.type === "document" && canWrite && (
-              <button type="button" className={`${secondary} mt-3`} disabled={busy || !writable}
-                onClick={() => actions.onDelete("documents", source.document.id, source.document.title)}>Delete document</button>
-            )}
           </div>
         </TechnicalDetails>
       </DetailsRow>

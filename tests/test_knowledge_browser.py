@@ -545,13 +545,16 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
             await expect(details).to_contain_text(
                 "application/pdf, 2,097,152 bytes. Document doc-hours"
             )
-            link = details.get_by_role("link", name="Download original")
+            # The file actions sit at the first Details level, not inside Technical details.
+            actions = page.get_by_test_id("kb-card-doc-hours-actions")
+            await expect(details.get_by_role("link", name="Download original")).to_have_count(0)
+            link = actions.get_by_role("link", name="Download original")
             await expect(link).to_have_attribute(
                 "href", re.compile(r"/console/v1/kb/files/file-hours/download")
             )
 
             # Delete source asks first, then deletes and refreshes the lists.
-            await details.get_by_role("button", name="Delete source").click()
+            await actions.get_by_role("button", name="Delete source").click()
             confirm = page.get_by_test_id("kb-confirm")
             await expect(confirm).to_contain_text(
                 "Delete opening-hours.pdf? Deleting a source with a linked document"
@@ -559,7 +562,7 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
             await confirm.get_by_role("button", name="Cancel").click()
             await expect(confirm).to_have_count(0)
             assert stub.deletes == []
-            await details.get_by_role("button", name="Delete document").click()
+            await actions.get_by_role("button", name="Delete document").click()
             await expect(confirm).to_contain_text("Delete Opening hours?")
             await confirm.get_by_role("button", name="Confirm delete").click()
             await expect(card(page, "doc-hours")).to_have_count(0)
@@ -575,10 +578,11 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
             failed = await open_card(page, "job-failed")
             await expect(failed).to_contain_text("job-failed: failed (attempts: 3)")
             await expect(failed).to_contain_text("Could not read any text in this PDF")
-            await expect(failed.get_by_role("link", name="Download original")).to_have_attribute(
-                "href", re.compile(r"/kb/files/file-failed/download")
-            )
-            await expect(failed.get_by_role("button", name="Delete source")).to_be_enabled()
+            failed_actions = page.get_by_test_id("kb-card-job-failed-actions")
+            await expect(
+                failed_actions.get_by_role("link", name="Download original")
+            ).to_have_attribute("href", re.compile(r"/kb/files/file-failed/download"))
+            await expect(failed_actions.get_by_role("button", name="Delete source")).to_be_enabled()
             # The retry: add the file again, on the Add page.
             await card(page, "job-failed").get_by_role("link", name="Choose the file again").click()
             await expect(page).to_have_url(re.compile(r"/portal/faq/add$"), timeout=WAIT)
@@ -1036,6 +1040,13 @@ async def test_questions_callout_links_to_the_questions_page(site: Site) -> None
             await link.click()
             await expect(page).to_have_url(re.compile(r"/portal/faq/questions$"), timeout=WAIT)
             await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
+        # A member who cannot write is offered no "Add an answer"; the link says what it is.
+        async with knowledge_page(browser, site, Stub(), role="read_only") as page:
+            callout = page.get_by_test_id("kb-questions-callout")
+            await expect(callout.get_by_role("link", name="Add an answer")).to_have_count(0)
+            await expect(callout.get_by_role("link", name="See the questions")).to_have_attribute(
+                "href", "/portal/faq/questions"
+            )
         # Hidden when there are none, and when the list could not be read.
         async with knowledge_page(browser, site, Stub(gaps=[])) as page:
             await expect(page.get_by_test_id("kb-status")).to_be_visible()
@@ -1081,7 +1092,7 @@ async def test_library_shows_five_then_show_all(site: Site) -> None:
 async def test_card_has_details_and_technical_details(site: Site) -> None:
     async def body(browser: Any) -> None:
         async with knowledge_page(browser, site, Stub()) as page:
-            plain = await open_plain(page, "doc-hours")
+            await open_plain(page, "doc-hours")
             rows = page.get_by_test_id("kb-card-doc-hours-plain")
             await expect(rows).to_contain_text("Added")
             await expect(rows).to_contain_text("2 Nov 2026")
@@ -1089,18 +1100,21 @@ async def test_card_has_details_and_technical_details(site: Site) -> None:
             await expect(rows).to_contain_text("2 MB")
             await expect(rows).to_contain_text("What your assistant can use")
             await expect(rows).to_contain_text("12 parts your assistant can look up")
-            # The exact lines and the source actions wait behind Technical details.
+            # The exact lines wait behind Technical details; the file actions are one level up.
             tech = page.get_by_test_id("kb-card-doc-hours-tech-details")
             await expect(tech).to_be_hidden()
             await expect(page.get_by_test_id("kb-card-doc-hours-tech-toggle")).to_have_attribute(
                 "aria-expanded", "false"
             )
-            await expect(plain.get_by_role("link", name="Download original")).to_have_count(0)
+            actions = page.get_by_test_id("kb-card-doc-hours-actions")
+            await expect(actions.get_by_role("link", name="Download original")).to_have_count(1)
+            await expect(actions.get_by_role("button", name="Delete document")).to_be_enabled()
+            await expect(actions.get_by_role("button", name="Delete source")).to_be_enabled()
             await page.get_by_test_id("kb-card-doc-hours-tech-toggle").click()
             await expect(tech).to_be_visible()
             await expect(tech).to_contain_text("Version 1, active, 12 chunks.")
-            await expect(tech.get_by_role("link", name="Download original")).to_have_count(1)
-            await expect(tech.get_by_role("button", name="Delete document")).to_be_enabled()
+            await expect(tech.get_by_role("link", name="Download original")).to_have_count(0)
+            await expect(tech.get_by_role("button", name="Delete document")).to_have_count(0)
 
             reading = page.get_by_test_id("kb-card-job-running-plain")
             await open_plain(page, "job-running")
@@ -1347,6 +1361,15 @@ async def test_drop_area_replaces_the_raw_file_control(site: Site, tmp_path: Any
             await page.evaluate(DROP_SCRIPT, [["menu.pdf", 10]])
             await expect(page.get_by_test_id("kb-selection")).to_have_text("No file chosen yet")
             await expect(page.get_by_text(SELECTION_MESSAGE)).to_have_count(0)
+            # Even then the browser must not open a dropped file in place of the console.
+            prevented = await page.evaluate(
+                """() => ['dragover', 'drop'].map((type) => {
+                    const event = new DragEvent(type, {bubbles: true, cancelable: true});
+                    document.querySelector('[data-testid="kb-drop"]').dispatchEvent(event);
+                    return event.defaultPrevented;
+                })"""
+            )
+            assert prevented == [True, True], prevented
 
     await with_browser(body)
 
