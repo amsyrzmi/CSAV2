@@ -279,3 +279,54 @@ async def test_warnings(sessions) -> None:
     assert "no_knowledge" in await warnings(), "an inactive document answers nothing"
     await sessions.q("UPDATE kb_documents SET is_active=true WHERE id=%s", document)
     assert "no_knowledge" not in await warnings()
+
+
+async def test_approve_gives_staff_a_day_to_review(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    await save(sessions, tenant, mode="approve", brand_name="Team Synthetic")
+    rows = await sessions.q(
+        "SELECT config->'policy'->>'approval_ttl_minutes' AS ttl FROM clients WHERE id=%s", tenant
+    )
+    assert rows[0]["ttl"] == "1440"
+    config = await sessions.q("SELECT config->'policy' AS policy FROM clients WHERE id=%s", tenant)
+    assert Policy.model_validate(config[0]["policy"]).approval_ttl_minutes == 1440
+
+
+async def test_a_pasted_non_breaking_space_is_a_space(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    response = await save(sessions, tenant, mode="auto", brand_name="Team\u00a0Synthetic")
+    assert response.status_code == 200, response.text
+    assert (await company(sessions, tenant))["brand_name"] == "Team Synthetic"
+
+
+async def test_replies_off_isnt_reported_while_customer_support_is_suspended(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    assert "replies_off" in (await sessions.admin.get(url(tenant))).json()["warnings"]
+    await sessions.mutate(
+        sessions.admin, f"/console/v1/services/customer_support/suspend?client_id={tenant}", {}
+    )
+    assert "replies_off" not in (await sessions.admin.get(url(tenant))).json()["warnings"]
+
+
+@pytest.mark.parametrize(
+    "policy", ['{"deployment_mode": "unknown"}', '{"deployment_mode": null}', "3"]
+)
+async def test_a_hand_edited_policy_reads_as_off_and_can_be_saved_over(
+    sessions, policy: str
+) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    await sessions.q(
+        "UPDATE clients SET config=jsonb_set(config,'{policy}',%s::jsonb) WHERE id=%s",
+        policy,
+        tenant,
+    )
+    read = await sessions.admin.get(url(tenant))
+    assert read.status_code == 200 and read.json()["mode"] == "off"
+    if policy != "3":
+        saved = await save(sessions, tenant, mode="auto", brand_name="Team Synthetic")
+        assert saved.status_code == 200, saved.text
+        assert (await company(sessions, tenant))["policy_mode"] == "auto"

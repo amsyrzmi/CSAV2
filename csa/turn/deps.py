@@ -54,7 +54,7 @@ from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider
 from csa.decide.providers import DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
-from csa.staff.ownership import automation_allowed
+from csa.staff.ownership import automation_allowed, replies_off
 
 logger = structlog.get_logger(__name__)
 
@@ -519,6 +519,8 @@ class PostgresTurnDependencies:
                 return message
             if envelope.channel != Channel.WEB:
                 await _insert_escalation(conn, envelope, f"fail_safe:{error_code}", "high")
+                if await replies_off(conn, envelope.client_id):
+                    return message
             else:
                 failed = await db.q.fetch_one(
                     "console/chat_fail.sql", (envelope.client_id, envelope.trace_id), conn=conn

@@ -1517,6 +1517,7 @@ A new company starts with no replies to customers. Its tenant admin turns them o
 - `warnings` holds any of: `replies_off`; `no_knowledge` (the `knowledge_base` add-on is active and no active document has chunks); `base_only` (no add-on is active, so most questions go to staff).
 - `PUT /console/v1/services/customer-replies`, for a tenant admin or platform admin, with CSRF, takes `{mode, brand_name}`. `brand_name` is trimmed, at most 120 characters, a single line; if omitted, the stored one stays.
 - Refusals: 422 `brand_name_required` for `approve` or `auto` with no name, stored or sent; 409 `package_suspended` while Customer support is suspended; 403 `tenant administrator required`.
+- Saving `approve` also sets `approval_ttl_minutes` to 1440.
 - A real change writes one `console_audit` row, `tenant.customer_replies_set`, with before and after. A repeat writes none.
 - A company still `onboarding` moves to `pilot` when Customer support is activated, or on a save, with one `tenant.status_changed` row. Background jobs visit only `pilot` and `active` companies, so its knowledge base files process before it goes live. Other statuses don't change.
 

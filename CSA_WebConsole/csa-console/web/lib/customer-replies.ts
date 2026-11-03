@@ -10,8 +10,11 @@ export interface CustomerReplies {
 
 export const MODE_CHOICES: { mode: ReplyMode; label: string }[] = [
   { mode: "off", label: "Off: customers get no reply" },
-  { mode: "approve", label: "Staff approve each reply" },
-  { mode: "auto", label: "Bot replies by itself: replies it isn't sure about still wait for staff" },
+  {
+    mode: "approve",
+    label: "Staff approve each reply: a draft waits up to 24 hours, then your team gets a ticket and the customer is told you'll follow up",
+  },
+  { mode: "auto", label: "Bot replies by itself: when it can't answer, it hands over to your team" },
 ];
 
 const PANEL_WARNINGS: Record<string, string> = {
@@ -59,6 +62,11 @@ export function refusalText(code: string): string | null {
 }
 
 export function saveErrorText(cause: unknown): string {
-  if (cause instanceof ApiError) return refusalText(cause.code) ?? cause.message;
+  if (cause instanceof ApiError) {
+    if (cause.status === 422 && !refusalText(cause.code)) {
+      return "Use one line of at most 120 characters for the brand name.";
+    }
+    return refusalText(cause.code) ?? cause.message;
+  }
   return "We couldn't save that. Try again.";
 }

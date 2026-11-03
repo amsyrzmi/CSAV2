@@ -45,8 +45,8 @@ test("the banner shows the most urgent line and never base_only", () => {
 test("the choices keep their exact wording", () => {
   assert.deepEqual(replies.MODE_CHOICES.map((choice) => choice.label), [
     "Off: customers get no reply",
-    "Staff approve each reply",
-    "Bot replies by itself: replies it isn't sure about still wait for staff",
+    "Staff approve each reply: a draft waits up to 24 hours, then your team gets a ticket and the customer is told you'll follow up",
+    "Bot replies by itself: when it can't answer, it hands over to your team",
   ]);
   assert.deepEqual(replies.MODE_CHOICES.map((choice) => choice.mode), ["off", "approve", "auto"]);
 });
@@ -56,4 +56,8 @@ test("the refusals have sentences", () => {
   assert.ok(replies.refusalText("brand_name_required").includes("brand name"));
   assert.ok(replies.refusalText("package_suspended").includes("suspended"));
   assert.equal(replies.refusalText("something_else"), null);
+  assert.equal(replies.saveErrorText(new api.ApiError(422, "Request failed (422)")),
+    "Use one line of at most 120 characters for the brand name.");
+  assert.equal(replies.saveErrorText(new api.ApiError(422, "brand_name_required")),
+    "Add your brand name before turning replies on.");
 });

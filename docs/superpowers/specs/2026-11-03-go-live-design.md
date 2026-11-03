@@ -75,8 +75,8 @@ A "Customer replies" panel, shown beside `WhatsAppPanel` when Customer support i
 - **Brand name:** a text box, "The name your bot uses with customers".
 - **Replies:** three choices:
   - "Off: customers get no reply"
-  - "Staff approve each reply"
-  - "Bot replies by itself: replies it isn't sure about still wait for staff"
+  - "Staff approve each reply: a draft waits up to 24 hours, then your team gets a ticket and the customer is told you'll follow up"
+  - "Bot replies by itself: when it can't answer, it hands over to your team"
 - **Save** is disabled with a reason while the brand name is blank and a mode other than off is chosen.
 - **Who sees what:** staff and read-only members see the current state without controls, and "Ask your tenant admin to change this."
 - **Warnings inside the panel:**
@@ -113,6 +113,16 @@ One small shared component, `CustomerRepliesBanner`, on the portal Overview and 
 - Each real change writes one audit row naming the actor; a repeat writes none.
 - The banner shows on Overview and Inbox while replies are off, and disappears after they're on, with no sign-in needed. A failed read leaves the page working.
 - The three warnings appear only in their own conditions, including `no_knowledge` clearing once a file is processed.
+
+## Added after the final review
+
+The final review traced what the three modes do in the turn path, and this design's words didn't match. These changes make them match.
+
+- **Off sends nothing:** a failed turn and an expired draft used to send the fallback sentence. Now, with replies off, they send nothing and staff still get an escalation.
+- **Off doesn't mute:** an escalation while Off used to mute the conversation for 24 hours, so that customer stayed unanswered after going live. Now it opens the ticket and skips the mute.
+- **"Bot replies by itself" says what happens:** a console-made company has no review rules, so no draft ever waits in `auto`. The wording no longer promises that it does.
+- **"Staff approve" gives a day:** saving `approve` sets `approval_ttl_minutes` to 1440, the most `Policy` allows, up from 30. An expired draft opens an escalation with reason `approval_expired`, for every company, since the customer is told someone will follow up.
+- **Hand-edited modes** read as Off, so a save can repair them. `replies_off` isn't reported while Customer support is suspended, because the panel can't act on it.
 
 ## Left to the builder
 

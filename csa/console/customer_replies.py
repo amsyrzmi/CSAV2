@@ -25,6 +25,8 @@ _TO_MODE: dict[str, Mode] = {"shadow": "off", "suggest": "approve", "auto": "aut
 _UNSET_DEPLOYMENT = "auto"
 _ADDONS = frozenset(p.key for p in PACKAGES if p.kind == "addon")
 MAX_BRAND_NAME = 120
+# The longest the gate's Policy allows: a small business reviews drafts the next day.
+APPROVAL_TTL_MINUTES = 1440
 
 
 class CustomerRepliesOut(BaseModel):
@@ -48,7 +50,7 @@ class CustomerRepliesIn(BaseModel):
         # The name goes into the bot's prompt, so no line breaks or control characters.
         if value is None:
             return None
-        cleaned = value.strip()
+        cleaned = value.replace("\u00a0", " ").strip()
         if len(cleaned) > MAX_BRAND_NAME or any(not c.isprintable() for c in cleaned):
             raise ValueError("brand name must be a single line of at most 120 characters")
         return cleaned or None
@@ -56,7 +58,10 @@ class CustomerRepliesIn(BaseModel):
 
 def _mode(row: dict[str, Any]) -> Mode:
     policy = row["policy"] or {}
-    return _TO_MODE[policy.get("deployment_mode", _UNSET_DEPLOYMENT)]
+    if not isinstance(policy, dict):
+        return "off"
+    # Only a hand edit reaches "off" here; it reads as off so a save can overwrite it.
+    return _TO_MODE.get(policy.get("deployment_mode", _UNSET_DEPLOYMENT), "off")
 
 
 def _can_manage(actor: ConsoleActor, client_id: UUID) -> bool:
@@ -73,7 +78,8 @@ async def _active_packages(conn: AsyncConnection[Any], client_id: UUID) -> dict[
 async def _warnings(conn: AsyncConnection[Any], client_id: UUID, mode: Mode) -> list[str]:
     statuses = await _active_packages(conn, client_id)
     active = {key for key, status in statuses.items() if status == "active"}
-    warnings = ["replies_off"] if mode == "off" else []
+    # A suspended company can't turn replies on, so telling it to would be a dead end.
+    warnings = ["replies_off"] if mode == "off" and "customer_support" in active else []
     if "knowledge_base" in active:
         found = await db.q.fetch_one(
             "console/customer_replies_has_knowledge.sql", (client_id, client_id), conn=conn
@@ -140,6 +146,12 @@ async def save_replies(
         await promote_to_pilot(conn, client_id, actor.user_id)
         if (body.mode, brand) != (before_mode, before_brand):
             await set_deployment_mode(conn, client_id, _TO_DEPLOYMENT[body.mode])
+            if body.mode == "approve":
+                await db.q.execute(
+                    "console/customer_replies_ttl_set.sql",
+                    (APPROVAL_TTL_MINUTES, client_id),
+                    conn=conn,
+                )
             await db.q.execute(
                 "console/customer_replies_brand_set.sql", (brand, client_id), conn=conn
             )

@@ -465,8 +465,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         )
         for label in (
             "Off: customers get no reply",
-            "Staff approve each reply",
-            "Bot replies by itself: replies it isn't sure about still wait for staff",
+            "Staff approve each reply: a draft waits up to 24 hours, then your team gets a "
+            "ticket and the customer is told you'll follow up",
+            "Bot replies by itself: when it can't answer, it hands over to your team",
         ):
             await expect(panel.get_by_text(label)).to_be_visible()
         await expect(panel.get_by_text("The name your bot uses with customers")).to_be_visible()
