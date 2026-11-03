@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { Inbox } from "./inbox/Inbox";
+import { CustomerRepliesBanner } from "./CustomerRepliesBanner";
 import { DetailsRow } from "./kit";
 import { field, Heading, Notice } from "./ui";
 
@@ -23,6 +24,8 @@ export function InboxWorkspace({ me }: { me: Me }) {
   if (!permitted) return <Notice error>Staff inbox access requires an administrator or staff role.</Notice>;
   const tenant = platform ? selected : me.active_client_id;
   return <>
+    {tenant && <CustomerRepliesBanner tenantId={platform ? tenant : null}
+      servicesHref={platform ? `/services?client_id=${encodeURIComponent(tenant)}` : "/portal/services"} />}
     <Heading title="Customer inbox" description="Conversations your customers start, with replies waiting for your review." />
     {/* The mechanics stay word for word, one tap away, so the list is the first thing on the page. */}
     <DetailsRow testId="inbox-howto" toggleLabel="how taking over works"

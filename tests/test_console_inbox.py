@@ -415,6 +415,12 @@ async def test_structured_reply_decisions_and_replay(sessions: SessionWorld, dec
     approval = await held(w, env)
     if decision == "expire":
         await w.q("UPDATE approvals SET expires_at=now()-interval '1 second' WHERE id=%s", approval)
+        # With replies off an expired draft sends nothing, so this company has them on.
+        await w.q(
+            "UPDATE clients SET config=jsonb_set(config,'{policy,deployment_mode}','\"suggest\"')"
+            " WHERE id=%s",
+            w.tenants[0],
+        )
     payload: dict[str, Any] = {
         "request_key": str(uuid4()),
         "decision": "approve" if decision == "expire" else decision,

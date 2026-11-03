@@ -1750,6 +1750,12 @@ async def test_packaged_customer_inbox_browser_acceptance(
                             "UPDATE approvals SET expires_at=now()-interval '1 second' WHERE id=%s",
                             (approval_id,),
                         )
+                        # With replies off an expired draft sends nothing, so replies are on.
+                        await owner.execute(
+                            "UPDATE clients SET config=jsonb_set(config,"
+                            "'{policy,deployment_mode}','\"suggest\"') WHERE id=%s",
+                            (tenants[0],),
+                        )
                     await card.get_by_text(
                         "Nobody decided in time, so this reply will not be sent.", exact=True
                     ).wait_for(timeout=60_000)

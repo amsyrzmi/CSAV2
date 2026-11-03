@@ -15,6 +15,7 @@ import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
 import { AgentCard } from "./RuntimeWorkspace";
 import { action, field, Heading, Notice, secondary } from "./ui";
+import { CustomerRepliesPanel } from "./CustomerRepliesPanel";
 import { WhatsAppPanel } from "./WhatsAppPanel";
 
 const GROUPS: { kind: Service["kind"]; title: string }[] = [
@@ -143,7 +144,10 @@ function ServiceList({ clientId, platform, canManage }: {
         );
       })}
       {services.some((service) => service.key === "customer_support" && service.status === "active") && (
-        <WhatsAppPanel tenantId={clientId} canManage={canManage} platform={platform} />
+        <>
+          <CustomerRepliesPanel tenantId={clientId} />
+          <WhatsAppPanel tenantId={clientId} canManage={canManage} platform={platform} />
+        </>
       )}
     </div>
   );

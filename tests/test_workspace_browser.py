@@ -391,6 +391,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             data = {"csrf_token": CSRF}
         elif path == "admin/clients" and platform:
             data = [TENANT_PROFILE]
+        elif path == "services/customer-replies":
+            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
         elif path in {"inbox/conversations", "inbox/approvals"}:
             data = EMPTY_PAGE
         elif path == "hr/context":

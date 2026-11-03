@@ -258,6 +258,13 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
     }
     calls: list[dict[str, Any]] = []
     unexpected: list[str] = []
+    replies: dict[str, Any] = {
+        "mode": "off",
+        "brand_name": None,
+        "can_manage": True,
+        "warnings": ["replies_off", "base_only"],
+    }
+    replies_status = {"read": 200}
 
     async def route(request_route: Any) -> None:
         request = request_route.request
@@ -268,7 +275,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 "path": path,
                 "query": query,
                 "csrf": request.headers.get("x-csrf-token"),
-                "body": request.post_data_json if request.method == "POST" else None,
+                "body": request.post_data_json if request.method in {"POST", "PUT"} else None,
             }
         )
         platform = upstream.me["role"] == "platform_admin"
@@ -303,8 +310,25 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             # The base is active now, so the add-on becomes activatable on the next list.
             rows["orders_products"] = {**rows["orders_products"], "can_activate": True}
             data = rows["customer_support"]
+        elif path == "services/customer-replies" and request.method == "GET":
+            if {"key": "customer_support", "status": "active"} not in upstream.packages:
+                status, data = 403, {"detail": "package_inactive"}
+            elif replies_status["read"] != 200:
+                status, data = replies_status["read"], {"detail": "synthetic failure"}
+            else:
+                data = replies
+        elif path == "services/customer-replies" and request.method == "PUT":
+            body = request.post_data_json
+            if body["mode"] != "off" and body["brand_name"] == "Refused":
+                status, data = 422, {"detail": "brand_name_required"}
+            else:
+                replies.update(mode=body["mode"], brand_name=body["brand_name"], warnings=[])
+                data = replies
         elif path in {"inbox/conversations", "inbox/approvals"}:
-            status, data = 403, {"detail": "package_inactive"}
+            if {"key": "customer_support", "status": "active"} in upstream.packages:
+                data = []
+            else:
+                status, data = 403, {"detail": "package_inactive"}
         elif path == "services/active" and request.method == "GET":
             # Overview's status strip (Overview is the assistant home).
             data = {"packages": upstream.packages}
@@ -433,6 +457,89 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(page.get_by_test_id("inbox-channel-badge")).to_have_count(0)
         await expect_navigation(page, ("Services",), GATED)
         assert any(c["path"] == "inbox/conversations" for c in calls[start:])
+
+        # (g) Replies are off: the banner shows on Overview and Inbox, and points to Services.
+        support = [{"key": "customer_support", "status": "active"}]
+        upstream.me, upstream.packages = make_me("tenant_admin"), support
+        banner = page.get_by_test_id("customer-replies-banner")
+        await page.goto(f"{base}/portal")
+        await expect(banner).to_contain_text(
+            "Your customers aren't getting replies yet.", timeout=WAIT
+        )
+        await expect(banner.get_by_role("link", name="Go to Services")).to_have_attribute(
+            "href", "/portal/services"
+        )
+        await page.goto(f"{base}/portal/inbox")
+        await expect(banner).to_contain_text(
+            "Your customers aren't getting replies yet.", timeout=WAIT
+        )
+
+        # (h) The panel: exact choices, the warning, Save blocked until there is a name.
+        await page.goto(f"{base}/portal/services")
+        panel = page.get_by_test_id("customer-replies-panel")
+        await expect(panel).to_contain_text(
+            "With Customer support alone, most customer questions go to your team.", timeout=WAIT
+        )
+        for label in (
+            "Off: customers get no reply",
+            "Staff approve each reply: a draft waits up to 24 hours, then your team gets a "
+            "ticket and the customer is told you'll follow up",
+            "Bot replies by itself: when it can't answer, it hands over to your team",
+        ):
+            await expect(panel.get_by_text(label)).to_be_visible()
+        await expect(panel.get_by_text("The name your bot uses with customers")).to_be_visible()
+        save = page.get_by_test_id("customer-replies-save")
+        await page.get_by_test_id("customer-replies-auto").check()
+        await expect(save).to_be_disabled()
+        await expect(panel.get_by_text("Add your brand name first.")).to_be_visible()
+
+        # (i) A refusal shows its sentence, and a good save shows the returned state.
+        await page.get_by_test_id("customer-replies-brand").fill("Refused")
+        await save.click()
+        await expect(
+            panel.get_by_text("Add your brand name before turning replies on.")
+        ).to_be_visible()
+        await page.get_by_test_id("customer-replies-brand").fill("  Team Synthetic ")
+        await save.click()
+        await expect(panel.get_by_role("status")).to_have_text("Saved.")
+        await expect(page.get_by_test_id("customer-replies-brand")).to_have_value("Team Synthetic")
+        saves = [c for c in calls if c["path"] == "services/customer-replies" and c["body"]]
+        assert saves[-1] == {
+            "method": "PUT",
+            "path": "services/customer-replies",
+            "query": "",
+            "csrf": "synthetic-csrf",
+            "body": {"mode": "auto", "brand_name": "Team Synthetic"},
+        }
+
+        # (j) Replies on: no banner, with no new sign-in.
+        await page.goto(f"{base}/portal")
+        await expect(page.get_by_text("Account access")).to_be_visible(timeout=WAIT)
+        await expect(banner).to_have_count(0)
+
+        # (k) Staff see the state and no controls, and are told who can change it.
+        replies.update(mode="off", can_manage=False, warnings=["replies_off"])
+        upstream.me = make_me("tenant_staff")
+        await page.goto(f"{base}/portal")
+        await expect(banner).to_contain_text(
+            "Ask your tenant admin to turn replies on.", timeout=WAIT
+        )
+        await expect(banner.get_by_role("link")).to_have_count(0)
+        await page.goto(f"{base}/portal/services")
+        state = page.get_by_test_id("customer-replies-state")
+        await expect(state).to_contain_text("Ask your tenant admin to change this.", timeout=WAIT)
+        await expect(page.get_by_test_id("customer-replies-save")).to_have_count(0)
+
+        # (l) A refused or failed read shows no banner and no error, and the page still works.
+        replies_status["read"] = 500
+        await page.goto(f"{base}/portal")
+        await expect(page.get_by_text("Account access")).to_be_visible(timeout=WAIT)
+        await expect(banner).to_have_count(0)
+        upstream.packages = []
+        replies_status["read"] = 200
+        await page.goto(f"{base}/portal")
+        await expect(page.get_by_text("Account access")).to_be_visible(timeout=WAIT)
+        await expect(banner).to_have_count(0)
 
         assert not unexpected, unexpected
         assert not upstream.unexpected, upstream.unexpected

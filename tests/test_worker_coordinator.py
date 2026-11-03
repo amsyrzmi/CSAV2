@@ -319,6 +319,32 @@ def _code(stage: str) -> str:
     return {"load_context": "load_ctx"}.get(stage, stage)
 
 
+@requires_docker
+@pytest.mark.parametrize("stage", ["signals", "compose"])
+async def test_a_failed_turn_sends_nothing_while_replies_are_off(
+    stage: str, pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, _ = _seed_events(owner_dsn)
+    with psycopg.connect(owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE clients SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+            "'{policy}', '{\"deployment_mode\": \"shadow\"}') WHERE id=%s",
+            (client_id,),
+        )
+    pools = await _worker(owner_dsn, app_dsn, fail_stage=stage)
+    try:
+        assert await pools[3].process_once() is True
+        result = _counts(owner_dsn, client_id)
+        assert result["outbound"] == []
+        assert result["deliveries"] == 0
+        assert len(result["escalations"]) == 1, "staff still hear about it"
+        assert result["status"] == "completed"
+    finally:
+        await _close(*pools[:3])
+
+
 async def test_finalize_failure_retries_from_checkpoint_without_second_reply(
     pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

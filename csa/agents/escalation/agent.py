@@ -14,7 +14,7 @@ from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.notify.notifier import notify
-from csa.staff.ownership import automation_allowed
+from csa.staff.ownership import automation_allowed, replies_off
 
 MUTE_FOR = timedelta(hours=24)
 logger = structlog.get_logger(__name__)
@@ -87,11 +87,14 @@ class EscalationAgent:
                 ),
                 conn=conn,
             )
-            await db.q.fetch_one(
-                "escalation/mute_conversation.sql",
-                (ctx.now() + MUTE_FOR, ctx.conversation_id, ctx.client_id),
-                conn=conn,
-            )
+            # With replies off there is nothing to mute, and a mute would silence this
+            # customer for a day after the company turns replies on.
+            if not await replies_off(conn, ctx.client_id):
+                await db.q.fetch_one(
+                    "escalation/mute_conversation.sql",
+                    (ctx.now() + MUTE_FOR, ctx.conversation_id, ctx.client_id),
+                    conn=conn,
+                )
             await notify(
                 conn,
                 client_id=ctx.client_id,
