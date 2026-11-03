@@ -79,7 +79,7 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
     <SectionNav label="Business management pages" testId="business-subnav" items={pages}
       current={section} query={tenantQuery || undefined} />
     <h2 ref={pageHeading} tabIndex={-1} data-testid="business-page-heading"
-      className="mb-3 font-(family-name:--fs-font-heading) text-(length:--fs-text-xl) font-semibold focus:outline-none">
+      className="mb-2 font-(family-name:--fs-font-heading) text-(length:--fs-text-xl) font-semibold focus:outline-none sm:mb-3">
       {pageTitle}
     </h2>
     {section === "orders" && demoMode && <div className="mb-5">
@@ -221,7 +221,9 @@ function BusinessRecords({ query, productsHref }: { query: string; productsHref:
   };
   return <div className="space-y-5">
     <section className="card rounded-[14px] p-3 sm:p-6">
-      <h2 className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold sm:mb-5">Orders</h2>
+      {/* The section tab above already says Orders: on a phone the heading stays for screen readers
+          and gives its line back, so the first order is on the first screen. */}
+      <h2 className="sr-only font-(family-name:--fs-font-heading) text-base font-semibold sm:not-sr-only sm:mb-5">Orders</h2>
       <SummaryTiles ariaLabel="Orders at a glance" testId="business-tiles" tiles={tiles} />
       <div data-testid="business-counts-note"
         className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[color:var(--fs-text-secondary)]">

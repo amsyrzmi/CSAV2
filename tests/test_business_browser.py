@@ -1352,10 +1352,9 @@ async def test_first_screen_at_390_shows_tiles_the_filters_button_and_the_first_
                 .get_by_test_id(f"business-order-{oid(1)}-title")
                 .evaluate("el => el.getBoundingClientRect().bottom")
             )
-            # The first order's card starts on the first screen (the redesign's top bar, wrapped
-            # section tabs and the page title now sit above it, so its title is at the fold),
-            # and the four tiles share one row.
-            assert top < 844, (top, title)
+            # The first order's title is on the first screen with room to spare, and the four
+            # tiles share one row.
+            assert top < 844 - 60 and title < 844 - 30, (top, title)
             rows = await page.evaluate(
                 """() => new Set([...document.querySelectorAll('[data-testid^=business-tile-]')]
                     .filter((el) => el.tagName !== 'SPAN')
