@@ -519,7 +519,7 @@ async def test_last_change_names_the_actor_for_platform_admins_only(
     tenant = UUID(sessions.tenants[0])
     before = await _services(sessions, tenant, admin)
     assert before["customer_support"].last_change is None
-    assert _agent_change(before["customer_support"], "kb_agent") is None
+    assert _agent_change(before["customer_support"], "ticket_agent") is None
     await activate_package(
         sessions.pool, tenant, "customer_support", ActivateIn(reference="Q-LC"), actor=admin
     )
@@ -529,7 +529,7 @@ async def test_last_change_names_the_actor_for_platform_admins_only(
     assert change.actor == admin.display_name == "Synthetic Admin"
     assert change.at is not None
     # Activation switches members on: is_enabled false->true reads as a subscription.
-    member = _agent_change(seen["customer_support"], "kb_agent")
+    member = _agent_change(seen["customer_support"], "ticket_agent")
     assert member is not None and member.action == "subscribed"
     assert member.actor == admin.display_name
     # A package nobody touched has no last change.
@@ -539,7 +539,7 @@ async def test_last_change_names_the_actor_for_platform_admins_only(
     hidden = await _services(sessions, tenant, tenant_admin)
     change = hidden["customer_support"].last_change
     assert change is not None and change.action == "activated" and change.actor == ROLE_LABEL
-    member = _agent_change(hidden["customer_support"], "kb_agent")
+    member = _agent_change(hidden["customer_support"], "ticket_agent")
     assert member is not None and member.actor == ROLE_LABEL
     blob = "".join(
         s.last_change.model_dump_json() if s.last_change else "" for s in hidden.values()
@@ -624,25 +624,25 @@ async def test_activation_no_op_member_rows_do_not_hide_an_older_change(
         (admin, CapabilityToggleIn(is_enabled=True)),
         (tenant_admin, CapabilityToggleIn(client_enabled=True)),
     ):
-        out = await toggle_capability(pool, tenant, "kb_agent", switches, actor_id=actor.user_id)
+        out = await toggle_capability(pool, tenant, "ticket_agent", switches, actor_id=actor.user_id)
         assert out is not None
     before = _agent_change(
-        (await _services(sessions, tenant, admin))["customer_support"], "kb_agent"
+        (await _services(sessions, tenant, admin))["customer_support"], "ticket_agent"
     )
     assert before is not None and before.action == "tenant_switch_on"
-    # Activation writes a capability.updated row for kb_agent where nothing changed.
+    # Activation writes a capability.updated row for ticket_agent where nothing changed.
     await activate_package(
         pool, tenant, "customer_support", ActivateIn(reference="Q-NOOP"), actor=admin
     )
     rows = await sessions.q(
-        "SELECT details FROM console_audit WHERE client_id=%s AND target_id='kb_agent'"
+        "SELECT details FROM console_audit WHERE client_id=%s AND target_id='ticket_agent'"
         " AND action='capability.updated' ORDER BY created_at DESC LIMIT 1",
         tenant,
     )
     assert rows[0]["details"]["before"] == rows[0]["details"]["after"]
     seen = await _services(sessions, tenant, admin)
     assert seen["customer_support"].last_change.action == "activated"  # type: ignore[union-attr]
-    assert _agent_change(seen["customer_support"], "kb_agent") == before
+    assert _agent_change(seen["customer_support"], "ticket_agent") == before
 
 
 async def test_last_change_breaks_time_ties_by_id(sessions: SessionWorld) -> None:
