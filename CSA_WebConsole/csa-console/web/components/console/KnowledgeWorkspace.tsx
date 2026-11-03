@@ -27,9 +27,10 @@ export function KnowledgeWorkspace({ me, section = "library" }: { me: Me; sectio
   const router = useRouter();
   const platform = me.role === "platform_admin";
   const [clients, setClients] = useState<Client[] | null>(null);
-  // An administrator's chosen tenant lives in the URL (?client_id=) so it survives a move
-  // between the four pages and a reload.
-  const [selected, setSelected] = useState(search.get("client_id") ?? "");
+  // An administrator's chosen tenant lives in the URL (?client_id=) and nowhere else, so the
+  // screen always agrees with the address: a section-bar click, a reload, Back and a rail link
+  // without a tenant all show what the URL says.
+  const selected = search.get("client_id") ?? "";
   const [error, setError] = useState("");
   const pageHeading = useRef<HTMLHeadingElement>(null);
   useSectionArrivalFocus(pageHeading);
@@ -46,7 +47,6 @@ export function KnowledgeWorkspace({ me, section = "library" }: { me: Me; sectio
   const query = platform && clientId ? `client_id=${encodeURIComponent(clientId)}` : "";
   const pages = knowledgePages(platform);
   const chooseTenant = (value: string) => {
-    setSelected(value);
     router.replace(value ? `${pathname}?client_id=${encodeURIComponent(value)}` : pathname, { scroll: false });
   };
   const canWrite = me.role !== null && me.role !== "read_only";

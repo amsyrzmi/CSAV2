@@ -315,6 +315,7 @@ async def knowledge_page(
     role: str = "tenant_admin",
     wait: str | None = "kb-library",
     path: str = "/portal/faq",
+    rail_expanded: bool = False,
 ) -> AsyncIterator[Page]:
     site.upstream.me = make_me(role)
     site.upstream.packages = [{"key": "customer_support", "status": "active"}]
@@ -322,6 +323,8 @@ async def knowledge_page(
     context.set_default_navigation_timeout(WAIT)
     context.set_default_timeout(15_000)
     cookies = [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
+    if rail_expanded:
+        cookies.append({"name": "fs-rail", "value": "expanded", "url": site.base})
     if theme:
         cookies.append({"name": "fs-theme", "value": theme, "url": site.base})
     await context.add_cookies(cookies)
@@ -1195,6 +1198,38 @@ async def test_choose_the_file_again_links_to_the_add_page(site: Site) -> None:
             await expect(page.get_by_test_id("kb-empty-add-link")).to_have_attribute(
                 "href", "/portal/faq/add"
             )
+
+    await with_browser(body)
+
+
+async def test_a_rail_link_without_a_tenant_drops_the_tenant_on_screen(site: Site) -> None:
+    """A soft move from ?client_id=A to the same page without it must not keep A's data."""
+
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with knowledge_page(
+            browser,
+            site,
+            stub,
+            path=f"/knowledge-base/add?client_id={TENANT}",
+            role="platform_admin",
+            wait="kb-add",
+            rail_expanded=True,
+        ) as page:
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            await page.get_by_test_id("rail-child-knowledge_base-add").click()
+            await expect(page).to_have_url(re.compile(r"/knowledge-base/add$"), timeout=WAIT)
+            await expect(page.get_by_text("Select a tenant to continue.")).to_be_visible()
+            await expect(page.get_by_test_id("kb-add")).to_have_count(0)
+            await expect(page.get_by_label("Tenant")).to_have_value("")
+            await expect(page.get_by_test_id("kb-subnav-library")).to_have_attribute(
+                "href", "/knowledge-base"
+            )
+            # Back returns to the first tenant and its page.
+            await page.go_back()
+            await expect(page).to_have_url(re.compile(rf"client_id={TENANT}$"), timeout=WAIT)
+            await expect(page.get_by_label("Tenant")).to_have_value(TENANT)
+            await expect(page.get_by_test_id("kb-add")).to_be_visible()
 
     await with_browser(body)
 
