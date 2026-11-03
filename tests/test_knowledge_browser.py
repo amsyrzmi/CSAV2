@@ -235,6 +235,10 @@ class Stub:
         parts = urlsplit("http://x/" + request.url.split("/console/v1/")[1])
         path = parts.path.lstrip("/")
         status, data = 200, None
+        if path == "hr/context" and request.method == "GET":
+            # The rail asks for the HR tabs on pages that name a tenant; unused here.
+            await request_route.fulfill(status=404, json={"detail": "not stubbed"})
+            return
         self.queries.setdefault(path, []).append(parse_qs(parts.query))
         if path == "auth/csrf":
             data = {"csrf_token": "synthetic-csrf"}

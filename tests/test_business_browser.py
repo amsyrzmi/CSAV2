@@ -202,6 +202,10 @@ class Stub:
             }
         elif path == "admin/clients" and request.method == "GET":
             data = [TENANT_PROFILE]
+        elif path == "hr/context" and request.method == "GET":
+            # The rail asks for the HR tabs on pages that name a tenant; unused here.
+            await request_route.fulfill(status=404, json={"detail": "not stubbed"})
+            return
         elif path == "business/products" and request.method == "GET":
             self.other_calls.append("products")
             self.product_queries.append(query)
