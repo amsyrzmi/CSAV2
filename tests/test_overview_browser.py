@@ -207,7 +207,7 @@ class Api:
             data = CLIENTS
         elif path == "hr/context" and request.method == "GET":
             # The rail asks for the HR tabs of a company with the HR package; a member with no
-            # access beyond Home (the shape of `HrContext`). A refused read would be a console error.
+            # access beyond Home (the shape of `HrContext`). A refused read is a console error.
             data = {
                 "employee": None,
                 "client_owner": False,

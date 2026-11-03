@@ -624,7 +624,9 @@ async def test_activation_no_op_member_rows_do_not_hide_an_older_change(
         (admin, CapabilityToggleIn(is_enabled=True)),
         (tenant_admin, CapabilityToggleIn(client_enabled=True)),
     ):
-        out = await toggle_capability(pool, tenant, "ticket_agent", switches, actor_id=actor.user_id)
+        out = await toggle_capability(
+            pool, tenant, "ticket_agent", switches, actor_id=actor.user_id
+        )
         assert out is not None
     before = _agent_change(
         (await _services(sessions, tenant, admin))["customer_support"], "ticket_agent"
