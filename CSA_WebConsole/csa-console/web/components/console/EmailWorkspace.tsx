@@ -180,7 +180,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
       await refreshOpen();
       setMore(!done);
       const count = Number(receipt.detail.threads ?? 0);
-      setMessage(count ? `Loaded ${count} older ${count === 1 ? "thread" : "threads"}.` : "");
+      setMessage(count ? `Loaded ${count} older ${count === 1 ? "conversation" : "conversations"}.` : "");
     });
     setLoadingMore(false);
   }
@@ -233,7 +233,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
     <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
     <StatusBar context={context} lastSync={lastSync} busy={busy} writable={writable} wide={attention.state === "off"}
       onSync={() => run(
-        () => client.sync(), async r => { const ctx = await refreshAll(); setMessage(`Synced ${String((r.detail as { threads?: number }).threads ?? 0)} threads.`); loadAttention(ctx); },
+        () => client.sync(), async r => { const ctx = await refreshAll(); const n = (r.detail as { threads?: number }).threads ?? 0; setMessage(`Checked Gmail: ${n} ${n === 1 ? "conversation" : "conversations"}.`); loadAttention(ctx); },
       )}
       onConnect={() => run(() => client.connect(), result => { window.location.assign(result.authorization_url); })}
       onSetEnabled={next => run(
@@ -241,7 +241,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
         async () => { const ctx = await client.context(); setContext(ctx); await reloadLists(ctx); setMessage(ctx.enabled ? "Assistant enabled." : "Assistant disabled."); },
       )}
       onDisconnect={() => run(
-        () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" }); setMessage("Mailbox disconnected; cached threads remain readable."); },
+        () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" }); setMessage("Gmail disconnected. Emails already loaded stay readable."); },
       )} />
     {attention.state !== "off" && <AttentionPanel attention={attention} busy={busy}
       onOpen={id => run(() => client.thread(id), detail => { setSelected(detail); setTab("inbox"); })} />}
@@ -258,7 +258,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
         draftCount={draftCount} draftsLoaded={drafts.length} shown={visible.length} />}
 
       {tab === "inbox" && <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <Panel title={`Threads${lastSync ? ` · synced ${formatWhen(lastSync)}` : ""}`}>
+        <Panel title={`Emails${lastSync ? ` · checked ${formatWhen(lastSync)}` : ""}`}>
           <div className="space-y-4">
             {threads.length === 0 && <p className="text-sm">No threads cached yet. Sync the inbox.</p>}
             {threads.length > 0 && visible.length === 0 && <div data-testid="email-no-match" className="flex flex-wrap items-center gap-3 text-sm">
@@ -453,9 +453,9 @@ function DraftEditor({ draft, busy, writable, onSave, onSend, onExport, onDelete
   const dirty = !same(edit.to, draft.to) || !same(edit.cc, draft.cc) || !same(edit.bcc, draft.bcc) ||
     subject !== draft.subject || body !== draft.body;
   const kind = isReply(draft) ? "Reply" : "New email";
-  const state = draft.status === "exported" ? `Saved to Gmail drafts (${draft.gmail_draft_id})`
+  const state = draft.status === "exported" ? "Saved to your Gmail drafts"
     : draft.status === "sent" ? "Sent" : draft.status === "sending" ? "Sending not confirmed"
-    : `${draft.source === "model" ? "Model draft" : "Edited draft"} · not sent`;
+    : `${draft.source === "model" ? "Written by the assistant" : "Edited by you"} · not sent`;
   return <form data-testid="email-draft" className="space-y-3 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 text-sm sm:p-4" onSubmit={event => { event.preventDefault(); onSave(edit); }}>
     <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-ink-500">
       <span>{kind} · {state}</span>

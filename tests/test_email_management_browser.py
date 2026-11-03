@@ -486,8 +486,10 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (d2) The manual Sync button loads the attention panel exactly once more.
         async with page.expect_request(re.compile(r"/console/v1/email/attention")):
-            await page.get_by_role("button", name="Sync inbox").click()
-        await expect(page.get_by_role("button", name="Sync inbox")).to_be_enabled(timeout=WAIT)
+            await page.get_by_role("button", name="Check for new email").click()
+        await expect(page.get_by_role("button", name="Check for new email")).to_be_enabled(
+            timeout=WAIT
+        )
         assert len(called("POST", "email/sync")) == 2
         assert len(called("GET", "email/attention")) == 2
 

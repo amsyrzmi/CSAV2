@@ -46,13 +46,13 @@ export function ReviewCard({ approval, now, blocked, onPropose, onEdit, onView }
     </div>}
     {editing && open && <form className="mt-3 space-y-2" onSubmit={(event) => {
       event.preventDefault();
-      if (window.confirm("Queue this edited reply for delivery?")) void onEdit(text);
+      if (window.confirm("Send this edited reply?")) void onEdit(text);
     }}>
       <label className="block"><span className="text-sm font-medium">Replacement reply</span>
         <textarea className={`${field} mt-1 h-28 py-2`} value={text} maxLength={2000} disabled={blocked}
           onChange={(event) => setText(event.target.value)} required />
       </label>
-      <button className={action} disabled={blocked || !text.trim()}>Queue edited reply</button>
+      <button className={action} disabled={blocked || !text.trim()}>Send edited reply</button>
     </form>}
   </article>;
 }

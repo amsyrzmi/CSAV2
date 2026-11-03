@@ -159,9 +159,9 @@ export function Thread({
         </>}
         <button type="button" className={secondary} disabled={blocked || !!detailError}
           onClick={() => {
-            if (!current.human_muted || window.confirm("Release this conversation to AI? Older paused turns stay suppressed."))
+            if (!current.human_muted || window.confirm("Let the assistant reply again? It won't answer messages that came in while you were handling this chat."))
               void act(current.human_muted ? "release" : "takeover");
-          }}>{current.human_muted ? "Release to AI" : "Take over"}</button>
+          }}>{current.human_muted ? "Hand back to assistant" : "Take over"}</button>
       </div>}
     </header>
     {(detailError || messages.error) && <div className="border-b border-[color:var(--fs-border)] p-3">
@@ -210,17 +210,17 @@ export function Thread({
         </label>
         <div className="mt-2 flex justify-start md:justify-end">
           <button ref={queueRef} className={action} aria-expanded={confirming} aria-controls={confirming ? `reply-confirm-${id}` : undefined}
-            disabled={blocked || !!detailError || !text.trim()}>Queue reply</button></div>
+            disabled={blocked || !!detailError || !text.trim()}>Send reply</button></div>
         {confirming && <div id={`reply-confirm-${id}`} role="group" aria-label="Confirm reply" data-testid="inbox-reply-confirm"
           className="mt-2 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] p-3">
-          <p className="text-sm font-medium">Queue this reply for delivery to the customer?</p>
+          <p className="text-sm font-medium">Send this reply to the customer?</p>
           <p className="mt-1 text-xs text-ink-700">Once it is delivered you cannot take it back.</p>
           <div className="mt-3 flex flex-wrap justify-start gap-2 md:justify-end">
             <button ref={cancelRef} type="button" data-testid="inbox-reply-confirm-cancel" className={secondary}
               disabled={blocked} onClick={cancelConfirm}>Cancel</button>
             <button type="button" data-testid="inbox-reply-confirm-send" className={action}
               disabled={blocked || !!detailError} onClick={() => void confirmSend()}>
-              {blocked ? "Queueing reply" : "Confirm and queue"}</button>
+              {blocked ? "Sending..." : "Confirm and send"}</button>
           </div>
         </div>}
       </form>

@@ -66,7 +66,7 @@ export default function StatusBar({
           <h2 className="font-(family-name:--fs-font-heading) text-base font-semibold">Mailbox</h2>
           <p className="flex flex-wrap items-center gap-2 text-sm">
             <span data-testid="email-status-word"><StatusLabel tone={tone}>{word}</StatusLabel></span>
-            {!context.enabled && <span>The email assistant is switched off for this tenant.</span>}
+            {!context.enabled && <span>The email assistant is switched off for your company.</span>}
             {context.enabled && !mailbox && <span>No mailbox connected for your account.</span>}
             {context.enabled && mailbox && <span className="break-all font-medium">{mailbox.address ?? "(pending)"}</span>}
           </p>
@@ -74,19 +74,19 @@ export default function StatusBar({
         <div className="flex flex-wrap gap-2">
           {context.can_manage && !context.enabled && (
             <button ref={switchOn} type="button" data-testid="email-switch-on" className={action} disabled={busy} onClick={() => onSetEnabled(true)}>
-              Switch on for tenant
+              Switch on for my company
             </button>
           )}
           {context.can_connect && !connected && (
             <button ref={connect} type="button" data-testid="email-connect" className={action} disabled={busy} onClick={onConnect}>Connect Gmail</button>
           )}
           {context.enabled && connected && writable && (
-            <button type="button" className={action} disabled={busy} onClick={onSync}>Sync inbox</button>
+            <button type="button" className={action} disabled={busy} onClick={onSync}>Check for new email</button>
           )}
         </div>
       </div>
       {!context.provider_configured && (
-        <p className="text-xs text-[color:var(--fs-warning)]">Google OAuth is not configured on this deployment.</p>
+        <p className="text-xs text-[color:var(--fs-warning)]">Connecting Gmail isn&apos;t available yet. Contact fourstacks support.</p>
       )}
       <DetailsRow
         testId="email-mailbox"
@@ -95,7 +95,7 @@ export default function StatusBar({
           ? <span data-testid="email-last-sync" className="text-sm text-[color:var(--fs-text-secondary)]">
             {mailbox.status === "pending" && "Gmail has not finished connecting. "}
             {mailbox.status === "revoked" && "Gmail access was removed, so new email will not arrive. "}
-            {synced ? `Last synced ${formatWhen(synced)}.` : "Not synced yet."}
+            {synced ? `Last checked ${formatWhen(synced)}.` : "Not checked yet."}
           </span>
           : <span className="text-sm text-[color:var(--fs-text-secondary)]">Privacy and mailbox settings</span>}
       >
@@ -112,7 +112,7 @@ export default function StatusBar({
             {context.can_manage && context.enabled && (
               <ConfirmAction
                 testId="email-switch-off"
-                label="Switch off for tenant"
+                label="Switch off for my company"
                 question="Switch the email assistant off for this company? Nobody here can use it until someone switches it on again."
                 disabled={busy}
                 onConfirm={() => { refocus.current = "switch-on"; onSetEnabled(false); }}

@@ -27,9 +27,9 @@ export function InboxWorkspace({ me }: { me: Me }) {
     {/* The mechanics stay word for word, one tap away, so the list is the first thing on the page. */}
     <DetailsRow testId="inbox-howto" toggleLabel="how taking over works"
       summary={<p className="text-sm text-ink-700">How taking over and replying work</p>}>
-      <Notice>Take over a conversation before you reply. The assistant stays paused until you release it.
-        If the assistant is already sending a reply, takeover waits for it. Replies the assistant had queued are not sent.
-        Queued replies still have to be delivered. Each reply shows its delivery status.
+      <Notice>Take over a chat before you reply. The assistant stops replying until you hand it back.
+        If the assistant is already sending a reply, taking over waits for it. Replies the assistant had lined up are not sent.
+        Each reply shows whether it was delivered.
         We hide common personal details in messages.</Notice>
     </DetailsRow>
     {error && <Notice error>{error}</Notice>}

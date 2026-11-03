@@ -571,7 +571,7 @@ async def test_expired_approval_shows_approval_expired(shell: Shell) -> None:
         await review.get_by_role("button", name="Edit", exact=True).click()
         await review.get_by_label("Replacement reply").fill("Your order ships on Friday.")
         page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
-        await review.get_by_role("button", name="Queue edited reply").click()
+        await review.get_by_role("button", name="Send edited reply").click()
         await expect(page.get_by_text("Approval expired. No reply queued.")).to_be_visible(
             timeout=WAIT
         )
@@ -811,7 +811,7 @@ async def test_thread_avatar_is_a_static_undimmed_rest_pose_even_with_motion_all
 # ---- Task 13: a friendlier inbox, and a confirm step before a reply is queued ----------------
 
 REPLY = "Yes, it arrives on Friday."
-CONFIRM_ASK = "Queue this reply for delivery to the customer?"
+CONFIRM_ASK = "Send this reply to the customer?"
 
 
 async def open_composer(page: Page, text: str = REPLY) -> Any:
@@ -829,7 +829,7 @@ async def test_queue_reply_asks_for_confirmation_and_cancel_sends_nothing(shell:
     state = Inbox()
     async with inbox_page(shell, state) as page:
         box = await open_composer(page)
-        queue = page.get_by_role("button", name="Queue reply", exact=True)
+        queue = page.get_by_role("button", name="Send reply", exact=True)
         confirm = page.get_by_test_id("inbox-reply-confirm")
         await expect(confirm).to_have_count(0)
         await queue.click()
@@ -850,7 +850,7 @@ async def test_queue_reply_asks_for_confirmation_and_cancel_sends_nothing(shell:
         await expect(confirm).to_have_count(0)
         await expect(queue).to_be_focused()
         await expect(box).to_have_value(REPLY)
-        # Pressing Enter on Queue reply from the keyboard only opens the step.
+        # Pressing Enter on Send reply from the keyboard only opens the step.
         await page.keyboard.press("Enter")
         await expect(confirm).to_be_visible()
         await expect(page.get_by_test_id("inbox-reply-confirm-send")).not_to_be_focused()
@@ -864,7 +864,7 @@ async def test_queue_reply_confirm_sends_once(shell: Shell, how: str) -> None:
     state = Inbox(reply_delay=0.8)
     async with inbox_page(shell, state) as page:
         box = await open_composer(page)
-        await page.get_by_role("button", name="Queue reply", exact=True).click()
+        await page.get_by_role("button", name="Send reply", exact=True).click()
         send = page.get_by_test_id("inbox-reply-confirm-send")
         await expect(send).to_be_visible()
         if how == "dblclick":
@@ -889,10 +889,10 @@ async def test_escape_does_nothing_while_the_reply_is_being_sent(shell: Shell) -
     state = Inbox(reply_delay=1.5)
     async with inbox_page(shell, state) as page:
         box = await open_composer(page)
-        await page.get_by_role("button", name="Queue reply", exact=True).click()
+        await page.get_by_role("button", name="Send reply", exact=True).click()
         confirm = page.get_by_test_id("inbox-reply-confirm")
         await page.get_by_test_id("inbox-reply-confirm-send").click()
-        await expect(page.get_by_test_id("inbox-reply-confirm-send")).to_have_text("Queueing reply")
+        await expect(page.get_by_test_id("inbox-reply-confirm-send")).to_have_text("Sending...")
         await page.keyboard.press("Escape")
         # Focus is on nothing while the buttons are disabled, so also aim Escape at the form itself.
         await page.get_by_test_id("inbox-composer").evaluate(
@@ -932,8 +932,8 @@ async def test_assistant_launcher_never_covers_the_reply_buttons(
                 document.body.appendChild(pill);
             }"""
         )
-        queue = page.get_by_role("button", name="Queue reply", exact=True)
-        assert await on_top(queue), "Queue reply is under the launcher"
+        queue = page.get_by_role("button", name="Send reply", exact=True)
+        assert await on_top(queue), "Send reply is under the launcher"
         assert not await touches_corner(queue)
         await queue.click()
         for test_id in ("inbox-reply-confirm-send", "inbox-reply-confirm-cancel"):
@@ -1098,7 +1098,7 @@ async def test_composer_sticky_at_390(shell: Shell) -> None:
     async with inbox_page(shell, state, width=390) as page:
         await open_composer(page)
         composer = page.get_by_test_id("inbox-composer")
-        queue = page.get_by_role("button", name="Queue reply", exact=True)
+        queue = page.get_by_role("button", name="Send reply", exact=True)
         height = await page.evaluate("window.innerHeight")
 
         async def in_view() -> dict[str, float]:
@@ -1146,7 +1146,7 @@ async def test_inbox_no_overflow_at_five_widths_in_three_themes(shell: Shell, th
                 .locator("textarea")
                 .fill("Thank you, it ships tomorrow.")
             )
-            await page.get_by_role("button", name="Queue reply", exact=True).click()
+            await page.get_by_role("button", name="Send reply", exact=True).click()
             await expect(page.get_by_test_id("inbox-reply-confirm")).to_be_visible()
             measured = await page_width(page)
             assert measured["scroll"] <= measured["inner"], ("confirm", theme, width, measured)
@@ -1161,7 +1161,7 @@ async def test_inbox_no_overflow_at_five_widths_in_three_themes(shell: Shell, th
 
 
 async def test_how_it_works_text_sits_behind_a_closed_arrow(shell: Shell) -> None:
-    mechanics = "Take over a conversation before you reply."
+    mechanics = "Take over a chat before you reply."
     async with inbox_page(shell, Inbox()) as page:
         await rows_loaded(page)
         row_box = await row(page, NAMED).bounding_box()
@@ -1183,7 +1183,7 @@ async def test_queue_reply_points_at_its_question_only_while_open_and_a_release_
     state = Inbox()
     async with inbox_page(shell, state) as page:
         await open_composer(page)
-        queue = page.get_by_role("button", name="Queue reply", exact=True)
+        queue = page.get_by_role("button", name="Send reply", exact=True)
         confirm = page.get_by_test_id("inbox-reply-confirm")
         # aria-controls names an element only while that element exists.
         await expect(queue).not_to_have_attribute("aria-controls", re.compile(r".+"))

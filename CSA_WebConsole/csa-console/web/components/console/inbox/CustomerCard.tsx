@@ -15,7 +15,7 @@ import { usePages } from "./usePages";
 /**
  * Who the customer is, who owns the conversation, and its reply history. The full phone
  * number comes only from the single-conversation read. Pending replies are decided in the
- * thread; handled ones stay reachable here behind "Include handled approvals".
+ * thread; handled ones stay reachable here behind "Show replies already checked".
  */
 export function CustomerCard({
   id, row, current, query, revision, now, actions, inDialog, onView, includeHandled, onIncludeHandled,
@@ -56,7 +56,7 @@ export function CustomerCard({
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" className="size-4" checked={includeHandled}
           onChange={(event) => onIncludeHandled(event.target.checked)} />
-        Include handled approvals
+        Show replies already checked
       </label>
       {includeHandled ? <History id={id} query={query} revision={revision} now={now} actions={actions} onView={onView} />
         : <p className="mt-2 text-xs text-ink-700">Replies waiting for review appear in the conversation.</p>}

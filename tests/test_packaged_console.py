@@ -1621,7 +1621,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
             await staff.get_by_role("button", name="Take over", exact=True).click()
             await thread.get_by_text("Staff has taken over", exact=True).wait_for()
             await staff.get_by_label("Human reply", exact=True).fill(reply_text)
-            await staff.get_by_role("button", name="Queue reply", exact=True).click()
+            await staff.get_by_role("button", name="Send reply", exact=True).click()
             await staff.get_by_test_id("inbox-reply-confirm-send").click()
             await staff.get_by_text("Outcome uncertain.", exact=False).wait_for()
             await thread.get_by_role("list").get_by_text(reply_text, exact=True).wait_for()
@@ -1633,7 +1633,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
             assert replies[0] is not None and json.loads(replies[0])["request_key"]
             assert await thread.get_by_role("list").get_by_text(reply_text, exact=True).count() == 1
             await staff.get_by_text("Staff · queued", exact=True).wait_for()
-            await staff.get_by_role("button", name="Release to AI", exact=True).click()
+            await staff.get_by_role("button", name="Hand back to assistant", exact=True).click()
             await thread.get_by_text("The assistant is handling this", exact=True).wait_for()
             assert await staff.get_by_label("Human reply", exact=True).count() == 0
             await staff.reload()
@@ -1764,7 +1764,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
                 elif decision == "edit":
                     await card.get_by_role("button", name="Edit", exact=True).click()
                     await card.get_by_role("textbox").fill("Synthetic edited answer")
-                    await card.get_by_role("button", name="Queue edited reply", exact=True).click()
+                    await card.get_by_role("button", name="Send edited reply", exact=True).click()
                 else:
                     await card.get_by_role(
                         "button", name="Approve" if decision == "approve" else "Reject", exact=True
@@ -1787,7 +1787,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
                 assert handled["status"] == 200
                 assert handled["body"]["outcome"] == "already_handled"
                 assert handled["body"]["queued"] is False
-            await staff.get_by_label("Include handled approvals", exact=True).check()
+            await staff.get_by_label("Show replies already checked", exact=True).check()
             await staff.get_by_text("Synthetic edit draft", exact=True).wait_for()
 
             async with await psycopg.AsyncConnection.connect(
