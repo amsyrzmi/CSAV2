@@ -1504,8 +1504,43 @@ Semantic rejection details stay in turn state for regeneration; only their count
 Classifier comparisons are persisted separately in `decision_log`; a console endpoint for those rows
 is not implemented yet.
 
+## Bookings
+
+Stage 1, PR 1 (migrations `0510`, `0511`). The Bookings package sells on its own: a company
+does not need Customer support, and activating it moves an `onboarding` company to `pilot`
+(one `tenant.status_changed` audit row), as Customer support does. This section covers the
+setup routes; the booking and calendar routes follow in a later change.
+
+Routes, under `/console/v1/bookings` with the usual tenant selection. Human sessions only
+(the machine token is refused) and behind the `bookings` package gate (active status only).
+Reads need membership of the company (a platform admin chooses it with `?client_id=`).
+Writes need an Admin of the company or a platform admin who chose it; staff and read-only
+members get 403. A `PATCH` carries the `version` read, and a stale one gets 409
+`version_conflict`. Every change writes a `bookings.*` audit row. Names, addresses, notes
+and links must be one short line of plain text (they end up in emails and calendar files).
+
+| Method/path | Result |
+|---|---|
+| `GET /people` | `PersonOut[]`: `{id, display_name, user_id, employee_id, email, is_active, version}` |
+| `POST /people` | Body `{display_name, user_id?, employee_id?, email?}`; 201. `user_id` must be an enabled member of this company and `employee_id` an HR person of this company, else 422 `member_not_found` / `employee_not_found`; a member already listed is 409 `person_exists` |
+| `PATCH /people/{id}` | `{version, ...}` and any of the same fields plus `is_active`; a field sent as `null` is cleared. 404 `person_not_found` |
+| `POST /people/from-team` | Adds each enabled console member not yet listed, linking the account and the HR person (if any); returns the people added, `[]` the second time. Works for a company without HR |
+| `GET, POST /resources`, `PATCH /resources/{id}` | Rooms and shared things: `{id, name, capacity, is_active, version}`. 404 `resource_not_found` |
+| `GET, POST /types`, `PATCH /types/{id}` | Booking types: name, `duration_minutes`, `buffer_minutes`, `audience` (`customers`, `staff`, `both`), `delivery` (`named`, `any`, `several`), `resource_rule` (`none`, `specific`, `any`), `location_kind` (`in_person`, `phone`, `online`), `address`, `meeting_link`, `needs_confirmation`, `min_notice_minutes`, `max_advance_days`, `change_cutoff_minutes`, `person_ids`, `resource_ids`. 422 `type_needs_people` (`named`/`several` with nobody), `type_needs_resources` (`specific`/`any` with no room), `type_needs_address`, `type_needs_link` (an `https://` link); `person_not_found`, `resource_not_found` for ids outside the company. The address or link not used by `location_kind` is dropped |
+| `POST /types/starters` | Creates "Appointment" (30 minutes) and "Consultation" (60 minutes), for customers, by any free person, by phone, only when the company has no type: 201 with the new types, then 200 with the existing ones and nothing created |
+| `GET /hours?subject_kind=&subject_id=` | `{subject_kind, subject_id, is_default, periods: [{weekday, opens, closes}]}`; `weekday` 0 is Monday, times are `HH:MM` in the company's time zone. With no subject: the company's hours, the default week (Monday to Friday, 09:00 to 18:00, `is_default: true`) until set. For a `person` or `resource`: its own hours, `[]` when it follows the company's |
+| `PUT /hours` | Body `{subject_kind?, subject_id?, periods}` replaces those hours as a whole. Each period must open before it closes (latest closing 23:59; nothing may run past midnight) and none may overlap on a day: 422 `hours_invalid` / `hours_overlap`. An empty list clears them (a company goes back to the default week). A `subject_id` outside the company: 422 `subject_not_found` |
+| `GET, POST /closed-days`, `DELETE /closed-days/{date}` | `{day, note}`; `GET` takes `from` and `to` dates. Closing a closed day again changes its note. `DELETE` is 204, 404 `closed_day_not_found` |
+| `GET /blocks?from=&to=` | Blocks ending after `from` (default now) and starting before `to` |
+| `POST /blocks` | Body `{subject_kind: person\|resource, subject_id, starts_at, ends_at, note?}`; 201. Writes the block's hold in the same transaction. 409 `slot_taken` when the person or room is already held for any of that time (a booking or another block); 422 `block_times_invalid`, `subject_not_found` |
+| `DELETE /blocks/{id}` | 204, and the hold goes with it. 404 `block_not_found` |
+
+`booking_team_members(client)` (migration `0511`) is a `SECURITY DEFINER` read, granted only to
+`csa_app`, that lists the company's enabled members with the HR person linked to each account;
+`csa_app` can read neither `console_memberships` nor, without an HR grant, `hr_employee_accounts`.
+
 ## Services and packages
-Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`). Packages are the management surface; the capability switches below remain the runtime enforcement.
+Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`; `bookings` is a separate service and requires nothing). Packages are the management surface; the capability switches below remain the runtime enforcement.
 
 | Package | Kind | Capabilities | Tabs | Sellable |
 |---|---|---|---|---|
@@ -1513,7 +1548,7 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 | `knowledge_base` | addon | `kb_agent` | knowledge_base | yes |
 | `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
 | `subscriptions` | addon | `subscription_agent` | subscriptions | yes |
-| `bookings` | addon | `booking_agent` | bookings | yes |
+| `bookings` | standalone | `booking_agent` | bookings | yes |
 | `marketplaces` | addon | `ecommerce_agent` | ecommerce | no |
 | `e_invoicing` | addon | `lhdn_agent` | lhdn_myinvois | no |
 | `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | hr | yes |

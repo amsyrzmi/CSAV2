@@ -584,9 +584,13 @@ def test_tab_labels_match_the_console_navigation() -> None:
     labels["chat"] = labels["overview"]
     tab_keys = set(get_args(TabKey))
     assert tab_keys <= TAB_LABELS.keys()
-    assert tab_keys <= labels.keys()
+    # The Bookings tab joins the sidebar with its pages (bookings stage 1, task 6): until then
+    # the assistant knows the tab and the sidebar does not.
+    not_in_sidebar_yet = {"bookings"}
+    assert tab_keys - not_in_sidebar_yet <= labels.keys()
     for key, label in TAB_LABELS.items():
-        assert labels[key] == label
+        if key not in not_in_sidebar_yet:
+            assert labels[key] == label
 
 
 def test_text_tables_have_the_same_keys() -> None:

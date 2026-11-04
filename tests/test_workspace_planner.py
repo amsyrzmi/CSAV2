@@ -699,7 +699,7 @@ def test_tab_available_ports_the_console_rule() -> None:
         state(key)
         for key in (
             "customer_support", "knowledge_base", "orders_products", "hr", "staff_email",
-            "subscriptions",
+            "subscriptions", "bookings",
         )
     ]  # fmt: skip
     assert tab_available("email", Role.TENANT_STAFF, [state("staff_email")])
@@ -733,6 +733,13 @@ def test_tab_available_ports_the_console_rule() -> None:
         assert not tab_available(tab, Role.READ_ONLY, every), tab
     assert tab_available("hr", Role.READ_ONLY, every)
     assert tab_available("subscriptions", Role.READ_ONLY, every)
+    # Bookings needs only its own package, active; Customer Support alone does not open it.
+    assert tab_available("bookings", Role.TENANT_STAFF, [state("bookings")])
+    assert tab_available("bookings", Role.READ_ONLY, [state("bookings")])
+    assert not tab_available("bookings", Role.TENANT_STAFF, [])
+    assert not tab_available("bookings", Role.TENANT_STAFF, [state("customer_support")])
+    assert not tab_available("bookings", Role.TENANT_STAFF, [state("bookings", "suspended")])
+    assert tab_available("bookings", Role.PLATFORM_ADMIN, [])
 
 
 async def test_planner_names_a_contract_failure() -> None:

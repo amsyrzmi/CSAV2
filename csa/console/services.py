@@ -325,6 +325,10 @@ async def request_package(
     return await _service(pool, client_id, key, actor)
 
 
+# Packages that make a company usable: activating one moves an onboarding company to pilot.
+PROMOTES_TO_PILOT: frozenset[str] = frozenset({"customer_support", "bookings"})
+
+
 async def activate_package(
     pool: AsyncConnectionPool,
     client_id: UUID,
@@ -360,7 +364,7 @@ async def activate_package(
                 conn, client_id, name, is_enabled=True, client_enabled=True, actor_id=actor.user_id
             )
         await _audit(conn, client_id, actor, "service.activated", key, before, row)
-        if key == "customer_support":
+        if key in PROMOTES_TO_PILOT:
             await promote_to_pilot(conn, client_id, actor.user_id)
     return await _service(pool, client_id, key, actor)
 

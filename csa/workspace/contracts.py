@@ -66,6 +66,7 @@ TabKey = Literal[
     "hr",
     "email",
     "subscriptions",
+    "bookings",
     "activity",
     "chat",
 ]

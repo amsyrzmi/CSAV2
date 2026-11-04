@@ -738,3 +738,50 @@ async def test_last_change_function_does_not_widen_csa_app_grants(sessions: Sess
             "forced": False,
         }
     ]
+
+
+async def test_bookings_activates_without_customer_support(sessions: SessionWorld) -> None:
+    tenant = sessions.tenants[0]
+    started = await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/bookings/activate?client_id={tenant}",
+        {"reference": "synthetic-test"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["status"] == "active" and started.json()["requires"] == []
+    rows = await sessions.q(
+        "SELECT package, status FROM console_service_packages WHERE client_id=%s", tenant
+    )
+    assert rows == [{"package": "bookings", "status": "active"}]
+
+
+async def test_activating_bookings_moves_an_onboarding_company_to_pilot(
+    sessions: SessionWorld,
+) -> None:
+    tenant = sessions.tenants[0]
+    before = await sessions.q("SELECT status FROM clients WHERE id=%s", tenant)
+    assert before == [{"status": "onboarding"}]
+    started = await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/bookings/activate?client_id={tenant}",
+        {"reference": "synthetic-test"},
+    )
+    assert started.status_code == 200, started.text
+    after = await sessions.q("SELECT status FROM clients WHERE id=%s", tenant)
+    assert after == [{"status": "pilot"}]
+    audit = await sessions.q(
+        "SELECT details FROM console_audit WHERE client_id=%s AND action='tenant.status_changed'",
+        tenant,
+    )
+    assert [row["details"] for row in audit] == [{"before": "onboarding", "after": "pilot"}]
+    # A company that is already live stays as it is.
+    live = sessions.tenants[1]
+    await sessions.q("UPDATE clients SET status='active' WHERE id=%s", live)
+    await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/bookings/activate?client_id={live}",
+        {"reference": "synthetic-test"},
+    )
+    assert await sessions.q("SELECT status FROM clients WHERE id=%s", live) == [
+        {"status": "active"}
+    ]
