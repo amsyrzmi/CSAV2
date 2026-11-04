@@ -47,6 +47,7 @@ Email = Annotated[
         max_length=254,
         pattern=r"^[^\s@<>,;\"]+@[^\s@<>,;\"]+\.[^\s@<>,;\"]+$",
     ),
+    AfterValidator(_one_line),
 ]
 ClockTime = Annotated[str, StringConstraints(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
 
@@ -74,7 +75,7 @@ class _Patch(Contract):
                 raise ValueError(f"{name} cannot be null")
 
 
-class PersonOut(Contract):
+class BookingPersonOut(Contract):
     id: UUID
     display_name: str
     user_id: UUID | None
@@ -84,14 +85,14 @@ class PersonOut(Contract):
     version: int
 
 
-class PersonIn(Contract):
+class BookingPersonIn(Contract):
     display_name: Name
     user_id: UUID | None = None
     employee_id: UUID | None = None
     email: Email | None = None
 
 
-class PersonPatch(_Patch):
+class BookingPersonPatch(_Patch):
     display_name: Name | None = None
     user_id: UUID | None = None
     employee_id: UUID | None = None
@@ -99,12 +100,12 @@ class PersonPatch(_Patch):
     is_active: bool | None = None
 
     @model_validator(mode="after")
-    def _not_null(self) -> PersonPatch:
+    def _not_null(self) -> BookingPersonPatch:
         self.refuse_null("display_name", "is_active")
         return self
 
 
-class ResourceOut(Contract):
+class BookingResourceOut(Contract):
     id: UUID
     name: str
     capacity: int | None
@@ -112,23 +113,23 @@ class ResourceOut(Contract):
     version: int
 
 
-class ResourceIn(Contract):
+class BookingResourceIn(Contract):
     name: Name
     capacity: int | None = Field(default=None, ge=1, le=10000)
 
 
-class ResourcePatch(_Patch):
+class BookingResourcePatch(_Patch):
     name: Name | None = None
     capacity: int | None = Field(default=None, ge=1, le=10000)
     is_active: bool | None = None
 
     @model_validator(mode="after")
-    def _not_null(self) -> ResourcePatch:
+    def _not_null(self) -> BookingResourcePatch:
         self.refuse_null("name", "is_active")
         return self
 
 
-class TypeOut(Contract):
+class BookingTypeOut(Contract):
     id: UUID
     name: str
     duration_minutes: int
@@ -149,7 +150,7 @@ class TypeOut(Contract):
     resource_ids: list[UUID]
 
 
-class TypeIn(Contract):
+class BookingTypeIn(Contract):
     name: Name
     duration_minutes: int = Field(ge=1, le=1440)
     buffer_minutes: int = Field(default=0, ge=0, le=1440)
@@ -167,7 +168,7 @@ class TypeIn(Contract):
     resource_ids: list[UUID] = Field(default_factory=list, max_length=200)
 
 
-class TypePatch(_Patch):
+class BookingTypePatch(_Patch):
     name: Name | None = None
     duration_minutes: int | None = Field(default=None, ge=1, le=1440)
     buffer_minutes: int | None = Field(default=None, ge=0, le=1440)
@@ -186,45 +187,45 @@ class TypePatch(_Patch):
     is_active: bool | None = None
 
     @model_validator(mode="after")
-    def _not_null(self) -> TypePatch:
+    def _not_null(self) -> BookingTypePatch:
         self.refuse_null(
             *(n for n in self.model_fields_set if n not in ("address", "meeting_link"))
         )
         return self
 
 
-class Period(Contract):
+class BookingPeriod(Contract):
     weekday: int = Field(ge=0, le=6)  # Monday is 0
     opens: ClockTime  # wall-clock time in the company's own time zone
     closes: ClockTime  # up to 23:59, and later than opens
 
 
-class HoursIn(Contract):
+class BookingHoursIn(Contract):
     subject_kind: HoursKind = "company"
     subject_id: UUID | None = None
-    periods: list[Period] = Field(max_length=70)
+    periods: list[BookingPeriod] = Field(max_length=70)
 
 
-class HoursOut(Contract):
+class BookingHoursOut(Contract):
     subject_kind: HoursKind
     subject_id: UUID | None
     # True when nothing is stored: a company then has the default week, a person or room
     # follows the company's hours.
     is_default: bool
-    periods: list[Period]
+    periods: list[BookingPeriod]
 
 
-class ClosedDayIn(Contract):
+class BookingClosedDayIn(Contract):
     day: date
     note: Note | None = None
 
 
-class ClosedDayOut(Contract):
+class BookingClosedDayOut(Contract):
     day: date
     note: str | None
 
 
-class BlockIn(Contract):
+class BookingBlockIn(Contract):
     subject_kind: SubjectKind
     subject_id: UUID
     starts_at: AwareDatetime
@@ -232,7 +233,7 @@ class BlockIn(Contract):
     note: Note | None = None
 
 
-class BlockOut(Contract):
+class BookingBlockOut(Contract):
     id: UUID
     subject_kind: SubjectKind
     subject_id: UUID

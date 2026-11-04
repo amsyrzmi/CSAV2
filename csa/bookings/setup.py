@@ -14,27 +14,28 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from psycopg import AsyncConnection, errors
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from csa.bookings.availability import DEFAULT_COMPANY_HOURS
 from csa.bookings.contracts import (
-    BlockIn,
-    BlockOut,
-    ClosedDayIn,
-    ClosedDayOut,
-    HoursIn,
+    BookingBlockIn,
+    BookingBlockOut,
+    BookingClosedDayIn,
+    BookingClosedDayOut,
+    BookingHoursIn,
+    BookingHoursOut,
+    BookingPeriod,
+    BookingPersonIn,
+    BookingPersonOut,
+    BookingPersonPatch,
+    BookingResourceIn,
+    BookingResourceOut,
+    BookingResourcePatch,
+    BookingTypeIn,
+    BookingTypeOut,
+    BookingTypePatch,
+    Email,
     HoursKind,
-    HoursOut,
-    Period,
-    PersonIn,
-    PersonOut,
-    PersonPatch,
-    ResourceIn,
-    ResourceOut,
-    ResourcePatch,
-    TypeIn,
-    TypeOut,
-    TypePatch,
 )
 from csa.console.contracts import ConsoleActor
 from csa.console.kb_uploads import audit
@@ -77,12 +78,12 @@ async def lock_subjects(conn: Conn, client_id: UUID, subjects: Iterable[tuple[st
 # --- people ----------------------------------------------------------------------------------
 
 
-def person_out(row: dict[str, Any]) -> PersonOut:
+def person_out(row: dict[str, Any]) -> BookingPersonOut:
     """A people row as the API shows it."""
-    return PersonOut.model_validate(row)
+    return BookingPersonOut.model_validate(row)
 
 
-async def list_people(conn: Conn, client_id: UUID) -> list[PersonOut]:
+async def list_people(conn: Conn, client_id: UUID) -> list[BookingPersonOut]:
     """Everyone who can be booked, active or not."""
     rows = await db.q.fetch_all("bookings/people_list.sql", {"client_id": client_id}, conn=conn)
     return [person_out(row) for row in rows]
@@ -118,8 +119,8 @@ async def _require_member(conn: Conn, client_id: UUID, user_id: UUID | None) -> 
 
 
 async def create_person(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, data: PersonIn
-) -> PersonOut:
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingPersonIn
+) -> BookingPersonOut:
     """Add a person; a linked account must be an enabled member of this company."""
     await _require_member(conn, client_id, data.user_id)
     row = await _write_person(
@@ -130,8 +131,8 @@ async def create_person(
 
 
 async def update_person(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, person_id: UUID, patch: PersonPatch
-) -> PersonOut:
+    conn: Conn, client_id: UUID, actor: ConsoleActor, person_id: UUID, patch: BookingPersonPatch
+) -> BookingPersonOut:
     """Change a person; only the fields sent change."""
     current = await db.q.fetch_one(
         "bookings/person_get.sql", {"client_id": client_id, "id": person_id}, conn=conn
@@ -148,12 +149,23 @@ async def update_person(
     return person_out(row)
 
 
+_EMAIL = TypeAdapter(Email)
+
+
+def _safe_email(address: object) -> str | None:
+    """The address if it passes the same check as one typed in; otherwise none is stored."""
+    try:
+        return _EMAIL.validate_python(address)
+    except ValidationError:
+        return None
+
+
 def _display_name(member: dict[str, Any]) -> str:
     name = " ".join(str(member["display_name"] or "").split())[:120]
     return name or str(member["email"])
 
 
-async def add_team(conn: Conn, client_id: UUID, actor: ConsoleActor) -> list[PersonOut]:
+async def add_team(conn: Conn, client_id: UUID, actor: ConsoleActor) -> list[BookingPersonOut]:
     """Add each enabled member not yet listed, with their HR person when they have one.
 
     The member list and the HR link come from one narrow database function, so a company without
@@ -162,7 +174,7 @@ async def add_team(conn: Conn, client_id: UUID, actor: ConsoleActor) -> list[Per
     await lock(conn, "people", client_id)
     rows = await db.q.fetch_all("bookings/people_user_ids.sql", {"client_id": client_id}, conn=conn)
     listed = {row["user_id"] for row in rows}
-    added: list[PersonOut] = []
+    added: list[BookingPersonOut] = []
     for member in await team_members(conn, client_id):
         if member["user_id"] in listed:
             continue
@@ -174,7 +186,7 @@ async def add_team(conn: Conn, client_id: UUID, actor: ConsoleActor) -> list[Per
                 "display_name": _display_name(member),
                 "user_id": member["user_id"],
                 "employee_id": member["employee_id"],
-                "email": member["email"],
+                "email": _safe_email(member["email"]),
             },
         )
         await audit(conn, actor, client_id, "bookings.person.created", str(row["id"]))
@@ -185,15 +197,15 @@ async def add_team(conn: Conn, client_id: UUID, actor: ConsoleActor) -> list[Per
 # --- rooms and shared things -----------------------------------------------------------------
 
 
-async def list_resources(conn: Conn, client_id: UUID) -> list[ResourceOut]:
+async def list_resources(conn: Conn, client_id: UUID) -> list[BookingResourceOut]:
     """Every room or shared thing, active or not."""
     rows = await db.q.fetch_all("bookings/resources_list.sql", {"client_id": client_id}, conn=conn)
-    return [ResourceOut.model_validate(row) for row in rows]
+    return [BookingResourceOut.model_validate(row) for row in rows]
 
 
 async def create_resource(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, data: ResourceIn
-) -> ResourceOut:
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingResourceIn
+) -> BookingResourceOut:
     """Add a room or shared thing."""
     row = await db.q.fetch_one(
         "bookings/resource_insert.sql", {"client_id": client_id, **data.model_dump()}, conn=conn
@@ -201,12 +213,12 @@ async def create_resource(
     if row is None:
         raise RuntimeError("resource_insert.sql returned no row")
     await audit(conn, actor, client_id, "bookings.resource.created", str(row["id"]))
-    return ResourceOut.model_validate(row)
+    return BookingResourceOut.model_validate(row)
 
 
 async def update_resource(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, resource_id: UUID, patch: ResourcePatch
-) -> ResourceOut:
+    conn: Conn, client_id: UUID, actor: ConsoleActor, resource_id: UUID, patch: BookingResourcePatch
+) -> BookingResourceOut:
     """Change a room or shared thing; only the fields sent change."""
     current = await db.q.fetch_one(
         "bookings/resource_get.sql", {"client_id": client_id, "id": resource_id}, conn=conn
@@ -222,21 +234,23 @@ async def update_resource(
     if row is None:
         raise RuntimeError("resource_update.sql returned no row")
     await audit(conn, actor, client_id, "bookings.resource.updated", str(resource_id))
-    return ResourceOut.model_validate(row)
+    return BookingResourceOut.model_validate(row)
 
 
 # --- booking types ---------------------------------------------------------------------------
 
 
-async def list_types(conn: Conn, client_id: UUID, type_id: UUID | None = None) -> list[TypeOut]:
+async def list_types(
+    conn: Conn, client_id: UUID, type_id: UUID | None = None
+) -> list[BookingTypeOut]:
     """Booking types, or the one type named, each with its people and rooms."""
     rows = await db.q.fetch_all(
         "bookings/types_list.sql", {"client_id": client_id, "id": type_id}, conn=conn
     )
-    return [TypeOut.model_validate(row) for row in rows]
+    return [BookingTypeOut.model_validate(row) for row in rows]
 
 
-def type_problem(data: TypeIn) -> str | None:
+def type_problem(data: BookingTypeIn) -> str | None:
     """What a type is missing for the rules it names, or None when it holds together."""
     if data.delivery in ("named", "several") and not data.person_ids:
         return "type_needs_people"
@@ -249,7 +263,7 @@ def type_problem(data: TypeIn) -> str | None:
     return None
 
 
-def _tidy(data: TypeIn) -> TypeIn:
+def _tidy(data: BookingTypeIn) -> BookingTypeIn:
     """Keep only what the chosen rules use, so a stale address or link is never stored."""
     return data.model_copy(
         update={
@@ -263,7 +277,7 @@ def _tidy(data: TypeIn) -> TypeIn:
     )
 
 
-async def _check_type(conn: Conn, client_id: UUID, data: TypeIn) -> TypeIn:
+async def _check_type(conn: Conn, client_id: UUID, data: BookingTypeIn) -> BookingTypeIn:
     data = _tidy(data)
     problem = type_problem(data)
     if problem is not None:
@@ -279,7 +293,7 @@ async def _check_type(conn: Conn, client_id: UUID, data: TypeIn) -> TypeIn:
     return data
 
 
-async def _store_links(conn: Conn, client_id: UUID, type_id: UUID, data: TypeIn) -> None:
+async def _store_links(conn: Conn, client_id: UUID, type_id: UUID, data: BookingTypeIn) -> None:
     for table, ids in (("people", data.person_ids), ("resources", data.resource_ids)):
         params = {"client_id": client_id, "type_id": type_id}
         await db.q.execute(f"bookings/type_{table}_delete.sql", params, conn=conn)
@@ -289,7 +303,9 @@ async def _store_links(conn: Conn, client_id: UUID, type_id: UUID, data: TypeIn)
             )
 
 
-async def _insert_type(conn: Conn, client_id: UUID, actor: ConsoleActor, data: TypeIn) -> TypeOut:
+async def _insert_type(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingTypeIn
+) -> BookingTypeOut:
     data = await _check_type(conn, client_id, data)
     row = await db.q.fetch_one(
         "bookings/type_insert.sql", {"client_id": client_id, **data.model_dump()}, conn=conn
@@ -301,14 +317,16 @@ async def _insert_type(conn: Conn, client_id: UUID, actor: ConsoleActor, data: T
     return (await list_types(conn, client_id, row["id"]))[0]
 
 
-async def create_type(conn: Conn, client_id: UUID, actor: ConsoleActor, data: TypeIn) -> TypeOut:
+async def create_type(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingTypeIn
+) -> BookingTypeOut:
     """Add a booking type, after checking it has the people, rooms, address or link it names."""
     return await _insert_type(conn, client_id, actor, data)
 
 
 async def update_type(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, type_id: UUID, patch: TypePatch
-) -> TypeOut:
+    conn: Conn, client_id: UUID, actor: ConsoleActor, type_id: UUID, patch: BookingTypePatch
+) -> BookingTypeOut:
     """Change a booking type; the result is checked as a whole, as on creation."""
     locked = await db.q.fetch_one(
         "bookings/type_lock.sql", {"client_id": client_id, "id": type_id}, conn=conn
@@ -320,7 +338,7 @@ async def update_type(
     merged = {**current, **patch.changes()}
     is_active = merged.pop("is_active")
     try:
-        data = TypeIn.model_validate({k: merged[k] for k in TypeIn.model_fields})
+        data = BookingTypeIn.model_validate({k: merged[k] for k in BookingTypeIn.model_fields})
     except ValidationError as exc:
         raise refuse(422, "type_invalid") from exc
     data = await _check_type(conn, client_id, data)
@@ -336,7 +354,7 @@ async def update_type(
 
 async def create_starters(
     conn: Conn, client_id: UUID, actor: ConsoleActor
-) -> tuple[list[TypeOut], bool]:
+) -> tuple[list[BookingTypeOut], bool]:
     """Create the starter types if the company has no type at all.
 
     Returns the company's types and whether anything was created, so a second call does nothing.
@@ -350,7 +368,7 @@ async def create_starters(
             conn,
             client_id,
             actor,
-            TypeIn(name=name, duration_minutes=minutes, location_kind="phone"),
+            BookingTypeIn(name=name, duration_minutes=minutes, location_kind="phone"),
         )
     return await list_types(conn, client_id), True
 
@@ -358,10 +376,10 @@ async def create_starters(
 # --- hours -----------------------------------------------------------------------------------
 
 
-def default_periods() -> list[Period]:
+def default_periods() -> list[BookingPeriod]:
     """A fresh copy of the default week, so the shared default can never be changed."""
     return [
-        Period(weekday=day, opens=f"{opens:%H:%M}", closes=f"{closes:%H:%M}")
+        BookingPeriod(weekday=day, opens=f"{opens:%H:%M}", closes=f"{closes:%H:%M}")
         for day, spans in sorted(DEFAULT_COMPANY_HOURS.items())
         for opens, closes in spans
     ]
@@ -388,7 +406,7 @@ async def _check_subject(
 
 async def get_hours(
     conn: Conn, client_id: UUID, kind: HoursKind, subject_id: UUID | None
-) -> HoursOut:
+) -> BookingHoursOut:
     """Stored hours for the company, a person or a room.
 
     A company with none stored has the default week. A person or room with none stored has an
@@ -400,13 +418,15 @@ async def get_hours(
         {"client_id": client_id, "kind": kind, "subject_id": subject_id},
         conn=conn,
     )
-    periods = [Period.model_validate(row) for row in rows]
+    periods = [BookingPeriod.model_validate(row) for row in rows]
     if not periods and kind == "company":
         periods = default_periods()
-    return HoursOut(subject_kind=kind, subject_id=subject_id, is_default=not rows, periods=periods)
+    return BookingHoursOut(
+        subject_kind=kind, subject_id=subject_id, is_default=not rows, periods=periods
+    )
 
 
-def check_periods(periods: list[Period]) -> None:
+def check_periods(periods: list[BookingPeriod]) -> None:
     """Each period opens before it closes, and none overlaps another on the same day.
 
     A period that runs past midnight is two days' hours, not one: it is refused here.
@@ -420,7 +440,9 @@ def check_periods(periods: list[Period]) -> None:
             raise refuse(422, "hours_overlap")
 
 
-async def put_hours(conn: Conn, client_id: UUID, actor: ConsoleActor, data: HoursIn) -> HoursOut:
+async def put_hours(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingHoursIn
+) -> BookingHoursOut:
     """Replace the hours of the company, a person or a room as a whole."""
     await _check_subject(conn, client_id, data.subject_kind, data.subject_id)
     check_periods(data.periods)
@@ -449,19 +471,19 @@ async def put_hours(conn: Conn, client_id: UUID, actor: ConsoleActor, data: Hour
 
 async def list_closed_days(
     conn: Conn, client_id: UUID, start: date | None, end: date | None
-) -> list[ClosedDayOut]:
+) -> list[BookingClosedDayOut]:
     """Closed days in date order, optionally within a range."""
     rows = await db.q.fetch_all(
         "bookings/closed_days_list.sql",
         {"client_id": client_id, "from": start, "to": end},
         conn=conn,
     )
-    return [ClosedDayOut.model_validate(row) for row in rows]
+    return [BookingClosedDayOut.model_validate(row) for row in rows]
 
 
 async def add_closed_day(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, data: ClosedDayIn
-) -> ClosedDayOut:
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingClosedDayIn
+) -> BookingClosedDayOut:
     """Close a day; closing it again only changes the note."""
     row = await db.q.fetch_one(
         "bookings/closed_day_upsert.sql", {"client_id": client_id, **data.model_dump()}, conn=conn
@@ -469,7 +491,7 @@ async def add_closed_day(
     if row is None:
         raise RuntimeError("closed_day_upsert.sql returned no row")
     await audit(conn, actor, client_id, "bookings.closed_day.added", data.day.isoformat())
-    return ClosedDayOut.model_validate(row)
+    return BookingClosedDayOut.model_validate(row)
 
 
 async def remove_closed_day(conn: Conn, client_id: UUID, actor: ConsoleActor, day: date) -> None:
@@ -487,15 +509,17 @@ async def remove_closed_day(conn: Conn, client_id: UUID, actor: ConsoleActor, da
 
 async def list_blocks(
     conn: Conn, client_id: UUID, start: datetime | None, end: datetime | None
-) -> list[BlockOut]:
+) -> list[BookingBlockOut]:
     """Blocks that end after `start` (default: now) and begin before `end`, earliest first."""
     rows = await db.q.fetch_all(
         "bookings/blocks_list.sql", {"client_id": client_id, "from": start, "to": end}, conn=conn
     )
-    return [BlockOut.model_validate(row) for row in rows]
+    return [BookingBlockOut.model_validate(row) for row in rows]
 
 
-async def create_block(conn: Conn, client_id: UUID, actor: ConsoleActor, data: BlockIn) -> BlockOut:
+async def create_block(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingBlockIn
+) -> BookingBlockOut:
     """Block a person or room for a period, writing its hold in the same transaction.
 
     A block over an existing booking, or over another block, is refused as `slot_taken`.
@@ -520,7 +544,7 @@ async def create_block(conn: Conn, client_id: UUID, actor: ConsoleActor, data: B
     except (errors.ExclusionViolation, errors.DeadlockDetected) as exc:
         raise refuse(409, "slot_taken") from exc
     await audit(conn, actor, client_id, "bookings.block.created", str(row["id"]))
-    return BlockOut.model_validate(row)
+    return BookingBlockOut.model_validate(row)
 
 
 async def remove_block(conn: Conn, client_id: UUID, actor: ConsoleActor, block_id: UUID) -> None:

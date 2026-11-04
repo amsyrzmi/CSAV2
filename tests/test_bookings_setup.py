@@ -7,13 +7,15 @@ import uuid
 from typing import Any
 
 import httpx
+import psycopg
 import pytest
 from csa.bookings.api import build_bookings_router
 from csa.bookings.availability import DEFAULT_COMPANY_HOURS
+from csa.core.tenancy import tx
 
 from tests.conftest import requires_docker
-from tests.test_console_services import activate
 from tests.test_console_sessions import SessionWorld
+from tests.test_customer_replies import activate_only
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
@@ -26,7 +28,7 @@ WEEKDAYS = [{"weekday": day, "opens": "09:00", "closes": "18:00"} for day in ran
 async def packages(sessions: SessionWorld) -> None:
     sessions.app.include_router(build_bookings_router())
     for tenant in sessions.tenants:
-        await activate(sessions, tenant, "bookings")
+        await activate_only(sessions, tenant, "bookings")
 
 
 class Team:
@@ -723,3 +725,152 @@ async def test_each_setup_change_writes_an_audit_row(sessions: SessionWorld, tea
         "bookings.%",
     )
     assert [r["action"] for r in other_rows] == ["bookings.type.created", "bookings.type.created"]
+
+
+# --- Bookings on its own ---------------------------------------------------------------------
+
+
+async def test_a_bookings_only_company_can_set_up_and_be_suspended(
+    sessions: SessionWorld, team: Team
+) -> None:
+    w = sessions
+    tenant = w.tenants[0]
+    held = await w.q(
+        "SELECT package, status FROM console_service_packages WHERE client_id=%s", tenant
+    )
+    assert held == [{"package": "bookings", "status": "active"}]
+
+    assert (await team.send(team.admin, "/people", {"display_name": "Aina"})).status_code == 201
+    off = await w.mutate(w.admin, f"/console/v1/services/bookings/suspend?client_id={tenant}", {})
+    assert off.status_code == 200, off.text
+    refused = await team.admin.get(f"{BASE}/people")
+    assert refused.status_code == 403 and refused.json()["detail"] == "package_inactive"
+    again = await w.mutate(
+        w.admin,
+        f"/console/v1/services/bookings/activate?client_id={tenant}",
+        {"reference": "synthetic-test"},
+    )
+    assert again.status_code == 200, again.text
+    assert len((await team.reader.get(f"{BASE}/people")).json()) == 1
+
+
+# --- addresses reach mail headers: one plain line ----------------------------------------------
+
+BAD_EMAILS = [
+    "a@example.test\nBcc: x@example.test",
+    "a@example.test\r\nBcc: x@example.test",
+    "a\n@example.test",
+    "a@exam\x00ple.test",
+    "a@example.test" + chr(0x2028) + "x",
+    "a@exam" + chr(0x200B) + "ple.test",
+    "a@example.test\tx",
+    "a b@example.test",
+    "a@example.test, x@example.test",
+    "<a@example.test>",
+    "no-at-sign",
+]
+
+
+@pytest.mark.parametrize("address", BAD_EMAILS)
+async def test_a_person_email_must_be_one_plain_address(
+    sessions: SessionWorld, team: Team, address: str
+) -> None:
+    refused = await team.send(team.admin, "/people", {"display_name": "Aina", "email": address})
+    assert refused.status_code == 422, address
+    person = await make_person(team, "Bakar", email="bakar@example.test")
+    patched = await team.send(
+        team.admin, f"/people/{person['id']}", {"version": 1, "email": address}, "PATCH"
+    )
+    assert patched.status_code == 422, address
+    assert (await team.admin.get(f"{BASE}/people")).json()[0]["email"] == "bakar@example.test"
+
+
+async def test_from_team_stores_no_unclean_address(sessions: SessionWorld, team: Team) -> None:
+    w = sessions
+    # Nothing in the identity table guards the shape of the address, so an old row could hold one.
+    await w.q(
+        "UPDATE console_users SET email=%s WHERE id=%s",
+        "x@example.test\nbcc: y@example.test",
+        team.staff_info["user"]["id"],
+    )
+    added = await team.send(team.admin, "/people/from-team")
+    assert added.status_code == 200, added.text
+    by_user = {row["user_id"]: row for row in added.json()}
+    assert by_user[team.staff_info["user"]["id"]]["email"] is None
+    assert by_user[team.admin_info["user"]["id"]]["email"].endswith("@example.test")
+
+
+# --- 0511: the team read ------------------------------------------------------------------------
+
+
+async def test_the_team_read_refuses_other_companies_and_stays_narrow(
+    sessions: SessionWorld, team: Team
+) -> None:
+    w = sessions
+    mine, theirs = w.tenants
+    employee = str(uuid.uuid4())
+    await w.q(
+        "INSERT INTO hr_employees (client_id, id, display_name) VALUES (%s,%s,'Synthetic')",
+        mine,
+        employee,
+    )
+    await w.q(
+        "INSERT INTO hr_employee_accounts (client_id, user_id, employee_id) VALUES (%s,%s,%s)",
+        mine,
+        team.staff_info["user"]["id"],
+        employee,
+    )
+    await w.q(
+        "UPDATE console_memberships SET is_enabled=false WHERE client_id=%s AND user_id=%s",
+        mine,
+        team.reader_info["user"]["id"],
+    )
+    async with tx(w.pool, mine) as conn:
+        cursor = await conn.execute("SELECT * FROM public.booking_team_members(%s)", (mine,))
+        rows = await cursor.fetchall()
+    # The disabled member is not listed; the HR link shows though the caller has no HR grant.
+    assert {str(r["user_id"]): r["employee_id"] for r in rows} == {
+        team.admin_info["user"]["id"]: None,
+        team.staff_info["user"]["id"]: uuid.UUID(employee),
+    }
+    assert set(rows[0]) == {"user_id", "display_name", "email", "employee_id"}
+
+    # Another company's id, and no company at all, are refused.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        async with tx(w.pool, mine) as conn:
+            await conn.execute("SELECT * FROM public.booking_team_members(%s)", (theirs,))
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        async with w.pool.connection() as conn:
+            await conn.execute("SELECT * FROM public.booking_team_members(%s)", (mine,))
+
+    # EXECUTE is csa_app's alone, and the tables behind it stay closed to csa_app.
+    grants = await w.q(
+        "SELECT has_function_privilege('csa_app', p.oid, 'EXECUTE') AS app,"
+        " has_function_privilege('csa_ro', p.oid, 'EXECUTE') AS ro,"
+        " has_function_privilege('csa_identity', p.oid, 'EXECUTE') AS ident,"
+        " has_function_privilege('public', p.oid, 'EXECUTE') AS public,"
+        " has_table_privilege('csa_app', 'public.console_users', 'SELECT') AS users_select,"
+        " has_table_privilege('csa_app', 'public.console_memberships', 'SELECT') AS members_select,"
+        " (SELECT relforcerowsecurity FROM pg_class"
+        "   WHERE oid = 'public.hr_employee_accounts'::regclass) AS forced"
+        " FROM pg_proc p WHERE p.oid = 'public.booking_team_members(uuid)'::regprocedure"
+    )
+    assert grants == [
+        {
+            "app": True,
+            "ro": False,
+            "ident": False,
+            "public": False,
+            "users_select": False,
+            "members_select": False,
+            "forced": False,
+        }
+    ]
+    for table in ("console_users", "console_memberships"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            async with tx(w.pool, mine) as conn:
+                await conn.execute(f"SELECT 1 FROM public.{table} LIMIT 1")  # type: ignore[arg-type]
+    # hr_employee_accounts shows a caller only their own row, and the caller here has none.
+    async with tx(w.pool, mine) as conn:
+        cursor = await conn.execute("SELECT * FROM public.hr_employee_accounts")
+        assert await cursor.fetchall() == []

@@ -1516,8 +1516,11 @@ Routes, under `/console/v1/bookings` with the usual tenant selection. Human sess
 Reads need membership of the company (a platform admin chooses it with `?client_id=`).
 Writes need an Admin of the company or a platform admin who chose it; staff and read-only
 members get 403. A `PATCH` carries the `version` read, and a stale one gets 409
-`version_conflict`. Every change writes a `bookings.*` audit row. Names, addresses, notes
-and links must be one short line of plain text (they end up in emails and calendar files).
+`version_conflict`. Every change writes a `bookings.*` audit row. Names, addresses, notes,
+links and email addresses must be one short line of plain text (they end up in mail headers and
+calendar files); an address is one plain `name@host` with no spaces, commas or angle brackets.
+The schemas are published in `docs/console_openapi.json` as `Booking*` (`BookingPersonOut` and so on,
+so they never clash with HR's `PersonOut`).
 
 | Method/path | Result |
 |---|---|
