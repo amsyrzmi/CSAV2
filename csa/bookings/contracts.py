@@ -241,3 +241,141 @@ class BookingBlockOut(Contract):
     ends_at: datetime
     note: str | None
     created_by: UUID
+
+
+# --- booking, moving and the calendar ----------------------------------------------------------
+
+Phone = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=3, max_length=30, pattern=r"^\+?[0-9][0-9 ()\-.]*$"
+    ),
+    AfterValidator(_one_line),
+]
+
+BookingStatus = Literal["pending", "confirmed", "cancelled", "no_show"]
+BookingKind = Literal["appointment", "meeting"]
+# What the rules can say about a time. Never why: no leave type, no reason.
+BookingFinding = Literal["outside_hours", "closed_day", "short_notice", "on_leave"]
+
+
+class BookingGuestIn(Contract):
+    """Someone outside the company on a meeting, kept by email address."""
+
+    name: Name | None = None
+    email: Email
+
+
+class BookingWalkInIn(Contract):
+    """A customer who is not in the contact list yet: a name and a phone number or an email."""
+
+    name: Name
+    phone: Phone | None = None
+    email: Email | None = None
+
+    @model_validator(mode="after")
+    def _a_way_to_reach_them(self) -> BookingWalkInIn:
+        if self.phone is None and self.email is None:
+            raise ValueError("a walk-in needs a phone number or an email address")
+        return self
+
+
+class BookingIn(Contract):
+    """A booking of a type (`type_id`), or a meeting (`title` and `minutes`)."""
+
+    type_id: UUID | None = None
+    title: Name | None = None
+    minutes: int | None = Field(default=None, ge=1, le=1440)
+    starts_at: AwareDatetime
+    people: list[UUID] = Field(default_factory=list, max_length=50)
+    resources: list[UUID] = Field(default_factory=list, max_length=50)
+    contact_id: UUID | None = None
+    walk_in: BookingWalkInIn | None = None
+    guests: list[BookingGuestIn] = Field(default_factory=list, max_length=50)
+    private: bool = False
+    acknowledged: list[BookingFinding] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def _a_type_or_a_meeting(self) -> BookingIn:
+        if self.type_id is not None and (self.title is not None or self.minutes is not None):
+            raise ValueError("a booking has a type, or a title and minutes, not both")
+        if self.type_id is None and (self.title is None or self.minutes is None):
+            raise ValueError("a meeting needs a title and minutes")
+        if self.contact_id is not None and self.walk_in is not None:
+            raise ValueError("give a contact or a walk-in, not both")
+        return self
+
+
+class BookingMoveIn(Contract):
+    """Move a booking to a new start, keeping its length, people and rooms."""
+
+    version: int = Field(ge=1)
+    starts_at: AwareDatetime
+    acknowledged: list[BookingFinding] = Field(default_factory=list, max_length=4)
+
+
+class BookingActionIn(Contract):
+    """Cancel, confirm, decline or mark a no-show. A version, when sent, must still be current."""
+
+    version: int | None = Field(default=None, ge=1)
+
+
+class BookingPersonRef(Contract):
+    id: UUID
+    display_name: str
+    is_active: bool
+
+
+class BookingResourceRef(Contract):
+    id: UUID
+    name: str
+    is_active: bool
+
+
+class BookingGuestOut(Contract):
+    name: str | None
+    email: str
+
+
+class BookingCustomerOut(Contract):
+    id: UUID
+    full_name: str | None
+    phone: str | None
+    email: str | None
+
+
+class BookingOut(Contract):
+    """A booking as one viewer may see it. Every read goes through `service.to_out`.
+
+    A private meeting the viewer is not part of is `redacted`: the title is "Busy" and nothing but
+    the times, status and version is shown. A read-only member sees no customer and no guests.
+    """
+
+    id: UUID
+    status: BookingStatus
+    kind: BookingKind
+    title: str | None
+    private: bool
+    redacted: bool
+    starts_at: datetime
+    ends_at: datetime
+    version: int
+    type_id: UUID | None
+    customer: BookingCustomerOut | None
+    people: list[BookingPersonRef]
+    resources: list[BookingResourceRef]
+    guests: list[BookingGuestOut]
+    location_kind: LocationKind | None
+    address: str | None
+    meeting_link: str | None
+    # "unavailable" when a person on the booking now has approved leave over it. Never why.
+    conflict: Literal["unavailable"] | None
+
+
+class BookingSlotOut(Contract):
+    """A free time in UTC, with everyone and everything that could take it."""
+
+    starts_at: datetime
+    ends_at: datetime
+    people: list[UUID]
+    resources: list[UUID]

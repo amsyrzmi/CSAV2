@@ -2,26 +2,35 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import date, datetime
-from typing import Annotated
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import AwareDatetime
 
-from csa.bookings import setup
+from csa.bookings import service, setup
 from csa.bookings.contracts import (
+    BookingActionIn,
     BookingBlockIn,
     BookingBlockOut,
     BookingClosedDayIn,
     BookingClosedDayOut,
     BookingHoursIn,
     BookingHoursOut,
+    BookingIn,
+    BookingMoveIn,
+    BookingOut,
     BookingPersonIn,
     BookingPersonOut,
     BookingPersonPatch,
     BookingResourceIn,
     BookingResourceOut,
     BookingResourcePatch,
+    BookingSlotOut,
     BookingTypeIn,
     BookingTypeOut,
     BookingTypePatch,
@@ -31,8 +40,13 @@ from csa.console.access import authenticate, tenant
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.services import package_gate
 from csa.core.tenancy import tx
+from csa.subscriptions import service as subscriptions
+from csa.subscriptions.contracts import CustomerRef
 
 WRITE_ROLES = {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN}
+# Customer details follow the Inbox rule: staff and Admins see them, read-only members do not.
+CUSTOMER_ROLES = {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}
+Change = Literal["created", "moved", "cancelled", "confirmed", "declined", "no_show"]
 # Module level: handler annotations are strings and must resolve in module globals.
 Tenant = Annotated[UUID, Depends(tenant)]
 
@@ -57,10 +71,35 @@ def require_bookings_write(actor: ConsoleActor, client_id: UUID) -> None:
     require_bookings_read(actor, client_id)
 
 
+class BookingRoute(APIRoute):
+    """Sends a `service.Refusal` with its extra fields (a sentence, the findings) at the top level
+    of the body, next to `detail`, which stays the short code."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def guarded(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except service.Refusal as refusal:
+                return JSONResponse(refusal.body, status_code=refusal.status_code)
+
+        return guarded
+
+
+async def after_commit(request: Request, record: service.BookingRecord, change: Change) -> None:
+    """Runs once the booking's transaction has committed, with the unredacted record.
+
+    Nothing happens here yet. Task 5 sends the invitation, change or cancellation email from this
+    one place, so a failed email can never undo a booking.
+    """
+
+
 def build_bookings_router() -> APIRouter:
     """The `/console/v1/bookings` router; reads need membership, setup writes need an Admin."""
     router = APIRouter(
         prefix="/console/v1/bookings",
+        route_class=BookingRoute,
         tags=["Bookings"],
         dependencies=[Depends(human_session), Depends(package_gate("bookings"))],
     )
@@ -72,6 +111,19 @@ def build_bookings_router() -> APIRouter:
         actor: ConsoleActor = request.state.console_actor
         require_bookings_write(actor, client_id)
         return actor
+
+    def changer(request: Request, client_id: UUID) -> ConsoleActor:
+        """Staff and Admins change bookings; read-only members get 403."""
+        actor: ConsoleActor = request.state.console_actor
+        require_bookings_read(actor, client_id)
+        service.acting_as(actor)
+        return actor
+
+    async def respond(
+        request: Request, actor: ConsoleActor, record: service.BookingRecord, change: Change
+    ) -> BookingOut:
+        await after_commit(request, record, change)
+        return service.to_out(record, service.viewer_of(actor))
 
     # --- people ------------------------------------------------------------------------------
 
@@ -240,5 +292,113 @@ def build_bookings_router() -> APIRouter:
         async with tx(request.app.state.pool, str(client_id)) as conn:
             await setup.remove_block(conn, client_id, actor, block_id)
         return Response(status_code=204)
+
+    # --- the calendar ------------------------------------------------------------------------
+
+    @router.get("/availability", response_model=list[BookingSlotOut])
+    async def availability(
+        request: Request,
+        client_id: Tenant,
+        start: Annotated[AwareDatetime, Query(alias="from")],
+        end: Annotated[AwareDatetime, Query(alias="to")],
+        type_id: UUID | None = None,
+        people: Annotated[list[UUID] | None, Query()] = None,
+        resources: Annotated[list[UUID] | None, Query()] = None,
+        minutes: Annotated[int | None, Query(ge=1, le=1440)] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ) -> list[BookingSlotOut]:
+        """Free times for a type, or for `people`, `resources` and `minutes`; at most 31 days."""
+        reader(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await service.availability(
+                conn,
+                client_id,
+                start=start,
+                end=end,
+                type_id=type_id,
+                people=people or [],
+                resources=resources or [],
+                minutes=minutes,
+                limit=limit,
+            )
+
+    @router.get("/calendar", response_model=list[BookingOut])
+    async def calendar(
+        request: Request,
+        client_id: Tenant,
+        start: Annotated[AwareDatetime, Query(alias="from")],
+        end: Annotated[AwareDatetime, Query(alias="to")],
+        person: UUID | None = None,
+        resource: UUID | None = None,
+    ) -> list[BookingOut]:
+        """Bookings that are not cancelled in the window, as this viewer may see them."""
+        reader(request, client_id)
+        service.check_window(start, end, 62)
+        viewer = service.viewer_of(request.state.console_actor)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            records = await service.read_records(
+                conn, client_id, start=start, end=end, person=person, resource=resource
+            )
+        return [service.to_out(record, viewer) for record in records]
+
+    @router.get("/customers", response_model=list[CustomerRef])
+    async def customers(
+        request: Request,
+        client_id: Tenant,
+        q: Annotated[str | None, Query(max_length=100)] = None,
+        limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    ) -> list[CustomerRef]:
+        """The Subscriptions customer search, closed to read-only members as the Inbox is."""
+        reader(request, client_id)
+        if request.state.console_actor.role not in CUSTOMER_ROLES:
+            raise HTTPException(403, "customer details are not available to read-only members")
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await subscriptions.search_customers(conn, client_id, q=q, limit=limit)
+
+    # --- bookings ----------------------------------------------------------------------------
+
+    @router.post("/bookings", response_model=BookingOut, status_code=201)
+    async def book(request: Request, payload: BookingIn, client_id: Tenant) -> BookingOut:
+        actor = changer(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            record = await service.create_booking(conn, client_id, actor, payload)
+        return await respond(request, actor, record, "created")
+
+    @router.patch("/bookings/{booking_id}", response_model=BookingOut)
+    async def move(
+        request: Request, booking_id: UUID, payload: BookingMoveIn, client_id: Tenant
+    ) -> BookingOut:
+        """Move a booking; its people and rooms stay, and its holds are replaced with it."""
+        actor = changer(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            record = await service.move_booking(conn, client_id, actor, booking_id, payload)
+        return await respond(request, actor, record, "moved")
+
+    def action(
+        change: Change,
+        run: Callable[..., Awaitable[service.BookingRecord]],
+    ) -> Callable[..., Awaitable[BookingOut]]:
+        async def handle(
+            request: Request,
+            booking_id: UUID,
+            client_id: Tenant,
+            payload: BookingActionIn | None = None,
+        ) -> BookingOut:
+            actor = changer(request, client_id)
+            async with tx(request.app.state.pool, str(client_id)) as conn:
+                record = await run(conn, client_id, actor, booking_id, payload or BookingActionIn())
+            return await respond(request, actor, record, change)
+
+        return handle
+
+    for path, change, run in (
+        ("cancel", "cancelled", service.cancel_booking),
+        ("confirm", "confirmed", service.confirm_booking),
+        ("decline", "declined", service.decline_booking),
+        ("no-show", "no_show", service.mark_no_show),
+    ):
+        router.post(f"/bookings/{{booking_id}}/{path}", response_model=BookingOut)(
+            action(change, run)  # type: ignore[arg-type]
+        )
 
     return router
