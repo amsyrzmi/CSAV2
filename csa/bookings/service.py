@@ -628,6 +628,16 @@ def crew_for(
     return crew
 
 
+def _no_room_left(booking_type: BookingTypeOut | None, crew: Crew) -> bool:
+    """A type that picks "any" room, with none asked for and every room it names switched off."""
+    return (
+        booking_type is not None
+        and booking_type.resource_rule == "any"
+        and not crew.resources
+        and not crew.resource_pool
+    )
+
+
 async def _pick(
     conn: Conn,
     client_id: UUID,
@@ -740,6 +750,8 @@ async def create_booking(
     )
     if booking_type is not None and not (crew.people or crew.person_pool):
         raise HTTPException(422, "nobody_to_book")  # every type needs someone to deliver it
+    if _no_room_left(booking_type, crew):
+        raise HTTPException(422, "no_room_available")
     _check_subjects("person", crew.people, _known(everyone))
     _check_subjects("resource", crew.resources, _known(rooms))
     if not (crew.people or crew.person_pool or crew.resources or crew.resource_pool):
@@ -1043,10 +1055,13 @@ async def availability(
         raise HTTPException(422, "people_or_resources_required")
     if booking_type is not None and not (crew.people or crew.person_pool):
         return []  # nobody is left to deliver it
+    if _no_room_left(booking_type, crew):
+        return []  # every room it could pick is switched off
     buffer = timedelta(minutes=booking_type.buffer_minutes if booking_type else 0)
-    start_from, until = start, end
+    # Nothing in the past is ever offered, with or without a type. Writing one is still allowed.
+    start_from, until = max(start, now), end
     if booking_type:
-        start_from = max(start, now + timedelta(minutes=booking_type.min_notice_minutes))
+        start_from = max(start_from, now + timedelta(minutes=booking_type.min_notice_minutes))
         until = min(end, now + timedelta(days=booking_type.max_advance_days))
     if until <= start_from:
         return []

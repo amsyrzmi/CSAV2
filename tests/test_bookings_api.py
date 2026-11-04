@@ -1132,6 +1132,67 @@ async def test_availability_leaves_out_a_person_on_leave_and_keeps_the_notice(
     assert none.json() == []
 
 
+async def test_an_any_room_type_with_every_room_switched_off_books_nothing(
+    sessions: SessionWorld, team: Team
+) -> None:
+    person = await make_person(team, "Aina")
+    room = await make_resource(team, "Room A")
+    kind = await make_type(
+        team,
+        delivery="any",
+        person_ids=[person["id"]],
+        resource_rule="any",
+        resource_ids=[room["id"]],
+        max_advance_days=60,
+    )
+    off = await team.send(
+        team.admin, f"/resources/{room['id']}", {"version": 1, "is_active": False}, "PATCH"
+    )
+    assert off.status_code == 200, off.text
+    refused = await book(team, team.staff, {"type_id": kind["id"], "starts_at": TEN})
+    assert refused.status_code == 422 and refused.json()["detail"] == "no_room_available"
+    assert await sessions.q("SELECT count(*) AS n FROM bookings") == [{"n": 0}]
+    soon = soon_tuesday()
+    slots = await team.staff.get(
+        f"{BASE}/availability?type_id={kind['id']}&from={soon}T09:00:00Z&to={soon}T17:00:00Z"
+    )
+    assert slots.status_code == 200 and slots.json() == []
+    # Naming a live room by hand is still a booking.
+    other = await make_resource(team, "Room B")
+    named = await book(
+        team, team.staff, {"type_id": kind["id"], "starts_at": TEN, "resources": [other["id"]]}
+    )
+    assert named.status_code == 201, named.text
+
+
+async def test_availability_never_offers_a_time_that_has_passed(
+    sessions: SessionWorld, team: Team
+) -> None:
+    person = await make_person(team, "Aina")
+    now = datetime.now(UTC)
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    window = (
+        f"from={(now - timedelta(days=3)).strftime(stamp)}"
+        f"&to={(now + timedelta(days=1)).strftime(stamp)}"
+    )
+    got = await team.staff.get(
+        f"{BASE}/availability?people={person['id']}&minutes=30&{window}&limit=500"
+    )
+    assert got.status_code == 200, got.text
+    assert all(datetime.fromisoformat(s["starts_at"]) >= now for s in got.json())
+    kind = await make_type(
+        team, delivery="named", person_ids=[person["id"]], min_notice_minutes=0, max_advance_days=60
+    )
+    got = await team.staff.get(
+        f"{BASE}/availability?type_id={kind['id']}&people={person['id']}&{window}&limit=500"
+    )
+    assert got.status_code == 200, got.text
+    assert all(datetime.fromisoformat(s["starts_at"]) >= now for s in got.json())
+    # A booking in the past is still allowed for staff to write.
+    past = await book(team, team.staff, meeting(person, start="2020-01-07T10:00:00Z"))
+    assert past.status_code == 201, past.text
+
+
 # --- audit ------------------------------------------------------------------------------------
 
 
