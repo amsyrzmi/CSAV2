@@ -1681,6 +1681,60 @@
         "title": "BookingBlockOut",
         "type": "object"
       },
+      "BookingBusy": {
+        "additionalProperties": false,
+        "description": "A time when someone or somewhere is taken by a private meeting the viewer is not part of.\n\nNothing here names the meeting or links two rows: no id, no version, no people.",
+        "properties": {
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "label": {
+            "const": "Busy",
+            "title": "Label",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "starts_at",
+          "ends_at",
+          "label"
+        ],
+        "title": "BookingBusy",
+        "type": "object"
+      },
+      "BookingCalendarOut": {
+        "additionalProperties": false,
+        "description": "The calendar read. `items` are bookings as the viewer may see them.\n\nWithout a person or room filter a private meeting is an item, redacted, so an Admin can still\nmove or cancel it. With a filter it is a `busy` time instead, because an id would let anyone\nlist who is in the meeting by filtering one person at a time. Overlapping times can still hint\nthat two busy times are one meeting.",
+        "properties": {
+          "busy": {
+            "items": {
+              "$ref": "#/components/schemas/BookingBusy"
+            },
+            "title": "Busy",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BookingOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "busy"
+        ],
+        "title": "BookingCalendarOut",
+        "type": "object"
+      },
       "BookingClosedDayIn": {
         "additionalProperties": false,
         "properties": {
@@ -1938,13 +1992,26 @@
                 "outside_hours",
                 "closed_day",
                 "short_notice",
-                "on_leave"
+                "unavailable"
               ],
               "type": "string"
             },
             "maxItems": 4,
             "title": "Acknowledged",
             "type": "array"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
           },
           "contact_id": {
             "anyOf": [
@@ -1965,6 +2032,35 @@
             "maxItems": 50,
             "title": "Guests",
             "type": "array"
+          },
+          "location_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "in_person",
+                  "phone",
+                  "online"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Kind"
+          },
+          "meeting_link": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "pattern": "^https://[^\\s/]\\S*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Link"
           },
           "minutes": {
             "anyOf": [
@@ -2059,7 +2155,7 @@
                 "outside_hours",
                 "closed_day",
                 "short_notice",
-                "on_leave"
+                "unavailable"
               ],
               "type": "string"
             },
@@ -16170,7 +16266,7 @@
     },
     "/console/v1/bookings/calendar": {
       "get": {
-        "description": "Bookings that are not cancelled in the window, as this viewer may see them.",
+        "description": "Bookings that are not cancelled in the window, as this viewer may see them. With a\n`person` or `resource` filter, private meetings the viewer is not part of come back as bare\nbusy times with no id.",
         "operationId": "calendar_console_v1_bookings_calendar_get",
         "parameters": [
           {
@@ -16267,11 +16363,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/BookingOut"
-                  },
-                  "title": "Response Calendar Console V1 Bookings Calendar Get",
-                  "type": "array"
+                  "$ref": "#/components/schemas/BookingCalendarOut"
                 }
               }
             },

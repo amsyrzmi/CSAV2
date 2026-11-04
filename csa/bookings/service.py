@@ -12,9 +12,11 @@ viewer may see, so a new read cannot forget to hide a private meeting or a custo
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
+from functools import partial
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -35,6 +37,8 @@ from csa.bookings.availability import (
 )
 from csa.bookings.contracts import (
     BookingActionIn,
+    BookingBusy,
+    BookingCalendarOut,
     BookingCustomerOut,
     BookingFinding,
     BookingGuestOut,
@@ -46,7 +50,7 @@ from csa.bookings.contracts import (
     BookingSlotOut,
     BookingTypeOut,
 )
-from csa.bookings.rules import Actor, decide, findings_for
+from csa.bookings.rules import Actor, Finding, decide, findings_for
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.kb_uploads import audit
 from csa.core import db
@@ -62,6 +66,14 @@ SENTENCES: dict[str, str] = {
     "short_notice": "Shorter notice than this booking type allows.",
 }
 BUSY = "Busy"
+# `rules.py` calls a person's leave `on_leave`. A client only ever hears "unavailable": nothing it
+# sees may say why someone is away.
+TO_WIRE: dict[str, str] = {"on_leave": "unavailable"}
+FROM_WIRE: dict[str, str] = {wire: inside for inside, wire in TO_WIRE.items()}
+
+
+def on_the_wire(findings: Iterable[str]) -> list[str]:
+    return sorted(TO_WIRE.get(f, f) for f in findings)
 
 
 class Refusal(HTTPException):
@@ -160,6 +172,11 @@ def involved(record: BookingRecord, user_id: UUID) -> bool:
     return record.created_by == user_id or any(p.user_id == user_id for p in record.people)
 
 
+def hidden_from(record: BookingRecord, viewer: Viewer) -> bool:
+    """A private meeting the viewer neither made nor attends."""
+    return record.private and not involved(record, viewer.user_id)
+
+
 def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
     """The one function every read goes through.
 
@@ -167,7 +184,7 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
     creator and the attendees, including Admins and platform admins. A read-only member never gets a
     customer or an outside guest.
     """
-    if record.private and not involved(record, viewer.user_id):
+    if hidden_from(record, viewer):
         return BookingOut(
             id=record.id,
             status=record.status,  # type: ignore[arg-type]
@@ -211,6 +228,26 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
         meeting_link=record.meeting_link,
         conflict="unavailable" if record.conflict else None,
     )
+
+
+def calendar_out(
+    records: Iterable[BookingRecord], viewer: Viewer, *, filtered: bool
+) -> BookingCalendarOut:
+    """The calendar as this viewer may see it.
+
+    A private meeting the viewer is not part of is a redacted item, with its id so an Admin can
+    move or cancel it. On a read filtered by person or room it is a bare busy time instead, with no
+    id: with one, asking about each person in turn would list everyone who is in it.
+    """
+    items: list[BookingOut] = []
+    busy: list[BookingBusy] = []
+    for record in records:
+        if filtered and hidden_from(record, viewer):
+            busy.append(BookingBusy(starts_at=record.starts_at, ends_at=record.ends_at, label=BUSY))
+        else:
+            items.append(to_out(record, viewer))
+    busy.sort(key=lambda b: (b.starts_at, b.ends_at))
+    return BookingCalendarOut(items=items, busy=busy)
 
 
 # --- loading ---------------------------------------------------------------------------------
@@ -458,18 +495,23 @@ def _check_time(
     """Refuse a taken time, then apply the owner's table to what is left.
 
     Nothing here names a person, a title or a reason: leave is only ever "Not available that day."
+    and the code "unavailable".
     """
     subjects = [("person", p) for p in people] + [("resource", r) for r in resources]
     if _taken(calendar, subjects, start, hold_end):
         raise slot_taken()
     found = findings_for(calendar, start, end, people, resources, min_notice, now)
-    decision = decide(acting, found, set(acknowledged))
+    agreed: set[Finding] = {FROM_WIRE.get(f, f) for f in acknowledged}  # type: ignore[misc]
+    decision = decide(acting, found, agreed)
     if decision.refused:
-        raise Refusal(409, "refused", NOT_AVAILABLE, findings=sorted(decision.refused))
+        raise Refusal(409, "refused", NOT_AVAILABLE, findings=on_the_wire(decision.refused))
     if decision.needs_acknowledging:
         needs = sorted(decision.needs_acknowledging)
         raise Refusal(
-            409, "needs_acknowledging", " ".join(SENTENCES[f] for f in needs), findings=needs
+            409,
+            "needs_acknowledging",
+            " ".join(SENTENCES[f] for f in needs),
+            findings=on_the_wire(needs),
         )
 
 
@@ -664,6 +706,8 @@ async def create_booking(
         [p.id for p in everyone if p.is_active],
         [r.id for r in rooms if r.is_active],
     )
+    if booking_type is not None and not (crew.people or crew.person_pool):
+        raise HTTPException(422, "nobody_to_book")  # every type needs someone to deliver it
     _check_subjects("person", crew.people, _known(everyone))
     _check_subjects("resource", crew.resources, _known(rooms))
     if not (crew.people or crew.person_pool or crew.resources or crew.resource_pool):
@@ -719,10 +763,11 @@ async def create_booking(
             "kind": "appointment" if booking_type else "meeting",
             "created_by": actor.user_id,
             "private": data.private,
-            # The place is copied from the type, so editing the type later moves no booking.
-            "location_kind": booking_type.location_kind if booking_type else None,
-            "address": booking_type.address if booking_type else None,
-            "meeting_link": booking_type.meeting_link if booking_type else None,
+            # The place is copied from the type, so editing the type later moves no booking. A
+            # meeting with no type brings its own.
+            "location_kind": booking_type.location_kind if booking_type else data.location_kind,
+            "address": booking_type.address if booking_type else data.address,
+            "meeting_link": booking_type.meeting_link if booking_type else data.meeting_link,
         },
         conn=conn,
     )
@@ -814,6 +859,8 @@ async def move_booking(
     )
     people = [h["subject_id"] for h in held if h["subject_kind"] == "person"]
     rooms = [h["subject_id"] for h in held if h["subject_kind"] == "resource"]
+    if record.type_id is not None and not people:
+        raise HTTPException(422, "nobody_to_book")  # a booking of a type needs someone
     subjects = [("person", p) for p in people] + [("resource", r) for r in rooms]
     await setup.lock_subjects(conn, client_id, subjects)
     calendar = await load_calendar(conn, client_id, start, hold_end, except_booking=booking_id)
@@ -953,6 +1000,10 @@ async def availability(
     )
     _check_subjects("person", crew.people, _known(everyone))
     _check_subjects("resource", crew.resources, _known(rooms))
+    if booking_type is None and not (crew.people or crew.resources):
+        raise HTTPException(422, "people_or_resources_required")
+    if booking_type is not None and not (crew.people or crew.person_pool):
+        return []  # nobody is left to deliver it
     buffer = timedelta(minutes=booking_type.buffer_minutes if booking_type else 0)
     start_from, until = start, end
     if booking_type:
@@ -962,20 +1013,26 @@ async def availability(
         return []
     calendar = await load_calendar(conn, client_id, start_from, until + buffer)
     duration = timedelta(minutes=booking_type.duration_minutes if booking_type else minutes or 0)
-    slots = free_slots(
-        calendar,
-        required_people=crew.people,
-        any_of_people=crew.person_pool,
-        required_resources=crew.resources,
-        any_of_resources=crew.resource_pool,
-        duration=duration,
-        buffer=buffer,
-        start_from=start_from,
-        until=until,
+    # The scan is plain computation and can take seconds over a month with many people. It runs in a
+    # thread so the gateway keeps serving everyone else, and stops once it has `limit` slots.
+    slots = await asyncio.to_thread(
+        partial(
+            free_slots,
+            calendar,
+            required_people=crew.people,
+            any_of_people=crew.person_pool,
+            required_resources=crew.resources,
+            any_of_resources=crew.resource_pool,
+            duration=duration,
+            buffer=buffer,
+            start_from=start_from,
+            until=until,
+            limit=limit,
+        )
     )
     return [
         BookingSlotOut(
             starts_at=s.start, ends_at=s.end, people=list(s.people), resources=list(s.resources)
         )
-        for s in slots[:limit]
+        for s in slots
     ]

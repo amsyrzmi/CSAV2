@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -253,10 +253,23 @@ Phone = Annotated[
     AfterValidator(_one_line),
 ]
 
+
+def _sane_time(value: datetime) -> datetime:
+    """A year between 2000 and 2100, in the time zone given and in UTC. Anything outside it is a
+    typo, and the far ends of the calendar overflow the date arithmetic.
+    """
+    if not 2000 <= value.year <= 2100 or not 2000 <= value.astimezone(UTC).year <= 2100:
+        raise ValueError("must be a time between the years 2000 and 2100")
+    return value
+
+
+# The one time type on every booking and availability input: with an offset, and in a sane range.
+BookingTime = Annotated[AwareDatetime, AfterValidator(_sane_time)]
+
 BookingStatus = Literal["pending", "confirmed", "cancelled", "no_show"]
 BookingKind = Literal["appointment", "meeting"]
-# What the rules can say about a time. Never why: no leave type, no reason.
-BookingFinding = Literal["outside_hours", "closed_day", "short_notice", "on_leave"]
+# What the rules can say about a time. Never why: a person who is away is only "unavailable".
+BookingFinding = Literal["outside_hours", "closed_day", "short_notice", "unavailable"]
 
 
 class BookingGuestIn(Contract):
@@ -286,13 +299,17 @@ class BookingIn(Contract):
     type_id: UUID | None = None
     title: Name | None = None
     minutes: int | None = Field(default=None, ge=1, le=1440)
-    starts_at: AwareDatetime
+    starts_at: BookingTime
     people: list[UUID] = Field(default_factory=list, max_length=50)
     resources: list[UUID] = Field(default_factory=list, max_length=50)
     contact_id: UUID | None = None
     walk_in: BookingWalkInIn | None = None
     guests: list[BookingGuestIn] = Field(default_factory=list, max_length=50)
     private: bool = False
+    # Where a meeting happens. With a type, the type decides, so these stay empty.
+    location_kind: LocationKind | None = None
+    address: Address | None = None
+    meeting_link: MeetingLink | None = None
     acknowledged: list[BookingFinding] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
@@ -303,6 +320,9 @@ class BookingIn(Contract):
             raise ValueError("a meeting needs a title and minutes")
         if self.contact_id is not None and self.walk_in is not None:
             raise ValueError("give a contact or a walk-in, not both")
+        place = (self.location_kind, self.address, self.meeting_link)
+        if self.type_id is not None and any(value is not None for value in place):
+            raise ValueError("the booking type decides where it happens")
         return self
 
 
@@ -310,7 +330,7 @@ class BookingMoveIn(Contract):
     """Move a booking to a new start, keeping its length, people and rooms."""
 
     version: int = Field(ge=1)
-    starts_at: AwareDatetime
+    starts_at: BookingTime
     acknowledged: list[BookingFinding] = Field(default_factory=list, max_length=4)
 
 
@@ -379,3 +399,27 @@ class BookingSlotOut(Contract):
     ends_at: datetime
     people: list[UUID]
     resources: list[UUID]
+
+
+class BookingBusy(Contract):
+    """A time when someone or somewhere is taken by a private meeting the viewer is not part of.
+
+    Nothing here names the meeting or links two rows: no id, no version, no people.
+    """
+
+    starts_at: datetime
+    ends_at: datetime
+    label: Literal["Busy"]
+
+
+class BookingCalendarOut(Contract):
+    """The calendar read. `items` are bookings as the viewer may see them.
+
+    Without a person or room filter a private meeting is an item, redacted, so an Admin can still
+    move or cancel it. With a filter it is a `busy` time instead, because an id would let anyone
+    list who is in the meeting by filtering one person at a time. Overlapping times can still hint
+    that two busy times are one meeting.
+    """
+
+    items: list[BookingOut]
+    busy: list[BookingBusy]

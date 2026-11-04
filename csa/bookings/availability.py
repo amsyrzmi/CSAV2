@@ -129,8 +129,10 @@ def free_slots(
     start_from: datetime,
     until: datetime,
     step: timedelta = timedelta(minutes=15),
+    limit: int | None = None,
 ) -> list[Slot]:
-    """Every free slot that starts at or after `start_from` and ends by `until`.
+    """Every free slot that starts at or after `start_from` and ends by `until`, earliest first, or
+    just the first `limit` of them: the scan stops as soon as it has that many.
 
     Candidates fall on the `step` grid of local clock times. A slot is kept when each required
     person and resource is free, and at least one of each `any_of` group is. A subject is free when
@@ -146,6 +148,8 @@ def free_slots(
         raise ValueError("buffer must not be negative")
     _require_aware("start_from", start_from)
     _require_aware("until", until)
+    if limit is not None and limit <= 0:
+        return []
 
     zone = calendar.timezone
     busy: dict[tuple[str, UUID], list[tuple[datetime, datetime]]] = {}
@@ -191,6 +195,8 @@ def free_slots(
                     tuple(dict.fromkeys([*required_resources, *resources])),
                 )
             )
+            if limit is not None and len(slots) >= limit:
+                return slots
         day += timedelta(days=1)
     return slots
 

@@ -1544,15 +1544,17 @@ Same prefix, gate and tenant selection. Reads need membership; `POST /bookings` 
 below need an Admin (or a platform admin who chose the company) or staff. Read-only members get 403
 on every change. Staff change only bookings they created or attend (403 `own_bookings_only`
 otherwise); an Admin changes any booking. A booking of another company is 404 `booking_not_found`.
-Times are UTC on the wire; hours, closed days and leave are read in `clients.timezone`.
+Times are UTC on the wire; hours, closed days and leave are read in `clients.timezone`. Every
+time a client sends (`starts_at`, `from`, `to`) must carry an offset and fall in the years 2000 to
+2100, in its own offset and in UTC: a time without an offset or outside that range is 422.
 
 | Method/path | Result |
 |---|---|
-| `GET /availability?type_id=&from=&to=` | `BookingSlotOut[]`: `{starts_at, ends_at, people, resources}`, at most 31 days (422 `window_too_large`, `window_invalid`). Respects the type's length, buffer, notice and `max_advance_days`. Or `people=&resources=&minutes=` (repeat `people` / `resources`), which are then all required (422 `minutes_required` with no type). With a type and no `people`: "several" needs all its people, "any" and "named" list who is free |
-| `GET /calendar?from=&to=&person=&resource=` | `BookingOut[]`: bookings that are not cancelled, at most 62 days. `person` / `resource` keep the bookings that hold that person or room |
+| `GET /availability?type_id=&from=&to=` | `BookingSlotOut[]`: `{starts_at, ends_at, people, resources}`, at most 31 days (422 `window_too_large`, `window_invalid`). Respects the type's length, buffer, notice and `max_advance_days`. `limit` (default 200, at most 500) stops the scan after that many slots, earliest first, and the scan runs off the event loop. Or `people=&resources=&minutes=` (repeat `people` / `resources`), which are then all required (422 `minutes_required` with no type, 422 `people_or_resources_required` with neither). With a type and no `people`: "several" needs all its people, "any" and "named" list who is free. A type with nobody active left to deliver it has no slots |
+| `GET /calendar?from=&to=&person=&resource=` | `BookingCalendarOut` `{items: BookingOut[], busy: BookingBusy[]}`: bookings that are not cancelled, at most 62 days (422 `window_too_large`). `person` / `resource` keep the bookings that hold that person or room. `busy` is `{starts_at, ends_at, label: "Busy"}` and is described below |
 | `GET /customers?q=&limit=` | The Subscriptions customer search (`CustomerRef[]`). 403 for read-only members, as the Inbox |
-| `POST /bookings` | 201 `BookingOut`. Body: `type_id`, or a meeting's `title` and `minutes` (not both); `starts_at`; `people`, `resources`; `contact_id` or `walk_in {name, phone?, email?}` (one of phone or email); `guests [{name?, email}]`; `private` (meetings only); `acknowledged` (findings). A type's `named` delivery needs `people` (422 `people_required`); "any" picks the free person with the fewest bookings that day; "several" takes all its people; a specific room is held and an "any" room is picked. Status is `confirmed`, or `pending` when the type needs confirmation (a pending booking holds the time). The type's location, address and link are copied onto the booking. 422: `type_not_found`, `type_inactive`, `person_not_found`, `person_inactive`, `resource_not_found`, `resource_inactive`, `contact_not_found`, `nobody_to_book`, `private_meetings_only` |
-| `PATCH /bookings/{id}` | Move it: `{version, starts_at, acknowledged}`. Keeps the id, length, people and rooms, bumps `version`, replaces the holds in one transaction. A refusal changes nothing. 409 `stale` for an old `version`; 409 `wrong_status` unless pending or confirmed |
+| `POST /bookings` | 201 `BookingOut`. Body: `type_id`, or a meeting's `title` and `minutes` (not both); `starts_at`; `people`, `resources`; `contact_id` or `walk_in {name, phone?, email?}` (one of phone or email); `guests [{name?, email}]`; `private` (meetings only); `location_kind`, `address`, `meeting_link` (a meeting with no type only: 422 with a `type_id`, because the type decides; `address` and `meeting_link` are single-line and the link must begin with `https://`, as on types); `acknowledged` (findings). A type's `named` delivery needs `people` (422 `people_required`); "any" picks the free person with the fewest bookings that day; "several" takes all its people; a specific room is held and an "any" room is picked. Status is `confirmed`, or `pending` when the type needs confirmation (a pending booking holds the time). The type's location, address and link are copied onto the booking. 422: `type_not_found`, `type_inactive`, `person_not_found`, `person_inactive`, `resource_not_found`, `resource_inactive`, `contact_not_found`, `nobody_to_book` (a type with nobody active to deliver it, or nothing and no one named for a meeting), `private_meetings_only` |
+| `PATCH /bookings/{id}` | Move it: `{version, starts_at, acknowledged}`. Keeps the id, length, people and rooms, bumps `version`, replaces the holds in one transaction. A refusal changes nothing. 409 `stale` for an old `version`; 409 `wrong_status` unless pending or confirmed; 422 `nobody_to_book` for a booking of a type that holds no person |
 | `POST /bookings/{id}/cancel`, `/decline`, `/confirm`, `/no-show` | Optional body `{version}`. Cancel (pending or confirmed) and decline (pending) delete the holds; confirm turns pending into confirmed; no-show (confirmed and already started, else 409 `not_started`) keeps the record and its holds. 409 `wrong_status` otherwise. Each bumps `version` |
 
 Refusals carry `detail` (the short code) and, for these, more at the top level of the body:
@@ -1560,9 +1562,12 @@ Refusals carry `detail` (the short code) and, for these, more at the top level o
 | Status | `detail` | Body |
 |---|---|---|
 | 409 | `slot_taken` | `message`: "That time was just taken." (a person or room is already held, or two requests raced and one lost) |
-| 409 | `needs_acknowledging` | `findings` (`outside_hours`, `closed_day`, `on_leave`) and a `message` of their sentences ("Outside working hours.", "This is a closed day.", "Not available that day."). Send them back in `acknowledged` |
-| 409 | `refused` | `findings` and `message`: "Not available that day." (staff and a person on leave) |
+| 409 | `needs_acknowledging` | `findings` (`outside_hours`, `closed_day`, `unavailable`) and a `message` of their sentences ("Outside working hours.", "This is a closed day.", "Not available that day."). Send them back in `acknowledged` |
+| 409 | `refused` | `findings` and `message`: "Not available that day." (staff and a person who is `unavailable`) |
 | 409 | `stale` | `message` |
+
+`unavailable` is the one code for a person who is away. It never says why, and it is the same name in
+`findings` and in `acknowledged`; the server keeps a different name for it inside.
 
 The owner's table: outside hours or a closed day, staff and Admin acknowledge then are allowed; shorter
 notice than the type allows, staff and Admin are allowed; a person on approved leave, staff are refused
@@ -1572,11 +1577,20 @@ returned or shown beyond the dates the server reads. A double booking is refused
 `BookingOut` is the only shape a booking is shown in, and one function redacts it. A private meeting
 the viewer did not create and does not attend is `redacted: true` with `title: "Busy"` and only the
 times, `status` and `version`, for everyone including Admins and platform admins, who can still move
-or cancel it (the answer stays redacted); the `person=` filter returns the same redacted item.
+or cancel it (the answer stays redacted).
 Read-only members get `customer: null` and no `guests`. `conflict` is `"unavailable"` when a person on
 a pending or confirmed booking now has approved leave over it, computed on every read.
 Every change writes `bookings.booking.created|moved|cancelled|confirmed|declined|no_show` with the
 booking id as target and no customer details.
+
+A read filtered by `person=` or `resource=` works differently for a private meeting the viewer is
+not part of. Its real id would let anyone ask about each person in turn and rebuild who is in it,
+so it is not an item at all: it is a `BookingBusy` in `busy`, with only the times and the label
+"Busy", and no id, version, status, people or rooms. The unfiltered read keeps the redacted item
+with its id (people and rooms empty, address and link null), so an Admin can still move or cancel
+it, and `busy` is empty there. The creator and attendees get the full item either way. What this
+does not hide: overlapping `busy` times from two filters can still hint that they are one meeting.
+That is accepted, because a person's calendar has to show them as busy.
 
 `booking_team_members(client)` (migration `0511`) is a `SECURITY DEFINER` read, granted only to
 `csa_app`, that lists the company's enabled members with the HR person linked to each account;

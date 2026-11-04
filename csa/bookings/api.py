@@ -10,13 +10,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import AwareDatetime
 
 from csa.bookings import service, setup
 from csa.bookings.contracts import (
     BookingActionIn,
     BookingBlockIn,
     BookingBlockOut,
+    BookingCalendarOut,
     BookingClosedDayIn,
     BookingClosedDayOut,
     BookingHoursIn,
@@ -31,6 +31,7 @@ from csa.bookings.contracts import (
     BookingResourceOut,
     BookingResourcePatch,
     BookingSlotOut,
+    BookingTime,
     BookingTypeIn,
     BookingTypeOut,
     BookingTypePatch,
@@ -299,8 +300,8 @@ def build_bookings_router() -> APIRouter:
     async def availability(
         request: Request,
         client_id: Tenant,
-        start: Annotated[AwareDatetime, Query(alias="from")],
-        end: Annotated[AwareDatetime, Query(alias="to")],
+        start: Annotated[BookingTime, Query(alias="from")],
+        end: Annotated[BookingTime, Query(alias="to")],
         type_id: UUID | None = None,
         people: Annotated[list[UUID] | None, Query()] = None,
         resources: Annotated[list[UUID] | None, Query()] = None,
@@ -322,16 +323,18 @@ def build_bookings_router() -> APIRouter:
                 limit=limit,
             )
 
-    @router.get("/calendar", response_model=list[BookingOut])
+    @router.get("/calendar", response_model=BookingCalendarOut)
     async def calendar(
         request: Request,
         client_id: Tenant,
-        start: Annotated[AwareDatetime, Query(alias="from")],
-        end: Annotated[AwareDatetime, Query(alias="to")],
+        start: Annotated[BookingTime, Query(alias="from")],
+        end: Annotated[BookingTime, Query(alias="to")],
         person: UUID | None = None,
         resource: UUID | None = None,
-    ) -> list[BookingOut]:
-        """Bookings that are not cancelled in the window, as this viewer may see them."""
+    ) -> BookingCalendarOut:
+        """Bookings that are not cancelled in the window, as this viewer may see them. With a
+        `person` or `resource` filter, private meetings the viewer is not part of come back as bare
+        busy times with no id."""
         reader(request, client_id)
         service.check_window(start, end, 62)
         viewer = service.viewer_of(request.state.console_actor)
@@ -339,7 +342,8 @@ def build_bookings_router() -> APIRouter:
             records = await service.read_records(
                 conn, client_id, start=start, end=end, person=person, resource=resource
             )
-        return [service.to_out(record, viewer) for record in records]
+        filtered = person is not None or resource is not None
+        return service.calendar_out(records, viewer, filtered=filtered)
 
     @router.get("/customers", response_model=list[CustomerRef])
     async def customers(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -113,15 +114,15 @@ async def person_on_leave(t: Team, first: str = TUESDAY, last: str = TUESDAY) ->
         t.w.tenants[0],
         employee,
     )
-    person = await make_person(t, "Leave Person", employee_id=employee)
+    person = await make_person(t, "Away Person", employee_id=employee)
     await approve_leave(t.w, employee, first, last)
     return person
 
 
 def no_leave_words(response: httpx.Response) -> None:
-    """The type of leave and the reason never appear (the finding code `on_leave` may)."""
+    """Nothing in a response says leave: not its type, not its reason, not the word itself."""
     text = response.text.lower()
-    for word in ("annual", "reason", "leave_type", "starts_on"):
+    for word in ("annual", "reason", "leave_type", "starts_on", "on_leave", "leave"):
         assert word not in text, response.text
 
 
@@ -344,10 +345,12 @@ async def test_staff_cannot_book_a_person_on_leave(sessions: SessionWorld, team:
     assert asked.json() == {
         "detail": "refused",
         "message": "Not available that day.",
-        "findings": ["on_leave"],
+        "findings": ["unavailable"],
     }
     no_leave_words(asked)
-    acknowledged = await book(team, team.staff, {**meeting(person), "acknowledged": ["on_leave"]})
+    acknowledged = await book(
+        team, team.staff, {**meeting(person), "acknowledged": ["unavailable"]}
+    )
     assert acknowledged.status_code == 409 and acknowledged.json()["detail"] == "refused"
     no_leave_words(acknowledged)
     # The day after is fine.
@@ -365,10 +368,10 @@ async def test_an_admin_can_book_a_person_on_leave_after_acknowledging(
     assert asked.json() == {
         "detail": "needs_acknowledging",
         "message": "Not available that day.",
-        "findings": ["on_leave"],
+        "findings": ["unavailable"],
     }
     no_leave_words(asked)
-    made = await book(team, team.admin, {**meeting(person), "acknowledged": ["on_leave"]})
+    made = await book(team, team.admin, {**meeting(person), "acknowledged": ["unavailable"]})
     assert made.status_code == 201, made.text
     no_leave_words(made)
     assert made.json()["conflict"] == "unavailable"
@@ -399,7 +402,7 @@ async def test_leave_approved_after_a_booking_flags_the_conflict(
     await approve_leave(sessions, employee, TUESDAY, TUESDAY)
     window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
     shown = await team.reader.get(f"{BASE}/calendar{window}")
-    flagged = {b["id"]: b for b in shown.json()}
+    flagged = {b["id"]: b for b in shown.json()["items"]}
     assert flagged[made["id"]]["conflict"] == "unavailable"
     assert flagged[made["id"]]["status"] == "confirmed"  # nothing is cancelled for them
     assert flagged[other["id"]]["conflict"] is None
@@ -501,10 +504,14 @@ async def test_a_move_to_a_closed_day_or_leave_follows_the_same_rules(
     assert staff.status_code == 409 and staff.json()["detail"] == "refused"
     admin = await team.send(team.admin, f"/bookings/{made['id']}", day, "PATCH")
     assert admin.status_code == 409 and admin.json()["detail"] == "needs_acknowledging"
+    assert staff.json()["findings"] == admin.json()["findings"] == ["unavailable"]
+    no_leave_words(staff)
+    no_leave_words(admin)
     done = await team.send(
-        team.admin, f"/bookings/{made['id']}", {**day, "acknowledged": ["on_leave"]}, "PATCH"
+        team.admin, f"/bookings/{made['id']}", {**day, "acknowledged": ["unavailable"]}, "PATCH"
     )
     assert done.status_code == 200 and done.json()["conflict"] == "unavailable"
+    no_leave_words(done)
 
 
 async def test_cancelling_frees_the_slot(sessions: SessionWorld, team: Team) -> None:
@@ -519,7 +526,7 @@ async def test_cancelling_frees_the_slot(sessions: SessionWorld, team: Team) -> 
     again = await booked(team, team.admin, meeting(person, resources=[room["id"]]))
     assert again["id"] != made["id"]
     window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
-    listed = [b["id"] for b in (await team.reader.get(f"{BASE}/calendar{window}")).json()]
+    listed = [b["id"] for b in (await team.reader.get(f"{BASE}/calendar{window}")).json()["items"]]
     assert listed == [again["id"]]
     twice = await team.send(team.staff, f"/bookings/{made['id']}/cancel")
     assert twice.status_code == 409 and twice.json()["detail"] == "wrong_status"
@@ -543,7 +550,7 @@ async def test_no_show_keeps_the_record(sessions: SessionWorld, team: Team) -> N
     shown = await team.reader.get(
         f"{BASE}/calendar?from=2020-01-07T00:00:00Z&to=2020-01-08T00:00:00Z"
     )
-    assert [(b["id"], b["status"]) for b in shown.json()] == [(past["id"], "no_show")]
+    assert [(b["id"], b["status"]) for b in shown.json()["items"]] == [(past["id"], "no_show")]
     again = await team.send(team.staff, f"/bookings/{past['id']}/no-show")
     assert again.status_code == 409 and again.json()["detail"] == "wrong_status"
 
@@ -588,7 +595,7 @@ async def test_a_deactivated_person_keeps_bookings_but_gets_no_new_ones(
     )
     assert off.status_code == 200
     window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
-    shown = (await team.staff.get(f"{BASE}/calendar{window}")).json()
+    shown = (await team.staff.get(f"{BASE}/calendar{window}")).json()["items"]
     assert shown[0]["id"] == old["id"]
     assert shown[0]["people"] == [{"id": gone["id"], "display_name": "Aina", "is_active": False}]
     refused = await book(team, team.staff, meeting(gone, start=at(14)))
@@ -683,7 +690,7 @@ async def test_an_outside_guest_is_kept_with_the_meeting(
         "supplier@example.test",
     ]
     window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
-    shown = (await team.admin.get(f"{BASE}/calendar{window}")).json()
+    shown = (await team.admin.get(f"{BASE}/calendar{window}")).json()["items"]
     assert len(shown[0]["guests"]) == 2
     rows = await sessions.q(
         "SELECT count(*) AS n FROM booking_attendees WHERE booking_id=%s AND person_id IS NULL",
@@ -739,7 +746,7 @@ async def test_another_company_cannot_read_or_change_a_booking(
     person = await make_person(team)
     made = await booked(team, team.admin, meeting(person))
     window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
-    assert (await team.other.get(f"{BASE}/calendar{window}")).json() == []
+    assert (await team.other.get(f"{BASE}/calendar{window}")).json() == {"items": [], "busy": []}
     assert (
         await team.other.get(f"{BASE}/calendar{window}&client_id={sessions.tenants[0]}")
     ).status_code == 403
@@ -791,6 +798,7 @@ async def test_a_private_meeting_shows_busy_to_everyone_but_attendees(
     second_admin, _ = await w.member(role="tenant_admin")
     attendee = await make_person(team, "Staff Attendee", user_id=team.staff_info["user"]["id"])
     hidden = await make_person(team, "Quiet Colleague")
+    room = await make_resource(team, "Secret Room")
     made = await booked(
         team,
         team.admin,
@@ -799,6 +807,7 @@ async def test_a_private_meeting_shows_busy_to_everyone_but_attendees(
             attendee,
             title="Redundancy talks",
             private=True,
+            resources=[room["id"]],
             guests=[{"name": "Adviser", "email": "adviser@example.test"}],
         ),
     )
@@ -811,6 +820,7 @@ async def test_a_private_meeting_shows_busy_to_everyone_but_attendees(
         "Redundancy",
         "Quiet Colleague",
         "Staff Attendee",
+        "Secret Room",
         "adviser@",
         "secret-room",
         "Weekly",
@@ -822,23 +832,22 @@ async def test_a_private_meeting_shows_busy_to_everyone_but_attendees(
         team.reader.get(f"{BASE}/calendar{window}"),
         second_admin.get(f"{BASE}/calendar{window}"),
         platform(),
-        second_admin.get(f"{BASE}/calendar{window}&person={hidden['id']}"),
-        second_admin.get(f"{BASE}/calendar{window}&person={attendee['id']}"),
-        w.admin.get(f"{BASE}/calendar{window}&client_id={w.tenants[0]}&person={hidden['id']}"),
     ):
         shown = await read
         assert shown.status_code == 200, shown.text
-        assert [b["id"] for b in shown.json()] == [made["id"]]
-        item = shown.json()[0]
+        assert shown.json()["busy"] == []
+        assert [b["id"] for b in shown.json()["items"]] == [made["id"]]
+        item = shown.json()["items"][0]
         assert item["title"] == "Busy" and item["redacted"] is True and item["private"] is True
         assert item["people"] == [] and item["guests"] == [] and item["resources"] == []
         assert item["meeting_link"] is None and item["customer"] is None and item["type_id"] is None
+        assert item["address"] is None and item["location_kind"] is None
         assert item["starts_at"].startswith(f"{TUESDAY}T10:00")
         for secret in secrets:
             assert secret not in shown.text
     # The creator and an attendee see everything.
     for who in (team.admin, team.staff):
-        full = (await who.get(f"{BASE}/calendar{window}")).json()[0]
+        full = (await who.get(f"{BASE}/calendar{window}")).json()["items"][0]
         assert full["title"] == "Redundancy talks" and full["redacted"] is False
         assert len(full["people"]) == 2 and full["meeting_link"].endswith("secret-room")
     # An Admin who is not part of it can still move and cancel it, and the answer stays redacted.
@@ -897,19 +906,67 @@ async def test_read_only_sees_no_customer_details(sessions: SessionWorld, team: 
     window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
     reader = await team.reader.get(f"{BASE}/calendar{window}")
     assert reader.status_code == 200
-    item = reader.json()[0]
+    item = reader.json()["items"][0]
     assert item["id"] == made["id"] and item["customer"] is None and item["guests"] == []
     for secret in ("Walk In", "0123456789", "walk.in@", "friend@", "Friend"):
         assert secret not in reader.text
     assert item["title"] == "Haircut" and item["people"][0]["id"] == person["id"]
     for who in (team.admin, team.staff):
-        full = (await who.get(f"{BASE}/calendar{window}")).json()[0]
+        full = (await who.get(f"{BASE}/calendar{window}")).json()["items"][0]
         assert full["customer"]["full_name"] == "Walk In" and len(full["guests"]) == 1
     # Customer search follows the Inbox: staff and Admins only.
     assert (await team.reader.get(f"{BASE}/customers")).status_code == 403
     assert (await team.staff.get(f"{BASE}/customers")).status_code == 200
     chosen = await sessions.admin.get(f"{BASE}/customers?client_id={sessions.tenants[0]}")
     assert chosen.status_code == 200 and len(chosen.json()) == 1
+
+
+async def test_a_filtered_calendar_gives_a_private_meeting_no_id(
+    sessions: SessionWorld, team: Team
+) -> None:
+    """Filtering by person or room must not let anyone rebuild who is in a private meeting."""
+    w = sessions
+    second_admin, _ = await w.member(role="tenant_admin")
+    aina, bakar = await make_person(team, "Aina"), await make_person(team, "Bakar")
+    room = await make_resource(team, "Board Room")
+    private = await booked(
+        team,
+        team.admin,
+        meeting(aina, bakar, resources=[room["id"]], private=True, title="Redundancy talks"),
+    )
+    ordinary = await booked(team, team.admin, meeting(aina, start=at(14), title="Open sync"))
+    window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
+    ids: list[str] = []
+    for query, expected in (
+        (f"&person={aina['id']}", [ordinary["id"]]),
+        (f"&person={bakar['id']}", []),
+        (f"&resource={room['id']}", []),
+    ):
+        for viewer in (second_admin, team.reader, team.staff):
+            shown = await viewer.get(f"{BASE}/calendar{window}{query}")
+            assert shown.status_code == 200, shown.text
+            body = shown.json()
+            assert [b["id"] for b in body["items"]] == expected
+            assert private["id"] not in shown.text
+            assert len(body["busy"]) == 1
+            assert set(body["busy"][0]) == {"starts_at", "ends_at", "label"}
+            assert body["busy"][0]["label"] == "Busy"
+            assert body["busy"][0]["starts_at"].startswith(f"{TUESDAY}T10:00")
+            ids += [b["id"] for b in body["items"]]
+            for secret in ("Redundancy", "Aina", "Bakar", "Board Room"):
+                assert secret not in json.dumps(body["busy"])
+    assert private["id"] not in ids
+    # The platform admin who chose the company reads the same way.
+    chosen = await w.admin.get(
+        f"{BASE}/calendar{window}&client_id={w.tenants[0]}&person={bakar['id']}"
+    )
+    assert chosen.json()["items"] == [] and len(chosen.json()["busy"]) == 1
+    # The creator is part of the meeting, so for them it is an item and not a busy time.
+    mine = (await team.admin.get(f"{BASE}/calendar{window}&person={bakar['id']}")).json()
+    assert [b["id"] for b in mine["items"]] == [private["id"]] and mine["busy"] == []
+    # An unfiltered read keeps the id, so an Admin can still find it to move or cancel.
+    plain = (await second_admin.get(f"{BASE}/calendar{window}")).json()
+    assert private["id"] in [b["id"] for b in plain["items"]] and plain["busy"] == []
 
 
 # --- availability ----------------------------------------------------------------------------
@@ -1007,3 +1064,180 @@ async def test_every_booking_change_writes_an_audit_row(sessions: SessionWorld, 
             w.tenants[1],
         )
     )[0]["n"] == 0
+
+
+# --- fix round 1 ------------------------------------------------------------------------------
+
+
+async def test_availability_stops_at_the_limit_and_keeps_the_event_loop_free(
+    sessions: SessionWorld, team: Team, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    person = await make_person(team)
+    seen: list[Any] = []
+    real = service.free_slots
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("limit"))
+        time.sleep(0.8)  # a long scan: it must not hold up everything else the gateway serves
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(service, "free_slots", slow)
+    gaps: list[float] = []
+    stop = asyncio.Event()
+
+    async def ticker() -> None:
+        loop = asyncio.get_running_loop()
+        last = loop.time()
+        while not stop.is_set():
+            await asyncio.sleep(0.02)
+            now = loop.time()
+            gaps.append(now - last)
+            last = now
+
+    watching = asyncio.create_task(ticker())
+    asked = await team.reader.get(
+        f"{BASE}/availability?people={person['id']}&minutes=30&limit=3"
+        f"&from={TUESDAY}T00:00:00Z&to=2031-03-06T00:00:00Z"
+    )
+    stop.set()
+    await watching
+    assert asked.status_code == 200, asked.text
+    assert len(asked.json()) == 3 and seen == [3]
+    assert max(gaps) < 0.4, max(gaps)
+
+
+async def test_an_any_type_with_nobody_active_books_nobody(
+    sessions: SessionWorld, team: Team
+) -> None:
+    only = await make_person(team, "Aina")
+    room = await make_resource(team)
+    plain = await make_type(team, name="Plain", delivery="any", person_ids=[only["id"]])
+    roomed = await make_type(
+        team,
+        name="Roomed",
+        delivery="any",
+        person_ids=[only["id"]],
+        resource_rule="any",
+        resource_ids=[room["id"]],
+    )
+    # A booking made while Aina was active can lose her hold; moving it must not book nobody.
+    held = await booked(team, team.staff, {"type_id": roomed["id"], "starts_at": at(9)})
+    await sessions.q(
+        "DELETE FROM booking_holds WHERE booking_id=%s AND subject_kind='person'", held["id"]
+    )
+    off = await team.send(
+        team.admin, f"/people/{only['id']}", {"version": 1, "is_active": False}, "PATCH"
+    )
+    assert off.status_code == 200
+    window = f"from={TUESDAY}T09:00:00Z&to={TUESDAY}T17:00:00Z"
+    for kind in (plain, roomed):
+        refused = await book(team, team.staff, {"type_id": kind["id"], "starts_at": at(13)})
+        assert refused.status_code == 422, (kind["name"], refused.text)
+        assert refused.json()["detail"] == "nobody_to_book"
+        slots = await team.staff.get(f"{BASE}/availability?type_id={kind['id']}&{window}")
+        assert slots.status_code == 200 and slots.json() == [], kind["name"]
+    moved = await team.send(
+        team.staff, f"/bookings/{held['id']}", {"version": 1, "starts_at": at(15)}, "PATCH"
+    )
+    assert moved.status_code == 422 and moved.json()["detail"] == "nobody_to_book"
+    unchanged = await sessions.q(
+        "SELECT starts_at::text AS s FROM bookings WHERE id=%s", held["id"]
+    )
+    assert unchanged[0]["s"].startswith(f"{TUESDAY} 09:00")
+    # Asking for times with no one and nothing named is a mistake, not an empty calendar.
+    nobody = await team.staff.get(f"{BASE}/availability?minutes=30&{window}")
+    assert nobody.status_code == 422, nobody.text
+    assert nobody.json()["detail"] == "people_or_resources_required"
+
+
+async def test_extreme_and_naive_times_are_refused_not_crashed(
+    sessions: SessionWorld, team: Team
+) -> None:
+    person = await make_person(team)
+    made = await booked(team, team.staff, meeting(person))
+    for bad in (
+        "9999-12-31T23:59:00Z",
+        "0001-01-01T00:00:00+08:00",
+        "1999-12-31T23:59:00Z",
+        "2101-01-01T00:00:00Z",
+        "2031-03-04T10:00:00",
+    ):
+        posted = await book(team, team.staff, meeting(person, start=bad))
+        assert posted.status_code == 422, (bad, posted.text)
+        moved = await team.send(
+            team.staff, f"/bookings/{made['id']}", {"version": 1, "starts_at": bad}, "PATCH"
+        )
+        assert moved.status_code == 422, (bad, moved.text)
+        for path, extra in (
+            ("/availability", {"people": person["id"], "minutes": 30}),
+            ("/calendar", {}),
+        ):
+            for window in (
+                {"from": bad, "to": f"{TUESDAY}T12:00:00Z"},
+                {"from": f"{TUESDAY}T09:00:00Z", "to": bad},
+            ):
+                read = await team.staff.get(f"{BASE}{path}", params={**extra, **window})
+                assert read.status_code == 422, (path, bad, read.text)
+    wide = await team.staff.get(
+        f"{BASE}/calendar", params={"from": f"{TUESDAY}T00:00:00Z", "to": "2031-06-04T00:00:00Z"}
+    )
+    assert wide.status_code == 422 and wide.json()["detail"] == "window_too_large"
+    rows = await sessions.q(
+        "SELECT count(*) AS n FROM bookings WHERE client_id=%s", sessions.tenants[0]
+    )
+    assert rows[0]["n"] == 1
+
+
+async def test_a_meeting_can_carry_a_place_or_an_online_link(
+    sessions: SessionWorld, team: Team
+) -> None:
+    person = await make_person(team)
+    kind = await make_type(team)
+    online = await booked(
+        team,
+        team.staff,
+        meeting(person, location_kind="online", meeting_link="https://meet.example.test/room-1"),
+    )
+    assert online["location_kind"] == "online"
+    assert online["meeting_link"] == "https://meet.example.test/room-1"
+    here = await booked(
+        team,
+        team.staff,
+        meeting(person, start=at(12), location_kind="in_person", address="Level 2, Room 3"),
+    )
+    assert here["location_kind"] == "in_person" and here["address"] == "Level 2, Room 3"
+    saved = await sessions.q(
+        "SELECT location_kind, address, meeting_link FROM bookings WHERE id=%s", online["id"]
+    )
+    assert saved == [
+        {
+            "location_kind": "online",
+            "address": None,
+            "meeting_link": "https://meet.example.test/room-1",
+        }
+    ]
+    for extra in (
+        {"meeting_link": "http://meet.example.test/room-1"},
+        {"meeting_link": "https://meet.example.test/a\nb"},
+        {"meeting_link": "javascript:alert(1)"},
+        {"address": "Level 2\nRoom 3"},
+        {"location_kind": "teleport"},
+    ):
+        refused = await book(team, team.staff, {**meeting(person, start=at(14)), **extra})
+        assert refused.status_code == 422, (extra, refused.text)
+    # With a type, the type decides the place.
+    for extra in (
+        {"location_kind": "online"},
+        {"address": "Somewhere else"},
+        {"meeting_link": "https://meet.example.test/other"},
+    ):
+        refused = await book(
+            team,
+            team.staff,
+            {"type_id": kind["id"], "starts_at": at(15), "people": [person["id"]], **extra},
+        )
+        assert refused.status_code == 422, (extra, refused.text)
+    rows = await sessions.q(
+        "SELECT count(*) AS n FROM bookings WHERE client_id=%s", sessions.tenants[0]
+    )
+    assert rows[0]["n"] == 2

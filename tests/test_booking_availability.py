@@ -400,3 +400,40 @@ def test_the_default_company_hours_are_monday_to_friday_nine_to_six() -> None:
     slots = _slots(cal, _at(6, 0), _at(9, 0))  # Friday 6 to Sunday 8 November, local
     assert {s.start.astimezone(KL).day for s in slots} == {6}
     assert len(slots) == 9
+
+
+def test_a_limit_stops_the_scan_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    from csa.bookings import availability
+
+    calls = {"n": 0}
+    real = availability.touches_closed_day
+
+    def counting(*args: object, **kwargs: object) -> bool:
+        calls["n"] += 1
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(availability, "touches_closed_day", counting)
+    person = uuid.uuid4()
+
+    def scan(limit: int | None) -> list[Slot]:
+        return free_slots(
+            _calendar(),
+            required_people=(person,),
+            any_of_people=(),
+            required_resources=(),
+            any_of_resources=(),
+            duration=timedelta(minutes=30),
+            buffer=timedelta(0),
+            start_from=_at(2, 0),
+            until=_at(2, 0, month=12),
+            limit=limit,
+        )
+
+    everything = scan(None)
+    full_work = calls["n"]
+    calls["n"] = 0
+    first = scan(3)
+    assert first == everything[:3] and len(first) == 3
+    assert calls["n"] < full_work / 10, (calls["n"], full_work)
+    assert scan(0) == []
+    assert scan(len(everything) + 5) == everything
