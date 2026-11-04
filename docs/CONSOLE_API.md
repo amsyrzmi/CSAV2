@@ -1583,6 +1583,33 @@ a pending or confirmed booking now has approved leave over it, computed on every
 Every change writes `bookings.booking.created|moved|cancelled|confirmed|declined|no_show` with the
 booking id as target and no customer details.
 
+**Email with a calendar file.** After a staff action commits, the server emails the people on the
+booking, each with an `invite.ics` that adds, updates or removes it in their calendar. It uses the
+mailer the console builds at startup (the one invitation mail uses), never sends inside the
+transaction, and a failed email never changes the booking or the status code. `BookingOut.email` says
+how it went and is set only on the answer to a staff action:
+
+| Action | Mail |
+|---|---|
+| `POST /bookings`, `/confirm` | An invitation (`METHOD:REQUEST`). A booking still `pending` goes to its people as `TENTATIVE` and not to the customer, so the confirm is the customer's first mail |
+| `PATCH /bookings/{id}` | The same `UID` with a higher `SEQUENCE` (the booking's `version`) and the new time |
+| `/cancel`, `/decline` | `METHOD:CANCEL`, `STATUS:CANCELLED`, same `UID`, higher `SEQUENCE` |
+| `/no-show` | Nothing; `email` is null |
+
+`email` is `"none"` when nobody has an address, else `"off"` when mail is switched off, else `"failed"`
+when any send failed (the others still went), else `"sent"`. It is null on every read, on a no-show,
+and on a redacted private meeting, so an Admin who is not part of one learns nothing about it.
+
+Who gets mail, once each by address: the customer (if their contact has an email), each person on the
+booking with an address (their own, or their account's), and each outside guest. The person who made
+the change gets one only if they are on the booking. A private meeting goes to its attendees and
+guests only, never to the customer or to an Admin who merely moved or cancelled it. Replies being Off
+makes no difference: this is a staff action. Each recipient gets their own file with only themselves
+as `ATTENDEE`, and `ORGANIZER` is the mailer's sender address, so nobody learns another address.
+Times in the file are UTC with a `Z`; the message gives the local time in the company's zone, the
+company's brand name (or its name), the address or link, and Maps and Waze links for in-person
+bookings. The calendar read carries no `email`.
+
 A read filtered by `person=` or `resource=` works differently for a private meeting the viewer is
 not part of. Its real id would let anyone ask about each person in turn and rebuild who is in it,
 so it is not an item at all: it is a `BookingBusy` in `busy`, with only the times and the label

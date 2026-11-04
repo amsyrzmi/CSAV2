@@ -2218,6 +2218,23 @@
               }
             ]
           },
+          "email": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sent",
+                  "off",
+                  "failed",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
           "ends_at": {
             "format": "date-time",
             "title": "Ends At",

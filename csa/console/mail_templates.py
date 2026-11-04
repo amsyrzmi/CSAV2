@@ -8,9 +8,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape
+from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
-from csa.console.mailer import OutgoingMail
+from csa.bookings.ics import map_links
+from csa.console.mailer import CalendarFile, OutgoingMail
+
+if TYPE_CHECKING:
+    from csa.bookings.service import BookingRecord
 
 # Password resets have no tenant, so their times use the console's own zone.
 RESET_TIMEZONE = "Asia/Kuala_Lumpur"
@@ -132,3 +137,77 @@ def owner_moved_mail(
     html = _html([f"Hello {escape(name)},", escape(change), power, "FourStacks"])
     subject = f"HR owner changed for {_one_line(business_name)}"
     return OutgoingMail(to=to, subject=subject, text=text, html=html)
+
+
+BookingChange = Literal["created", "moved", "cancelled"]
+_BOOKING_SUBJECT = {"created": "Booked", "moved": "Moved", "cancelled": "Cancelled"}
+
+
+def _span(start: datetime, end: datetime, tz: str) -> str:
+    """``4 Mar 2031, 10:00 to 10:30`` and, across midnight, the end's date too."""
+    zone = ZoneInfo(tz)
+    first, last = start.astimezone(zone), end.astimezone(zone)
+    until = f"{last:%H:%M}" if first.date() == last.date() else when(end, tz)
+    return f"{when(start, tz)} to {until}"
+
+
+def booking_mail(
+    *,
+    to: str,
+    name: str | None,
+    brand: str,
+    booking: BookingRecord,
+    change: BookingChange,
+    tz: str,
+    calendar: CalendarFile,
+) -> OutgoingMail:
+    """A booking made, moved or cancelled by staff, with the calendar file attached.
+
+    The place and the Maps and Waze links come from the booking itself, and nothing here says who
+    else is on it.
+    """
+    title = " ".join((booking.title or "Booking").split())
+    pending = booking.status == "pending" and change != "cancelled"
+    headline = {
+        "created": f"{title} with {brand} is booked.",
+        "moved": f"{title} with {brand} has moved to a new time.",
+        "cancelled": f"{title} with {brand} has been cancelled.",
+    }[change]
+    if pending:
+        headline = f"{title} with {brand} is waiting for confirmation."
+    rows: list[tuple[str, str, str | None]] = [
+        ("What", title, None),
+        ("When", f"{_span(booking.starts_at, booking.ends_at, tz)} ({tz})", None),
+    ]
+    if booking.location_kind == "in_person" and booking.address:
+        maps, waze = map_links(booking.address)
+        rows += [
+            ("Where", booking.address, None),
+            ("Google Maps", maps, maps),
+            ("Waze", waze, waze),
+        ]
+    elif booking.location_kind == "online" and booking.meeting_link:
+        link = booking.meeting_link
+        rows.append(("Link", link, link if link.startswith("https://") else None))
+    elif booking.location_kind == "phone":
+        rows.append(("Where", "By phone", None))
+    footer = (
+        "Open the attached calendar file to remove it from your calendar."
+        if change == "cancelled"
+        else "Open the attached calendar file to add it to your calendar."
+    )
+    hello = f"Hello {name}," if name else "Hello,"
+    text = (
+        f"{hello}\n\n{headline}\n\n"
+        + "".join(f"{label}: {value}\n" for label, value, _ in rows)
+        + f"\n{footer}\n\n{brand}\n"
+    )
+    details = "<br>\n".join(
+        f"<strong>{label}:</strong> "
+        + (f'<a href="{escape(href)}">{escape(value)}</a>' if href else escape(value))
+        for label, value, href in rows
+    )
+    html = _html([escape(hello), escape(headline), details, escape(footer), escape(brand)])
+    subject_title = _BOOKING_SUBJECT[change] if not pending else "Waiting for confirmation"
+    subject = f"{subject_title}: {title} on {when(booking.starts_at, tz)} ({_one_line(brand)})"
+    return OutgoingMail(to=to, subject=subject, text=text, html=html, calendar=calendar)

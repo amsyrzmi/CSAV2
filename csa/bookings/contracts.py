@@ -268,6 +268,9 @@ BookingTime = Annotated[AwareDatetime, AfterValidator(_sane_time)]
 
 BookingStatus = Literal["pending", "confirmed", "cancelled", "no_show"]
 BookingKind = Literal["appointment", "meeting"]
+# How the email went after a staff change: "sent" (all of it), "failed" (at least one did not go),
+# "off" (mail is switched off) or "none" (nobody on the booking has an address).
+EmailSummary = Literal["sent", "off", "failed", "none"]
 # What the rules can say about a time. Never why: a person who is away is only "unavailable".
 BookingFinding = Literal["outside_hours", "closed_day", "short_notice", "unavailable"]
 
@@ -390,6 +393,9 @@ class BookingOut(Contract):
     meeting_link: str | None
     # "unavailable" when a person on the booking now has approved leave over it. Never why.
     conflict: Literal["unavailable"] | None
+    # Only on the answer to a staff change that sends mail (book, move, cancel, confirm, decline);
+    # null on every read, on a no-show, and on a private meeting the viewer is not part of.
+    email: EmailSummary | None = None
 
 
 class BookingSlotOut(Contract):

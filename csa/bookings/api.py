@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
-from csa.bookings import service, setup
+from csa.bookings import notify, service, setup
 from csa.bookings.contracts import (
     BookingActionIn,
     BookingBlockIn,
@@ -35,9 +35,11 @@ from csa.bookings.contracts import (
     BookingTypeIn,
     BookingTypeOut,
     BookingTypePatch,
+    EmailSummary,
     HoursKind,
 )
 from csa.console.access import authenticate, tenant
+from csa.console.auth import _mailer
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.services import package_gate
 from csa.core.tenancy import tx
@@ -88,12 +90,29 @@ class BookingRoute(APIRoute):
         return guarded
 
 
-async def after_commit(request: Request, record: service.BookingRecord, change: Change) -> None:
+# What each staff action tells people. A confirmation is the invitation, because until then the
+# customer has been sent nothing; a decline is a cancellation. A no-show sends nothing.
+MAIL_FOR: dict[Change, notify.Change] = {
+    "created": "created",
+    "confirmed": "created",
+    "moved": "moved",
+    "cancelled": "cancelled",
+    "declined": "cancelled",
+}
+
+
+async def after_commit(
+    request: Request, record: service.BookingRecord, change: Change
+) -> EmailSummary | None:
     """Runs once the booking's transaction has committed, with the unredacted record.
 
-    Nothing happens here yet. Task 5 sends the invitation, change or cancellation email from this
-    one place, so a failed email can never undo a booking.
+    Sends the invitation, change or cancellation email from this one place, so a failed email can
+    never undo a booking. It never raises, and the mail text never reaches the response.
     """
+    mail = MAIL_FOR.get(change)
+    if mail is None:
+        return None
+    return await notify.notify_after_commit(request.app.state.pool, _mailer(request), record, mail)
 
 
 def build_bookings_router() -> APIRouter:
@@ -123,8 +142,10 @@ def build_bookings_router() -> APIRouter:
     async def respond(
         request: Request, actor: ConsoleActor, record: service.BookingRecord, change: Change
     ) -> BookingOut:
-        await after_commit(request, record, change)
-        return service.to_out(record, service.viewer_of(actor))
+        summary = await after_commit(request, record, change)
+        out = service.to_out(record, service.viewer_of(actor))
+        # A redacted answer says nothing about the meeting, not even whether it had addresses.
+        return out if out.redacted else out.model_copy(update={"email": summary})
 
     # --- people ------------------------------------------------------------------------------
 
