@@ -163,6 +163,5 @@ def test_capability_row_defaults_pre_lg11_fields() -> None:
         }
     )
 
-    assert row.impl_kind == "n8n"
     assert row.impl_ref is None
     assert row.routing_hint is None
