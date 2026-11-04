@@ -144,7 +144,12 @@ The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) t
 | Book outside working hours | Staff | A warning with "Outside working hours."; "Book anyway" books it | manual |
 | Book on a closed day | Admin | A warning with "This is a closed day."; "Book anyway" books it | manual |
 | Book a person who is on approved leave in HR | Staff, then Admin | Staff: "Not available that day." with no way past it. Admin: the same sentence as a warning, and "Book anyway" books it. Nothing says why the person is away | manual |
-| Book a time someone else has just taken | Two browsers, the same person and time | The second says "That time was just taken." and keeps the form filled in | manual |
+| Book a time someone else has just taken | Two browsers, the same person and time | The second says "That time was just taken.", keeps the form filled in, and the free times below it are read again with the taken time gone. The same when moving a booking | manual |
+| Move or cancel a booking for a phone-only customer | A customer with a phone number and no email; a person on it with an address | The notice says "Customer wasn't told." after the change, even though the person was mailed | manual |
+| Switch a person (or room) off who has bookings | Admin untick "Can be booked" for someone with a booking ahead | Their bookings stay, with a warning mark on the calendar and in the details saying they aren't taking bookings any more; they stay in the calendar's filter | manual |
+| Book a type whose rooms are all switched off | A type with "Any free room" and every room switched off | The booking is refused with a plain sentence, and no free times are offered | manual |
+| Link a team member to HR after adding them to Bookings | Add the person first, link their account in HR, approve leave | They are not offered on the leave day, staff are refused, and a booking already there shows the warning mark. Nothing says why | manual |
+| Ask for free times for a meeting today | Staff, the form's free times | No time before now is offered | manual |
 | Make a private meeting, then open the calendar as another member and as an Admin who is not in it | Staff creates it with "Private" | Both see "Busy" and no title or people; the Admin can still move or cancel it; filtering by one of its people shows a plain "Busy" block | manual |
 | Open the calendar as a read-only member | Read-only member | No "New booking" button, no customer names or phones in the calendar or on a booking | manual |
 | Open the calendar from a browser set to another time zone | Company in Asia/Kuala_Lumpur, laptop on another zone | The week and every time are still in the company's time zone | manual |
