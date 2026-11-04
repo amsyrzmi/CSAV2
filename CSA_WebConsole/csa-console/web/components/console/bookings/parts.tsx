@@ -1,23 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
-import Dialog from "../fs/Dialog";
-import { field } from "../ui";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { field, Notice } from "../ui";
 
-/**
- * A dialog that is open for as long as it is mounted. The shared Dialog closes and reopens its
- * native <dialog> when effects run twice in development, and the late `close` event of that
- * first close would shut a dialog that mounted already open. This one mounts closed and opens a
- * frame later, which is how the shared Dialog is used everywhere else (toggled, not mounted open).
- */
-export function OpenDialog(props: Omit<ComponentProps<typeof Dialog>, "open">) {
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => setOpen(true));
-    return () => cancelAnimationFrame(frame);
-  }, []);
-  return <Dialog {...props} open={open} />;
-}
+/** Reading the company's time zone: still going, done, or failed (so nothing may be shown in a guess). */
+export type ZoneState = "loading" | "loaded" | "failed";
 
 /** What every Bookings page needs to know about who is looking and which company it is. */
 export interface BookingsScope {
@@ -25,10 +12,31 @@ export interface BookingsScope {
   tenantId: string | null;
   /** An Admin of the company, or a platform admin: the only people who change the setup. */
   canEdit: boolean;
-  /** The company's IANA time zone, or null while it is unknown. */
+  /** An Admin, a platform admin or staff: who may make bookings. Read-only members may not. */
+  canBook: boolean;
+  /** The signed-in account, to find which of the listed people is them. */
+  userId: string;
+  /** The company's IANA time zone; set only once it has been read and is valid. */
   zone: string | null;
+  zoneState: ZoneState;
   /** `client_id=…` for a platform admin's links, else empty. */
   query: string;
+}
+
+/**
+ * Shows its content once the company's time zone is known. While it is being read there is only a
+ * quiet loading line; if it could not be read there is the message and nothing else, because times
+ * must never be shown or accepted in the browser's own zone.
+ */
+export function ZoneGate({ scope, children }: { scope: BookingsScope; children: (zone: string) => ReactNode }) {
+  if (scope.zone) return <>{children(scope.zone)}</>;
+  if (scope.zoneState === "loading") return <p role="status" className={mutedText}>Loading…</p>;
+  return (
+    <Notice warning testId="zone-failed">
+      We could not read your company&apos;s time zone, so times can&apos;t be shown or entered yet.
+      Reload the page to try again.
+    </Notice>
+  );
 }
 
 export const cardClass =

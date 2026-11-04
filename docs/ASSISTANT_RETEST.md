@@ -128,6 +128,28 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Rehire a person who has left | HR owner, a Left person | Rehire with a start date says "Rehired. Invite them again from Settings to give console access."; the person is Active with no access switches | manual |
 | Open People & HR Home | HR owner | No "HR chat (assistant & voice)" block; the assistant dock is the only assistant | manual |
 
+## Bookings
+
+The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) that run against a stub, so none of them proves that mail leaves the server or that a calendar app accepts the file. The rows below are for a person on staging, with Mail on and the Bookings package active. Use synthetic people only, and your own mailbox and calendar for the invitations. The assistant does not book, move or cancel anything yet (that is PR 2), so there is no assistant prompt here.
+
+| Check | Setup | Expected | Kind |
+|---|---|---|---|
+| Book a customer appointment for a person whose address is a mailbox you can open | Admin or staff; a booking type with that person; a customer with your own email | The booking shows on the calendar in the company's time zone, and an invitation arrives in that mailbox with an `invite.ics` attachment. Opening it in a real calendar (Google Calendar, Apple Calendar or Outlook) adds an event at the right local time, with the address or link | manual |
+| Move that booking to another time | Same booking | The same event in the real calendar moves to the new time (an update, not a second event) | manual |
+| Cancel that booking | Same booking | The event in the real calendar is removed or marked cancelled | manual |
+| Book a meeting with an outside guest and an online link | Staff; your own email as the guest | The guest's invitation shows the link; their copy lists only themselves as an attendee, and nobody else's address | manual |
+| Book a type that needs confirmation, then Confirm it | A type with "Staff confirm" on, your own email as the customer | Before Confirm the customer (you) gets nothing and the people on it get a tentative invitation; after Confirm the customer gets the invitation | manual |
+| Cancel a booking that was never confirmed | Same kind of type | The customer gets no cancellation, because they were never told about it | manual |
+| Book with Mail off | Mail switched off on the server | "Booked. Mail is off, so nobody was emailed." and the booking is still made | manual |
+| Book outside working hours | Staff | A warning with "Outside working hours."; "Book anyway" books it | manual |
+| Book on a closed day | Admin | A warning with "This is a closed day."; "Book anyway" books it | manual |
+| Book a person who is on approved leave in HR | Staff, then Admin | Staff: "Not available that day." with no way past it. Admin: the same sentence as a warning, and "Book anyway" books it. Nothing says why the person is away | manual |
+| Book a time someone else has just taken | Two browsers, the same person and time | The second says "That time was just taken." and keeps the form filled in | manual |
+| Make a private meeting, then open the calendar as another member and as an Admin who is not in it | Staff creates it with "Private" | Both see "Busy" and no title or people; the Admin can still move or cancel it; filtering by one of its people shows a plain "Busy" block | manual |
+| Open the calendar as a read-only member | Read-only member | No "New booking" button, no customer names or phones in the calendar or on a booking | manual |
+| Open the calendar from a browser set to another time zone | Company in Asia/Kuala_Lumpur, laptop on another zone | The week and every time are still in the company's time zone | manual |
+| Open an in-person booking's details | A type with an address | "Open in Maps" and "Open in Waze" open the right place in a new tab | manual |
+
 ## Go live
 
 | Check | Setup | Expected | Kind |

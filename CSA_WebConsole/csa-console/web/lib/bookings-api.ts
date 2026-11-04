@@ -267,3 +267,165 @@ export function addBlock(tenantId: string | null, body: BookingBlockIn): Promise
 export function removeBlock(tenantId: string | null, blockId: string): Promise<void> {
   return del(bookingsPath(tenantId, `/blocks${id(blockId)}`));
 }
+
+// ---- Bookings, the calendar and customers ---------------------------------------------------
+
+/** The findings a booking or a move can come back with, as they are on the wire. */
+export type BookingFinding = "outside_hours" | "closed_day" | "short_notice" | "unavailable";
+export type BookingStatus = "pending" | "confirmed" | "cancelled" | "no_show";
+/** How the mail went, on the answer to a staff action only: null on every read. */
+export type BookingMail = "sent" | "off" | "failed" | "none";
+
+export interface BookingPersonRef {
+  id: string;
+  display_name: string;
+  is_active: boolean;
+}
+
+export interface BookingResourceRef {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
+
+export interface BookingCustomer {
+  id: string;
+  full_name: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
+export interface BookingGuest {
+  name: string | null;
+  email: string;
+}
+
+/**
+ * A redacted private meeting has `redacted: true`, `title: "Busy"`, no people, rooms or details;
+ * a read-only member gets `customer: null` and no guests.
+ */
+export interface BookingOut {
+  id: string;
+  status: BookingStatus;
+  kind: "appointment" | "meeting";
+  title: string | null;
+  private: boolean;
+  redacted: boolean;
+  starts_at: string;
+  ends_at: string;
+  version: number;
+  type_id: string | null;
+  customer: BookingCustomer | null;
+  people: BookingPersonRef[];
+  resources: BookingResourceRef[];
+  guests: BookingGuest[];
+  location_kind: BookingLocationKind | null;
+  address: string | null;
+  meeting_link: string | null;
+  /** "unavailable" when a person on it now has time off over it; never says why. */
+  conflict: "unavailable" | null;
+  email?: BookingMail | null;
+}
+
+/** A private meeting the viewer is not part of, on a filtered read: times only, and no id. */
+export interface BookingBusy {
+  starts_at: string;
+  ends_at: string;
+  label: "Busy";
+}
+
+export interface BookingCalendar {
+  items: BookingOut[];
+  busy: BookingBusy[];
+}
+
+export interface BookingSlot {
+  starts_at: string;
+  ends_at: string;
+  people: string[];
+  resources: string[];
+}
+
+export interface BookingIn {
+  starts_at: string;
+  type_id?: string | null;
+  title?: string | null;
+  minutes?: number | null;
+  people?: string[];
+  resources?: string[];
+  contact_id?: string | null;
+  walk_in?: { name: string; phone?: string | null; email?: string | null } | null;
+  guests?: { name?: string | null; email: string }[];
+  private?: boolean;
+  location_kind?: BookingLocationKind | null;
+  address?: string | null;
+  meeting_link?: string | null;
+  acknowledged?: BookingFinding[];
+}
+
+export interface BookingMoveIn {
+  version: number;
+  starts_at: string;
+  acknowledged?: BookingFinding[];
+}
+
+export type BookingAction = "cancel" | "confirm" | "decline" | "no-show";
+
+export function getCalendar(
+  tenantId: string | null,
+  range: { from: string; to: string },
+  filter: { person?: string; resource?: string } = {},
+  signal?: AbortSignal,
+): Promise<BookingCalendar> {
+  return api(
+    bookingsPath(tenantId, "/calendar", { ...range, person: filter.person, resource: filter.resource }),
+    { signal },
+  );
+}
+
+/** Free times for a type, or (no type) for the people and rooms given and `minutes`. */
+export function getAvailability(
+  tenantId: string | null,
+  query: { from: string; to: string; typeId?: string; people?: string[]; resources?: string[]; minutes?: number },
+  signal?: AbortSignal,
+): Promise<BookingSlot[]> {
+  const search = new URLSearchParams();
+  if (tenantId) search.set("client_id", tenantId);
+  search.set("from", query.from);
+  search.set("to", query.to);
+  if (query.typeId) search.set("type_id", query.typeId);
+  if (query.minutes) search.set("minutes", String(query.minutes));
+  for (const person of query.people ?? []) search.append("people", person);
+  for (const resource of query.resources ?? []) search.append("resources", resource);
+  return api(`${BASE}/availability?${search}`, { signal });
+}
+
+/** Read-only members get 403 here, as in the Inbox. */
+export function searchCustomers(
+  tenantId: string | null,
+  q: string,
+  signal?: AbortSignal,
+): Promise<BookingCustomer[]> {
+  return api(bookingsPath(tenantId, "/customers", { q: q.trim() || undefined }), { signal });
+}
+
+export function createBooking(tenantId: string | null, body: BookingIn): Promise<BookingOut> {
+  return post(bookingsPath(tenantId, "/bookings"), body);
+}
+
+export function moveBooking(
+  tenantId: string | null,
+  bookingId: string,
+  body: BookingMoveIn,
+): Promise<BookingOut> {
+  return patch(bookingsPath(tenantId, `/bookings${id(bookingId)}`), body);
+}
+
+export function changeBooking(
+  tenantId: string | null,
+  bookingId: string,
+  action: BookingAction,
+  version: number,
+): Promise<BookingOut> {
+  return post(bookingsPath(tenantId, `/bookings${id(bookingId)}/${action}`), { version });
+}

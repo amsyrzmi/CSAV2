@@ -18,6 +18,9 @@ const {
   typeToForm, emptyTypeForm, formToTypeIn, formToTypePatch, typeProblem,
   audienceLabel, deliveryLabel, locationLabel, durationText, typeSummary, isEmail, zonedToUtc,
   blockWhen, emailForViewer, todayInZone,
+  weekDays, layoutDay, findingCopy, emailNote, addDays, timeInZone, dayInZone, shiftWeek, weekTitle,
+  bookingTitle, mapsLink, wazeLink, safeMeetingLink, canChangeBooking,
+  emptyBookingForm, bookingProblem, formToBookingIn, isPhone,
 } = view;
 
 const week = (opens, closes, days = [0, 1, 2, 3, 4]) => days.map((weekday) => ({ weekday, opens, closes }));
@@ -203,4 +206,216 @@ test("today is read on the company's calendar", () => {
   assert.equal(todayInZone("UTC", instant), "2026-11-04");
   assert.equal(todayInZone(null, instant), null);
   assert.equal(todayInZone("Not/AZone", instant), null);
+});
+
+const KL = "Asia/Kuala_Lumpur";
+const NY = "America/New_York";
+
+test("the week and its days follow the company's zone, not the browser's", () => {
+  // Sunday 8 Nov 2026, 17:00 UTC: already Monday 9 Nov in Kuala Lumpur, still Sunday in New York.
+  const anchor = new Date("2026-11-08T17:00:00Z");
+  const kl = weekDays(anchor, KL);
+  const ny = weekDays(anchor, NY);
+  assert.deepEqual(kl.map((d) => d.day), [
+    "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14", "2026-11-15",
+  ]);
+  assert.equal(ny[0].day, "2026-11-02");
+  assert.equal(ny[6].day, "2026-11-08");
+  assert.equal(kl[0].label, "Mon 9 Nov");
+  // Each day runs from its own midnight, so the instants differ by the zone's offset.
+  assert.equal(kl[0].start, "2026-11-08T16:00:00.000Z");
+  assert.equal(kl[0].end, "2026-11-09T16:00:00.000Z");
+  assert.equal(ny[0].start, "2026-11-02T05:00:00.000Z");
+  assert.equal(ny[0].end, "2026-11-03T05:00:00.000Z");
+});
+
+test("a day with a clock change still ends at the next midnight", () => {
+  // New York leaves summer time on 1 Nov 2026: that Sunday has 25 hours.
+  const sunday = weekDays(new Date("2026-11-01T12:00:00Z"), NY)[6];
+  assert.equal(sunday.day, "2026-11-01");
+  assert.equal(sunday.start, "2026-11-01T04:00:00.000Z");
+  assert.equal(sunday.end, "2026-11-02T05:00:00.000Z");
+});
+
+test("moving the week keeps to whole weeks on the company's calendar", () => {
+  const anchor = new Date("2026-11-08T17:00:00Z");
+  assert.equal(weekDays(shiftWeek(anchor, 1, KL), KL)[0].day, "2026-11-16");
+  assert.equal(weekDays(shiftWeek(anchor, -1, KL), KL)[0].day, "2026-11-02");
+  assert.equal(addDays("2026-12-31", 1), "2027-01-01");
+  assert.equal(addDays("2026-03-01", -1), "2026-02-28");
+  assert.equal(weekTitle(weekDays(anchor, KL)), "9 Nov to 15 Nov 2026");
+  assert.equal(weekTitle(weekDays(new Date("2026-12-30T04:00:00Z"), KL)), "28 Dec 2026 to 3 Jan 2027");
+});
+
+test("times and days of a booking are read on the company's clock", () => {
+  assert.equal(timeInZone("2026-11-05T01:30:00Z", KL), "09:30");
+  assert.equal(timeInZone("2026-11-05T01:30:00Z", NY), "20:30");
+  assert.equal(dayInZone("2026-11-05T01:30:00Z", KL), "2026-11-05");
+  assert.equal(dayInZone("2026-11-05T01:30:00Z", NY), "2026-11-04");
+});
+
+const at = (start, end, extra = {}) => ({
+  starts_at: `2026-11-05T${start}:00Z`, ends_at: `2026-11-05T${end}:00Z`, ...extra,
+});
+
+test("overlapping bookings lay out side by side, the rest take the full width", () => {
+  const placed = layoutDay(
+    [
+      at("01:00", "02:00", { id: "a" }),
+      at("01:30", "02:30", { id: "b" }),
+      at("01:45", "02:15", { id: "c" }),
+      at("04:00", "05:00", { id: "d" }),
+    ],
+    KL,
+  );
+  const by = Object.fromEntries(placed.map((p) => [p.item.id, p]));
+  assert.equal(by.a.startMinute, 9 * 60);
+  assert.equal(by.a.endMinute, 10 * 60);
+  assert.deepEqual([by.a.lane, by.b.lane, by.c.lane], [0, 1, 2]);
+  assert.deepEqual([by.a.lanes, by.b.lanes, by.c.lanes], [3, 3, 3]);
+  assert.deepEqual([by.d.lane, by.d.lanes], [0, 1]);
+});
+
+test("a lane is reused once its booking has ended", () => {
+  const placed = layoutDay(
+    [at("01:00", "02:00", { id: "a" }), at("01:30", "03:00", { id: "b" }), at("02:00", "02:30", { id: "c" })],
+    KL,
+  );
+  const by = Object.fromEntries(placed.map((p) => [p.item.id, p]));
+  assert.deepEqual([by.a.lane, by.b.lane, by.c.lane], [0, 1, 0]);
+  assert.equal(by.c.lanes, 2);
+});
+
+test("a booking that runs past midnight stops at midnight, and a busy row lays out too", () => {
+  const placed = layoutDay(
+    [{ starts_at: "2026-11-05T14:00:00Z", ends_at: "2026-11-05T18:00:00Z", label: "Busy" }],
+    KL,
+  );
+  assert.equal(placed[0].startMinute, 22 * 60);
+  assert.equal(placed[0].endMinute, 24 * 60);
+});
+
+test("the finding copy is exact and never names leave", () => {
+  assert.equal(findingCopy("outside_hours"), "Outside working hours.");
+  assert.equal(findingCopy("closed_day"), "This is a closed day.");
+  assert.equal(findingCopy("unavailable"), "Not available that day.");
+  assert.equal(findingCopy("short_notice"), "Shorter notice than this booking type allows.");
+  assert.equal(findingCopy("something_new"), "This time needs a second look.");
+  for (const code of ["outside_hours", "closed_day", "unavailable", "short_notice", "x"]) {
+    assert.doesNotMatch(findingCopy(code), /leave/i);
+  }
+});
+
+test("the mail note says what happened, and nothing when all went well", () => {
+  assert.equal(emailNote("off"), "Mail is off, so nobody was emailed.");
+  assert.equal(emailNote("failed"), "We couldn't email everyone. Some may not have got it.");
+  assert.equal(emailNote("none"), "Nobody on this booking has an email address.");
+  assert.equal(emailNote("sent"), null);
+  assert.equal(emailNote(null), null);
+  assert.equal(emailNote(undefined), null);
+});
+
+const APPOINTMENT = {
+  id: "t1", name: "Consultation", duration_minutes: 60, audience: "customers", delivery: "named",
+  resource_rule: "none", person_ids: ["p1"], resource_ids: [],
+};
+
+test("a booking of a type asks for its people and a customer, then sends the type's way", () => {
+  const form = { ...emptyBookingForm("2026-11-05"), typeId: "t1", time: "10:00" };
+  assert.equal(bookingProblem(form, APPOINTMENT, KL), "Choose who this booking is with.");
+  form.personIds = ["p1"];
+  assert.equal(bookingProblem(form, APPOINTMENT, KL), "Choose a customer, or enter a new one with a phone number or an email.");
+  form.walkName = "Aina Synthetic";
+  assert.equal(bookingProblem(form, APPOINTMENT, KL), "Enter the customer's phone number or email.");
+  form.walkPhone = "012-345 6789";
+  assert.equal(bookingProblem(form, APPOINTMENT, KL), null);
+  form.guests = [{ name: "", email: " guest@example.test " }, { name: "", email: "" }];
+  const body = formToBookingIn(form, APPOINTMENT, KL, ["outside_hours"]);
+  assert.deepEqual(body, {
+    starts_at: "2026-11-05T02:00:00.000Z",
+    type_id: "t1",
+    people: ["p1"],
+    resources: [],
+    walk_in: { name: "Aina Synthetic", phone: "012-345 6789", email: null },
+    guests: [{ name: null, email: "guest@example.test" }],
+    acknowledged: ["outside_hours"],
+  });
+});
+
+test("a chosen customer is sent by id, and a type for staff has no customer at all", () => {
+  const form = { ...emptyBookingForm("2026-11-05"), typeId: "t1", time: "10:00", personIds: ["p1"], contactId: "c1", walkName: "Ignored" };
+  assert.equal(formToBookingIn(form, APPOINTMENT, KL).contact_id, "c1");
+  assert.equal("walk_in" in formToBookingIn(form, APPOINTMENT, KL), false);
+  const staffOnly = { ...APPOINTMENT, audience: "staff" };
+  const body = formToBookingIn({ ...form, contactId: "" }, staffOnly, KL);
+  assert.equal("walk_in" in body || "contact_id" in body, false);
+  assert.equal(bookingProblem({ ...form, contactId: "" }, staffOnly, KL), null);
+  // "any" delivery lets the server pick, so no people are sent.
+  assert.deepEqual(formToBookingIn(form, { ...APPOINTMENT, delivery: "any" }, KL).people, []);
+});
+
+test("a meeting needs a title, a length and someone or somewhere, and keeps only what it uses", () => {
+  const form = { ...emptyBookingForm("2026-11-05"), time: "15:00", title: "Planning", minutes: "45" };
+  assert.equal(bookingProblem({ ...form, title: " " }, null, KL), "Give the meeting a title.");
+  assert.equal(bookingProblem({ ...form, minutes: "0" }, null, KL), "Enter the length as a whole number of minutes, from 1 to 1,440 (24 hours).");
+  assert.equal(bookingProblem(form, null, KL), "Choose at least one colleague or room.");
+  form.personIds = ["p1", "p2"];
+  form.locationKind = "online";
+  form.link = "http://meet.example.test/x";
+  assert.equal(bookingProblem(form, null, KL), "The meeting link must start with https://.");
+  form.link = "https://meet.example.test/x";
+  form.address = "Left over";
+  form.isPrivate = true;
+  assert.equal(bookingProblem(form, null, KL), null);
+  assert.deepEqual(formToBookingIn(form, null, KL), {
+    starts_at: "2026-11-05T07:00:00.000Z",
+    title: "Planning",
+    minutes: 45,
+    people: ["p1", "p2"],
+    resources: [],
+    private: true,
+    location_kind: "online",
+    meeting_link: "https://meet.example.test/x",
+    guests: [],
+    acknowledged: [],
+  });
+});
+
+test("the day and time are required, a guest needs an address, a phone is digits", () => {
+  const form = { ...emptyBookingForm("2026-11-05"), time: "", title: "x", personIds: ["p1"] };
+  assert.equal(bookingProblem(form, null, KL), "Choose the day and time.");
+  form.time = "10:00";
+  form.guests = [{ name: "Guest", email: "not-an-address" }];
+  assert.equal(bookingProblem(form, null, KL), "Check the guest's email address: not-an-address.");
+  assert.equal(isPhone("+60 12-345 6789"), true);
+  assert.equal(isPhone("call me"), false);
+  assert.equal(isPhone("12"), false);
+});
+
+test("titles, links and who may change a booking", () => {
+  assert.equal(bookingTitle({ redacted: true, title: "Busy", kind: "meeting" }), "Busy");
+  assert.equal(bookingTitle({ redacted: false, title: "Consultation", kind: "appointment" }), "Consultation");
+  assert.equal(bookingTitle({ redacted: false, title: null, kind: "appointment" }), "Appointment");
+  assert.equal(bookingTitle({ redacted: false, title: null, kind: "meeting" }), "Meeting");
+  assert.equal(
+    mapsLink("1 Jalan Contoh & Sons"),
+    "https://www.google.com/maps/search/?api=1&query=1%20Jalan%20Contoh%20%26%20Sons",
+  );
+  assert.equal(wazeLink("1 Jalan Contoh"), "https://waze.com/ul?q=1%20Jalan%20Contoh&navigate=yes");
+  assert.equal(safeMeetingLink("https://meet.example.test/abc"), "https://meet.example.test/abc");
+  assert.equal(safeMeetingLink("http://meet.example.test/abc"), null);
+  assert.equal(safeMeetingLink("javascript:alert(1)"), null);
+  assert.equal(safeMeetingLink(null), null);
+
+  const booking = { id: "b1", people: [{ id: "p1" }], redacted: false, status: "confirmed" };
+  const admin = { admin: true, staff: false, myPersonIds: [], mine: [] };
+  const staff = (extra) => ({ admin: false, staff: true, myPersonIds: [], mine: [], ...extra });
+  assert.equal(canChangeBooking(booking, admin), true);
+  assert.equal(canChangeBooking({ ...booking, redacted: true, people: [] }, admin), true);
+  assert.equal(canChangeBooking(booking, staff({ myPersonIds: ["p1"] })), true);
+  assert.equal(canChangeBooking(booking, staff({ myPersonIds: ["p9"], mine: ["b1"] })), true);
+  assert.equal(canChangeBooking(booking, staff({ myPersonIds: ["p9"] })), false);
+  assert.equal(canChangeBooking({ ...booking, redacted: true, people: [] }, staff({ myPersonIds: ["p1"] })), false);
+  assert.equal(canChangeBooking(booking, { admin: false, staff: false, myPersonIds: ["p1"], mine: ["b1"] }), false);
+  assert.equal(canChangeBooking({ ...booking, status: "cancelled" }, admin), false);
 });

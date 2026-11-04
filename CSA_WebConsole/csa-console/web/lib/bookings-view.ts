@@ -6,6 +6,8 @@
 import type {
   BookingAudience,
   BookingDelivery,
+  BookingFinding,
+  BookingIn,
   BookingHoursOut,
   BookingLocationKind,
   BookingPeriod,
@@ -326,6 +328,313 @@ export function blockWhen(startsAt: string, endsAt: string, zone: string): strin
 export function dayText(day: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
   return match ? `${Number(match[3])} ${MONTHS[Number(match[2]) - 1]} ${match[1]}` : day;
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** The date on the company's calendar of an instant, as "YYYY-MM-DD". Throws for an unknown zone. */
+export function dayInZone(instant: string | Date, zone: string): string {
+  const p = zoneParts(new Date(instant).getTime(), zone);
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
+}
+
+/** The time on the company's clock of an instant, as "HH:MM". */
+export function timeInZone(instant: string | Date, zone: string): string {
+  const p = zoneParts(new Date(instant).getTime(), zone);
+  return `${pad2(p.hour)}:${pad2(p.minute)}`;
+}
+
+/** A calendar date moved by whole days ("2026-12-31" plus one is "2027-01-01"). */
+export function addDays(day: string, days: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!match) return day;
+  const moved = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + days));
+  return `${moved.getUTCFullYear()}-${pad2(moved.getUTCMonth() + 1)}-${pad2(moved.getUTCDate())}`;
+}
+
+/** 0 is Monday, for a date written "YYYY-MM-DD". */
+function weekdayOf(day: string): number {
+  const [year, month, date] = day.split("-").map(Number);
+  return (new Date(Date.UTC(year, month - 1, date)).getUTCDay() + 6) % 7;
+}
+
+export interface WeekDay {
+  day: string;
+  /** 0 is Monday. */
+  weekday: number;
+  label: string;
+  /** This day's midnight and the next midnight on the company's clock, as UTC instants. */
+  start: string;
+  end: string;
+}
+
+function midnight(day: string, zone: string): string {
+  const instant = zonedToUtc(day, "00:00", zone);
+  if (!instant) throw new RangeError(`Cannot read ${day} in ${zone}`);
+  return instant;
+}
+
+/** One calendar day on the company's clock as the UTC window the server reads. */
+export function dayWindow(day: string, timezone: string): { from: string; to: string } | null {
+  const from = zonedToUtc(day, "00:00", timezone);
+  const to = zonedToUtc(addDays(day, 1), "00:00", timezone);
+  return from && to ? { from, to } : null;
+}
+
+/** The Monday-to-Sunday week that holds `anchor` on the company's calendar, never the browser's. */
+export function weekDays(anchor: Date, timezone: string): WeekDay[] {
+  const today = dayInZone(anchor, timezone);
+  const monday = addDays(today, -weekdayOf(today));
+  return Array.from({ length: 7 }, (_, weekday) => {
+    const day = addDays(monday, weekday);
+    const parts = day.split("-").map(Number);
+    return {
+      day,
+      weekday,
+      label: `${WEEKDAYS[weekday].slice(0, 3)} ${parts[2]} ${MONTHS[parts[1] - 1]}`,
+      start: midnight(day, timezone),
+      end: midnight(addDays(day, 1), timezone),
+    };
+  });
+}
+
+/** An instant in the middle of the same weekday `weeks` weeks away, on the company's calendar. */
+export function shiftWeek(anchor: Date, weeks: number, timezone: string): Date {
+  const day = addDays(dayInZone(anchor, timezone), weeks * 7);
+  return new Date(zonedToUtc(day, "12:00", timezone) ?? anchor);
+}
+
+/** "9 Nov to 15 Nov 2026", with both years when the week crosses New Year. */
+export function weekTitle(days: WeekDay[]): string {
+  const first = days[0].day;
+  const last = days[days.length - 1].day;
+  const from = dayText(first);
+  return `${first.slice(0, 4) === last.slice(0, 4) ? from.replace(/ \d{4}$/, "") : from} to ${dayText(last)}`;
+}
+
+export interface Placed<T> {
+  item: T;
+  /** Minutes after midnight on the company's clock; the end stops at midnight. */
+  startMinute: number;
+  endMinute: number;
+  /** Column among those that overlap, and how many columns that group needs. */
+  lane: number;
+  lanes: number;
+}
+
+/** The shortest a booking is drawn, so a short one can still be read and pressed. */
+const MIN_DRAWN = 30;
+
+/**
+ * Places one day's bookings on a 24-hour grid. Bookings that overlap in time (different people
+ * or rooms) sit in side-by-side columns; one that overlaps nothing takes the full width.
+ */
+export function layoutDay<T extends { starts_at: string; ends_at: string }>(
+  items: T[],
+  timezone: string,
+): Placed<T>[] {
+  const minutes = items.map((item) => {
+    const starts = zoneParts(new Date(item.starts_at).getTime(), timezone);
+    const ends = zoneParts(new Date(item.ends_at).getTime(), timezone);
+    const startMinute = starts.hour * 60 + starts.minute;
+    const sameDay = starts.year === ends.year && starts.month === ends.month && starts.day === ends.day;
+    const endMinute = sameDay ? ends.hour * 60 + ends.minute : 1440;
+    return { item, startMinute, endMinute: Math.min(1440, Math.max(endMinute, startMinute + MIN_DRAWN)) };
+  });
+  minutes.sort((a, b) => a.startMinute - b.startMinute || b.endMinute - a.endMinute);
+  const placed: Placed<T>[] = [];
+  let cluster: Placed<T>[] = [];
+  let laneEnds: number[] = [];
+  let clusterEnd = -1;
+  const close = () => {
+    for (const entry of cluster) entry.lanes = laneEnds.length;
+    cluster = [];
+    laneEnds = [];
+  };
+  for (const entry of minutes) {
+    if (entry.startMinute >= clusterEnd) close();
+    let lane = laneEnds.findIndex((end) => end <= entry.startMinute);
+    if (lane === -1) lane = laneEnds.length;
+    laneEnds[lane] = entry.endMinute;
+    clusterEnd = cluster.length ? Math.max(clusterEnd, entry.endMinute) : entry.endMinute;
+    const next = { ...entry, lane, lanes: 1 };
+    cluster.push(next);
+    placed.push(next);
+  }
+  close();
+  return placed;
+}
+
+const FINDINGS: Record<string, string> = {
+  outside_hours: "Outside working hours.",
+  closed_day: "This is a closed day.",
+  unavailable: "Not available that day.",
+  short_notice: "Shorter notice than this booking type allows.",
+};
+
+/** The sentence for one finding the server returned. Never says why a person is away. */
+export function findingCopy(finding: string): string {
+  return FINDINGS[finding] ?? "This time needs a second look.";
+}
+
+const MAIL_NOTES: Record<string, string> = {
+  off: "Mail is off, so nobody was emailed.",
+  failed: "We couldn't email everyone. Some may not have got it.",
+  none: "Nobody on this booking has an email address.",
+};
+
+/** What to tell staff after a change when the mail did not all go; null when it did or is unknown. */
+export function emailNote(status: string | null | undefined): string | null {
+  return (status && MAIL_NOTES[status]) || null;
+}
+
+/** What a booking is called on the calendar. A private meeting the viewer is not part of is "Busy". */
+export function bookingTitle(booking: { redacted: boolean; title: string | null; kind: string }): string {
+  if (booking.redacted) return "Busy";
+  return booking.title?.trim() || (booking.kind === "meeting" ? "Meeting" : "Appointment");
+}
+
+export const mapsLink = (address: string) =>
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+export const wazeLink = (address: string) => `https://waze.com/ul?q=${encodeURIComponent(address)}&navigate=yes`;
+
+/** A meeting link is shown as a link only when it begins with https://. */
+export function safeMeetingLink(link: string | null | undefined): string | null {
+  return link && HTTPS_LINK.test(link) ? link : null;
+}
+
+/**
+ * Whether to offer Move and Cancel. An Admin may change any booking, including a redacted private
+ * meeting. Staff may change what they are on, or made in this session: the API names no creator,
+ * so the server has the final say (403) for the rest. Read-only members change nothing.
+ */
+export function canChangeBooking(
+  booking: { id: string; people: { id: string }[]; redacted: boolean; status: string },
+  who: { admin: boolean; staff: boolean; myPersonIds: string[]; mine: string[] },
+): boolean {
+  if (booking.status !== "pending" && booking.status !== "confirmed") return false;
+  if (who.admin) return true;
+  if (!who.staff || booking.redacted) return false;
+  return booking.people.some((person) => who.myPersonIds.includes(person.id)) || who.mine.includes(booking.id);
+}
+
+const PHONE = /^\+?[0-9][0-9 ()\-.]*$/;
+/** A phone number as the server takes it: digits with spaces, brackets, dots and dashes. */
+export const isPhone = (text: string) => text.length >= 3 && text.length <= 30 && PHONE.test(text);
+
+/** The booking form. Everything is text while it is typed; `typeId` empty means a meeting. */
+export interface BookingForm {
+  typeId: string;
+  title: string;
+  minutes: string;
+  day: string;
+  time: string;
+  personIds: string[];
+  resourceIds: string[];
+  isPrivate: boolean;
+  locationKind: BookingLocationKind;
+  address: string;
+  link: string;
+  contactId: string;
+  walkName: string;
+  walkPhone: string;
+  walkEmail: string;
+  guests: { name: string; email: string }[];
+}
+
+export function emptyBookingForm(day: string): BookingForm {
+  return {
+    typeId: "", title: "", minutes: "30", day, time: "", personIds: [], resourceIds: [],
+    isPrivate: false, locationKind: "phone", address: "", link: "", contactId: "", walkName: "",
+    walkPhone: "", walkEmail: "", guests: [],
+  };
+}
+
+type BookingTypeRules = Pick<BookingTypeOut, "audience" | "delivery">;
+
+/** Whether the form asks for a customer: a booking of a type that is not for staff only. */
+export const takesCustomer = (type: BookingTypeRules | null) => type !== null && type.audience !== "staff";
+
+const trimmed = (text: string) => text.trim() || null;
+
+/** The first thing missing or wrong, as a sentence, or null when the form can be sent. */
+export function bookingProblem(form: BookingForm, type: BookingTypeRules | null, zone: string): string | null {
+  if (type) {
+    if (type.delivery === "named" && form.personIds.length === 0) return "Choose who this booking is with.";
+    if (takesCustomer(type)) {
+      const name = form.walkName.trim();
+      const phone = form.walkPhone.trim();
+      const email = form.walkEmail.trim();
+      const started = Boolean(name || phone || email);
+      if (!form.contactId && !started && type.audience === "customers") {
+        return "Choose a customer, or enter a new one with a phone number or an email.";
+      }
+      if (!form.contactId && started) {
+        if (!name) return "Enter the customer's name.";
+        if (!phone && !email) return "Enter the customer's phone number or email.";
+        if (phone && !isPhone(phone)) return "Check the customer's phone number.";
+        if (email && !isEmail(email)) return "Check the customer's email address.";
+      }
+    }
+  } else {
+    if (!form.title.trim()) return "Give the meeting a title.";
+    const minutes = whole(form.minutes);
+    if (minutes === null || minutes < 1 || minutes > 1440) {
+      return "Enter the length as a whole number of minutes, from 1 to 1,440 (24 hours).";
+    }
+    if (form.personIds.length === 0 && form.resourceIds.length === 0) {
+      return "Choose at least one colleague or room.";
+    }
+    if (form.locationKind === "online" && form.link.trim() && !HTTPS_LINK.test(form.link.trim())) {
+      return "The meeting link must start with https://.";
+    }
+  }
+  if (!zonedToUtc(form.day, form.time, zone)) return "Choose the day and time.";
+  for (const guest of form.guests) {
+    if (guest.email.trim() && !isEmail(guest.email.trim())) {
+      return `Check the guest's email address: ${guest.email.trim()}.`;
+    }
+  }
+  return null;
+}
+
+/** The request body. Call it on a form with no problem; it sends only what the chosen rules use. */
+export function formToBookingIn(
+  form: BookingForm,
+  type: BookingTypeRules & { id: string } | null,
+  zone: string,
+  acknowledged: BookingFinding[] = [],
+): BookingIn {
+  const body: BookingIn = {
+    starts_at: zonedToUtc(form.day, form.time, zone) ?? "",
+    people: type ? (type.delivery === "named" ? form.personIds : []) : form.personIds,
+    resources: type ? [] : form.resourceIds,
+    guests: form.guests
+      .filter((guest) => guest.email.trim())
+      .map((guest) => ({ name: trimmed(guest.name), email: guest.email.trim() })),
+    acknowledged,
+  };
+  if (type) {
+    body.type_id = type.id;
+    if (takesCustomer(type)) {
+      if (form.contactId) body.contact_id = form.contactId;
+      else if (form.walkName.trim()) {
+        body.walk_in = {
+          name: form.walkName.trim(),
+          phone: trimmed(form.walkPhone),
+          email: trimmed(form.walkEmail),
+        };
+      }
+    }
+    return body;
+  }
+  body.title = form.title.trim();
+  body.minutes = Number(form.minutes);
+  body.private = form.isPrivate;
+  body.location_kind = form.locationKind;
+  if (form.locationKind === "in_person" && form.address.trim()) body.address = form.address.trim();
+  if (form.locationKind === "online" && form.link.trim()) body.meeting_link = form.link.trim();
+  return body;
 }
 
 /** Today's date on the company's calendar as "YYYY-MM-DD"; null when the zone is not known. */

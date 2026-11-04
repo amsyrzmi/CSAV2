@@ -25,7 +25,7 @@ import {
   typeToForm,
   type TypeForm,
 } from "@/lib/bookings-view";
-import { OpenDialog as Dialog } from "./parts";
+import Dialog from "../fs/Dialog";
 import { action, Notice, secondary } from "../ui";
 import { Check, Field, input, mutedText, useAction, type BookingsScope } from "./parts";
 
@@ -88,7 +88,7 @@ export default function TypeFormDialog({
         : "Choose at least one person.";
 
   return (
-    <Dialog onClose={() => !busy && onClose()} title={type ? `Change ${type.name}` : "Add a booking type"}
+    <Dialog open onClose={() => !busy && onClose()} title={type ? `Change ${type.name}` : "Add a booking type"}
       testId="type-dialog" widthClass="max-w-2xl">
       <form
         noValidate

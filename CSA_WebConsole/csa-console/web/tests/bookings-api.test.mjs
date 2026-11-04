@@ -110,6 +110,82 @@ test("platform admins name the tenant first on every call", async () => {
   ]);
 });
 
+test("booking, calendar, availability and customer calls", async () => {
+  const [, requests] = await capture(async () => {
+    await bookings.getCalendar(null, { from: "2026-11-02T00:00:00Z", to: "2026-11-09T00:00:00Z" });
+    await bookings.getCalendar("t1", { from: "a", to: "b" }, { person: ID });
+    await bookings.getCalendar(null, { from: "a", to: "b" }, { resource: ID });
+    await bookings.getAvailability(null, { from: "a", to: "b", typeId: ID });
+    await bookings.getAvailability(null, { from: "a", to: "b", people: [ID, "p2"], resources: ["r1"], minutes: 45 });
+    await bookings.searchCustomers(null, "  aina ");
+    await bookings.searchCustomers(null, "");
+    await bookings.createBooking(null, { starts_at: "2026-11-05T02:00:00Z", type_id: ID });
+    await bookings.moveBooking(null, ID, { version: 2, starts_at: "2026-11-06T02:00:00Z", acknowledged: ["closed_day"] });
+    await bookings.changeBooking(null, ID, "cancel", 3);
+    await bookings.changeBooking(null, ID, "no-show", 3);
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", "/console/v1/bookings/calendar?from=2026-11-02T00%3A00%3A00Z&to=2026-11-09T00%3A00%3A00Z"],
+    ["GET", `/console/v1/bookings/calendar?client_id=t1&from=a&to=b&person=${ID}`],
+    ["GET", `/console/v1/bookings/calendar?from=a&to=b&resource=${ID}`],
+    ["GET", `/console/v1/bookings/availability?from=a&to=b&type_id=${ID}`],
+    ["GET", `/console/v1/bookings/availability?from=a&to=b&minutes=45&people=${ID}&people=p2&resources=r1`],
+    ["GET", "/console/v1/bookings/customers?q=aina"],
+    ["GET", "/console/v1/bookings/customers"],
+    ["POST", "/console/v1/bookings/bookings"],
+    ["PATCH", `/console/v1/bookings/bookings/${ID}`],
+    ["POST", `/console/v1/bookings/bookings/${ID}/cancel`],
+    ["POST", `/console/v1/bookings/bookings/${ID}/no-show`],
+  ]);
+  assert.deepEqual(JSON.parse(requests[8][1].body), {
+    version: 2, starts_at: "2026-11-06T02:00:00Z", acknowledged: ["closed_day"],
+  });
+  assert.deepEqual(JSON.parse(requests[9][1].body), { version: 3 });
+});
+
+test("a booking refusal carries the server's sentence and its findings; other pages are unchanged", async () => {
+  const refuse = (body, status = 409) =>
+    assert.rejects(
+      capture(() => bookings.createBooking(null, { starts_at: "x" }), () => Response.json(body, { status })),
+      (error) => error instanceof ApiError,
+    );
+  await refuse({ detail: "slot_taken", message: "That time was just taken." });
+
+  const caught = async (body, status = 409) => {
+    try {
+      await capture(() => bookings.createBooking(null, { starts_at: "x" }), () => Response.json(body, { status }));
+    } catch (error) {
+      return error;
+    }
+    throw new Error("expected a refusal");
+  };
+  const warn = await caught({
+    detail: "needs_acknowledging",
+    message: "Outside working hours. This is a closed day.",
+    findings: ["closed_day", "outside_hours"],
+  });
+  assert.equal(warn.code, "needs_acknowledging");
+  assert.equal(warn.message, "Outside working hours. This is a closed day.");
+  assert.deepEqual(warn.body.findings, ["closed_day", "outside_hours"]);
+
+  const refused = await caught({ detail: "refused", message: "Not available that day.", findings: ["unavailable"] });
+  assert.equal(refused.message, "Not available that day.");
+  assert.deepEqual(refused.body.findings, ["unavailable"]);
+
+  const stale = await caught({ detail: "stale", message: "This booking was changed by someone else." });
+  assert.equal(stale.message, "This booking was changed by someone else.");
+  // Without a sentence from the server there is still one here, never the code.
+  assert.match((await caught({ detail: "stale" })).message, /changed by someone else/);
+  assert.match((await caught({ detail: "own_bookings_only" }, 403)).message, /only change bookings you made or are part of/);
+  assert.match((await caught({ detail: "wrong_status" })).message, /current status/);
+
+  // A message on any other code is ignored, so no other page changes.
+  const other = await caught({ detail: "version_conflict", message: "Something else" });
+  assert.match(other.message, /changed this while you were editing/);
+  const unknown = await caught({ detail: "some_code", message: "A sentence" });
+  assert.equal(unknown.message, "some_code");
+});
+
 test("a setup refusal reads as a plain sentence, never the code", async () => {
   const cases = {
     version_conflict: /changed this while you were editing/,

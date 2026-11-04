@@ -8,11 +8,15 @@ fails the test.
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 import pytest
 from playwright.async_api import Page, async_playwright, expect
@@ -34,6 +38,19 @@ pytestmark = pytest.mark.asyncio
 site = services.site
 
 ACTIVE = [{"key": "bookings", "status": "active"}]
+# The company runs on Kuala Lumpur time; every browser context runs on New York time, so a page that
+# read the browser's clock (instead of the company's) would put things on the wrong day or hour.
+COMPANY_ZONE = "Asia/Kuala_Lumpur"
+BROWSER_ZONE = "America/New_York"
+TENANT2 = "11111111-1111-4111-8111-222222222222"
+TENANT2_PROFILE = TENANT_PROFILE | {
+    "id": TENANT2,
+    "slug": "second",
+    "name": "Second Tenant",
+    "timezone": "Pacific/Auckland",
+}
+ME = "22222222-2222-4222-8222-222222222222"
+CUSTOMER_NAME = "Aina Synthetic"
 THEMES = ("cobalt", "night", "bureau")
 WIDTHS = (320, 390, 768)
 AIMAN = "44444444-4444-4444-8444-000000000001"
@@ -54,6 +71,61 @@ EDIT_CONTROLS = (
     "block-add",
 )
 DEFAULT_WEEK = [{"weekday": day, "opens": "09:00", "closes": "18:00"} for day in range(5)]
+
+
+def monday_of(zone: str, weeks: int = 0) -> date:
+    """The Monday of the current week on that company's calendar, `weeks` weeks on."""
+    today = datetime.now(ZoneInfo(zone)).date()
+    return today - timedelta(days=today.weekday()) + timedelta(weeks=weeks)
+
+
+def utc_at(day: date, clock: str, zone: str = COMPANY_ZONE) -> str:
+    """A wall-clock time on the company's clock, as the UTC instant the API sends."""
+    hour, minute = (int(part) for part in clock.split(":"))
+    local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ZoneInfo(zone))
+    return local.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def as_sent(instant: str) -> str:
+    """The same instant as the browser sends it (`toISOString`, with milliseconds)."""
+    return instant.removesuffix("Z") + ".000Z"
+
+
+def week_title(monday: date) -> str:
+    sunday = monday + timedelta(days=6)
+
+    def read(day: date, year: bool) -> str:
+        return f"{day.day} {day.strftime('%b')}" + (f" {day.year}" if year else "")
+
+    return f"{read(monday, monday.year != sunday.year)} to {read(sunday, True)}"
+
+
+def instant(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def booking(booking_id: int, start: str, end: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "id": f"99999999-9999-4999-8999-{booking_id:012d}",
+        "status": "confirmed",
+        "kind": "appointment",
+        "title": "Consultation",
+        "private": False,
+        "redacted": False,
+        "starts_at": start,
+        "ends_at": end,
+        "version": 1,
+        "type_id": TYPE,
+        "customer": None,
+        "people": [{"id": AIMAN, "display_name": "Aiman Hakim", "is_active": True}],
+        "resources": [],
+        "guests": [],
+        "location_kind": "phone",
+        "address": None,
+        "meeting_link": None,
+        "conflict": None,
+        "email": None,
+    } | extra
 
 
 def person(person_id: str, name: str, email: str | None, **extra: Any) -> dict[str, Any]:
@@ -117,6 +189,16 @@ class World:
         self.closed_days: list[dict[str, Any]] = []
         self.blocks: list[dict[str, Any]] = []
         self.stale_people = stale_people
+        self.tenants = [TENANT_PROFILE]
+        self.bookings: list[dict[str, Any]] = []
+        self.busy: list[dict[str, Any]] = []
+        self.customers: list[dict[str, Any]] = []
+        self.slots: list[str] = []
+        # Queued refusals, each answers one booking or move: (status, body).
+        self.refusals: list[tuple[int, dict[str, Any]]] = []
+        self.mail = "sent"
+        self.profile_status = 200
+        self.profile_delay = 0.0
         if rich:
             self.people = [
                 person(AIMAN, "Aiman Hakim", "aiman@example.test", employee_id=HR_RECORD),
@@ -154,6 +236,8 @@ class World:
         body = request.post_data_json if request.method in {"POST", "PATCH", "PUT"} else None
         call = {"method": request.method, "path": path, "params": params, "body": body}
         self.calls.append(call)
+        if path == "profile" and self.profile_delay:
+            await asyncio.sleep(self.profile_delay)
         if request.method != "GET" and path.startswith("bookings"):
             self.writes.append(call)
         status, data = self.answer(request.method, path, params, body)
@@ -165,8 +249,10 @@ class World:
         if path == "auth/csrf":
             return 200, {"csrf_token": "synthetic-csrf"}
         if path == "admin/clients" and platform:
-            return 200, [TENANT_PROFILE]
+            return 200, self.tenants
         if path == "profile" and method == "GET" and not platform:
+            if self.profile_status != 200:
+                return self.profile_status, {"detail": "unavailable"}
             return 200, TENANT_PROFILE
         # The rail asks for the HR tabs on pages that name a tenant; unused here.
         if path == "hr/context" and method == "GET":
@@ -176,12 +262,19 @@ class World:
         if not path.startswith("bookings/"):
             self.unexpected.append(f"{method} {path}?{params}")
             return 500, {"detail": "unexpected synthetic call"}
-        # Platform admins must always name the company; members never do.
-        if (params.get("client_id") == TENANT) != platform:
+        # Platform admins must always name a company; members never do.
+        named = params.get("client_id")
+        if (named in {tenant["id"] for tenant in self.tenants}) != platform or (
+            not platform and named is not None
+        ):
             self.unexpected.append(f"{method} {path} with params {params}")
             return 400, {"detail": "tenant mismatch"}
         route = path.removeprefix("bookings/")
-        if method != "GET" and role not in {"tenant_admin", "platform_admin"}:
+        # Booking changes are open to staff; setup changes are for an Admin.
+        is_booking = route == "bookings" or route.startswith("bookings/")
+        if method != "GET" and role == "read_only":
+            return 403, {"detail": "bookings changes require staff or an administrator"}
+        if method != "GET" and not is_booking and role not in {"tenant_admin", "platform_admin"}:
             return 403, {"detail": "bookings setup requires an administrator"}
         handler = getattr(self, "do_" + route.split("/")[0].replace("-", "_"), None)
         if handler is None:
@@ -292,6 +385,93 @@ class World:
         self.closed_days = [d for d in self.closed_days if d["day"] != day]
         return 204, None
 
+    def in_window(self, row: dict[str, Any], params: dict[str, str]) -> bool:
+        return instant(params["from"]) <= instant(row["starts_at"]) < instant(params["to"])
+
+    def do_calendar(
+        self, method: str, route: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        rows = [
+            row
+            for row in self.bookings
+            if row["status"] != "cancelled" and self.in_window(row, params)
+        ]
+        person, resource = params.get("person"), params.get("resource")
+        filtered = bool(person or resource)
+        if person:
+            rows = [r for r in rows if any(p["id"] == person for p in r["people"])]
+        if resource:
+            rows = [r for r in rows if any(x["id"] == resource for x in r["resources"])]
+        # A private meeting the viewer is not part of is a bare busy time when filtered.
+        rows = [r for r in rows if not (filtered and r["redacted"])]
+        if self.upstream.me["role"] == "read_only":
+            rows = [r | {"customer": None, "guests": []} for r in rows]
+        busy = [b for b in self.busy if self.in_window(b, params)] if filtered else []
+        return 200, {"items": rows, "busy": busy}
+
+    def do_availability(
+        self, method: str, route: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        found = [s for s in self.slots if self.in_window({"starts_at": s}, params)]
+        return 200, [
+            {
+                "starts_at": s,
+                "ends_at": (instant(s) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "people": [],
+                "resources": [],
+            }
+            for s in found
+        ]
+
+    def do_customers(
+        self, method: str, route: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if self.upstream.me["role"] == "read_only":
+            return 403, {"detail": "customer details are not available to read-only members"}
+        q = params.get("q", "").lower()
+        return 200, [c for c in self.customers if q in (c["full_name"] or "").lower()]
+
+    def do_bookings(
+        self, method: str, route: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        # A booking or a move can be refused; the other actions are not queued for refusal.
+        if (route == "bookings" or method == "PATCH") and self.refusals:
+            return self.refusals.pop(0)
+        if route == "bookings":
+            minutes = body.get("minutes") or next(
+                (t["duration_minutes"] for t in self.types if t["id"] == body.get("type_id")), 30
+            )
+            row = booking(
+                100 + len(self.bookings),
+                body["starts_at"],
+                (instant(body["starts_at"]) + timedelta(minutes=minutes)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                title=body.get("title") or "Consultation",
+                type_id=body.get("type_id"),
+                kind="meeting" if body.get("title") else "appointment",
+                email=self.mail,
+            )
+            self.bookings.append(row)
+            return 201, row
+        row = next(b for b in self.bookings if b["id"] == route.split("/")[1])
+        if method == "PATCH":
+            if body["version"] != row["version"]:
+                return 409, {
+                    "detail": "stale",
+                    "message": "This booking was changed by someone else.",
+                }
+            length = instant(row["ends_at"]) - instant(row["starts_at"])
+            row.update(
+                starts_at=body["starts_at"],
+                ends_at=(instant(body["starts_at"]) + length).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+        else:
+            status = {"cancel": "cancelled", "decline": "cancelled", "confirm": "confirmed"}
+            row["status"] = status.get(route.rsplit("/", 1)[1], row["status"])
+        row["version"] += 1
+        return 200, row | {"email": self.mail}
+
     def do_blocks(
         self, method: str, route: str, params: dict[str, str], body: Any
     ) -> tuple[int, Any]:
@@ -321,10 +501,11 @@ async def bookings_page(
     height: int = 1000,
     theme: str | None = None,
     packages: list[dict[str, str]] = ACTIVE,
+    timezone: str = BROWSER_ZONE,
 ) -> AsyncIterator[Page]:
     site.upstream.me, site.upstream.packages = make_me(role), packages
     context = await browser.new_context(
-        viewport={"width": width, "height": height}, timezone_id="Asia/Kuala_Lumpur"
+        viewport={"width": width, "height": height}, timezone_id=timezone
     )
     context.set_default_navigation_timeout(WAIT)
     context.set_default_timeout(15_000)
@@ -371,7 +552,7 @@ async def test_admin_sets_up_types_people_rooms_and_hours(site: Site) -> None:
         # A company with Bookings alone: the rail has the tab, and no Customer support entries.
         async with bookings_page(browser, site, world, path="/portal/bookings") as page:
             await expect_navigation(page, ("Bookings",), ("Customer inbox", "Subscriptions"))
-            await expect(page.get_by_test_id("calendar-placeholder")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
 
             # Empty company: one clear first step, the starter types.
             await page.get_by_test_id("bookings-subnav-types").click()
@@ -628,5 +809,661 @@ async def test_setup_pages_fit_320_390_and_768_in_every_theme(site: Site, theme:
                 assert inside["s"] <= inside["c"], ("hours dialog", theme, width, inside)
                 await page.keyboard.press("Escape")
                 await expect(dialog).to_have_count(0)
+
+    await with_browser(body)
+
+
+def rich_world(upstream: Upstream) -> World:
+    """The rich company, with its second person active too."""
+    world = World(upstream, rich=True)
+    world.people[1]["is_active"] = True
+    return world
+
+
+async def fill_meeting(
+    dialog: Any, title: str, day: str = "2099-11-10", clock: str = "10:00"
+) -> None:
+    await dialog.get_by_test_id("booking-type").select_option(value="")
+    await dialog.get_by_test_id("booking-title").fill(title)
+    await dialog.get_by_test_id("booking-colleagues").get_by_label("Aiman Hakim").check()
+    await dialog.get_by_test_id("booking-day").fill(day)
+    await dialog.get_by_test_id("booking-time").fill(clock)
+
+
+def availability_asked(world: World) -> dict[str, str]:
+    """What the last free-times request asked for, or nothing yet."""
+    asked = [c["params"] for c in world.calls if c["path"] == "bookings/availability"]
+    return asked[-1] if asked else {}
+
+
+async def until(check: Any, seconds: float = 10) -> None:
+    for _ in range(int(seconds * 10)):
+        if check():
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("the page did not get there")
+
+
+def calendar_reads(world: World) -> list[dict[str, str]]:
+    return [c["params"] for c in world.calls if c["path"] == "bookings/calendar"]
+
+
+async def test_staff_book_a_meeting_and_a_walk_in_customer(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        world.mail = "off"
+        day = date(2099, 11, 10)
+        world.slots = [utc_at(day, "10:00"), utc_at(day, "11:00")]
+        monday = monday_of(COMPANY_ZONE)
+        # Two bookings this week: one the staff member is part of, one that is not.
+        world.people[0]["user_id"] = ME
+        world.bookings = [
+            booking(1, utc_at(monday, "09:00"), utc_at(monday, "10:00"), title="Mine"),
+            booking(
+                2,
+                utc_at(monday, "13:00"),
+                utc_at(monday, "14:00"),
+                title="Theirs",
+                people=[{"id": SITI, "display_name": "Siti Nur", "is_active": True}],
+            ),
+        ]
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+
+            # Staff may change what they are part of; the server decides for the rest.
+            await page.get_by_test_id("booking").filter(has_text="Mine").click()
+            await expect(page.get_by_test_id("details-move")).to_be_visible()
+            await expect(page.get_by_test_id("details-cancel")).to_be_visible()
+            await page.keyboard.press("Escape")
+            await expect(page.get_by_test_id("booking-details")).to_have_count(0)
+            await page.get_by_test_id("booking").filter(has_text="Theirs").click()
+            await expect(page.get_by_test_id("details-readonly")).to_have_text(
+                "You can only change bookings you made or are part of."
+            )
+            await expect(page.get_by_test_id("details-move")).to_have_count(0)
+            await expect(page.get_by_test_id("details-cancel")).to_have_count(0)
+            await page.keyboard.press("Escape")
+
+            # An internal meeting with a room, a colleague, a guest and an online link.
+            await page.get_by_test_id("booking-new").click()
+            dialog = page.get_by_test_id("booking-dialog")
+            await fill_meeting(dialog, "Planning")
+            await dialog.get_by_test_id("booking-minutes").fill("45")
+            await dialog.get_by_test_id("booking-rooms").get_by_label("Meeting room").check()
+            await dialog.get_by_test_id("booking-location").select_option("online")
+            await dialog.get_by_test_id("booking-link").fill("https://meet.example.test/plan")
+            await dialog.get_by_test_id("booking-guest-add").click()
+            await dialog.get_by_test_id("booking-guest-email").fill("guest@example.test")
+            # Free times come from the people, the room and the length, read on the company's clock.
+            await until(lambda: availability_asked(world).get("resources") == ROOM)
+            asked = availability_asked(world)
+            assert asked["minutes"] == "45" and asked["people"] == AIMAN
+            await dialog.get_by_test_id("free-times-11:00").click()
+            await expect(dialog.get_by_test_id("booking-time")).to_have_value("11:00")
+            await dialog.get_by_test_id("booking-save").click()
+            await expect(page.get_by_test_id("booking-dialog")).to_have_count(0)
+            await expect(page.get_by_test_id("calendar-notice")).to_have_text(
+                "Booked. Mail is off, so nobody was emailed."
+            )
+            assert writes(world, "POST", "bookings/bookings") == [
+                {
+                    "starts_at": as_sent(utc_at(day, "11:00")),
+                    "people": [AIMAN],
+                    "resources": [ROOM],
+                    "guests": [{"name": None, "email": "guest@example.test"}],
+                    "acknowledged": [],
+                    "title": "Planning",
+                    "minutes": 45,
+                    "private": False,
+                    "location_kind": "online",
+                    "meeting_link": "https://meet.example.test/plan",
+                }
+            ]
+
+            # A walk-in customer, from an empty customer list, for a booking type.
+            await page.get_by_test_id("booking-new").click()
+            dialog = page.get_by_test_id("booking-dialog")
+            await expect(dialog.get_by_test_id("booking-customer-none")).to_have_text(
+                "No customers yet. Add the first one below."
+            )
+            await dialog.get_by_test_id("booking-people").get_by_label("Aiman Hakim").check()
+            await dialog.get_by_test_id("booking-walk-name").fill(CUSTOMER_NAME)
+            await dialog.get_by_test_id("booking-walk-phone").fill("012-345 6789")
+            await dialog.get_by_test_id("booking-day").fill("2099-11-10")
+            await dialog.get_by_test_id("free-times-10:00").click()
+            await dialog.get_by_test_id("booking-save").click()
+            await expect(page.get_by_test_id("booking-dialog")).to_have_count(0)
+            second = writes(world, "POST", "bookings/bookings")[1]
+            assert second["type_id"] == TYPE
+            assert second["people"] == [AIMAN]
+            assert second["walk_in"] == {
+                "name": CUSTOMER_NAME,
+                "phone": "012-345 6789",
+                "email": None,
+            }
+            assert second["starts_at"] == as_sent(utc_at(day, "10:00"))
+            assert [c for c in world.calls if c["path"] == "bookings/customers"]
+
+    await with_browser(body)
+
+
+async def test_a_warning_is_book_anyway_and_a_refusal_has_no_override(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            await page.get_by_test_id("booking-new").click()
+            dialog = page.get_by_test_id("booking-dialog")
+            await fill_meeting(dialog, "Late meeting", clock="21:00")
+            findings = ["closed_day", "outside_hours"]
+            world.refusals = [
+                (
+                    409,
+                    {
+                        "detail": "needs_acknowledging",
+                        "message": "This is a closed day. Outside working hours.",
+                        "findings": findings,
+                    },
+                )
+            ]
+            await dialog.get_by_test_id("booking-save").click()
+            warning = dialog.get_by_test_id("booking-warning")
+            await expect(warning).to_contain_text("This is a closed day.")
+            await expect(warning).to_contain_text("Outside working hours.")
+            assert "leave" not in (await dialog.inner_text()).lower()
+            await expect(dialog.get_by_test_id("booking-anyway")).to_have_text("Book anyway")
+            assert [b["acknowledged"] for b in writes(world, "POST", "bookings/bookings")] == [[]]
+            await dialog.get_by_test_id("booking-anyway").click()
+            await expect(page.get_by_test_id("booking-dialog")).to_have_count(0)
+            sent = writes(world, "POST", "bookings/bookings")
+            assert [b["acknowledged"] for b in sent] == [[], findings]
+            assert sent[1]["title"] == "Late meeting"
+
+            # The time was taken by someone else: the form stays as it was.
+            await page.get_by_test_id("booking-new").click()
+            dialog = page.get_by_test_id("booking-dialog")
+            await fill_meeting(dialog, "Busy slot")
+            world.refusals = [
+                (409, {"detail": "slot_taken", "message": "That time was just taken."})
+            ]
+            await dialog.get_by_test_id("booking-save").click()
+            await expect(dialog.get_by_test_id("booking-taken")).to_contain_text(
+                "That time was just taken."
+            )
+            await expect(dialog.get_by_test_id("booking-title")).to_have_value("Busy slot")
+            await expect(dialog.get_by_test_id("booking-time")).to_have_value("10:00")
+            await dialog.get_by_role("button", name="Pick another time").click()
+            await expect(dialog.get_by_test_id("booking-time")).to_be_focused()
+            await expect(dialog.get_by_test_id("booking-taken")).to_have_count(0)
+
+            # Not available that day: the sentence, and no way past it.
+            world.refusals = [
+                (
+                    409,
+                    {
+                        "detail": "refused",
+                        "message": "Not available that day.",
+                        "findings": ["unavailable"],
+                    },
+                )
+            ]
+            await dialog.get_by_test_id("booking-save").click()
+            await expect(dialog.get_by_test_id("booking-refused")).to_have_text(
+                "Not available that day."
+            )
+            await expect(dialog.get_by_test_id("booking-anyway")).to_have_count(0)
+            assert "leave" not in (await dialog.inner_text()).lower()
+
+            # Another time works, and nothing is acknowledged.
+            await dialog.get_by_test_id("booking-time").fill("11:00")
+            await dialog.get_by_test_id("booking-save").click()
+            await expect(page.get_by_test_id("booking-dialog")).to_have_count(0)
+            assert writes(world, "POST", "bookings/bookings")[-1]["acknowledged"] == []
+
+    await with_browser(body)
+
+
+async def test_calendar_and_blocks_follow_the_company_zone_not_the_browser(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        monday = monday_of(COMPANY_ZONE)
+        tuesday, wednesday, thursday = (monday + timedelta(days=n) for n in (1, 2, 3))
+        customer = {
+            "id": "33333333-3333-4333-8333-000000000001",
+            "full_name": CUSTOMER_NAME,
+            "phone": "012-345 6789",
+            "email": None,
+        }
+        siti = {"id": SITI, "display_name": "Siti Nur", "is_active": True}
+        world.bookings = [
+            # 10:00 on the company's Monday is Sunday evening in New York.
+            booking(1, utc_at(monday, "10:00"), utc_at(monday, "11:00"), customer=customer),
+            booking(
+                2,
+                utc_at(monday, "10:30"),
+                utc_at(monday, "11:30"),
+                title="Site visit",
+                people=[siti],
+            ),
+            booking(
+                3,
+                utc_at(tuesday, "14:00"),
+                utc_at(tuesday, "15:00"),
+                kind="meeting",
+                title="Busy",
+                private=True,
+                redacted=True,
+                people=[],
+            ),
+            booking(
+                4,
+                utc_at(wednesday, "09:00"),
+                utc_at(wednesday, "09:30"),
+                title="Clash",
+                conflict="unavailable",
+            ),
+            booking(
+                5,
+                utc_at(thursday, "09:00"),
+                utc_at(thursday, "10:00"),
+                title="Waiting",
+                status="pending",
+            ),
+        ]
+        world.busy = [
+            {
+                "starts_at": utc_at(monday, "14:00"),
+                "ends_at": utc_at(monday, "15:00"),
+                "label": "Busy",
+            }
+        ]
+        world.blocks = [
+            {
+                "id": "88888888-8888-4888-8888-000000000009",
+                "subject_kind": "resource",
+                "subject_id": ROOM,
+                "starts_at": utc_at(date(2099, 11, 10), "09:00"),
+                "ends_at": utc_at(date(2099, 11, 10), "18:00"),
+                "note": None,
+                "created_by": ME,
+            }
+        ]
+        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(week_title(monday))
+            first = calendar_reads(world)[0]
+            assert first["from"] == as_sent(utc_at(monday, "00:00"))
+            assert first["to"] == as_sent(utc_at(monday + timedelta(days=7), "00:00"))
+            assert "person" not in first and "resource" not in first
+
+            column = page.locator(f'[data-testid="calendar-day"][data-day="{monday}"]')
+            monday_bookings = column.get_by_test_id("booking")
+            await expect(monday_bookings).to_have_count(2)
+            await expect(monday_bookings.first).to_contain_text("10:00")
+            # Overlapping bookings of different people sit side by side.
+            one = await monday_bookings.nth(0).bounding_box()
+            two = await monday_bookings.nth(1).bounding_box()
+            assert one and two and one["x"] + one["width"] <= two["x"] + 1, (one, two)
+
+            # A pending booking says so, and a conflict is flagged.
+            await expect(
+                page.get_by_test_id("booking").filter(has_text="Waiting")
+            ).to_have_attribute("aria-label", re.compile("waiting to be confirmed"))
+            await expect(page.get_by_test_id("booking-conflict")).to_have_count(1)
+            assert "leave" not in (await page.get_by_test_id("calendar").inner_text()).lower()
+
+            # A redacted private meeting is "Busy" with no details; an Admin can still change it.
+            hidden = page.get_by_test_id("booking-busy")
+            await expect(hidden).to_have_count(1)
+            await expect(hidden).to_contain_text("Busy")
+            await hidden.click()
+            details = page.get_by_test_id("booking-details")
+            await expect(details).to_contain_text("This is a private meeting.")
+            await expect(details.get_by_test_id("details-customer")).to_have_count(0)
+            await expect(details.get_by_test_id("details-people")).to_have_count(0)
+            await expect(details.get_by_test_id("details-move")).to_be_visible()
+            await expect(details.get_by_test_id("details-cancel")).to_be_visible()
+            await page.keyboard.press("Escape")
+
+            # Filtering asks for that person or room; other private meetings are plain "Busy".
+            await page.get_by_test_id("calendar-filter").select_option(f"person:{AIMAN}")
+            await expect(page.get_by_test_id("busy")).to_have_count(1)
+            await expect(page.get_by_test_id("busy")).to_contain_text("Busy")
+            await expect(page.get_by_test_id("booking-busy")).to_have_count(0)
+            assert calendar_reads(world)[-1]["person"] == AIMAN
+            await page.get_by_test_id("calendar-filter").select_option(f"resource:{ROOM}")
+            await expect(page.get_by_test_id("booking")).to_have_count(0)
+            assert calendar_reads(world)[-1]["resource"] == ROOM
+            await page.get_by_test_id("calendar-filter").select_option("")
+
+            # The next week is the company's next week.
+            await page.get_by_test_id("calendar-next").click()
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(
+                week_title(monday + timedelta(days=7))
+            )
+            assert calendar_reads(world)[-1]["from"] == as_sent(
+                utc_at(monday + timedelta(days=7), "00:00")
+            )
+            await page.get_by_test_id("calendar-today").click()
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(week_title(monday))
+
+            # The unavailable times panel reads a stored time on the company's clock too.
+            await page.get_by_test_id("bookings-subnav-people").click()
+            await expect(page.get_by_test_id("block")).to_contain_text(
+                "Meeting room: 10 Nov 2099, 09:00 to 18:00", timeout=WAIT
+            )
+            await page.get_by_test_id("block-who").select_option(f"resource:{ROOM}")
+            await page.get_by_test_id("block-start-day").fill("2099-11-11")
+            await page.get_by_test_id("block-add").click()
+            await expect(page.get_by_test_id("block")).to_have_count(2)
+            added = writes(world, "POST", "bookings/blocks")[0]
+            assert added["starts_at"] == as_sent(utc_at(date(2099, 11, 11), "09:00"))
+            assert added["ends_at"] == as_sent(utc_at(date(2099, 11, 11), "18:00"))
+
+    await with_browser(body)
+
+
+async def test_booking_details_links_and_the_admin_changes(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        monday = monday_of(COMPANY_ZONE)
+        tuesday, wednesday = (monday + timedelta(days=n) for n in (1, 2))
+        address = "1 Jalan Contoh, Synthetic City"
+        world.bookings = [
+            booking(
+                1,
+                utc_at(monday, "09:00"),
+                utc_at(monday, "10:00"),
+                title="Site visit",
+                location_kind="in_person",
+                address=address,
+            ),
+            booking(
+                2,
+                utc_at(tuesday, "09:00"),
+                utc_at(tuesday, "10:00"),
+                title="Online chat",
+                location_kind="online",
+                meeting_link="https://meet.example.test/chat",
+            ),
+            booking(
+                3,
+                utc_at(wednesday, "09:00"),
+                utc_at(wednesday, "10:00"),
+                title="Unsafe link",
+                location_kind="online",
+                meeting_link="http://meet.example.test/plain",
+            ),
+        ]
+        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            details = page.get_by_test_id("booking-details")
+
+            # In person: Maps and Waze, both opened safely, and no meeting link.
+            await page.get_by_test_id("booking").filter(has_text="Site visit").click()
+            maps = details.get_by_test_id("details-maps")
+            waze = details.get_by_test_id("details-waze")
+            await expect(maps).to_have_attribute(
+                "href",
+                "https://www.google.com/maps/search/?api=1&query=1%20Jalan%20Contoh%2C%20Synthetic%20City",
+            )
+            await expect(waze).to_have_attribute(
+                "href",
+                "https://waze.com/ul?q=1%20Jalan%20Contoh%2C%20Synthetic%20City&navigate=yes",
+            )
+            for link in (maps, waze):
+                await expect(link).to_have_attribute("rel", "noopener noreferrer")
+                await expect(link).to_have_attribute("target", "_blank")
+            await expect(details.get_by_test_id("details-link")).to_have_count(0)
+            await expect(details.get_by_test_id("details-when")).to_have_text(
+                f"{monday.day} {monday.strftime('%b')} {monday.year}, 09:00 to 10:00"
+            )
+
+            # Cancelling asks first, sends the booking's version, and reports the mail.
+            world.mail = "none"
+            await details.get_by_test_id("details-cancel").click()
+            await expect(details.get_by_test_id("details-ask")).to_contain_text(
+                "Cancel this booking?"
+            )
+            assert not writes(world, "POST", f"bookings/bookings/{world.bookings[0]['id']}/cancel")
+            await details.get_by_test_id("details-ask-yes").click()
+            await expect(page.get_by_test_id("booking-details")).to_have_count(0)
+            await expect(page.get_by_test_id("calendar-notice")).to_have_text(
+                "Cancelled. Nobody on this booking has an email address."
+            )
+            assert writes(world, "POST", f"bookings/bookings/{world.bookings[0]['id']}/cancel") == [
+                {"version": 1}
+            ]
+            await expect(page.get_by_test_id("booking")).to_have_count(2)
+
+            # Online: the link only when it is https, opened safely, and no map.
+            await page.get_by_test_id("booking").filter(has_text="Online chat").click()
+            link = details.get_by_test_id("details-link")
+            await expect(link).to_have_attribute("href", "https://meet.example.test/chat")
+            await expect(link).to_have_attribute("rel", "noopener noreferrer")
+            await expect(details.get_by_test_id("details-maps")).to_have_count(0)
+
+            # Moving: a stale booking says so and offers a reload; then the move goes through.
+            await details.get_by_test_id("details-move").click()
+            await details.get_by_test_id("move-day").fill(str(tuesday + timedelta(days=7)))
+            await details.get_by_test_id("move-time").fill("14:00")
+            world.refusals = [
+                (409, {"detail": "stale", "message": "This booking was changed by someone else."})
+            ]
+            await details.get_by_test_id("move-save").click()
+            await expect(details.get_by_test_id("booking-stale")).to_contain_text(
+                "This booking was changed by someone else."
+            )
+            await details.get_by_role("button", name="Reload the calendar").click()
+            await expect(page.get_by_test_id("booking-details")).to_have_count(0)
+            await page.get_by_test_id("booking").filter(has_text="Online chat").click()
+            await details.get_by_test_id("details-move").click()
+            await details.get_by_test_id("move-day").fill(str(tuesday + timedelta(days=7)))
+            await details.get_by_test_id("move-time").fill("14:00")
+            world.mail = "failed"
+            await details.get_by_test_id("move-save").click()
+            await expect(page.get_by_test_id("calendar-notice")).to_have_text(
+                "Moved. We couldn't email everyone. Some may not have got it."
+            )
+            moves = writes(world, "PATCH", f"bookings/bookings/{world.bookings[1]['id']}")
+            assert moves[-1] == {
+                "version": 1,
+                "starts_at": as_sent(utc_at(tuesday + timedelta(days=7), "14:00")),
+                "acknowledged": [],
+            }
+            await expect(page.get_by_test_id("booking")).to_have_count(1)
+
+            # A link that is not https is never shown as a link.
+            await page.get_by_test_id("booking").filter(has_text="Unsafe link").click()
+            await expect(details.get_by_test_id("details-where")).to_contain_text("Online")
+            await expect(details.get_by_test_id("details-link")).to_have_count(0)
+            assert "http://meet.example.test" not in await details.inner_text()
+
+    await with_browser(body)
+
+
+async def test_read_only_member_sees_the_calendar_without_customers_or_buttons(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        monday = monday_of(COMPANY_ZONE)
+        customer = {
+            "id": "33333333-3333-4333-8333-000000000001",
+            "full_name": CUSTOMER_NAME,
+            "phone": "012-345 6789",
+            "email": "aina@example.test",
+        }
+        world.bookings = [
+            booking(1, utc_at(monday, "09:00"), utc_at(monday, "10:00"), customer=customer)
+        ]
+        async with bookings_page(
+            browser, site, world, role="read_only", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("booking")).to_have_count(1, timeout=WAIT)
+            await expect(page.get_by_test_id("booking-new")).to_have_count(0)
+            await page.get_by_test_id("booking").click()
+            details = page.get_by_test_id("booking-details")
+            await expect(details).to_be_visible()
+            await expect(details.get_by_test_id("details-customer")).to_have_count(0)
+            await expect(details.get_by_test_id("details-actions")).to_have_count(0)
+            await expect(details.get_by_test_id("details-readonly")).to_have_count(0)
+            content = await page.content()
+            assert CUSTOMER_NAME not in content and "aina@example.test" not in content
+            assert not [c for c in world.calls if c["path"] == "bookings/customers"]
+        assert not world.writes
+
+    await with_browser(body)
+
+
+async def test_an_unreadable_zone_shows_a_message_and_no_form(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # While the zone is being read there is no complaint, only a quiet loading line.
+        world = rich_world(site.upstream)
+        world.profile_delay = 2.0
+        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
+            await expect(page.get_by_text("Loading…").first).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("zone-failed")).to_have_count(0)
+            await expect(page.get_by_test_id("booking-new")).to_have_count(0)
+            assert not [c for c in world.calls if c["path"] == "bookings/calendar"]
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("zone-failed")).to_have_count(0)
+
+        # The profile fails: the message, no calendar, no booking button, and no blocks form.
+        world = rich_world(site.upstream)
+        world.profile_status = 500
+        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
+            failed = page.get_by_test_id("zone-failed")
+            await expect(failed).to_contain_text(
+                "We could not read your company's time zone", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("calendar-week")).to_have_count(0)
+            await expect(page.get_by_test_id("calendar-agenda")).to_have_count(0)
+            await expect(page.get_by_test_id("booking-new")).to_have_count(0)
+            await page.get_by_test_id("bookings-subnav-people").click()
+            await expect(page.get_by_test_id("blocks")).to_contain_text(
+                "We could not read your company's time zone", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("block-who")).to_have_count(0)
+            await expect(page.get_by_test_id("block-add")).to_have_count(0)
+            assert not [
+                c for c in world.calls if c["path"] in {"bookings/calendar", "bookings/blocks"}
+            ]
+            assert not world.writes
+
+    await with_browser(body)
+
+
+async def test_platform_admin_calendar_follows_the_chosen_company(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        world.tenants = [TENANT_PROFILE, TENANT2_PROFILE]
+        async with bookings_page(
+            browser, site, world, role="platform_admin", path="/bookings", packages=[]
+        ) as page:
+            select = page.get_by_test_id("bookings-tenant")
+            await expect(select).to_have_value("", timeout=WAIT)
+            assert not calendar_reads(world)
+            await select.select_option(TENANT)
+            kl = monday_of(COMPANY_ZONE)
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(
+                week_title(kl), timeout=WAIT
+            )
+            reads = [c for c in world.calls if c["path"] == "bookings/calendar"]
+            assert reads[-1]["params"]["client_id"] == TENANT
+            assert reads[-1]["params"]["from"] == as_sent(utc_at(kl, "00:00"))
+            assert page.url.endswith(f"/bookings?client_id={TENANT}")
+            await expect(page.get_by_test_id("booking-new")).to_be_visible()
+
+            # The other company has another clock, and the calendar reads it.
+            await select.select_option(TENANT2)
+            nz = monday_of("Pacific/Auckland")
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(week_title(nz))
+            # The weeks may read alike, so wait for the other company's read itself.
+            await until(lambda: calendar_reads(world)[-1].get("client_id") == TENANT2)
+            assert calendar_reads(world)[-1]["from"] == as_sent(
+                utc_at(nz, "00:00", "Pacific/Auckland")
+            )
+            assert page.url.endswith(f"/bookings?client_id={TENANT2}")
+            assert all(
+                c["params"].get("client_id") in {TENANT, TENANT2}
+                for c in world.calls
+                if c["path"].startswith("bookings")
+            )
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_calendar_is_an_agenda_at_390_and_a_week_from_768(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        monday = monday_of(COMPANY_ZONE)
+        tuesday = monday + timedelta(days=1)
+        long_title = "A synthetic booking with a very long title that must wrap and never overflow"
+        world.bookings = [
+            booking(1, utc_at(monday, "10:00"), utc_at(monday, "11:00"), title=long_title),
+            booking(
+                2,
+                utc_at(monday, "10:30"),
+                utc_at(monday, "11:30"),
+                title="Site visit",
+                people=[{"id": SITI, "display_name": "Siti Nur", "is_active": True}],
+            ),
+            booking(
+                3,
+                utc_at(tuesday, "09:00"),
+                utc_at(tuesday, "10:00"),
+                title="Clash",
+                conflict="unavailable",
+                status="pending",
+            ),
+            booking(
+                4,
+                utc_at(tuesday, "14:00"),
+                utc_at(tuesday, "15:00"),
+                kind="meeting",
+                title="Busy",
+                redacted=True,
+                people=[],
+            ),
+        ]
+        async with bookings_page(
+            browser, site, world, width=390, theme=theme, path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("calendar-agenda")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("calendar-week")).to_have_count(0)
+            await expect(page.get_by_test_id("booking")).to_have_count(3)
+            await expect(page.get_by_test_id("booking-conflict")).to_have_count(1)
+            for width in (320, 390):
+                await page.set_viewport_size({"width": width, "height": 900})
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], ("agenda", theme, width, measured)
+
+            await page.get_by_test_id("booking").first.click()
+            details = page.get_by_test_id("booking-details")
+            await expect(details).to_be_visible()
+            inside = await details.evaluate("el => ({s: el.scrollWidth, c: el.clientWidth})")
+            assert inside["s"] <= inside["c"], ("details", theme, inside)
+            await page.keyboard.press("Escape")
+            await expect(details).to_have_count(0)
+
+            await page.get_by_test_id("booking-new").click()
+            form = page.get_by_test_id("booking-dialog")
+            await expect(form.get_by_test_id("booking-type")).to_be_visible()
+            inside = await form.evaluate("el => ({s: el.scrollWidth, c: el.clientWidth})")
+            assert inside["s"] <= inside["c"], ("form", theme, inside)
+            measured = await overflow(page)
+            assert measured["scroll"] <= measured["inner"], ("form page", theme, measured)
+            await page.keyboard.press("Escape")
+            await expect(form).to_have_count(0)
+
+            await page.set_viewport_size({"width": 768, "height": 900})
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible()
+            await expect(page.get_by_test_id("calendar-agenda")).to_have_count(0)
+            measured = await overflow(page)
+            assert measured["scroll"] <= measured["inner"], ("week", theme, measured)
 
     await with_browser(body)

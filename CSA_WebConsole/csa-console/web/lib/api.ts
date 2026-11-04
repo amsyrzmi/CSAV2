@@ -116,7 +116,27 @@ const explained: Record<string, string> = {
   block_times_invalid: "The end must be after the start.",
   block_not_found: "That unavailable time is no longer there. Reload the page.",
   slot_taken: "That time was just taken.",
+  stale: "This booking was changed by someone else. Reload to see the latest, then try again.",
+  needs_acknowledging: "This time needs a second look before it can be booked.",
+  refused: "Not available that day.",
+  own_bookings_only: "You can only change bookings you made or are part of.",
+  wrong_status: "That isn't possible from the booking's current status. Reload to see the latest.",
+  not_started: "A booking can only be marked as a no-show once it has started.",
+  nobody_to_book: "Nobody is free to take this booking. Check the booking type's people or choose someone.",
+  people_required: "Choose who this booking is with.",
+  booking_not_found: "That booking no longer exists. Reload the page.",
+  private_meetings_only: "Only a meeting can be private.",
+  window_too_large: "That is too many days to show at once.",
+  "customer details are not available to read-only members":
+    "Customer details are not available to read-only members.",
 };
+
+/**
+ * Booking refusals say their own sentence next to `detail` (the code), and the sentence is more
+ * exact than anything written here, so it wins for these codes only. Every other page keeps
+ * reading `detail` alone.
+ */
+const serverSentence = new Set(["stale", "refused", "needs_acknowledging"]);
 
 async function decode<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -135,7 +155,8 @@ async function decode<T>(response: Response): Promise<T> {
         typeof body.detail === "string"
       ) {
         code = body.detail;
-        message = explained[code] ?? code;
+        const said = "message" in body && typeof body.message === "string" ? body.message : "";
+        message = (serverSentence.has(code) && said) || (explained[code] ?? code);
         detail = body as Record<string, unknown>;
       }
     } catch {

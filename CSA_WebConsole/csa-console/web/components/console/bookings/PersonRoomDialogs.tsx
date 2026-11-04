@@ -10,7 +10,7 @@ import {
   type BookingResourceOut,
 } from "@/lib/bookings-api";
 import { isEmail } from "@/lib/bookings-view";
-import { OpenDialog as Dialog } from "./parts";
+import Dialog from "../fs/Dialog";
 import { action, Notice, secondary } from "../ui";
 import { Check, Field, input, useAction, type BookingsScope } from "./parts";
 
@@ -34,7 +34,7 @@ function FormShell({
   children: ReactNode;
 }) {
   return (
-    <Dialog onClose={() => !busy && onClose()} title={title} testId={testId}>
+    <Dialog open onClose={() => !busy && onClose()} title={title} testId={testId}>
       <form
         noValidate
         className="space-y-4"

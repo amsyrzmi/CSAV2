@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { getHours, replaceHours, type BookingHoursOut } from "@/lib/bookings-api";
 import { daysToPeriods, hoursLines, hoursProblem, periodsToDays, type HoursDays } from "@/lib/bookings-view";
-import { OpenDialog as Dialog } from "./parts";
+import Dialog from "../fs/Dialog";
 import { action, Notice, secondary } from "../ui";
 import HoursEditor from "./HoursEditor";
 import { mutedText, useAction, useLoaded, type BookingsScope } from "./parts";
@@ -30,7 +30,7 @@ export default function HoursDialog({
     getHours(scope.tenantId, subject.kind === "company" ? undefined : { kind: subject.kind, id: subject.id }),
   );
   return (
-    <Dialog onClose={onClose} title={title} testId="hours-dialog" widthClass="max-w-xl">
+    <Dialog open onClose={onClose} title={title} testId="hours-dialog" widthClass="max-w-xl">
       {hours.error ? (
         <Notice error>{hours.error}</Notice>
       ) : !hours.data ? (
