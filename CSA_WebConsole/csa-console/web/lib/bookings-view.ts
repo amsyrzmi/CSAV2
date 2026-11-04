@@ -461,7 +461,10 @@ export function layoutDay<T extends Span>(
     const sameDay = starts.year === ends.year && starts.month === ends.month && starts.day === ends.day;
     const continuesAfter = dayEnd !== null ? to > dayEnd : !sameDay;
     const startMinute = continuesBefore ? 0 : starts.hour * 60 + starts.minute;
-    const endMinute = continuesAfter ? 1440 : ends.hour * 60 + ends.minute;
+    // The grid counts wall-clock minutes, so a booking that reaches the end of the day (even exactly,
+    // at midnight) is drawn to 1440 whatever the day's real length.
+    const reachesEnd = continuesAfter || (dayEnd !== null && to >= dayEnd);
+    const endMinute = reachesEnd ? 1440 : ends.hour * 60 + ends.minute;
     return {
       item,
       startMinute,

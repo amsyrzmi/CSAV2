@@ -453,7 +453,27 @@ test("a long booking fills the days between, and one ending at midnight stops th
   // Ends exactly at Tuesday 00:00: nothing on Tuesday.
   const ends = { starts_at: "2026-11-09T14:00:00Z", ends_at: "2026-11-09T16:00:00Z" };
   assert.equal(entriesOnDay([ends], days[1]).length, 0);
-  assert.equal(layoutDay(entriesOnDay([ends], days[0]), KL, days[0])[0].continuesAfter, false);
+  const [piece] = layoutDay(entriesOnDay([ends], days[0]), KL, days[0]);
+  assert.equal(piece.continuesAfter, false);
+  // It is drawn to the end of the day, not shortened to half an hour.
+  assert.deepEqual([piece.startMinute, piece.endMinute], [22 * 60, 1440]);
+});
+
+test("a booking that ends at midnight is drawn to the end of a 23-hour and a 25-hour day", () => {
+  // The grid counts wall-clock minutes, so a day always ends at 1440 whatever its real length.
+  const cases = [
+    // New York leaves summer time on 1 Nov 2026 (25 hours): 22:00 to 00:00 is 03:00Z to 05:00Z.
+    [new Date("2026-11-01T12:00:00Z"), "2026-11-01", "2026-11-02T03:00:00Z", "2026-11-02T05:00:00Z"],
+    // And starts it on 8 Mar 2026 (23 hours): 22:00 to 00:00 is 02:00Z to 04:00Z the next day.
+    [new Date("2026-03-08T12:00:00Z"), "2026-03-08", "2026-03-09T02:00:00Z", "2026-03-09T04:00:00Z"],
+  ];
+  for (const [anchor, iso, starts_at, ends_at] of cases) {
+    const target = day(weekDays(anchor, NY), iso);
+    const hours = (new Date(target.end) - new Date(target.start)) / 3600000;
+    assert.ok(hours === 25 || hours === 23, `${iso} is ${hours} hours`);
+    const [piece] = layoutDay(entriesOnDay([{ starts_at, ends_at }], target), NY, target);
+    assert.deepEqual([piece.startMinute, piece.endMinute, piece.continuesAfter], [22 * 60, 1440, false], iso);
+  }
 });
 
 test("a busy row is split across days the same way", () => {
