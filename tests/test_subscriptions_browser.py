@@ -11,32 +11,33 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
-import os
-import shutil
-import subprocess
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
-import httpx
 import pytest
 from playwright.async_api import Page, async_playwright, expect
 
+from tests import test_services_redesign_browser as services
 from tests.test_services_browser import (
-    ROOT,
     TENANT,
     TENANT_PROFILE,
     WAIT,
-    WEB,
     Upstream,
     expect_navigation,
-    free_port,
     make_me,
 )
+from tests.test_services_redesign_browser import Site
 
 pytestmark = pytest.mark.asyncio
+
+# The staged copy of the console is built once per file by the services fixture.
+site = services.site
 
 AISYAH = "33333333-3333-4333-8333-333333333333"
 BEN = "33333333-3333-4333-8333-444444444444"
@@ -177,6 +178,16 @@ class World:
             return 200, {"csrf_token": "synthetic-csrf"}
         if path == "admin/clients" and platform:
             return 200, [TENANT_PROFILE]
+        # The rail asks for the HR tabs on pages that name a tenant; unused here.
+        if path == "hr/context" and method == "GET":
+            return 404, {"detail": "not stubbed"}
+        # Overview is the assistant home: its status strip and the sandbox chat history.
+        if path == "services/active" and method == "GET":
+            return 200, {"packages": self.upstream.packages}
+        if path == "inbox/conversations" and method == "GET":
+            return 200, {"items": [], "next_cursor": None, "needs_review_count": 0}
+        if path == "chat/conversations" and method == "GET":
+            return 200, {"items": [], "next_cursor": None}
         # Platform admins must always name the tenant; members never do.
         if path.startswith("subscriptions") and (params.get("client_id") == TENANT) != platform:
             self.unexpected.append(f"{method} {path} with params {params}")
@@ -284,75 +295,13 @@ class World:
         return 500, {"detail": "unexpected synthetic call"}
 
 
-async def test_subscriptions_tab_actions_requests_and_roles(tmp_path: Path) -> None:
-    node = shutil.which("node")
-    assert node, "Node is required for browser subscriptions acceptance"
-    assert (WEB / "node_modules/next/dist/bin/next").is_file(), (
-        "Console dependencies are missing; run `npm ci --ignore-scripts` in "
-        "CSA_WebConsole/csa-console/web before browser subscriptions acceptance"
-    )
-    stage = tmp_path / "web"
-    with Upstream() as upstream:
-        environment = {
-            "PATH": os.environ["PATH"],
-            "NEXT_TELEMETRY_DISABLED": "1",
-            "CSA_CONSOLE_API_ORIGIN": upstream.origin,
-        }
-        subprocess.run(
-            [node, str(WEB / "scripts/check-isolated.mjs"), "--context", str(stage)],
-            check=True,
-            cwd=ROOT,
-            env=environment,
-            capture_output=True,
-        )
-        (stage / "node_modules").symlink_to(WEB / "node_modules", target_is_directory=True)
-        port = free_port()
-        log_path = tmp_path / "frontend.log"
-        log = log_path.open("w")
-        process = subprocess.Popen(
-            [
-                node,
-                str(WEB / "node_modules/next/dist/bin/next"),
-                "dev",
-                "--webpack",
-                "--hostname",
-                "127.0.0.1",
-                "--port",
-                str(port),
-            ],
-            cwd=stage,
-            env=environment,
-            stdout=log,
-            stderr=log,
-        )
+async def test_subscriptions_tab_actions_requests_and_roles(site: Site, tmp_path: Path) -> None:
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
         try:
-            async with httpx.AsyncClient(trust_env=False) as http:
-                for _ in range(120):
-                    assert process.poll() is None, log_path.read_text()
-                    try:
-                        if (
-                            await http.get(f"http://127.0.0.1:{port}/login", timeout=2)
-                        ).status_code == 200:
-                            break
-                    except httpx.HTTPError:
-                        pass
-                    await asyncio.sleep(0.5)
-                else:
-                    pytest.fail(f"Synthetic subscriptions frontend did not start; log: {log_path}")
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch()
-                try:
-                    await exercise(browser, f"http://127.0.0.1:{port}", upstream, tmp_path)
-                finally:
-                    await browser.close()
+            await exercise(browser, site.base, site.upstream, tmp_path)
         finally:
-            process.terminate()
-            try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-            log.close()
+            await browser.close()
 
 
 async def open_customer(page: Page, name: str) -> Any:
@@ -583,3 +532,731 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         with contextlib.suppress(Exception):  # Preserve the original failure if Chromium crashed.
             await context.tracing.stop(path=tmp_path / "subscriptions-trace.zip")
         await context.close()
+
+
+# ---------------------------------------------------------------------------
+# The clearer Subscriptions page: summary row, chips, help lines, sections, review step.
+# ---------------------------------------------------------------------------
+
+THEMES = ("cobalt", "night", "bureau")
+WIDTHS = (320, 390, 768, 1024, 1440)
+ZONE = "Asia/Kuala_Lumpur"
+# The browser clock is fixed (Date only; timers keep running) so "ending soon" is exact.
+NOW = datetime(2026, 11, 2, 10, 0, tzinfo=ZoneInfo(ZONE))
+DEWI = "33333333-3333-4333-8333-666666666666"
+FARID = "33333333-3333-4333-8333-777777777777"
+GITA = "33333333-3333-4333-8333-888888888888"
+HANA = "33333333-3333-4333-8333-999999999999"
+STAFF = "22222222-2222-4222-8222-222222222222"
+
+
+class RichWorld(World):
+    """Six customers (four active, one paused, one cancelled) and the knobs the new tests need."""
+
+    def __init__(
+        self,
+        upstream: Upstream,
+        *,
+        page_limit: int | None = None,
+        empty: bool = False,
+        no_plans: bool = False,
+    ) -> None:
+        super().__init__(upstream)
+        self.page_limit = page_limit
+        self.requests_fail = False
+        self.customers_fail = False
+        self.settings_fail = False
+        extra = [
+            (
+                DEWI,
+                "Dewi Lim",
+                "+60130000001",
+                "basic",
+                "59.90",
+                {"renews_at": "2027-03-01T01:00:00Z"},
+            ),
+            (
+                FARID,
+                "Farid Hassan",
+                "+60130000002",
+                "pro",
+                "99.00",
+                {"status": "paused", "paused_at": "2026-10-20T01:00:00Z"},
+            ),
+            (
+                GITA,
+                "Gita Nair",
+                "+60130000003",
+                "basic",
+                "59.90",
+                {"cancel_at_period_end": True, "renews_at": "2027-01-10T01:00:00Z"},
+            ),
+            (
+                HANA,
+                "Hana Yusof",
+                "+60130000004",
+                "pro",
+                "99.00",
+                {"status": "cancelled", "cancelled_at": "2026-09-30T01:00:00Z", "renews_at": None},
+            ),
+        ]
+        for sub_id, name, phone, plan, price, changes in extra:
+            who = customer(f"88888888-8888-4888-8888-{sub_id[-12:]}", name, phone)
+            self.subs[sub_id] = {**subscription(sub_id, who, plan, price), **changes}
+            self.events[sub_id] = [
+                {
+                    "id": 1,
+                    "actor": STAFF,
+                    "action": "created",
+                    "from_status": None,
+                    "to_status": "active",
+                    "payload": {"plan": plan},
+                    "created_at": "2026-09-27T01:00:00Z",
+                }
+            ]
+        if empty:
+            self.subs.clear()
+            self.requests.clear()
+        if no_plans:
+            self.plans = []
+
+    def answer(self, method: str, path: str, params: dict[str, str], body: Any) -> tuple[int, Any]:
+        if path == "subscriptions/settings" and self.settings_fail:
+            return 500, {"detail": "synthetic settings outage"}
+        if path == "subscriptions/requests" and method == "GET" and self.requests_fail:
+            return 503, {"detail": "synthetic requests outage"}
+        if path == "subscriptions" and method == "GET":
+            if self.customers_fail:
+                return 503, {"detail": "synthetic customers outage"}
+            status, data = super().answer(method, path, params, body)
+            if self.page_limit:
+                start = int(params.get("before", "0"))
+                items = data["items"]
+                more = start + self.page_limit < len(items)
+                data = {
+                    "items": items[start : start + self.page_limit],
+                    "next_cursor": str(start + self.page_limit) if more else None,
+                }
+            return status, data
+        parts = path.split("/")
+        if (
+            method == "GET"
+            and len(parts) == 2
+            and parts[0] == "subscriptions"
+            and parts[1] in self.subs
+            and parts[1] not in {AISYAH, BEN}
+        ):
+            return 200, {"subscription": self.subs[parts[1]], "events": self.events[parts[1]]}
+        return super().answer(method, path, params, body)
+
+
+@asynccontextmanager
+async def subs_page(
+    browser: Any,
+    site: Site,
+    world: World,
+    *,
+    role: str = "tenant_staff",
+    width: int = 1280,
+    height: int = 1000,
+    theme: str | None = None,
+    timezone: str = ZONE,
+    wait_for_rows: bool = True,
+) -> AsyncIterator[Page]:
+    site.upstream.me, site.upstream.packages = make_me(role), ACTIVE
+    context = await browser.new_context(
+        viewport={"width": width, "height": height}, timezone_id=timezone
+    )
+    context.set_default_navigation_timeout(WAIT)
+    context.set_default_timeout(15_000)
+    await context.clock.set_fixed_time(NOW)
+    cookies = [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
+    if theme:
+        cookies.append({"name": "fs-theme", "value": theme, "url": site.base})
+    await context.add_cookies(cookies)
+    page = await context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    await page.route("**/console/v1/**", world.route)
+    await page.goto(f"{site.base}/portal/subscriptions")
+    if wait_for_rows:
+        await expect(page.get_by_test_id("subscription-row").first).to_be_visible(timeout=WAIT)
+    try:
+        yield page
+        assert not errors, errors
+        assert not world.unexpected, world.unexpected
+        assert not site.upstream.unexpected, site.upstream.unexpected
+    finally:
+        await context.close()
+
+
+async def with_browser(body: Any) -> None:
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            await body(browser)
+        finally:
+            await browser.close()
+
+
+async def until(
+    check: Any, message: str = "condition not met in time", timeout: float = 10
+) -> None:
+    deadline = time.monotonic() + timeout
+    while not check():
+        assert time.monotonic() < deadline, message
+        await asyncio.sleep(0.1)
+
+
+def customer_reads(world: World) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["path"] == "subscriptions" and c["method"] == "GET"]
+
+
+def request_reads(world: World) -> list[dict[str, Any]]:
+    return [
+        c for c in world.calls if c["path"] == "subscriptions/requests" and c["method"] == "GET"
+    ]
+
+
+def names(page: Page) -> Any:
+    return page.get_by_test_id("subscription-row").locator("button")
+
+
+async def test_summary_row_shows_and_hides_on_failure(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # Four active customers, one of them ending soon (Gita is set to cancel at the end of the
+        # period; renewals coming up do not count), two requests waiting.
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            summary = page.get_by_test_id("subscriptions-summary")
+            await expect(summary).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("summary-active-value")).to_have_text("4")
+            await expect(page.get_by_test_id("summary-ending-value")).to_have_text("1")
+            await expect(page.get_by_test_id("summary-requests-value")).to_have_text("2")
+            await expect(summary).to_contain_text("Customers active")
+            await expect(summary).to_contain_text("Ending soon")
+            await expect(summary).to_contain_text("Requests waiting")
+            await expect(page.get_by_test_id("subscriptions-summary-note")).to_contain_text(
+                "Ending soon means set to cancel at the end of the period."
+            )
+            # The row stays above every tab.
+            await page.get_by_test_id("subscriptions-tab-plans").click()
+            await expect(summary).to_be_visible()
+            await page.get_by_test_id("subscriptions-tab-requests").click()
+            await expect(summary).to_be_visible()
+
+        # The requests read fails: no figures at all, not a zero.
+        failing = RichWorld(site.upstream)
+        failing.requests_fail = True
+        async with subs_page(browser, site, failing) as page:
+            await page.get_by_test_id("subscriptions-tab-requests").click()
+            await expect(page.get_by_text("synthetic requests outage").first).to_be_visible()
+            await until(lambda: len(request_reads(failing)) >= 2, "requests were read twice")
+            await expect(page.get_by_test_id("subscriptions-summary")).to_have_count(0)
+            await expect(page.get_by_test_id("summary-active-value")).to_have_count(0)
+
+        # The customers read fails: the same.
+        failing = RichWorld(site.upstream)
+        failing.customers_fail = True
+        async with subs_page(browser, site, failing, wait_for_rows=False) as page:
+            await expect(page.get_by_text("synthetic customers outage").first).to_be_visible(
+                timeout=WAIT
+            )
+            await until(lambda: len(customer_reads(failing)) >= 2, "customers were read twice")
+            await expect(page.get_by_test_id("subscriptions-summary")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_summary_row_adds_a_plus_where_a_further_page_exists(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # Five customers per page: four are active (Aisyah, Ben, Dewi, Gita), one is ending soon.
+        world = RichWorld(site.upstream, page_limit=5)
+        async with subs_page(browser, site, world) as page:
+            await expect(page.get_by_test_id("summary-active-value")).to_have_text("4+")
+            await expect(page.get_by_test_id("summary-ending-value")).to_have_text("1+")
+            # The requests list has no further page, so its figure is exact.
+            await expect(page.get_by_test_id("summary-requests-value")).to_have_text("2")
+            await expect(page.get_by_test_id("subscriptions-summary-note")).to_contain_text(
+                "plus sign"
+            )
+
+    await with_browser(body)
+
+
+async def test_customer_chips_filter(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            rows = page.get_by_test_id("subscription-row")
+            await expect(rows).to_have_count(6)
+            # Visible labels on the search and the two selects.
+            for label in ("Search customers", "Status", "Plan"):
+                await expect(page.get_by_text(label, exact=True).first).to_be_visible()
+            labels = {
+                "all": "All (6)",
+                "active": "Active (4)",
+                "paused": "Paused (1)",
+                "cancelled": "Cancelled (1)",
+                "ending": "Ending soon (1)",
+            }
+            for key, text in labels.items():
+                await expect(page.get_by_test_id(f"customers-view-{key}")).to_have_text(text)
+            await expect(page.get_by_test_id("customers-view-all")).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            await expect(page.get_by_test_id("customers-view-note")).to_have_count(0)
+
+            reads = len(customer_reads(world))
+            await page.get_by_test_id("customers-view-paused").click()
+            await expect(rows).to_have_count(1)
+            await expect(rows.first).to_contain_text("Farid Hassan")
+            await expect(page.get_by_test_id("customers-view-paused")).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            await expect(page.get_by_test_id("customers-view-all")).to_have_attribute(
+                "aria-pressed", "false"
+            )
+            await page.get_by_test_id("customers-view-ending").click()
+            await expect(rows).to_have_count(1)
+            await expect(rows.filter(has_text="Gita Nair")).to_have_count(1)
+            await expect(rows.filter(has_text="Dewi Lim")).to_have_count(0)
+            await page.get_by_test_id("customers-view-cancelled").click()
+            await expect(rows).to_have_count(1)
+            await expect(rows.first).to_contain_text("Hana Yusof")
+            # Chips work on the rows already loaded: no new read.
+            assert len(customer_reads(world)) == reads, customer_reads(world)
+
+            # A chip that matches nothing says so and offers one way back.
+            await page.get_by_test_id("subscriptions-status").select_option("paused")
+            await expect(page.get_by_test_id("customers-view-paused")).to_have_text("Paused (1)")
+            await expect(page.get_by_test_id("customers-view-active")).to_have_text("Active (0)")
+            await page.get_by_test_id("customers-view-active").click()
+            await expect(rows).to_have_count(0)
+            await expect(page.get_by_test_id("customers-view-empty")).to_be_visible()
+            await page.get_by_test_id("customers-show-all").click()
+            await expect(rows).to_have_count(1)
+            await expect(page.get_by_test_id("customers-view-all")).to_have_attribute(
+                "aria-pressed", "true"
+            )
+
+    await with_browser(body)
+
+
+async def test_customer_chips_say_when_they_cover_only_the_loaded_page(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream, page_limit=5)
+        async with subs_page(browser, site, world) as page:
+            rows = page.get_by_test_id("subscription-row")
+            await expect(rows).to_have_count(5)
+            note = page.get_by_test_id("customers-view-note")
+            await expect(note).to_contain_text("only the customers loaded so far")
+            # Figures over a partial page would mislead, so the chips carry none.
+            await expect(page.get_by_test_id("customers-view-active")).to_have_text("Active")
+            await page.get_by_test_id("customers-view-ending").click()
+            await expect(rows).to_have_count(1)
+            await page.get_by_role("button", name="Show more customers").click()
+            await expect(note).to_have_count(0)
+            await expect(page.get_by_test_id("customers-view-ending")).to_have_text(
+                "Ending soon (1)"
+            )
+            await expect(rows).to_have_count(1)
+            await page.get_by_test_id("customers-view-all").click()
+            await expect(rows).to_have_count(6)
+
+    await with_browser(body)
+
+
+async def test_timeline_uses_the_tenant_time_zone(site: Site) -> None:
+    extended = {
+        "id": 20,
+        "actor": STAFF,
+        "action": "renewal_extended",
+        "from_status": None,
+        "to_status": None,
+        "payload": {
+            "old_renews_at": "2026-11-27T18:00:00Z",
+            "new_renews_at": "2026-12-27T18:00:00Z",
+        },
+        "created_at": "2026-11-01T17:30:00Z",
+    }
+
+    async def body(browser: Any) -> None:
+        # The company is in Kuala Lumpur (UTC+8); this browser is in Los Angeles (UTC-8).
+        world = RichWorld(site.upstream)
+        world.events[AISYAH].append(extended)
+        async with subs_page(browser, site, world, timezone="America/Los_Angeles") as page:
+            await expect(page.get_by_test_id("subscription-row").first).to_contain_text(
+                "27 Nov 2026"
+            )
+            drawer = await open_customer(page, "Aisyah Rahman")
+            newest = drawer.get_by_test_id("subscription-timeline").locator("li").first
+            await expect(newest).to_contain_text("Renewal moved from 28 Nov 2026 to 28 Dec 2026.")
+            await expect(newest.locator("time")).to_have_text("2 Nov 2026, 01:30")
+            await expect(drawer.get_by_test_id("timeline-zone")).to_contain_text(
+                "Asia/Kuala_Lumpur"
+            )
+
+        # When the company's zone cannot be read, the browser's zone is used and the page says so.
+        world = RichWorld(site.upstream)
+        world.settings_fail = True
+        world.events[AISYAH].append(extended)
+        async with subs_page(browser, site, world, timezone="America/Los_Angeles") as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            newest = drawer.get_by_test_id("subscription-timeline").locator("li").first
+            await expect(newest).to_contain_text("Renewal moved from 27 Nov 2026 to 27 Dec 2026.")
+            await expect(newest.locator("time")).to_have_text("1 Nov 2026, 09:30")
+            await expect(drawer.get_by_test_id("timeline-zone")).to_contain_text("this device")
+
+    await with_browser(body)
+
+
+async def test_help_lines_beside_jargon_fields(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            await drawer.get_by_role("button", name="Change plan").click()
+            form = drawer.get_by_test_id("subscription-action-form")
+            # The label is the old one, word for word; the new help line sits under the field.
+            await expect(
+                form.get_by_text("Special price in RM (optional; starts now)")
+            ).to_be_visible()
+            price = form.get_by_test_id("action-price")
+            help_line = form.get_by_test_id("help-special-price")
+            await expect(help_line).to_contain_text(
+                "Leave this empty to use the plan's normal price"
+            )
+            assert await price.get_attribute("aria-describedby") == await help_line.get_attribute(
+                "id"
+            )
+            price_box, help_box = await price.bounding_box(), await help_line.bounding_box()
+            assert price_box and help_box
+            assert 0 <= help_box["y"] - (price_box["y"] + price_box["height"]) < 24, (
+                price_box,
+                help_box,
+            )
+            await expect(form.get_by_test_id("help-change-plan")).to_contain_text(
+                "Moves the customer to another plan"
+            )
+            await form.get_by_role("button", name="Cancel", exact=True).click()
+
+            await drawer.get_by_role("button", name="Cancel at period end").click()
+            await expect(drawer.get_by_test_id("help-cancel-at-period-end")).to_contain_text(
+                "stays active until the current period ends"
+            )
+            await (
+                drawer.get_by_test_id("subscription-action-form")
+                .get_by_role("button", name="Cancel", exact=True)
+                .click()
+            )
+            await drawer.get_by_role("button", name="Cancel now").click()
+            await expect(drawer.get_by_test_id("help-cancel-now")).to_contain_text(
+                "cannot be started again"
+            )
+            await drawer.get_by_test_id("subscription-close").click()
+
+            await page.get_by_test_id("subscriptions-tab-plans").click()
+            await page.get_by_test_id("plan-add").click()
+            code_label = "Short code (lowercase letters, numbers, - or _; cannot change later)"
+            await expect(page.get_by_text(code_label)).to_be_visible()
+            code_help = page.get_by_test_id("help-plan-code")
+            await expect(code_help).to_contain_text("You cannot change it after you save")
+            assert await page.get_by_test_id("plan-code").get_attribute("aria-describedby") == (
+                await code_help.get_attribute("id")
+            )
+
+    await with_browser(body)
+
+
+async def test_review_step_shows_a_plain_sentence_and_raw_values_inside_the_arrow(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            await drawer.get_by_role("button", name="Pause subscription").click()
+            await drawer.get_by_test_id("action-resume-at").fill("2099-11-15")
+            await drawer.get_by_test_id("action-submit").click()
+            step = drawer.get_by_test_id("review-step")
+            sentence = step.get_by_test_id("review-sentence")
+            await expect(sentence).to_have_text(
+                "This will pause Aisyah Rahman's subscription until 15 Nov 2099."
+            )
+            # The sentence comes first, then the card with the confirm button.
+            card = drawer.get_by_test_id("proposal-card")
+            await expect(card).to_contain_text("Pause now until someone resumes it.")
+            sentence_box, card_box = await sentence.bounding_box(), await card.bounding_box()
+            assert sentence_box and card_box and sentence_box["y"] < card_box["y"]
+            await expect(card.get_by_test_id("proposal-confirm")).to_be_visible()
+            # The values the page sends sit behind a closed arrow.
+            raw = step.get_by_test_id("review-raw-details")
+            await expect(raw).to_be_hidden()
+            await expect(raw).to_contain_text("resume_at")
+            await expect(raw).to_contain_text("2099-11-15")
+            await step.get_by_test_id("review-raw-toggle").click()
+            await expect(raw).to_be_visible()
+            await expect(raw).to_contain_text("pause")
+            await expect(raw).to_contain_text("2099-11-15")
+            # Confirming still goes through the card, and the plain review goes away with it.
+            await card.get_by_test_id("proposal-confirm").click()
+            await expect(card.get_by_test_id("proposal-outcome")).to_contain_text("now paused")
+            await expect(step).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_drawer_is_sectioned_into_who_plan_price_and_when(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Gita Nair")
+            details = drawer.get_by_test_id("subscription-details")
+            for section in ("who", "plan", "price", "when"):
+                await expect(
+                    details.get_by_test_id(f"subscription-section-{section}")
+                ).to_be_visible()
+            who = details.get_by_test_id("subscription-section-who")
+            await expect(who).to_contain_text("+60130000003")
+            plan = details.get_by_test_id("subscription-section-plan")
+            await expect(plan.get_by_test_id("subscription-detail-status")).to_have_text("Active")
+            await expect(plan).to_contain_text("Cancels when the period ends on 10 Jan 2027")
+            price = details.get_by_test_id("subscription-section-price")
+            await expect(price).to_contain_text("RM 59.90")
+            await expect(price).to_contain_text("Every month")
+            when = details.get_by_test_id("subscription-section-when")
+            await expect(when).to_contain_text("27 Sep 2026")
+            await expect(when).to_contain_text("10 Jan 2027")
+
+    await with_browser(body)
+
+
+async def test_phone_filters_fold_under_more_filters(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world, width=390, height=844) as page:
+            rows = page.get_by_test_id("subscription-row")
+            await expect(rows).to_have_count(6)
+            await expect(page.get_by_test_id("subscriptions-summary")).to_be_visible()
+            # Search and its button stay in view; the two selects fold away but stay in the DOM.
+            await expect(page.get_by_test_id("subscriptions-search")).to_be_visible()
+            await expect(page.get_by_test_id("subscriptions-search-submit")).to_be_visible()
+            await expect(page.get_by_test_id("customers-view-all")).to_be_visible()
+            filters = page.get_by_test_id("customers-filters")
+            await expect(filters).to_contain_text("More filters")
+            await expect(page.get_by_test_id("customers-filters-active")).to_have_count(0)
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_hidden()
+            await expect(page.get_by_test_id("subscriptions-plan")).to_be_hidden()
+            assert await page.get_by_test_id("subscriptions-status").count() == 1
+            # Folding the selects and scrolling the chips keeps the list close: the chips are one
+            # row and the first customer starts within about 220 px of the search button.
+            chips = await page.get_by_test_id("customers-view").bounding_box()
+            search = await page.get_by_test_id("subscriptions-search-submit").bounding_box()
+            first = await rows.first.bounding_box()
+            assert chips and search and first
+            assert chips["height"] <= 56, chips
+            assert first["y"] - (search["y"] + search["height"]) <= 220, (search, first)
+            # Open the fold, choose, close it: the words beside the arrow say what is chosen.
+            await page.get_by_test_id("customers-filters-toggle").click()
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_visible()
+            await expect(page.get_by_test_id("help-status-filter")).to_contain_text(
+                "Status filters the whole list; the chips below only narrow what is loaded."
+            )
+            await page.get_by_test_id("subscriptions-status").select_option("paused")
+            await page.get_by_test_id("subscriptions-plan").select_option("pro")
+            await expect(rows).to_have_count(1)
+            await page.get_by_test_id("customers-filters-toggle").click()
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_hidden()
+            hint = page.get_by_test_id("customers-filters-active")
+            await expect(hint).to_be_visible()
+            await expect(hint).to_have_text(" · Status: Paused · Plan: Pro")
+            await expect(rows.first).to_contain_text("Farid Hassan")
+            reads = customer_reads(world)
+            assert reads[-1]["params"] == {"status": "paused", "plan": "pro"}, reads[-1]
+
+        # From sm up nothing is folded: the selects and the help line are always there.
+        async with subs_page(browser, site, world, width=1024) as page:
+            await expect(page.get_by_test_id("customers-filters")).to_have_count(0)
+            await expect(page.get_by_test_id("subscriptions-status")).to_be_visible()
+            await expect(page.get_by_test_id("subscriptions-plan")).to_be_visible()
+            await expect(page.get_by_test_id("help-status-filter")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_empty_states_keep_their_sentence_and_offer_one_next_action(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # No customers yet, plans exist: the old sentence stays and a button starts the first one.
+        world = RichWorld(site.upstream, empty=True)
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await expect(
+                page.get_by_text(
+                    "Subscriptions will appear here. "
+                    "Add a subscription to put a customer on one of your plans."
+                )
+            ).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("subscriptions-summary")).to_be_visible()
+            await expect(page.get_by_test_id("summary-active-value")).to_have_text("0")
+            await expect(page.get_by_test_id("customers-view-all")).to_have_count(0)
+            await page.get_by_test_id("customers-empty-add").click()
+            await expect(page.get_by_test_id("subscription-add-form")).to_be_visible()
+            await expect(page.get_by_test_id("customers-empty-add")).to_have_count(0)
+
+        # No plans either: the next step is a plan, and the Plans tab offers its own first step.
+        world = RichWorld(site.upstream, empty=True, no_plans=True)
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await expect(page.get_by_test_id("customers-empty-plans")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("customers-empty-add")).to_have_count(0)
+            await page.get_by_test_id("customers-empty-plans").click()
+            await expect(
+                page.get_by_text("No plans yet. Add your first plan so customers can subscribe.")
+            ).to_be_visible()
+            await page.get_by_test_id("plans-empty-add").click()
+            await expect(page.get_by_test_id("plan-form")).to_be_visible()
+
+        # Nothing matches a search: the old sentence stays and one button clears the filters.
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            search = page.get_by_placeholder("Search by name, phone or email")
+            await search.fill("zzz")
+            await page.get_by_test_id("subscriptions-search-submit").click()
+            await expect(
+                page.get_by_text(
+                    "No subscriptions match. "
+                    "Try another name, phone or email, or clear the filters."
+                )
+            ).to_be_visible()
+            await page.get_by_test_id("customers-clear-filters").click()
+            await expect(page.get_by_test_id("subscription-row")).to_have_count(6)
+            await expect(search).to_have_value("")
+
+        # Read-only members see the sentence and no button to start something they cannot do.
+        world = RichWorld(site.upstream, empty=True)
+        async with subs_page(browser, site, world, role="read_only", wait_for_rows=False) as page:
+            await expect(
+                page.get_by_text(
+                    "Subscriptions will appear here once your team adds a customer to a plan."
+                )
+            ).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("customers-empty-add")).to_have_count(0)
+            await expect(page.get_by_test_id("customers-empty-plans")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def overflow(page: Page) -> dict[str, int]:
+    return await page.evaluate(
+        "() => ({scroll: document.documentElement.scrollWidth, inner: window.innerWidth})"
+    )
+
+
+# Text contrast of the new elements: the same maths as the kit's contrast test.
+CONTRAST_JS = """async (names) => {
+    const parse = (value) => {
+        const m = value.match(/rgba?\\(([^)]+)\\)/);
+        if (!m) throw new Error('unsupported colour ' + value);
+        const parts = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+        return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+    };
+    const over = (top, below) => ({
+        r: top.r * top.a + below.r * (1 - top.a), g: top.g * top.a + below.g * (1 - top.a),
+        b: top.b * top.a + below.b * (1 - top.a), a: 1,
+    });
+    const backdrop = (el) => {
+        const own = parse(getComputedStyle(el).backgroundColor);
+        if (own.a >= 1) return own;
+        const parent = el.parentElement;
+        const below = parent ? backdrop(parent) : { r: 255, g: 255, b: 255, a: 1 };
+        return own.a === 0 ? below : over(own, below);
+    };
+    const channel = (v) => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = ({ r, g, b }) => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    const ratio = (a, b) => {
+        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+        return (hi + 0.05) / (lo + 0.05);
+    };
+    return names.map((name) => {
+        const el = document.querySelector(`[data-testid=${name}]`);
+        const below = backdrop(el);
+        return { name, ratio: ratio(over(parse(getComputedStyle(el).color), below), below) };
+    });
+}"""
+
+# Does the placeholder fit inside the search box? (Measured with the box's own font.)
+PLACEHOLDER_FITS_JS = """() => {
+    const input = document.querySelector('[data-testid=subscriptions-search]');
+    const style = getComputedStyle(input);
+    const context = document.createElement('canvas').getContext('2d');
+    context.font = style.font;
+    const room = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    return { need: context.measureText(input.placeholder).width, room };
+}"""
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_subscriptions_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        async with subs_page(browser, site, world, theme=theme) as page:
+            await expect(page.get_by_test_id("subscriptions-summary")).to_be_visible(timeout=WAIT)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 900})
+                await expect(page.get_by_test_id("customers-view-ending")).to_be_visible()
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], ("page", theme, width, measured)
+                # The search box shows its whole placeholder (it was cut at 768).
+                fit = await page.evaluate(PLACEHOLDER_FITS_JS)
+                assert fit["need"] <= fit["room"], ("placeholder", theme, width, fit)
+                # The summary tiles and the chips stay inside the viewport.
+                outside = await page.evaluate(
+                    """() => [...document.querySelectorAll(
+                        '[data-testid^="summary-"], [data-testid^="customers-view-"]')]
+                        .filter(e => {
+                            const row = e.parentElement;
+                            const scrolls = row && getComputedStyle(row).overflowX === 'auto';
+                            const right = e.getBoundingClientRect().right;
+                            return !scrolls && right > window.innerWidth + 0.5;
+                        })
+                        .map(e => e.dataset.testid)"""
+                )
+                assert not outside, (theme, width, outside)
+                if width == 1440:
+                    texts = await page.evaluate(
+                        CONTRAST_JS,
+                        [
+                            "summary-active-value",
+                            "summary-active-label",
+                            "subscriptions-summary-note",
+                        ],
+                    )
+                    for item in texts:
+                        assert item["ratio"] >= 4.5, (theme, item)
+
+                # The drawer and its review step fit too.
+                drawer = await open_customer(page, "Aisyah Rahman")
+                await drawer.get_by_role("button", name="Pause subscription").click()
+                await expect(drawer.get_by_test_id("help-pause")).to_be_visible()
+                if width == 1440:
+                    texts = await page.evaluate(CONTRAST_JS, ["help-pause"])
+                    for item in texts:
+                        assert item["ratio"] >= 4.5, (theme, item)
+                await drawer.get_by_test_id("action-submit").click()
+                await expect(drawer.get_by_test_id("review-step")).to_be_visible()
+                await drawer.get_by_test_id("review-raw-toggle").click()
+                await expect(drawer.get_by_test_id("review-raw-details")).to_be_visible()
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], ("drawer", theme, width, measured)
+                inside = await drawer.evaluate("el => ({s: el.scrollWidth, c: el.clientWidth})")
+                assert inside["s"] <= inside["c"], ("drawer box", theme, width, inside)
+                if width == 1440:
+                    texts = await page.evaluate(CONTRAST_JS, ["review-sentence", "timeline-zone"])
+                    for item in texts:
+                        assert item["ratio"] >= 4.5, (theme, item)
+                await page.keyboard.press("Escape")
+                await expect(drawer).to_be_hidden(timeout=WAIT)
+
+    await with_browser(body)

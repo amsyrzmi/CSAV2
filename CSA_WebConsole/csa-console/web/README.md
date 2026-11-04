@@ -157,7 +157,8 @@ HTTP integration tests cover those role gates. A queued job alone still proves n
 worker nor TEI health. Use synthetic files and
 [the API rollout/recovery contract](../../../docs/CONSOLE_API.md#isolated-dev-rollout-prerequisites).
 
-M4 adds `/chat` and `/portal/chat`, explicitly labelled **Sandbox assistant**.
+M4 added `/chat` and `/portal/chat`; both now redirect to Overview (`/` and `/portal`),
+where the private chat lives, and keep a `client_id` if the link had one.
 Conversations are private to the verified account and tenant, with a separate sandbox
 contact. Only knowledge and product-information reads are allowed by the runtime;
 customer records, business mutations, staff escalation, callbacks/confirmations,
@@ -168,7 +169,7 @@ History polls every 2.5 seconds using stable turn IDs and older-page cursors.
 Queued/processing/awaiting-delivery, held, privately available, failed and no-reply states
 are distinct. Held drafts are not falsely displayed as delivered or automatically released.
 HTTP requests time out after 15 seconds; uncertain sends keep the same in-memory key/text
-for explicit retry, while reconnect only checks persisted history. A 90-second turn
+for explicit retry, while Check for new messages only checks persisted history. A 90-second turn
 deadline is a delay warning, not a delivery claim. After reload or leaving the tenant,
 check persisted history before sending again. Archive is confirmed, audited hide and
 does not delete history, uploads or accepted work.
@@ -188,7 +189,7 @@ and order decisions are deferred. Takeover pauses AI until release, human reply 
 takeover, and old turns stay suppressed after release. The queue supports source
 navigation, approve/reject/edit, history pages and stale refresh. Outcomes distinguish
 queued, delivered, suppressed, expired and already handled. Uncertain actions retain the
-same in-memory key and payload for explicit retry; reconnect only refreshes. After
+same in-memory key and payload for explicit retry; the refresh control only refreshes. After
 navigation/reload inspect history before resubmitting. Explicitly approved forward-only
 0300 and coordinated guarded dev replacement are complete; platform-admin UI and
 synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff
@@ -278,9 +279,12 @@ Reviewed source comprises `app/` (including non-importing deferred stubs),
 controls, `lib/api.ts`, `lib/identity-*.ts`, `lib/server-identity.ts`,
 `lib/upstream.ts`, `lib/sandbox-chat.ts`, `lib/business.ts`, `proxy.ts`, the tool configuration, synthetic transport/state tests,
 and the supplied brand mark. The build-check script lists its exact file boundary.
-The supplied `ui-guide/fourstacks-tokens.css` is imported before product styles and
-scoped through `fs-ui`; the light canvas, blue actions, control boundaries, explicit
-role labels and brand mark follow the detailed UI guide. Font family names use local/system fallbacks because font files
+Colours live in `app/themes.css`, which defines three themes: cobalt (the default), night
+and bureau. The root layout sets `data-theme` on `<html>` from the `fs-theme` cookie, so the
+first paint is already themed; `tests/theme-contrast.test.mjs` checks every pair in every
+theme and `tests/theme-literals.test.mjs` keeps colour literals out of the redesigned
+components. `app/fourstacks-tokens.css` now holds only fonts, sizes, spacing and radii.
+Font family names use local/system fallbacks because font files
 were not supplied, and no remote font fetch is needed to build.
 
 ## Staff HR adoption (source implementation, 2026-10-21)

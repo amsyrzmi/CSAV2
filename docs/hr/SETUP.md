@@ -184,7 +184,7 @@ use **Mark as leaving** on a person's Overview.
   own manager. The person shows as **Leaving** until the last day has passed. The reason is for
   HR viewers only; the person and their direct manager see the last day.
 - **Who can be marked.** The HR owner cannot be marked as leaving while they are the owner: “The HR
-  owner can't be marked as leaving. Ask your tenant admin to move HR ownership to someone else
+  owner can't be marked as leaving. Ask your admin to move HR ownership to someone else
   first.” (a company has one HR owner; the tenant admin moves it on the Team page, see “Moving the
   HR owner”).
   Only the HR owner can mark someone who holds HR access beyond the staff switches, or who is a

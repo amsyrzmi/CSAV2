@@ -120,7 +120,7 @@ export function RecordedVoice({ conversation, query, disabled, onText, onBusy }:
   }
   return <div className="my-4 space-y-2">
     {error && <Notice error>{error}</Notice>}
-    {!enabled ? <p className="text-sm">Recorded voice is unavailable until transcription is configured.</p> : <>
+    {!enabled ? <p className="text-sm">Voice messages aren&apos;t set up for your company yet.</p> : <>
       <label className="block text-sm"><input type="checkbox" checked={consent} disabled={state !== "idle"}
         onChange={event => setConsent(event.target.checked)} /> Send this recording to the configured transcription service. Review the transcript before sending it to chat.</label>
       {state === "idle" && <button type="button" className={secondary} disabled={disabled || !consent} onClick={() => void start()}>Record voice message</button>}

@@ -9,9 +9,9 @@ import type { Message } from "@/lib/inbox-api";
 import { authorLabel, clockTime, type ThreadItem } from "@/lib/inbox-thread";
 
 const BUBBLE = {
-  customer: "border border-[#D8E1F0] bg-white text-ink-900",
-  assistant: "border border-[#B9CDFA] border-l-[3px] border-l-[var(--fs-primary)] bg-white text-ink-900",
-  staff: "border border-[#183DA5] bg-[#183DA5] text-white",
+  customer: "border border-[color:var(--fs-bubble-customer-border)] bg-[var(--fs-bubble-customer-bg)] text-ink-900",
+  assistant: "border border-[color:var(--fs-brand-200)] border-l-[3px] border-l-[var(--fs-primary)] bg-[var(--fs-surface)] text-ink-900",
+  staff: "border border-[color:var(--fs-bubble-staff-bg)] bg-[var(--fs-bubble-staff-bg)] text-[color:var(--fs-bubble-staff-text)]",
 } as const;
 
 /**
@@ -20,7 +20,7 @@ const BUBBLE = {
  */
 function TeamAvatar() {
   return <span aria-hidden
-    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-[#15203A] text-white">
+    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--fs-team-bg)] text-[color:var(--fs-team-text)]">
     <Users size={16} /></span>;
 }
 
@@ -50,7 +50,7 @@ export function MessageItem({ item, contactId, contactName, motion, arrived }: {
   const outbound = sender !== "customer";
   const avatar = !last ? <span aria-hidden className="w-8 shrink-0" />
     : sender === "customer" ? <CustomerAvatar id={contactId} name={contactName} size={32} />
-    : sender === "assistant" ? <AgentAvatar agentId="support" size={32} />
+    : sender === "assistant" ? <AgentAvatar agentId="support" size={32} state="rest" />
     : <TeamAvatar />;
   const corner = outbound ? (last ? "rounded-br-[4px]" : "") : (last ? "rounded-bl-[4px]" : "");
   return <li className={`flex min-w-0 items-end gap-2 ${first ? "mt-3" : "mt-1"} ${outbound ? "flex-row-reverse" : ""} ${arrived && motion ? "fs-message-in" : ""}`}>

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, LiteralString
 
@@ -760,6 +760,189 @@ async def test_m2_runtime_keyset_pagination_detail_redaction_and_overview(
         await reader.get("/console/v1/runs", params={"client_id": sessions.tenants[1]})
     ).status_code == 403
     assert (await sessions.admin.get("/console/v1/runs")).status_code == 400
+
+
+async def _seed_runs(
+    sessions: SessionWorld,
+    tenant: str,
+    specs: list[tuple[str, str, datetime]],
+) -> list[int]:
+    """Insert (agent, status, created_at) runs in order; return their ids in that order."""
+    ids: list[int] = []
+    for agent, status, created_at in specs:
+        [row] = await sessions.q(
+            "INSERT INTO agent_runs(client_id,trace_id,agent,ok,status,created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            tenant,
+            uuid.uuid4(),
+            agent,
+            status == "ok",
+            status,
+            created_at,
+        )
+        ids.append(row["id"])
+    return ids
+
+
+def _run_ids(response: httpx.Response) -> list[int]:
+    assert response.status_code == 200, response.text
+    return [row["id"] for row in response.json()["items"]]
+
+
+async def test_runs_filter_by_date_window_is_half_open(sessions: SessionWorld) -> None:
+    reader, _ = await sessions.member(role="read_only")
+    base = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
+    stamps = [base + timedelta(hours=hour) for hour in range(4)]
+    ids = await _seed_runs(sessions, sessions.tenants[0], [("a", "ok", s) for s in stamps])
+    window = await reader.get(
+        "/console/v1/runs",
+        params={"from": stamps[1].isoformat(), "to": stamps[3].isoformat()},
+    )
+    # from is inclusive, to is exclusive.
+    assert _run_ids(window) == [ids[2], ids[1]]
+    # Offsets other than UTC denote the same instants.
+    shifted = await reader.get(
+        "/console/v1/runs",
+        params={
+            "from": stamps[1].astimezone(timezone(timedelta(hours=8))).isoformat(),
+            "to": stamps[3].astimezone(timezone(timedelta(hours=8))).isoformat(),
+        },
+    )
+    assert _run_ids(shifted) == [ids[2], ids[1]]
+    only_from = await reader.get("/console/v1/runs", params={"from": stamps[2].isoformat()})
+    assert _run_ids(only_from) == [ids[3], ids[2]]
+    only_to = await reader.get("/console/v1/runs", params={"to": stamps[1].isoformat()})
+    assert _run_ids(only_to) == [ids[0]]
+
+
+async def test_runs_filter_by_status(sessions: SessionWorld) -> None:
+    reader, _ = await sessions.member(role="read_only")
+    now = datetime.now(UTC)
+    ids = await _seed_runs(
+        sessions,
+        sessions.tenants[0],
+        [("a", "ok", now), ("a", "error", now), ("b", "ok", now), ("b", "error", now)],
+    )
+    ok = await reader.get("/console/v1/runs", params={"status": "ok"})
+    assert _run_ids(ok) == [ids[2], ids[0]]
+    error = await reader.get("/console/v1/runs", params={"status": "error"})
+    assert _run_ids(error) == [ids[3], ids[1]]
+    assert all(row["status"] == "error" for row in error.json()["items"])
+
+
+async def test_runs_filters_combine_with_agent_and_keyset_paging(
+    sessions: SessionWorld,
+) -> None:
+    reader, _ = await sessions.member(role="read_only")
+    base = datetime(2026, 4, 1, 0, 0, tzinfo=UTC)
+    specs = [
+        (
+            "invoice_agent" if index % 3 else "booking_agent",
+            "error" if index % 2 else "ok",
+            base + timedelta(minutes=index),
+        )
+        for index in range(30)
+    ]
+    ids = await _seed_runs(sessions, sessions.tenants[0], specs)
+    start, end = base + timedelta(minutes=5), base + timedelta(minutes=27)
+    expected = [
+        ids[index]
+        for index in range(30)
+        if specs[index][0] == "invoice_agent"
+        and specs[index][1] == "error"
+        and start <= specs[index][2] < end
+    ][::-1]
+    assert len(expected) >= 5
+    params: dict[str, Any] = {
+        "agent": "invoice_agent",
+        "status": "error",
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "limit": 2,
+    }
+    seen: list[int] = []
+    cursor: int | None = None
+    for _ in range(len(expected) + 1):
+        page = await reader.get(
+            "/console/v1/runs", params={**params, **({"before_id": cursor} if cursor else {})}
+        )
+        assert page.status_code == 200, page.text
+        seen.extend(row["id"] for row in page.json()["items"])
+        cursor = page.json()["next_before_id"]
+        if cursor is None:
+            break
+    assert cursor is None
+    # No gap and no repeat across pages.
+    assert seen == expected
+    assert len(set(seen)) == len(seen)
+
+
+async def test_runs_without_filters_is_unchanged(sessions: SessionWorld) -> None:
+    reader, _ = await sessions.member(role="read_only")
+    base = datetime(2025, 1, 1, tzinfo=UTC)
+    # Creation time deliberately disagrees with id order: ordering stays id DESC.
+    ids = await _seed_runs(
+        sessions,
+        sessions.tenants[0],
+        [("a", "ok", base + timedelta(days=2)), ("a", "error", base), ("b", "ok", base)],
+    )
+    page = await reader.get("/console/v1/runs", params={"limit": 2})
+    assert _run_ids(page) == [ids[2], ids[1]]
+    assert page.json()["next_before_id"] == ids[1]
+    rest = await reader.get("/console/v1/runs", params={"limit": 2, "before_id": ids[1]})
+    assert _run_ids(rest) == [ids[0]]
+    assert rest.json()["next_before_id"] is None
+    assert set(page.json()["items"][0]) == {
+        "id",
+        "trace_id",
+        "conversation_id",
+        "agent",
+        "ok",
+        "status",
+        "error_code",
+        "error_category",
+        "latency_ms",
+        "created_at",
+    }
+
+
+async def test_runs_rejects_inverted_range_and_unknown_status(sessions: SessionWorld) -> None:
+    reader, _ = await sessions.member(role="read_only")
+    when = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
+    later = when + timedelta(hours=1)
+    for params in (
+        {"from": when.isoformat(), "to": when.isoformat()},
+        {"from": later.isoformat(), "to": when.isoformat()},
+    ):
+        response = await reader.get("/console/v1/runs", params=params)
+        assert response.status_code == 422
+        assert response.json()["detail"] == "invalid_range"
+    for status in ("", "OK", "failed", "partial", "ok,error"):
+        response = await reader.get("/console/v1/runs", params={"status": status})
+        assert response.status_code == 422, status
+        assert response.json()["detail"] == "invalid_status"
+    for params in ({"from": "yesterday"}, {"to": "2026-03-10T12:00:00"}):
+        assert (await reader.get("/console/v1/runs", params=params)).status_code == 422
+
+
+async def test_runs_filters_stay_tenant_scoped(sessions: SessionWorld) -> None:
+    reader, _ = await sessions.member(role="read_only")
+    other, _ = await sessions.member(role="read_only", tenant=sessions.tenants[1])
+    when = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
+    noise = [("a", "ok", when), ("b", "error", when), ("a", "error", when - timedelta(hours=1))]
+    mine, *_ = await _seed_runs(sessions, sessions.tenants[0], [("a", "error", when), *noise])
+    theirs, *_ = await _seed_runs(sessions, sessions.tenants[1], [("a", "error", when), *noise])
+    params = {
+        "status": "error",
+        "agent": "a",
+        "from": when.isoformat(),
+        "to": (when + timedelta(seconds=1)).isoformat(),
+    }
+    assert _run_ids(await reader.get("/console/v1/runs", params=params)) == [mine]
+    assert _run_ids(await other.get("/console/v1/runs", params=params)) == [theirs]
+    assert (
+        await reader.get("/console/v1/runs", params={**params, "client_id": sessions.tenants[1]})
+    ).status_code == 403
 
 
 async def test_m2_kb_console_execution_cannot_bypass_disabled_switch(

@@ -30,7 +30,7 @@ export function CustomerRepliesBanner({ tenantId, servicesHref }: {
         {lines[0]}{" "}
         {replies.can_manage
           ? <Link className="underline" href={servicesHref}>Go to Services</Link>
-          : off && "Ask your tenant admin to turn replies on."}
+          : off && "Ask your admin to turn replies on."}
       </Notice>
     </div>
   );

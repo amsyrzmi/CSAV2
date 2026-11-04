@@ -51,7 +51,7 @@ PACKAGES: tuple[Package, ...] = (
     ),
     Package(
         key="knowledge_base",
-        title="Knowledge base",
+        title="Business knowledge",
         summary="Answers customer questions from the files you upload.",
         kind="addon",
         requires=("customer_support",),

@@ -1,28 +1,7 @@
 /* Source-aligned brand tokens plus recommended dashboard extensions.
    Read UI_GUIDE.md for the distinction. This file does not import page CSS. */
 :root {
-  color-scheme: light;
-  --fs-bg: #f7f8fa;
-  --fs-surface: #ffffff;
-  --fs-surface-raised: #fcfdff;
-  --fs-surface-blue: #edf2ff;
-  --fs-text: #1c2b40;
-  --fs-text-secondary: #566274;
-  --fs-primary: #3264ff;
-  --fs-primary-hover: #234fd8;
-  --fs-border: #dce2e9;
-  --fs-border-control: #7b8ca5;
-  --fs-focus: #3264ff;
-  --fs-disabled-bg: #eef2f7;
-  --fs-disabled-text: #566274;
-  --fs-success: #166534;
-  --fs-success-bg: #eefbf3;
-  --fs-warning: #854d0e;
-  --fs-warning-bg: #fff7e0;
-  --fs-danger: #b42318;
-  --fs-danger-bg: #fff1f0;
-  --fs-info: #2558b4;
-  --fs-info-bg: #edf2ff;
+  /* Colours, color-scheme and the per-theme radius and shadows live in themes.css. */
   --fs-font-body: 'Inter', system-ui, sans-serif;
   --fs-font-heading: 'Space Grotesk', 'Inter', system-ui, sans-serif;
   --fs-font-brand: 'Manrope', 'Inter', system-ui, sans-serif;
@@ -42,12 +21,9 @@
   --fs-space-6: 1.5rem;
   --fs-space-8: 2rem;
   --fs-space-10: 2.5rem;
-  --fs-radius-control: 6px;
   --fs-radius-panel: 14px;
   --fs-radius-dialog: 16px;
   --fs-radius-pill: 999px;
-  --fs-shadow-popover: 0 8px 28px #1c2b4012;
-  --fs-shadow-dialog: 0 24px 64px #1c2b4024;
   --fs-sidebar-width: 240px;
   --fs-header-height: 64px;
   --fs-control-height: 40px;
@@ -60,7 +36,6 @@
 }
 
 .fs-ui {
-  color-scheme: light;
   color: var(--fs-text);
   background: var(--fs-bg);
   font-family: var(--fs-font-body);

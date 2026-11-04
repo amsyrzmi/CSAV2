@@ -1,0 +1,280 @@
+/* Console themes: cobalt (default), night and bureau.
+   The root layout sets data-theme on <html> from the fs-theme cookie, so the first paint is
+   already themed. Every colour the console uses lives here; the contrast test
+   (tests/theme-contrast.test.mjs) reads this file and is the authority on the values.
+
+   --color-white overrides Tailwind's built-in white. bg-white, text-white and border-white
+   compile to var(--color-white), so remapping it re-themes files that still use those
+   utilities. It follows the card surface; --fs-on-primary is the label colour on the accent
+   for code that is converted to tokens.
+
+   Colours are #rrggbb so the contrast test can parse them; the scrim and shadow tokens are
+   8-digit translucent hex. tests/theme-literals.test.mjs keeps colour literals out of the
+   components, so this file is the only place for them. */
+
+:root,
+[data-theme="cobalt"] {
+  color-scheme: light;
+  --fs-bg: #e3ebfa;
+  --fs-shell: #e3ebfa;
+  --fs-rail: #edf2fc;
+  --fs-surface: #ffffff;
+  --fs-surface-raised: #fbfdff;
+  --fs-surface-blue: #e7efff;
+  --fs-tile: #f3f7ff;
+  /* One-cell sticker outline around an avatar (AgentAvatar): the sprites' own navy, so pale bodies keep a 3:1 edge on light surfaces. */
+  --fs-sprite-halo: #15203a;
+  --fs-text: #0b1b3f;
+  --fs-text-secondary: #53648b;
+  --fs-primary: #0047ab;
+  --fs-primary-hover: #003a8f;
+  --fs-on-primary: #ffffff;
+  --fs-border: #d4def2;
+  --fs-border-control: #6b7fa6;
+  --fs-focus: #0047ab;
+  --fs-disabled-bg: #e8eef9;
+  --fs-disabled-text: #53648b;
+  --fs-success: #166534;
+  --fs-success-bg: #eefbf3;
+  --fs-warning: #854d0e;
+  --fs-warning-bg: #fff7e0;
+  --fs-danger: #b42318;
+  --fs-danger-bg: #fff1f0;
+  --fs-info: #0047ab;
+  --fs-info-bg: #e7efff;
+  --fs-human: #8a4a00;
+  --fs-ink-950: #060f26;
+  --fs-ink-800: #1a2b57;
+  --fs-ink-700: #2d3f6b;
+  --fs-ink-400: #8a98ba;
+  --fs-ink-200: #dbe4f5;
+  --fs-ink-100: #e9eff9;
+  --fs-ink-50: #f3f7ff;
+  --fs-brand-100: #d6e4ff;
+  --fs-brand-200: #b5ceff;
+  --fs-brand-900: #0b2d6b;
+  --fs-border-strong: #b9c7e6;
+  --fs-neutral-bg: #eaf0fa;
+  --fs-neutral-text: #445577;
+  --fs-customer-bg: #dce8ff;
+  --fs-customer-text: #183da5;
+  --fs-team-bg: #15203a;
+  --fs-team-text: #ffffff;
+  --fs-channel-bg: #d3eeff;
+  --fs-channel-text: #0b5a8c;
+  --fs-bubble-staff-bg: #183da5;
+  --fs-bubble-staff-text: #ffffff;
+  /* The customer's message bubble on the thread log; night lifts it off the dark log. */
+  --fs-bubble-customer-bg: #ffffff;
+  --fs-bubble-customer-border: #d4def2;
+  --fs-room-staff-bg: #eef1f8;
+  --fs-room-staff-bar: #15203a;
+  --fs-log-from: #eef3fc;
+  --fs-log-to: #e6eefb;
+  --fs-attention-border: #f0d98c;
+  /* Decorative by design: the review card's left edge; the words on the card carry the meaning,
+     so this colour has no contrast pair. */
+  --fs-attention-edge: #e0a82e;
+  --fs-customer-1-bg: #d9e5ff;
+  --fs-customer-1-text: #183da5;
+  --fs-customer-2-bg: #cfebff;
+  --fs-customer-2-text: #0b5a8c;
+  --fs-customer-3-bg: #e0e6fb;
+  --fs-customer-3-text: #2c3e9e;
+  --fs-customer-4-bg: #d2eef6;
+  --fs-customer-4-text: #164b8d;
+  --fs-skeleton: #e9eff9;
+  --fs-skeleton-shine: #f6f9ff;
+  --fs-scrim: #1c2b4066;
+  --fs-auth-from: #0047ab;
+  --fs-auth-to: #2d7cf0;
+  --fs-auth-text: #ffffff;
+  --fs-auth-logo: #ffffff;
+  --fs-auth-logo-accent: #7fb0ff;
+  --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7fa6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-white: #ffffff;
+  --fs-radius-control: 6px;
+  /* The sandbox chat: composer box, message bubbles, tiles and trays, round buttons and chips. */
+  --fs-radius-composer: 1.75rem;
+  --fs-radius-bubble: 1.25rem;
+  --fs-radius-tile: 1rem;
+  --fs-radius-round: 999px;
+  --fs-shadow-card: 0 1px 2px #0b1b3f14;
+  --fs-shadow-popover: 0 8px 28px #0b1b3f1f;
+  --fs-shadow-dialog: 0 24px 64px #0b1b3f2e;
+}
+
+[data-theme="night"] {
+  color-scheme: dark;
+  --fs-bg: #0e1626;
+  --fs-shell: #0e1626;
+  --fs-rail: #111b2e;
+  --fs-surface: #141e33;
+  --fs-surface-raised: #1a2640;
+  --fs-surface-blue: #172a52;
+  --fs-tile: #18233b;
+  /* One-cell light outline around an avatar: its darker body tones would sink into the night surfaces. */
+  --fs-sprite-halo: #dbe6fb;
+  --fs-text: #e8eefc;
+  --fs-text-secondary: #93a0bf;
+  --fs-primary: #6ea2ff;
+  --fs-primary-hover: #8bb6ff;
+  --fs-on-primary: #0b1220;
+  --fs-border: #24314f;
+  --fs-border-control: #6f81a8;
+  --fs-focus: #8bb6ff;
+  --fs-disabled-bg: #1b2742;
+  --fs-disabled-text: #93a0bf;
+  --fs-success: #6ee7a0;
+  --fs-success-bg: #0f2c1e;
+  --fs-warning: #f2b84b;
+  --fs-warning-bg: #33270b;
+  --fs-danger: #ff9b92;
+  --fs-danger-bg: #3b1a1a;
+  --fs-info: #8bb6ff;
+  --fs-info-bg: #172a52;
+  --fs-human: #f2b84b;
+  --fs-ink-950: #f6f9ff;
+  --fs-ink-800: #d3ddf5;
+  --fs-ink-700: #b8c4e0;
+  --fs-ink-400: #7a89ab;
+  --fs-ink-200: #2a3858;
+  --fs-ink-100: #1b2742;
+  --fs-ink-50: #18233b;
+  --fs-brand-100: #22386b;
+  --fs-brand-200: #2f4b8a;
+  --fs-brand-900: #cfe0ff;
+  --fs-border-strong: #36466a;
+  --fs-neutral-bg: #1f2b47;
+  --fs-neutral-text: #b8c4e0;
+  --fs-customer-bg: #1e3566;
+  --fs-customer-text: #bcd3ff;
+  --fs-team-bg: #2a3858;
+  --fs-team-text: #f6f9ff;
+  --fs-channel-bg: #14425f;
+  --fs-channel-text: #c8f0ff;
+  --fs-bubble-staff-bg: #2f56a8;
+  --fs-bubble-staff-text: #ffffff;
+  --fs-bubble-customer-bg: #1a2640;
+  --fs-bubble-customer-border: #3d4f78;
+  --fs-room-staff-bg: #1d2a47;
+  --fs-room-staff-bar: #8bb6ff;
+  --fs-log-from: #101a2e;
+  --fs-log-to: #0d1524;
+  --fs-attention-border: #5c4713;
+  --fs-attention-edge: #f2b84b;
+  --fs-customer-1-bg: #1d3a6e;
+  --fs-customer-1-text: #cfe0ff;
+  --fs-customer-2-bg: #14425f;
+  --fs-customer-2-text: #c8f0ff;
+  --fs-customer-3-bg: #2a3470;
+  --fs-customer-3-text: #d6dcff;
+  --fs-customer-4-bg: #173f6a;
+  --fs-customer-4-text: #c4e4ff;
+  --fs-skeleton: #1b2742;
+  --fs-skeleton-shine: #2a3858;
+  --fs-scrim: #00000099;
+  --fs-auth-from: #0047ab;
+  --fs-auth-to: #2d7cf0;
+  --fs-auth-text: #ffffff;
+  --fs-auth-logo: #ffffff;
+  --fs-auth-logo-accent: #7fb0ff;
+  --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236f81a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-white: #141e33;
+  --fs-radius-control: 6px;
+  /* The sandbox chat: composer box, message bubbles, tiles and trays, round buttons and chips. */
+  --fs-radius-composer: 1.75rem;
+  --fs-radius-bubble: 1.25rem;
+  --fs-radius-tile: 1rem;
+  --fs-radius-round: 999px;
+  --fs-shadow-card: 0 1px 2px #00000066;
+  --fs-shadow-popover: 0 8px 28px #00000066;
+  --fs-shadow-dialog: 0 24px 64px #00000099;
+}
+
+[data-theme="bureau"] {
+  color-scheme: light;
+  --fs-bg: #f6f1e7;
+  --fs-shell: #f6f1e7;
+  --fs-rail: #efe8d8;
+  --fs-surface: #fffdf8;
+  --fs-surface-raised: #fffefb;
+  --fs-surface-blue: #e8eefc;
+  --fs-tile: #f8f3e8;
+  --fs-sprite-halo: #15203a;
+  --fs-text: #14213d;
+  --fs-text-secondary: #5c6272;
+  --fs-primary: #1f4fd8;
+  --fs-primary-hover: #1a40ad;
+  --fs-on-primary: #ffffff;
+  --fs-border: #ddd3be;
+  --fs-border-control: #857a60;
+  --fs-focus: #1f4fd8;
+  --fs-disabled-bg: #ece4d2;
+  --fs-disabled-text: #5c6272;
+  --fs-success: #1b5e32;
+  --fs-success-bg: #e8f3e6;
+  --fs-warning: #7a4608;
+  --fs-warning-bg: #f8ecd0;
+  --fs-danger: #a8261b;
+  --fs-danger-bg: #f9e4dc;
+  --fs-info: #1a40ad;
+  --fs-info-bg: #e6ecfb;
+  --fs-human: #8a4a00;
+  --fs-ink-950: #0b1530;
+  --fs-ink-800: #26324f;
+  --fs-ink-700: #3d4760;
+  --fs-ink-400: #9a9686;
+  --fs-ink-200: #e6dcc6;
+  --fs-ink-100: #efe7d5;
+  --fs-ink-50: #f8f2e4;
+  --fs-brand-100: #dbe5fb;
+  --fs-brand-200: #bccbf5;
+  --fs-brand-900: #142e7a;
+  --fs-border-strong: #c4b79a;
+  --fs-neutral-bg: #ece4d2;
+  --fs-neutral-text: #3d4760;
+  --fs-customer-bg: #dbe5fb;
+  --fs-customer-text: #1a40ad;
+  --fs-team-bg: #14213d;
+  --fs-team-text: #fffdf8;
+  --fs-channel-bg: #d7ebf2;
+  --fs-channel-text: #0b5a7a;
+  --fs-bubble-staff-bg: #1a40ad;
+  --fs-bubble-staff-text: #fffdf8;
+  --fs-bubble-customer-bg: #fffdf8;
+  --fs-bubble-customer-border: #ddd3be;
+  --fs-room-staff-bg: #efe8d8;
+  --fs-room-staff-bar: #14213d;
+  --fs-log-from: #f4eee0;
+  --fs-log-to: #ece4d0;
+  --fs-attention-border: #e6d197;
+  --fs-attention-edge: #c98a1a;
+  --fs-customer-1-bg: #d9e5ff;
+  --fs-customer-1-text: #183da5;
+  --fs-customer-2-bg: #cfebff;
+  --fs-customer-2-text: #0b5a8c;
+  --fs-customer-3-bg: #e0e6fb;
+  --fs-customer-3-text: #2c3e9e;
+  --fs-customer-4-bg: #d2eef6;
+  --fs-customer-4-text: #164b8d;
+  --fs-skeleton: #efe7d5;
+  --fs-skeleton-shine: #f8f2e4;
+  --fs-scrim: #14213d66;
+  --fs-auth-from: #0047ab;
+  --fs-auth-to: #2d7cf0;
+  --fs-auth-text: #ffffff;
+  --fs-auth-logo: #ffffff;
+  --fs-auth-logo-accent: #7fb0ff;
+  --fs-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23857a60' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --color-white: #fffdf8;
+  --fs-radius-control: 0;
+  /* The sandbox chat: composer box, message bubbles, tiles and trays, round buttons and chips. */
+  --fs-radius-composer: 0;
+  --fs-radius-bubble: 0;
+  --fs-radius-tile: 0;
+  --fs-radius-round: 0;
+  --fs-shadow-card: 3px 3px 0 #ddd3be;
+  --fs-shadow-popover: 3px 3px 0 #ddd3be;
+  --fs-shadow-dialog: 3px 3px 0 #ddd3be;
+}

@@ -580,6 +580,8 @@ def test_tab_labels_match_the_console_navigation() -> None:
 
     source = Path(__file__).parents[1] / "CSA_WebConsole/csa-console/web/lib/navigation.ts"
     labels = dict(re.findall(r'\{ key: "(\w+)", label: "([^"]+)"', source.read_text()))
+    # The sandbox chat folded into Overview: the dock's `chat` tab opens and is named as Overview.
+    labels["chat"] = labels["overview"]
     tab_keys = set(get_args(TabKey))
     assert tab_keys <= TAB_LABELS.keys()
     assert tab_keys <= labels.keys()

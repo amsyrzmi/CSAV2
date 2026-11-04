@@ -123,7 +123,7 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Open Documents as each viewer | A person with a Contract and an Other document | The HR owner and Manage people holders see both; the person (My HR → My documents) sees the Contract only, with no Upload; their manager and colleagues have no Documents section | manual |
 | Mark a person as leaving with a last day a week ahead, then Undo leaving | HR owner | The profile says "Leaving on <date> (Resigned)" and People lists them as Leaving; Undo leaving says "Leaving undone. They stay on." and they are Active again | manual |
 | Mark a person with a report and a linked console account as leaving, last day today; check again the next day | HR owner | Today: still Leaving and can still sign in; the report now has the chosen manager. The next day: Left (under the Left filter), History shows the change by "System", the member's HR access switches are gone and they can no longer open the company | manual |
-| Mark yourself as leaving | HR owner, on their own profile | "The HR owner can't be marked as leaving. Ask your tenant admin to move HR ownership to someone else first." and nothing changes (the Malay chat says "Pemilik HR tidak boleh ditandakan sebagai akan berhenti. Minta pentadbir syarikat anda memindahkan pemilikan HR kepada orang lain dahulu.") | manual |
+| Mark yourself as leaving | HR owner, on their own profile | "The HR owner can't be marked as leaving. Ask your admin to move HR ownership to someone else first." and nothing changes (the Malay chat says "Pemilik HR tidak boleh ditandakan sebagai akan berhenti. Minta pentadbir syarikat anda memindahkan pemilikan HR kepada orang lain dahulu.") | manual |
 | Mark a colleague who has Approves (or any HR access) as leaving | Member with Manage people | "Only the HR owner can mark someone with HR access as leaving." and nothing changes | manual |
 | Rehire a person who has left | HR owner, a Left person | Rehire with a start date says "Rehired. Invite them again from Settings to give console access."; the person is Active with no access switches | manual |
 | Open People & HR Home | HR owner | No "HR chat (assistant & voice)" block; the assistant dock is the only assistant | manual |
@@ -133,26 +133,31 @@ The 1a screens have browser scenarios for the access page and the training flow,
 | Check | Setup | Expected | Kind |
 |---|---|---|---|
 | A new company starts quiet | Platform admin creates a company and activates Customer support | The company is `pilot`; Services shows Customer replies as Off; Overview and Inbox show "Your customers aren't getting replies yet." | manual |
-| A file processes before going live | That company, with the Knowledge base add-on, replies still Off | The uploaded file finishes processing; a customer message gets no reply | manual |
+| A file processes before going live | That company, with the Business knowledge add-on, replies still Off | The uploaded file finishes processing; a customer message gets no reply | manual |
 | No brand name | Tenant admin chooses a mode that replies, with the name blank | Save stays off and says "Add your brand name first." | manual |
-| Staff approve each reply | A company with an add-on and something to answer from; the tenant admin saves a name and this choice; ask a question the bot can answer | A draft waits in the Inbox, and the customer gets nothing until staff approve; the reply uses the brand name. A handoff or button answer still goes straight away, on purpose | manual |
+| Staff approve each reply | A company with an add-on and something to answer from; the admin saves a name and this choice; ask a question the bot can answer | A draft waits in the Inbox, and the customer gets nothing until staff approve; the reply uses the brand name. A handoff or button answer still goes straight away, on purpose | manual |
 | A draft nobody approves | Leave a draft for 24 hours | It leaves the Inbox's review list, the customer is told a team member will follow up, and an escalation opens | manual |
-| Bot replies by itself | The same company; the tenant admin saves this choice; message the bot | The reply comes on that message, with no restart, using the brand name; the banner has gone from Overview and Inbox | manual |
+| Bot replies by itself | The same company; the admin saves this choice; message the bot | The reply comes on that message, with no restart, using the brand name; the banner has gone from Overview and Inbox | manual |
 | Message while Off, then go live | Message the bot with replies Off, then turn them on and message again | Staff see a ticket for the first message and the customer gets no reply; the second message gets a reply | manual |
 | Off again | Tenant admin saves Off | The next message gets no reply, even if the turn fails, and the banner is back | manual |
-| Nothing to answer from | The Knowledge base add-on is active with no processed file, replies on | The panel and the banner say "Your bot has nothing to answer from yet." until a file finishes | manual |
-| Who can change it | Staff and read-only members on Services | They see the state and "Ask your tenant admin to change this.", with no controls | manual |
+| Nothing to answer from | The Business knowledge add-on is active with no processed file, replies on | The panel and the banner say "Your bot has nothing to answer from yet." until a file finishes | manual |
+| Who can change it | Staff and read-only members on Services | They see the state and "Ask your admin to change this.", with no controls | manual |
+| The Overview chat previews with replies Off | A company with Customer support and replies Off; ask the Overview chat a question the bot can answer | The chat answers, and the banner above it still says "Your customers aren't getting replies yet."; a customer on Telegram or WhatsApp still gets nothing | manual |
+| The Overview chat previews with "Staff approve each reply" | The same company, replies set to "Staff approve each reply"; ask the Overview chat the same question | The chat answers at once, with no draft in the Inbox | manual |
+| A review rule still holds the preview | A company with a `never_auto` intent or a confidence threshold; ask the Overview chat that kind of question | The chat holds the answer, as it would for a customer; it does not send it | manual |
+| An employee-only company has a small home | A company with People & HR and no Customer support; open Overview | Links to People & HR and Services, no chat, no banner, and no Assistant activity in the menu; "Ask the assistant at the side of the screen." shows only for people who have the assistant at the side of the screen, and a View only member sees the links without it | manual |
+| A platform admin switches company | Choose a company with Customer support, then one without, then back | Overview shows the chat, then the small home, then the chat; it never shows one company's page for the other | manual |
 
-## Knowledge base add-on
+## Business knowledge add-on
 
 | Check | Setup | Expected | Kind |
 |---|---|---|---|
-| Customer support only | A company with Customer support and no Knowledge base add-on | No Knowledge base in the menu; asking the assistant to open it says it isn't available | manual |
+| Customer support only | A company with Customer support and no Business knowledge add-on | No Business knowledge in the menu; asking the assistant to open it says it isn't available | manual |
 | A customer question at that company | Message the company's bot with a question about a policy, in `auto` and again in `suggest` | The customer gets the handoff message straight away in both, staff get a normal-priority ticket, and the bot stays quiet for that customer until staff act | manual |
-| A mixed question, with Orders but no Knowledge base | Ask for a product's price and its warranty | The bot answers the price and says the team will follow up on the rest; no ticket opens | manual |
-| Activate the add-on | Platform admin, Services page for that company | Knowledge base shows as an add-on; after activating, the menu entry appears | manual |
+| A mixed question, with Orders but no Business knowledge | Ask for a product's price and its warranty | The bot answers the price and says the team will follow up on the rest; no ticket opens | manual |
+| Activate the add-on | Platform admin, Services page for that company | Business knowledge shows as an add-on; after activating, the menu entry appears | manual |
 | Files after activating | Upload a file, wait for it to process, ask the bot about it | The bot answers from the file. The company must be `pilot` or `active`, or the file stays queued | manual |
-| Existing company after the rollout | A company that had Customer support before migration 0530 | Its Knowledge base entry, files and bot answers still work, and Services shows the add-on with the same status as Customer support | manual |
+| Existing company after the rollout | A company that had Customer support before migration 0530 | Its Business knowledge entry, files and bot answers still work, and Services shows the add-on with the same status as Customer support | manual |
 
 ## Moving the HR owner
 

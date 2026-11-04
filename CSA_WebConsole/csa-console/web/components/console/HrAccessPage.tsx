@@ -188,18 +188,18 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
   const still = review ? review.result.warnings.filter((w) => warnings.some((old) => warningKey(old) === warningKey(w))) : [];
   const current = selected ? pending[selected.user_id]?.person ?? selected : null;
 
-  return <div className="space-y-5 pb-24">
+  return <div className="space-y-5 pb-28">
     <div>
       <h2 className="text-lg font-semibold">{PAGE_COPY.title}</h2>
       <p className="mt-1 text-sm text-ink-600">{PAGE_COPY.description}</p>
     </div>
     {problem && <Notice error>{problem}</Notice>}
     {notice && <Notice>{notice}</Notice>}
-    {conflict && <div data-testid="hr-access-conflict" role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+    {conflict && <div data-testid="hr-access-conflict" role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--fs-warning)]/50 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm">
       <span>{PAGE_COPY.conflict}</span>
       <button type="button" className={secondary} disabled={busy} onClick={() => void reload()}>Reload access</button>
     </div>}
-    {warnings.length > 0 && <details className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
+    {warnings.length > 0 && <details className="rounded-md border border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm">
       <summary className="cursor-pointer font-medium">{warnings.length} {warnings.length === 1 ? "thing" : "things"} to check across your company</summary>
       <ul className="mt-2 list-disc space-y-1 pl-5">{warnings.map((w) => <li key={warningKey(w)}>{warningText(w)}</li>)}</ul>
     </details>}
@@ -221,9 +221,9 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
               <option value="">Anyone</option>{managers.map((m) => <option key={m.employee_id} value={m.employee_id}>{m.display_name}</option>)}
             </select>
           </label>
-          <label className="block text-sm">Has switch
+          <label className="block text-sm">Has permission
             <select className={`${field} mt-1`} value={filters.has} onChange={(event) => filter({ has: event.target.value as SwitchId | "" })}>
-              <option value="">Any switch</option>
+              <option value="">Any permission</option>
               {SWITCH_IDS.map((id) => <option key={id} value={id}>{SWITCH_COPY[id].label} ({page?.counts[id] ?? 0})</option>)}
             </select>
           </label>
@@ -240,7 +240,7 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
               onClick={() => edit(ticked.map((person) => ({ person, desired: applyPreset(desiredOf(person), bulkPreset) })))}>Apply preset</button>
           </div>
           <div className="flex flex-wrap items-end gap-2">
-            <label className="block grow">Switch
+            <label className="block grow">Permission
               <select className={`${field} mt-1`} value={bulkSwitch} onChange={(event) => setBulkSwitch(event.target.value as SwitchId)}>
                 {SWITCH_IDS.map((id) => <option key={id} value={id}>{SWITCH_COPY[id].label}</option>)}
               </select>
@@ -273,12 +273,12 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
                   {desired.map((id) => <span key={id} className="rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-700">{SWITCH_COPY[id].tag}</span>)}
                   {person.is_owner && <span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-700">HR owner</span>}
                   {desired.length === 0 && !person.is_owner && <span className="text-xs text-ink-500">No HR access</span>}
-                  {person.custom.length > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800">Custom access</span>}
-                  {flagged && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800">Warning</span>}
-                  {pending[person.user_id] && <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs text-brand-800">Not saved yet</span>}
+                  {person.custom.length > 0 && <span className="rounded-full bg-[var(--fs-warning-bg)] px-2 py-0.5 text-xs text-[color:var(--fs-warning)]">Custom access</span>}
+                  {flagged && <span className="rounded-full bg-[var(--fs-warning-bg)] px-2 py-0.5 text-xs text-[color:var(--fs-warning)]">Warning</span>}
+                  {pending[person.user_id] && <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs text-[color:var(--fs-text)]">Not saved yet</span>}
                 </span>
                 {outcome && <span data-testid={`hr-access-result-${person.user_id}`}
-                  className={`mt-1 block text-xs font-medium ${outcome.outcome === "refused" ? "text-red-700" : "text-emerald-700"}`}>
+                  className={`mt-1 block text-xs font-medium ${outcome.outcome === "refused" ? "text-[color:var(--fs-danger)]" : "text-[color:var(--fs-success)]"}`}>
                   {RESULT_TEXT[outcome.outcome]}{outcome.outcome === "refused" ? `. ${refusalText(outcome.reason)}` : ""}
                 </span>}
               </span>
@@ -306,7 +306,7 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
     <HrAccessFeatures tenant={tenant} readonly={readonly} />
     <HrAccessRecent tenant={tenant} refresh={recentRefresh} />
 
-    {people > 0 && <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-md border border-ink-200 bg-white p-3 shadow-lg">
+    {people > 0 && <div className="sticky bottom-20 z-10 flex flex-wrap items-center justify-between gap-3 rounded-md border border-ink-200 bg-[var(--fs-surface-raised)] p-3 shadow-lg">
       <span className="text-sm font-medium">{changesSummary(changes, people)}</span>
       <div className="flex gap-2">
         <button type="button" className={secondary} disabled={busy || review !== null} onClick={() => { setPending({}); setNotice(""); }}>Discard changes</button>
@@ -314,7 +314,7 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
       </div>
     </div>}
 
-    {review && <div className="fixed inset-0 z-40 flex items-end justify-center bg-ink-900/40 p-4 sm:items-center">
+    {review && <div className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--fs-scrim)] p-4 sm:items-center">
       <div role="dialog" aria-modal="true" aria-labelledby="hr-access-review-title" className="card max-h-[85vh] w-full max-w-lg space-y-4 overflow-y-auto p-5 sm:p-6">
         <h2 id="hr-access-review-title" className="text-base font-semibold">Save {changesSummary(changes, people)}?</h2>
         {review.problem && <Notice error>{review.problem}</Notice>}
@@ -323,7 +323,7 @@ export function HrAccessPage({ tenant, readonly, onAdvanced }: { tenant: string;
             {pendingRef.current[item.user_id]?.person.display_name ?? "A member"}: {item.outcome === "refused" ? `Won't save. ${refusalText(item.reason)}` : "Nothing to change."}
           </li>)}
         </ul>}
-        {fresh.length > 0 ? <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
+        {fresh.length > 0 ? <div className="space-y-2 rounded-md border border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm">
           <h3 className="font-semibold">After this change</h3>
           <ul className="list-disc space-y-1 pl-5">{fresh.map((w) => <li key={warningKey(w)}>{warningText(w)}</li>)}</ul>
           <p>You can still save. These are warnings, not errors.</p>

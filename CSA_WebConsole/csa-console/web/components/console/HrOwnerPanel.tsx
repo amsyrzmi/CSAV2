@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Modal } from "@/components/ui/kit";
+import Dialog from "./fs/Dialog";
 import type { Member } from "@/lib/identity-contracts";
 import {
   confirmText,
@@ -142,8 +142,8 @@ export function HrOwnerPanel({
           <Notice error={notice.error}>{notice.text}</Notice>
         </div>
       )}
-      <Modal
-        isOpen={open}
+      <Dialog
+        open={open}
         onClose={() => {
           if (!busy) setOpen(false);
         }}
@@ -200,7 +200,7 @@ export function HrOwnerPanel({
             </button>
           </div>
         </div>
-      </Modal>
+      </Dialog>
     </section>
   );
 }

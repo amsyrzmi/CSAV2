@@ -269,6 +269,8 @@ class SyntheticDeps(PostgresTurnDependencies):
         )
 
     async def gate(self, state: TurnState) -> GateVerdict:
+        if self.mode == "real_gate":
+            return await super().gate(state)
         return GateVerdict(
             decision="approve" if self.mode == "hold" else "send",
             risk_score=0,
@@ -344,6 +346,44 @@ async def test_graph_and_private_delivery_states(
         "SELECT count(*) AS n FROM outbound_deliveries WHERE trace_id=%s", queued["trace_id"]
     )
     assert count["n"] == 1
+
+
+@pytest.mark.parametrize("deployment_mode", ["shadow", "suggest"])
+async def test_the_preview_answers_while_customer_replies_are_off_or_need_approval(
+    sessions: SessionWorld, deployment_mode: str
+) -> None:
+    world = sessions
+    await world.q(
+        "UPDATE clients SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+        "'{policy}', %s::jsonb) WHERE id=%s",
+        f'{{"deployment_mode": "{deployment_mode}"}}',
+        world.tenants[0],
+    )
+    conversation = await create(world)
+    queued = await send(world, conversation)
+    await process(world, queued, mode="real_gate")
+    owner = db.build_pool(world.owner_dsn, max_size=2)
+    await owner.open(wait=True)
+
+    def no_network(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("the preview must never make an external request")
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(no_network)) as client:
+            assert await DeliveryWorker(owner, world.pool, client).process_once()
+    finally:
+        await owner.close()
+    [turn] = await history(world, conversation)
+    assert turn["status"] == "available" and len(turn["replies"]) == 1
+    # Nothing for the company's staff or customers: no escalation, no approval, no Telegram.
+    assert not await world.q("SELECT id FROM escalations WHERE client_id=%s", world.tenants[0])
+    assert not await world.q("SELECT id FROM approvals WHERE trace_id=%s", queued["trace_id"])
+    assert not await world.q(
+        "SELECT d.id FROM outbound_deliveries d JOIN webhook_endpoints e ON e.id = d.endpoint_id "
+        "JOIN channel_credentials c ON c.id = e.credential_id "
+        "WHERE d.trace_id=%s AND c.channel <> 'web'",
+        queued["trace_id"],
+    )
 
 
 async def test_execution_rejects_mutations_and_private_reads(sessions: SessionWorld) -> None:

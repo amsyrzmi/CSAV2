@@ -7,6 +7,8 @@ import {
   CUSTOM_COPY, GROUPS, OWNER_ACCESS_LINE, PRESET_COPY, refusalText, SWITCH_COPY, warningText,
 } from "@/lib/hr-access-copy";
 import { ApiError } from "@/lib/api";
+import { DetailsRow } from "./kit";
+import RoleCards from "./hr-guide/RoleCards";
 import { field, secondary } from "./ui";
 
 /** An explained server sentence, or the fallback; raw codes stay off the screen. */
@@ -25,7 +27,7 @@ export function warningsFor(person: AccessPerson, warnings: AccessWarningOut[]):
     || (person.employee_id !== null && w.employee_id === person.employee_id));
 }
 
-/** The selected member: their switches, grouped, with presets, copy-from, custom access and warnings. */
+/** The selected member: their permissions, grouped, with presets, copy-from, custom access and warnings. */
 export function HrAccessPanel({ person, desired, others, warnings, result, disabled, onChange, onBack, onAdvanced }: {
   person: AccessPerson;
   desired: SwitchId[];
@@ -52,8 +54,9 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
         </p>
       </div>
     </header>
-    {result?.outcome === "refused" && <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+    {result?.outcome === "refused" && <p role="alert" className="rounded-md border border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] p-3 text-sm text-[color:var(--fs-danger)]">
       Not saved. {refusalText(result.reason)}</p>}
+    <RoleCards desired={desired} disabled={disabled} onChange={onChange} />
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="block text-sm">Preset
         <select className={`${field} mt-1`} data-testid="hr-access-preset" value="" disabled={disabled}
@@ -74,14 +77,17 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
         </select>
       </label>
     </div>
-    <p className="text-xs text-ink-500">Presets only turn switches on. Copying replaces the switches but keeps custom access.</p>
-    {GROUPS.map((group) => <fieldset key={group} className="space-y-3" disabled={disabled}>
+    <p className="text-xs text-ink-500">Presets only turn permissions on. Copying replaces the permissions but keeps custom access.</p>
+    <DetailsRow testId="hr-access-fine-tune" toggleLabel="permissions" summary={<>
+      <span className="block text-sm font-semibold">Fine-tune</span>
+      <span className="block text-sm text-[color:var(--fs-text-secondary)]">Turn single permissions on or off.</span>
+    </>}><div className="space-y-5">{GROUPS.map((group) => <fieldset key={group} className="space-y-3" disabled={disabled}>
       <legend className="mb-2 text-sm font-semibold">{group}</legend>
       {SWITCH_IDS.filter((id) => SWITCH_COPY[id].group === group).map((id) => {
         const on = desired.includes(id);
         const inside = includedWith(desired, id);
         const changed = on !== saved.has(id);
-        return <label key={id} className={`flex gap-3 rounded-md border p-3 text-sm ${changed ? "border-brand-300 bg-brand-50" : "border-ink-200"}`}>
+        return <label key={id} className={`flex gap-3 rounded-md border p-3 text-sm ${changed ? "border-[color:var(--fs-primary)] bg-brand-50" : "border-ink-200"}`}>
           <input type="checkbox" className="mt-1 h-4 w-4 shrink-0" data-testid={`hr-access-switch-${id}`} checked={on}
             disabled={inside !== null} onChange={(event) => onChange(setSwitch(desired, id, event.target.checked, person.on))} />
           <span>
@@ -92,15 +98,15 @@ export function HrAccessPanel({ person, desired, others, warnings, result, disab
           </span>
         </label>;
       })}
-    </fieldset>)}
+    </fieldset>)}</div></DetailsRow>
     {person.is_owner && <p className="text-sm">{OWNER_ACCESS_LINE}</p>}
-    {person.custom.length > 0 && <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
+    {person.custom.length > 0 && <div className="space-y-2 rounded-md border border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm">
       <h3 className="font-semibold">{CUSTOM_COPY.title}</h3>
       <p>{CUSTOM_COPY.intro}</p>
       <ul className="list-disc space-y-1 pl-5">{person.custom.map((row) => <li key={row}>{row}</li>)}</ul>
       <button type="button" className="font-medium text-brand-700 underline" onClick={onAdvanced}>{CUSTOM_COPY.link}</button>
     </div>}
-    {warnings.length > 0 && <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm" role="status">
+    {warnings.length > 0 && <div className="space-y-2 rounded-md border border-[var(--fs-warning)]/30 bg-[var(--fs-warning-bg)] text-[color:var(--fs-warning)] p-3 text-sm" role="status">
       <h3 className="font-semibold">Things to check</h3>
       <ul className="list-disc space-y-1 pl-5">{warnings.map((w, index) => <li key={`${w.kind}:${index}`}>{warningText(w)}</li>)}</ul>
     </div>}

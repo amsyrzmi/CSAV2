@@ -59,6 +59,30 @@ test("tab routes follow the shell navigation and keep the admin tenant", () => {
     assert.ok(view.tabHref(tab, staff, all, "t1"), tab);
 });
 
+test("the sandbox chat tab opens Overview, its home since the Sandbox entry folded into it", () => {
+  assert.equal(view.tabHref("chat", staff, all, "t1"), "/portal");
+  assert.equal(view.tabHref("chat", { ...staff, role: "read_only" }, [], "t1"), "/portal");
+  assert.equal(view.tabHref("chat", admin, [], "t9"), "/?client_id=t9");
+  assert.equal(view.tabLabel("chat", staff, all), "Overview");
+  // The Overview route stays the overview tab for page context.
+  assert.equal(view.tabForPath("/portal", staff, all), "overview");
+  assert.equal(view.tabForPath("/", admin, []), "overview");
+  assert.equal(view.tabForPath("/portal/chat", staff, all), null);
+});
+
+test("tabForPath resolves sub-pages to their group", () => {
+  assert.equal(view.tabForPath("/portal/business/stores", staff, all), "business");
+  assert.equal(view.tabForPath("/portal/faq/add", staff, all), "knowledge_base");
+  assert.equal(view.tabForPath("/knowledge-base/add", admin, []), "knowledge_base");
+  assert.equal(view.tabForPath("/portal/hr/people", staff, all), "hr");
+  assert.equal(view.tabForPath("/portal/hr/people/abc", staff, all), "hr");
+  assert.equal(view.tabForPath("/portal/chat", staff, all), null);
+  assert.equal(view.tabForPath("/portal/team", staff, all), null);
+  assert.equal(view.tabForPath("/portal/businessx", staff, all), null);
+  // The dock link keeps pointing at the group's first page.
+  assert.equal(view.tabHref("business", staff, all, "t1"), "/portal/business");
+});
+
 test("the route names the current tab; published context wins", () => {
   assert.equal(view.tabForPath("/portal/faq", staff, all), "knowledge_base");
   assert.equal(view.tabForPath("/hr", admin, []), "hr");
@@ -269,7 +293,7 @@ test("a navigate to a hidden tab prints only the notice, never Opened", () => {
   assert.deepEqual(view.navigateText("inbox", true, staff, all), { text: "Opened Customer inbox and continued there.", error: false });
   assert.deepEqual(view.navigateText("email", false, staff, []), { text: "Email assistant is not available to you.", error: true });
   assert.deepEqual(view.navigateText("hr", false, staff, []), { text: "People & HR is not available to you.", error: true });
-  assert.deepEqual(view.navigateText("knowledge_base", false, staff, []), { text: "Knowledge base is not available to you.", error: true });
+  assert.deepEqual(view.navigateText("knowledge_base", false, staff, []), { text: "Business knowledge is not available to you.", error: true });
 });
 
 test("a hidden tab is named as the sidebar names it", async () => {
@@ -278,7 +302,8 @@ test("a hidden tab is named as the sidebar names it", async () => {
   const everyTab = nav.navigationFor(admin, all);
   const tabs = ["overview", "services", "inbox", "knowledge_base", "business", "hr", "email", "subscriptions", "activity", "chat"];
   for (const tab of tabs) {
-    const link = everyTab.find((item) => item.key === tab);
+    // The sandbox chat folded into Overview: the dock's `chat` tab is named as Overview.
+    const link = everyTab.find((item) => item.key === (tab === "chat" ? "overview" : tab));
     assert.ok(link, tab);
     assert.equal(view.tabName(tab), link.label, tab);
   }

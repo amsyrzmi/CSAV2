@@ -26,12 +26,12 @@ export default function ForgotPasswordPage() {
   return (
     <AuthCard
       title="Reset your password"
-      subtitle="A workspace administrator can issue a secure reset link."
+      subtitle="Enter your email. We record the request and your administrator can send you a reset link."
     >
       {sent ? (
         <Notice>
-          Your request has been recorded. Contact your administrator for a reset
-          link.
+          We have recorded your request. Ask your administrator to send you a
+          reset link.
         </Notice>
       ) : (
         <form onSubmit={submit} className="space-y-5">
@@ -51,7 +51,7 @@ export default function ForgotPasswordPage() {
           </div>
           {error && <Notice error>{error}</Notice>}
           <button className={action + " w-full"} disabled={busy}>
-            {busy ? "Submitting…" : "Request reset"}
+            {busy ? "Sending request…" : "Request password reset"}
           </button>
         </form>
       )}

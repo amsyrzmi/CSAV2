@@ -10,17 +10,17 @@ export type StatusTone =
   | "team";
 
 /**
- * Background and text per tone. Every pair is at least 4.5:1 (UI guide 11); the guide's
- * --fs-* tokens are used wherever one exists, the rest come from the approved mockup.
+ * Background and text per tone, all theme tokens so Night and Bureau stay readable. Every
+ * pair is at least 4.5:1 in every theme (tests/theme-contrast.test.mjs).
  */
 const TONES: Record<StatusTone, { background: string; color: string }> = {
-  neutral: { background: "#EAF0FA", color: "#445577" },
+  neutral: { background: "var(--fs-neutral-bg)", color: "var(--fs-neutral-text)" },
   info: { background: "var(--fs-info-bg)", color: "var(--fs-info)" },
   attention: { background: "var(--fs-warning-bg)", color: "var(--fs-warning)" },
   success: { background: "var(--fs-success-bg)", color: "var(--fs-success)" },
   error: { background: "var(--fs-danger-bg)", color: "var(--fs-danger)" },
-  customer: { background: "#DCE8FF", color: "#183DA5" },
-  team: { background: "#15203A", color: "#FFFFFF" },
+  customer: { background: "var(--fs-customer-bg)", color: "var(--fs-customer-text)" },
+  team: { background: "var(--fs-team-bg)", color: "var(--fs-team-text)" },
 };
 
 /** A small pill. The meaning is always in the words, never in the colour alone. */

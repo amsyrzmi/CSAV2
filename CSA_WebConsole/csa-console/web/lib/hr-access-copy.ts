@@ -78,7 +78,7 @@ export const PRESET_COPY: Record<PresetId, { label: string; description: string 
 export const CUSTOM_COPY = {
   marker: "Custom access",
   title: "Custom access",
-  intro: "The switches don't describe this access. It came from earlier settings, and saving here keeps it.",
+  intro: "The permissions don't describe this access. It came from earlier settings, and saving here keeps it.",
   link: "Change custom access in Advanced",
 };
 
@@ -138,7 +138,7 @@ const REASONS: Record<string, string> = {
   not_a_member: "This person is no longer a member. Discard their change.",
   too_many_rows: "This person has too much custom access to save here. Change their access in Advanced.",
   changed_since_load: "Their access changed since you opened this page. Reload to see the latest.",
-  partly_saved: "Only part of this change was saved. Check their switches, then save again.",
+  partly_saved: "Only part of this change was saved. Check their permissions, then save again.",
   access_changed: "Their access changed since this save started. Reload to see the latest.",
 };
 

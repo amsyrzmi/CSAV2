@@ -454,9 +454,10 @@ async def test_packaged_identity_readiness_and_boundaries(
                 )
                 page = member.get("/portal/business")
                 assert page.status_code == 200
-                assert "Local records only, not a live TikTok Shop feed." in page.text
-                assert "Stock is not synchronized or authoritative across stores." in page.text
-                assert "Not available in this slice" in page.text
+                assert "These are orders and products saved in fourstacks." in page.text
+                assert "They are not a live TikTok Shop feed" in page.text
+                assert "stock is not matched or checked across stores" in page.text
+                assert "Not available yet" in page.text
             for client in (anonymous, member):
                 for path in (
                     "/api/v1/channels/tiktok_shop/oauth/authorize",
@@ -1039,7 +1040,13 @@ async def test_packaged_m2_browser_acceptance(
         # Agents live in collapsed package cards on the Services tab; invoices is orders_products.
         await page.get_by_test_id("services-agents-toggle-orders_products").click()
         agents = page.get_by_test_id("services-agents-orders_products")
-        return agents.get_by_role("heading", name="Invoices").locator("xpath=..")
+        return agents.get_by_test_id("agent-card-invoice_agent")
+
+    def agent_value(card: Locator, field: str, value: str) -> Locator:
+        # "plan" is Included in your plan; "company" is Turned on for your company (Yes or No).
+        return card.get_by_test_id(f"agent-{field}-invoice_agent").filter(
+            has_text=re.compile(f"^{value}$")
+        )
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -1183,32 +1190,31 @@ async def test_packaged_m2_browser_acceptance(
             await admin_page.goto(f"{w.origin}/services?client_id={tenants[0]}")
             await admin_page.get_by_test_id("services-tenant").select_option(tenants[0])
             admin_invoice = await invoice_card(admin_page)
-            await admin_invoice.get_by_role("button", name="Subscribe", exact=True).click()
-            await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
-            await admin_invoice.get_by_text("Off", exact=True).wait_for()
+            await admin_invoice.get_by_role("button", name="Add to my plan", exact=True).click()
+            await agent_value(admin_invoice, "plan", "Yes").wait_for()
+            await agent_value(admin_invoice, "company", "No").wait_for()
 
             await admin_page.reload()
             await admin_page.get_by_test_id("services-tenant").select_option(tenants[0])
             admin_invoice = await invoice_card(admin_page)
-            await admin_invoice.get_by_text("Subscribed", exact=True).wait_for()
+            await agent_value(admin_invoice, "plan", "Yes").wait_for()
             await admin_page.get_by_test_id("services-tenant").select_option(tenants[1])
             other_invoice = await invoice_card(admin_page)
-            await other_invoice.get_by_text("Not subscribed", exact=True).wait_for()
+            await agent_value(other_invoice, "plan", "No").wait_for()
 
             _, tenant_page = await new_page()
             await login(tenant_page, tenant_admin_email, member_password, "/portal")
             await tenant_page.goto(f"{w.origin}/portal/services")
             tenant_invoice = await invoice_card(tenant_page)
             assert (
-                await tenant_page.get_by_role("button", name="Subscribe", exact=True).count() == 0
+                await tenant_page.get_by_role("button", name="Add to my plan", exact=True).count()
+                == 0
             )
-            await tenant_invoice.get_by_role(
-                "button", name="Turn tenant switch on", exact=True
-            ).click()
-            await tenant_invoice.get_by_text("On", exact=True).wait_for()
+            await tenant_invoice.get_by_role("button", name="Turn on", exact=True).click()
+            await agent_value(tenant_invoice, "company", "Yes").wait_for()
             await tenant_page.reload()
             tenant_invoice = await invoice_card(tenant_page)
-            await tenant_invoice.get_by_text("On", exact=True).wait_for()
+            await agent_value(tenant_invoice, "company", "Yes").wait_for()
             forbidden_tenant = await tenant_page.evaluate(
                 """async (clientId) => (await fetch(
                   `/console/v1/agents?client_id=${encodeURIComponent(clientId)}`
@@ -1261,21 +1267,17 @@ async def test_packaged_m2_browser_acceptance(
 
             await admin_page.goto(f"{w.origin}/activity")
             await admin_page.get_by_label("Tenant").select_option(tenants[0])
-            await admin_page.get_by_label("Agent name (optional)").fill("invoice_agent")
-            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
             invoice_run = run_ids[(tenants[0], "invoice_agent")]
-            invoice_row = admin_page.get_by_role(
-                "button", name=re.compile(rf"#{invoice_run}\s+invoice_agent")
-            )
-            await invoice_row.wait_for()
             booking_run = run_ids[(tenants[0], "booking_agent")]
-            assert (
-                await admin_page.get_by_role(
-                    "button", name=re.compile(rf"#{booking_run}\s+booking_agent")
-                ).count()
-                == 0
-            )
-            await invoice_row.click()
+            invoice_row = admin_page.get_by_test_id(f"activity-run-{invoice_run}")
+            booking_row = admin_page.get_by_test_id(f"activity-run-{booking_run}")
+            await invoice_row.wait_for()
+            await booking_row.wait_for()
+            await admin_page.get_by_test_id("activity-agent").select_option("invoice_agent")
+            await booking_row.wait_for(state="detached")
+            await invoice_row.wait_for()
+            # The technical lines sit behind the arrow: open the invoice run first.
+            await admin_page.get_by_test_id(f"activity-run-{invoice_run}-toggle").click()
             await admin_page.get_by_role(
                 "heading", name=f"Run #{invoice_run}", exact=True
             ).wait_for()
@@ -1299,17 +1301,22 @@ async def test_packaged_m2_browser_acceptance(
                 "browser_poll_followup / invoice_agent / ok / 23 ms"
             ).wait_for(timeout=12_000)
 
+            # The list refreshes itself every 5 seconds on the newest page with no filter on: a
+            # failed read shows the error and recovers on a later refresh (there is no refresh
+            # button any more). The Assistant filter above stops that, so clear it first.
+            await admin_page.get_by_test_id("activity-agent").select_option("")
+            await booking_row.wait_for()
             fail_run_list = True
-            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
             await (
                 admin_page.get_by_role("alert")
                 .filter(has_text="synthetic transient failure")
-                .wait_for()
+                .wait_for(timeout=15_000)
             )
-            await admin_page.get_by_text("Runtime data unavailable.", exact=True).wait_for()
+            await admin_page.get_by_text(
+                "We couldn't load the activity. Try again.", exact=True
+            ).wait_for()
             fail_run_list = False
-            await admin_page.get_by_role("button", name="Filter / refresh", exact=True).click()
-            await invoice_row.wait_for()
+            await invoice_row.wait_for(timeout=15_000)
             await (
                 admin_page.get_by_role("alert")
                 .filter(has_text="synthetic transient failure")
@@ -1320,10 +1327,11 @@ async def test_packaged_m2_browser_acceptance(
             await login(reader_page, reader_email, member_password, "/portal")
             await reader_page.goto(f"{w.origin}/portal/services")
             reader_invoice = await invoice_card(reader_page)
-            await reader_invoice.get_by_text("Not subscribed", exact=True).wait_for()
+            await agent_value(reader_invoice, "plan", "No").wait_for()
             assert (
                 await reader_page.get_by_role(
-                    "button", name=re.compile(r"Subscribe|Turn tenant switch")
+                    "button",
+                    name=re.compile(r"Add to my plan|Remove from my plan|Turn on|Turn off"),
                 ).count()
                 == 0
             )
@@ -1336,27 +1344,13 @@ async def test_packaged_m2_browser_acceptance(
             assert forbidden_runs == 403
             await reader_page.goto(f"{w.origin}/portal/activity")
             beta_run = run_ids[(tenants[1], "invoice_agent")]
-            beta_row = reader_page.get_by_role(
-                "button", name=re.compile(rf"#{beta_run}\s+invoice_agent")
-            )
+            beta_row = reader_page.get_by_test_id(f"activity-run-{beta_run}")
             await beta_row.wait_for()
-            assert (
-                await reader_page.get_by_role(
-                    "button", name=re.compile(rf"#{invoice_run}\s+invoice_agent")
-                ).count()
-                == 0
-            )
+            assert await reader_page.get_by_test_id(f"activity-run-{invoice_run}").count() == 0
             await tenant_page.goto(f"{w.origin}/portal/activity")
             tenant_invoice_run = run_ids[(tenants[0], "invoice_agent")]
-            await tenant_page.get_by_role(
-                "button", name=re.compile(rf"#{tenant_invoice_run}\s+invoice_agent")
-            ).wait_for()
-            assert (
-                await tenant_page.get_by_role(
-                    "button", name=re.compile(rf"#{beta_run}\s+invoice_agent")
-                ).count()
-                == 0
-            )
+            await tenant_page.get_by_test_id(f"activity-run-{tenant_invoice_run}").wait_for()
+            assert await tenant_page.get_by_test_id(f"activity-run-{beta_run}").count() == 0
 
             session_cookie = next(
                 cookie
@@ -1630,7 +1624,8 @@ async def test_packaged_customer_inbox_browser_acceptance(
             await staff.get_by_role("button", name="Take over", exact=True).click()
             await thread.get_by_text("Staff has taken over", exact=True).wait_for()
             await staff.get_by_label("Human reply", exact=True).fill(reply_text)
-            await staff.get_by_role("button", name="Queue reply", exact=True).click()
+            await staff.get_by_role("button", name="Send reply", exact=True).click()
+            await staff.get_by_test_id("inbox-reply-confirm-send").click()
             await staff.get_by_text("Outcome uncertain.", exact=False).wait_for()
             await thread.get_by_role("list").get_by_text(reply_text, exact=True).wait_for()
             await staff.get_by_role("button", name="Retry the same action", exact=True).click()
@@ -1641,7 +1636,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
             assert replies[0] is not None and json.loads(replies[0])["request_key"]
             assert await thread.get_by_role("list").get_by_text(reply_text, exact=True).count() == 1
             await staff.get_by_text("Staff · queued", exact=True).wait_for()
-            await staff.get_by_role("button", name="Release to AI", exact=True).click()
+            await staff.get_by_role("button", name="Hand back to assistant", exact=True).click()
             await thread.get_by_text("The assistant is handling this", exact=True).wait_for()
             assert await staff.get_by_label("Human reply", exact=True).count() == 0
             await staff.reload()
@@ -1778,7 +1773,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
                 elif decision == "edit":
                     await card.get_by_role("button", name="Edit", exact=True).click()
                     await card.get_by_role("textbox").fill("Synthetic edited answer")
-                    await card.get_by_role("button", name="Queue edited reply", exact=True).click()
+                    await card.get_by_role("button", name="Send edited reply", exact=True).click()
                 else:
                     await card.get_by_role(
                         "button", name="Approve" if decision == "approve" else "Reject", exact=True
@@ -1801,7 +1796,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
                 assert handled["status"] == 200
                 assert handled["body"]["outcome"] == "already_handled"
                 assert handled["body"]["queued"] is False
-            await staff.get_by_label("Include handled approvals", exact=True).check()
+            await staff.get_by_label("Show replies already checked", exact=True).check()
             await staff.get_by_text("Synthetic edit draft", exact=True).wait_for()
 
             async with await psycopg.AsyncConnection.connect(

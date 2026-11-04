@@ -6,6 +6,7 @@ import { hrClient, type HrContext } from "@/lib/hr-api";
 import { hrHref, visibleTabs, type HrRoute } from "@/lib/hr-paths";
 import type { Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
+import TabIntro from "../hr-guide/TabIntro";
 import { field, secondary, Heading, Notice } from "../ui";
 import { HomeTab } from "./HomeTab";
 import { HrTabBar } from "./HrTabBar";
@@ -26,6 +27,8 @@ export interface HrTabProps {
   readonly: boolean;
   platform: boolean;
   userId: string;
+  /** A tenant admin, who can open the Team page. */
+  admin?: boolean;
   refreshContext: () => Promise<void>;
 }
 
@@ -73,9 +76,10 @@ function TenantHr({ me, tenant, route, platform }: { me: Me; tenant: string; rou
   if (error) return <Notice error>{error}. Reload the page to try again.</Notice>;
   if (!context) return <Notice>Loading your HR access…</Notice>;
   const tabs = visibleTabs(context);
-  const props: HrTabProps = { tenant, context, readonly: me.role === "read_only", platform, userId: me.user.id, refreshContext };
+  const props: HrTabProps = { tenant, context, readonly: me.role === "read_only", platform, userId: me.user.id, admin: me.role === "tenant_admin", refreshContext };
   return <div className="space-y-6">
     <HrTabBar tabs={tabs} current={route.tab} platform={platform} tenant={tenant} />
+    {tabs.includes(route.tab) && <TabIntro tab={route.tab} />}
     {tabs.includes(route.tab) ? <TabContent route={route} props={props} />
       : <Notice>You don&apos;t have access to this part of People & HR. <Link className="underline" href={hrHref({ tab: "home" }, platform, tenant)}>Go to HR Home</Link></Notice>}
   </div>;

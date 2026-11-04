@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { Inbox } from "./inbox/Inbox";
 import { CustomerRepliesBanner } from "./CustomerRepliesBanner";
+import { DetailsRow } from "./kit";
 import { field, Heading, Notice } from "./ui";
 
 export function InboxWorkspace({ me }: { me: Me }) {
@@ -26,10 +27,15 @@ export function InboxWorkspace({ me }: { me: Me }) {
     {tenant && <CustomerRepliesBanner tenantId={platform ? tenant : null}
       servicesHref={platform ? `/services?client_id=${encodeURIComponent(tenant)}` : "/portal/services"} />}
     <Heading title="Customer inbox" description="Conversations your customers start, with replies waiting for your review." />
-    <Notice>Take over a conversation before you reply. The assistant stays paused until you release it.
-      If the assistant is already sending a reply, takeover waits for it. Replies the assistant had queued are not sent.
-      Queued replies still have to be delivered. Each reply shows its delivery status.
-      We hide common personal details in messages.</Notice>
+    {/* The mechanics stay word for word, one tap away, so the list is the first thing on the page. */}
+    <DetailsRow testId="inbox-howto" toggleLabel="how taking over works"
+      summary={<p className="text-sm text-ink-700">How taking over and replying work</p>}>
+      <Notice>Take over a chat before you reply. The assistant stops replying until you hand it back.
+        If the assistant is already sending a reply, taking over waits for it. Replies the assistant had lined up are not sent.
+        A sent reply waits to be delivered; its status shows under it.
+        Each reply shows whether it was delivered.
+        We hide common personal details in messages.</Notice>
+    </DetailsRow>
     {error && <Notice error>{error}</Notice>}
     {platform && <label className="my-5 block">Tenant
       <select className={field} value={selected} onChange={(event) => setSelected(event.target.value)}>

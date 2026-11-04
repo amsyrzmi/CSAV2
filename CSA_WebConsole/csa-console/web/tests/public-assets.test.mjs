@@ -73,7 +73,7 @@ test("public/fourstacks/agents/ holds exactly one SVG per agent avatar id", asyn
     `Missing avatars in public/fourstacks/agents/: ${missing.join(", ")}. ` +
       "Copy them from ui-guide/assets/agents/ (every AGENT_IDS entry needs one).",
   );
-  assert.equal(AGENT_IDS.length, 11, "AGENT_IDS should list the eleven agent avatars");
+  assert.equal(AGENT_IDS.length, 12, "AGENT_IDS should list the twelve agent avatars");
 });
 
 const ALLOWED_EXCLUSIONS = [

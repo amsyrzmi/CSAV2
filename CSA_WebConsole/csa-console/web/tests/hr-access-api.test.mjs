@@ -227,6 +227,16 @@ test("the new refusal reasons read as plain sentences", () => {
   assert.doesNotMatch(partly, /_/);
 });
 
+test("the access page says permission where it used to say switch", () => {
+  assert.match(copy.CUSTOM_COPY.intro, /permissions/);
+  assert.match(copy.refusalText("partly_saved"), /permissions/);
+  for (const text of [copy.CUSTOM_COPY.intro, copy.refusalText("partly_saved"), ...Object.values(copy.PAGE_COPY)])
+    assert.doesNotMatch(text, /switch/i);
+  // The five roles the cards show each have a preset.
+  for (const id of ["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"])
+    assert.ok(copy.PRESET_COPY[id], id);
+});
+
 const PENDING_ID = "66666666-6666-4666-8666-666666666666";
 
 test("the pending, apply and dismiss calls carry the tenant", async () => {

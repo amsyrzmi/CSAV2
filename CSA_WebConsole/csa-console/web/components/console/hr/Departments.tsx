@@ -7,6 +7,9 @@ import { action, field, secondary, Notice, Panel } from "../ui";
 import { peopleWriteError } from "./refusal";
 import { useHrRunner } from "./useHrRunner";
 
+/** One row of a phone-width list: the same data as a table row, as a card. */
+const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
+
 /** The department being added or renamed. A new department's id is made when its form opens and kept for retries. */
 type Editing = { departmentId: string; name: string; version: number | null; archived: boolean };
 
@@ -52,7 +55,7 @@ export function Departments({ tenant, readonly }: { tenant: string; readonly: bo
         initial="" busy={busy} onCancel={() => setEditing(null)}
         onSave={name => save({ ...editing, name }, "Department added.", () => setEditing(null))} />}
       {items.length === 0 ? <p className="text-sm text-ink-500">{emptyText("departments", writable)}</p>
-        : <div className="overflow-x-auto"><table className="w-full text-left text-sm">
+        : <div className="overflow-x-auto"><table data-testid="hr-departments-table" className="hidden w-full text-left text-sm md:table">
           <thead><tr>{["Name", "People", "Status", ...(writable ? ["Actions"] : [])].map(label => <th className="p-2" key={label} scope="col">{label}</th>)}</tr></thead>
           <tbody>{items.map(item => <tr key={item.department_id} className="border-t border-ink-200">
             {editing?.departmentId === item.department_id
@@ -74,7 +77,29 @@ export function Departments({ tenant, readonly }: { tenant: string; readonly: bo
                 </div></td>}
               </>}
           </tr>)}</tbody>
-        </table></div>}
+        </table>
+        <ul data-testid="hr-departments-cards" className="space-y-3 md:hidden">{items.map(item => <li key={item.department_id} data-testid="hr-department-card" className={card}>
+          {editing?.departmentId === item.department_id
+            ? <NameForm label={`New name for ${item.name}`} submit="Save name" initial={item.name}
+              busy={busy} onCancel={() => setEditing(null)}
+              onSave={name => save({ ...editing, name }, "Department renamed.", () => setEditing(null))} />
+            : <>
+              <p className="font-medium">{item.name}</p>
+              <dl className="mt-2 space-y-1 text-sm">
+                <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">People</dt><dd className="min-w-0 break-words text-right">{item.people}</dd></div>
+                <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Status</dt><dd className="min-w-0 break-words text-right">{item.archived ? "Archived" : "In use"}</dd></div>
+              </dl>
+              {writable && <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className={secondary} disabled={busy}
+                  onClick={() => setEditing({ departmentId: item.department_id, name: item.name, version: item.version, archived: item.archived })}>
+                  Rename {item.name}</button>
+                <button type="button" className={secondary} disabled={busy}
+                  onClick={() => save({ departmentId: item.department_id, name: item.name, version: item.version, archived: !item.archived },
+                    item.archived ? "Department restored." : "Department archived.")}>
+                  {item.archived ? "Unarchive" : "Archive"} {item.name}</button>
+              </div>}
+            </>}
+        </li>)}</ul></div>}
       <p className="mt-4 text-sm text-ink-500">An archived department keeps its people until you move them.</p>
     </Panel>
   </div>;

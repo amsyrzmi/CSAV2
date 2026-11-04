@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Modal } from "@/components/ui/kit";
+import Dialog from "../fs/Dialog";
 import { ApiError } from "@/lib/api";
 import { isDenied, shortWhen } from "@/lib/hr-pickers";
 import { documentIssue, fileSizeText, RECORDS_COPY, recordsErrorText } from "@/lib/hr-records";
@@ -11,6 +11,8 @@ type Loaded = { items: PersonDocument[] } | { hidden: true } | { failed: true } 
 /** The file chosen for upload. Its key is made with the choice and kept for retries of that exact upload. */
 type Selection = { file: File; kind: DocumentKind; key: string };
 
+/** One row of a phone-width list: the same data as a table row, as a card. */
+const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 const kindLabel = (kind: DocumentKind) => RECORDS_COPY.kinds.find(([id]) => id === kind)?.[1] ?? kind;
 const failureOf = (cause: unknown) => cause instanceof ApiError ? { status: cause.status, code: cause.code } : null;
 /** A definite answer (4xx) ends the attempt; anything else may have landed, so the retry keeps its key. */
@@ -123,7 +125,7 @@ export function DocumentsSection({ tenant, employeeId, canManage, title = "Docum
         {selectionIssue && <p className="w-full text-sm text-[var(--fs-danger)]" role="alert">{selectionIssue}</p>}
       </form>}
       {loaded.items.length === 0 ? <p className="text-sm text-ink-500">No documents yet.</p>
-        : <div className="overflow-x-auto"><table className="w-full text-left text-sm">
+        : <div className="overflow-x-auto"><table data-testid="hr-documents-table" className="hidden w-full text-left text-sm md:table">
           <thead><tr>{["Kind", "File name", "Size", "Uploaded", "Actions"].map(label =>
             <th className="p-2" key={label} scope="col">{label}</th>)}</tr></thead>
           <tbody>{loaded.items.map(item => <tr key={item.document_id} className="border-t border-ink-200">
@@ -138,9 +140,23 @@ export function DocumentsSection({ tenant, employeeId, canManage, title = "Docum
                 onClick={() => setRemoving(item)}>Remove</button>}
             </div></td>
           </tr>)}</tbody>
-        </table></div>}
+        </table>
+        <ul data-testid="hr-documents-cards" className="space-y-3 md:hidden">{loaded.items.map(item => <li key={item.document_id} data-testid="hr-document-card" className={card}>
+          <p className="font-medium break-all">{item.file_name}</p>
+          <dl className="mt-2 space-y-1 text-sm">
+            <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Kind</dt><dd className="min-w-0 break-words text-right">{kindLabel(item.kind)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Size</dt><dd className="min-w-0 break-words text-right">{fileSizeText(item.byte_size)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Uploaded</dt><dd className="min-w-0 break-words text-right">{shortWhen(item.uploaded_at)}{item.uploaded_by_name && ` · ${item.uploaded_by_name}`}</dd></div>
+          </dl>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <a className={secondary} href={records.downloadHref(item.document_id)} download
+              aria-label={`Download ${item.file_name}`}>Download</a>
+            {canManage && <button type="button" className={secondary} disabled={busy} aria-label={`Remove ${item.file_name}`}
+              onClick={() => setRemoving(item)}>Remove</button>}
+          </div>
+        </li>)}</ul></div>}
     </div>
-    <Modal isOpen={removing !== null} onClose={() => { if (!busy) setRemoving(null); }} title="Remove this document?">
+    <Dialog open={removing !== null} onClose={() => { if (!busy) setRemoving(null); }} title="Remove this document?">
       {removing && <div className="space-y-4 text-sm">
         <p>Remove {removing.file_name} from this person&apos;s documents?</p>
         <div className="flex flex-wrap gap-2">
@@ -148,6 +164,6 @@ export function DocumentsSection({ tenant, employeeId, canManage, title = "Docum
           <button type="button" className={secondary} disabled={busy} onClick={() => setRemoving(null)}>Cancel</button>
         </div>
       </div>}
-    </Modal>
+    </Dialog>
   </Panel>;
 }

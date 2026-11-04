@@ -1,6 +1,12 @@
-import Image from "next/image";
-import { KeyRound, ShieldCheck, Users } from "lucide-react";
+import { ByFourstacks, MitoMark, MitoWordmark } from "@/components/brand/Mito";
+import { AUTH_TAGLINE } from "@/lib/auth-copy";
 
+/**
+ * Every sign-in style page (sign in, reset request, forced password change, invite and reset
+ * redemption). From 1024 px: the brand panel (the Mito mark, wordmark, one tagline and "by
+ * fourstacks" with the company logo) beside the form. Below that the panel becomes a slim banner
+ * so the mark is still there. The brand panel is the same cobalt in every theme.
+ */
 export function AuthCard({
   title,
   subtitle,
@@ -11,78 +17,50 @@ export function AuthCard({
   children: React.ReactNode;
 }) {
   return (
-    <main className="grid min-h-screen bg-[var(--app-bg)] lg:grid-cols-2">
-      <aside className="hidden flex-col justify-between border-r border-ink-200 bg-brand-50 p-12 lg:flex">
-        <div className="flex items-center gap-3">
-          <Image
-            src="/brand/fourstacks-mark.svg"
-            alt=""
-            width={40}
-            height={40}
+    <main className="grid min-h-screen grid-rows-[auto_1fr] bg-[var(--app-bg)] lg:grid-cols-2 lg:grid-rows-1">
+      <header
+        data-testid="auth-banner"
+        className="auth-brand flex items-center gap-3 px-5 py-3 lg:hidden"
+      >
+        <MitoMark size={40} ink="var(--fs-auth-logo)" nucleus="var(--fs-auth-logo-accent)" />
+        <span data-testid="auth-banner-wordmark" className="flex flex-col gap-1">
+          <MitoWordmark className="text-2xl" />
+          <ByFourstacks
+            size={11}
+            ink="var(--fs-auth-logo)"
+            accent="var(--fs-auth-logo-accent)"
+            className="text-[11px] font-medium"
           />
-          <span className="brand-wordmark text-xl font-semibold">
-            fourstacks
-          </span>
-        </div>
-        <div className="max-w-md">
-          <p className="eyebrow mb-4">CSA Console</p>
-          <h2 className="text-4xl font-semibold leading-tight tracking-tight">
-            A clear view of your workspace.
-          </h2>
-          <p className="mt-5 text-ink-600">
-            Secure access for your team, with permissions that follow each
-            tenant.
-          </p>
-          <ul className="mt-10 space-y-5">
-            {[
-              {
-                icon: KeyRound,
-                title: "Your identity, verified",
-                text: "Personal sessions and password controls.",
-              },
-              {
-                icon: Users,
-                title: "The right level of access",
-                text: "Explicit tenant memberships and team roles.",
-              },
-              {
-                icon: ShieldCheck,
-                title: "Accountable administration",
-                text: "Tenant and membership changes are audited.",
-              },
-            ].map(({ icon: Icon, title, text }) => (
-              <li key={title} className="flex gap-3">
-                <Icon size={20} className="mt-1 shrink-0 text-brand-600" />
-                <span>
-                  <strong className="block text-sm">{title}</strong>
-                  <span className="text-sm text-ink-600">{text}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <p className="text-xs text-ink-500">
-          fourstacks · Restricted workspace access
+        </span>
+      </header>
+      <aside
+        data-testid="auth-panel"
+        className="auth-brand hidden flex-col items-center justify-center p-12 text-center lg:flex"
+      >
+        <MitoMark size={120} ink="var(--fs-auth-logo)" nucleus="var(--fs-auth-logo-accent)" />
+        <span data-testid="auth-wordmark" className="mt-4 flex flex-col items-center gap-2">
+          <MitoWordmark className="text-5xl" />
+        </span>
+        <p data-testid="auth-tagline" className="mt-3 text-[15px]">
+          {AUTH_TAGLINE}
         </p>
+        <ByFourstacks
+          size={16}
+          ink="var(--fs-auth-logo)"
+          accent="var(--fs-auth-logo-accent)"
+          className="mt-8 text-sm font-medium opacity-90"
+        />
       </aside>
-      <section className="flex items-center justify-center px-5 py-12">
+      <section className="flex items-start justify-center px-5 py-10 lg:items-center lg:py-12">
         <div className="w-full max-w-[380px]">
-          <div className="mb-10 flex items-center gap-3 lg:hidden">
-            <Image
-              src="/brand/fourstacks-mark.svg"
-              alt=""
-              width={32}
-              height={32}
-            />
-            <span className="brand-wordmark text-lg font-semibold">
-              fourstacks
-            </span>
-          </div>
-          <h1 className="text-3xl font-semibold tracking-tight">{title}</h1>
-          <p className="mt-2 text-sm text-ink-600">
-            {subtitle ?? "Secure access to your workspace."}
-          </p>
-          <div className="mt-8">{children}</div>
+          <h1
+            data-testid="auth-title"
+            className="text-3xl font-semibold tracking-tight"
+          >
+            {title}
+          </h1>
+          {subtitle && <p className="mt-2 text-sm text-ink-600">{subtitle}</p>}
+          <div className={subtitle ? "mt-8" : "mt-6"}>{children}</div>
         </div>
       </section>
     </main>

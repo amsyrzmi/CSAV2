@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ApiError } from "@/lib/api";
-import type { Me } from "@/lib/identity-contracts";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { api, ApiError } from "@/lib/api";
+import type { Client, Me } from "@/lib/identity-contracts";
 import {
   emailClient, type AttentionPage, type Draft, type DraftEdit, type EmailContext, type Thread, type ThreadDetail,
 } from "@/lib/email-api";
@@ -10,17 +10,17 @@ import {
   addressesLookValid, attentionEmpty, attentionNote, attentionProblem, emailErrorSentence, formatAddresses,
   formatWhen, isReply, needsSync, parseAddresses, rereadThread,
 } from "@/lib/email-recipients";
+import { categoryLabel, draftThreadIds, filterThreads, listDate, noFilters, type EmailFilters } from "@/lib/email-view";
 import { usePublishContext } from "@/lib/page-context";
 import { createProposal, type ProposalOut } from "@/lib/workspace-api";
 import { EmailPreview } from "./EmailPreview";
+import ConfirmAction from "./email/ConfirmAction";
+import FilterBar from "./email/FilterBar";
+import StatusBar from "./email/StatusBar";
+import StatusLabel from "./fs/StatusLabel";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, secondary, Heading, Notice, Panel } from "./ui";
 
-const categoryLabel: Record<string, string> = {
-  customer_request: "Customer request", order_or_delivery: "Order / delivery", complaint: "Complaint",
-  billing: "Billing", vendor_or_partner: "Vendor / partner", internal: "Internal",
-  newsletter_or_promotion: "Newsletter / promotion", spam_or_phishing: "Spam / phishing", other: "Other",
-};
 const CONNECTED = "Mailbox connected.";
 
 /** The plain sentence for a failed request; codes without one keep the generic form. */
@@ -40,13 +40,25 @@ export function EmailWorkspace({ me, initialTenant = "", notice = "" }: {
 }) {
   const [selection, setSelection] = useState(initialTenant || me.active_client_id || "");
   const [tenant, setTenant] = useState(me.role === "platform_admin" ? initialTenant : me.active_client_id ?? "");
+  // Company names for the picker, read once and only for a platform administrator. A failed read
+  // is not worth an error here: the picker shows each id instead.
+  const [names, setNames] = useState<Record<string, string>>({});
+  const platform = me.role === "platform_admin";
+  useEffect(() => {
+    if (!platform) return;
+    const controller = new AbortController();
+    api<Client[]>("/console/v1/admin/clients", { signal: controller.signal })
+      .then(rows => setNames(Object.fromEntries(rows.map(row => [row.id, row.name]))))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [platform]);
   return <div className="space-y-6">
     <Heading title="Email assistant" description="Triage, summarise, draft and send email from your own connected Gmail mailbox. Nothing is sent until you confirm it." />
-    {me.role === "platform_admin" && <form className="flex flex-wrap items-end gap-3" onSubmit={event => {
+    {platform && <form className="flex flex-wrap items-end gap-3" onSubmit={event => {
       event.preventDefault(); setTenant(selection);
-    }}><label className="text-sm">Tenant membership<select className={`${field} mt-1`} value={selection}
+    }}><label className="min-w-0 grow basis-60 text-sm sm:max-w-md sm:grow-0">Tenant membership<select data-testid="email-tenant" className={`${field} mt-1`} value={selection}
       onChange={e => setSelection(e.target.value)} required><option value="">Choose a tenant</option>
-      {me.memberships.map(m => <option key={m.client_id} value={m.client_id}>{m.client_id}</option>)}
+      {me.memberships.map(m => <option key={m.client_id} value={m.client_id}>{names[m.client_id] ?? m.client_id}</option>)}
     </select></label><button className={secondary}>Open email</button></form>}
     {tenant ? <TenantEmail key={tenant} me={me} tenant={tenant} notice={notice} /> : <Notice>Select a tenant to continue.</Notice>}
   </div>;
@@ -75,6 +87,19 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   const writable = me.role !== "read_only";
   const [exporting, setExporting] = useState<{ draftId: string; proposal: ProposalOut } | null>(null);
   usePublishContext({ tab: "email", record: exporting ? { kind: "draft", id: exporting.draftId } : null });
+  // Filters work on what is already loaded: they never ask the server for anything.
+  const [filters, setFilters] = useState<EmailFilters>(noFilters);
+  const draftIds = useMemo(() => draftThreadIds(drafts), [drafts]);
+  const visible = useMemo(() => filterThreads(threads, filters, draftIds), [threads, filters, draftIds]);
+  const unreadCount = useMemo(() => threads.filter(thread => thread.unread).length, [threads]);
+  const draftCount = useMemo(() => threads.filter(thread => draftIds.has(thread.thread_id)).length, [threads, draftIds]);
+  const tabButtons = useRef<Record<string, HTMLButtonElement | null>>({});
+  const readingPane = useRef<HTMLElement>(null);
+  const selectedId = selected?.thread_id ?? null;
+  // On a narrow screen the reading pane sits under the list: bring it into view when a thread opens.
+  useEffect(() => {
+    if (selectedId && window.matchMedia("(max-width: 1023px)").matches) readingPane.current?.scrollIntoView({ block: "start" });
+  }, [selectedId]);
 
   async function run<T>(work: () => Promise<T>, done?: (value: T) => void | Promise<void>) {
     if (inFlight.current) return;
@@ -155,7 +180,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
       await refreshOpen();
       setMore(!done);
       const count = Number(receipt.detail.threads ?? 0);
-      setMessage(count ? `Loaded ${count} older ${count === 1 ? "thread" : "threads"}.` : "");
+      setMessage(count ? `Loaded ${count} older ${count === 1 ? "conversation" : "conversations"}.` : "");
     });
     setLoadingMore(false);
   }
@@ -187,89 +212,91 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
     });
   }
 
+  /** One draft's editor with every action wired; the Drafts tab and the open thread both use it. */
+  function editor(draft: Draft): ReactNode {
+    return <DraftEditor key={`${draft.id}:${draft.updated_at}`} draft={draft} busy={busy} writable={writable}
+      onSave={body => { if (checkAddresses(body)) void run(() => client.updateDraft(draft.id, body), async () => { await reloadDrafts(); setMessage("Draft saved."); }); }}
+      onSend={(body, dirty) => startSend(draft, body, dirty)}
+      onRelease={() => run(() => client.release(draft.id), async () => { await reloadDrafts(); setMessage("You can edit and send this email again."); })}
+      onExport={() => run(() => createProposal("email_export", { action: "email_export", draft_id: draft.id }, undefined, undefined, scope),
+        proposal => setExporting({ draftId: draft.id, proposal }))}
+      onDelete={() => run(() => client.deleteDraft(draft.id), async () => {
+        setDrafts(await client.drafts().then(p => p.items));
+        // The deleted draft's button is gone; leave focus somewhere sensible.
+        tabButtons.current[tab]?.focus();
+      })} />;
+  }
+
   return <div className="space-y-6">
     {error && <Notice error>{error}</Notice>}
     {message && <Notice>{message}</Notice>}
+    <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+    <StatusBar context={context} lastSync={lastSync} busy={busy} writable={writable} wide={attention.state === "off"}
+      onSync={() => run(
+        () => client.sync(), async r => { const ctx = await refreshAll(); const n = (r.detail as { threads?: number }).threads ?? 0; setMessage(`Checked Gmail: ${n} ${n === 1 ? "conversation" : "conversations"}.`); loadAttention(ctx); },
+      )}
+      onConnect={() => run(() => client.connect(), result => { window.location.assign(result.authorization_url); })}
+      onSetEnabled={next => run(
+        () => client.setEnabled(next),
+        async () => { const ctx = await client.context(); setContext(ctx); await reloadLists(ctx); setMessage(ctx.enabled ? "Assistant enabled." : "Assistant disabled."); },
+      )}
+      onDisconnect={() => run(
+        () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" }); setMessage("Gmail disconnected. Emails already loaded stay readable."); },
+      )} />
     {attention.state !== "off" && <AttentionPanel attention={attention} busy={busy}
       onOpen={id => run(() => client.thread(id), detail => { setSelected(detail); setTab("inbox"); })} />}
-    <Panel title="Mailbox">
-      <p className="text-sm">
-        {!context.enabled && "The email assistant is switched off for this tenant."}
-        {context.enabled && !mailbox && "No mailbox connected for your account."}
-        {context.enabled && mailbox && `Mailbox: ${mailbox.address ?? "(pending)"} · ${mailbox.status}` +
-          (mailbox.last_sync_at ? ` · last synced ${new Date(mailbox.last_sync_at).toLocaleString()}` : "")}
-      </p>
-      <p className="mt-2 text-xs text-neutral-500">{context.disclosure}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {context.can_manage && <button className={secondary} disabled={busy} onClick={() => run(
-          () => client.setEnabled(!context.enabled),
-          async () => { const ctx = await client.context(); setContext(ctx); await reloadLists(ctx); setMessage(ctx.enabled ? "Assistant enabled." : "Assistant disabled."); },
-        )}>{context.enabled ? "Switch off for tenant" : "Switch on for tenant"}</button>}
-        {context.can_connect && !connected && <button className={action} disabled={busy} onClick={() => run(
-          () => client.connect(), result => { window.location.assign(result.authorization_url); },
-        )}>Connect Gmail</button>}
-        {context.enabled && connected && writable && <>
-          <button className={action} disabled={busy} onClick={() => run(
-            () => client.sync(), async r => { const ctx = await refreshAll(); setMessage(`Synced ${String((r.detail as { threads?: number }).threads ?? 0)} threads.`); loadAttention(ctx); },
-          )}>Sync inbox</button>
-          <button className={secondary} disabled={busy} onClick={() => run(
-            () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" }); setMessage("Mailbox disconnected; cached threads remain readable."); },
-          )}>Disconnect</button>
-        </>}
-      </div>
-      {!context.provider_configured && <p className="mt-2 text-xs text-amber-700">Google OAuth is not configured on this deployment.</p>}
-    </Panel>
+    </div>
 
     {context.enabled && mailbox && <>
-      <div className="flex gap-2 text-sm">
-        {(["inbox", "drafts"] as const).map(key => <button key={key} className={tab === key ? action : secondary}
+      <div className="flex flex-wrap gap-2 text-sm">
+        {(["inbox", "drafts"] as const).map(key => <button key={key} ref={node => { tabButtons.current[key] = node; }}
+          className={tab === key ? action : secondary} aria-pressed={tab === key}
           onClick={() => setTab(key)}>{key === "inbox" ? `Inbox (${threads.length})` : `Drafts (${drafts.length})`}</button>)}
       </div>
 
-      {tab === "inbox" && <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <Panel title={`Threads${lastSync ? ` · synced ${new Date(lastSync).toLocaleString()}` : ""}`}>
-          {threads.length === 0 && <p className="text-sm">No threads cached yet. Sync the inbox.</p>}
-          <ul className="divide-y">
-            {threads.map(thread => <li key={thread.thread_id}>
-              <button className="w-full py-2 text-left text-sm hover:bg-neutral-50" onClick={() => run(
-                () => client.thread(thread.thread_id), setSelected,
-              )}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className={thread.unread ? "font-semibold" : ""}>{thread.subject || "(no subject)"}</span>
-                  <span className="shrink-0 text-xs">{thread.priority === "high" && <span className="rounded bg-red-100 px-1 text-red-800">high</span>} {thread.category && categoryLabel[thread.category]}</span>
-                </div>
-                <div className="text-xs text-neutral-500">{thread.sender}</div>
-                <div className="truncate text-xs text-neutral-600">{thread.summary ?? thread.snippet}</div>
-              </button>
-            </li>)}
-          </ul>
+      {tab === "inbox" && <FilterBar threads={threads} filters={filters} onChange={setFilters} unreadCount={unreadCount}
+        draftCount={draftCount} draftsLoaded={drafts.length} shown={visible.length} />}
+
+      {tab === "inbox" && <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <Panel title={`Emails${lastSync ? ` · checked ${formatWhen(lastSync)}` : ""}`}>
+          <div className="space-y-4">
+            {threads.length === 0 && <p className="text-sm">No threads cached yet. Sync the inbox.</p>}
+            {threads.length > 0 && visible.length === 0 && <div data-testid="email-no-match" className="flex flex-wrap items-center gap-3 text-sm">
+              <p>No emails match these filters. Clear the filters to see them all.</p>
+              <button type="button" data-testid="email-no-match-clear" className={secondary}
+                onClick={() => setFilters(noFilters())}>Clear filters</button>
+            </div>}
+            <ul data-testid="email-thread-list" className="max-h-[28rem] divide-y divide-[color:var(--fs-border)] overflow-y-auto lg:max-h-[70vh]">
+              {visible.map(thread => <li key={thread.thread_id}>
+                <ThreadRow thread={thread} current={selected?.thread_id === thread.thread_id} hasDraft={draftIds.has(thread.thread_id)}
+                  onOpen={() => run(() => client.thread(thread.thread_id), setSelected)} />
+              </li>)}
+            </ul>
+          </div>
           {connected && writable && (more
             ? <button type="button" data-testid="email-load-more" className={`${secondary} mt-3`} disabled={busy}
               onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load older email"}</button>
             : <p data-testid="email-load-more" className="mt-3 text-xs text-ink-500">No older email in the last 90 days</p>)}
         </Panel>
-        <Panel title={selected ? selected.subject || "(no subject)" : "Select a thread"}>
+        <section ref={readingPane} data-testid="email-reading" className="card scroll-mt-4 rounded-[14px] p-5 sm:p-6">
+          <h2 className="mb-4 font-(family-name:--fs-font-heading) text-base font-semibold [overflow-wrap:anywhere]">
+            {selected ? selected.subject || "(no subject)" : "Select a thread"}</h2>
+          {!selected && <p className="text-sm text-[color:var(--fs-text-secondary)]">Pick an email from the list to read it here.</p>}
           {selected && <ThreadView detail={selected} busy={busy} writable={writable} modelConfigured={context.model_configured}
+            disclosure={context.disclosure}
+            drafts={drafts.filter(draft => draft.thread_id === selected.thread_id).map(editor)}
             onAnalyse={() => run(() => client.analyse(selected.thread_id), async d => { setSelected(d); setThreads(await client.threads().then(p => p.items)); })}
             onDraft={(instructions, language) => run(() => client.draft(selected.thread_id, instructions, language), async d => {
               setDrafts(await client.drafts().then(p => p.items)); setTab("drafts"); setMessage(`Draft created for ${d.recipient}.`);
             })} />}
-        </Panel>
+        </section>
       </div>}
 
       {tab === "drafts" && <Panel title="Drafts">
         {exporting && <ProposalCard key={exporting.proposal.id} proposal={exporting.proposal} tenantId={scope}
           onSettled={next => { if (next.status === "executed") void run(() => client.drafts(), page => setDrafts(page.items)); }} />}
         {drafts.length === 0 && <p className="text-sm">No drafts yet. Analyse a thread and ask for a reply draft.</p>}
-        <div className="space-y-4">
-          {drafts.map(draft => <DraftEditor key={`${draft.id}:${draft.updated_at}`} draft={draft} busy={busy} writable={writable}
-            onSave={body => { if (checkAddresses(body)) void run(() => client.updateDraft(draft.id, body), async () => { await reloadDrafts(); setMessage("Draft saved."); }); }}
-            onSend={(body, dirty) => startSend(draft, body, dirty)}
-            onRelease={() => run(() => client.release(draft.id), async () => { await reloadDrafts(); setMessage("You can edit and send this email again."); })}
-            onExport={() => run(() => createProposal("email_export", { action: "email_export", draft_id: draft.id }, undefined, undefined, scope),
-              proposal => setExporting({ draftId: draft.id, proposal }))}
-            onDelete={() => run(() => client.deleteDraft(draft.id), async () => { setDrafts(await client.drafts().then(p => p.items)); })} />)}
-        </div>
+        <div className="space-y-4">{drafts.map(editor)}</div>
       </Panel>}
     </>}
     {confirming && <SendDialog draft={confirming} busy={busy} from={mailbox?.address ?? null}
@@ -277,30 +304,65 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   </div>;
 }
 
+/** One cached email in the list: subject and date first, then who it is from and what it says. */
+function ThreadRow({ thread, current, hasDraft, onOpen }: {
+  thread: Thread; current: boolean; hasDraft: boolean; onOpen: () => void;
+}) {
+  return <button type="button" data-testid="email-thread" data-thread-id={thread.thread_id} aria-current={current ? "true" : undefined}
+    className="block w-full min-w-0 px-3 py-3 text-left text-sm hover:bg-brand-50 aria-[current=true]:bg-brand-50" onClick={onOpen}>
+    <span className="flex items-baseline justify-between gap-3">
+      <span className="flex min-w-0 items-center gap-2">
+        {thread.unread && <><span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-brand-600" /><span className="sr-only">Unread: </span></>}
+        <span className={`truncate ${thread.unread ? "font-semibold" : ""}`}>{thread.subject || "(no subject)"}</span>
+      </span>
+      <span className="shrink-0 text-xs text-[color:var(--fs-text-secondary)]">{listDate(thread.received_at)}</span>
+    </span>
+    <span className="block truncate text-xs text-[color:var(--fs-text-secondary)]">{thread.sender}</span>
+    <span className="mt-1 line-clamp-2 block text-xs">{thread.summary ?? thread.snippet}</span>
+    {(thread.priority === "high" || thread.category || hasDraft) && <span className="mt-1.5 flex flex-wrap gap-1.5">
+      {thread.priority === "high" && <StatusLabel tone="error">high</StatusLabel>}
+      {thread.category && <StatusLabel tone="neutral">{categoryLabel[thread.category]}</StatusLabel>}
+      {hasDraft && <span data-testid="email-thread-draft"><StatusLabel tone="info">Draft</StatusLabel></span>}
+    </span>}
+  </button>;
+}
+
+const PHONE_ITEMS = 2;
+
 function AttentionPanel({ attention, busy, onOpen }: {
   attention: Exclude<AttentionState, { state: "off" }>; busy: boolean; onOpen: (threadId: string) => void;
 }) {
   const page = attention.state === "ready" ? attention.page : null;
   const note = page ? attentionNote(page) : null;
+  // On a phone only the first items show; the rest stay in the page behind "Show N more".
+  const [expanded, setExpanded] = useState(false);
+  const listId = useId();
+  const extra = page ? Math.max(0, page.items.length - PHONE_ITEMS) : 0;
   return <div data-testid="email-attention">
     <Panel title="What needs my attention">
       {page?.as_of && <p className="-mt-3 mb-3 text-xs text-ink-500">as of {formatWhen(page.as_of)}</p>}
       {attention.state === "loading" && <p className="text-sm">Loading…</p>}
       {attention.state === "error" && <p className="text-sm">{attention.text}</p>}
       {page && page.items.length === 0 && <p className="text-sm">{attentionEmpty(page)}</p>}
-      {page && page.items.length > 0 && <ul className="divide-y">
-        {page.items.map(item => <li key={item.thread_id} className="py-2 text-sm">
-          <button type="button" className="w-full text-left hover:bg-neutral-50" disabled={busy} onClick={() => onOpen(item.thread_id)}>
+      {page && page.items.length > 0 && <ul id={listId} className="divide-y">
+        {page.items.map((item, index) => <li key={item.thread_id}
+          className={`py-2 text-sm ${index >= PHONE_ITEMS && !expanded ? "max-lg:hidden" : ""}`}>
+          <button type="button" className="w-full text-left hover:bg-brand-50" disabled={busy} onClick={() => onOpen(item.thread_id)}>
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium">{item.subject || "(no subject)"}</span>
-              {item.priority === "high" && <span className="shrink-0 rounded bg-red-100 px-1 text-xs text-red-800">high</span>}
+              {item.priority === "high" && <StatusLabel tone="error">high</StatusLabel>}
             </div>
-            <div className="text-xs text-neutral-500">{item.sender}</div>
+            <div className="text-xs text-ink-500">{item.sender}</div>
             <p className="mt-1">{item.summary}</p>
           </button>
           {item.next_steps.length > 0 && <ul className="mt-1 list-disc pl-5 text-xs">{item.next_steps.map(step => <li key={step}>{step}</li>)}</ul>}
         </li>)}
       </ul>}
+      {extra > 0 && <button type="button" data-testid="email-attention-more" aria-expanded={expanded} aria-controls={listId}
+        className="mt-1 inline-flex min-h-10 items-center rounded-[var(--fs-radius-control)] px-2 text-[color:var(--fs-primary)] hover:bg-[var(--fs-surface-blue)] pointer-coarse:min-h-11 lg:hidden"
+        onClick={() => setExpanded(open => !open)}>
+        <span className="text-[length:var(--fs-text-sm)] font-medium">{expanded ? "Show fewer" : `Show ${extra} more`}</span>
+      </button>}
       {note && <p className="mt-2 text-xs text-ink-500">{note}</p>}
     </Panel>
   </div>;
@@ -310,46 +372,67 @@ function AttentionPanel({ attention, busy, onOpen }: {
 function SendDialog({ draft, busy, from, onConfirm, onClose }: {
   draft: Draft; busy: boolean; from: string | null; onConfirm: () => void; onClose: () => void;
 }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+  const keep = useRef<HTMLButtonElement>(null);
+  // The dialog opens while the request that built it is still busy, so the button is disabled
+  // and `autoFocus` cannot land: take focus as soon as it is enabled, so Escape reaches the dialog.
+  useEffect(() => { if (!busy) keep.current?.focus(); }, [busy]);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--fs-scrim)] p-4"
     onKeyDown={event => { if (event.key === "Escape" && !busy) onClose(); }}>
     <div role="dialog" aria-modal="true" aria-labelledby="email-send-title"
-      className="card max-h-[85vh] w-full max-w-lg space-y-4 overflow-y-auto bg-white p-5 sm:p-6">
+      className="card max-h-[85vh] w-full max-w-lg space-y-4 overflow-y-auto bg-[var(--fs-surface)] p-5 sm:p-6">
       <h2 id="email-send-title" className="text-base font-semibold">Send this email?</h2>
       <EmailPreview draft={draft} />
       <p className="text-sm">It goes from your Gmail{from ? ` (${from})` : ""} straight away. You can&apos;t take it back.</p>
       <div className="flex flex-wrap gap-2">
         <button type="button" data-testid="email-send-confirm" className={action} disabled={busy} onClick={onConfirm}>
           {busy ? "Sending…" : "Send now"}</button>
-        <button type="button" className={secondary} disabled={busy} autoFocus onClick={onClose}>Keep editing</button>
+        <button ref={keep} type="button" className={secondary} disabled={busy} autoFocus onClick={onClose}>Keep editing</button>
       </div>
     </div>
   </div>;
 }
 
-function ThreadView({ detail, busy, writable, modelConfigured, onAnalyse, onDraft }: {
-  detail: ThreadDetail; busy: boolean; writable: boolean; modelConfigured: boolean;
+function ThreadView({ detail, busy, writable, modelConfigured, disclosure, drafts, onAnalyse, onDraft }: {
+  detail: ThreadDetail; busy: boolean; writable: boolean; modelConfigured: boolean; disclosure: string;
+  /** This thread's own drafts, already built as editors. */
+  drafts: ReactNode[];
   onAnalyse: () => void; onDraft: (instructions: string, language: "auto" | "en" | "ms") => void;
 }) {
   const [instructions, setInstructions] = useState("");
   const [language, setLanguage] = useState<"auto" | "en" | "ms">("auto");
-  return <div className="space-y-3 text-sm">
-    <div className="text-xs text-neutral-500">From {detail.sender}{detail.received_at ? ` · ${new Date(detail.received_at).toLocaleString()}` : ""}</div>
-    {detail.summary ? <div className="rounded border border-neutral-200 bg-neutral-50 p-3">
-      <div className="text-xs uppercase text-neutral-500">{detail.category && categoryLabel[detail.category]} · priority {detail.priority}</div>
-      <p className="mt-1">{detail.summary}</p>
-      {detail.action_items.length > 0 && <ul className="mt-2 list-disc pl-5">{detail.action_items.map(item => <li key={item}>{item}</li>)}</ul>}
-    </div> : <p className="text-xs text-neutral-500">Not analysed yet.</p>}
-    <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded border border-neutral-200 p-3 text-xs">{detail.body ?? detail.snippet}</pre>
-    {writable && <div className="space-y-2">
-      <button className={secondary} disabled={busy || !modelConfigured || !detail.has_body} onClick={onAnalyse}>{detail.summary ? "Re-analyse" : "Analyse"}</button>
+  const unavailable = !modelConfigured || !detail.has_body;
+  return <div className="flex min-h-0 flex-col gap-3 text-sm">
+    {/* The reading area scrolls above the docked reply box, unless a draft is open: its buttons must not be clipped. */}
+    <div data-testid="email-reading-scroll" className={`min-h-0 space-y-3 ${drafts.length === 0 ? "lg:max-h-[max(16rem,calc(100dvh_-_19rem))] lg:overflow-y-auto lg:pr-1" : ""}`}>
+      <div className="text-xs text-ink-500 [overflow-wrap:anywhere]">From {detail.sender}{detail.received_at ? ` · ${formatWhen(detail.received_at)}` : ""}</div>
+      {detail.summary ? <div className="rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-blue)] p-3">
+        <div className="text-xs uppercase text-ink-500">{detail.category && categoryLabel[detail.category]} · priority {detail.priority}</div>
+        <p className="mt-1">{detail.summary}</p>
+        {detail.action_items.length > 0 && <ul className="mt-2 list-disc pl-5">{detail.action_items.map(item => <li key={item}>{item}</li>)}</ul>}
+      </div> : <p className="text-xs text-ink-500">Not analysed yet.</p>}
+      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] p-3 font-sans text-xs">{detail.body ?? detail.snippet}</pre>
+      {drafts.length > 0 && <div data-testid="email-thread-drafts" className="space-y-3">
+        <h3 className="text-sm font-semibold">Drafts for this email</h3>
+        {drafts}
+      </div>}
+    </div>
+    {writable && <div data-testid="email-reply-dock" className="space-y-2 border-t border-[color:var(--fs-border)] pt-3">
+      {unavailable && <p data-testid="email-reply-unavailable" className="text-xs text-ink-500">
+        {!modelConfigured
+          ? "The assistant is not set up for this company yet, so Analyse and Draft a reply are off."
+          : "We do not have the full text of this email yet, so Analyse and Draft a reply are off."}</p>}
       <form className="space-y-2" onSubmit={event => { event.preventDefault(); onDraft(instructions, language); }}>
         <label className="block text-sm">Instructions for the reply (optional)
-          <textarea className={`${field} mt-1`} maxLength={1000} rows={2} value={instructions} onChange={e => setInstructions(e.target.value)}
+          <textarea className={`${field} mt-1 h-auto py-2`} maxLength={1000} rows={2} value={instructions} onChange={e => setInstructions(e.target.value)}
             placeholder="e.g. apologise for the delay and say it ships on Monday" /></label>
-        <label className="block text-sm">Language<select className={`${field} mt-1`} value={language} onChange={e => setLanguage(e.target.value as "auto" | "en" | "ms")}>
-          <option value="auto">Match the customer</option><option value="en">English</option><option value="ms">Bahasa Melayu</option></select></label>
-        <button className={action} disabled={busy || !modelConfigured || !detail.has_body}>Draft a reply</button>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="block min-w-0 grow basis-44 text-sm sm:max-w-56">Language<select className={`${field} mt-1`} value={language} onChange={e => setLanguage(e.target.value as "auto" | "en" | "ms")}>
+            <option value="auto">Match the customer</option><option value="en">English</option><option value="ms">Bahasa Melayu</option></select></label>
+          <button type="button" className={secondary} disabled={busy || !modelConfigured || !detail.has_body} onClick={onAnalyse}>{detail.summary ? "Re-analyse" : "Analyse"}</button>
+          <button className={action} disabled={busy || !modelConfigured || !detail.has_body}>Draft a reply</button>
+        </div>
       </form>
+      <p data-testid="email-dock-disclosure" className="text-xs text-ink-500">{disclosure}</p>
     </div>}
   </div>;
 }
@@ -370,31 +453,35 @@ function DraftEditor({ draft, busy, writable, onSave, onSend, onExport, onDelete
   const dirty = !same(edit.to, draft.to) || !same(edit.cc, draft.cc) || !same(edit.bcc, draft.bcc) ||
     subject !== draft.subject || body !== draft.body;
   const kind = isReply(draft) ? "Reply" : "New email";
-  const state = draft.status === "exported" ? `Saved to Gmail drafts (${draft.gmail_draft_id})`
+  const state = draft.status === "exported" ? "Saved to your Gmail drafts"
     : draft.status === "sent" ? "Sent" : draft.status === "sending" ? "Sending not confirmed"
-    : `${draft.source === "model" ? "Model draft" : "Edited draft"} · not sent`;
-  return <form className="space-y-2 rounded border border-neutral-200 p-3 text-sm" onSubmit={event => { event.preventDefault(); onSave(edit); }}>
-    <div className="flex items-center justify-between text-xs text-neutral-500">
+    : `${draft.source === "model" ? "Written by the assistant" : "Edited by you"} · not sent`;
+  return <form data-testid="email-draft" className="space-y-3 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 text-sm sm:p-4" onSubmit={event => { event.preventDefault(); onSave(edit); }}>
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-ink-500">
       <span>{kind} · {state}</span>
       <span>{formatWhen(draft.updated_at)}</span>
     </div>
     {draft.status === "sent" && draft.sent_at && <p data-testid="email-sent-at" className="font-medium">Sent at {formatWhen(draft.sent_at)}</p>}
+    {draft.status === "exported" && draft.gmail_draft_id && <p data-testid="email-gmail-draft-id" className="text-xs text-ink-500 [overflow-wrap:anywhere]">Gmail draft ID: {draft.gmail_draft_id}</p>}
     {draft.status === "sending" && <div className="space-y-2">
       <Notice error>{emailErrorSentence({ code: "send_outcome_unknown" })}</Notice>
       {writable && <button type="button" data-testid="email-release" className={secondary} disabled={busy} onClick={onRelease}>
         I checked — it wasn&apos;t sent</button>}
     </div>}
     <label className="block">To<input data-testid="email-to" className={`${field} mt-1`} value={to} disabled={locked} onChange={e => setTo(e.target.value)} /></label>
-    <label className="block">CC<input data-testid="email-cc" className={`${field} mt-1`} value={cc} disabled={locked} onChange={e => setCc(e.target.value)} placeholder="Optional" /></label>
-    <label className="block">BCC<input data-testid="email-bcc" className={`${field} mt-1`} value={bcc} disabled={locked} onChange={e => setBcc(e.target.value)} placeholder="Optional" /></label>
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2">
+      <label className="block">CC<input data-testid="email-cc" className={`${field} mt-1`} value={cc} disabled={locked} onChange={e => setCc(e.target.value)} placeholder="Optional" /></label>
+      <label className="block">BCC<input data-testid="email-bcc" className={`${field} mt-1`} value={bcc} disabled={locked} onChange={e => setBcc(e.target.value)} placeholder="Optional" /></label>
+    </div>
     <label className="block">Subject<input className={`${field} mt-1`} value={subject} maxLength={200} disabled={locked} onChange={e => setSubject(e.target.value)} /></label>
-    <label className="block">Body<textarea className={`${field} mt-1 h-auto`} rows={8} maxLength={20000} disabled={locked} value={body} onChange={e => setBody(e.target.value)} /></label>
-    {!locked && draft.needs_staff_input && !dirty && <p className="text-xs text-amber-700">{emailErrorSentence({ code: "draft_needs_staff_input" })}</p>}
-    {!locked && <div className="flex flex-wrap gap-2">
+    <label className="block">Body<textarea className={`${field} mt-1 h-auto py-2`} rows={8} maxLength={20000} disabled={locked} value={body} onChange={e => setBody(e.target.value)} /></label>
+    {!locked && draft.needs_staff_input && !dirty && <p className="text-xs text-[color:var(--fs-warning)]">{emailErrorSentence({ code: "draft_needs_staff_input" })}</p>}
+    {!locked && <div className="flex flex-wrap items-start gap-2">
       <button type="button" data-testid="email-send" className={action} disabled={busy} onClick={() => onSend(edit, dirty)}>Send</button>
       <button className={secondary} disabled={busy || !dirty}>Save edits</button>
       <button type="button" className={secondary} disabled={busy || dirty} onClick={onExport}>Save to my Gmail drafts</button>
-      <button type="button" className={secondary} disabled={busy} onClick={onDelete}>Delete</button>
+      <ConfirmAction testId="email-delete-draft" label="Delete" disabled={busy} onConfirm={onDelete}
+        question="Delete this draft? It will be removed and you cannot get it back." />
     </div>}
   </form>;
 }

@@ -85,7 +85,7 @@ export function CustomerRepliesPanel({ tenantId }: { tenantId: string | null }) 
             <div className="space-y-1 text-sm" data-testid="customer-replies-state">
               <p>Brand name: {replies.brand_name ?? "Not set"}</p>
               <p>Replies: {current?.label}</p>
-              <p>Ask your tenant admin to change this.</p>
+              <p>Ask your admin to change this.</p>
             </div>
           )}
         </>}

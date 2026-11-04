@@ -33,6 +33,15 @@ export function Thread({
   const muted = current?.human_muted ?? null;
   const base = `/console/v1/inbox/conversations/${id}`;
   const [text, setText] = useState("");
+  // The reply is queued only after a second, explicit step; Cancel is where focus starts.
+  const [confirming, setConfirming] = useState(false);
+  // A poll that shows the conversation released to the AI takes the reply box away: the question goes too.
+  if (confirming && muted === false) setConfirming(false);
+  const refocus = useRef(false);
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const queueRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const sending = useRef(false);
 
   // The room changes only when the server's read says so, and animates only on a change.
   const [room, setRoom] = useState<{ muted: boolean | null; changed: boolean }>({ muted: null, changed: false });
@@ -84,11 +93,45 @@ export function Thread({
   }
   const blocked = actions.blocked;
 
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (!confirming) return;
+    cancelRef.current?.focus({ preventScroll: true });
+    // Show the whole question with the bottom padding under it, clear of the assistant's launcher.
+    const form = formRef.current;
+    if (form) form.scrollTop = form.scrollHeight;
+  }, [confirming]);
+  // After a send the box is free again: back to the box when the text went, else to the button.
+  useEffect(() => {
+    if (!refocus.current || blocked || confirming) return;
+    refocus.current = false;
+    (text.trim() ? queueRef : boxRef).current?.focus();
+  }, [confirming, blocked, text]);
+
+  function cancelConfirm() {
+    // While the request is in flight the question stays up, so nothing can hide or move focus mid-send.
+    if (sending.current) return;
+    setConfirming(false);
+    queueRef.current?.focus();
+  }
+  async function confirmSend() {
+    if (sending.current) return;
+    sending.current = true;
+    try {
+      const request = act("reply");
+      if (request) await request;
+    } finally {
+      sending.current = false;
+      setConfirming(false);
+      refocus.current = true;
+    }
+  }
+
   return <section aria-labelledby={`thread-${id}-title`} data-testid="inbox-thread"
     className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-    <header className={`flex flex-col gap-2 border-b border-[#D8E1F0] px-3 py-2.5 ${motion
+    <header className={`flex flex-col gap-2 border-b border-[color:var(--fs-border)] px-3 py-2.5 ${motion
       ? "transition-[background-color,box-shadow] duration-200 ease-(--fs-ease-out)" : ""} ${muted
-      ? "bg-[#EEF1F8] shadow-[inset_0_4px_0_#15203A]" : "bg-white"}`} data-room={muted ? "staff" : "assistant"}>
+      ? "bg-[var(--fs-room-staff-bg)] shadow-[inset_0_4px_0_var(--fs-room-staff-bar)]" : "bg-[var(--fs-surface)]"}`} data-room={muted ? "staff" : "assistant"}>
       {/* Phone: Back and View details on one row, the customer on the next. */}
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <button type="button" className={`${secondary} shrink-0 px-2.5 md:hidden`} onClick={onBack}
@@ -116,18 +159,18 @@ export function Thread({
         </>}
         <button type="button" className={secondary} disabled={blocked || !!detailError}
           onClick={() => {
-            if (!current.human_muted || window.confirm("Release this conversation to AI? Older paused turns stay suppressed."))
+            if (!current.human_muted || window.confirm("Let the assistant reply again? It won't answer messages that came in while you were handling this chat."))
               void act(current.human_muted ? "release" : "takeover");
-          }}>{current.human_muted ? "Release to AI" : "Take over"}</button>
+          }}>{current.human_muted ? "Hand back to assistant" : "Take over"}</button>
       </div>}
     </header>
-    {(detailError || messages.error) && <div className="border-b border-[#D8E1F0] p-3">
+    {(detailError || messages.error) && <div className="border-b border-[color:var(--fs-border)] p-3">
       {/* A refusal (403) carries the server's plain words; retrying will not change it. */}
       <Notice error>{messages.status === 403 && messages.error ? messages.error
         : "We could not refresh this conversation. We will keep trying every few seconds."}</Notice></div>}
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={logRef} role="log" aria-label={`Messages with ${title}`} tabIndex={0} onScroll={readPosition}
-        className="min-h-0 flex-1 overflow-y-auto bg-linear-to-b from-[#EEF3FC] to-[#E6EEFB] px-3 py-3 focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)]">
+        className="min-h-0 flex-1 overflow-y-auto bg-linear-to-b from-[var(--fs-log-from)] to-[var(--fs-log-to)] px-3 py-3 focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)]">
         {messages.next_cursor !== null && <div className="mb-3 text-center">
           <button type="button" className={secondary} onClick={onOlder}>Older messages</button></div>}
         {!messages.loaded && !messages.error && <div aria-hidden className="space-y-3">
@@ -136,7 +179,7 @@ export function Thread({
         {messages.loaded && ordered.length === 0 && <p className="py-6 text-center text-sm text-ink-700">No messages yet.</p>}
         <ol className="flex flex-col">{threadItems(ordered).map((item) => item.kind === "day"
           ? <li key={item.key} className="my-3 flex justify-center">
-            <span className="rounded-full border border-[#D8E1F0] bg-white px-2.5 py-0.5 text-[11px] text-ink-700">{item.label}</span></li>
+            <span className="rounded-full border border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-2.5 py-0.5 text-[11px] text-ink-700">{item.label}</span></li>
           : <MessageItem key={item.key} item={item} contactId={id} contactName={contact.display_name} motion={motion}
             arrived={baseline !== null && timeOf(item.message.created_at) > baseline} />)}</ol>
         {pending.length > 0 && <div className="mt-3 flex flex-col items-end gap-3">
@@ -148,22 +191,40 @@ export function Thread({
       </div>
       <div aria-live="polite" className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
         {unseen > 0 && <button type="button" data-testid="inbox-new-messages-pill" onClick={() => toBottom(motion)}
-          className={`pointer-events-auto inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--fs-primary)] px-3.5 text-xs font-semibold text-white shadow-[var(--fs-shadow-popover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] ${motion ? "fs-fade" : ""}`}>
+          className={`pointer-events-auto inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--fs-primary)] px-3.5 text-xs font-semibold text-[color:var(--fs-on-primary)] shadow-[var(--fs-shadow-popover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] ${motion ? "fs-fade" : ""}`}>
           <ArrowDown aria-hidden size={14} /><span className="text-xs font-semibold">{newMessagesText(unseen)}</span></button>}
       </div>
     </div>
     {feedback}
     {current?.human_muted
-      ? <form key="reply" className={`border-t border-[#D8E1F0] bg-white p-3 ${roomMotion}`}
-        onSubmit={(event) => { event.preventDefault(); void act("reply"); }}>
+      ? <form key="reply" ref={formRef} data-testid="inbox-composer"
+        className={`max-h-[60%] shrink-0 scroll-pb-16 overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 pb-16 md:scroll-pb-0 md:pb-3 ${roomMotion}`}
+        onSubmit={(event) => { event.preventDefault(); if (text.trim() && !blocked) setConfirming(true); }}
+        onKeyDown={(event) => {
+          // Escape closes the question first; the inbox's own Escape (back to the list) must not also fire.
+          if (event.key === "Escape" && confirming) { event.stopPropagation(); event.preventDefault(); cancelConfirm(); }
+        }}>
         <label className="block"><span className="text-sm font-medium">Human reply</span>
-          <textarea className={`${field} mt-1 h-24 py-2`} value={text} maxLength={2000} disabled={blocked}
-            onChange={(event) => setText(event.target.value)} required />
+          <textarea ref={boxRef} className={`${field} mt-1 h-20 py-2 md:h-24`} value={text} maxLength={2000}
+            disabled={blocked} readOnly={confirming} onChange={(event) => setText(event.target.value)} required />
         </label>
-        <div className="mt-2 flex justify-end">
-          <button className={action} disabled={blocked || !!detailError || !text.trim()}>Queue reply</button></div>
+        <div className="mt-2 flex justify-start md:justify-end">
+          <button ref={queueRef} className={action} aria-expanded={confirming} aria-controls={confirming ? `reply-confirm-${id}` : undefined}
+            disabled={blocked || !!detailError || !text.trim()}>Send reply</button></div>
+        {confirming && <div id={`reply-confirm-${id}`} role="group" aria-label="Confirm reply" data-testid="inbox-reply-confirm"
+          className="mt-2 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] p-3">
+          <p className="text-sm font-medium">Send this reply to the customer?</p>
+          <p className="mt-1 text-xs text-ink-700">Once it is delivered you cannot take it back.</p>
+          <div className="mt-3 flex flex-wrap justify-start gap-2 md:justify-end">
+            <button ref={cancelRef} type="button" data-testid="inbox-reply-confirm-cancel" className={secondary}
+              disabled={blocked} onClick={cancelConfirm}>Cancel</button>
+            <button type="button" data-testid="inbox-reply-confirm-send" className={action}
+              disabled={blocked || !!detailError} onClick={() => void confirmSend()}>
+              {blocked ? "Sending..." : "Confirm and send"}</button>
+          </div>
+        </div>}
       </form>
-      : <p key="hint" className={`border-t border-[#D8E1F0] bg-white px-3 py-3 text-sm text-ink-700 ${roomMotion}`}>
+      : <p key="hint" className={`border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-3 py-3 text-sm text-ink-700 ${roomMotion}`}>
         Take over to reply as a team member.</p>}
   </section>;
 }

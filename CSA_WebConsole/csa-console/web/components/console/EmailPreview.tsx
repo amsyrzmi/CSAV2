@@ -19,7 +19,7 @@ export function EmailPreview({ draft, recipientsTestId, bodyTestId, language = "
               <span key={`${group.key}-${person.address}`} className="break-all">
                 {person.address}
                 {person.outside && (
-                  <span className="ml-1 rounded bg-amber-100 px-1 text-xs font-medium text-amber-900">
+                  <span className="ml-1 rounded bg-[var(--fs-warning-bg)] px-1 text-xs font-medium text-[color:var(--fs-warning)]">
                     {OUTSIDE_LABELS[language]}
                   </span>
                 )}

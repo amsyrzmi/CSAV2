@@ -5,7 +5,7 @@ import { PAUSE_KEY, motionAllowed, parsePause } from "@/lib/motion";
 
 const REDUCED_QUERY = "(prefers-reduced-motion: reduce)";
 /** Same-tab signal; the browser's own `storage` event only reaches other tabs. */
-const PAUSE_EVENT = "fs-motion-pause-change";
+export const PAUSE_EVENT = "fs-motion-pause-change";
 
 function readPaused(): boolean {
   try {
@@ -34,7 +34,16 @@ export function setMotionPaused(paused: boolean): void {
  * intersecting.
  */
 export function useMotionAllowed(ref?: RefObject<Element | null>): boolean {
-  const [allowed, setAllowed] = useState(false);
+  return useMotionReport(ref) === true;
+}
+
+/**
+ * The same answer, but `null` until the hook has reported once (the server render, hydration and
+ * the first commit). A caller that must tell "not reported yet" from "not allowed" (a CSS-driven
+ * animation that should not restart when the answer arrives) uses this instead.
+ */
+export function useMotionReport(ref?: RefObject<Element | null>): boolean | null {
+  const [allowed, setAllowed] = useState<boolean | null>(null);
 
   useEffect(() => {
     const media =

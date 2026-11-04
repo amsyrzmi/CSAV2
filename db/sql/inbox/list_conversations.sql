@@ -25,6 +25,10 @@ CROSS JOIN LATERAL (
          OR nullif(btrim(k.address), '') IS NOT NULL) AS known
 ) kn
 CROSS JOIN LATERAL (
+    SELECT d.digits, regexp_replace(d.digits, '^0+', '') AS national
+    FROM (SELECT regexp_replace(coalesce(k.phone, ''), '[^0-9]', '', 'g') AS digits) d
+) ph
+CROSS JOIN LATERAL (
     SELECT count(*)::int AS n FROM public.approvals a
     WHERE a.client_id = c.client_id AND a.conversation_id = c.id
       AND a.status = 'pending' AND a.expires_at > now()
@@ -39,8 +43,12 @@ WHERE c.client_id = %(client_id)s AND c.channel IN ('telegram','whatsapp')
        OR coalesce(k.full_name, '') ILIKE %(like)s::text ESCAPE '\'
        OR coalesce(k.telegram_username, '') ILIKE %(like)s::text ESCAPE '\'
        OR (%(digits)s::text IS NOT NULL
-           AND regexp_replace(coalesce(k.phone, ''), '[^0-9]', '', 'g')
-               LIKE '%%' || %(digits)s::text || '%%'))
+           AND (ph.digits LIKE '%%' || %(digits)s::text || '%%'
+                -- A number stored in local form (0125550148) is found by its international
+                -- form (60125550148): the stored digits without leading zeros, at least
+                -- seven of them, must end the query digits.
+                OR (length(ph.national) >= 7
+                    AND right(%(digits)s::text, length(ph.national)) = ph.national))))
   AND (%(before)s::uuid IS NULL OR (act.at, c.id) < (
       SELECT coalesce(bl.created_at, bc.opened_at), bc.id
       FROM public.conversations bc

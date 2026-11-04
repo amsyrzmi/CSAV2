@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -155,6 +156,15 @@ class Inbox:
     list_queries: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
     messages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Held replies the approvals read returns for a conversation, and what decide answered.
+    approvals: list[dict[str, Any]] = field(default_factory=list)
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+    decide_result: dict[str, Any] = field(default_factory=dict)
+    # Bodies of the replies staff queued, and how long the stub takes to answer one.
+    replies: list[str] = field(default_factory=list)
+    reply_delay: float = 0.0
+    # Off by default: the older tests type into the search box without caring about the rows.
+    filter_search: bool = False
 
     def thread(self, identifier: str) -> list[dict[str, Any]]:
         """Newest first, as the API pages them."""
@@ -191,6 +201,20 @@ class Inbox:
                 items = [item for item in items if item["pending_approvals"] > 0]
             if "channel" in params:
                 items = [item for item in items if item["channel"] in params["channel"]]
+            if "sender" in params:
+                known = params["sender"] == ["known"]
+                items = [item for item in items if item["contact"]["known"] == known]
+            if self.filter_search and "q" in params:
+                needle = params["q"][0].lower()
+                items = [
+                    item
+                    for item in items
+                    if needle
+                    in " ".join(
+                        str(item["contact"][key] or "")
+                        for key in ("display_name", "telegram_username", "phone_masked")
+                    ).lower()
+                ]
             if self.refuse_lists is not None:
                 status, data = 403, {"detail": self.refuse_lists}
             elif self.fail_lists:
@@ -201,6 +225,11 @@ class Inbox:
                     "next_cursor": None,
                     "needs_review_count": self.needs_review_count,
                 }
+        elif path.startswith("inbox/conversations/") and path.endswith("/reply"):
+            await asyncio.sleep(self.reply_delay)
+            self.replies.append((request.post_data_json or {}).get("body", ""))
+            data = {"outcome": "applied", "queued": True, "warnings": [], "status": None}
+            status = 202
         elif path.startswith("inbox/conversations/") and path.endswith("/messages"):
             data = {"items": self.thread(path.split("/")[2]), "next_cursor": None}
         elif path.startswith("inbox/conversations/"):
@@ -208,7 +237,12 @@ class Inbox:
             if data is None:
                 status, data = 404, {"detail": "conversation not found"}
         elif path == "inbox/approvals":
-            data = {"items": [], "next_cursor": None}
+            wanted = parse_qs(query).get("conversation_id", [])
+            items = [item for item in self.approvals if item["conversation_id"] in wanted]
+            data = {"items": items, "next_cursor": None}
+        elif path.startswith("inbox/approvals/") and path.endswith("/decide"):
+            self.decisions.append({"id": path.split("/")[2], **(request.post_data_json or {})})
+            data = self.decide_result
         else:
             self.unexpected.append(f"{request.method} {path}?{query}")
             status, data = 500, {"detail": "unexpected synthetic call"}
@@ -303,6 +337,7 @@ async def inbox_page(
     width: int = 1440,
     role: str = "tenant_admin",
     reduced_motion: bool = False,
+    theme: str = "cobalt",
 ) -> AsyncIterator[Page]:
     """A logged-in page on the inbox, answered by `state`; checks for stray calls on exit."""
     shell.upstream.me = make_me(role)
@@ -316,7 +351,10 @@ async def inbox_page(
         )
         context.set_default_navigation_timeout(WAIT)
         await context.add_cookies(
-            [{"name": "csa_session", "value": "synthetic-session", "url": shell.base}]
+            [
+                {"name": "csa_session", "value": "synthetic-session", "url": shell.base},
+                {"name": "fs-theme", "value": theme, "url": shell.base},
+            ]
         )
         page = await context.new_page()
         errors: list[str] = []
@@ -500,6 +538,52 @@ async def test_unnamed_whatsapp_sender_shows_masked_number_in_list_and_full_in_c
         card = page.get_by_test_id("inbox-customer-card")
         await expect(card).to_contain_text(FULL_PHONE, timeout=WAIT)
         assert "0125550148" not in await listing.inner_text()
+        # `inner_text` skips hidden and attribute text; the markup would show a leak there.
+        markup = await listing.evaluate("el => el.outerHTML")
+        assert MASKED_PHONE in markup
+        assert "0125550148" not in markup
+        # The full number belongs to the customer card; the thread itself never prints it.
+        assert "0125550148" not in await page.get_by_test_id("inbox-thread").inner_text()
+
+
+async def test_expired_approval_shows_approval_expired(shell: Shell) -> None:
+    held = {
+        "id": 7,
+        "conversation_id": NAMED,
+        "draft": "Your order ships tomorrow.",
+        "reason": "Mentions a delivery date.",
+        "status": "pending",
+        "expires_at": ago(-30),
+    }
+    # The server found the approval past its expiry when staff decided: 200, nothing queued.
+    state = Inbox(
+        approvals=[held],
+        decide_result={
+            "outcome": "expired",
+            "status": "expired",
+            "queued": False,
+            "warnings": [],
+        },
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        await open_thread(page, NAMED)
+        review = page.get_by_role("article", name="Held reply, needs review")
+        await expect(review).to_be_visible(timeout=WAIT)
+        await review.get_by_role("button", name="Edit", exact=True).click()
+        await review.get_by_label("Replacement reply").fill("Your order ships on Friday.")
+        page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        await review.get_by_role("button", name="Send edited reply").click()
+        await expect(page.get_by_text("Approval expired. No reply queued.")).to_be_visible(
+            timeout=WAIT
+        )
+        assert [(call["id"], call["decision"]) for call in state.decisions] == [("7", "edit")]
+        # Not reported as a send or as handled by someone else.
+        await expect(
+            page.get_by_text(re.compile(r"^(Reply queued|Already handled)"))
+        ).to_have_count(0)
+        # The stub keeps listing the reply, so the page must not drop the card by itself.
+        await expect(review).to_be_visible()
 
 
 async def test_j_k_move_selection_but_not_inside_inputs(shell: Shell) -> None:
@@ -543,11 +627,59 @@ async def test_slide_over_opens_closes_with_escape_and_returns_focus(shell: Shel
         await expect(dialog.get_by_test_id("inbox-customer-card")).to_contain_text(
             FULL_PHONE, timeout=WAIT
         )
+        # While the panel is open, focus has moved into it and left the opener behind.
+        await expect(details).not_to_be_focused()
+        inside = await dialog.evaluate("el => el.contains(document.activeElement)")
+        assert inside, "focus stayed outside the open dialog"
         await page.keyboard.press("Escape")
         await expect(dialog).to_be_hidden()
         await expect(details).to_be_focused()
         # Escape closed only the panel; the thread is still open.
         await expect(page.get_by_test_id("inbox-thread")).to_be_visible()
+
+
+async def test_back_on_phone_returns_focus_to_the_open_conversation_row(shell: Shell) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state, width=390) as page:
+        await rows_loaded(page)
+        await open_thread(page, UNNAMED)
+        await expect(row(page, UNNAMED)).to_be_hidden()
+        await page.get_by_role("button", name="Back to conversations").click()
+        await expect(row(page, UNNAMED)).to_be_visible()
+        await expect(row(page, UNNAMED)).to_be_focused()
+
+
+NO_BOX_JS = """(args) => {
+    const [selector, rootSelector] = args;
+    const root = document.querySelector(rootSelector);
+    const found = [...root.querySelectorAll(selector)];
+    return found.map((el) => {
+        const chain = [];
+        for (let node = el; node && node !== root; node = node.parentElement) {
+            const s = getComputedStyle(node);
+            chain.push({
+                tag: node.tagName.toLowerCase(),
+                agent: node.dataset.agent || null,
+                background: s.backgroundColor + " " + s.backgroundImage,
+                radius: s.borderRadius,
+                border: s.borderTopWidth,
+                overflow: s.overflow,
+            });
+        }
+        return chain;
+    });
+}"""
+
+
+def assert_no_box(found: list[list[dict[str, str]]], expected: int) -> None:
+    """Every avatar and every wrapper up to its container is transparent, square and unclipped."""
+    assert len(found) == expected, found
+    for chain in found:
+        assert chain, found
+        for box in chain:
+            assert box["background"] == "rgba(0, 0, 0, 0) none", box
+            assert box["radius"] == "0px" and box["border"] == "0px", box
+            assert box["overflow"] == "visible", box
 
 
 async def test_empty_state_connect_button_only_for_admins(shell: Shell) -> None:
@@ -556,6 +688,11 @@ async def test_empty_state_connect_button_only_for_admins(shell: Shell) -> None:
         empty = page.get_by_test_id("inbox-list-state-empty")
         await expect(empty).to_be_visible(timeout=WAIT)
         await expect(empty.get_by_role("heading", name="No conversations yet")).to_be_visible()
+        # The empty-state avatar is drawn straight onto the page: no box of any kind.
+        found = await page.evaluate(
+            NO_BOX_JS, ["[data-agent]", '[data-testid="inbox-list-state-empty"]']
+        )
+        assert_no_box(found, 1)
         connect = page.get_by_test_id("inbox-connect-whatsapp")
         await expect(connect).to_be_visible()
         await expect(connect).to_have_attribute("href", "/portal/services")
@@ -597,12 +734,17 @@ async def test_agent_avatar_loads_and_the_proxy_still_denies_by_default(shell: S
     async with inbox_page(shell, state) as page:
         await rows_loaded(page)
         await open_thread(page, NAMED)
-        avatar = "[data-testid='inbox-thread'] img[src*='/fourstacks/agents/support.svg']"
-        await page.wait_for_function(
-            f'() => {{ const img = document.querySelector("{avatar}");'
-            " return !!img && img.complete && img.naturalWidth > 0; }",
-            timeout=WAIT,
-        )
+        # The avatar is an inline sprite now, not an <img>: no request for the artwork is needed.
+        avatar = page.get_by_test_id("inbox-thread").locator("[data-agent='support']").first
+        sprite = avatar.locator("svg")
+        await expect(sprite.locator("rect").first).to_be_attached(timeout=WAIT)
+        assert await sprite.get_attribute("shape-rendering") == "crispEdges"
+        # The thread prints no name beside it, but the sender is named in text, so it is decoration.
+        assert await sprite.get_attribute("aria-hidden") == "true"
+        assert await avatar.locator("img").count() == 0
+        box = await sprite.bounding_box()
+        assert box is not None
+        assert (box["width"], box["height"]) == (32, 32)  # size 32 = the 32 grid at 1x
     async with httpx.AsyncClient(base_url=shell.base, trust_env=False, timeout=60) as http:
         artwork = await http.get("/fourstacks/agents/support.svg")
         assert artwork.status_code == 200
@@ -624,3 +766,439 @@ async def test_agent_avatar_loads_and_the_proxy_still_denies_by_default(shell: S
         for path in ("/system", "/settings/audit"):
             refused = await signed_in.get(path)
             assert (refused.status_code, refused.text) == (404, "Not found"), path
+
+
+async def avatar_frames(avatar: Any) -> list[str]:
+    """Computed animation names of every frame of one sprite (a `[data-agent]` tile)."""
+    await expect(avatar.locator(".fs-px-f0 rect").first).to_be_attached(timeout=WAIT)
+    return await avatar.locator(".fs-px-frame").evaluate_all(
+        "els => els.map(el => getComputedStyle(el).animationName)"
+    )
+
+
+async def test_agent_avatar_is_still_under_reduced_motion(shell: Shell) -> None:
+    # Control: the empty-state avatar is an idle sprite, so with motion allowed it loops four
+    # frames and "none" below means something.
+    empty_state = Inbox(items=[], needs_review_count=0)
+    async with inbox_page(shell, empty_state) as page:
+        avatar = page.get_by_test_id("inbox-list-state-empty").locator("[data-agent='support']")
+        frames = avatar.locator(".fs-px-frame")
+        await expect(frames).to_have_count(4, timeout=WAIT)
+        assert await avatar_frames(avatar) == ["fs-px-show"] * 4
+    async with inbox_page(shell, empty_state, reduced_motion=True) as page:
+        assert await page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        avatar = page.get_by_test_id("inbox-list-state-empty").locator("[data-agent='support']")
+        assert await avatar_frames(avatar) == ["none"]  # frame 0 only, and it does not animate
+        await page.wait_for_timeout(600)  # long enough for the motion hook to have run
+        assert await avatar_frames(avatar) == ["none"]
+        frame = avatar.locator(".fs-px-f0")
+        assert await frame.evaluate("el => getComputedStyle(el).opacity") == "1"
+
+
+async def test_thread_avatar_is_a_static_undimmed_rest_pose_even_with_motion_allowed(
+    shell: Shell,
+) -> None:
+    async with inbox_page(shell, Inbox()) as page:
+        await rows_loaded(page)
+        await open_thread(page, NAMED)
+        avatar = page.get_by_test_id("inbox-thread").locator("[data-agent='support']").first
+        assert await avatar_frames(avatar) == ["none"]
+        await page.wait_for_timeout(600)  # an idle sprite would have gained its other frames
+        assert await avatar_frames(avatar) == ["none"]
+        assert await avatar.get_attribute("data-state") == "rest"
+        # Not dimmed: past replies are not inactive agents.
+        assert await avatar.locator("svg").evaluate("el => getComputedStyle(el).filter") == "none"
+
+
+# ---- Task 13: a friendlier inbox, and a confirm step before a reply is queued ----------------
+
+REPLY = "Yes, it arrives on Friday."
+CONFIRM_ASK = "Send this reply to the customer?"
+
+
+async def open_composer(page: Page, text: str = REPLY) -> Any:
+    """Open the conversation where staff already took over and type a reply."""
+    await rows_loaded(page)
+    await open_thread(page, NEWCOMER)
+    await expect(page.get_by_label("Human reply", exact=True)).to_be_visible(timeout=WAIT)
+    # Held by tag: the wrapping label's text grows with the textarea's contents.
+    box = page.get_by_test_id("inbox-thread").locator("textarea")
+    await box.fill(text)
+    return box
+
+
+async def test_queue_reply_asks_for_confirmation_and_cancel_sends_nothing(shell: Shell) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state) as page:
+        box = await open_composer(page)
+        queue = page.get_by_role("button", name="Send reply", exact=True)
+        confirm = page.get_by_test_id("inbox-reply-confirm")
+        await expect(confirm).to_have_count(0)
+        await queue.click()
+        await expect(confirm).to_be_visible()
+        await expect(confirm.get_by_text(CONFIRM_ASK, exact=True)).to_be_visible()
+        assert state.replies == []
+        # Focus lands on the safe button, so Enter on it cannot send.
+        cancel = page.get_by_test_id("inbox-reply-confirm-cancel")
+        await expect(cancel).to_be_focused()
+        await page.keyboard.press("Enter")
+        await expect(confirm).to_have_count(0)
+        await expect(queue).to_be_focused()
+        await expect(box).to_have_value(REPLY)
+        # Escape cancels too, and focus comes back to the button that opened the step.
+        await queue.click()
+        await expect(confirm).to_be_visible()
+        await page.keyboard.press("Escape")
+        await expect(confirm).to_have_count(0)
+        await expect(queue).to_be_focused()
+        await expect(box).to_have_value(REPLY)
+        # Pressing Enter on Send reply from the keyboard only opens the step.
+        await page.keyboard.press("Enter")
+        await expect(confirm).to_be_visible()
+        await expect(page.get_by_test_id("inbox-reply-confirm-send")).not_to_be_focused()
+        await asyncio.sleep(0.5)
+        assert state.replies == []
+        await expect(page.get_by_text("Reply queued.")).to_have_count(0)
+
+
+@pytest.mark.parametrize("how", ("dblclick", "same_tick"))
+async def test_queue_reply_confirm_sends_once(shell: Shell, how: str) -> None:
+    state = Inbox(reply_delay=0.8)
+    async with inbox_page(shell, state) as page:
+        box = await open_composer(page)
+        await page.get_by_role("button", name="Send reply", exact=True).click()
+        send = page.get_by_test_id("inbox-reply-confirm-send")
+        await expect(send).to_be_visible()
+        if how == "dblclick":
+            await send.dblclick()
+        else:
+            # Two clicks in one tick: nothing has re-rendered, so only the guard stops the second.
+            await send.evaluate("el => { el.click(); el.click(); }")
+        await expect(
+            page.get_by_text(
+                "Reply queued. Delivery status appears in the conversation.", exact=True
+            )
+        ).to_be_visible(timeout=WAIT)
+        await asyncio.sleep(0.5)
+        assert state.replies == [REPLY]
+        await expect(page.get_by_test_id("inbox-reply-confirm")).to_have_count(0)
+        await expect(box).to_have_value("")
+        # The button is disabled with nothing typed, so focus rests in the box for the next reply.
+        await expect(box).to_be_focused()
+
+
+async def test_escape_does_nothing_while_the_reply_is_being_sent(shell: Shell) -> None:
+    state = Inbox(reply_delay=1.5)
+    async with inbox_page(shell, state) as page:
+        box = await open_composer(page)
+        await page.get_by_role("button", name="Send reply", exact=True).click()
+        confirm = page.get_by_test_id("inbox-reply-confirm")
+        await page.get_by_test_id("inbox-reply-confirm-send").click()
+        await expect(page.get_by_test_id("inbox-reply-confirm-send")).to_have_text("Sending...")
+        await page.keyboard.press("Escape")
+        # Focus is on nothing while the buttons are disabled, so also aim Escape at the form itself.
+        await page.get_by_test_id("inbox-composer").evaluate(
+            "el => el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))"
+        )
+        await expect(page.get_by_test_id("inbox-reply-confirm-cancel")).to_be_disabled()
+        await asyncio.sleep(0.3)
+        # The question stays up until the request ends.
+        await expect(confirm).to_be_visible()
+        await expect(box).to_have_value(REPLY)
+        await expect(
+            page.get_by_text(
+                "Reply queued. Delivery status appears in the conversation.", exact=True
+            )
+        ).to_be_visible(timeout=WAIT)
+        await expect(confirm).to_have_count(0)
+        assert state.replies == [REPLY]
+
+
+@pytest.mark.parametrize("theme", ("cobalt", "night"))
+@pytest.mark.parametrize("size", ((390, 844), (320, 640)))
+async def test_assistant_launcher_never_covers_the_reply_buttons(
+    shell: Shell, theme: str, size: tuple[int, int]
+) -> None:
+    """A fixed pill like the assistant's launcher (bottom right, z-40, after the app)."""
+    width, height = size
+    async with inbox_page(shell, Inbox(), width=width, theme=theme) as page:
+        await page.set_viewport_size({"width": width, "height": height})
+        await page.goto(f"{shell.base}/portal/inbox")
+        await open_composer(page)
+        await page.evaluate(
+            """() => {
+                const pill = document.createElement("div");
+                pill.id = "dock-stand-in";
+                pill.style.cssText = "position:fixed;bottom:20px;right:20px;width:120px;"
+                    + "height:44px;z-index:40;background:red";
+                document.body.appendChild(pill);
+            }"""
+        )
+        queue = page.get_by_role("button", name="Send reply", exact=True)
+        assert await on_top(queue), "Send reply is under the launcher"
+        assert not await touches_corner(queue)
+        await queue.click()
+        for test_id in ("inbox-reply-confirm-send", "inbox-reply-confirm-cancel"):
+            button = page.get_by_test_id(test_id)
+            await expect(button).to_be_in_viewport()
+            assert await on_top(button), (test_id, "is under the launcher")
+            assert not await touches_corner(button), (test_id, "touches the launcher corner")
+        # The pill really is drawn over the corner (so the check above can fail).
+        assert (
+            await page.evaluate(
+                "() => document.elementFromPoint(innerWidth - 80, innerHeight - 42)?.id"
+            )
+            == "dock-stand-in"
+        )
+
+
+async def test_inbox_view_chips_filter_like_the_old_control(shell: Shell) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        group = page.get_by_test_id("inbox-view")
+        await expect(group).to_have_attribute("role", "group")
+        chips = group.get_by_role("button")
+        await expect(chips).to_have_text(
+            ["All", re.compile(r"^Needs review\s*\d+$"), "Customers", "New senders"]
+        )
+        # The channel control stays a select.
+        channel = page.get_by_test_id("inbox-channel-filter")
+        assert await channel.evaluate("el => el.tagName") == "SELECT"
+        # The count lives inside its chip and keeps its own id.
+        await expect(
+            page.get_by_test_id("inbox-filter-needs-review").get_by_test_id(
+                "inbox-needs-review-count"
+            )
+        ).to_have_text("2")
+
+        async def press(test_id: str, expected: str) -> dict[str, list[str]]:
+            before = len(state.list_queries)
+            await page.get_by_test_id(test_id).click()
+            await expect(page.get_by_test_id(test_id)).to_have_attribute("aria-pressed", "true")
+            for other in await chips.all():
+                if await other.get_attribute("data-testid") != test_id:
+                    await expect(other).to_have_attribute("aria-pressed", "false")
+            await eventually(lambda: len(state.list_queries) > before)
+            await asyncio.sleep(0.3)
+            latest = parse_qs(state.list_queries[-1])
+            assert latest.get("needs_review", [""])[0] == ("true" if expected == "review" else "")
+            assert latest.get("sender", [""])[0] == (
+                expected if expected in {"known", "new"} else ""
+            )
+            return latest
+
+        await press("inbox-filter-needs-review", "review")
+        await rows_loaded(page, 2)
+        await press("inbox-filter-customers", "known")
+        await rows_loaded(page, 2)
+        await press("inbox-filter-new-senders", "new")
+        await rows_loaded(page, 2)
+        # A pressed chip stays pressed when pressed again (single select, as before).
+        await page.get_by_test_id("inbox-filter-new-senders").click()
+        await expect(page.get_by_test_id("inbox-filter-new-senders")).to_have_attribute(
+            "aria-pressed", "true"
+        )
+        await press("inbox-filter-all", "all")
+        await rows_loaded(page, 4)
+        # Chips and the channel select still combine into one request.
+        await channel.select_option("whatsapp")
+        await press("inbox-filter-needs-review", "review")
+        latest = parse_qs(state.list_queries[-1])
+        assert latest["channel"] == ["whatsapp"] and latest["needs_review"] == ["true"]
+
+
+async def test_search_clear_button_resets(shell: Shell) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        search = page.get_by_test_id("inbox-search")
+        clear = page.get_by_test_id("inbox-search-clear")
+        await expect(clear).to_have_count(0)
+        await search.fill("Ai")
+        await expect(clear).to_be_visible()
+        await eventually(lambda: "q=Ai" in state.list_queries[-1])
+        await clear.click()
+        await expect(search).to_have_value("")
+        await expect(search).to_be_focused()
+        await expect(clear).to_have_count(0)
+        await eventually(lambda: "q=" not in state.list_queries[-1])
+        await asyncio.sleep(0.5)
+        assert "q=" not in state.list_queries[-1], state.list_queries
+        # One character still shows the existing hint, and the clear button removes it.
+        await search.fill("A")
+        await expect(page.get_by_text("Type at least two characters to search.")).to_be_visible()
+        await clear.click()
+        await expect(page.get_by_text("Type at least two characters to search.")).to_have_count(0)
+
+
+async def test_rows_show_preview_time_and_review_marker(shell: Shell) -> None:
+    state = Inbox()
+    long_preview = "Could you check whether my order can still be changed before it ships out? " * 2
+    state.items[0]["last_message"]["preview"] = long_preview.strip()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        named = row(page, NAMED)
+        # Avatar: a round initials circle.
+        avatar = named.locator("span[aria-hidden='true']").first
+        await expect(avatar).to_have_text("AR")
+        assert await avatar.evaluate("el => getComputedStyle(el).borderRadius") == "50%"
+        # Relative time, name and a one-line preview that ends in an ellipsis.
+        await expect(named.get_by_test_id("inbox-row-time")).to_have_text(
+            re.compile(r"^(Just now|\d+ min)$")
+        )
+        preview = named.get_by_test_id("inbox-row-preview")
+        await expect(preview).to_contain_text("Could you check whether my order")
+        style = await preview.evaluate(
+            """el => ({
+                ellipsis: getComputedStyle(el).textOverflow,
+                wrap: getComputedStyle(el).whiteSpace,
+                cut: el.scrollWidth > el.clientWidth,
+                lines: Math.round(
+                    el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)
+                ),
+            })"""
+        )
+        assert style == {"ellipsis": "ellipsis", "wrap": "nowrap", "cut": True, "lines": 1}, style
+        # The review marker is words plus an icon, only on rows with a held reply.
+        for identifier, expected in ((NAMED, 1), (UNNAMED, 0), (NEWCOMER, 1), (LONG, 0)):
+            marker = row(page, identifier).get_by_test_id("inbox-row-review")
+            await expect(marker).to_have_count(expected)
+        marker = named.get_by_test_id("inbox-row-review")
+        await expect(marker).to_have_text("Needs review")
+        await expect(marker.locator("svg")).to_have_count(1)
+        # Existing row words are still there.
+        await expect(named).to_contain_text("Customer")
+        await expect(named.get_by_test_id("inbox-channel-badge")).to_have_text("Telegram")
+
+
+async def on_top(button: Any) -> bool:
+    """Whether the centre of the control is the control itself, not something drawn over it."""
+    return await button.evaluate(
+        """el => {
+            const r = el.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+            return hit === el || el.contains(hit);
+        }"""
+    )
+
+
+async def touches_corner(button: Any) -> bool:
+    """Whether the control's box meets the launcher stand-in's box (bottom 20, right 20, 120x44)."""
+    return await button.evaluate(
+        """el => {
+            const r = el.getBoundingClientRect();
+            const left = innerWidth - 20 - 120, top = innerHeight - 20 - 44;
+            const right = innerWidth - 20, bottom = innerHeight - 20;
+            return r.right > left && r.bottom > top && r.left < right && r.top < bottom;
+        }"""
+    )
+
+
+async def test_composer_sticky_at_390(shell: Shell) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state, width=390) as page:
+        await open_composer(page)
+        composer = page.get_by_test_id("inbox-composer")
+        queue = page.get_by_role("button", name="Send reply", exact=True)
+        height = await page.evaluate("window.innerHeight")
+
+        async def in_view() -> dict[str, float]:
+            box = await composer.bounding_box()
+            assert box is not None
+            return {"top": box["y"], "bottom": box["y"] + box["height"], "height": height}
+
+        # Opening a conversation brings the pane into view; from there and at the foot of the
+        # page the reply box and its button stay on screen, with nothing drawn over them.
+        for position in ("window.scrollY", "document.body.scrollHeight"):
+            await page.evaluate(f"window.scrollTo(0, {position})")
+            await asyncio.sleep(0.2)
+            seen = await in_view()
+            assert 0 <= seen["top"] and seen["bottom"] <= height, (position, seen)
+            await expect(queue).to_be_in_viewport()
+            assert await on_top(queue), ("covered", position)
+        # Scrolling the messages up does not move the composer either.
+        await page.get_by_role("log").evaluate("el => { el.scrollTop = 0; }")
+        seen = await in_view()
+        assert seen["bottom"] <= height, seen
+        # Opening the confirm step keeps both of its buttons on screen as well.
+        await queue.click()
+        await expect(page.get_by_test_id("inbox-reply-confirm-send")).to_be_in_viewport()
+        await expect(page.get_by_test_id("inbox-reply-confirm-cancel")).to_be_in_viewport()
+        # Nothing floats over the buttons (the assistant's round launcher sits bottom right).
+        assert await on_top(page.get_by_test_id("inbox-reply-confirm-send"))
+        assert await on_top(page.get_by_test_id("inbox-reply-confirm-cancel"))
+        assert await on_top(queue)
+
+
+@pytest.mark.parametrize("theme", ("cobalt", "night", "bureau"))
+async def test_inbox_no_overflow_at_five_widths_in_three_themes(shell: Shell, theme: str) -> None:
+    state = Inbox(filter_search=True)
+    async with inbox_page(shell, state, width=WIDTHS[0], theme=theme) as page:
+        await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+        for width in WIDTHS:
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.goto(f"{shell.base}/portal/inbox")
+            await rows_loaded(page)
+            measured = await page_width(page)
+            assert measured["scroll"] <= measured["inner"], ("list", theme, width, measured)
+            await open_thread(page, NEWCOMER)
+            await (
+                page.get_by_test_id("inbox-thread")
+                .locator("textarea")
+                .fill("Thank you, it ships tomorrow.")
+            )
+            await page.get_by_role("button", name="Send reply", exact=True).click()
+            await expect(page.get_by_test_id("inbox-reply-confirm")).to_be_visible()
+            measured = await page_width(page)
+            assert measured["scroll"] <= measured["inner"], ("confirm", theme, width, measured)
+            # No-match state with its one next action.
+            await page.get_by_test_id("inbox-reply-confirm-cancel").click()
+            if width < 768:
+                await page.get_by_role("button", name="Back to conversations").click()
+            await page.get_by_test_id("inbox-search").fill("zzzz")
+            await expect(page.get_by_test_id("inbox-no-match")).to_be_visible(timeout=WAIT)
+            measured = await page_width(page)
+            assert measured["scroll"] <= measured["inner"], ("no-match", theme, width, measured)
+
+
+async def test_how_it_works_text_sits_behind_a_closed_arrow(shell: Shell) -> None:
+    mechanics = "Take over a chat before you reply."
+    async with inbox_page(shell, Inbox()) as page:
+        await rows_loaded(page)
+        row_box = await row(page, NAMED).bounding_box()
+        assert row_box is not None
+        # The long explanation is still on the page, word for word, but closed and out of sight.
+        notice = page.get_by_text(mechanics)
+        await expect(notice).to_have_count(1)
+        await expect(notice).to_be_hidden()
+        await expect(page.get_by_test_id("inbox-howto")).to_have_attribute("data-open", "false")
+        # The list is not pushed down the page by it.
+        assert row_box["y"] < 700, row_box
+        await page.get_by_test_id("inbox-howto-toggle").click()
+        await expect(notice).to_be_visible()
+        await expect(
+            page.get_by_text("A sent reply waits to be delivered; its status shows under it.")
+        ).to_be_visible()
+
+
+async def test_queue_reply_points_at_its_question_only_while_open_and_a_release_closes_it(
+    shell: Shell,
+) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state) as page:
+        await open_composer(page)
+        queue = page.get_by_role("button", name="Send reply", exact=True)
+        confirm = page.get_by_test_id("inbox-reply-confirm")
+        # aria-controls names an element only while that element exists.
+        await expect(queue).not_to_have_attribute("aria-controls", re.compile(r".+"))
+        await queue.click()
+        await expect(confirm).to_be_visible()
+        controls = await queue.get_attribute("aria-controls")
+        assert controls and await page.locator(f"[id='{controls}']").count() == 1
+        # The conversation is released to the AI (seen by the next poll): the question goes too.
+        row = next(item for item in state.items if item["id"] == NEWCOMER)
+        row["human_muted"], row["owned_by"] = False, None
+        await expect(confirm).to_have_count(0, timeout=15_000)
+        await expect(page.get_by_label("Human reply", exact=True)).to_have_count(0)
+        assert state.replies == []

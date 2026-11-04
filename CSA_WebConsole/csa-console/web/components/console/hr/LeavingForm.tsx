@@ -1,8 +1,8 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { hrClient } from "@/lib/hr-api";
-import { klDate, PEOPLE_COPY } from "@/lib/hr-people";
+import { dateText, klDate, PEOPLE_COPY } from "@/lib/hr-people";
 import { peopleClient, type LeavingReason, type OrgChart, type Person } from "@/lib/hr-people-api";
 import {
   leaveBody, leaveFormIssue, leavingErrorText, leaveUndoBody, RECORDS_COPY, rehireBody, rehireFormIssue, reportsMoveChoices,
@@ -38,8 +38,20 @@ export function LeavingForm({ tenant, person, onDone, onReload, onCancel }: {
   const [reason, setReason] = useState<LeavingReason>("resigned");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
+  // What the form chose when it was submitted; set while the inline question asks, nothing is sent until "Yes".
+  const [asking, setAsking] = useState<{ input: { lastDay: string; reason: LeavingReason; note: string }; reportsNewManager: string | null } | null>(null);
   const submitting = useRef(false);
+  const submitButton = useRef<HTMLButtonElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const wasAsking = useRef(false);
+  const questionId = useId();
   const today = klDate(new Date());
+
+  // The safe choice takes focus when the question opens; closing it hands focus back to the submit button.
+  useEffect(() => {
+    if (asking) { wasAsking.current = true; cancelButton.current?.focus(); }
+    else if (wasAsking.current) { wasAsking.current = false; submitButton.current?.focus(); }
+  }, [asking]);
 
   useEffect(() => {
     let active = true;
@@ -56,7 +68,7 @@ export function LeavingForm({ tenant, person, onDone, onReload, onCancel }: {
   const typed = people.denied || people.failed;
   const defaultId = typed ? person.manager_id ?? "" : move.defaultId;
 
-  async function submit(form: HTMLFormElement) {
+  function submit(form: HTMLFormElement) {
     if (submitting.current || !ready) return;
     const data = new FormData(form);
     const input = {
@@ -64,15 +76,23 @@ export function LeavingForm({ tenant, person, onDone, onReload, onCancel }: {
     };
     const issue = leaveFormIssue(input, today);
     if (issue) { setProblem({ text: issue, code: "" }); return; }
+    // Nothing is sent yet: the form validated, so the inline question asks first; "Yes, mark as leaving" sends this.
+    setProblem(null);
+    setAsking({ input, reportsNewManager: move.hasReports ? String(data.get("reports_new_manager") ?? "") : null });
+  }
+
+  async function send() {
+    if (submitting.current || !asking) return;
     submitting.current = true; setBusy(true); setProblem(null);
     try {
       await client.operation(leaveBody({
-        employeeId: person.employee_id, version: person.version ?? undefined, ...input,
-        reportsNewManager: move.hasReports ? String(data.get("reports_new_manager") ?? "") : null,
+        employeeId: person.employee_id, version: person.version ?? undefined, ...asking.input,
+        reportsNewManager: asking.reportsNewManager,
       }));
     } catch (cause) {
       const failure = failureOf(cause);
       setProblem({ text: leavingErrorText(failure, "leave"), code: failure?.code ?? "" });
+      setAsking(null);
       return;
     } finally { submitting.current = false; setBusy(false); }
     onDone();
@@ -81,7 +101,7 @@ export function LeavingForm({ tenant, person, onDone, onReload, onCancel }: {
   return <Panel title={`Mark ${person.display_name} as leaving`}>
     {!ready ? <Notice>Loading the form…</Notice>
       : <form onSubmit={event => { event.preventDefault(); void submit(event.currentTarget); }}>
-        <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
+        <fieldset disabled={busy || asking !== null} className="grid gap-4 sm:grid-cols-2">
           <label className="block text-sm">Last day
             <input className={`${field} mt-1`} name="last_day" type="date" min={today} required /></label>
           <label className="block text-sm">Reason
@@ -98,10 +118,20 @@ export function LeavingForm({ tenant, person, onDone, onReload, onCancel }: {
           </div>}
           <Problems problem={problem} onReload={onReload} />
           <div className="flex flex-wrap gap-2 sm:col-span-2">
-            <button className={action}>Mark as leaving</button>
+            <button ref={submitButton} className={action}>Mark as leaving</button>
             <button type="button" className={secondary} onClick={onCancel}>Cancel</button>
           </div>
         </fieldset>
+        {asking && <div role="group" aria-labelledby={questionId} data-testid="hr-leaving-confirm-group"
+          onKeyDown={event => { if (event.key === "Escape" && !busy) { event.stopPropagation(); setAsking(null); } }}
+          className="mt-4 space-y-3 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] p-3">
+          <p id={questionId} data-testid="hr-leaving-confirm-question" className="text-sm">
+            {`${person.display_name} will be marked as leaving, last day ${dateText(asking.input.lastDay)}. Their access to this company ends after the last day, and you can choose Undo leaving on their profile until the end of the last day.`}</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" data-testid="hr-leaving-confirm" className={action} disabled={busy} onClick={() => void send()}>Yes, mark as leaving</button>
+            <button ref={cancelButton} type="button" data-testid="hr-leaving-cancel" className={secondary} disabled={busy} onClick={() => setAsking(null)}>Cancel</button>
+          </div>
+        </div>}
       </form>}
   </Panel>;
 }

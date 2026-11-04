@@ -13,6 +13,11 @@ import { Departments } from "./Departments";
 import { OrgChart } from "./OrgChart";
 import { PersonSelect, usePeopleOptions } from "./Pickers";
 
+/** The List / Org chart / Departments switch: one pill group, the current view lifted on a card. */
+const SEGMENT = "inline-flex min-h-10 items-center rounded-[var(--fs-radius-round)] px-4 text-sm font-medium focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:min-h-11";
+const SEGMENT_ON = "bg-[var(--fs-surface)] font-semibold text-[color:var(--fs-text)] shadow-[var(--fs-shadow-card)]";
+const SEGMENT_OFF = "text-[color:var(--fs-text-secondary)] hover:text-[color:var(--fs-text)]";
+
 /** The three views this tab serves; the profile and Add person pages come with their own routes. */
 export type PeopleListView = Extract<PeopleView, "list" | "org-chart" | "departments">;
 export interface PeopleTabProps {
@@ -34,9 +39,9 @@ export function PeopleTab({ tenant, context, readonly, platform, view }: PeopleT
     ...(canEdit ? [{ view: "departments" as const, label: "Departments" }] : []),
   ];
   return <div className="space-y-5">
-    <nav aria-label="People views" className="flex flex-wrap gap-2">
+    <nav aria-label="People views" className="inline-flex flex-wrap gap-1 rounded-[var(--fs-radius-round)] bg-[var(--fs-tile)] p-1">
       {views.map(item => <Link key={item.view} href={href({ tab: "people", view: item.view })}
-        className={item.view === view ? action : secondary} aria-current={item.view === view ? "page" : undefined}>{item.label}</Link>)}
+        className={`${SEGMENT} ${item.view === view ? SEGMENT_ON : SEGMENT_OFF}`} aria-current={item.view === view ? "page" : undefined}>{item.label}</Link>)}
     </nav>
     {view === "list" && <PeopleList tenant={tenant} canEdit={canEdit} readonly={readonly} href={href} />}
     {view === "org-chart" && <OrgChartView tenant={tenant} canEdit={canEdit} owner={context.client_owner} href={href} />}
@@ -47,6 +52,8 @@ export function PeopleTab({ tenant, context, readonly, platform, view }: PeopleT
 }
 
 type Href = (route: HrRoute) => string;
+/** One row of a phone-width list: the same data as a table row, as a card. */
+const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 const profileRoute = (employeeId: string): HrRoute => ({ tab: "people", view: "profile", employeeId });
 
 function OrgChartView({ tenant, canEdit, owner, href }: { tenant: string; canEdit: boolean; owner: boolean; href: Href }) {
@@ -124,7 +131,7 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
       <label className="block text-sm sm:col-span-2 lg:col-span-4">Search
         <span className="mt-1 flex gap-2">
           <input className={field} name="q" type="search" maxLength={120} placeholder="Name, job title or work email" />
-          <button className={action}>Search people</button>
+          <button className={`${action} shrink-0 whitespace-nowrap`}>Search people</button>
         </span></label>
       <label className="block text-sm">Department
         <select className={`${field} mt-1`} name="department" defaultValue="all">
@@ -151,7 +158,7 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
           : page.items.length === 0
             ? <p className="text-sm text-ink-500">{filtered ? "No one matches. Clear the search or the filters." : emptyText("people", canEdit && !readonly)}</p>
             : <>
-              <div className="overflow-x-auto"><table className="w-full text-left text-sm">
+              <div className="overflow-x-auto"><table data-testid="hr-people-table" className="hidden w-full text-left text-sm md:table">
                 <thead><tr>{["Name", "Title", "Department", "Manager", "Status"].map(label => <th className="p-2" key={label} scope="col">{label}</th>)}</tr></thead>
                 <tbody>{page.items.map(person => <tr key={person.employee_id} className="border-t border-ink-200">
                   <td className="p-2"><Link className="font-medium underline" href={href(profileRoute(person.employee_id))}>{person.display_name}</Link></td>
@@ -160,7 +167,16 @@ function PeopleList({ tenant, canEdit, readonly, href }: { tenant: string; canEd
                   <td className="p-2">{person.manager_name ?? "—"}</td>
                   <td className="p-2"><StatusLabel tone={STATUS_TONES[person.status]}>{STATUS_LABELS[person.status]}</StatusLabel></td>
                 </tr>)}</tbody>
-              </table></div>
+              </table>
+              <ul data-testid="hr-people-cards" className="space-y-3 md:hidden">{page.items.map(person => <li key={person.employee_id} data-testid="hr-person-card" className={card}>
+                <Link className="font-medium underline" href={href(profileRoute(person.employee_id))}>{person.display_name}</Link>
+                <dl className="mt-2 space-y-1 text-sm">
+                  <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Title</dt><dd className="min-w-0 break-words text-right">{person.job_title ?? "—"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Department</dt><dd className="min-w-0 break-words text-right">{person.department ?? "—"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Manager</dt><dd className="min-w-0 break-words text-right">{person.manager_name ?? "—"}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Status</dt><dd><StatusLabel tone={STATUS_TONES[person.status]}>{STATUS_LABELS[person.status]}</StatusLabel></dd></div>
+                </dl>
+              </li>)}</ul></div>
               <p className="mt-3 text-sm text-ink-500" aria-live="polite">Showing {page.items.length} of {page.total}</p>
               {moreFailed && <Notice error>We could not load more people. Try again.</Notice>}
               {page.next_cursor && <button type="button" className={`${secondary} mt-3`} disabled={moreBusy} onClick={() => void loadMore()}>

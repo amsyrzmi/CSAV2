@@ -151,6 +151,8 @@ ACTIVE = frozenset({"active"})
 # Tab -> (packages that unlock it, accepted statuses).
 TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "inbox": (frozenset({"customer_support"}), frozenset({"active", "suspended"})),
+    # An employee-only company has no customer conversations, so its rail has no activity page.
+    "activity": (frozenset({"customer_support"}), frozenset({"active", "suspended"})),
     "knowledge_base": (frozenset({"knowledge_base"}), ACTIVE),
     "business": (frozenset({"orders_products", "marketplaces"}), ACTIVE),
     "hr": (frozenset({"hr"}), ACTIVE),
@@ -163,13 +165,13 @@ TAB_LABELS: dict[str, str] = {
     "overview": "Overview",
     "services": "Services",
     "inbox": "Customer inbox",
-    "knowledge_base": "Knowledge base",
+    "knowledge_base": "Business knowledge",
     "business": "Business management",
     "hr": "People & HR",
     "email": "Email assistant",
     "subscriptions": "Subscriptions",
-    "activity": "Runtime activity",
-    "chat": "Sandbox assistant",
+    "activity": "Assistant activity",
+    "chat": "Overview",
 }
 # Tabs the console shows only to members who can write (not read_only).
 WRITER_TABS = frozenset({"inbox", "email", "business"})

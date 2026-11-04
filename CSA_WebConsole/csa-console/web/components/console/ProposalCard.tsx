@@ -97,7 +97,7 @@ export function ProposalCard({
     <article
       data-testid="proposal-card"
       aria-label={card.title}
-      className="mt-3 rounded-md border border-brand-200 bg-white p-4 text-sm"
+      className="mt-3 break-words rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] p-4 text-sm text-[color:var(--fs-text)]"
     >
       <h3 className="font-semibold">{card.title}</h3>
       <p className="mt-1">{card.summary}</p>
@@ -120,13 +120,13 @@ export function ProposalCard({
         <dl className="mt-3 space-y-1">
           {fields.map((item, index) => (
             <div key={`${item.label}-${index}`} className="grid gap-1 sm:grid-cols-[8rem_1fr]">
-              <dt className="text-ink-500">{item.label}</dt>
+              <dt className="text-[color:var(--fs-text-secondary)]">{item.label}</dt>
               <dd className="whitespace-pre-wrap break-words">{item.value}</dd>
             </div>
           ))}
         </dl>
       )}
-      <p className="mt-3 text-xs text-ink-500">
+      <p className="mt-3 text-xs text-[color:var(--fs-text-secondary)]">
         {panelText(language, "expires", { when: new Date(card.expires_at).toLocaleString() })}
       </p>
       {(error || (staleCode && current.status === "requested")) && (

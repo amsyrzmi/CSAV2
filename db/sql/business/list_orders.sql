@@ -5,6 +5,10 @@ FROM public.orders
 WHERE client_id = %s
   AND (%s::text IS NULL OR channel = %s)
   AND (%s::text IS NULL OR external_shop_id = %s)
+  AND (%s::timestamptz IS NULL OR created_at >= %s)
+  AND (%s::timestamptz IS NULL OR created_at < %s)
+  AND (%s::text IS NULL OR status = %s)
+  AND (%s::text IS NULL OR payment_status = %s)
   AND (%s::text IS NULL OR (created_at, id) <
       (SELECT created_at, id FROM public.orders WHERE client_id = %s AND id = %s))
 ORDER BY created_at DESC, id DESC LIMIT %s;

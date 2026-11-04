@@ -24,7 +24,7 @@ const PANE = "card min-h-0 min-w-0 flex-col overflow-hidden";
 function Feedback({ actions, framed }: { actions: InboxActions; framed: boolean }) {
   const { error, notice, proposal, pending, busy } = actions;
   if (!error && !notice && !proposal && !(pending && !busy)) return null;
-  return <div className={`space-y-2 ${framed ? "max-h-[45%] overflow-y-auto border-t border-[#D8E1F0] bg-white p-3" : ""}`}>
+  return <div className={`space-y-2 ${framed ? "max-h-[45%] overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3" : ""}`}>
     {error && <Notice error>{error}</Notice>}
     {notice && <Notice>{notice}</Notice>}
     {proposal && <ProposalCard key={proposal.id} proposal={proposal} tenantId={actions.tenantId}
@@ -52,6 +52,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const [cardHost, setCardHost] = useState<HTMLElement | null>(null);
   const detailsRef = useRef<HTMLButtonElement>(null);
   const listScroll = useRef(0);
+  const focusAfterBack = useRef(false);
 
   // Typing settles for 300 ms before the server is asked; inboxListQuery drops one character.
   useEffect(() => {
@@ -93,10 +94,22 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     }
   }
   const back = useCallback(() => {
+    focusAfterBack.current = true;
     setThreadOpen(false);
     setDetailsOpen(false);
     requestAnimationFrame(() => window.scrollTo({ top: listScroll.current }));
   }, []);
+  // Back hides the thread and shows the list in one commit. The Back button vanishes with the
+  // thread, so focus goes to the row that was open, or to the list heading when that row is gone
+  // (filtered out, or disabled while an action is pending).
+  useEffect(() => {
+    if (threadOpen || !focusAfterBack.current) return;
+    focusAfterBack.current = false;
+    const target = [...document.querySelectorAll<HTMLElement>("[data-conversation-id]")]
+      .find((el) => el.dataset.conversationId === selected && !(el instanceof HTMLButtonElement && el.disabled))
+      ?? document.querySelector<HTMLElement>("[data-conversation-list-heading]");
+    target?.focus({ preventScroll: true });
+  }, [threadOpen, selected]);
   function changeFilters(next: { channel?: ChannelFilter; view?: View }) {
     if (next.channel !== undefined) setChannel(next.channel);
     if (next.view !== undefined) setView(next.view);
@@ -140,7 +153,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   return <div ref={rootRef} data-motion={motion ? "on" : "off"} className="mt-6 min-w-0 space-y-4">
     {!selected && <Feedback actions={actions} framed={false} />}
     {/* Breakpoints in rem like `md`: Tailwind cannot order a px variant against a rem one. */}
-    <div className="grid min-w-0 gap-3 md:h-[min(46rem,calc(100dvh-5rem))] md:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[14.5rem_minmax(0,1fr)_12rem]">
+    <div className="grid min-w-0 gap-3 md:h-[min(46rem,calc(100dvh-5rem))] md:grid-cols-[minmax(15rem,17.5rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[18rem_minmax(0,1fr)_12rem]">
       <div className={`${PANE} ${selected && threadOpen ? "hidden md:flex" : "flex"}`}>
         <ConversationList items={items} selected={selected} blocked={actions.blocked} now={now}
           status={{

@@ -9,7 +9,7 @@ import {
 } from "@/lib/assistant-copy";
 import type { Me } from "@/lib/identity-contracts";
 import { formatWhen } from "@/lib/email-recipients";
-import { navigationFor } from "@/lib/navigation";
+import { entryForPath, navigationFor } from "@/lib/navigation";
 import type { PackageState } from "@/lib/services-api";
 import type {
   ClarificationOption,
@@ -47,6 +47,15 @@ export function dockTenant(me: Me, clientIdParam: string | null): string | null 
   return null;
 }
 
+/**
+ * The navigation entry that hosts a dock tab. The sandbox chat (`chat`) folded into Overview,
+ * so it opens and is named as Overview; every other tab is its own entry.
+ */
+function navEntry(tab: TabKey, me: Me, packages: PackageState[]) {
+  const key = tab === "chat" ? "overview" : tab;
+  return navigationFor(me, packages).find((item) => item.key === key);
+}
+
 /** Route for a tab through the shell navigation; null when the tab is not offered. */
 export function tabHref(
   tab: TabKey,
@@ -55,7 +64,7 @@ export function tabHref(
   tenantId: string | null,
   section: string | null = null,
 ): string | null {
-  const link = navigationFor(me, packages).find((item) => item.key === tab);
+  const link = navEntry(tab, me, packages);
   if (!link) return null;
   const query = new URLSearchParams();
   if (section) query.set("section", section);
@@ -64,14 +73,16 @@ export function tabHref(
   return query.size ? `${link.href}?${query}` : link.href;
 }
 
-/** The tab whose navigation link points at this pathname, if any. */
+/**
+ * The tab whose navigation entry hosts this pathname: the entry's own page or a sub-page of its
+ * group, so moving between sub-pages never reads as leaving the tab.
+ */
 export function tabForPath(
   pathname: string,
   me: Me,
   packages: PackageState[],
 ): TabKey | null {
-  const link = navigationFor(me, packages).find((item) => item.href === pathname);
-  const key = link?.key;
+  const key = entryForPath(navigationFor(me, packages), pathname)?.key;
   return TABS.find((tab) => tab === key) ?? null;
 }
 
@@ -80,13 +91,13 @@ const TAB_NAMES: Record<TabKey, string> = {
   overview: "Overview",
   services: "Services",
   inbox: "Customer inbox",
-  knowledge_base: "Knowledge base",
+  knowledge_base: "Business knowledge",
   business: "Business management",
   hr: "People & HR",
   email: "Email assistant",
   subscriptions: "Subscriptions",
-  activity: "Runtime activity",
-  chat: "Sandbox assistant",
+  activity: "Assistant activity",
+  chat: "Overview",
 };
 
 export function tabName(tab: TabKey): string {
@@ -94,7 +105,7 @@ export function tabName(tab: TabKey): string {
 }
 
 export function tabLabel(tab: TabKey, me: Me, packages: PackageState[]): string {
-  return navigationFor(me, packages).find((item) => item.key === tab)?.label ?? tab;
+  return navEntry(tab, me, packages)?.label ?? tab;
 }
 
 /**

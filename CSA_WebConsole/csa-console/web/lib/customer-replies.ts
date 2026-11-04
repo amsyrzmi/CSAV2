@@ -18,7 +18,7 @@ export const MODE_CHOICES: { mode: ReplyMode; label: string }[] = [
 ];
 
 const PANEL_WARNINGS: Record<string, string> = {
-  no_knowledge: "Your bot has nothing to answer from yet. Add files in Knowledge base.",
+  no_knowledge: "Your bot has nothing to answer from yet. Add files in Business knowledge.",
   base_only: "With Customer support alone, most customer questions go to your team.",
 };
 

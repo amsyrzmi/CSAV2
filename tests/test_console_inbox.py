@@ -837,6 +837,31 @@ async def test_search_matches_name_phone_formats_and_escapes(sessions: SessionWo
     assert {i["id"] for i in combined.json()["items"]} == {aisyah}
 
 
+async def test_search_phone_finds_local_and_international_forms(sessions: SessionWorld) -> None:
+    w = sessions
+    _, local = await seed(w, name="Local Format", phone="0125550148")
+    _, intl = await seed(w, name="Intl Format", phone="+60 12-888 0099")
+    _, other = await seed(w, name="Other Number", phone="0139990000")
+    _, foreign = await seed(w, tenant=1, name="Foreign Tenant", phone="0125550148")
+
+    async def found(q: str) -> set[str]:
+        response = await w.admin.get(path(w, "/conversations") + "&" + urlencode({"q": q}))
+        assert response.status_code == 200, (q, response.text)
+        return {i["id"] for i in response.json()["items"]}
+
+    for q in ("0125550148", "60125550148", "+60125550148", "+60 12-555 0148", "125550148"):
+        assert await found(q) == {local}, q
+    for q in ("0128880099", "+60128880099", "60128880099", "128880099"):
+        assert await found(q) == {intl}, q
+    # A short query only matches numbers that contain it; it is not read as a country code.
+    assert await found("012") == {local, intl}
+    assert await found("013") == {other}
+    assert await found("60") == {intl}
+    # A different number matches nothing, and the other tenant's contact never appears.
+    assert await found("+60125550149") == set()
+    assert foreign not in await found("0125550148")
+
+
 async def test_username_is_returned_and_searchable(sessions: SessionWorld) -> None:
     w = sessions
     _, handle = await seed(w, name="Nur Aisyah")

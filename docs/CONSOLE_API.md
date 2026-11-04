@@ -461,8 +461,9 @@ machine token to browsers. Empty allowlist grants no tenant access.
 
 ## Private sandbox assistant (M4)
 
-The `/chat` (platform) and `/portal/chat` (tenant) screens are **Sandbox assistant**,
-not a customer inbox. They use the verified session and tenant selector above.
+The private sandbox assistant lives on **Overview** (`/` for platform admins, `/portal` for tenant
+members); `/chat` and `/portal/chat` only redirect there, keeping `client_id`. It is not a customer
+inbox. It uses the verified session and tenant selector above.
 All chat reads additionally require a human session and exact conversation ownership;
 even another staff member or platform administrator cannot read someone else's sandbox.
 Machine principals are denied. Read-only members can read their existing history but
@@ -541,7 +542,7 @@ Archive is audited hide, not retention-approved purge.
 The browser distinguishes a **15-second HTTP timeout** (potentially accepted; retain the
 same in-memory request key/text and explicitly retry) from a definite 4xx rejection and
 from the **90-second turn deadline** (show delayed status, never invent delivery/failure).
-Polling can reconcile an uncertain send by its request key. Reconnect only refreshes
+Polling can reconcile an uncertain send by its request key. Check for new messages only refreshes
 history; it never resends. If the page/tenant is left or reloaded, check persisted history
 before submitting again; the retained draft/key are not stored in browser storage.
 Voice, arbitrary attachments and confirmation actions remain unavailable. KB upload is
@@ -1229,7 +1230,8 @@ No write routes are added; normal session/tenant controls remain authoritative.
 
 | Method/path | Query | Response |
 |---|---|---|
-| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, optional `from`, `to`, `status`, `payment_status`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders/counts` | optional `from`, `to`, `payment_status`, `channel`, `shop_id`, tenant query (a `status` parameter is ignored) | `{total,by_status:{<status>:int}}` with every order status present, zero included |
 | `GET /business/orders/{id}` | optional `channel` and `shop_id`, tenant query | Local order summary including persisted tracking/carrier, channel/store/order IDs and local timestamps |
 | `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"unavailable",items,next_cursor}` |
 | `GET /business/products/{id}` | tenant query | Local product summary, decimal price and local stock/reserved/available quantities |
@@ -1257,10 +1259,39 @@ returns an empty local page, not a connection-health claim. Omitting filters pre
 all tenant-local orders, including missing store IDs. Products remain tenant-wide local
 catalogue/stock; no store-specific listing or inventory mapping is inferred.
 
+Order list window and status filters (all optional, combine with each other, with `channel`,
+`shop_id` and `before`, and stay tenant-scoped): `from` and `to` are ISO 8601 timestamps with an
+offset (for example `2026-03-10T00:00:00+08:00`) on `created_at`, the column the list sorts and
+pages on; `from` is inclusive and `to` exclusive, so a row stamped exactly at `to` belongs to the
+next window. `status` is one of `draft`, `pending_confirmation`, `confirmed`, `processing`,
+`shipped`, `delivered`, `cancelled`, `refunded`; `payment_status` is one of `unpaid`,
+`cod_pending`, `paid`, `refunded`, `failed`. An unknown value is rejected with 422
+`invalid_status` or `invalid_payment_status`, `from` at or after `to` with 422 `invalid_range`,
+and a timestamp without an offset with the standard 422 validation error. With none of them the
+response and the `(created_at, id)` descending order are unchanged. Orders with no `placed_at`
+are listed and counted like any other (the window is on `created_at`). The order objects do not
+gain customer or line-item fields.
+
+`GET /business/orders/counts` returns `{total, by_status}` for the same `from`, `to`,
+`payment_status`, `channel` and `shop_id` filters (same validation, same tenant, package and
+role gating as the list). It deliberately does not read `status`, so a status chip bar can show
+the number behind every chip while one status is selected. `by_status` lists all eight order
+statuses in the order above; a status with no matching order is `0`, and `total` is their sum.
+
 The UI applies order filters explicitly and remounts order paging on changed applied
 scope, aborting obsolete requests and starting from newest. Tenant changes reset filter
 drafts and all record state. Draft filter edits do not change applied results until Apply.
 The applied scope remains visible; inventory is explicitly labelled unaffected.
+
+The order date range, the status chips and the payment-status select act at once (only the
+source and store ID wait for Apply). The page builds every query with `URLSearchParams` and
+sends the chosen days as UTC instants from `toISOString()`, never a local offset, and leaves
+empty parameters out. The counts read starts beside the list and is aborted when its filters
+change; a status chip changes only the list. With no dates chosen the page asks for the counts
+over the last 30 days (the unwindowed read scans the whole tenant and can be slow); "Count all
+time" is an explicit choice that sends no window. A failed or malformed counts read removes the
+numbers from the chips and never shows them as zero. "Older orders" adds the next page to the
+rows on screen.
 
 Store records contain `id`, `platform`, `shop_id`, recorded `expires_at`/`updated_at`,
 derived `expiry` (`unknown`, `expired`, `not_expired`), and constant
@@ -1491,6 +1522,10 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 State is in `console_service_packages` (migration `0450`): `status` is `requested`, `active` or `suspended`, with requester, activator, `reference`, `note` and timestamps. Tenant RLS applies; only `csa_app` has grants. The migration backfills a package as `active` with reference `backfill-0450` when all its member capabilities are `is_enabled` (`hr`: any enabled `hr_agent_settings` row; `staff_email`: `email_settings.enabled`).
 
 - `GET /console/v1/services`: catalogue joined with the tenant's state, including `consistent` and `inconsistencies` (drift between the package record and member switches) per package. `staff_email` also reports `inner_switch`.
+- `last_change` on each service and on each member agent's `capability` in `GET /console/v1/services` (and the service returned by request, activate and suspend): `null` when the audit trail has no recognisable change, otherwise `{action, at, actor}` from the newest matching `console_audit` row.
+  - `action` for a service is `requested`, `activated` or `suspended` (from `service.requested`, `service.activated`, `service.suspended`). For a capability it is derived from the `capability.updated` details: `is_enabled` false to true is `subscribed`, true to false `unsubscribed`; `client_enabled` false to true is `tenant_switch_on`, true to false `tenant_switch_off`. When one row changed both switches the subscription wins. A `capability.updated` row whose `before` and `after` are equal (package activation writes one per member even when that member was already on) is skipped, so the newest real change is returned instead; `last_change` is `null` only when no row changed anything.
+  - `at` is the audit time; rows with the same time are ordered by audit id. `actor` is the person's display name only when the caller is a platform admin (`"a platform administrator"` when the audit row has no actor). Every other role gets a label, never a name, user id or email: `"a platform administrator"` when the person who made the change is a platform admin, `"a member of your team"` for any other person, and `"an administrator"` when the audit row has no actor (system or legacy rows). The platform-admin check uses the person's current status, not their status when they made the change: someone who became a platform admin later is labelled as one on their older changes too, and the reverse.
+  - Read through `public.console_last_change(client, target, actions)` (migration `0502`), a `SECURITY DEFINER` function granted only to `csa_app` that returns action, time, display name, details and `actor_is_platform_admin` (no user id), filters by tenant itself and returns nothing unless `client` equals the transaction's `app.client_id`. `csa_app` still cannot read `console_audit` or `console_users`. The same migration adds the index `console_audit_tenant_target_time (client_id, target_id, created_at DESC)` for the per-target lookup. Only `GET /console/v1/services` (and the service returned by request, activate and suspend) fills `last_change`: `GET /console/v1/capabilities` and `GET /console/v1/agents` always return `last_change: null`.
 - `GET /console/v1/services/active`: `{"packages": [{key, status}]}` for packages that are `active` or `suspended`, used to build navigation; the console shows the Inbox for a suspended Customer Support package and every other gated tab only when its package is active. A platform admin without `client_id` receives `{"packages": []}`.
 - `POST /console/v1/services/{key}/request`: tenant admin or platform admin.
 - `POST /console/v1/services/{key}/activate` with body `{"reference": str, "note"?: str}`: platform admin. Flips member `is_enabled` and `client_enabled` through the same SQL as the capability toggle; audits `capability.updated` and `service.activated`.
@@ -1504,7 +1539,7 @@ Gates: a route behind an inactive package returns 403 `package_inactive`, and ga
 - The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
 - Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.
 
-Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Knowledge base, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
+Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Business knowledge, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
 
 
 ### Customer replies (Go live)
@@ -1523,7 +1558,7 @@ A new company starts with no replies to customers. Its tenant admin turns them o
 
 ## Capabilities and specialised tabs (LG13)
 Packages (see Services and packages) are the management surface; the switches below remain the enforcement.
-- `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`.
+- `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`. `last_change` is always `null` here; the services read fills it (see Services and packages).
 - `PATCH /console/v1/capabilities/{name}` with body `{"is_enabled"?: bool, "client_enabled"?: bool}`. A human platform admin controls subscriptions; a human tenant admin/platform admin controls tenant switches. Actor fields such as `changed_by` are rejected. Required safety capabilities cannot be disabled. Changes and before/after audit share one locked transaction.
 - `GET /console/v1/agents`: authoritative management catalogue. Each row has `name`, `title`,
   nullable `capability` (the existing registry contract), `implementation`, `readiness`,
@@ -1575,8 +1610,15 @@ The separate machine principal remains read-only and tenant-allowlisted.
   `last_run_at` and `window_hours=24`. Counts describe recorded attempts, not provider
   health, revenue or complete historical workflow usage. Query failures propagate rather
   than being replaced by zero.
-- `GET /console/v1/runs?limit=50&before_id=<id>&agent=<optional exact name>`:
+- `GET /console/v1/runs?limit=50&before_id=<id>&agent=<optional exact name>&from=<ts>&to=<ts>&status=<ok|error>`:
   `{items, next_before_id}`; limit 1–200, descending unique run ID keyset pagination.
+  `from` and `to` are optional ISO 8601 timestamps with an offset (for example
+  `2026-03-10T00:00:00+08:00`) on `created_at`: `from` is inclusive, `to` is exclusive.
+  `status` is optional, `ok` or `error` (the stored run status; `partial` runs match
+  neither). The filters combine with `agent` and `before_id` and stay tenant-scoped; with
+  none of them the response and ordering are unchanged. `from` at or after `to` is
+  rejected with 422 `invalid_range`, any other `status` with 422 `invalid_status`; a
+  timestamp without an offset is rejected with the standard 422 validation error.
   Run IDs/cursors must be positive PostgreSQL bigint values (maximum `2^63 - 1`);
   out-of-range values are rejected with 422 before querying run data.
   Pass `next_before_id` unchanged for the next page; null means no older page.

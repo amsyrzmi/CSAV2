@@ -2,8 +2,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hrClient } from "@/lib/hr-api";
 import { HrAccessPage } from "../HrAccessPage";
+import HolidayDates from "../hr-guide/HolidayDates";
+import WeekdayTicks from "../hr-guide/WeekdayTicks";
 import { Notice } from "../ui";
-import { Form, ref, regionField, value } from "./HrForm";
+import { Form, regionField, value } from "./HrForm";
 import type { HrTabProps } from "./HrShell";
 import { useMemberOptions } from "./Pickers";
 import { useHrRunner, useHrSave } from "./useHrRunner";
@@ -33,16 +35,16 @@ export function SettingsTab({ tenant, readonly, refreshContext }: HrTabProps) {
     }} />
     {message && <Notice>{message}</Notice>}{error && <Notice error>{error}. Check saved records before retrying an uncertain write.</Notice>}
     <Form title="Work calendar" disabled={busy || readonly} fields={[regionField, { name: "year", label: "Year", type: "number" },
-      { name: "weekdays", label: "Working weekdays", multiple: true, options: weekdays }, { ...ref("holidays", "Reviewed holiday dates, separated by commas (YYYY-MM-DD)"), optional: true }]}
+      <WeekdayTicks key="weekdays" name="weekdays" label="Working weekdays" options={weekdays} />, <HolidayDates key="holidays" name="holidays" label="Reviewed holiday dates, separated by commas (YYYY-MM-DD)" />]}
       save={data => save({ operation: "calendar.save", region: value(data, "region"), year: Number(value(data, "year")), expected_version: calendars.find(calendar => calendar.region === value(data, "region") && calendar.year === Number(value(data, "year")))?.version ?? null,
         working_weekdays: data.getAll("weekdays").map(Number), holidays: value(data, "holidays").split(",").map(item => item.trim()).filter(Boolean) })} />
-    <Form title="Background maintenance" disabled={busy || readonly} fields={[
+    <Form title="Automatic reminders" disabled={busy || readonly} fields={[
       { name: "enabled", label: "Retention and reminders", options: [["true", "Enable for this tenant"], ["false", "Disable background maintenance"]] },
       { name: "hours", label: "Remind after pending hours", type: "number", value: "24" }]}
       save={data => save({ operation: "automation.configure", enabled: value(data, "enabled") === "true", remind_after_hours: Number(value(data, "hours")) })}>
       <p className="text-sm sm:col-span-2">Requires the separately configured maintenance worker. It can erase expired candidate content and create local reminders; it cannot make HR decisions or send external messages.</p>
     </Form>
-    <Form title="Private access" disabled={busy || readonly} fields={[{ name: "user", label: "Console member", options: memberOptions },
+    <Form title="Who can open private areas" disabled={busy || readonly} fields={[{ name: "user", label: "Console member", options: memberOptions },
       { name: "area", label: "Private capability", options: [["recruitment", "CV intake, notes and interviews"], ["attendance", "Attendance import and shifts"], ["payroll", "Private payroll records"]] },
       { name: "enabled", label: "Access decision", options: [["true", "Grant explicitly"], ["false", "Revoke"]] }]}
       save={data => save({ operation: "private_access.save", user_id: value(data, "user"), area: value(data, "area"), enabled: value(data, "enabled") === "true" })} />

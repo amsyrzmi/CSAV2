@@ -715,8 +715,17 @@ def test_tab_available_ports_the_console_rule() -> None:
     assert tab_available("business", Role.TENANT_ADMIN, [state("marketplaces")])
     assert not tab_available("business", Role.TENANT_ADMIN, [])
     # Ungated tabs are always there; platform admins skip the package gate.
-    for tab in ("overview", "services", "activity", "chat"):
+    for tab in ("overview", "services", "chat"):
         assert tab_available(tab, Role.TENANT_STAFF, []), tab
+    # Assistant activity follows Customer Support, active or suspended; platform admins keep it.
+    assert not tab_available("activity", Role.TENANT_STAFF, [])
+    assert not tab_available("activity", Role.TENANT_STAFF, [state("hr"), state("staff_email")])
+    assert not tab_available(
+        "activity", Role.TENANT_STAFF, [state("customer_support", "requested")]
+    )
+    assert tab_available("activity", Role.TENANT_STAFF, [state("customer_support")])
+    assert tab_available("activity", Role.TENANT_STAFF, [state("customer_support", "suspended")])
+    assert tab_available("activity", Role.PLATFORM_ADMIN, [])
     assert tab_available("email", Role.PLATFORM_ADMIN, [])
     assert tab_available("hr", Role.PLATFORM_ADMIN, [])
     # Read-only members never get the writer tabs, whatever is active.
@@ -2729,11 +2738,25 @@ async def test_navigate_to_locked_tab_answers_locked(planned) -> None:
         "Tab Business management memerlukan perkhidmatan Marketplaces atau Orders and products, "
     )
     assert " or " not in business_text
+    # Assistant activity needs Customer support: the refusal names it, and reads as a sentence.
+    model.reply({"action": "navigate", "tab": "activity"})
+    activity = await _turn(w, browser, thread, "Take me to the assistant activity", "overview")
+    assert activity.status_code == 201, activity.text
+    assert activity.json()["result"] == {
+        "action": "answer",
+        "markdown": "The Assistant activity tab needs the Customer support service, which is not "
+        "active for this workspace. Ask your administrator to activate it on the Services page.",
+    }
     await activate(w, w.tenants[0], "staff_email")
     model.reply({"action": "navigate", "tab": "email"})
     opened = await _turn(w, browser, thread, "Take me to email", "overview")
     assert opened.status_code == 201, opened.text
     assert opened.json()["result"]["action"] == "navigate"
+    # Activating the email add-on brought its base, Customer support, with it.
+    model.reply({"action": "navigate", "tab": "activity"})
+    allowed = await _turn(w, browser, thread, "Take me to the assistant activity", "overview")
+    assert allowed.status_code == 201, allowed.text
+    assert allowed.json()["result"]["action"] == "navigate"
 
 
 @requires_docker

@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
-import { MessageSquare, X } from "lucide-react";
+import { ArrowUp, MessageSquare, X } from "lucide-react";
 import { languageOf, panelText, PANEL, type Language } from "@/lib/assistant-copy";
 import {
   candidateAnswer,
@@ -40,8 +40,18 @@ import {
   type WorkspaceResult,
   type WorkspaceTurn,
 } from "@/lib/workspace-api";
+import { CopyReply } from "./chat/CopyReply";
+import { starterLook } from "./chat/ChatEmptyState";
+import AgentAvatar from "./fs/AgentAvatar";
 import { ProposalCard } from "./ProposalCard";
-import { action, field, Notice, secondary } from "./ui";
+import { action, Notice, secondary } from "./ui";
+
+/** The corner the launcher and the panel share: 20 px in, or clear of a notch or home bar. */
+const corner = "bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-[max(1.25rem,env(safe-area-inset-right))]";
+const sendLook =
+  "inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-2 rounded-[var(--fs-radius-round)] bg-[var(--fs-primary)] text-sm font-medium text-[color:var(--fs-on-primary)] transition-colors duration-150 hover:bg-[var(--fs-primary-hover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-[var(--fs-disabled-bg)] disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:h-11";
+const headerButton =
+  "inline-flex min-h-9 items-center rounded-[var(--fs-radius-round)] border border-[color:var(--fs-border-control)] px-2.5 text-[13px] font-medium text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11";
 
 /** How long a resumed turn waits for the new tab to publish its context. */
 const RESUME_GRACE_MS = 1000;
@@ -292,6 +302,21 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
     return () => clearTimeout(timer);
   }, [waitingForRoute]);
 
+  // The message box grows with what is typed (up to about six lines) and shrinks back after a send.
+  useEffect(() => {
+    const box = input.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${Math.min(box.scrollHeight, 152)}px`;
+  }, [body, open]);
+
+  // The newest reply scrolls into view; an open question stays visible while the assistant works.
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = list.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [open, turns.length, busy]);
+
   function newConversation() {
     void withdrawOpen();
     mutation.current?.abort();
@@ -323,7 +348,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         aria-expanded={false}
         aria-controls={panelId}
         onClick={() => setOpen(true)}
-        className={`${action} fixed bottom-5 right-5 z-40 rounded-full shadow-lg`}
+        className={`${action} fixed ${corner} z-40 rounded-full shadow-[var(--fs-shadow-popover)]`}
       >
         <MessageSquare size={18} aria-hidden />
         {text.dock_title}
@@ -339,15 +364,16 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
       onKeyDown={(event) => {
         if (event.key === "Escape") close();
       }}
-      className="fixed bottom-5 right-5 z-40 flex max-h-[80vh] w-[min(28rem,calc(100vw-2.5rem))] flex-col rounded-lg border border-ink-200 bg-white shadow-xl"
+      className={`fixed ${corner} z-40 flex max-h-[min(80dvh,40rem)] w-[min(28rem,calc(100vw-2.5rem))] flex-col rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]`}
     >
-      <header className="flex items-center gap-2 border-b border-ink-200 px-4 py-3">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-[color:var(--fs-border)] px-3.5 py-3 sm:flex-nowrap">
+        <AgentAvatar agentId="assistant" size={32} state="rest" label="" />
         <h2 id={`${panelId}-title`} className="text-base font-semibold">
           {text.dock_title}
         </h2>
         <span
           data-testid="assistant-tab"
-          className="rounded-full bg-brand-50 px-2 py-0.5 text-xs text-ink-700"
+          className="min-w-0 truncate rounded-full bg-[var(--fs-surface-blue)] px-2 py-0.5 text-xs text-[color:var(--fs-text)]"
         >
           {context
             ? panelText(language, "on_tab", { tab: tabLabel(context.tab, me, packages) })
@@ -355,7 +381,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
         </span>
         <button
           type="button"
-          className="ml-auto text-sm text-ink-600 underline hover:text-brand-600 disabled:opacity-50"
+          className={`ml-auto shrink-0 ${headerButton}`}
           disabled={busy}
           onClick={newConversation}
         >
@@ -365,73 +391,104 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
           type="button"
           aria-label={text.close_assistant}
           onClick={close}
-          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md hover:bg-ink-50"
+          className="inline-grid size-9 shrink-0 place-items-center rounded-[var(--fs-radius-round)] text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:size-11"
         >
           <X size={18} aria-hidden />
         </button>
       </header>
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3" aria-live="polite">
-        {!loaded && <p className="text-sm text-ink-500">{PANEL.en.loading}</p>}
+      <div ref={list} className="flex-1 space-y-4 overflow-y-auto px-4 py-3" aria-live="polite">
+        {!loaded && <p className="text-sm text-[color:var(--fs-text-secondary)]">{PANEL.en.loading}</p>}
         {loaded && turns.length === 0 && (
-          <p className="text-sm text-ink-500">{text.empty_hint}</p>
+          <p className="text-sm text-[color:var(--fs-text-secondary)]">{text.empty_hint}</p>
         )}
         {turns.map((turn) => (
           <article key={turn.id} data-testid="assistant-turn" className="space-y-2">
-            <p className="ml-8 whitespace-pre-wrap rounded-md bg-ink-50 p-3 text-sm">{turn.body}</p>
-            <TurnResult
-              result={turn.result}
-              language={languageOf(turn)}
-              origin={originFor(turn, origins)}
-              me={me}
-              packages={packages}
-              tenant={tenant}
-              outcomes={outcomes}
-              disabled={busy || resume !== null}
-              answerable={isAnswerable(turns, turn.id)}
-              onSettled={settle}
-              onAsk={(outgoing) => ask(outgoing)}
-            />
+            <div className="flex justify-end pl-8">
+              <p className="max-w-full whitespace-pre-wrap break-words rounded-[var(--fs-radius-bubble)] rounded-br-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)] px-4 py-2.5 text-sm text-[color:var(--fs-text)]">{turn.body}</p>
+            </div>
+            <div className="flex items-start gap-2">
+              <AgentAvatar agentId="assistant" size={32} state="rest" label="" />
+              <div className="min-w-0 flex-1">
+                <TurnResult
+                  result={turn.result}
+                  language={languageOf(turn)}
+                  origin={originFor(turn, origins)}
+                  me={me}
+                  packages={packages}
+                  tenant={tenant}
+                  outcomes={outcomes}
+                  disabled={busy || resume !== null}
+                  answerable={isAnswerable(turns, turn.id)}
+                  onSettled={settle}
+                  onAsk={(outgoing) => ask(outgoing)}
+                />
+              </div>
+            </div>
           </article>
         ))}
+        {busy && (
+          <div
+            data-testid="assistant-working"
+            className="flex items-center gap-2 text-sm text-[color:var(--fs-text-secondary)]"
+          >
+            <AgentAvatar agentId="assistant" size={32} state="working" label="" />
+            <p>{text.button_sending}</p>
+          </div>
+        )}
         {resume && (
           <Notice>{panelText(language, "resume_opening", { tab: tabLabel(resume.tab, me, packages) })}</Notice>
         )}
         {error && <Notice error>{error}</Notice>}
       </div>
       <form
-        className="space-y-2 border-t border-ink-200 px-4 py-3"
+        className="space-y-2 border-t border-[color:var(--fs-border)] px-4 py-3"
         onSubmit={(event) => {
           event.preventDefault();
           if (body.trim()) ask(typedMessage(body, turns, origins), true);
         }}
       >
-        <label className="block text-sm">
+        <label htmlFor={`${panelId}-input`} className="block text-xs font-medium text-[color:var(--fs-text-secondary)]">
           {text.message_label}
-          <textarea
-            ref={input}
-            data-testid="assistant-input"
-            className={`${field} min-h-20 py-2`}
-            value={body}
-            maxLength={4000}
-            disabled={busy || retry}
-            onChange={(event) => setBody(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                if (body.trim()) ask(typedMessage(body, turns, origins), true);
-              }
-            }}
-          />
         </label>
-        <div className="flex flex-wrap gap-2">
-          {retry ? (
-            <>
-              <button type="button" className={action} onClick={() => pending && send(pending)}>
+        <div className="rounded-[var(--fs-radius-composer)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] shadow-[var(--fs-shadow-card)] transition-[border-color,box-shadow] duration-200 ease-(--fs-ease-out) motion-reduce:transition-none has-[textarea:focus-visible]:border-[color:var(--fs-primary)] has-[textarea:focus-visible]:shadow-[var(--fs-shadow-popover)] has-[textarea:focus-visible]:outline-2 has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-[color:var(--fs-focus)] has-[textarea:disabled]:bg-[var(--fs-disabled-bg)]">
+          <div className="flex items-end gap-2 py-2 pl-4 pr-2">
+            <textarea
+              id={`${panelId}-input`}
+              ref={input}
+              data-testid="assistant-input"
+              rows={1}
+              className="block max-h-[9.5rem] min-h-10 min-w-0 flex-1 resize-none bg-transparent py-2 text-sm leading-6 text-[color:var(--fs-text)] outline-none focus-visible:shadow-none focus-visible:outline-none! disabled:cursor-not-allowed disabled:text-[color:var(--fs-disabled-text)]"
+              value={body}
+              maxLength={4000}
+              disabled={busy || retry}
+              onChange={(event) => setBody(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (body.trim()) ask(typedMessage(body, turns, origins), true);
+                }
+              }}
+            />
+            {!retry && (
+              <button
+                type="submit"
+                data-testid="assistant-send"
+                className={`${sendLook} px-4`}
+                disabled={busy || resume !== null || !body.trim() || !loaded}
+              >
+                {busy ? text.button_sending : text.button_send}
+                {!busy && <ArrowUp size={16} aria-hidden />}
+              </button>
+            )}
+          </div>
+          {retry && (
+            <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5">
+              <button type="button" className={`${sendLook} px-4`} onClick={() => pending && send(pending)}>
                 {text.retry_same}
               </button>
               <button
                 type="button"
-                className={secondary}
+                className={headerButton}
                 onClick={() => {
                   setPending(null);
                   setError("");
@@ -439,16 +496,7 @@ function Dock({ tenant, me, packages }: { tenant: string; me: Me; packages: Pack
               >
                 {text.start_new}
               </button>
-            </>
-          ) : (
-            <button
-              type="submit"
-              data-testid="assistant-send"
-              className={action}
-              disabled={busy || resume !== null || !body.trim() || !loaded}
-            >
-              {busy ? text.button_sending : text.button_send}
-            </button>
+            </div>
           )}
         </div>
       </form>
@@ -486,18 +534,27 @@ function TurnResult({
 }) {
   const view = resultView(result, language);
   const text = PANEL[language];
-  const box = "rounded-md bg-brand-50 p-3 text-sm";
+  const box =
+    "rounded-[var(--fs-radius-bubble)] rounded-tl-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3 text-sm text-[color:var(--fs-text)]";
+  const copy = (body: string) => (
+    <div className="mt-1 -ml-2 flex items-center gap-1">
+      <CopyReply body={body} />
+    </div>
+  );
   switch (view.kind) {
     case "notice":
       return <Notice error={view.error}>{view.text}</Notice>;
     case "guidance":
       return (
-        <div className={box}>
-          <p>{view.text}</p>
-          <p className="mt-2 text-xs text-ink-500">
-            {text.order_source}: {view.source} · {text.order_as_of} {new Date(view.asOf).toLocaleString()}
-          </p>
-        </div>
+        <>
+          <div className={box}>
+            <p>{view.text}</p>
+            <p className="mt-2 text-xs text-[color:var(--fs-text-secondary)]">
+              {text.order_source}: {view.source} · {text.order_as_of} {new Date(view.asOf).toLocaleString()}
+            </p>
+          </div>
+          {copy(view.text)}
+        </>
       );
     case "order": {
       const { order } = view.result;
@@ -514,7 +571,7 @@ function TurnResult({
             {order.tracking_no ?? text.order_not_recorded} · {text.order_carrier}:{" "}
             {order.carrier ?? text.order_not_recorded}
           </p>
-          <p className="mt-2 text-xs text-ink-500">
+          <p className="mt-2 text-xs text-[color:var(--fs-text-secondary)]">
             {text.order_source}: {view.result.source} · {text.order_marketplace_sync}:{" "}
             {view.result.marketplace_sync} · {text.order_as_of}{" "}
             {new Date(view.result.as_of).toLocaleString()}
@@ -532,13 +589,18 @@ function TurnResult({
         />
       );
     case "answer":
-      return <p className={`${box} whitespace-pre-wrap`}>{view.text}</p>;
+      return (
+        <>
+          <p className={`${box} whitespace-pre-wrap break-words`}>{view.text}</p>
+          {copy(view.text)}
+        </>
+      );
     case "navigate": {
       const shown = navigateText(view.tab, view.resume, me, packages, language);
       return shown.error ? (
         <Notice error>{shown.text}</Notice>
       ) : (
-        <p className="text-sm text-ink-600">{shown.text}</p>
+        <p className="pt-1 text-sm text-[color:var(--fs-text-secondary)]">{shown.text}</p>
       );
     }
     case "directory":
@@ -558,7 +620,7 @@ function TurnResult({
                   <span>
                     <span className="font-medium">{person.display_name}</span>
                     {(person.job_title || person.work_email) && (
-                      <span className="block text-xs text-ink-500">
+                      <span className="block text-xs text-[color:var(--fs-text-secondary)]">
                         {[person.job_title, person.work_email].filter(Boolean).join(" · ")}
                       </span>
                     )}
@@ -579,7 +641,7 @@ function TurnResult({
                 <button
                   key={option.value}
                   type="button"
-                  className={secondary}
+                  className={`${starterLook} max-w-full break-words text-left`}
                   disabled={disabled || !answerable}
                   onClick={() => onAsk(optionAnswer(option, view.question, origin))}
                 >
