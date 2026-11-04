@@ -563,9 +563,10 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         replies_status["read"] = 200
         await page.goto(f"{base}/portal")
         await expect(page.get_by_role("heading", name="Your workspace")).to_be_visible(timeout=WAIT)
+        # This stub has no assistant at the side of the screen, so the home does not point at one.
         await expect(
             page.get_by_text("Ask the assistant at the side of the screen.")
-        ).to_be_visible()
+        ).to_have_count(0)
         await expect(chat_heading).to_have_count(0)
         await expect(banner).to_have_count(0)
 
