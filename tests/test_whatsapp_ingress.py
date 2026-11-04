@@ -758,7 +758,7 @@ async def test_over_limit_tenant_does_not_block_other_tenants_in_a_batch(
 
 
 @requires_docker
-async def test_n8n_runtime_tenant_is_skipped(
+async def test_leftover_n8n_runtime_setting_is_ignored(
     whatsapp_context: WhatsAppContext, pg_container: object
 ) -> None:
     ingress, _, client_id, number, _ = whatsapp_context
@@ -768,8 +768,8 @@ async def test_n8n_runtime_tenant_is_skipped(
             (client_id,),
         )
     receipts = await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.N1")])))
-    assert receipts == []
-    assert _count(pg_container, "ingress_events", client_id) == 0
+    assert len(receipts) == 1
+    assert _count(pg_container, "ingress_events", client_id) == 1
 
 
 async def test_gateway_routes_hidden_when_unconfigured_and_verify_challenge(

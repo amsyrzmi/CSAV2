@@ -9,7 +9,7 @@ LangGraph, and PostgreSQL. Read the relevant phase plan under
 - Develop and test only against the isolated dev Docker Postgres and
   generated seed/fixture data.
 - Never connect an agent, test, or local app process to the production
-  database, production bot tokens, or production n8n.
+  database or production bot tokens.
 - Keep production secrets on the server in its environment or Docker secrets.
   Never place secrets in source, fixtures, logs, docs, issues, or prompts.
 - Do not use production data in tests; use synthetic fixtures.
@@ -20,8 +20,7 @@ LangGraph, and PostgreSQL. Read the relevant phase plan under
 - Use Pydantic models for external and persisted data contracts.
 - Keep SQL in `db/sql/`; use parameterized queries.
 - Only `csa/graph/` may import LangGraph.
-- Preserve additive, ordered migrations and staged RLS. Do not enable `FORCE`
-  while legacy n8n still uses the owner role.
+- Preserve additive, ordered migrations and staged RLS. Do not enable `FORCE`.
 - Keep dependency versions exactly pinned and update `uv.lock` with dependency
   changes.
 - Surface configuration, database, and runtime errors; do not add silent
@@ -29,7 +28,7 @@ LangGraph, and PostgreSQL. Read the relevant phase plan under
 
 ## Dev commands
 
-- `make up`: start the isolated dev Postgres (separate from production csa_db).
+- `make up`: start the isolated dev Postgres (separate from any production database).
 - `make db-reset`: recreate the local database from the schema baseline and
   migrations. This is destructive to that local database.
 - `make test`: run the test suite, skipping tests marked `slow` (packaged image
@@ -39,7 +38,7 @@ LangGraph, and PostgreSQL. Read the relevant phase plan under
 - `make run-gateway`: start only the local gateway process.
 - `make stop-gateway`: stop any running dev gateway process on port 18080.
 - `make restart-gateway`: stop any running dev gateway and start a fresh one.
-- `make down`: stop the isolated dev Postgres (separate from production csa_db).
+- `make down`: stop the isolated dev Postgres (separate from any production database).
 
 ## Definition of done
 

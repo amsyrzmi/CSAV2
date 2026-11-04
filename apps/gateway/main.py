@@ -340,7 +340,6 @@ def create_app() -> FastAPI:
                 "ok": receipt.accepted,
                 "duplicate": receipt.duplicate,
                 "trace_id": str(receipt.trace_id),
-                "proxied": receipt.proxied,
             },
         )
 
