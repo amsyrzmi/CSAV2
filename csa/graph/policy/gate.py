@@ -9,6 +9,7 @@ from pydantic import Field
 from csa.contracts.envelope import Channel, ContractModel
 from csa.contracts.plan import Intent
 from csa.contracts.state import GateVerdict, TurnState
+from csa.graph.policy.handoff import SERVICE_OFF
 
 POLICY_NAME = "lg07-gate-v1"
 FAILURE_PENALTY = 0.25
@@ -55,13 +56,20 @@ def evaluate(policy: Policy, state: TurnState) -> GateVerdict:
     def verdict(decision: Literal["send", "approve", "reject"], reason: str) -> GateVerdict:
         return GateVerdict(decision=decision, risk_score=risk, reason=reason, policy=POLICY_NAME)
 
-    if policy.deployment_mode == "shadow":
+    # The Overview chat is a private preview: it answers whatever the company's reply mode, and
+    # still follows every other review rule. The mode only governs what customers receive.
+    follows_mode = state.envelope.channel != Channel.WEB
+    if follows_mode and policy.deployment_mode == "shadow":
         return verdict("reject", "shadow_mode")
+    # The handoff has already muted the bot, so holding this reply would leave the customer
+    # with nothing and staff with no draft.
+    if state.handoff is not None and state.handoff.required and state.handoff.reason == SERVICE_OFF:
+        return verdict("send", "system_reply")
     plan = state.plan
     # Acknowledging a handoff and answering button taps must never wait for a human.
     if state.envelope.callback is not None or (plan and plan.reply_strategy == "escalate"):
         return verdict("send", "system_reply")
-    if policy.deployment_mode == "suggest":
+    if follows_mode and policy.deployment_mode == "suggest":
         return verdict("approve", "suggest_mode")
     if state.verified is False:
         return verdict("approve", "draft_verification_failed")

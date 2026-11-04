@@ -1,68 +1,72 @@
 "use client";
 
-import Image from "next/image";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { Suspense, useState } from "react";
-import {
-  Building2,
-  LayoutDashboard,
-  Mail,
-  LogOut,
-  Users,
-  KeyRound,
-  Bot,
-  Activity,
-  BookOpen,
-  MessageSquare,
-  CreditCard,
-  type LucideIcon,
-} from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useLayoutEffect, useState } from "react";
 import { identity } from "@/lib/identity-api";
 import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
-import { navigationFor, type NavKey } from "@/lib/navigation";
+import type { HrNavItem } from "@/lib/hr-paths";
+import { navigationFor } from "@/lib/navigation";
+import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
+import { useHrNav } from "@/components/console/hr/useHrNav";
+import { Rail } from "@/components/console/shell/Rail";
+import type { ShellAccount } from "@/components/console/shell/UserMenu";
+import { TopBar } from "@/components/console/shell/TopBar";
 import { Notice } from "@/components/console/ui";
 import { PageContextProvider } from "@/lib/page-context";
 
-const icons: Record<NavKey, LucideIcon> = {
-  overview: LayoutDashboard,
-  services: Bot,
-  hr: Users,
-  activity: Activity,
-  knowledge_base: BookOpen,
-  chat: MessageSquare,
-  inbox: MessageSquare,
-  email: Mail,
-  business: Building2,
-  tenants: Building2,
-  members: Users,
-  team: Users,
-  password: KeyRound,
-  subscriptions: CreditCard,
-};
+/**
+ * Reports the People & HR sub-pages for the rail. It reads `?client_id=` (a platform admin's
+ * tenant), so it renders under Suspense and renders nothing itself.
+ */
+function HrNavBridge({ me, enabled, path, onItems }: {
+  me: Me;
+  enabled: boolean;
+  path: string;
+  onItems: (items: HrNavItem[] | null) => void;
+}) {
+  const platform = me.role === "platform_admin";
+  const param = useSearchParams().get("client_id")?.trim() || null;
+  const tenant = platform ? param : me.active_client_id;
+  const items = useHrNav({ enabled, platform, tenant, path });
+  // A layout effect, so a changed tenant's old sub-links are dropped before the next paint.
+  useLayoutEffect(() => { onItems(items); }, [items, onItems]);
+  return null;
+}
 
 export function AppShell({
   me,
   packages,
   children,
+  initialRail,
+  tenantName,
 }: {
   me: Me;
   packages: PackageState[];
   children: React.ReactNode;
+  initialRail?: RailState;
+  tenantName?: string | null;
 }) {
   const path = usePathname();
   const router = useRouter();
   const admin = me.role === "platform_admin";
   const home = admin ? "/" : "/portal";
-  const links = navigationFor(me, packages).map((link) => ({
-    ...link,
-    icon: icons[link.key],
-  }));
+  const [hrItems, setHrItems] = useState<HrNavItem[] | null>(null);
+  const baseLinks = navigationFor(me, packages);
+  // People & HR gets its sub-pages once the HR context is known; until then (and if it fails) it is a plain link.
+  const links = baseLinks.map((link) =>
+    link.key === "hr" && hrItems?.length ? { ...link, children: hrItems } : link,
+  );
+  const [rail, setRail] = useState<RailState>(initialRail ?? "collapsed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  function toggleRail() {
+    const next: RailState = rail === "expanded" ? "collapsed" : "expanded";
+    setRail(next);
+    writeRail(next);
+  }
   async function signOut() {
     setBusy(true);
     setError("");
@@ -75,67 +79,52 @@ export function AppShell({
       setBusy(false);
     }
   }
+  const account: ShellAccount = {
+    name: me.user.display_name || me.user.email,
+    email: me.user.email,
+    tenant: tenantName ?? null,
+    role: me.role ? roleLabels[me.role] : "Not linked to a company yet",
+    busy,
+    onSignOut: signOut,
+  };
   return (
-    <div className="min-h-screen lg:flex">
-      <aside className="shell-sidebar flex flex-col lg:sticky lg:top-0 lg:h-screen lg:w-60 lg:shrink-0">
-        <Link href={home} className="flex h-20 items-center gap-3 px-6">
-          <Image
-            src="/brand/fourstacks-mark.svg"
-            alt=""
-            width={32}
-            height={32}
-          />
-          <span className="brand-wordmark text-lg font-semibold">
-            fourstacks.
-          </span>
-        </Link>
-        <nav
-          aria-label="Main navigation"
-          className="flex flex-wrap gap-1 p-3 lg:flex-col"
-        >
-          {links.map(({ href, label, icon: Icon }) => (
-            <Link
-              key={href}
-              href={href}
-              aria-current={path === href ? "page" : undefined}
-              className="shell-nav-link"
-            >
-              <Icon size={18} />
-              {label}
-            </Link>
-          ))}
-        </nav>
-        <div className="mt-auto border-t border-ink-200 p-5">
-          <p className="break-words text-sm font-semibold">
-            {me.user.display_name || me.user.email}
-          </p>
-          <p className="mt-1 text-xs text-ink-500">
-            {me.role ? roleLabels[me.role] : "No active membership"}
-          </p>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={signOut}
-            className="mt-4 flex min-h-11 items-center gap-2 text-sm text-ink-600 hover:text-brand-600"
-          >
-            <LogOut size={16} />
-            {busy ? "Signing out…" : "Sign out"}
-          </button>
-        </div>
-      </aside>
-      <div className="min-w-0 flex-1">
-        <header className="border-b border-ink-200 bg-white px-5 py-5 sm:px-8">
-          <p className="eyebrow">CSA Console</p>
-          <p className="mt-1 text-sm text-ink-600">
-            {admin ? "Platform administration" : "Tenant workspace"}
-          </p>
-        </header>
-        <main className="mx-auto max-w-6xl p-5 sm:p-8">
-          {error && (
-            <div className="mb-5">
-              <Notice error>{error}</Notice>
-            </div>
-          )}
+    <div
+      data-testid="shell-root"
+      className="flex min-h-dvh bg-[var(--fs-surface)] text-[color:var(--fs-text)]"
+    >
+      <Suspense fallback={null}>
+        <HrNavBridge
+          me={me}
+          enabled={baseLinks.some((link) => link.key === "hr")}
+          path={path}
+          onItems={setHrItems}
+        />
+      </Suspense>
+      <Rail
+        links={links}
+        path={path}
+        home={home}
+        state={rail}
+        onToggle={toggleRail}
+      />
+      {/* A page marked `data-fill` (Overview) gets the whole window below the top bar: the
+          column becomes exactly the viewport tall (never shorter than 30rem) and <main> fills
+          it edge to edge, so the page's own scroll areas scroll instead of the document. */}
+      <div className="min-w-0 flex-1 has-[[data-fill]]:flex has-[[data-fill]]:h-dvh has-[[data-fill]]:min-h-[30rem] has-[[data-fill]]:flex-col">
+        <TopBar
+          links={links}
+          path={path}
+          home={home}
+          fallbackTitle={admin ? "Platform administration" : "Workspace"}
+          account={account}
+        />
+        {/* Outside <main> and every dialog, so a failed sign-out is never hidden behind one. */}
+        {error && (
+          <div className="px-4 pt-4 sm:px-8">
+            <Notice error>{error}</Notice>
+          </div>
+        )}
+        <main className="mx-auto max-w-6xl p-5 sm:p-8 has-[[data-fill]]:flex has-[[data-fill]]:min-h-0 has-[[data-fill]]:w-full has-[[data-fill]]:max-w-none has-[[data-fill]]:flex-1 has-[[data-fill]]:flex-col has-[[data-fill]]:p-0">
           <PageContextProvider>
             {children}
             {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}

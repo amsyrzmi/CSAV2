@@ -7,7 +7,9 @@ from typing import Any, LiteralString, cast
 from uuid import UUID, uuid4
 
 import httpx
+import psycopg
 import pytest
+from csa.console.capabilities import CapabilityToggleIn, toggle_capability
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
 from csa.console.services import (
     ActivateIn,
@@ -18,6 +20,7 @@ from csa.console.services import (
     request_package,
     suspend_package,
 )
+from csa.core.tenancy import tx
 from csa.email.api import build_email_router
 from csa.hr.api import build_hr_router
 from fastapi import HTTPException
@@ -153,9 +156,9 @@ async def test_request_then_activate_flips_member_switches_and_audits(
     found = await caps(sessions, tenant)
     assert all(
         found[n]["is_enabled"] and found[n]["client_enabled"]
-        for n in ("kb_agent", "ticket_agent", "escalation_agent", "order_approval")
+        for n in ("ticket_agent", "escalation_agent", "order_approval")
     )
-    assert not found["order_agent"]["is_enabled"]
+    assert not found["order_agent"]["is_enabled"] and not found["kb_agent"]["is_enabled"]
     audit = await sessions.q(
         "SELECT action, target_id, details FROM console_audit"
         " WHERE client_id=%s AND action LIKE 'service.%%' ORDER BY created_at",
@@ -176,7 +179,6 @@ async def test_request_then_activate_flips_member_switches_and_audits(
     )
     assert [s["target_id"] for s in switches] == [
         "escalation_agent",
-        "kb_agent",
         "order_approval",
         "ticket_agent",
     ]
@@ -212,7 +214,7 @@ async def test_addon_requires_active_base_and_base_cannot_suspend_under_active_a
     found = await caps(sessions, tenant)
     assert not found["order_agent"]["is_enabled"] and not found["invoice_agent"]["is_enabled"]
     assert (
-        found["kb_agent"]["is_enabled"]
+        found["ticket_agent"]["is_enabled"]
         and found["escalation_agent"]["is_enabled"]
         and found["order_approval"]["is_enabled"]
     )
@@ -298,11 +300,11 @@ async def test_staff_email_and_hr_have_no_capability_members_and_email_inner_swi
     assert svc["hr"].inner_switch is None and svc["hr"].agents == []
     assert svc["customer_support"].inner_switch is None
     assert [a.name for a in svc["customer_support"].agents] == [
-        "kb_agent",
         "ticket_agent",
         "escalation_agent",
         "order_approval",
     ]
+    assert [a.name for a in svc["knowledge_base"].agents] == ["kb_agent"]
     assert svc["customer_support"].can_request and not svc["customer_support"].can_activate
     assert not svc["marketplaces"].can_request
     assert [
@@ -406,6 +408,11 @@ async def test_inactive_packages_block_inbox_business_kb_for_every_role(sessions
         f"/console/v1/services/customer_support/activate?client_id={t}",
         {"reference": "Q"},
     )
+    await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/knowledge_base/activate?client_id={t}",
+        {"reference": "Q"},
+    )
     reader, _ = await sessions.member(role="read_only")
     assert (await reader.get("/console/v1/kb/documents")).status_code == 200
     assert (await reader.get("/console/v1/business/orders")).status_code == 403
@@ -484,3 +491,250 @@ async def test_hr_and_email_apis_require_their_packages(sessions, services_app):
     assert (await browser.get("/console/v1/hr/guidance")).status_code != 403
     r = await browser.get("/console/v1/email/context")
     assert r.status_code == 403 and r.json()["detail"] == "package_inactive"
+
+
+# --- last_change (0502): newest matching console_audit row, read through a definer function.
+
+ROLE_LABEL = "a platform administrator"
+TEAM_LABEL = "a member of your team"
+
+
+async def _services(sessions: SessionWorld, tenant: UUID, actor: ConsoleActor) -> dict[str, Any]:
+    rows = await list_services(
+        sessions.pool, tenant, actor=actor, kb_model=None, kb_tei_configured=False
+    )
+    return {s.key: s for s in rows}
+
+
+def _agent_change(service: Any, name: str) -> Any:
+    agent = next(a for a in service.agents if a.name == name)
+    assert agent.capability is not None
+    return agent.capability.last_change
+
+
+async def test_last_change_names_the_actor_for_platform_admins_only(
+    sessions: SessionWorld,
+) -> None:
+    admin, tenant_admin = await actors(sessions)
+    tenant = UUID(sessions.tenants[0])
+    before = await _services(sessions, tenant, admin)
+    assert before["customer_support"].last_change is None
+    assert _agent_change(before["customer_support"], "ticket_agent") is None
+    await activate_package(
+        sessions.pool, tenant, "customer_support", ActivateIn(reference="Q-LC"), actor=admin
+    )
+    seen = await _services(sessions, tenant, admin)
+    change = seen["customer_support"].last_change
+    assert change is not None and change.action == "activated"
+    assert change.actor == admin.display_name == "Synthetic Admin"
+    assert change.at is not None
+    # Activation switches members on: is_enabled false->true reads as a subscription.
+    member = _agent_change(seen["customer_support"], "ticket_agent")
+    assert member is not None and member.action == "subscribed"
+    assert member.actor == admin.display_name
+    # A package nobody touched has no last change.
+    assert seen["orders_products"].last_change is None
+    assert _agent_change(seen["orders_products"], "order_agent") is None
+
+    hidden = await _services(sessions, tenant, tenant_admin)
+    change = hidden["customer_support"].last_change
+    assert change is not None and change.action == "activated" and change.actor == ROLE_LABEL
+    member = _agent_change(hidden["customer_support"], "ticket_agent")
+    assert member is not None and member.actor == ROLE_LABEL
+    blob = "".join(
+        s.last_change.model_dump_json() if s.last_change else "" for s in hidden.values()
+    ) + "".join(
+        a.capability.last_change.model_dump_json()
+        for s in hidden.values()
+        for a in s.agents
+        if a.capability and a.capability.last_change
+    )
+    assert "subscribed" in blob and "activated" in blob
+    for secret in (str(admin.user_id), admin.email, admin.display_name):
+        assert secret not in blob
+    assert set(change.model_dump()) == {"action", "at", "actor"}
+
+
+async def test_last_change_tracks_request_and_suspension(sessions: SessionWorld) -> None:
+    admin, tenant_admin = await actors(sessions)
+    tenant, pool = UUID(sessions.tenants[0]), sessions.pool
+    await request_package(pool, tenant, "customer_support", actor=tenant_admin)
+    change = (await _services(sessions, tenant, admin))["customer_support"].last_change
+    assert change is not None and change.action == "requested"
+    assert change.actor == tenant_admin.display_name
+    # The tenant admin's own request reads as a team member's, never by name.
+    mine = (await _services(sessions, tenant, tenant_admin))["customer_support"].last_change
+    assert mine is not None and mine.action == "requested" and mine.actor == TEAM_LABEL
+    for secret in (str(tenant_admin.user_id), tenant_admin.email, tenant_admin.display_name):
+        assert secret not in mine.model_dump_json()
+    await activate_package(pool, tenant, "customer_support", ActivateIn(reference="Q"), actor=admin)
+    await activate_package(pool, tenant, "orders_products", ActivateIn(reference="Q"), actor=admin)
+    await suspend_package(pool, tenant, "orders_products", SuspendIn(), actor=admin)
+    seen = await _services(sessions, tenant, admin)
+    change = seen["orders_products"].last_change
+    assert change is not None and change.action == "suspended"
+    off = _agent_change(seen["orders_products"], "order_agent")
+    assert off is not None and off.action == "unsubscribed"
+    assert seen["customer_support"].last_change.action == "activated"  # type: ignore[union-attr]
+
+
+async def test_capability_toggles_map_to_last_change_actions(sessions: SessionWorld) -> None:
+    admin, tenant_admin = await actors(sessions)
+    tenant, pool = UUID(sessions.tenants[0]), sessions.pool
+
+    async def toggle(actor: ConsoleActor, **switches: bool) -> Any:
+        out = await toggle_capability(
+            pool, tenant, "order_agent", CapabilityToggleIn(**switches), actor_id=actor.user_id
+        )
+        assert out is not None
+        return _agent_change(
+            (await _services(sessions, tenant, admin))["orders_products"], "order_agent"
+        )
+
+    change = await toggle(admin, is_enabled=True)
+    assert (
+        change is not None and change.action == "subscribed" and change.actor == "Synthetic Admin"
+    )
+    change = await toggle(tenant_admin, client_enabled=True)
+    assert change is not None and change.action == "tenant_switch_on"
+    assert change.actor == tenant_admin.display_name
+    seen_by_tenant = (await _services(sessions, tenant, tenant_admin))["orders_products"]
+    switch = _agent_change(seen_by_tenant, "order_agent")
+    assert switch is not None and switch.action == "tenant_switch_on" and switch.actor == TEAM_LABEL
+    change = await toggle(tenant_admin, client_enabled=False)
+    assert change is not None and change.action == "tenant_switch_off"
+    change = await toggle(admin, is_enabled=False)
+    assert change is not None and change.action == "unsubscribed"
+    # Both switches in one row: the subscription wins.
+    change = await toggle(admin, is_enabled=True, client_enabled=True)
+    assert change is not None and change.action == "subscribed"
+    real = await toggle(tenant_admin, client_enabled=False)
+    assert real is not None and real.action == "tenant_switch_off"
+    # A toggle that changes nothing never becomes the last change: the older real one stays.
+    assert await toggle(admin, client_enabled=False) == real
+    assert await toggle(admin, is_enabled=True) == real
+
+
+async def test_activation_no_op_member_rows_do_not_hide_an_older_change(
+    sessions: SessionWorld,
+) -> None:
+    admin, tenant_admin = await actors(sessions)
+    tenant, pool = UUID(sessions.tenants[0]), sessions.pool
+    for actor, switches in (
+        (admin, CapabilityToggleIn(is_enabled=True)),
+        (tenant_admin, CapabilityToggleIn(client_enabled=True)),
+    ):
+        out = await toggle_capability(
+            pool, tenant, "ticket_agent", switches, actor_id=actor.user_id
+        )
+        assert out is not None
+    before = _agent_change(
+        (await _services(sessions, tenant, admin))["customer_support"], "ticket_agent"
+    )
+    assert before is not None and before.action == "tenant_switch_on"
+    # Activation writes a capability.updated row for ticket_agent where nothing changed.
+    await activate_package(
+        pool, tenant, "customer_support", ActivateIn(reference="Q-NOOP"), actor=admin
+    )
+    rows = await sessions.q(
+        "SELECT details FROM console_audit WHERE client_id=%s AND target_id='ticket_agent'"
+        " AND action='capability.updated' ORDER BY created_at DESC LIMIT 1",
+        tenant,
+    )
+    assert rows[0]["details"]["before"] == rows[0]["details"]["after"]
+    seen = await _services(sessions, tenant, admin)
+    assert seen["customer_support"].last_change.action == "activated"  # type: ignore[union-attr]
+    assert _agent_change(seen["customer_support"], "ticket_agent") == before
+
+
+async def test_last_change_breaks_time_ties_by_id(sessions: SessionWorld) -> None:
+    tenant = sessions.tenants[0]
+    low, high = "00000000-0000-4000-8000-000000000000", "ffffffff-ffff-4fff-bfff-ffffffffffff"
+    # Same time; the higher id is inserted last, so insertion order alone would pick the other.
+    for row_id, action in ((low, "service.requested"), (high, "service.activated")):
+        await sessions.q(
+            "INSERT INTO console_audit (id, client_id, action, target_id, details, created_at)"
+            " VALUES (%s, %s, %s, 'customer_support', '{}', '2026-10-20T09:00:00Z')",
+            row_id,
+            tenant,
+            action,
+        )
+    async with tx(sessions.pool, tenant) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT action FROM public.console_last_change(%s, 'customer_support',"
+                " ARRAY['service.requested', 'service.activated'])",
+                (tenant,),
+            )
+        ).fetchall()
+    assert [r["action"] for r in rows] == ["service.activated"]
+
+
+async def test_last_change_never_crosses_tenants(sessions: SessionWorld) -> None:
+    admin, _ = await actors(sessions)
+    mine, other = UUID(sessions.tenants[0]), UUID(sessions.tenants[1])
+    await activate_package(
+        sessions.pool, other, "customer_support", ActivateIn(reference="Q"), actor=admin
+    )
+    seen = await _services(sessions, mine, admin)
+    assert all(s.last_change is None for s in seen.values())
+    assert all(
+        a.capability.last_change is None for s in seen.values() for a in s.agents if a.capability
+    )
+    assert (await _services(sessions, other, admin))["customer_support"].last_change is not None
+    call = (
+        "SELECT * FROM public.console_last_change(%s, 'customer_support',"
+        " ARRAY['service.activated'])"
+    )
+    async with tx(sessions.pool, str(mine)) as conn:
+        assert await (await conn.execute(call, (mine,))).fetchall() == []
+        # The function also refuses a tenant other than the transaction's own.
+        assert await (await conn.execute(call, (other,))).fetchall() == []
+    async with tx(sessions.pool, str(other)) as conn:
+        rows = await (await conn.execute(call, (other,))).fetchall()
+    assert len(rows) == 1 and rows[0]["action"] == "service.activated"
+    assert set(rows[0]) == {"action", "at", "actor_name", "actor_is_platform_admin", "details"}
+    assert rows[0]["actor_is_platform_admin"] is True
+    # Without a tenant in the transaction the function returns nothing.
+    async with sessions.pool.connection() as conn:
+        assert await (await conn.execute(call, (other,))).fetchall() == []
+
+
+async def test_last_change_function_does_not_widen_csa_app_grants(sessions: SessionWorld) -> None:
+    tenant = sessions.tenants[0]
+    async with tx(sessions.pool, tenant) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT * FROM public.console_last_change(%s, 'x', ARRAY['service.activated'])",
+                (tenant,),
+            )
+        ).fetchall()
+    assert rows == []
+    direct: tuple[LiteralString, ...] = (
+        "SELECT 1 FROM public.console_audit LIMIT 1",
+        "SELECT display_name FROM public.console_users LIMIT 1",
+    )
+    for statement in direct:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            async with tx(sessions.pool, tenant) as conn:
+                await conn.execute(statement)
+    grants = await sessions.q(
+        "SELECT has_function_privilege('csa_app', p.oid, 'EXECUTE') AS app,"
+        " has_function_privilege('csa_ro', p.oid, 'EXECUTE') AS ro,"
+        " has_function_privilege('csa_identity', p.oid, 'EXECUTE') AS ident,"
+        " has_table_privilege('csa_app', 'public.console_audit', 'SELECT') AS audit_select,"
+        " has_table_privilege('csa_app', 'public.console_users', 'SELECT') AS users_select,"
+        " (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'public.console_audit'::regclass)"
+        " AS forced"
+        " FROM pg_proc p WHERE p.oid = 'public.console_last_change(uuid,text,text[])'::regprocedure"
+    )
+    assert grants == [
+        {
+            "app": True,
+            "ro": False,
+            "ident": False,
+            "audit_select": False,
+            "users_select": False,
+            "forced": False,
+        }
+    ]

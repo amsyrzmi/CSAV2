@@ -98,3 +98,38 @@ test("confirm and cancel name the tenant when one is given", async () => {
   await client.cancelProposal("p1", undefined, "t");
   assert.equal(last().url, "/console/v1/workspace/proposals/p1/cancel?client_id=t");
 });
+
+const M3_CODES = [
+  "planner_invalid_output", "email_model_unavailable", "hr_model_unavailable",
+  "email_timeout_check_saved_state", "hr_agent_timeout_check_saved_state", "training_not_draft",
+  "stale_version", "invalid_transition", "csrf_required", "no_employee_link",
+  "hr_training_not_permitted", "reply_approval_not_found", "reply approval not found",
+];
+
+test("every reachable assistant error code shows a plain sentence, not the code", async () => {
+  for (const code of M3_CODES) {
+    reply = () => new Response(JSON.stringify({ detail: code }), { status: 409 });
+    await assert.rejects(client.confirmProposal("p1"), (e) =>
+      e instanceof ApiError && e.code === code && e.message !== code && /^[A-Z].*[.]$/.test(e.message), code);
+  }
+  reply = () => new Response(JSON.stringify({ detail: "no_employee_link" }), { status: 409 });
+  await assert.rejects(client.confirmProposal("p1"), (e) => e.message ===
+    "Your login isn't linked to an employee record, so you can't submit training requests. Ask your HR owner to link it.");
+});
+
+test("a non-JSON server error says something went wrong, not the status", async () => {
+  reply = () => new Response("<html>bad gateway</html>", { status: 500 });
+  await assert.rejects(client.confirmProposal("p1"), (e) =>
+    e instanceof ApiError && e.status === 500 && e.message === "Something went wrong on our side. Try again.");
+  reply = () => new Response("", { status: 502 });
+  await assert.rejects(client.confirmProposal("p1"), (e) => e.message === "Something went wrong on our side. Try again.");
+  // A non-5xx non-JSON failure keeps its status text.
+  reply = () => new Response("nope", { status: 404 });
+  await assert.rejects(client.confirmProposal("p1"), (e) => e.message === "Request failed (404)");
+});
+
+test("a turn always carries a tab: no context becomes the overview", () => {
+  assert.deepEqual(client.turnPageContext(null), { tab: "overview" });
+  const ctx = { tab: "hr", section: "training", record: { kind: "employee", id: "e1" } };
+  assert.equal(client.turnPageContext(ctx), ctx);
+});

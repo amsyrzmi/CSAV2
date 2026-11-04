@@ -48,7 +48,8 @@ persistent migration, deployment, live-provider or payroll-compliance acceptance
   No employee references, private areas, records or model input are returned.
   The staff workspace renders fixed guidance and same-origin links to the existing
   HR pages; this is separate from persisted workspace turns and their action union.
-  HR navigation accepts only `section=directory|training`; platform links retain the
+  HR navigation accepts only `section=directory|training` (since project 1a the HR pages
+  redirect these to `/people` and `/training`); platform links retain the
   explicitly selected `client_id`. URL hints never establish authority. Opening a
   page rechecks resource eligibility, and read-only sessions still cannot mutate.
 - `/operations` handles explicitly granted administration and private operations;
@@ -68,6 +69,296 @@ persistent migration, deployment, live-provider or payroll-compliance acceptance
 All HR responses are no-store; validation errors do not echo submitted HR data.
 External calendar/email delivery, hiring/ranking, payments, filings and automatic
 PCB calculation are not implemented by these local receipts.
+
+### HR access page
+
+The "Who can do what" page (People & HR) reads and changes each member's HR access as
+nine switches. The server works out the switches, the "Custom access" rows, the
+warnings and the version; the page shows what it returns. Switch ids:
+`directory`, `own_requests`, `approves_team`, `hr_team`, `manage_people`, `recruitment`,
+`attendance`, `payroll_prepare`, `payroll_review`. `manage_people` ("Manage people", migration
+0520) is the grant row `people.manage` on the `hr_operator` scope with no fields; the
+`hr_team` preset turns it on and no other preset does. Neither it nor its grant can change
+access.
+
+- **Owner only.** All three routes need the HR client owner. Anyone else, including
+  another tenant's owner, gets 404 `resource_unavailable`, as for
+  `/records/members`.
+- `GET /access/people?cursor=&q=&team=&has=&reports_to=` returns
+  `AccessPeoplePage`: up to 50 people (`items`), an opaque `next_cursor`, the
+  `version` stamp, `counts` per switch and the current `warnings`. `q` matches part
+  of the name (any case), `team` the department, `has` a switch that is on or
+  included, and `reports_to` the manager's employee id. `counts`, `warnings` and
+  `version` always cover the whole client, whatever the filters.
+- Each person carries `on` (every switch whose rows are all present),
+  `included` (a switch whose rows sit inside another switch that is on, which
+  cannot be turned off on its own), `custom` (the rows no switch describes, in
+  plain words; for the HR owner, without the standard set a move of the title gives,
+  which the page sums up in one line), `team_size` and `is_owner`. Every save keeps
+  the rows no switch describes, so the owner's own decision rows on `client_owner`
+  are never dropped here.
+- `POST /access/changes` takes `AccessChanges`: `batch_id`, the `version` the
+  page showed, `dry_run` and 1–50 `changes`, each `{user_id, on, base}`: the
+  member's full desired switch set (`on`) and the `on` set the page loaded them
+  with (`base`), both at most 16 unique switch ids (9 exist; the headroom keeps the next switch from needing
+  another function rewrite); user ids are unique. The body
+  cap is 65536 bytes.
+  - A `version` that no longer matches gives 409 `access_changed` and writes
+    nothing (a dry run too). The page reloads, keeps its own edits over each
+    member's latest switches, and lets the owner save again.
+  - A person whose current switches differ from their `base` is `refused` with
+    `changed_since_load` and nothing is written for them (a dry run too). This
+    covers a member who was not on the reloaded page.
+  - Each person is saved through `/operations`' own path (`access.save`, then
+    `private_access.save` per changed area), with idempotency keys derived from
+    `batch_id` and `user_id`, so each gets the usual receipt and authority event.
+    The version is checked once per batch and each **operation** is its own
+    transaction: a batch is not atomic, and neither is one person's save. A save
+    that stops after one of the person's operations landed is `refused` with
+    `partly_saved`.
+  - **Batch ids:** every new submit needs a new `batch_id`. Reuse one only to
+    retry the same body after a lost response (the page's dry run and its
+    confirm share one).
+  - **Replay:** if any person of the batch already has a receipt for that
+    `batch_id`, the batch is a retry and the version stamp is not checked. The
+    per-person guards still apply: a person with an `access.save` receipt is
+    compared with it (the same rows finish any missing area changes and report
+    `saved`; different rows are `refused` with `access_changed` and write
+    nothing); a person with only area receipts finishes the missing area
+    changes; and a person with no receipt is checked against `base` and saved as
+    usual.
+  - `dry_run: true` writes nothing and returns the outcomes and the `warnings`
+    for the proposed state.
+  - `AccessChangeResult.results` has one entry per person: `saved`, `unchanged`
+    (nothing to write) or `refused` with a `reason` (`not_a_member`,
+    `too_many_rows`, `changed_since_load`, `partly_saved`, `access_changed` on a
+    replay, or an HR policy code). Other people in the batch still save. It also
+    returns the new `version` and the `warnings`.
+  - A `cursor` that is not one this API returned gives 409 `invalid_cursor` (404
+    `resource_unavailable` for a non-owner), on `/access/people` and
+    `/access/recent`.
+- Warnings (`AccessWarningOut`, names resolved by the server): `no_approver`,
+  `no_manager`, `no_payroll_reviewer`, `manager_without_team` and
+  `prepares_and_reviews`. They warn; they never block a save.
+- `GET /access/recent?cursor=` returns `AccessEventPage`: up to 50 `access.save`,
+  `private_access.save` and `owner.move` events, newest first, with an opaque cursor. Each
+  `access.save` lists `turned_on` and `turned_off` against that person's previous
+  `access.save`; a private-area event gives `area` and `area_enabled`. A member who
+  is no longer enabled has `actor_name` or `target_name` `null` ("Former member").
+  Each event has a `source`: `page` for a save on this page, `invitation` for access
+  set on an invitation when it was accepted, or `owner_move`. An `invitation` event carries the `preset`
+  (otherwise `null`); its actor is whoever chose the preset (a platform admin shows as
+  "FourStacks admin"), and `turned_on` is only what the preset added to what the person
+  already had. An `owner_move` event is a change of HR owner: its actor is whoever moved
+  it (a platform admin shows as "FourStacks admin"), its target is the new owner,
+  `replaced_owner` is true when there was an owner before, and `previous_owner_name` is that
+  owner (`null` for a first owner or once they are no longer an enabled member, when the page
+  says "replacing Former member"); it changes no switches.
+- **Access chosen on an invitation** (`InviteIn.hr_preset`, see the invitation table
+  below) is applied when the invitation is accepted. If it is not, it waits for the HR
+  owner: a preset other than Staff whose chooser is no longer the HR owner (or no longer an
+  enabled user with an enabled membership in the tenant), or any preset, Staff included,
+  whose apply failed (for example the tenant's HR lock was held for more than 5 s). HR owner
+  only, tenant query as for the other `/access` routes:
+  - `GET /access/invitations` returns `PendingInvitationPage`: `items` of
+    `{token_id, user_id, display_name, preset, chosen_by, chooser_name, accepted_at}`.
+    `chooser_name` is "FourStacks admin" for a platform admin and `null` once the chooser
+    is no longer an enabled member.
+  - `POST /access/invitations/{token_id}/apply` applies the chosen preset now, on top of
+    what the person already has (it never turns a switch off), and returns an
+    `AccessPersonResult` with `outcome` `saved`. It checks again that the caller is the HR
+    owner. Refusals are errors, never a `refused` outcome: 409
+    `invitation_already_handled` when it was already applied or dismissed; 404
+    `resource_unavailable` for an unknown token.
+  - `POST /access/invitations/{token_id}/dismiss` leaves the person's access as it is; 204.
+    The same 409 applies.
+- The company features ("What the HR assistant can help with") stay on
+  `PUT /agents`. They control only the HR assistant and agents; they never limit
+  what staff can do in the console, and no switch or warning depends on them.
+
+### People, departments and Manage people (project 1a, migration 0520)
+
+The People & HR pages are `/portal/hr/…` for staff and `/hr/…` for a platform admin (who keeps
+`client_id` on every link): Home (`/portal/hr`), `people`, `people/org-chart`,
+`people/departments`, `people/new`, `people/<employee_id>`, `recruitment`, `leave`, `payroll`,
+`training`, `requests` and `settings`. An old `?section=` link redirects to its tab
+(`directory` and `people` to People, `attendance` and `leave` to Leave & attendance, `workflows`
+and `requests` to Requests; `training`, `recruitment`, `payroll` and `settings` to their own).
+The new routes below are GET only, return no-store, and take only `client_id` and the query keys
+named here (`/people` is the only one with any; another key is 400 `invalid_hr_query`). A person
+the caller may not see, and any caller the route does not serve, gets 404 `resource_unavailable`.
+
+**Who sees what.** The server decides the viewer: `hr` (the HR owner or a holder of Manage
+people), `directory` (the complete directory switch: `directory.read` on `hr_operator` with all
+five basic fields) or `self` (any other HR session of the tenant). A hand-made partial directory
+grant is `self`, not `directory`. A `self` viewer can open only their own linked person's profile;
+the list, org chart and departments are 404 for them. A `directory` viewer sees active and starting
+people with basic fields only. The HR-only fields (`employment_profile`, `version`,
+`account_linked`, and Left people) are present for `hr` and `null` or absent for everyone else.
+
+- `GET /people?q=&department=&manager=&status=&cursor=` returns `PeoplePage`: up to 50 `items`
+  (`HrPersonOut`: `employee_id`, `display_name`, `job_title`, `department_id`, `department`,
+  `manager_id`, `manager_name`, `work_email`, `work_phone`, `start_date`, `employment_type`,
+  `status`, and the HR-only three), an opaque `next_cursor` and the `total` that matches.
+  `q` (at most 120 characters) uses the directory's word-by-word rule (the first 5 words, each in
+  the name or work email or starting a word of the job title). `department` is a department id,
+  `none` or `all`; `manager` an employee id; `status` is `active`, `starting` or `left`. With no
+  `status` the list shows Active and Starting; `left` is for `hr` only and is 404 for the others.
+  `starting` means the start date is after today in Asia/Kuala_Lumpur. `cursor` is a number the
+  API returned. A `department` that is neither `none` nor an id is 409 `invalid_department_filter`.
+- `GET /people/{employee_id}` returns `PersonProfile`: the `person`, the `sections` the viewer may
+  open (`overview` for everyone; `access` and `history` for `hr`) and `can_edit`.
+- `GET /people/{employee_id}/history` returns `PersonHistory` (`hr` only): up to 200 changes,
+  newest first, each `{changed_at, actor_name, fields:[{field, old, new}]}`, and `truncated`.
+  A database trigger writes one row per change from any path, so changes made through
+  `employee.save` appear too.
+- `GET /people/{employee_id}/access` returns `PersonAccessOut` (`hr` only): the linked
+  `account` (`{user_id, display_name}` or `null`), the `on` switches, the `custom` rows and
+  `is_owner`.
+- `GET /org-chart` returns `OrgChart`: `nodes` (up to 5000) and `looped`, the ids that sit in a
+  manager loop (shown flat). `directory` viewers see active and starting people.
+- `GET /departments` returns `DepartmentList`: each `{department_id, name, archived, version,
+  people}`. `hr` and `directory` viewers only.
+- `GET /home` returns `HrHome` (`training_waiting`, `requests_waiting`): counts of what waits for
+  the caller, from the caller's own grants.
+
+**Departments** are rows (`hr_departments`). The old free-text `department` was folded into rows by
+the migration (names that differ only in case or spacing become one department), and the text
+column stays as a mirror of the linked department's name, kept by triggers. So `employee.save`, the
+directory and every existing reader keep working. A department name stays taken while archived.
+
+**New operations** on `POST /operations` (CSRF and `Idempotency-Key`, as for the others):
+
+- `person.add` `{employee_id, values, employment_profile?}`: a new active person. `employee_id`
+  is chosen by the client, so a retry is safe. `values` is `{display_name, job_title, start_date,
+  manager_id?, department_id? | new_department?, work_email?, work_phone?, employment_type?}`
+  (`employment_type` is `full_time`, `part_time`, `contract` or `intern`; `job_title` and
+  `start_date` are required here; giving both `department_id` and `new_department` is 422).
+- `person.update` `{employee_id, expected_version, values, employment_profile?}`: every editable
+  field at once. It never changes whether the person is active (leaving and rehire are 1b), and
+  a `manager_id` equal to `employee_id` is 422. A stale `expected_version` is 409 `person_changed`.
+  The `employment_profile` (`region`, `legal_entity_reference`, `employment_category`) is
+  all-three-or-none.
+- `department.save` `{department_id, expected_version?, name, archived}`: create (no
+  `expected_version`), rename, archive or restore. A stale version is 409 `department_changed`.
+- `account.link` `{employee_id, account_id | null}`: link a person to a tenant member's console
+  account, or unlink. HR owner only.
+
+`person.add`, `person.update` and `department.save` are for the HR owner or a Manage people
+holder; the database checks again. They write a receipt but no authority event, and cannot change
+access, account links or whether a person is active. `employee.save` stays in the API for
+the HR owner (it is the only way to change `is_active` until 1b; the console no longer has a form
+for it).
+
+Refusals are 409 with the code as `detail`, except `permission_denied` and `resource_unavailable`
+(404 `resource_unavailable`): `employee_exists`, `person_changed`, `manager_unavailable`,
+`manager_loop` (the new manager reports, directly or not, to this person), `manager_is_you` (a
+non-owner cannot newly make their own linked person anyone's manager), `own_manager_owner_only` (a
+non-owner cannot change their own linked person's manager), `department_unavailable`,
+`department_archived`, `department_changed`, `department_name_taken`, `account_taken` (the
+account is linked to another person) and `member_unavailable` (not an active member of the tenant).
+Validation failures are 422 `invalid_hr_input` with no field named.
+
+**`GET /records/interviewers`** (a new `records` area) returns `{user_id, display_name}` for every
+enabled console member of the tenant, for the HR owner or anyone with private recruitment
+access (everyone else gets 404). The Recruitment tab uses it to choose an interviewer.
+
+**`GET /context` (`HrContext`) gained three fields:** `switches` (the access switches that are on
+for the caller, in switch order), `workflows` (the caller's `domain.action` workflow grants, sorted
+and unique) and `hr_duties` (true for the HR owner and for anyone holding a switch beyond
+directory and own requests). The console uses them to hide tabs the caller cannot use; they
+never grant anything.
+
+### Personal details, documents and leaving (project 1b, migration 0521)
+
+Every route below takes only `client_id` (the upload also takes `kind`) and answers no-store. A
+caller the route does not serve gets 404 `resource_unavailable`, never 403. Writes need CSRF; the
+upload, the removal and the operations also need an `Idempotency-Key`.
+
+**The Sensitive details switch.** `sensitive_details` is a new access switch (`people.sensitive`
+on the `hr_operator` scope, in no preset). It appears in `SwitchId`, in `HrContext.switches` and on
+the access page like the others, counts as an HR duty, and changes no access: only the HR owner
+changes access.
+
+**People and profiles.** `HrPersonOut.status` gains `leaving` (active with a last day that has not
+passed in Asia/Kuala_Lumpur), and `HrPersonOut` gains `last_day` (HR viewers, the person and their
+direct manager; `null` for everyone else) and `leaving` (`{reason, note}`, HR viewers only).
+`GET /people?status=leaving` lists them; with no `status` the list shows Active, Starting and
+Leaving people. `PersonProfile.sections` is now, in this order, `overview`; `personal` (the HR
+owner, Sensitive details holders and the person themself); `documents` (the HR owner, Manage people
+holders and the person themself); then `access` and `history` for `hr` viewers. History fields gain
+`last_day`, `leaving_reason`, the twelve personal field names (with `old` and `new` always `null`)
+and `document` (`old` or `new` reads like `Contract: offer.pdf`). A history row with no actor (the
+leaver finish) has `actor_name` `System`.
+
+**Personal details.**
+
+- `GET /people/{employee_id}/personal` returns `PersonalOut`: `ic_or_passport`, `date_of_birth`,
+  `home_address`, `personal_phone`, `emergency_name`, `emergency_relationship`, `emergency_phone`,
+  `bank_name`, `bank_account`, `tax_number`, `epf_number`, `socso_number`, `version` (`null` until
+  the first save) and `can_edit` (`all` for the HR owner and Sensitive details holders, `contact`
+  for the person). The five numbers are masked: `•••• ` and the last 4 characters, or `••••` for 4
+  characters or fewer.
+- `POST /people/{employee_id}/personal/reveal` `{field}` (one of `ic_or_passport`, `bank_account`,
+  `tax_number`, `epf_number`, `socso_number`) returns `{value}` in full, or `null` when none is
+  stored. Every call is recorded in `hr_personal_reveals` (who, whose, which, when).
+- `personal.save` on `POST /operations` `{employee_id, expected_version, values, encrypted}`.
+  `values` holds the plain fields and `encrypted` the numbers; a key that is absent keeps the
+  stored value and `null` clears it. The person may send only `home_address`, `personal_phone` and
+  the three emergency fields (anything else is 409 `personal_field_refused`). A stale version is
+  409 `person_changed`. A number equal to the stored one is not a change. The receipt's
+  `version` is 0 when nothing was saved and no record exists. A same-key retry returns the first
+  receipt. The numbers are encrypted with `CREDENTIALS_KEY`, and the request fingerprint is an
+  HMAC keyed from it, so it never holds a plain hash of a number. A 422 is `invalid_hr_input` and
+  never repeats a submitted value.
+
+**Documents.** The gateway needs `HR_UPLOAD_ROOT`; without it these routes answer 503
+`hr_documents_unavailable`.
+
+- `GET /people/{employee_id}/documents` returns `DocumentList`: `items` of `DocumentOut`
+  (`document_id`, `kind`, `file_name`, `media_type`, `byte_size`, `uploaded_at`,
+  `uploaded_by_name`), newest first. The HR owner and Manage people holders see every document;
+  the person sees their own `contract`, `identity` and `certificate` documents, not `other`. A
+  person outside the tenant is 404.
+- `POST /people/{employee_id}/documents?kind=` (`contract`, `identity`, `certificate` or `other`)
+  takes one multipart field `file`: PDF, JPG, PNG or DOCX, at most 10 MB (413 `file exceeds 10
+  MB`; more than one file is 422 `upload one file`). It returns 201 `DocumentOut`; a retry with the
+  same `Idempotency-Key` returns the first document and stores one file. The content must match
+  the extension (409 `hr_document_type_unsupported`); an empty file is 409 `hr_document_empty` and
+  an unusable name 409 `hr_document_name_invalid`. HR owner and Manage people holders only.
+- `GET /documents/{document_id}/download` streams the file with a safe `Content-Disposition`
+  name. A file missing from the volume is 503 `hr_document_file_unavailable`.
+- `POST /documents/{document_id}/remove` (`{}`) answers 204. Removal is soft: the record and its
+  History entry stay and the file is deleted. Removing twice is harmless. HR owner and Manage
+  people holders only.
+
+**Leaving and rehire** on `POST /operations` (the HR owner or a Manage people holder):
+
+- `person.leave` `{employee_id, expected_version, last_day, reason, note?, reports_new_manager}`:
+  `reason` is `resigned`, `contract_ended`, `dismissed`, `retired` or `other` (`other` needs a
+  `note`, at most 200 characters); `reports_new_manager` is an employee id or `null` (no manager).
+  Marking again replaces the plan.
+- `person.leave_undo` `{employee_id, expected_version}`: until the end of the last day.
+- `person.rehire` `{employee_id, expected_version, start_date}`: someone who has left becomes
+  active again. A manager who has left is dropped. No access comes back.
+
+New refusals (409 with the code as `detail`): `last_owner_leaving` (the HR owner cannot be marked
+as leaving; a company has one HR owner, so ownership must move first, which a tenant admin does
+on the Team page), `leaver_has_access` (only
+the HR owner marks someone whose account holds HR duties beyond the staff switches or an enabled
+`tenant_admin` membership of the company; marking yourself is allowed), `last_day_past`,
+`leaving_final` (already left, or nothing to undo),
+`not_left` (rehire of someone who has not left), `person_not_active`, and, as for `person.update`,
+`person_changed`, `manager_unavailable` and `manager_loop` (the new manager is the leaver or sits
+under them).
+
+**The finish.** The worker's `hr_leavers_round` (every 900 seconds) and HR Home's `automation.run`
+call `hr_finish_leaver` for each due person. On the last day it moves the direct reports to
+`reports_new_manager` (or to no manager when that person has left or now reports to the leaver).
+The day after, the person becomes inactive, the linked account's HR grants, workflow rows, private
+areas and HR owner row for the tenant are deleted, its membership is disabled and its sessions
+revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
+Each step happens once, whoever runs it.
 
 ## Authentication, tenancy and settings
 
@@ -170,8 +461,9 @@ machine token to browsers. Empty allowlist grants no tenant access.
 
 ## Private sandbox assistant (M4)
 
-The `/chat` (platform) and `/portal/chat` (tenant) screens are **Sandbox assistant**,
-not a customer inbox. They use the verified session and tenant selector above.
+The private sandbox assistant lives on **Overview** (`/` for platform admins, `/portal` for tenant
+members); `/chat` and `/portal/chat` only redirect there, keeping `client_id`. It is not a customer
+inbox. It uses the verified session and tenant selector above.
 All chat reads additionally require a human session and exact conversation ownership;
 even another staff member or platform administrator cannot read someone else's sandbox.
 Machine principals are denied. Read-only members can read their existing history but
@@ -250,7 +542,7 @@ Archive is audited hide, not retention-approved purge.
 The browser distinguishes a **15-second HTTP timeout** (potentially accepted; retain the
 same in-memory request key/text and explicitly retry) from a definite 4xx rejection and
 from the **90-second turn deadline** (show delayed status, never invent delivery/failure).
-Polling can reconcile an uncertain send by its request key. Reconnect only refreshes
+Polling can reconcile an uncertain send by its request key. Check for new messages only refreshes
 history; it never resends. If the page/tenant is left or reloaded, check persisted history
 before submitting again; the retained draft/key are not stored in browser storage.
 Voice, arbitrary attachments and confirmation actions remain unavailable. KB upload is
@@ -295,8 +587,8 @@ All paths use `/console/v1/inbox` with the existing tenant-selection query.
 
 | Method/path | Request | Result |
 |---|---|---|
-| `GET /conversations` | `before=UUID`, `limit=1..50` (20 default) | `{items,next_cursor}` |
-| `GET /conversations/{id}` | — | Ownership, mute and version metadata |
+| `GET /conversations` | `before=UUID`, `limit=1..50` (20 default), `channel`, `needs_review=true`, `sender=known\|new`, `q` (2..64 characters) | `{items,next_cursor,needs_review_count}` |
+| `GET /conversations/{id}` | — | Ownership, mute and version metadata, plus `contact` with the full `phone` |
 | `GET /conversations/{id}/messages` | `before=UUID`, `limit=1..100` (50 default) | Bounded redacted text, direction, author and actual delivery status |
 | `GET /approvals` | `before=bigint`, `conversation_id=UUID`, `include_handled=false`, `limit=1..50` | Pending reply approvals; optionally settled history |
 | `POST /conversations/{id}/takeover` | `{request_key: UUID, expected_version: int}` | Audited indefinite human ownership |
@@ -420,6 +712,47 @@ Delivery and statuses:
 - Inbox conversations carry `channel` (`telegram` or `whatsapp`) and the list accepts
   `?channel=telegram|whatsapp`.
 
+### Inbox read fields, filters, search and order
+
+Each conversation also carries these additive fields (no behaviour change for existing
+clients):
+
+- `contact`: `display_name` (the stored name, or `null` when it is blank or only the
+  contact's own number, as WhatsApp stores when the customer has no profile name),
+  `telegram_username` (the customer's Telegram @username without the `@`, from migration `0500`; `null` when they have none, for WhatsApp and for any value that is not 4 to 32 letters, digits or underscores), `phone_masked`
+  (last four digits, for example `••••0148`; `null` when no number is stored), `phone`,
+  `kind` (`customer`) and `known`. `phone` is `null` in list rows; only `GET /conversations/{id}` returns the full number.
+  Takeover, release and reply results carry no contact data, preview or approval count
+  (`contact` and `last_message` are `null`), and neither do their stored receipts.
+- `known` is true when the contact has at least one order, at least one subscription,
+  or a non-blank email or address. Otherwise the sender is new.
+- `last_message`: `preview` (first 120 characters of the redacted body, whitespace
+  collapsed; the same text the thread shows) and `at`; `null` when there are no messages.
+- `pending_approvals`: count of the conversation's approvals that are `pending` and not
+  past `expires_at`.
+
+The page also returns `needs_review_count`: the number of conversations in the whole
+tenant with at least one such approval. It ignores `channel`, `needs_review`, `sender`
+and `q`, so a filtered list shows the same chip count.
+
+List filters, all applied on the server across every page and combined with `channel`:
+
+- `needs_review=true`: only conversations with a pending approval that has not expired.
+- `sender=known` or `sender=new`: split by `known` above. Any other value is 422.
+- `q`: search over the contact's name, phone and Telegram @username (so `isyah`,
+  `aisyah_r` and `@AISYAH_R` all find `aisyah_r`). The text is trimmed, one leading `@` is ignored, and fewer than two characters
+  is 422 `search needs at least two characters`; more than 64 characters is 422. Matching
+  is case-insensitive and substring; `%`, `_` and `\` match only themselves. Phone numbers
+  match on digits only when the text holds two or more digits, so `012 555`,
+  `0125550148` and `+60125550148` agree. Message bodies are never searched. The text is
+  personal data: it is not written to the audit log, and the gateway's access log drops
+  query strings on `/console/` paths.
+
+Order is last activity, newest first: the time of the latest message, or `opened_at`
+when there are no messages, then `id` descending. `before` stays the id of the last
+conversation on the previous page; the server derives its position from that
+conversation's current activity time.
+
 ## Workspace assistant
 
 The floating assistant dock (on every console tab) and the tab actions share one
@@ -457,18 +790,35 @@ payload or employee/contact identity mapping is stored.
 | `GET /workspace/people/me` | tenant query | The caller's employee link and manager |
 
 `page_context` is `{tab, section?, record?}` where `tab` is one of `overview`,
-`services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `activity`, `chat` and
+`services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `subscriptions`, `activity`, `chat` and
 `record` is `{kind, id, version?}`. The legacy `page_hint` path (fixed page guidance and a
 single local order read with `source:"local_records"`, `marketplace_sync:"unavailable"`
 and an `as_of` timestamp) is unchanged; reusing a request key with different input, or
 replaying an order result after its resource version changes, returns 409. A
 missing or foreign order returns only `resource_unavailable`.
 
+### Language
+
+Every planned turn has one language, `"en"` or `"ms"`, returned as `WorkspaceTurnOut.language`
+(default `"en"`) on the 201 response, the 200 replay and `GET .../turns`, and saved in the stored
+turn result (no migration; a turn stored without it reads as English). The server guesses it from
+what the user typed (`detect_language` in `csa/workspace/planner.py`, which ignores email
+addresses, URLs and words both languages share) and decides it once per turn: a clear guess wins,
+and when the message gives no clear guess (a typed address, a name, "ok", a clicked option) the
+turn carries the previous turn's language, or English for the first turn of a thread. The turn's
+answers, questions, locked-tab text and cards are written in that language; a locked tab is named
+as the console's sidebar shows it (for example "People & HR"). The console panel (dock title,
+buttons, card status and error lines, the email preview's labels) follows `language`, from the
+latest turn for panel-wide text and from the turn or card for its own text; text the console
+shows by name (tab names, addresses, subjects, bodies) is never translated. Limits: before any
+turn exists the panel is English, so a first message that fails gets an English error; the HR
+assistant chat and tab-origin cards stay English.
+
 ### Planner
 
 A turn with `page_context` is planned by one model call that returns exactly one typed
-proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `training_submit`,
-`inbox_decision` or `clarification`. The planner only proposes; role, package, switch and
+proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `email_reply`,
+`email_team`, `inbox_summary`, `training_submit`, `inbox_decision` or `clarification`. The planner only proposes; role, package, switch and
 record-version gates are enforced afterwards by the turn service and the proposal
 registry, so a wrong plan can at worst produce a refused turn or a card the user
 declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; the
@@ -486,6 +836,12 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   own manager (as `GET /workspace/people/me` does) before planning and passes only the
   manager's `employee_id`, or a reason (`no_employee_link`, `no_manager`,
   `package_inactive`).
+- When the message is about training (English or Malay words such as "training",
+  "course", "latihan", "kursus"), the server passes `my_employee`: `{linked,
+  can_request_training, reason}`, with `reason` one of `hr_inactive`, `no_hr_access`,
+  `no_employee_link`, `assistant_off` (the tenant's HR assistant switch is off) or null.
+  When either flag is false the planner answers with the reason instead of proposing
+  `training_submit`.
 - The dock repeats the originating request in follow-up turns: picking a directory
   candidate sends `Use employee <id> for: <original message>`, and a clarification answer
   sends the option value with its question and the original message.
@@ -496,20 +852,41 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   written.
 - The user's own message is sent to the planner unredacted; the stored turn body is
   redacted before it is persisted.
-- A `navigate` to a tab that the role or packages do not unlock is turned into an
-  `answer` explaining that the package is not active.
+- A `navigate` to a tab that the console would not offer (the package and role rule of
+  `navigationFor`, in `csa/workspace/rules.py` `tab_available`) is turned into an `answer`:
+  the package is not active, or the tab is not available to the role.
 - Planner failures return 503 `planner_unavailable` (provider timeout, transport or HTTP
-  error; retryable) or 502 `planner_invalid_output` (output failed the strict schema).
+  error; retryable) or 502 `planner_invalid_output` (output that is not JSON, or a refusal
+  the server cannot name). A plan refused for a named rule is re-planned once (one
+  correction per turn, shared with the content correction) and, if refused again, answered
+  with a no-option question for the address on an email turn, otherwise a plain answer (see
+  `docs/EMAIL_ASSISTANT.md`).
+- A failure of the email-drafting model (invalid output, provider error or timeout) on an
+  `email_compose`, `email_reply` or `email_team` turn returns 503
+  `email_model_unavailable`; nothing is drafted or stored.
 
 ### Proposals and confirmation
 
-Every mutation is a proposal the user confirms on a card. Kinds: `email_export`
-(freeze a draft and save it to the user's own Gmail drafts), `training_submit` (submit a
-training request), `inbox_decision` (approve or reject a held customer reply) and
-`subscription_action` (a [subscription state change](#subscriptions), requested from the
-Subscriptions tab).
+Every mutation is a proposal the user confirms on a card. The kinds are:
+
+- `email_export`: freeze a draft and save it to the user's own Gmail drafts;
+- `email_send`: send a draft from the user's own Gmail (see
+  [Email management](#email-management));
+- `training_submit`: submit a training request. When the card is made (and again at
+  confirm) the caller must have their own employee record (409 `no_employee_link`) and the
+  `training.submit` grant, plus `training.draft` for a new request (403
+  `hr_training_not_permitted`), so a refused submit never leaves a draft behind;
+- `inbox_decision`: approve or reject a held customer reply;
+- `subscription_action`: a [subscription state change](#subscriptions), requested from
+  the Subscriptions tab.
+
 `ProposalOut` is `{id, kind, status, card, result, created_at, expires_at}`; the card
-holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at` and `expected_version`.
+holds `proposal_id`, `kind`, `title`, `summary`, label/value `fields`, `expires_at`, `expected_version`
+and `language` (`"en"` or `"ms"`, default `"en"`): the language the card's title, summary and field
+labels are written in. It is stored with the card, so confirm and cancel responses and a reloaded
+card keep it, and it never enters the proposal payload or its hash. A card made from a tab
+(`POST /workspace/proposals`) and a card stored before the field existed read `"en"`. The email
+cards' hidden `Subject` and `Draft` sentinel fields keep their English labels in both languages.
 
 Statuses are `requested`, then `confirmed`, then `executed`, or `cancelled` / `expired`.
 A proposal lives 15 minutes and is visible only to its owner.
@@ -544,7 +921,12 @@ version. The package gate is re-run at confirm.
 | `proposal_consumed` | 409 | Already confirmed or cancelled, or another confirm holds the lease |
 | `proposal_stale` | 409 | Payload hash or `expected_version` no longer matches |
 | `planner_unavailable` | 503 | No planner configured, or the model provider failed |
-| `planner_invalid_output` | 502 | The model output failed the strict proposal schema |
+| `planner_invalid_output` | 502 | Non-JSON output or an unnamed refusal; named schema failures are corrected once |
+| `email_model_unavailable` | 503 | The email-drafting model failed on a compose, reply or team turn; try again |
+| `mailbox_not_connected` | 409 | An `email_export` or `email_send` card was asked for while the user's mailbox is not connected; checked when the card is made, not only at confirm |
+| `no_employee_link` | 409 | A `training_submit` card was asked for, or a training draft saved, while the caller's login is not linked to an employee record |
+| `hr_training_not_permitted` | 403 | A `training_submit` card was asked for without the training grants it needs (`training.submit`, plus `training.draft` for a new request) |
+| `reply_approval_not_found` | 404 | An `inbox_decision` card named a held reply that is gone or belongs to another conversation |
 
 Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 `workspace.proposal.created`, `workspace.proposal.confirmed`,
@@ -556,9 +938,10 @@ Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 | Action | Requires |
 |---|---|
 | Inbox decision | `customer_support` package `active` or `suspended` |
-| Training submit | `hr` package active; training proposals created by the assistant (planner or HR chat) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
+| Training submit | `hr` package active; training proposals created by an assistant (the workspace planner, or the deprecated `POST /console/v1/hr/assistant` route) also require the tenant's `hr_assistant` switch; tab-originated proposals do not |
 | People search and `people/me` | `hr` package active (`people/me` reports `package_inactive` as a `reason`, not an error) |
-| Email export and compose | `staff_email` package active and `email_settings.enabled` |
+| Email export, compose and send | `staff_email` package active and `email_settings.enabled` |
+| Email my team | The above, the `hr` package, and the HR access switch "approves team" |
 
 ### People
 
@@ -582,7 +965,97 @@ subject, instructions and an optional language (default `auto`). It returns a mo
 `thread_id` null and `source="model"`, exported through the existing export flow (and so
 through an `email_export` proposal). Nothing is sent.
 
+### Email management
+
+All routes sit under `/console/v1/email`, take the tenant `client_id` query, need the
+`staff_email` package and the tenant switch, and (except the reads) take an
+`Idempotency-Key`. Sending uses the staff member's own Gmail; no scope beyond
+`gmail.readonly` and `gmail.compose` is needed. The behaviour and limits are in
+[EMAIL_ASSISTANT.md](EMAIL_ASSISTANT.md#sending).
+
+| Route | Body | Result |
+|---|---|---|
+| `GET /drafts/{draft_id}` | none | `DraftOut` for the owner; 404 otherwise. The console uses it to show recipients and body on a card |
+| `PUT /drafts/{draft_id}` | `{to?, cc?, bcc?, subject, body}` | Edited `DraftOut` (`recipient` is the old single-To field) |
+| `POST /drafts/{draft_id}/send` | `{version}` | `SendResult` `{outcome, sent_at, gmail_message_id, remaining_this_hour}` |
+| `POST /drafts/{draft_id}/release` | none | `DraftOut` back in `draft`, owner only |
+| `POST /threads/{thread_id}/reply` | `{instructions?, language? (auto\|en\|ms), cc?, bcc?}` | 201 `DraftOut` addressed by the reply rule; 409 `reply_target_unavailable` when the only target is the owner |
+| `POST /sync/more` | none | `Receipt` for the next page of 20 threads; `{"threads": 0, "done": true}` once the mailbox holds 200 threads or cleanup removed the whole page |
+| `GET /attention` | none | `AttentionPage` `{as_of, items, skipped}` |
+
+`DraftOut` carries `to`, `cc`, `bcc`, `recipients` (each address with an `outside` flag),
+`status` (`draft`, `sending`, `sent` or `exported`), `sent_at`, `needs_staff_input`,
+`reply_to_message_id` and `version`. The server computes `version` from the thread,
+recipients, subject and body; a client sends it back on `send` and never computes it.
+`EmailContext` gains `last_synced_at` and `more_available`.
+
+Email errors:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `draft_changed` | 409 | The draft changed since the version was read; read it again |
+| `draft_already_sending` | 409 | Another send of this draft is in flight |
+| `draft_already_sent` | 409 | The draft was sent |
+| `draft_already_exported` | 409 | The draft was saved to Gmail drafts and is frozen |
+| `draft_needs_staff_input` | 409 | A `[STAFF:` placeholder is still in the draft |
+| `send_limit_reached` | 429 | 20 sends in the last 60 minutes; the body has `retry_after` in seconds |
+| `send_refused` | 409 | Gmail refused the message with another 4xx; the draft is back in `draft` |
+| `mailbox_reauthorization_required` | 409 | Gmail answered 401, or 403 for a reason other than a quota limit; reconnect the mailbox |
+| `provider_rate_limited` | 409 | Gmail answered 429, or 403 with the reason `userRateLimitExceeded`, `rateLimitExceeded` or `dailyLimitExceeded`; the draft is back in `draft` |
+| `invalid_message` | 409 | Gmail could not accept the message; the draft is back in `draft` |
+| `recipients_invalid` | 422 | Not 1 to 20 valid addresses in To, CC and BCC together |
+| `send_outcome_unknown` | 502 | Timeout, 5xx, 408, 409, 499 or a 200 without an id. The draft stays `sending`; the body has `message` "Check your Gmail Sent folder before trying again." |
+| `draft_not_releasable` | 409 | Release needs the owner, status `sending`, no Gmail id and a claim at least 120 seconds old |
+| `send_released` | 409 | A replay of a send key whose outcome was unknown, after the owner released the draft (it is back in `draft`). Gmail is not called; send again with a new key |
+| `reply_target_unavailable` | 409 | The only reply target is the mailbox owner |
+
+A send makes at most one Gmail call, with a 25-second deadline and no retry, after
+claiming the draft under a per-mailbox lock. Each claim carries a `send_claim_id`, so a
+late outcome from a released attempt never changes the row.
+
+`GET /attention` reads stored data only and runs at most 5 analyses. It leaves out
+`newsletter_or_promotion`, `spam_or_phishing` and threads whose latest message the owner
+sent, and returns up to 10 items. It skips threads it cannot analyse and counts them in
+`skipped`. It is refused for `read_only` members. `GET /threads` lists every cached
+thread, up to 200. A thread's time is Gmail's `internalDate` for its latest message (the
+`Date` header only when that is missing), and a message labelled `SENT` (send-as aliases
+included) counts as the owner's.
+
+`email_send` proposal: the card follows the user's own words, never a planner question or
+a clicked option, nor text equal to an option any earlier card offered. The first match wins:
+a draft word (draft, drafts, draf, save, simpan) or a negated send (don't send, do not send,
+never send, jangan hantar) gives an `email_export` card; a send word (send, hantar, kirim)
+gives a send card unless a write word (write, tulis, karang) is there and the planner does not
+ask to send; an email verb (email, e-mail, e-mel) gives a send card when the planner also asks
+to send and the user wrote no write word; anything else is an `email_export` card (see
+[EMAIL_ASSISTANT.md](EMAIL_ASSISTANT.md#workspace-assistant)). In the console only the newest
+assistant card's options and candidates can be clicked; older cards are history.
+Its stored payload is `{draft_id, version}`; the card's title, summary
+and fields hold counts only, and so does the `email_export` card now. `expected_version` is
+the draft version, so an edit after the card was made makes the confirm return 409
+`draft_changed` and nothing is sent. The `email_export` card's `expected_version` is the
+same `draft_version`, bound to To, CC, BCC, subject and body, so any edit makes it
+`proposal_stale`. The executor uses an idempotency key derived from the
+proposal id. A refused confirm returns the send error body above (for example
+`send_limit_reached` with `retry_after`). The executed result is `{draft_id, outcome,
+sent_at, gmail_message_id, remaining_this_hour}`, with no content.
+
+Planner actions: `email_reply` takes a `thread_id` from the mailbox facts (its To is never
+chosen by the model), `email_team` drafts one email to the caller's active direct reports
+(refusals `package_inactive`, `not_team_approver`, `no_employee_link`, `no_reports`,
+`no_work_email` and `team_too_large` come back as plain answers), and `inbox_summary`
+answers from `GET /attention`; its failures are also plain answers, and the stored turn
+says only "Inbox summary: N items." Any address the model proposes must appear in the
+user's own message; an address seen only in the mailbox can never become a recipient. An
+employee id in To, CC or BCC must be in the message, among the ids an earlier directory
+turn offered, or `my_manager`; any other id is refused, corrected once, then met with a
+no-option question asking the user to type the address.
+
 ### HR assistant delegation
+
+**Deprecated.** `POST /console/v1/hr/assistant` is kept for one release, removed in a cleanup
+PR. The console no longer calls it: the separate HR chat left People & HR Home in project 1b,
+and the workspace assistant dock is the only assistant.
 
 `POST /console/v1/hr/assistant` keeps its HR planner and plan replay (`hr_chat_plans` is
 still written). A training submit no longer executes: it returns a `ProposalOut` with 201
@@ -606,13 +1079,14 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 
 | Method/path | Who | Result |
 |---|---|---|
+| `GET /settings` | any tenant member | `{timezone}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar |
 | `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active}` |
 | `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`. 409 `plan_exists`; audited `subscriptions.plan.created` |
 | `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives). 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active or paused subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
 | `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
 | `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
 | `GET /{id}` | any tenant member | `{subscription, events}`, events being the timeline. 404 `subscription_not_found` |
-| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
+| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
 | `POST /{id}/actions` | writers | Body `{action, reason?, ...}`; 201 `ProposalOut` (the card), `Cache-Control: no-store`. Nothing changes until the same login session confirms the card at `POST /console/v1/workspace/proposals/{id}/confirm` |
 | `GET /requests?status=open\|decided` | any tenant member | `{items, next_cursor}` of `RequestOut`, the customer requests staged by the subscription agent, with the decision once one exists |
 | `POST /requests/{id}/decide` | writers | Body `{decision: approve\|decline, note?, resume_at?}`; returns the decided `RequestOut` |
@@ -620,7 +1094,7 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 "Writers" are `tenant_admin` and `tenant_staff` in their own tenant, and platform admins
 who select a tenant with `?client_id=`. Every member of the tenant may read, including
 `read_only`; a `read_only` writer attempt and any other tenant's id are 403. The static
-paths (`/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
+paths (`/settings`, `/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
 "Add subscription" form uses `GET /customers` to find the customer, then `POST` (the
 collection) with an active plan and an optional start date.
 
@@ -726,14 +1200,20 @@ to the job's batch size (100) of rows with `FOR UPDATE SKIP LOCKED`:
    subscription, only clears them (`pending_change_skipped`).
 3. Resume: a paused subscription whose `resume_at` is today or earlier resumes, with a lapsed
    or missing `renews_at` set as in a manual resume.
-4. Renew: an active, unflagged subscription whose `renews_at` has passed advances by one
-   billing interval of its plan (`renewed`).
+4. Renew: an active, unflagged subscription whose `renews_at` has passed advances to the
+   next step of its renewal cycle (`renewed`).
 
 A row moves at most one step per rule per run, so a long-lapsed renewal catches up one
 interval per run. Nothing is charged. Renewal and resume arithmetic and the resume date
-use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`). Known
-behaviour: a renewal anchored on the 29th to 31st falls back to the shorter month's last
-day and stays there (owner question open).
+use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`).
+
+Renewals keep the cycle's day of the month. Each subscription counts its renewals from a
+stored anchor (`subscriptions.renewal_anchor`, not exposed by the API) in whole billing
+intervals of its plan, so a renewal clamps to the last day only in a shorter month and
+returns to the day afterwards (31 Jan, 28 Feb, 31 Mar). A subscription created with an explicit `renews_at` takes that date's day as the cycle's day; a defaulted one keeps `started_at`'s day. An extension moves the cycle to
+the chosen date. A resume with a lapsed or missing `renews_at` (manual or by the job)
+restarts the cycle from the resume time. A plan change between monthly and yearly, applied
+now or by the job, counts the new interval from the end of the current period.
 
 Audit actions: `subscriptions.plan.created`, `subscriptions.plan.updated`,
 `subscriptions.created`, `subscriptions.request.approved`, `subscriptions.request.declined`,
@@ -750,7 +1230,8 @@ No write routes are added; normal session/tenant controls remain authoritative.
 
 | Method/path | Query | Response |
 |---|---|---|
-| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, optional `from`, `to`, `status`, `payment_status`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders/counts` | optional `from`, `to`, `payment_status`, `channel`, `shop_id`, tenant query (a `status` parameter is ignored) | `{total,by_status:{<status>:int}}` with every order status present, zero included |
 | `GET /business/orders/{id}` | optional `channel` and `shop_id`, tenant query | Local order summary including persisted tracking/carrier, channel/store/order IDs and local timestamps |
 | `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"unavailable",items,next_cursor}` |
 | `GET /business/products/{id}` | tenant query | Local product summary, decimal price and local stock/reserved/available quantities |
@@ -778,10 +1259,39 @@ returns an empty local page, not a connection-health claim. Omitting filters pre
 all tenant-local orders, including missing store IDs. Products remain tenant-wide local
 catalogue/stock; no store-specific listing or inventory mapping is inferred.
 
+Order list window and status filters (all optional, combine with each other, with `channel`,
+`shop_id` and `before`, and stay tenant-scoped): `from` and `to` are ISO 8601 timestamps with an
+offset (for example `2026-03-10T00:00:00+08:00`) on `created_at`, the column the list sorts and
+pages on; `from` is inclusive and `to` exclusive, so a row stamped exactly at `to` belongs to the
+next window. `status` is one of `draft`, `pending_confirmation`, `confirmed`, `processing`,
+`shipped`, `delivered`, `cancelled`, `refunded`; `payment_status` is one of `unpaid`,
+`cod_pending`, `paid`, `refunded`, `failed`. An unknown value is rejected with 422
+`invalid_status` or `invalid_payment_status`, `from` at or after `to` with 422 `invalid_range`,
+and a timestamp without an offset with the standard 422 validation error. With none of them the
+response and the `(created_at, id)` descending order are unchanged. Orders with no `placed_at`
+are listed and counted like any other (the window is on `created_at`). The order objects do not
+gain customer or line-item fields.
+
+`GET /business/orders/counts` returns `{total, by_status}` for the same `from`, `to`,
+`payment_status`, `channel` and `shop_id` filters (same validation, same tenant, package and
+role gating as the list). It deliberately does not read `status`, so a status chip bar can show
+the number behind every chip while one status is selected. `by_status` lists all eight order
+statuses in the order above; a status with no matching order is `0`, and `total` is their sum.
+
 The UI applies order filters explicitly and remounts order paging on changed applied
 scope, aborting obsolete requests and starting from newest. Tenant changes reset filter
 drafts and all record state. Draft filter edits do not change applied results until Apply.
 The applied scope remains visible; inventory is explicitly labelled unaffected.
+
+The order date range, the status chips and the payment-status select act at once (only the
+source and store ID wait for Apply). The page builds every query with `URLSearchParams` and
+sends the chosen days as UTC instants from `toISOString()`, never a local offset, and leaves
+empty parameters out. The counts read starts beside the list and is aborted when its filters
+change; a status chip changes only the list. With no dates chosen the page asks for the counts
+over the last 30 days (the unwindowed read scans the whole tenant and can be slow); "Count all
+time" is an explicit choice that sends no window. A failed or malformed counts read removes the
+numbers from the chips and never shows them as zero. "Older orders" adds the next page to the
+rows on screen.
 
 Store records contain `id`, `platform`, `shop_id`, recorded `expires_at`/`updated_at`,
 derived `expiry` (`unknown`, `expired`, `not_expired`), and constant
@@ -854,12 +1364,14 @@ return `{user:{id,email,display_name,is_platform_admin,must_change_password}, me
 | POST `/invites/accept` | `{token,password,display_name?}` | Single-use acceptance, membership/session creation |
 | GET/POST `/admin/clients` | POST `{slug,name,timezone?}` | Platform admin; list (up to 200) / audited creation |
 | GET `/profile` | Platform selection if applicable | Verified tenant profile |
-| POST `/admin/invites` | `{email,display_name,client_id,role}` | Platform admin; issue manual-delivery invitation |
+| POST `/admin/invites` | `{email,display_name,client_id,role,hr_preset?}` | Platform admin; issue an invitation, emailed when mail is on |
 | POST `/team/invites` | Same | Selected tenant admin/platform; no platform role grants |
-| GET `/admin/invites` | `client_id=UUID` | Authorized tenant admin/platform; pending/used/revoked/expiry metadata |
-| POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement; same scoped authorization |
+| GET `/admin/invites` | `client_id=UUID` | Authorized tenant admin/platform; pending/used/revoked/expiry metadata, and `hr_preset` (`null` for none) |
+| POST `/admin/invites/{id}/renew` | — | Revoke old pending token, issue replacement (keeps `hr_preset` and who chose it); same scoped authorization |
 | DELETE `/admin/invites/{id}` | — | Revoke invitation; reset-token revocation requires platform admin |
 | GET `/team` | `client_id=UUID` | Selected tenant admin/platform; member list |
+| GET `/team/hr-owner` | `client_id=UUID` | Selected tenant admin/platform; `{available,owner}`, where `owner` is `{user_id,display_name,usable}` or `null`; package off gives 200 with `available=false` and `owner=null` |
+| POST `/team/hr-owner` | `Idempotency-Key`; `{client_id,new_owner_id,expected_owner_id}` | Selected tenant admin/platform; moves the HR owner at once and emails the people affected; `{owner,mail}`. See [Moving the HR owner](#moving-the-hr-owner) |
 | PATCH `/team/{user_id}` | query `client_id`; `{role?,is_enabled?}` | Scoped member change; revoke affected tenant sessions; protect last admin |
 | GET `/admin/users` | bounded `limit` | Platform admin; safe user metadata |
 | PATCH `/admin/users/{id}` | `{is_enabled}` | Platform admin; disable revokes sessions/tokens; protect last admins |
@@ -873,9 +1385,36 @@ writes, and read-only users cannot mutate. Membership changes and disablement pr
 last active tenant administrator; platform disablement also protects the last platform admin.
 
 Invitations/reset tokens are hashed, expire after 48 hours, and are consumed under locks.
-Raw tokens are returned once to the authorized issuer for **manual delivery**. The UI uses
-`/invite#token=...` and immediately clears the fragment before submitting the token in JSON.
-There is no email provider integration. Existing credentialed accounts cannot be overwritten
+The UI uses `/invite#token=...` and immediately clears the fragment before submitting the
+token in JSON.
+
+**Delivery (B4).** Invite, renew and admin-issued reset return `IssuedTokenOut`:
+`{id, token, expires_at, delivery, delivery_note}`. With invitation mail on
+(`INVITE_MAIL_ENABLED` and both `SMTP_USERNAME` and `SMTP_PASSWORD` secrets, sent through
+the Google Workspace relay `smtp-relay.gmail.com:587` with STARTTLS, 10 s timeout),
+the link is emailed after the token commits: `delivery` is `email`, `delivery_note` is
+`null` and **`token` is `null`**, so the raw token never leaves the server. Otherwise
+`delivery` is `manual` and the raw token is returned once to the authorized issuer, with
+`delivery_note` saying why: `mail_off` (mail is not configured, which is normal) or
+`send_failed` (the relay refused, timed out or failed; the user and token still exist
+once, with no retry). Failures are logged by category only (`smtp_disabled`,
+`smtp_auth_failed`, `smtp_refused`, `smtp_timeout`, `smtp_error`), never with the address,
+link or body; a message that fails to build is `smtp_error` too. The gateway names itself
+in EHLO as `SMTP_EHLO_HOSTNAME` (default `fourstacks.my`). With `INVITE_MAIL_ENABLED` on but
+a relay secret missing or empty, startup logs one warning, `console_mail_inactive` with
+category `secrets_missing`, and mail stays off. Reset links expire in `Asia/Kuala_Lumpur`
+time; invitation links in the tenant's `clients.timezone`, which is checked before the
+invitation is written only while mail is on (with mail off an invalid zone does not block
+inviting). Renewing an invitation that has no tenant is 404 `pending invitation not found`.
+
+**HR access on an invitation.** `InviteIn.hr_preset` is one of `staff`, `manager`,
+`hr_team`, `payroll_preparer`, `payroll_reviewer`, or omitted for no HR access. Any
+inviting admin may choose none or `staff`; the other presets only the tenant's HR owner
+(403 `hr_preset_requires_hr_owner`, checked again at apply time). A preset on a tenant
+without the `hr` package is 422 `hr_not_available`. The preset and who chose it are stored
+on the token (migration 0483) and applied when the invitation is accepted; see
+`/access/invitations` under "HR access page" for one that must wait for the HR owner.
+Existing credentialed accounts cannot be overwritten
 through invitations; cross-tenant account attachment and membership switching remain deferred.
 Admin-issued password resets require an account that has already set its password.
 A pending invitation returns 409 without revoking its token; renew or accept that invitation
@@ -884,6 +1423,41 @@ instead. This prevents reset acceptance from bypassing the membership-creation s
 Tenant creation atomically writes the tenant, nine disabled registry rows with current
 Pydantic input schemas, and an actor-attributed audit event. It starts no channel, provider,
 worker or external operation. Deliberate subscription/tenant enablement is separate.
+
+### Moving the HR owner
+
+A tenant admin of the company or a platform admin, who needs no membership, can read and move the
+HR owner. A tenant admin gains no HR data by holding that role: they learn who the owner is and
+nothing else. `usable` is false when the owner's account or membership is disabled or their role is
+`read_only`.
+
+`POST /team/hr-owner` runs `hr_owner_move` (migration 0522) on the app pool. `expected_owner_id` is
+required, and `null` means "no owner yet". A new owner gets no payroll access.
+
+| Answer | Detail | When |
+|---|---|---|
+| 403 | `tenant administrator required` | The caller isn't a tenant admin of this company or a platform admin |
+| 422 | `hr_not_available` | The company's HR package isn't active |
+| 409 | `owner_read_only` | The person chosen is a read-only member |
+| 409 | `owner_leaving` | The person chosen is marked as leaving, or their linked person isn't active |
+| 409 | `owner_unavailable` | The person chosen isn't an enabled member, or is still on their first password |
+| 409 | `owner_unchanged` | The person chosen is already the owner |
+| 409 | `owner_changed` | `expected_owner_id` is not the current owner |
+| 409 | `idempotency_conflict` | The key was already used for something else: another person, another expected owner or another operation |
+| 409 | `try_again` | A rare deadlock with another HR action; nothing changed, so the same request can be sent again |
+
+A 200 means the move has committed. `owner` is who holds the title now, so a retry after a later
+move names the later owner. `mail` is one of:
+
+- `sent`: every email went out.
+- `not_sent`: mail is off, or at least one email failed. The move stands, and the page asks the
+  admin to tell the people affected. Logs carry a failure category only.
+- `repeat`: this key already ran with this request. Nothing changed and no email went out.
+
+One email goes to the old owner (even if they're disabled), the new owner and each enabled tenant
+admin, once per address. It names the company, who made the change, the old and new owner and the
+time in the company's timezone, or the console's default zone if that timezone is invalid. A
+platform admin appears as "FourStacks admin". There is no link and no HR data.
 
 ## Endpoints
 ### `GET /console/v1/traces?limit=50&before=<ISO time>`
@@ -935,7 +1509,8 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 
 | Package | Kind | Capabilities | Tabs | Sellable |
 |---|---|---|---|---|
-| `customer_support` | base | `kb_agent`, `ticket_agent`, `escalation_agent`, `order_approval` | inbox, knowledge_base | yes |
+| `customer_support` | base | `ticket_agent`, `escalation_agent`, `order_approval` | inbox | yes |
+| `knowledge_base` | addon | `kb_agent` | knowledge_base | yes |
 | `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
 | `subscriptions` | addon | `subscription_agent` | subscriptions | yes |
 | `bookings` | addon | `booking_agent` | bookings | yes |
@@ -947,6 +1522,10 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 State is in `console_service_packages` (migration `0450`): `status` is `requested`, `active` or `suspended`, with requester, activator, `reference`, `note` and timestamps. Tenant RLS applies; only `csa_app` has grants. The migration backfills a package as `active` with reference `backfill-0450` when all its member capabilities are `is_enabled` (`hr`: any enabled `hr_agent_settings` row; `staff_email`: `email_settings.enabled`).
 
 - `GET /console/v1/services`: catalogue joined with the tenant's state, including `consistent` and `inconsistencies` (drift between the package record and member switches) per package. `staff_email` also reports `inner_switch`.
+- `last_change` on each service and on each member agent's `capability` in `GET /console/v1/services` (and the service returned by request, activate and suspend): `null` when the audit trail has no recognisable change, otherwise `{action, at, actor}` from the newest matching `console_audit` row.
+  - `action` for a service is `requested`, `activated` or `suspended` (from `service.requested`, `service.activated`, `service.suspended`). For a capability it is derived from the `capability.updated` details: `is_enabled` false to true is `subscribed`, true to false `unsubscribed`; `client_enabled` false to true is `tenant_switch_on`, true to false `tenant_switch_off`. When one row changed both switches the subscription wins. A `capability.updated` row whose `before` and `after` are equal (package activation writes one per member even when that member was already on) is skipped, so the newest real change is returned instead; `last_change` is `null` only when no row changed anything.
+  - `at` is the audit time; rows with the same time are ordered by audit id. `actor` is the person's display name only when the caller is a platform admin (`"a platform administrator"` when the audit row has no actor). Every other role gets a label, never a name, user id or email: `"a platform administrator"` when the person who made the change is a platform admin, `"a member of your team"` for any other person, and `"an administrator"` when the audit row has no actor (system or legacy rows). The platform-admin check uses the person's current status, not their status when they made the change: someone who became a platform admin later is labelled as one on their older changes too, and the reverse.
+  - Read through `public.console_last_change(client, target, actions)` (migration `0502`), a `SECURITY DEFINER` function granted only to `csa_app` that returns action, time, display name, details and `actor_is_platform_admin` (no user id), filters by tenant itself and returns nothing unless `client` equals the transaction's `app.client_id`. `csa_app` still cannot read `console_audit` or `console_users`. The same migration adds the index `console_audit_tenant_target_time (client_id, target_id, created_at DESC)` for the per-target lookup. Only `GET /console/v1/services` (and the service returned by request, activate and suspend) fills `last_change`: `GET /console/v1/capabilities` and `GET /console/v1/agents` always return `last_change: null`.
 - `GET /console/v1/services/active`: `{"packages": [{key, status}]}` for packages that are `active` or `suspended`, used to build navigation; the console shows the Inbox for a suspended Customer Support package and every other gated tab only when its package is active. A platform admin without `client_id` receives `{"packages": []}`.
 - `POST /console/v1/services/{key}/request`: tenant admin or platform admin.
 - `POST /console/v1/services/{key}/activate` with body `{"reference": str, "note"?: str}`: platform admin. Flips member `is_enabled` and `client_enabled` through the same SQL as the capability toggle; audits `capability.updated` and `service.activated`.
@@ -956,15 +1535,30 @@ Errors: 409 on state conflicts (already active, requirements inactive, dependent
 
 Gates: a route behind an inactive package returns 403 `package_inactive`, and gates run before role checks, so every role sees it.
 - Inbox requires `customer_support` in status `active` **or `suspended`**, so staff can still resolve held replies and escalations while a client is suspended (the required safety capabilities keep running); Business requires `orders_products` or `marketplaces` active.
-- All `/kb/*` routes (uploads, files and downloads for every role) require `customer_support`; `/invoices*` require `orders_products`.
+- All `/kb/*` routes (uploads, files and downloads for every role) require `knowledge_base`, which migration `0530` gave to each company with a `customer_support` row, with the same status; `/invoices*` require `orders_products`.
 - The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
 - Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.
 
-Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Knowledge base, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
+Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Business knowledge, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.
+
+
+### Customer replies (Go live)
+
+A new company starts with no replies to customers. Its tenant admin turns them on here, with no help from FourStacks.
+
+- Behind the `customer_support` gate, which accepts `active` and `suspended`.
+- `GET /console/v1/services/customer-replies`, for any member or platform admin, returns `{mode, brand_name, can_manage, warnings}`.
+- `mode` is `off`, `approve` or `auto`, which are the deployment modes `shadow`, `suggest` and `auto`. It reads `config.policy.deployment_mode`, as the turn gate does, so it reports what the bot does.
+- `warnings` holds any of: `replies_off`; `no_knowledge` (the `knowledge_base` add-on is active and no active document has chunks); `base_only` (no add-on is active, so most questions go to staff).
+- `PUT /console/v1/services/customer-replies`, for a tenant admin or platform admin, with CSRF, takes `{mode, brand_name}`. `brand_name` is trimmed, at most 120 characters, a single line; if omitted, the stored one stays.
+- Refusals: 422 `brand_name_required` for `approve` or `auto` with no name, stored or sent; 409 `package_suspended` while Customer support is suspended; 403 `tenant administrator required`.
+- Saving `approve` also sets `approval_ttl_minutes` to 1440.
+- A real change writes one `console_audit` row, `tenant.customer_replies_set`, with before and after. A repeat writes none.
+- A company still `onboarding` moves to `pilot` when Customer support is activated, or on a save, with one `tenant.status_changed` row. Background jobs visit only `pilot` and `active` companies, so its knowledge base files process before it goes live. Other statuses don't change.
 
 ## Capabilities and specialised tabs (LG13)
 Packages (see Services and packages) are the management surface; the switches below remain the enforcement.
-- `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`.
+- `GET /console/v1/capabilities`: each agent has `name`, `is_enabled` (the admin subscription), `client_enabled` (the client's own switch), `active` (true only when both are on), `circuit_state`, `fail_count`, `capability_kind`, and `updated_at`. `last_change` is always `null` here; the services read fills it (see Services and packages).
 - `PATCH /console/v1/capabilities/{name}` with body `{"is_enabled"?: bool, "client_enabled"?: bool}`. A human platform admin controls subscriptions; a human tenant admin/platform admin controls tenant switches. Actor fields such as `changed_by` are rejected. Required safety capabilities cannot be disabled. Changes and before/after audit share one locked transaction.
 - `GET /console/v1/agents`: authoritative management catalogue. Each row has `name`, `title`,
   nullable `capability` (the existing registry contract), `implementation`, `readiness`,
@@ -1016,8 +1610,15 @@ The separate machine principal remains read-only and tenant-allowlisted.
   `last_run_at` and `window_hours=24`. Counts describe recorded attempts, not provider
   health, revenue or complete historical workflow usage. Query failures propagate rather
   than being replaced by zero.
-- `GET /console/v1/runs?limit=50&before_id=<id>&agent=<optional exact name>`:
+- `GET /console/v1/runs?limit=50&before_id=<id>&agent=<optional exact name>&from=<ts>&to=<ts>&status=<ok|error>`:
   `{items, next_before_id}`; limit 1–200, descending unique run ID keyset pagination.
+  `from` and `to` are optional ISO 8601 timestamps with an offset (for example
+  `2026-03-10T00:00:00+08:00`) on `created_at`: `from` is inclusive, `to` is exclusive.
+  `status` is optional, `ok` or `error` (the stored run status; `partial` runs match
+  neither). The filters combine with `agent` and `before_id` and stay tenant-scoped; with
+  none of them the response and ordering are unchanged. `from` at or after `to` is
+  rejected with 422 `invalid_range`, any other `status` with 422 `invalid_status`; a
+  timestamp without an offset is rejected with the standard 422 validation error.
   Run IDs/cursors must be positive PostgreSQL bigint values (maximum `2^63 - 1`);
   out-of-range values are rejected with 422 before querying run data.
   Pass `next_before_id` unchanged for the next page; null means no older page.

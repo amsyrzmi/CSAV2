@@ -65,6 +65,17 @@ def conversation(identifier: str, channel: str) -> dict[str, Any]:
         "human_muted": False,
         "inbox_version": 1,
         "opened_at": "2026-10-27T00:00:00Z",
+        # The redesigned inbox's additive read fields (spec 7.5).
+        "contact": {
+            "display_name": f"Synthetic {channel} customer",
+            "telegram_username": None,
+            "phone_masked": "••••6789" if channel == "whatsapp" else None,
+            "phone": None,
+            "kind": "customer",
+            "known": False,
+        },
+        "last_message": {"preview": "Your parcel left today.", "at": "2026-10-27T00:00:00Z"},
+        "pending_approvals": 0,
     }
 
 
@@ -162,6 +173,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         status, data = 200, None
         if path == "auth/csrf":
             data = {"csrf_token": "synthetic-csrf"}
+        elif path == "services/customer-replies":
+            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
         elif path == "services" and request.method == "GET":
             data = [make_service("customer_support", "Customer Support", "base", "active")]
         elif path == "channels/whatsapp" and request.method == "GET":
@@ -208,7 +221,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             inbox_queries.append(query)
             wanted = [part[8:] for part in query.split("&") if part.startswith("channel=")]
             items = [c for c in everything if not wanted or c["channel"] in wanted]
-            data = {"items": items, "next_cursor": None}
+            data = {"items": items, "next_cursor": None, "needs_review_count": 0}
         elif path == "inbox/approvals":
             data = {"items": [], "next_cursor": None}
         else:

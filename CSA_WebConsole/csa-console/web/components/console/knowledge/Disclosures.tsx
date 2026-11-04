@@ -1,0 +1,117 @@
+"use client";
+
+import type { Agent } from "@/lib/identity-contracts";
+import type { AgentState } from "@/lib/knowledge-view";
+import { DetailsRow, TechnicalDetails } from "../kit";
+import { Notice, secondary } from "../ui";
+
+const box =
+  "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
+
+/** A quiet row, closed unless the page opens it on arrival. */
+function Quiet({ testId, title, defaultOpen = false, children }: { testId: string; title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  return (
+    <div className={box}>
+      <DetailsRow testId={testId} toggleLabel={title} defaultOpen={defaultOpen} summary={<p className="font-medium">{title}</p>}>
+        {children}
+      </DetailsRow>
+    </div>
+  );
+}
+
+/**
+ * Maintenance: a plain line, the controls, and under Technical details the technical text the
+ * page used to open with, word for word. The one correction: the page no longer polls all the
+ * time, so the polling sentence says when it does.
+ */
+export function Maintenance({
+  agent,
+  agentState,
+  canWrite,
+  writable,
+  busy,
+  onReconcile,
+  onRetryAgent,
+}: {
+  agent: Agent | null;
+  agentState: AgentState;
+  canWrite: boolean;
+  writable: boolean;
+  busy: boolean;
+  onReconcile: () => void;
+  onRetryAgent: () => void;
+}) {
+  return (
+    <Quiet testId="kb-maintenance" title="Maintenance" defaultOpen>
+      <div className="space-y-4">
+        <Notice>This page updates by itself while a file is being read.</Notice>
+        <div>
+          {agent ? (
+            !writable && <p className="text-sm">{canWrite ? "To add files, the knowledge assistant must be switched on in Services. Ask your admin." : "Read-only access: upload, deletion and gap resolution are unavailable."}</p>
+          ) : agentState === "missing" ? (
+            <p data-testid="kb-agent-missing">We couldn&apos;t check the knowledge assistant&apos;s settings.</p>
+          ) : agentState === "failed" ? (
+            <p className="flex flex-wrap items-center gap-2">
+              We could not load the assistant details.
+              <button type="button" className={secondary} data-testid="kb-retry-agents-maintenance" onClick={onRetryAgent}>Try again</button>
+            </p>
+          ) : <p>Loading...</p>}
+        </div>
+        {canWrite && (
+          <div>
+            <button type="button" className={secondary} disabled={busy} onClick={onReconcile}>Clean up leftover files</button>
+          </div>
+        )}
+        <TechnicalDetails testId="kb-maintenance-tech">
+          <div className="space-y-4">
+            <Notice>Polling every 5 seconds while a file is being read. Lists show the latest 50 documents/gaps, 20 jobs and 100 sources.
+              Uploads need configured storage and an ingestion worker. A queued job is not proof the worker is running.</Notice>
+            {agent && <div>
+              <h3 className="mb-2 font-semibold">Embedding compatibility</h3>
+              <p>{agent.detail}</p>
+              <p className="mt-2 text-sm">Model: {agent.embedding_model ?? "Not configured"}.
+                Compatible chunks: {agent.compatible_chunks ?? "Unknown"}.
+                Incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
+                No legacy FAQ files are imported automatically.</p>
+            </div>}
+          </div>
+        </TechnicalDetails>
+      </div>
+    </Quiet>
+  );
+}
+
+/** Settings: whether the knowledge assistant is on, and where to change it. */
+export function Settings({
+  agent,
+  agentState,
+  servicesHref,
+  onRetryAgent,
+}: {
+  agent: Agent | null;
+  agentState: AgentState;
+  servicesHref: string;
+  onRetryAgent: () => void;
+}) {
+  const on = agent?.capability?.active === true;
+  return (
+    <Quiet testId="kb-settings" title="Settings" defaultOpen>
+      {agent ? (
+        <div className="space-y-2">
+          <p>The knowledge assistant is {on ? "on" : "off"}.</p>
+          <p className="text-[color:var(--fs-text-secondary)]">
+            It answers customers from the files above only while it is on. You can switch it on or off in Services.
+          </p>
+          <a className={secondary} href={servicesHref}>Open Services</a>
+        </div>
+      ) : agentState === "missing" ? (
+        <p>The knowledge assistant settings are not available.</p>
+      ) : agentState === "failed" ? (
+        <p className="flex flex-wrap items-center gap-2">
+          We could not load the assistant settings.
+          <button type="button" className={secondary} data-testid="kb-retry-agents-settings" onClick={onRetryAgent}>Try again</button>
+        </p>
+      ) : <p>Loading...</p>}
+    </Quiet>
+  );
+}

@@ -441,7 +441,7 @@ async def _ensure_account(
         ),
     )
     password = password_factory()
-    accepted, _session, _csrf = await identity.accept_token(issued.token, password)
+    accepted, _session, _csrf, _token, _client = await identity.accept_token(issued.token, password)
     return AccountResult(spec, accepted.user_id, created=True, password=password)
 
 

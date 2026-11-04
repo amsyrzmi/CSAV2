@@ -38,15 +38,27 @@ PACKAGES: tuple[Package, ...] = (
         key="customer_support",
         title="Customer support",
         summary=(
-            "Answers customer questions from your knowledge base and handles tickets, "
-            "escalations and order approvals."
+            "A shared inbox for your channels, with tickets, handoff to your team and order "
+            "approvals. Without an add-on, most customer questions go to your team."
         ),
         kind="base",
         requires=(),
-        capabilities=("kb_agent", "ticket_agent", "escalation_agent", "order_approval"),
+        capabilities=("ticket_agent", "escalation_agent", "order_approval"),
         hr_modules=(),
         email=False,
-        tabs=("inbox", "knowledge_base"),
+        tabs=("inbox",),
+        sellable=True,
+    ),
+    Package(
+        key="knowledge_base",
+        title="Business knowledge",
+        summary="Answers customer questions from the files you upload.",
+        kind="addon",
+        requires=("customer_support",),
+        capabilities=("kb_agent",),
+        hr_modules=(),
+        email=False,
+        tabs=("knowledge_base",),
         sellable=True,
     ),
     Package(
@@ -64,7 +76,10 @@ PACKAGES: tuple[Package, ...] = (
     Package(
         key="subscriptions",
         title="Subscriptions",
-        summary="Shows subscription plans and status and records unexecuted subscription requests.",
+        summary=(
+            "Keeps your plans and customers' subscriptions, "
+            "and lets staff change them or answer requests."
+        ),
         kind="addon",
         requires=("customer_support",),
         capabilities=("subscription_agent",),

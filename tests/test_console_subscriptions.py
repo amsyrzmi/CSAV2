@@ -66,6 +66,18 @@ def when(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+async def test_settings_return_the_tenant_time_zone_to_every_role(sessions: SessionWorld) -> None:
+    w = sessions
+    reader, _ = await w.member(role="read_only")
+    other, _ = await w.member(role="tenant_admin", tenant=w.tenants[1])
+    await w.q("UPDATE clients SET timezone='Asia/Kuching' WHERE id=%s", w.tenants[0])
+    await w.q("UPDATE clients SET timezone='UTC' WHERE id=%s", w.tenants[1])
+
+    shown = await reader.get(f"{BASE}/settings")
+    assert shown.status_code == 200 and shown.json() == {"timezone": "Asia/Kuching"}
+    assert (await other.get(f"{BASE}/settings")).json() == {"timezone": "UTC"}
+
+
 async def test_plans_crud_roles_and_isolation(sessions: SessionWorld) -> None:
     w = sessions
     admin, _ = await w.member(role="tenant_admin")
@@ -506,3 +518,48 @@ async def test_customer_lookup_for_adding_a_subscription(sessions: SessionWorld)
     bare, _ = await w.member(role="tenant_admin", tenant=created.json()["id"])
     refused = await bare.get(customers)
     assert refused.status_code == 403 and refused.json()["detail"] == "package_inactive"
+
+
+async def test_create_sets_the_anchor_and_a_cycle_default(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic")
+    contact = await seed_customer(w, w.tenants[0])
+
+    response = await w.mutate(
+        staff,
+        BASE,
+        {"contact_id": contact, "plan_code": "basic", "started_at": "2026-10-31T02:00:00Z"},
+    )
+    assert response.status_code == 201, response.text
+    # 31 Oct 10:00 in Kuala Lumpur renews on 30 Nov 10:00 there; the cycle is anchored on the start.
+    assert when(response.json()["renews_at"]) == datetime(2026, 11, 30, 2, 0, tzinfo=UTC)
+    [stored] = await w.q(
+        "SELECT renewal_anchor, renews_at FROM subscriptions WHERE id=%s", response.json()["id"]
+    )
+    assert stored["renewal_anchor"] == datetime(2026, 10, 31, 2, 0, tzinfo=UTC)
+    assert stored["renews_at"] == datetime(2026, 11, 30, 2, 0, tzinfo=UTC)
+
+
+async def test_create_with_renews_at_anchors_on_it(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic")
+    contact = await seed_customer(w, w.tenants[0])
+
+    response = await w.mutate(
+        staff,
+        BASE,
+        {
+            "contact_id": contact,
+            "plan_code": "basic",
+            "started_at": "2026-10-31T02:00:00Z",
+            "renews_at": "2026-12-15T02:00:00Z",
+        },
+    )
+    assert response.status_code == 201, response.text
+    [stored] = await w.q(
+        "SELECT renewal_anchor, renews_at FROM subscriptions WHERE id=%s", response.json()["id"]
+    )
+    assert stored["renewal_anchor"] == datetime(2026, 12, 15, 2, 0, tzinfo=UTC)
+    assert stored["renews_at"] == datetime(2026, 12, 15, 2, 0, tzinfo=UTC)

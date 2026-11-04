@@ -7,9 +7,12 @@ from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from csa.console.capabilities import CapabilityOut
+from csa.console.last_change import LastChange, last_change_from_row
 from csa.console.router import build_router
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 
 @pytest.fixture
@@ -72,6 +75,7 @@ def test_capabilities_and_specialized_tabs(
         assert data[0]["active"] is True
         assert data[1]["name"] == "ecommerce_agent"
         assert data[1]["active"] is False  # Because client_enabled is False
+        assert data[0]["last_change"] is None  # Filled only on the services read
 
         # 2. Specialized tabs overview
         tabs_resp = client.get("/console/v1/tabs/specialized", headers=headers)
@@ -178,3 +182,113 @@ def test_invoices_console_endpoints(
         assert [c.args[1:] for c in gate.await_args_list] == [
             (client_id, frozenset({"orders_products"}), frozenset({"active"}))
         ] * 2
+
+
+# --- last_change (0502): action derivation and the actor rule, without a database.
+
+AT = datetime(2026, 10, 29, 9, 30)
+
+
+def _row(
+    action: str,
+    details: dict[str, object],
+    name: str | None = "Synthetic Admin",
+    platform: bool = True,
+) -> dict:
+    return {
+        "action": action,
+        "at": AT,
+        "actor_name": name,
+        "actor_is_platform_admin": platform,
+        "details": details,
+    }
+
+
+def _flags(before: tuple[bool, bool], after: tuple[bool, bool]) -> dict[str, object]:
+    return {
+        "before": {"is_enabled": before[0], "client_enabled": before[1]},
+        "after": {"is_enabled": after[0], "client_enabled": after[1]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("action", "details", "expected"),
+    [
+        ("service.requested", {"before": None, "after": "requested"}, "requested"),
+        ("service.activated", {"before": "requested", "after": "active"}, "activated"),
+        ("service.suspended", {"before": "active", "after": "suspended"}, "suspended"),
+        ("capability.updated", _flags((False, False), (True, False)), "subscribed"),
+        ("capability.updated", _flags((True, True), (False, True)), "unsubscribed"),
+        ("capability.updated", _flags((True, False), (True, True)), "tenant_switch_on"),
+        ("capability.updated", _flags((True, True), (True, False)), "tenant_switch_off"),
+        # Both switches changed in one row: the subscription wins.
+        ("capability.updated", _flags((False, False), (True, True)), "subscribed"),
+        ("capability.updated", _flags((True, True), (False, False)), "unsubscribed"),
+        # Nothing recognisable changed.
+        ("capability.updated", _flags((True, True), (True, True)), None),
+        ("capability.updated", {}, None),
+        ("capability.updated", {"before": None, "after": "x"}, None),
+        ("service.unknown", {}, None),
+    ],
+)
+def test_last_change_action_mapping(
+    action: str, details: dict[str, object], expected: str | None
+) -> None:
+    change = last_change_from_row(_row(action, details), platform_admin=True)
+    if expected is None:
+        assert change is None
+    else:
+        assert change is not None and change.action == expected and change.at == AT
+
+
+def test_last_change_actor_is_a_name_only_for_platform_admins() -> None:
+    row = _row("service.activated", {"before": None, "after": "active"})
+    shown = last_change_from_row(row, platform_admin=True)
+    assert shown is not None and shown.actor == "Synthetic Admin"
+    hidden = last_change_from_row(row, platform_admin=False)
+    assert hidden is not None and hidden.actor == "a platform administrator"
+    assert "Synthetic Admin" not in hidden.model_dump_json()
+    # A missing or empty actor name falls back to the role label even for platform admins.
+    for name in (None, ""):
+        anonymous = last_change_from_row({**row, "actor_name": name}, platform_admin=True)
+        assert anonymous is not None and anonymous.actor == "a platform administrator"
+    assert last_change_from_row(None, platform_admin=True) is None
+
+
+def test_last_change_labels_a_tenant_actor_as_a_team_member_for_tenant_viewers() -> None:
+    row = _row(
+        "service.requested", {"before": None, "after": "requested"}, "Synthetic Member", False
+    )
+    team = last_change_from_row(row, platform_admin=False)
+    assert team is not None and team.actor == "a member of your team"
+    assert "Synthetic Member" not in team.model_dump_json()
+    named = last_change_from_row(row, platform_admin=True)
+    assert named is not None and named.actor == "Synthetic Member"
+    # No actor (system or legacy rows): the function reports no name and false. Tenant viewers
+    # get neutral wording, not "a member of your team"; platform viewers keep the role label.
+    gone = {**row, "actor_name": None, "actor_is_platform_admin": False}
+    tenant_view = last_change_from_row(gone, platform_admin=False)
+    assert tenant_view is not None and tenant_view.actor == "an administrator"
+    platform_view = last_change_from_row(gone, platform_admin=True)
+    assert platform_view is not None and platform_view.actor == "a platform administrator"
+
+
+def test_last_change_model_is_closed_and_capability_field_is_optional() -> None:
+    with pytest.raises(ValidationError):
+        LastChange.model_validate(
+            {"action": "activated", "at": AT, "actor": "x", "actor_id": str(uuid.uuid4())}
+        )
+    with pytest.raises(ValidationError):
+        LastChange.model_validate({"action": "deleted", "at": AT, "actor": "x"})
+    cap = CapabilityOut(
+        id=uuid.uuid4(),
+        name="kb_agent",
+        is_enabled=True,
+        client_enabled=True,
+        active=True,
+        circuit_state="closed",
+        fail_count=0,
+        capability_kind="dispatched",
+        updated_at=AT,
+    )
+    assert cap.last_change is None and cap.model_dump()["last_change"] is None

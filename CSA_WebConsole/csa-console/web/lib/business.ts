@@ -56,10 +56,47 @@ export function appendDemoListing(listings: readonly DemoListing[]): DemoListing
   ];
 }
 
-export function localOrderPath(tenantQuery: string, channel: string, shopId: string): string {
-  if (shopId && !channel) throw new Error("Select a source/platform before a store ID.");
+/** What the order list and the counts can be narrowed by; empty values are left out. */
+export type OrderQuery = {
+  channel?: string;
+  shopId?: string;
+  /** ISO instants from `toISOString()` (UTC); a raw `+08:00` offset would decode to a space. */
+  from?: string | null;
+  to?: string | null;
+  status?: string;
+  paymentStatus?: string;
+};
+
+function orderParams(tenantQuery: string, filters: OrderQuery, withStatus: boolean): URLSearchParams {
+  if (filters.shopId && !filters.channel) throw new Error("Select a source/platform before a store ID.");
   const query = new URLSearchParams(tenantQuery);
-  if (channel) query.set("channel", channel);
-  if (shopId) query.set("shop_id", shopId);
-  return `/console/v1/business/orders?${query}`;
+  if (filters.channel) query.set("channel", filters.channel);
+  if (filters.shopId) query.set("shop_id", filters.shopId);
+  if (filters.from) query.set("from", filters.from);
+  if (filters.to) query.set("to", filters.to);
+  if (withStatus && filters.status) query.set("status", filters.status);
+  if (filters.paymentStatus) query.set("payment_status", filters.paymentStatus);
+  return query;
+}
+
+export function localOrderPath(tenantQuery: string, channel: string, shopId: string): string {
+  return orderListPath(tenantQuery, { channel, shopId });
+}
+
+export function orderListPath(tenantQuery: string, filters: OrderQuery): string {
+  return `/console/v1/business/orders?${orderParams(tenantQuery, filters, true)}`;
+}
+
+/** The counts read ignores any status on purpose, so it never sends one. */
+export function orderCountsPath(tenantQuery: string, filters: OrderQuery): string {
+  return `/console/v1/business/orders/counts?${orderParams(tenantQuery, filters, false)}`;
+}
+
+/** The same read for the next page: `before` joins the query. No cursor leaves the path as is. */
+export function withCursor(path: string, cursor: string | null): string {
+  if (!cursor) return path;
+  const at = path.indexOf("?");
+  const query = new URLSearchParams(at < 0 ? "" : path.slice(at + 1));
+  query.set("before", cursor);
+  return `${at < 0 ? path : path.slice(0, at)}?${query}`;
 }

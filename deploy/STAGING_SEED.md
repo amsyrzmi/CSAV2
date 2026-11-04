@@ -19,7 +19,7 @@ fabricate deliveries, approvals or runtime traces.
 Service packages: for a capability-enabled tenant (`demo-meranti`) the seed also
 writes `active` rows in `console_service_packages` (reference `staging-seed-v1`,
 activated by the seeding platform administrator) for every package whose
-capabilities it enables: `customer_support`, `orders_products`, `subscriptions`,
+capabilities it enables: `customer_support`, `knowledge_base`, `orders_products`, `subscriptions`,
 `bookings` and `marketplaces`. It activates `hr` for every tenant it assigns an
 HR owner (`demo-meranti`), in the same transaction as the HR step.
 `e_invoicing` is not activated because onboarding provisions no `lhdn_agent`
@@ -49,6 +49,10 @@ Validation: `tests/test_seed_staging.py` runs the whole seed twice against a
 disposable migrated Testcontainer and checks roles, forced password change,
 revoked sessions, HR receipts and exact record counts.
 
+**A staging reset does not run this seed.** Seeding after a reset would add the demo tenants
+beside the real companies, and `accounts` (`deploy/STAGING_PIPELINE.md`, "Resetting staging")
+refuses to run again once a company outside its roster exists. Do not seed a reset staging.
+
 ## Running against staging (separate approval)
 
 Run from an approved checkout as a one-off container on the accepted Python
@@ -57,7 +61,7 @@ owner and identity connection strings are mounted as read-only secret files.
 
 ```bash
 (
-  cd /home/amsyrzmi/CSAV2-seed || exit 1
+  cd /home/amsyrzmi/CSAV2 || exit 1
   docker run --rm --network csa-staging_data --user 1000:1000 \
     --env NO_LOCAL_ENV=1 \
     --env CSA_STAGING_SEED_APPROVAL=approved-isolated-staging \

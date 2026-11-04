@@ -81,6 +81,85 @@ def test_agent_failure_lowers_confidence_and_triggers_partial_result_review() ->
     assert _decide({"always_review_if": ["requires_human"]}, _state(handoff=True))[0] == "approve"
 
 
+def _web(state: TurnState) -> TurnState:
+    return state.model_copy(
+        update={"envelope": state.envelope.model_copy(update={"channel": Channel.WEB})}
+    )
+
+
+@pytest.mark.parametrize("mode", ["shadow", "suggest"])
+def test_the_sandbox_answers_in_any_mode(mode: str) -> None:
+    assert _decide({"deployment_mode": mode}, _web(_state())) == ("send", "auto")
+
+
+def test_the_sandbox_still_follows_review_rules() -> None:
+    for mode in ("shadow", "suggest"):
+        held = {"deployment_mode": mode, "never_auto": ["refund_returns"]}
+        assert _decide(held, _web(_state(Intent.REFUND_RETURNS))) == (
+            "approve",
+            "never_auto:refund_returns",
+        )
+        threshold = {"deployment_mode": mode, "auto_send": {"by_intent": {"product_info": 0.7}}}
+        assert _decide(threshold, _web(_state(confidence=0.6)))[0] == "approve"
+        assert _decide(threshold, _web(_state(confidence=0.7)))[0] == "send"
+        flagged = {"deployment_mode": mode, "always_review_if": ["requires_human"]}
+        assert _decide(flagged, _web(_state(handoff=True)))[0] == "approve"
+        unverified = _web(_state()).model_copy(update={"verified": False})
+        assert _decide({"deployment_mode": mode}, unverified) == (
+            "approve",
+            "draft_verification_failed",
+        )
+
+
+@pytest.mark.parametrize("channel", [Channel.TELEGRAM, Channel.WHATSAPP])
+def test_customer_channels_keep_the_mode(channel: Channel) -> None:
+    state = _state().model_copy(
+        update={"envelope": _state().envelope.model_copy(update={"channel": channel})}
+    )
+    assert _decide({"deployment_mode": "shadow"}, state) == ("reject", "shadow_mode")
+    assert _decide({"deployment_mode": "suggest"}, state) == ("approve", "suggest_mode")
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"deployment_mode": "suggest"},
+        {"auto_send": {"default": False}},
+        {"never_auto": ["product_info"]},
+        {"always_review_if": ["requires_human"]},
+        {"auto_send": {"by_intent": {"product_info": 0.99}}},
+    ],
+)
+def test_the_handoff_for_a_switched_off_service_never_waits_for_a_human(policy: dict) -> None:
+    state = _state().model_copy(
+        update={"handoff": Handoff(required=True, reason="service_off", priority="normal")}
+    )
+    assert _decide(policy, state) == ("send", "system_reply")
+
+
+def test_the_sandbox_gets_the_switched_off_service_reply_where_customers_do_not() -> None:
+    state = _state().model_copy(
+        update={"handoff": Handoff(required=True, reason="service_off", priority="normal")}
+    )
+    shadow = {"deployment_mode": "shadow"}
+    assert _decide(shadow, _web(state)) == ("send", "system_reply")
+    assert _decide(shadow, state) == ("reject", "shadow_mode")
+
+
+def test_shadow_mode_still_holds_the_handoff_for_a_switched_off_service() -> None:
+    state = _state().model_copy(
+        update={"handoff": Handoff(required=True, reason="service_off", priority="normal")}
+    )
+    assert _decide({"deployment_mode": "shadow"}, state) == ("reject", "shadow_mode")
+
+
+def test_other_handoffs_still_wait_in_suggest_mode() -> None:
+    assert _decide({"deployment_mode": "suggest"}, _state(handoff=True)) == (
+        "approve",
+        "suggest_mode",
+    )
+
+
 def test_has_attachment_review_is_a_per_client_policy_choice() -> None:
     plain = _state()
     attached = plain.model_copy(

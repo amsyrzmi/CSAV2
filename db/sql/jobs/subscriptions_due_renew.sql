@@ -1,8 +1,12 @@
 -- Rule 4 of the subscriptions_due job: an active subscription not flagged to cancel whose
--- renews_at has passed renews, advancing renews_at by ONE billing interval of its plan (year or
--- month, month when the plan row is gone) on the tenant's calendar (clients.timezone), so a month
--- end clamps the way the customer sees it. Nothing is charged. A subscription far behind catches
--- up one interval per run: the statement touches each row once, so no row renews twice in a run.
+-- renews_at has passed renews. renews_at becomes the first step of the cycle after the old one
+-- (subscription_next_renewal): the cycle's anchor, coalesce(renewal_anchor, renews_at), plus whole
+-- billing intervals of its plan (year or month, month when the plan row is gone) on the tenant's
+-- calendar (clients.timezone). So the cycle keeps its day of the month and clamps only in a
+-- shorter month: 31 Jan -> 28 Feb -> 31 Mar. The anchor is stored (a NULL one is set to the old
+-- renews_at, the row's own cycle from here on); both read the row's values from before the update.
+-- Nothing is charged. A subscription far behind catches up one interval per run: the statement
+-- touches each row once, so no row renews twice in a run.
 -- Action 'renewed' with {previous_renews_at, renews_at}. Rows are claimed FOR UPDATE SKIP LOCKED
 -- (oldest first, at most %(batch_size)s); version bumps.
 WITH tenant AS (
@@ -19,12 +23,12 @@ WITH tenant AS (
     LIMIT %(batch_size)s
 ), changed AS (
     UPDATE public.subscriptions s
-    SET renews_at = ((s.renews_at AT TIME ZONE tenant.timezone)
-                     + CASE (SELECT p.billing_interval FROM public.plans p
-                             WHERE p.client_id = s.client_id AND p.code = s.plan)
-                           WHEN 'year' THEN interval '1 year'
-                           ELSE interval '1 month' END)
-                    AT TIME ZONE tenant.timezone,
+    SET renews_at = public.subscription_next_renewal(
+            coalesce(s.renewal_anchor, s.renews_at), s.renews_at,
+            coalesce((SELECT p.billing_interval FROM public.plans p
+                      WHERE p.client_id = s.client_id AND p.code = s.plan), 'month'),
+            tenant.timezone),
+        renewal_anchor = coalesce(s.renewal_anchor, s.renews_at),
         version = s.version + 1
     FROM due, tenant
     WHERE s.client_id = %(client_id)s AND s.id = due.id

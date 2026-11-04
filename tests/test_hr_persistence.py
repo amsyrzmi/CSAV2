@@ -708,9 +708,9 @@ async def test_employee_without_account_and_owner_without_employee_link(world: H
         {"action": "approve", "expected_version": 1},
     )
     assert decision.status_code == 200, decision.text
-    assert (
-        await world.call("owner", "POST", "/console/v1/hr/training-requests", CONTENT)
-    ).status_code == 404
+    # The owner's own missing employee link is a distinct prerequisite code, not a 404.
+    drafted = await world.call("owner", "POST", "/console/v1/hr/training-requests", CONTENT)
+    assert drafted.status_code == 409 and drafted.json()["detail"] == "no_employee_link"
 
 
 async def test_database_field_filtering_and_unsupported_grants(world: HrWorld) -> None:
@@ -784,7 +784,7 @@ async def test_rls_and_role_privileges_fail_closed(world: HrWorld) -> None:
         "SELECT relrowsecurity,relforcerowsecurity FROM pg_class "
         "WHERE relname LIKE 'hr_%' AND relkind='r'"
     )
-    assert len(staged) == 27 and all(
+    assert len(staged) == 32 and all(
         r["relrowsecurity"] and not r["relforcerowsecurity"] for r in staged
     )
 
@@ -1024,6 +1024,24 @@ async def test_api_contract_exposes_only_bounded_hr_operations(world: HrWorld) -
         "/console/v1/hr/training-requests",
         "/console/v1/hr/training-requests/{request_id}",
         "/console/v1/hr/training-requests/{request_id}/transitions",
+        "/console/v1/hr/access/people",
+        "/console/v1/hr/access/changes",
+        "/console/v1/hr/access/recent",
+        "/console/v1/hr/access/invitations",
+        "/console/v1/hr/access/invitations/{token_id}/apply",
+        "/console/v1/hr/access/invitations/{token_id}/dismiss",
+        "/console/v1/hr/people",
+        "/console/v1/hr/people/{employee_id}",
+        "/console/v1/hr/people/{employee_id}/history",
+        "/console/v1/hr/people/{employee_id}/access",
+        "/console/v1/hr/people/{employee_id}/personal",
+        "/console/v1/hr/people/{employee_id}/personal/reveal",
+        "/console/v1/hr/people/{employee_id}/documents",
+        "/console/v1/hr/documents/{document_id}/download",
+        "/console/v1/hr/documents/{document_id}/remove",
+        "/console/v1/hr/org-chart",
+        "/console/v1/hr/departments",
+        "/console/v1/hr/home",
     }
     assert schema["components"]["schemas"]["TrainingDraftInput"]["additionalProperties"] is False
 

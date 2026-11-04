@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 import psycopg
 import pytest
 from apps.worker.main import IngressWorker
+from csa.contracts.envelope import Channel
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import (
     Context,
@@ -23,6 +25,7 @@ from csa.graph.saver import build_checkpoint_pool, build_saver
 from csa.turn.deps import FALLBACK_TEXT, PostgresTurnDependencies, _supported_locale
 
 from tests.conftest import owner_dsn_for, requires_docker
+from tests.test_coordinator import make_envelope
 from tests.test_worker import _configure_test_settings, _seed_events
 
 pytestmark = [requires_docker, pytest.mark.asyncio, pytest.mark.usefixtures("lg_setup_dsn")]
@@ -235,6 +238,47 @@ async def test_client_shadow_policy_suppresses_the_reply_the_default_policy_send
         await _close(*pools[:3])
 
 
+async def test_the_wired_gate_lets_a_sandbox_turn_through_where_customers_get_none(
+    pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, _ = _seed_events(owner_dsn)
+    with psycopg.connect(owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE clients SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+            "'{policy}', '{\"deployment_mode\": \"shadow\"}') WHERE id=%s",
+            (client_id,),
+        )
+        # This test never runs the worker, so the seeded event would stay queued and the next
+        # test's worker would claim it (a shadow company's turn) before its own.
+        conn.execute(
+            "UPDATE ingress_events SET status='completed', completed_at=now() WHERE client_id=%s",
+            (client_id,),
+        )
+    pools = await _worker(owner_dsn, app_dsn)
+    deps = pools[4]
+    try:
+        state = TurnState(
+            envelope=make_envelope("hi").model_copy(update={"client_id": UUID(client_id)}),
+            plan=Plan(
+                tasks=[],
+                reply_strategy="auto_reply",
+                intent=Intent.PRODUCT_INFO,
+                confidence=0.9,
+                source="policy",
+            ),
+            draft=Draft(text="ok", language="en"),
+        )
+        sandbox = state.model_copy(
+            update={"envelope": state.envelope.model_copy(update={"channel": Channel.WEB})}
+        )
+        assert (await deps.gate(sandbox)).decision == "send"
+        assert (await deps.gate(state)).decision == "reject"
+    finally:
+        await _close(*pools[:3])
+
+
 async def test_supported_locale_normalizes_and_rejects_unsupported() -> None:
     assert _supported_locale("zh-CN") == "zh"
     assert _supported_locale("MS_my") == "ms"
@@ -317,6 +361,32 @@ async def test_forced_exception_ends_in_fail_safe_with_outbound_and_escalation(
 
 def _code(stage: str) -> str:
     return {"load_context": "load_ctx"}.get(stage, stage)
+
+
+@requires_docker
+@pytest.mark.parametrize("stage", ["signals", "compose"])
+async def test_a_failed_turn_sends_nothing_while_replies_are_off(
+    stage: str, pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    _configure_test_settings(monkeypatch, app_dsn=app_dsn, owner_dsn=owner_dsn)
+    owner_dsn, client_id, _ = _seed_events(owner_dsn)
+    with psycopg.connect(owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE clients SET config = jsonb_set(coalesce(config,'{}'::jsonb), "
+            "'{policy}', '{\"deployment_mode\": \"shadow\"}') WHERE id=%s",
+            (client_id,),
+        )
+    pools = await _worker(owner_dsn, app_dsn, fail_stage=stage)
+    try:
+        assert await pools[3].process_once() is True
+        result = _counts(owner_dsn, client_id)
+        assert result["outbound"] == []
+        assert result["deliveries"] == 0
+        assert len(result["escalations"]) == 1, "staff still hear about it"
+        assert result["status"] == "completed"
+    finally:
+        await _close(*pools[:3])
 
 
 async def test_finalize_failure_retries_from_checkpoint_without_second_reply(

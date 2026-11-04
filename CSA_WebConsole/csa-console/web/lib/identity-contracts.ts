@@ -91,9 +91,20 @@ export interface Member {
 }
 export interface IssuedInvitation {
   id: string;
-  token: string;
+  /** Null when the server emailed the link: the raw token then never leaves the server. */
+  token: string | null;
   expires_at: string;
-  delivery: "manual";
+  delivery: "manual" | "email";
+  /** Why the link is shown: mail is switched off, or the send failed. Absent on older responses. */
+  delivery_note?: "mail_off" | "send_failed" | null;
+}
+/** The newest recorded change to a service or capability; `actor` is a ready-to-display string. */
+export interface LastChange {
+  action:
+    | "requested" | "activated" | "suspended" | "subscribed" | "unsubscribed"
+    | "tenant_switch_on" | "tenant_switch_off";
+  at: string;
+  actor: string;
 }
 export interface Capability {
   name: string;
@@ -104,6 +115,7 @@ export interface Capability {
   circuit_state: string;
   fail_count: number;
   updated_at: string;
+  last_change?: LastChange | null;
 }
 export interface Agent {
   name: string;
@@ -162,7 +174,7 @@ export function homeFor(me: Me): string {
 }
 export const roleLabels: Record<ConsoleRole, string> = {
   platform_admin: "Platform admin",
-  tenant_admin: "Tenant admin",
-  tenant_staff: "Tenant staff",
-  read_only: "Read only",
+  tenant_admin: "Admin",
+  tenant_staff: "Staff",
+  read_only: "View only",
 };

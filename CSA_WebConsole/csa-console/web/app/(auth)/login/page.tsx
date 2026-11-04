@@ -31,7 +31,7 @@ export default function LoginPage() {
   return (
     <AuthCard
       title="Sign in"
-      subtitle="Enter your account details to continue."
+      subtitle="Enter your email and password to continue."
     >
       <form onSubmit={submit} className="space-y-5">
         <div>

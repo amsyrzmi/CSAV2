@@ -21,6 +21,7 @@ from csa.subscriptions.contracts import (
     PlanPatch,
     RequestOut,
     RequestPage,
+    SettingsOut,
     Status,
     SubscriptionCreateIn,
     SubscriptionDetail,
@@ -67,7 +68,16 @@ def build_subscriptions_router() -> APIRouter:
         require_subscriptions_write(actor, client_id)
         return actor
 
-    # `/plans` routes are declared before `/{subscription_id}`, which is also typed UUID.
+    # `/settings` and `/plans` routes are declared before `/{subscription_id}`, which is also
+    # typed UUID.
+    @router.get("/settings", response_model=SettingsOut)
+    async def settings(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> SettingsOut:
+        reader(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await service.get_settings(conn, client_id)
+
     @router.get("/plans", response_model=list[PlanOut])
     async def plans(
         request: Request,

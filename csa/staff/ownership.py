@@ -38,3 +38,10 @@ async def automation_allowed(
     if row is None:
         raise RuntimeError("conversation_not_found")
     return row["allowed"] is True
+
+
+async def replies_off(conn: AsyncConnection[Any], client_id: UUID) -> bool:
+    """Whether the company has customer replies off, so nothing may reach its customers."""
+    row = await db.q.fetch_one("turn/get_client_policy.sql", (client_id,), conn=conn)
+    policy = row["policy"] if row else None
+    return isinstance(policy, dict) and policy.get("deployment_mode") == "shadow"

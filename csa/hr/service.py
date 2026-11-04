@@ -18,6 +18,14 @@ from psycopg_pool import AsyncConnectionPool
 
 from csa.core.db import q
 from csa.core.tenancy import tx
+from csa.hr.access_switches import (
+    SWITCH_IDS,
+    AccessRows,
+    GrantRow,
+    SwitchId,
+    WorkflowRow,
+    state,
+)
 from csa.hr.models import (
     DirectoryProjection,
     EmployeeRef,
@@ -100,16 +108,37 @@ class HrService:
     async def context(self, session: HrSession) -> HrContext:
         async with tx(self.pool, str(session.tenant_id)) as conn:
             access = await self._access(conn, session)
+            areas = tuple(
+                row["area"]
+                for row in await q.fetch_all(
+                    "hr/private_catalog.sql", (session.tenant_id,), conn=conn
+                )
+            )
+            catalog = await q.fetch_all("hr/workflow_catalog.sql", (session.tenant_id,), conn=conn)
+            on = state(
+                AccessRows(
+                    frozenset(
+                        GrantRow(
+                            grant.action.value,
+                            grant.scope.value,
+                            tuple(sorted(field.value for field in grant.fields)),
+                        )
+                        for grant in access.grants
+                    ),
+                    frozenset(WorkflowRow(r["domain"], r["action"], r["scope"]) for r in catalog),
+                    frozenset(areas),
+                )
+            ).on
+            switches: tuple[SwitchId, ...] = tuple(s for s in SWITCH_IDS if s in on)
             result = HrContext(
-                private_areas=tuple(
-                    row["area"]
-                    for row in await q.fetch_all(
-                        "hr/private_catalog.sql", (session.tenant_id,), conn=conn
-                    )
-                ),
+                private_areas=areas,
                 employee=access.employee,
                 client_owner=access.client_owner,
                 actions=tuple(sorted({grant.action.value for grant in access.grants})),
+                switches=switches,
+                workflows=tuple(sorted({f"{r['domain']}.{r['action']}" for r in catalog})),
+                hr_duties=access.client_owner
+                or bool(set(switches) - {"directory", "own_requests"}),
             )
             await self._session(conn, session)
         return result
@@ -117,10 +146,13 @@ class HrService:
     async def guidance(self, session: HrSession) -> HrGuidance:
         async with tx(self.pool, str(session.tenant_id)) as conn:
             access = await self._access(conn, session)
-            result = HrGuidance(
-                actions=tuple(sorted({grant.action for grant in access.grants})),
-                as_of=self.now(),
-            )
+            # Guidance names the directory and training actions only; people.manage and
+            # people.sensitive are switches of the People pages, not something the assistant guides.
+            actions = {grant.action for grant in access.grants} - {
+                HrAction.PEOPLE_MANAGE,
+                HrAction.PEOPLE_SENSITIVE,
+            }
+            result = HrGuidance(actions=tuple(sorted(actions)), as_of=self.now())
             await self._session(conn, session)
         return result
 
@@ -508,7 +540,8 @@ class HrService:
                 )
             else:
                 if access.employee is None:
-                    raise HrPolicyError("resource_unavailable")
+                    # The caller's own prerequisite, not a lookup of someone else's record.
+                    raise HrPolicyError("no_employee_link")
                 employee = await self._employee(conn, session, access.employee.employee_id)
                 draft = propose_draft(access, employee.directory(session.tenant_id), content)
                 scope = self._scope(access, HrAction.TRAINING_DRAFT, employee)

@@ -6,14 +6,16 @@ again by HrService against locked server state inside the persistence transactio
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Coroutine
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid5
 
 import psycopg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import SecretStr
 
@@ -24,10 +26,29 @@ from csa.console.security import digest
 from csa.console.services import require_package
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError
+from csa.hr.access_contracts import (
+    AccessChangeResult,
+    AccessChanges,
+    AccessEventPage,
+    AccessPeoplePage,
+    AccessPersonResult,
+    PendingInvitationPage,
+)
+from csa.hr.access_page import HrAccessPage
+from csa.hr.access_switches import SwitchId
 from csa.hr.agents import HrAgentDescription, describe_agent
 from csa.hr.assistant import HrAssistant, HrChatInput, HrChatPlan, TrainingSubmitIntent
 from csa.hr.automation_models import HrOperation, OperationReceipt
 from csa.hr.cases import CasePage, HrWorkflowService
+from csa.hr.documents import (
+    MAX_UPLOAD_BODY_BYTES,
+    MEDIA,
+    DocumentKind,
+    DocumentList,
+    DocumentOut,
+    HrDocuments,
+)
+from csa.hr.invitation_access import InvitationAccess
 from csa.hr.models import (
     DirectoryProjection,
     HrModel,
@@ -37,6 +58,18 @@ from csa.hr.models import (
 )
 from csa.hr.operation_records import Records, project_records
 from csa.hr.operations import HrOperations
+from csa.hr.people_contracts import (
+    DepartmentList,
+    HrHome,
+    OrgChart,
+    PeoplePage,
+    PersonAccessOut,
+    PersonHistory,
+    PersonProfile,
+    PersonStatus,
+)
+from csa.hr.people_service import HrPeople
+from csa.hr.personal import HrPersonal, PersonalOut, PersonalReveal, PersonalRevealIn
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import (
     AgentSwitch,
@@ -55,6 +88,18 @@ from csa.workspace.registry import ProposalError, ProposalRegistry
 
 _PROPOSAL_NS = UUID("5f0b8a3e-3c1d-4b57-9a52-7d2f1c6e8b40")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
+# Request body caps in bytes; every other HR path keeps 8192.
+_BODY_LIMITS = {"/console/v1/hr/operations": 262144, "/console/v1/hr/access/changes": 65536}
+_DOCUMENT_UPLOAD = re.compile(r"/console/v1/hr/people/[0-9a-fA-F-]{36}/documents")
+# Extra query keys per GET path; every HR path also takes client_id.
+_QUERY_KEYS = {
+    "/console/v1/hr/employees": {"limit", "after"},
+    "/console/v1/hr/training-requests": {"limit", "after"},
+    "/console/v1/hr/workflows": {"limit", "after"},
+    "/console/v1/hr/access/people": {"cursor", "q", "team", "has", "reports_to"},
+    "/console/v1/hr/access/recent": {"cursor"},
+    "/console/v1/hr/people": {"q", "department", "manager", "status", "cursor"},
+}
 
 
 def hr_http_error(exc: HrPolicyError) -> HTTPException:
@@ -69,6 +114,8 @@ def hr_http_error(exc: HrPolicyError) -> HTTPException:
         "request_employee_mismatch",
     }:
         return HTTPException(404, "resource_unavailable")
+    # Everything else is a 409, including no_employee_link: the caller's own login has no
+    # employee record, which reveals nothing about anyone else's.
     return HTTPException(409, code)
 
 
@@ -97,9 +144,13 @@ class HrRoute(APIRoute):
         async def guarded(request: Request) -> Response:
             try:
                 data = bytearray()
+                maximum = (
+                    MAX_UPLOAD_BODY_BYTES
+                    if request.method == "POST" and _DOCUMENT_UPLOAD.fullmatch(request.url.path)
+                    else _BODY_LIMITS.get(request.url.path, 8192)
+                )
                 async for chunk in request.stream():
                     data.extend(chunk)
-                    maximum = 262144 if request.url.path == "/console/v1/hr/operations" else 8192
                     if len(data) > maximum:
                         raise HTTPException(413, "hr_request_too_large")
                 # Starlette caches body bytes on Request; parsing uses the bounded copy.
@@ -146,12 +197,10 @@ async def _session(
 ) -> HrSession:
     keys = [key for key, _ in request.query_params.multi_items()]
     allowed = {"client_id"}
-    if request.method == "GET" and request.url.path in {
-        "/console/v1/hr/employees",
-        "/console/v1/hr/training-requests",
-        "/console/v1/hr/workflows",
-    }:
-        allowed |= {"limit", "after"}
+    if request.method == "GET":
+        allowed |= _QUERY_KEYS.get(request.url.path, set())
+    elif request.method == "POST" and _DOCUMENT_UPLOAD.fullmatch(request.url.path):
+        allowed.add("kind")
     if any(key not in allowed for key in keys) or len(keys) != len(set(keys)):
         raise HTTPException(400, "invalid_hr_query")
     if request.headers.get("authorization"):
@@ -198,8 +247,17 @@ class ConfirmationAccept(HrModel):
     """Opaque path reference only; callers cannot replace the prepared command."""
 
 
-def build_hr_router() -> APIRouter:
-    """Requires configured identity_service, hr_service and ordered HR schema."""
+def build_hr_router(hr_upload_root: Path | None = None) -> APIRouter:
+    """Requires configured identity_service, hr_service and ordered HR schema.
+
+    `hr_upload_root` is where employee document files are stored; without it the document routes
+    answer 503 `hr_documents_unavailable`."""
+
+    def documents_for(service: HrService) -> HrDocuments:
+        if hr_upload_root is None:
+            raise HTTPException(503, "hr_documents_unavailable")
+        return HrDocuments(service, hr_upload_root)
+
     router = APIRouter(prefix="/console/v1/hr", tags=["HR"], route_class=HrRoute)
 
     @router.get("/guidance", response_model=HrGuidance)
@@ -266,11 +324,191 @@ def build_hr_router() -> APIRouter:
     ) -> OperationReceipt:
         return await HrOperations(service).apply(session, body, request_key)
 
+    @router.get("/access/people", response_model=AccessPeoplePage)
+    async def access_people(
+        session: Session,
+        service: Service,
+        cursor: Annotated[str | None, Query(max_length=16)] = None,
+        q: Annotated[str | None, Query(max_length=120)] = None,
+        team: Annotated[str | None, Query(max_length=120)] = None,
+        has: SwitchId | None = None,
+        reports_to: UUID | None = None,
+    ) -> AccessPeoplePage:
+        return await HrAccessPage(service).people(
+            session, cursor=cursor, q=q, team=team, has=has, reports_to=reports_to
+        )
+
+    @router.post("/access/changes", response_model=AccessChangeResult)
+    async def access_changes(
+        body: AccessChanges, session: Session, service: Service
+    ) -> AccessChangeResult:
+        return await HrAccessPage(service).changes(session, body)
+
+    @router.get("/access/recent", response_model=AccessEventPage)
+    async def access_recent(
+        session: Session,
+        service: Service,
+        cursor: Annotated[str | None, Query(max_length=200)] = None,
+    ) -> AccessEventPage:
+        return await HrAccessPage(service).recent(session, cursor=cursor)
+
+    @router.get("/access/invitations", response_model=PendingInvitationPage)
+    async def access_invitations(session: Session, service: Service) -> PendingInvitationPage:
+        return await InvitationAccess(service).pending(session)
+
+    @router.post("/access/invitations/{token_id}/apply", response_model=AccessPersonResult)
+    async def access_invitation_apply(
+        token_id: UUID, session: Session, service: Service
+    ) -> AccessPersonResult:
+        return await InvitationAccess(service).apply(session, token_id)
+
+    @router.post("/access/invitations/{token_id}/dismiss", status_code=204)
+    async def access_invitation_dismiss(token_id: UUID, session: Session, service: Service) -> None:
+        await InvitationAccess(service).dismiss(session, token_id)
+
+    @router.get("/people", response_model=PeoplePage, response_model_exclude_none=False)
+    async def people(
+        session: Session,
+        service: Service,
+        q: Annotated[str | None, Query(max_length=120)] = None,
+        department: Annotated[str | None, Query(max_length=36)] = None,
+        manager: UUID | None = None,
+        status: PersonStatus | None = None,
+        cursor: Annotated[str | None, Query(max_length=16)] = None,
+    ) -> PeoplePage:
+        return await HrPeople(service).page(
+            session, q=q, department=department, manager=manager, status=status, cursor=cursor
+        )
+
+    @router.get(
+        "/people/{employee_id}", response_model=PersonProfile, response_model_exclude_none=False
+    )
+    async def person_profile(
+        employee_id: UUID, session: Session, service: Service
+    ) -> PersonProfile:
+        return await HrPeople(service).profile(session, employee_id)
+
+    @router.get(
+        "/people/{employee_id}/history",
+        response_model=PersonHistory,
+        response_model_exclude_none=False,
+    )
+    async def person_history(
+        employee_id: UUID, session: Session, service: Service
+    ) -> PersonHistory:
+        return await HrPeople(service).history(session, employee_id)
+
+    @router.get(
+        "/people/{employee_id}/access",
+        response_model=PersonAccessOut,
+        response_model_exclude_none=False,
+    )
+    async def person_access(
+        employee_id: UUID, session: Session, service: Service
+    ) -> PersonAccessOut:
+        return await HrPeople(service).access(session, employee_id)
+
+    @router.get(
+        "/people/{employee_id}/personal",
+        response_model=PersonalOut,
+        response_model_exclude_none=False,
+    )
+    async def person_personal(employee_id: UUID, session: Session, service: Service) -> PersonalOut:
+        return await HrPersonal(service).get(session, employee_id)
+
+    @router.post(
+        "/people/{employee_id}/personal/reveal",
+        response_model=PersonalReveal,
+        response_model_exclude_none=False,
+    )
+    async def person_personal_reveal(
+        employee_id: UUID, body: PersonalRevealIn, session: Session, service: Service
+    ) -> PersonalReveal:
+        value = await HrPersonal(service).reveal(session, employee_id, body.field)
+        return PersonalReveal(value=value)
+
+    @router.get(
+        "/people/{employee_id}/documents",
+        response_model=DocumentList,
+        response_model_exclude_none=False,
+    )
+    async def person_documents(
+        employee_id: UUID, session: Session, service: Service
+    ) -> DocumentList:
+        return await documents_for(service).for_person(session, employee_id)
+
+    @router.post(
+        "/people/{employee_id}/documents",
+        response_model=DocumentOut,
+        response_model_exclude_none=False,
+        status_code=201,
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "multipart/form-data": {
+                        "schema": {
+                            "type": "object",
+                            "required": ["file"],
+                            "properties": {"file": {"type": "string", "format": "binary"}},
+                        }
+                    }
+                },
+            }
+        },
+    )
+    async def person_document_upload(
+        employee_id: UUID,
+        kind: Annotated[DocumentKind, Query()],
+        request: Request,
+        session: Session,
+        service: Service,
+        request_key: RequestKey,
+    ) -> DocumentOut:
+        return await documents_for(service).upload(session, request, employee_id, kind, request_key)
+
+    @router.get(
+        "/documents/{document_id}/download",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "content": {
+                    media: {"schema": {"type": "string", "format": "binary"}}
+                    for media in MEDIA.values()
+                }
+            }
+        },
+    )
+    async def document_download(
+        document_id: UUID, session: Session, service: Service
+    ) -> StreamingResponse:
+        return await documents_for(service).download(session, document_id)
+
+    @router.post("/documents/{document_id}/remove", status_code=204)
+    async def document_remove(
+        document_id: UUID, session: Session, service: Service, request_key: RequestKey
+    ) -> None:
+        # Removing twice is harmless, so the key only has to be present, like every HR write.
+        await documents_for(service).remove(session, document_id)
+
+    @router.get("/org-chart", response_model=OrgChart, response_model_exclude_none=False)
+    async def org_chart(session: Session, service: Service) -> OrgChart:
+        return await HrPeople(service).org_chart(session)
+
+    @router.get("/departments", response_model=DepartmentList, response_model_exclude_none=False)
+    async def departments(session: Session, service: Service) -> DepartmentList:
+        return await HrPeople(service).departments(session)
+
+    @router.get("/home", response_model=HrHome, response_model_exclude_none=False)
+    async def home(session: Session, service: Service) -> HrHome:
+        return await HrPeople(service).home(session)
+
     @router.get("/records/{area}", response_model=Records)
     async def records(
         area: Literal[
             "authority_audit",
             "members",
+            "interviewers",
             "employees",
             "candidates",
             "interviews",

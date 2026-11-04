@@ -1,18 +1,31 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
-import { api, patch } from "@/lib/api";
+import { Receipt } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  agentOptions, lastAssistants, popCursor, pushCursor, runsQuery,
+  type LastAssistant, type StatusFilter,
+} from "@/lib/activity-view";
+import { avatarForAgent } from "@/lib/agent-avatars";
+import { api } from "@/lib/api";
+import { toInstants, type DayRange } from "@/lib/date-range";
 import type {
-  Agent, AgentRun, Client, Me, RunPage, RuntimeEvent, RuntimeOverview,
+  Agent, AgentRun, Client, Me, RunPage, RuntimeOverview,
 } from "@/lib/identity-contracts";
-import { field, Heading, Notice, Panel, secondary } from "./ui";
+import { buildText, lastChangeText, SAVED_NOT_REFRESHED, safetyPauseText, setupText } from "@/lib/services-view";
+import LastAssistants from "./activity/LastAssistants";
+import RunRow from "./activity/RunRow";
+import AgentAvatar from "./fs/AgentAvatar";
+import { useAvatarTransition } from "./fs/useAvatarTransition";
+import { DateRangeFilter, PageIntro, StatusChips, TechnicalDetails } from "./kit";
+import { field, Notice, Panel, secondary } from "./ui";
+
+type SwitchName = "is_enabled" | "client_enabled";
 
 export function RuntimeWorkspace({
-  me, mode, initialAgent = "", initialClientId = "",
+  me, initialAgent = "", initialClientId = "",
 }: {
   me: Me;
-  mode: "agents" | "activity";
   initialAgent?: string;
   initialClientId?: string;
 }) {
@@ -34,8 +47,12 @@ export function RuntimeWorkspace({
   const query = platform ? `client_id=${encodeURIComponent(selected)}` : "";
   return (
     <>
-      <Heading title={mode === "agents" ? "Agents" : "Runtime activity"}
-        description="CSAV2 capability controls and recorded execution metadata. No legacy workflow metrics." />
+      <h1 className="page-title mb-2 font-(family-name:--fs-font-heading) text-(length:--fs-text-page) font-semibold">
+        Assistant activity
+      </h1>
+      <PageIntro>
+        What your assistants did recently: each run, whether it worked and how long it took. Message text is never shown.
+      </PageIntro>
       {error && <Notice error>{error}</Notice>}
       {platform && (
         <div className="mb-5">
@@ -48,226 +65,268 @@ export function RuntimeWorkspace({
         </div>
       )}
       {!clientId ? <Notice>Select a tenant with an active membership to continue.</Notice> :
-        mode === "agents" ?
-          <AgentManagement key={clientId} query={query} platform={platform} /> :
-          <RuntimeActivity key={clientId} query={query} initialAgent={initialAgent} />}
+        <RuntimeActivity key={clientId} query={query} initialAgent={initialAgent} />}
     </>
   );
 }
 
-function AgentManagement({ query, platform }: { query: string; platform: boolean }) {
-  const [agents, setAgents] = useState<Agent[] | null>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [revision, setRevision] = useState(0);
-  const [selected, setSelected] = useState("");
-  const path = `/console/v1/agents?${query}`;
-  useEffect(() => {
-    const controller = new AbortController();
-    api<Agent[]>(path, { signal: controller.signal })
-      .then((rows) => { setAgents(rows); setError(""); })
-      .catch((cause: Error) => {
-        if (!controller.signal.aborted) setError(cause.message);
-      });
-    return () => controller.abort();
-  }, [path, revision]);
-  async function toggle(agent: Agent, switchName: "is_enabled" | "client_enabled") {
-    const capability = agent.capability;
-    if (!capability) return;
-    setBusy(true);
-    setError("");
-    try {
-      await patch(`/console/v1/capabilities/${encodeURIComponent(agent.name)}?${query}`,
-        { [switchName]: !capability[switchName] });
-      setAgents(await api<Agent[]>(path));
-    } catch (cause) {
-      setError((cause as Error).message);
-      // Controls must not use stale switch values after a failed refresh.
-      setAgents(null);
-    } finally {
-      setBusy(false);
-    }
-  }
-  const detail = agents?.find((agent) => agent.name === selected && agent.can_view_specialized);
-  return (
-    <div className="space-y-5">
-      {error && <Notice error>{error}</Notice>}
-      <button className={secondary} disabled={busy} onClick={() => setRevision((value) => value + 1)}>Refresh agents</button>
-      <Notice>Subscription, tenant switch, implementation, setup and circuit are independent.
-        Both switches on does not mean a provider is connected or healthy. Changes affect the next execution attempt; already-started work is not cancelled.</Notice>
-      {agents && (
-        <nav aria-label="Specialized agents" className="flex flex-wrap gap-2">
-          {agents.filter((agent) => agent.can_view_specialized).map((agent) =>
-            <button key={agent.name} className={secondary} onClick={() => setSelected(agent.name)}>
-              {agent.title}: {agent.implementation === "prepared_only" ? "prepared only" : label(agent.readiness)}
-            </button>)}
-        </nav>
-      )}
-      {detail && <Panel title={detail.title}>
-        <p className="mb-4 text-sm">{detail.detail}</p>
-        <Link className={secondary} href={`${platform ? "" : "/portal"}/activity?${query}&agent=${encodeURIComponent(detail.name)}`}>
-          View recorded activity
-        </Link>
-        {detail.name === "kb_agent" ? <Link className={`${secondary} mt-3`} href={`${platform ? "/knowledge-base" : "/portal/faq"}?${query}`}>Open knowledge base</Link> :
-          <p className="mt-3 text-sm text-ink-500">Feature-specific actions are adopted in later migration phases.</p>}
-      </Panel>}
-      {!agents ? <Notice>{error ? "Agent state unavailable. Refresh to retry." : "Loading agents..."}</Notice> :
-        <div className="grid gap-5 xl:grid-cols-2">
-          {agents.map((agent) => <AgentCard key={agent.name} agent={agent} busy={busy} onToggle={toggle} />)}
-        </div>}
-    </div>
-  );
-}
+/**
+ * Agents that are planned but not built yet. Listed by name rather than inferred from "has no
+ * avatar", so a future agent that simply lacks art is not mislabelled as planned.
+ */
+const PLANNED_AGENTS: ReadonlySet<string> = new Set(["lhdn_agent"]);
 
-export function AgentCard({ agent, busy, onToggle }: {
+/**
+ * One agent: avatar (drawn straight onto the card, no box), title, status words, the details, and the two switches.
+ *
+ * The avatar follows the server, never the click. `pending` (the switch being saved) shows a
+ * still, dimmed avatar and a "Saving..." label; when it clears, `failed` restores the old look
+ * and shows the reason, a newly active capability plays the short wake, a newly inactive one
+ * settles, and an unchanged one just restores. `saved` means the change was saved but the
+ * list reload after it failed: the card says so (not a failure) and nothing animates, because
+ * no reloaded state confirms it. A change nobody made here (a reload or a poll)
+ * is shown at once without a wake, because the resting look is derived from `capability.active`
+ * and only the transition phases come from the hook. Parents must keep `key` stable (the agent
+ * name) so a reload while pending does not remount the card and lose the pending request.
+ */
+export function AgentCard({ agent, busy, onToggle, pending = null, failed = null, saved = false }: {
   agent: Agent; busy: boolean;
-  onToggle: (agent: Agent, switchName: "is_enabled" | "client_enabled") => void;
+  onToggle: (agent: Agent, switchName: SwitchName) => void;
+  pending?: SwitchName | null;
+  failed?: string | null;
+  saved?: boolean;
 }) {
+  const active = Boolean(agent.capability?.active);
+  const avatar = avatarForAgent(agent.name);
+  const transition = useAvatarTransition(active ? "idle" : "still");
+  const { start, confirm, fail } = transition;
+  const previous = useRef<SwitchName | null>(null);
+  const activeAtStart = useRef(active);
+  useEffect(() => {
+    const before = previous.current;
+    if (pending === before) return;
+    previous.current = pending;
+    if (pending) {
+      activeAtStart.current = active;
+      start();
+    } else if (failed || active === activeAtStart.current) {
+      fail();
+    } else {
+      confirm(active ? "active" : "inactive");
+    }
+  }, [pending, failed, active, start, confirm, fail]);
+  const resting = transition.phase === "idle" || transition.phase === "still";
+  const state = pending ? "pending" : resting ? (active ? "idle" : "still") : transition.state;
+  const subscribed = agent.capability?.is_enabled;
+  const switchOn = agent.capability?.client_enabled;
+  const name = agent.name;
+  const planned = PLANNED_AGENTS.has(name);
+  const lastChange = lastChangeText(agent.capability?.last_change);
   return (
-  <Panel title={agent.title}>
-            <dl className="grid grid-cols-2 gap-3 text-sm">
-              <div><dt className="text-ink-500">Subscription</dt><dd>{agent.capability?.is_enabled ? "Subscribed" : "Not subscribed"}</dd></div>
-              <div><dt className="text-ink-500">Tenant switch</dt><dd>{agent.capability?.client_enabled ? "On" : "Off"}</dd></div>
-              <div><dt className="text-ink-500">Implementation</dt><dd>{label(agent.implementation)}</dd></div>
-              <div><dt className="text-ink-500">Setup</dt><dd>{label(agent.readiness)}</dd></div>
-              <div><dt className="text-ink-500">Circuit</dt><dd>{agent.capability?.circuit_state ?? "Not registered"}</dd></div>
-              <div><dt className="text-ink-500">Failure count</dt><dd>{agent.capability?.fail_count ?? "Not registered"}</dd></div>
-            </dl>
-            <p className="my-4 text-sm text-ink-600">{agent.detail}</p>
-            {agent.embedding_model && <p className="mb-4 text-sm">
-              Embeddings: {agent.embedding_model}. Compatible chunks: {agent.compatible_chunks ?? "Unknown"};
-              incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
-            </p>}
-            {agent.required_system && <p className="mb-3 text-sm">Required safety capability; disabling is prohibited.</p>}
-              <div className="flex flex-wrap gap-2">
-                {agent.can_subscribe && <button className={secondary} disabled={busy}
-                  onClick={() => onToggle(agent, "is_enabled")}>
-                  {agent.capability?.is_enabled ? "Remove subscription" : "Subscribe"}
-                </button>}
-                {agent.can_toggle && <button className={secondary} disabled={busy}
-                  onClick={() => onToggle(agent, "client_enabled")}>
-                  Turn tenant switch {agent.capability?.client_enabled ? "off" : "on"}
-                </button>}
-              </div>
-          </Panel>
+    <article data-testid={`agent-card-${name}`}
+      className="rounded-[14px] border border-[var(--fs-border)] bg-[var(--fs-surface)] p-5 shadow-[var(--fs-shadow-card)] sm:p-6">
+      <header className="mb-4 flex items-start gap-3">
+        {avatar ? <AgentAvatar agentId={avatar} size={48} label="" state={state} /> :
+          <span aria-hidden="true"
+            className="inline-flex size-12 flex-none items-center justify-center text-[color:var(--fs-text-secondary)]">
+            <Receipt className="size-6" />
+          </span>}
+        <div className="min-w-0 flex-1">
+          {/* h4: the card sits under a service row whose title is the h3. */}
+          <h4 className="font-(family-name:--fs-font-heading) text-base font-semibold">{agent.title}</h4>
+          <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            {planned && <span data-testid={`agent-planned-${name}`} className="font-medium">Planned</span>}
+            {agent.capability && <span data-testid={`agent-status-${name}`}
+              className="font-medium text-ink-700">{active ? "Active" : "Not active"}</span>}
+          </p>
+          {lastChange && <p data-testid={`agent-last-change-${name}`}
+            className="mt-1 text-sm text-ink-600 [overflow-wrap:anywhere]">{lastChange}</p>}
+          {/* Always rendered (empty when idle) so assistive technology announces the change reliably. */}
+          <span role="status" data-testid={`agent-pending-${name}`}
+            className={pending ? "mt-1 block text-sm text-ink-600" : "block"}>{pending ? "Saving..." : ""}</span>
+        </div>
+      </header>
+      <dl className="grid grid-cols-2 gap-3 text-sm">
+        <div><dt className="text-ink-500">Included in your plan</dt><dd data-testid={`agent-plan-${name}`}>{subscribed ? "Yes" : "No"}</dd></div>
+        <div><dt className="text-ink-500">Turned on for your company</dt><dd data-testid={`agent-company-${name}`}>{switchOn ? "Yes" : "No"}</dd></div>
+        <div><dt className="text-ink-500">Availability</dt><dd>{buildText(agent.implementation)}</dd></div>
+        <div><dt className="text-ink-500">Setup</dt><dd>{setupText(agent.readiness)}</dd></div>
+        <div><dt className="text-ink-500">Automatic safety pause</dt><dd>{agent.capability ? safetyPauseText(agent.capability.circuit_state, agent.implementation, agent.readiness) : "No record yet"}</dd></div>
+        <div><dt className="text-ink-500">Recent failures</dt><dd>{agent.capability?.fail_count ?? "No record yet"}</dd></div>
+      </dl>
+      <p className="my-4 text-sm text-ink-600">{agent.detail}</p>
+      {agent.required_system && <p className="mb-3 text-sm">Always on for safety. This can&apos;t be turned off.</p>}
+      {failed && <div className="mb-3"><Notice error>{failed}</Notice></div>}
+      {saved && !failed && <div className="mb-3"><Notice warning>{SAVED_NOT_REFRESHED}</Notice></div>}
+      <div className="flex flex-wrap gap-2">
+        {agent.can_subscribe && <button className={secondary} disabled={busy}
+          data-testid={`agent-subscribe-${name}`}
+          onClick={() => onToggle(agent, "is_enabled")}>
+          {subscribed ? "Remove from my plan" : "Add to my plan"}
+        </button>}
+        {agent.can_toggle && <button className={secondary} disabled={busy}
+          data-testid={`agent-switch-${name}`}
+          onClick={() => onToggle(agent, "client_enabled")}>
+          Turn {switchOn ? "off" : "on"}
+        </button>}
+      </div>
+      {agent.embedding_model && <TechnicalDetails testId={`agent-tech-${name}`}>
+        <p className="text-sm">
+          Embeddings: {agent.embedding_model}. Compatible chunks: {agent.compatible_chunks ?? "Unknown"};
+          incompatible chunks: {agent.incompatible_chunks ?? "Unknown"}.
+        </p>
+      </TechnicalDetails>}
+    </article>
   );
 }
 
-function label(value: string) { return value.replaceAll("_", " "); }
+/** The current time, renewed every `ms`, so "3 minutes ago" keeps up while the page stays open. */
+function useClock(ms: number): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), ms);
+    return () => clearInterval(timer);
+  }, [ms]);
+  return now;
+}
+
+const PAGE_SIZE = 5;
+const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "ok", label: "Worked" },
+  { value: "error", label: "Needed attention" },
+];
 
 function RuntimeActivity({ query, initialAgent }: { query: string; initialAgent: string }) {
   const [agent, setAgent] = useState(initialAgent);
-  const [filter, setFilter] = useState(initialAgent);
-  const [before, setBefore] = useState<number | null>(null);
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [range, setRange] = useState<DayRange>({ from: null, to: null });
+  // The `before_id` cursors of the pages already passed; the last one is the page on screen.
+  const [stack, setStack] = useState<number[]>([]);
+  const before = stack.length ? stack[stack.length - 1] : null;
+  const instants = useMemo(() => toInstants(range), [range]);
   const [page, setPage] = useState<RunPage | null>(null);
-  const [overview, setOverview] = useState<RuntimeOverview | null>(null);
-  const [selected, setSelected] = useState<AgentRun | null>(null);
   const [error, setError] = useState("");
-  const [revision, setRevision] = useState(0);
+  const [cards, setCards] = useState<LastAssistant[] | null>(null);
+  const [cardsFailed, setCardsFailed] = useState(false);
+  const [overview, setOverview] = useState<RuntimeOverview | null>(null);
+  // Open rows are kept by run id, so a refresh (or a page change and back) never closes them.
+  const [openIds, setOpenIds] = useState<ReadonlySet<number>>(() => new Set());
+  const now = useClock(30_000);
+  const newest = before === null;
+  const filtered = Boolean(agent) || status !== "all" || range.from !== null || range.to !== null;
+  const options = agentOptions();
+  const known = options.some((option) => option.value === initialAgent);
+
+  // The list: refreshed every 5 seconds on the newest page only, and only with no filter on. A filter or page change
+  // restarts it, which also drops any read still in flight for the old choice.
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    const unfiltered = !agent && status === "all" && instants.from === null && instants.to === null;
     async function refresh() {
       try {
-        const params = new URLSearchParams(query);
-        params.set("limit", "25");
-        if (before !== null) params.set("before_id", String(before));
-        if (filter) params.set("agent", filter);
-        const [next, summary] = await Promise.all([
-          api<RunPage>(`/console/v1/runs?${params}`, { signal: controller.signal }),
-          api<RuntimeOverview>(`/console/v1/overview?${query}`, { signal: controller.signal }),
-        ]);
-        if (!controller.signal.aborted) {
-          setPage(next); setOverview(summary); setError("");
-        }
+        const params = runsQuery(query, {
+          limit: PAGE_SIZE, beforeId: before, agent, status, from: instants.from, to: instants.to,
+        });
+        const next = await api<RunPage>(`/console/v1/runs?${params}`, { signal: controller.signal });
+        if (!controller.signal.aborted) { setPage(next); setError(""); }
       } catch (cause) {
-        if (!controller.signal.aborted) {
-          setError((cause as Error).message); setPage(null); setOverview(null);
-        }
+        if (!controller.signal.aborted) { setError((cause as Error).message); setPage(null); }
       } finally {
-        if (!controller.signal.aborted) timer = setTimeout(refresh, 5000);
+        if (!controller.signal.aborted && before === null && unfiltered) timer = setTimeout(refresh, 5000);
       }
     }
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [query, before, filter, revision]);
+  }, [query, before, agent, status, instants.from, instants.to]);
+
+  // The last-assistants strip and the 24-hour line do not depend on the filters or on the page.
+  // They load once and then refresh on the newest page with no filter only. Paging or filtering does
+  // not read them again: the timer keeps ticking, and a tick on an older or filtered view does
+  // nothing. (Back on the newest unfiltered view the next tick, at most 5 seconds away, refreshes them.)
+  const liveRef = useRef(newest && !filtered);
+  useEffect(() => { liveRef.current = newest && !filtered; }, [newest, filtered]);
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    let first = true;
+    async function load() {
+      // The first read always runs, so a link that opens already filtered (?agent=) still fills the strip.
+      if (first || liveRef.current) {
+        first = false;
+        const [runs, summary] = await Promise.allSettled([
+          api<RunPage>(`/console/v1/runs?${runsQuery(query, { limit: 100 })}`, { signal: controller.signal }),
+          api<RuntimeOverview>(`/console/v1/overview?${query}`, { signal: controller.signal }),
+        ]);
+        if (controller.signal.aborted) return;
+        if (runs.status === "fulfilled") { setCards(lastAssistants(runs.value.items)); setCardsFailed(false); }
+        else setCardsFailed(true);
+        setOverview(summary.status === "fulfilled" ? summary.value : null);
+      }
+      timer = setTimeout(load, 5000);
+    }
+    void load();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [query]);
+
+  // A filter that did not really change (the same chip, the same day, Clear when already clear)
+  // does nothing: no new read, no loading flash, paging kept.
+  function change(changed: boolean, apply: () => void) {
+    if (!changed) return;
+    apply(); setStack([]); setPage(null);
+  }
+  function setOpen(id: number, open: boolean) {
+    setOpenIds((current) => {
+      const next = new Set(current);
+      if (open) next.add(id); else next.delete(id);
+      return next;
+    });
+  }
   return (
     <div className="space-y-5">
       {error && <Notice error>{error}</Notice>}
-      {overview && <Panel title="Last 24 hours (all agents)">
-        <p className="text-sm">{overview.runs} recorded runs; {overview.succeeded} succeeded; {overview.failed} failed.</p>
-        <p className="mt-2 text-sm">Last run: {overview.last_run_at ? new Date(overview.last_run_at).toLocaleString() : "No runs in this window"}.</p>
-      </Panel>}
-      <form className="flex flex-wrap gap-3" onSubmit={(event) => {
-        event.preventDefault(); setFilter(agent.trim()); setBefore(null);
-        setPage(null); setSelected(null); setRevision((value) => value + 1);
-      }}>
-        <label className="flex-1 text-sm">Agent name (optional)
-          <input className={field} value={agent} maxLength={100} onChange={(event) => setAgent(event.target.value)} />
-        </label>
-        <button className={secondary}>Filter / refresh</button>
-      </form>
-      <Notice>Polling every 5 seconds. Execution metadata only; no message text, raw inputs or outputs.
-        An empty list means no recorded executions, not proof that a provider is healthy.</Notice>
-      <Panel title="Recorded runs">
-        {!page ? <p>{error ? "Runtime data unavailable." : "Loading runs..."}</p> :
-          page.items.length === 0 ? <p>No recorded runs for this selection.</p> :
-            <ul className="divide-y divide-ink-200">{page.items.map((run) => <li key={run.id}>
-              <button className="w-full py-4 text-left text-sm hover:text-brand-600" onClick={() => setSelected(run)}>
-                #{run.id} {run.agent} / {run.status} / {run.error_code ?? (run.ok ? "Succeeded" : "Failed")}
-                <span className="mt-1 block text-ink-500">{new Date(run.created_at).toLocaleString()} / {run.latency_ms ?? "Unknown"} ms</span>
-              </button>
-            </li>)}</ul>}
+      {overview && <p data-testid="activity-overview" className="text-sm text-[color:var(--fs-text-secondary)]">
+        Last 24 hours: {overview.runs} {overview.runs === 1 ? "run" : "runs"}, {overview.failed} needed attention
+      </p>}
+      <LastAssistants cards={cards} failed={cardsFailed} now={now} />
+      <div className="flex flex-wrap items-end gap-3">
+        <DateRangeFilter testId="activity-date" value={range}
+          onChange={(next) => change(next.from !== range.from || next.to !== range.to, () => setRange(next))} />
+        <div className="w-full sm:w-72">
+          <label htmlFor="activity-agent" className="mb-1 block text-sm">Assistant</label>
+          <select id="activity-agent" data-testid="activity-agent" className={field} value={agent}
+            onChange={(event) => change(event.target.value !== agent, () => setAgent(event.target.value))}>
+            <option value="">All assistants</option>
+            {initialAgent && !known && <option value={initialAgent}>{initialAgent}</option>}
+            {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <StatusChips mode="single" testId="activity-status" ariaLabel="Outcome" options={STATUS_OPTIONS}
+          value={status} onChange={(next) => change(next !== status, () => setStatus(next as StatusFilter))} />
+      </div>
+      <Notice>This list refreshes every 5 seconds. It shows when each run happened, not what was said.
+        An empty list only means nothing has run yet; it does not mean everything is healthy.
+        It only refreshes by itself on the newest page with no filter on.</Notice>
+      <Panel title="Recent tasks">
+        {!page ? <p>{error ? "We couldn't load the activity. Try again." : "Loading tasks..."}</p> :
+          page.items.length === 0 ? <p>{filtered ? "Nothing has been recorded for this selection." : "Nothing yet. Tasks appear here as your assistants work."}</p> :
+            <ul data-testid="activity-list" className="divide-y divide-[color:var(--fs-border)]">
+              {page.items.map((run: AgentRun) => <li key={run.id} className="py-3 first:pt-0 last:pb-0">
+                <RunRow run={run} query={query} now={now} open={openIds.has(run.id)}
+                  onOpenChange={(open) => setOpen(run.id, open)} />
+              </li>)}
+            </ul>}
         <div className="mt-4 flex gap-3">
-          <button className={secondary} disabled={before === null} onClick={() => { setBefore(null); setPage(null); }}>Newest</button>
-          <button className={secondary} disabled={!page?.next_before_id} onClick={() => {
-            setBefore(page?.next_before_id ?? null); setPage(null);
-          }}>Older runs</button>
+          <button className={secondary} data-testid="activity-newer" disabled={stack.length === 0}
+            onClick={() => { setStack(popCursor(stack)); setPage(null); }}>Newer</button>
+          <button className={secondary} data-testid="activity-older" disabled={!page?.next_before_id}
+            onClick={() => {
+              if (!page?.next_before_id) return;
+              setStack(pushCursor(stack, page.next_before_id)); setPage(null);
+            }}>Older</button>
         </div>
       </Panel>
-      {selected && <RunDetail key={selected.id} run={selected} query={query} />}
     </div>
   );
-}
-
-function RunDetail({ run, query }: { run: AgentRun; query: string }) {
-  const [detail, setDetail] = useState<AgentRun | null>(null);
-  const [events, setEvents] = useState<RuntimeEvent[]>([]);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    let cursor = 0;
-    let timer: ReturnType<typeof setTimeout>;
-    async function poll() {
-      try {
-        const params = new URLSearchParams(query);
-        params.set("trace_id", run.trace_id);
-        params.set("after_id", String(cursor));
-        const [current, next] = await Promise.all([
-          api<AgentRun>(`/console/v1/runs/${run.id}?${query}`, { signal: controller.signal }),
-          api<RuntimeEvent[]>(`/console/v1/events?${params}`, { signal: controller.signal }),
-        ]);
-        if (!controller.signal.aborted) {
-          setDetail(current);
-          setEvents((previous) => [...previous, ...next]);
-          if (next.length) cursor = next[next.length - 1].id;
-          setError("");
-        }
-      } catch (cause) {
-        if (!controller.signal.aborted) setError((cause as Error).message);
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(poll, 5000);
-      }
-    }
-    void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [run.id, run.trace_id, query]);
-  return <Panel title={`Run #${run.id}`}>
-    {error && <Notice error>{error} (previously loaded detail may be stale)</Notice>}
-    {detail && <p className="mb-4 break-all text-sm">{detail.agent}: {detail.status}. Trace: {detail.trace_id}</p>}
-    <h3 className="mb-3 text-sm font-semibold">Trace events</h3>
-    {events.length === 0 ? <p className="text-sm">{detail ? "No recorded events yet." : "Loading detail..."}</p> :
-      <ol className="space-y-2 text-sm">{events.map((event) =>
-        <li key={event.id}>#{event.id} {event.node} / {event.agent ?? "Coordinator"} / {event.status} / {event.duration_ms} ms</li>)}</ol>}
-  </Panel>;
 }

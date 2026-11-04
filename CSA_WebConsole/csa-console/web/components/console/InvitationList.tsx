@@ -2,6 +2,11 @@
 import { useEffect, useState } from "react";
 import { api, del, post } from "@/lib/api";
 import type { IssuedInvitation } from "@/lib/identity-contracts";
+import type { PresetId } from "@/lib/hr-access-api";
+import { invitationHrAccess } from "@/lib/invite-access";
+import { invitationChip } from "@/lib/team-view";
+import StatusLabel from "./fs/StatusLabel";
+import { DetailsRow } from "./kit";
 import { Notice, Panel, secondary } from "./ui";
 
 interface Invitation {
@@ -13,15 +18,22 @@ interface Invitation {
   expires_at: string;
   consumed_at: string | null;
   revoked_at: string | null;
+  hr_preset: PresetId | null;
 }
 export function InvitationList({
   clientId,
   revision,
+  hasHrPackage,
   onIssued,
 }: {
   clientId: string;
   revision: number;
-  onIssued: (token: IssuedInvitation) => void;
+  hasHrPackage: boolean;
+  onIssued: (
+    token: IssuedInvitation,
+    email: string,
+    kind: "invite" | "reset",
+  ) => void;
 }) {
   const [rows, setRows] = useState<Invitation[] | null>(null);
   const [error, setError] = useState("");
@@ -50,9 +62,13 @@ export function InvitationList({
           await post<IssuedInvitation>(
             `/console/v1/admin/invites/${row.id}/renew`,
           ),
+          row.email,
+          row.kind,
         );
       else await del(`/console/v1/admin/invites/${row.id}`);
       setRows(await api<Invitation[]>(endpoint));
+      // Cancel link may take the button away: leave focus on the row's arrow, which stays.
+      if (!renew) document.querySelector<HTMLElement>(`[data-testid="team-invitation-${row.id}-toggle"]`)?.focus();
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -71,7 +87,7 @@ export function InvitationList({
       ) : rows.length === 0 ? (
         <p className="text-sm text-ink-500">No invitations issued.</p>
       ) : (
-        <ul className="divide-y divide-ink-100">
+        <ul data-testid="team-invitations" className="divide-y divide-[color:var(--fs-border)]">
           {rows.map((row) => {
             const expired = new Date(row.expires_at).getTime() <= observedAt;
             const status = row.consumed_at
@@ -81,42 +97,58 @@ export function InvitationList({
                 : expired
                   ? "Expired"
                   : "Pending";
+            const hrAccess =
+              row.kind === "invite" ? invitationHrAccess(row.hr_preset, hasHrPackage) : null;
+            const chip = invitationChip(status);
+            const testId = `team-invitation-${row.id}`;
             return (
-              <li
-                key={row.id}
-                className="flex flex-wrap items-center justify-between gap-3 py-4"
-              >
-                <div className="min-w-0">
-                  <p className="break-all text-sm font-medium">{row.email}</p>
-                  <p className="mt-1 text-xs text-ink-500">
-                    {row.kind === "reset" ? "Password reset" : "Invitation"} ·{" "}
-                    {status}
+              <li key={row.id} className="py-2.5">
+                <DetailsRow
+                  testId={testId}
+                  toggleLabel={row.email}
+                  summary={
+                    <div className="min-w-0">
+                      <p className="break-all text-sm font-medium">{row.email}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span data-testid={`${testId}-chip`}>
+                          <StatusLabel tone={chip.tone}>{chip.label}</StatusLabel>
+                        </span>
+                        <span className="text-xs text-[color:var(--fs-text-secondary)]">
+                          {row.display_name} · {row.kind === "reset" ? "Password reset" : "Invitation"}
+                        </span>
+                      </div>
+                    </div>
+                  }
+                >
+                  <p className="text-xs text-ink-500">
+                    {row.kind === "reset" ? "Password reset" : "Invitation"} · {status}
                   </p>
-                </div>
-                {!row.consumed_at && (
-                  <div className="flex flex-wrap gap-2">
-                    {row.kind === "invite" && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        className={secondary}
-                        onClick={() => void change(row, true)}
-                      >
-                        Renew invitation
-                      </button>
-                    )}
-                    {!row.revoked_at && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        className={secondary}
-                        onClick={() => void change(row, false)}
-                      >
-                        Revoke link
-                      </button>
-                    )}
-                  </div>
-                )}
+                  {hrAccess && <p className="mt-1 text-xs text-ink-500">{hrAccess}</p>}
+                  {!row.consumed_at && (
+                    <div className="mt-3 flex flex-wrap justify-start gap-2">
+                      {row.kind === "invite" && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          className={secondary}
+                          onClick={() => void change(row, true)}
+                        >
+                          Renew invitation
+                        </button>
+                      )}
+                      {!row.revoked_at && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          className={secondary}
+                          onClick={() => void change(row, false)}
+                        >
+                          Cancel link
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </DetailsRow>
               </li>
             );
           })}

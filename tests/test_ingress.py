@@ -370,6 +370,112 @@ async def test_legacy_contact_without_identity_is_repaired(
         assert await result.fetchone() == {"name": "Legacy"}
 
 
+async def _counts_and_username(
+    pool: db.AsyncConnectionPool, client_id: str
+) -> tuple[dict[str, int], str | None]:
+    async with tx(pool, client_id) as conn:
+        counts = {}
+        for table in ("contacts", "conversations", "ingress_events"):
+            result = await conn.execute(
+                sql.SQL("SELECT count(*) AS count FROM {}").format(sql.Identifier(table))
+            )
+            row = await result.fetchone()
+            assert row is not None
+            counts[table] = row["count"]
+        result = await conn.execute("SELECT telegram_username FROM contacts")
+        row = await result.fetchone()
+        assert row is not None
+        return counts, row["telegram_username"]
+
+
+async def _receive_with_username(
+    ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
+    update_id: int,
+    username: object,
+    *,
+    include: bool = True,
+) -> Any:
+    ingress, _, _, public_id, secret = ingress_context
+    update = _message_update(update_id=update_id)
+    if include:
+        update["message"]["from"]["username"] = username
+    return await ingress.receive(public_id, secret, json.dumps(update).encode())
+
+
+@requires_docker
+async def test_telegram_username_is_stored_updated_and_never_blocks_a_message(
+    ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
+) -> None:
+    _, pool, client_id, _, _ = ingress_context
+
+    first = await _receive_with_username(ingress_context, 301, "aisyah_r")
+    assert first.accepted and not first.duplicate
+    counts, username = await _counts_and_username(pool, client_id)
+    assert username == "aisyah_r"
+    assert counts["contacts"] == 1 and counts["conversations"] == 1
+
+    await _receive_with_username(ingress_context, 302, "new_name_1")
+    _, username = await _counts_and_username(pool, client_id)
+    assert username == "new_name_1"
+
+    # An invalid username is accepted exactly like a normal message and clears the value.
+    ok = await _receive_with_username(ingress_context, 303, "ab")
+    assert ok.accepted and not ok.duplicate
+    counts_after, username = await _counts_and_username(pool, client_id)
+    assert username is None
+    assert counts_after["contacts"] == 1 and counts_after["conversations"] == 1
+    assert counts_after["ingress_events"] == counts["ingress_events"] + 2
+
+    for update_id, bad in ((304, "has space"), (305, 123), (306, "x" * 40)):
+        await _receive_with_username(ingress_context, update_id, bad)
+        _, username = await _counts_and_username(pool, client_id)
+        assert username is None
+
+    await _receive_with_username(ingress_context, 307, "back_again")
+    _, username = await _counts_and_username(pool, client_id)
+    assert username == "back_again"
+    # A sender without a username clears it.
+    await _receive_with_username(ingress_context, 308, None, include=False)
+    final, username = await _counts_and_username(pool, client_id)
+    assert username is None
+    assert final["contacts"] == 1 and final["conversations"] == 1
+    assert final["ingress_events"] == 8
+
+
+@requires_docker
+async def test_telegram_username_with_a_new_contact_that_has_none_or_a_bad_one(
+    ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
+) -> None:
+    _, pool, client_id, _, _ = ingress_context
+    receipt = await _receive_with_username(ingress_context, 310, "bad name!")
+    assert receipt.accepted
+    counts, username = await _counts_and_username(pool, client_id)
+    assert username is None and counts["contacts"] == 1 and counts["conversations"] == 1
+
+
+@requires_docker
+async def test_telegram_username_survives_the_concurrent_insert_fallback_path(
+    ingress_context: tuple[TelegramIngress, db.AsyncConnectionPool, str, str, str],
+) -> None:
+    _, pool, client_id, _, _ = ingress_context
+    # A contact that already exists without an identity makes the first statement find
+    # nothing and resolves through the conflict statements instead.
+    async with tx(pool, client_id) as conn:
+        await conn.execute(
+            "INSERT INTO contacts (client_id,telegram_id,full_name,telegram_username) "
+            "VALUES (%s,501,'Legacy','old_name')",
+            (client_id,),
+        )
+    receipt = await _receive_with_username(ingress_context, 320, "aisyah_r")
+    assert receipt.accepted
+    counts, username = await _counts_and_username(pool, client_id)
+    assert username == "aisyah_r" and counts["contacts"] == 1 and counts["conversations"] == 1
+    # The identity now exists, so the next message takes the known-contact path.
+    await _receive_with_username(ingress_context, 321, "ab")
+    _, username = await _counts_and_username(pool, client_id)
+    assert username is None
+
+
 @requires_docker
 @pytest.mark.parametrize("autocommit", [False, True])
 async def test_identity_conflict_rolls_back_new_contact_and_event(

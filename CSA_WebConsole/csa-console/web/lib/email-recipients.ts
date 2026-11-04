@@ -1,0 +1,270 @@
+/**
+ * Display helpers for email drafts: recipients, card staleness, times, and the one map of
+ * email error codes to sentences, in English and Malay. No runtime imports, so the node tests
+ * load it directly.
+ */
+import type { Language } from "@/lib/assistant-copy";
+
+export const OUTSIDE_LABELS: Record<Language, string> = {
+  en: "Outside your company",
+  ms: "Di luar syarikat anda",
+};
+export const OUTSIDE_LABEL = OUTSIDE_LABELS.en;
+/** The Email tab syncs on open when the last sync is older than this. */
+export const SYNC_AFTER_MS = 5 * 60 * 1000;
+const MAX_RECIPIENTS = 20;
+
+export interface RecipientFlag { address: string; outside: boolean }
+export interface DraftContent {
+  thread_id: string | null;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  body: string;
+}
+export interface DraftRecipients extends DraftContent {
+  recipients: RecipientFlag[];
+  reply_to_message_id: string | null;
+}
+/** `key` is stable across languages; `label` is the shown text. */
+export interface RecipientGroup { key: "to" | "cc" | "bcc"; label: string; people: RecipientFlag[] }
+
+/** The shown label of each group; the server's Malay card text says "Kepada" for To. */
+const GROUP_LABELS: Record<Language, { to: string; cc: string; bcc: string }> = {
+  en: { to: "To", cc: "CC", bcc: "BCC" },
+  ms: { to: "Kepada", cc: "CC", bcc: "BCC" },
+};
+
+/**
+ * To, CC and BCC with the server's outside flag; an address the server did not mark is outside.
+ * `label` is the shown text, so it is "Kepada" (not "To") in Malay; compare `key`, not `label`.
+ */
+export function recipientGroups(draft: DraftRecipients, language: Language = "en"): RecipientGroup[] {
+  const labels = GROUP_LABELS[language];
+  const all = [...draft.to, ...draft.cc, ...draft.bcc];
+  // recipients[] follows [...to, ...cc, ...bcc]; fall back to a lookup if it ever does not.
+  const positional = draft.recipients.length === all.length &&
+    draft.recipients.every((r, i) => r.address.toLowerCase() === all[i].toLowerCase());
+  const byAddress = new Map(draft.recipients.map(r => [r.address.trim().toLowerCase(), r.outside]));
+  let index = 0;
+  const flag = (address: string): RecipientFlag => {
+    const outside = positional ? draft.recipients[index].outside : byAddress.get(address.trim().toLowerCase()) ?? true;
+    index += 1;
+    return { address, outside };
+  };
+  const groups: RecipientGroup[] = [
+    { key: "to", label: labels.to, people: draft.to.map(flag) },
+    { key: "cc", label: labels.cc, people: draft.cc.map(flag) },
+    { key: "bcc", label: labels.bcc, people: draft.bcc.map(flag) },
+  ];
+  return groups.filter(group => group.people.length > 0);
+}
+
+export function outsideCount(draft: DraftRecipients): number {
+  return new Set(recipientGroups(draft).flatMap(g => g.people).filter(p => p.outside)
+    .map(p => p.address.toLowerCase())).size;
+}
+
+/** Same rule as the server's card title: a reply needs a thread and a message to answer. */
+export function isReply(draft: { thread_id: string | null; reply_to_message_id: string | null }): boolean {
+  return draft.thread_id !== null && Boolean(draft.reply_to_message_id);
+}
+
+export function parseAddresses(text: string): string[] {
+  return text.split(/[\s,;]+/).map(part => part.trim()).filter(Boolean);
+}
+export function formatAddresses(addresses: string[]): string {
+  return addresses.join(", ");
+}
+/** A quick shape check before saving; the server applies the full recipient rules. */
+export function addressesLookValid(addresses: string[]): boolean {
+  return addresses.length >= 1 && addresses.length <= MAX_RECIPIENTS &&
+    addresses.every(address => /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(address));
+}
+
+export function needsSync(lastSyncedAt: string | null, now: number): boolean {
+  return lastSyncedAt === null || now - Date.parse(lastSyncedAt) > SYNC_AFTER_MS;
+}
+
+/** "27 Oct 2026, 09:15" (docs/WRITING_GUIDE.md). */
+export function formatWhen(iso: string, timeZone?: string): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    hourCycle: "h23", ...(timeZone ? { timeZone } : {}),
+  }).formatToParts(new Date(iso));
+  const part = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+  return `${part("day")} ${part("month")} ${part("year")}, ${part("hour")}:${part("minute")}`;
+}
+
+/** Cards store counts only; the draft id is in the `Draft` field, the content is fetched on open. */
+export function draftIdFromCard(card: { fields: { label: string; value: string }[] }): string | null {
+  const value = card.fields.find(field => field.label === "Draft")?.value.trim();
+  return value ? value : null;
+}
+/** The opened draft replaces the `Subject` and `Draft` placeholders; other fields stay. */
+export function cardFieldsShown(card: { fields: { label: string; value: string }[] }) {
+  return card.fields.filter(field => field.label !== "Subject" && field.label !== "Draft");
+}
+
+/** The fields an email card lists: the placeholders are hidden whether or not a draft is loaded. */
+export function cardFieldsFor(
+  card: { fields: { label: string; value: string }[] }, isEmail: boolean,
+): { label: string; value: string }[] {
+  return isEmail ? cardFieldsShown(card) : card.fields;
+}
+
+/**
+ * A send card is bound to the draft's version when it was made. If the draft read now has a
+ * different version it was edited since: say so and do not send (the server re-checks anyway).
+ */
+export function sendCardStale(
+  card: { kind: string; expected_version: string | null },
+  draft: { version: string },
+): boolean {
+  return card.kind === "email_send" && card.expected_version !== null && card.expected_version !== draft.version;
+}
+
+/** A card's draft that is no longer a draft offers no Send or Confirm. */
+const NOT_A_DRAFT: Record<string, string> = {
+  sending: "draft_already_sending",
+  sent: "draft_already_sent",
+  exported: "draft_already_exported",
+};
+
+/**
+ * Why a send or export card offers no Send or Confirm for the draft as read now, as a code for
+ * `emailErrorSentence`, or null when it can be confirmed. The server re-checks all of these.
+ */
+export function emailCardBlock(
+  card: { kind: string; expected_version: string | null },
+  draft: { status: string; version: string; needs_staff_input: boolean },
+): string | null {
+  const notADraft = NOT_A_DRAFT[draft.status];
+  if (notADraft) return notADraft;
+  if (card.kind !== "email_send") return null;
+  if (draft.needs_staff_input) return "card_needs_staff_input";
+  return sendCardStale(card, draft) ? "draft_changed" : null;
+}
+
+/**
+ * Each email error code's sentence, in English and Malay (the Malay follows the server's
+ * `_TEXT["ms"]`: "e-mel", "anda", on-screen names such as "Email assistant" and "Gmail" kept).
+ */
+const sentences: Record<Language, Record<string, string>> = {
+  en: {
+    draft_needs_staff_input: "Fill in the [STAFF: …] parts before sending.",
+    // A send card in the assistant: the placeholders are filled in on the Email tab.
+    card_needs_staff_input: "Fill in the [STAFF: …] parts on the Email assistant tab, then send it there.",
+    send_released:
+      "You marked this email as not sent. Ask the assistant to send it again, or send it from the Email assistant tab.",
+    send_outcome_unknown: "We couldn't confirm the email was sent. Check your Gmail Sent folder before trying again.",
+    draft_changed: "This email changed after you opened it. Review it and send again.",
+    draft_already_sent: "This email was already sent.",
+    draft_already_sending: "This email is already being sent.",
+    send_refused: "Gmail refused this email. Check the addresses and try again.",
+    mailbox_reauthorization_required: "Reconnect your Gmail on the Email assistant tab, then try again.",
+    provider_rate_limited: "Gmail is busy. Try again in a minute.",
+    recipients_invalid: "Check the email addresses.",
+    recipient_unresolved: "We have no work email for this colleague. Add one to their profile, then try again.",
+    draft_not_releasable: "Wait a couple of minutes, then try again.",
+    // Email tab codes from before sending existed.
+    oauth_state_invalid: "The sign-in link expired or was already used. Start the connection again.",
+    provider_denied: "Google reported that access was not granted.",
+    scopes_not_granted: "Google did not grant read and compose access. Tick both permissions and try again.",
+    assistant_disabled: "The email assistant is switched off for your company.",
+    mailbox_not_connected: "Connect your Gmail on the Email assistant tab first.",
+    model_not_configured: "No model is configured for analysis.",
+    provider_not_configured: "Connecting Gmail isn't available yet. Contact fourstacks support.",
+    provider_unreachable: "We couldn't reach Gmail. Wait a minute and try again.",
+    permission_denied: "You don't have access to email here. Ask an administrator to give you access.",
+    email_model_unavailable: "The email assistant couldn't write that right now. Try again in a moment.",
+    draft_rejected: "The draft was rejected: check the recipient and remove line breaks from the subject.",
+    draft_already_exported: "This draft was already saved to Gmail and can no longer be edited here.",
+    thread_body_unavailable: "This thread has no readable text to analyse.",
+    idempotency_conflict: "A different request already used this key. Reload and try again.",
+  },
+  ms: {
+    draft_needs_staff_input: "Isi bahagian [STAFF: …] sebelum menghantar.",
+    card_needs_staff_input: "Isi bahagian [STAFF: …] di tab Email assistant, kemudian hantar e-mel itu di sana.",
+    send_released:
+      "Anda menandakan e-mel ini sebagai tidak dihantar. Minta pembantu menghantarnya semula, atau hantar dari tab Email assistant.",
+    send_outcome_unknown: "Kami tidak dapat mengesahkan e-mel itu telah dihantar. Semak folder Sent Gmail anda sebelum mencuba lagi.",
+    draft_changed: "E-mel ini telah berubah selepas anda membukanya. Semak dan hantar semula.",
+    draft_already_sent: "E-mel ini sudah dihantar.",
+    draft_already_sending: "E-mel ini sedang dihantar.",
+    send_refused: "Gmail menolak e-mel ini. Semak alamat dan cuba lagi.",
+    mailbox_reauthorization_required: "Sambungkan semula Gmail anda di tab Email assistant, kemudian cuba lagi.",
+    provider_rate_limited: "Gmail sedang sibuk. Cuba lagi dalam seminit.",
+    recipients_invalid: "Semak alamat e-mel.",
+    recipient_unresolved: "Kami tiada e-mel kerja untuk rakan sekerja ini. Tambahkannya pada profil mereka, kemudian cuba lagi.",
+    draft_not_releasable: "Tunggu beberapa minit, kemudian cuba lagi.",
+    oauth_state_invalid: "Pautan log masuk telah tamat tempoh atau sudah digunakan. Mulakan sambungan semula.",
+    provider_denied: "Google melaporkan akses tidak diberikan.",
+    scopes_not_granted: "Google tidak memberikan akses baca dan karang. Tandakan kedua-dua kebenaran dan cuba lagi.",
+    assistant_disabled: "Email assistant dimatikan untuk ruang kerja anda.",
+    mailbox_not_connected: "Sambungkan Gmail anda di tab Email assistant dahulu.",
+    model_not_configured: "Tiada model dikonfigurasikan untuk analisis.",
+    provider_not_configured: "Google OAuth tidak dikonfigurasikan untuk sistem ini.",
+    provider_unreachable: "Kami tidak dapat menghubungi Gmail. Tunggu seminit dan cuba lagi.",
+    permission_denied: "Anda tiada akses e-mel di sini. Minta pentadbir memberi anda akses.",
+    email_model_unavailable: "Email assistant tidak dapat menulisnya sekarang. Cuba lagi sebentar lagi.",
+    draft_rejected: "Draf ditolak: semak penerima dan buang pemisah baris daripada subjek.",
+    draft_already_exported: "Draf ini sudah disimpan ke Gmail dan tidak boleh disunting lagi di sini.",
+    thread_body_unavailable: "Perbualan ini tiada teks yang boleh dibaca untuk dianalisis.",
+    idempotency_conflict: "Permintaan lain sudah menggunakan kunci ini. Muat semula dan cuba lagi.",
+  },
+};
+
+/** Every code with an email sentence (the Malay table must cover each of them). */
+export const EMAIL_ERROR_CODES: string[] = Object.keys(sentences.en);
+
+function codeOf(error: unknown): string | null {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code : null;
+}
+
+/**
+ * The open thread read again after a sync, so a reply that arrived shows in it: the fresh detail,
+ * or null when nothing is open or the sync's cleanup removed the thread (404
+ * `resource_unavailable`). Any other failure is thrown for the caller to show.
+ */
+export async function rereadThread<T>(threadId: string | null, read: (id: string) => Promise<T>): Promise<T | null> {
+  if (threadId === null) return null;
+  try { return await read(threadId); }
+  catch (error) {
+    if (codeOf(error) === "resource_unavailable") return null;
+    throw error;
+  }
+}
+
+/** The sentence for an email refusal (an `ApiError`, or anything with `code`), or null if unmapped. */
+export function emailErrorSentence(error: unknown, language: Language = "en"): string | null {
+  const code = codeOf(error);
+  if (code === null) return null;
+  if (code === "send_limit_reached") {
+    const body = (error as { body?: { retry_after?: unknown } }).body;
+    const seconds = typeof body?.retry_after === "number" ? body.retry_after : 60;
+    const minutes = Math.max(1, Math.ceil(seconds / 60));
+    return language === "ms"
+      ? `Anda telah menghantar 20 e-mel dalam sejam yang lalu. Cuba lagi dalam ${minutes} minit.`
+      : `You've sent 20 emails in the last hour. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
+  }
+  return sentences[language][code] ?? null;
+}
+
+/** "hide" for no access, a sentence for a summary that cannot run, or null for the generic error. */
+export function attentionProblem(error: unknown): "hide" | string | null {
+  const code = codeOf(error);
+  if (code === "permission_denied") return "hide";
+  if (code === "model_not_configured" || code === "email_model_unavailable") return "The summary isn't available right now.";
+  return code === "mailbox_not_connected" ? sentences.en.mailbox_not_connected : null;
+}
+const SOME_SKIPPED = "Some emails couldn't be summarised.";
+export function attentionNote(page: { items: unknown[]; skipped?: number }): string | null {
+  return (page.skipped ?? 0) > 0 && page.items.length > 0 ? SOME_SKIPPED : null;
+}
+/** The line for a summary with no items: a skipped email means it may not be "nothing". */
+export function attentionEmpty(page: { skipped?: number }): string {
+  return (page.skipped ?? 0) > 0 ? SOME_SKIPPED : "Nothing needs your attention right now.";
+}

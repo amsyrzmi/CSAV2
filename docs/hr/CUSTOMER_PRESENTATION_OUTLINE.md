@@ -18,7 +18,7 @@ CSA brings AI assistance into business workflows through a set of specialized ag
 The two requested areas are:
 
 1. **HR agent:** authenticated staff workflows for directory access, training and other people operations. Access is governed by explicit HR authority, and consequential decisions stay with authorized people.
-2. **Voice experience:** local browser dictation and spoken status in the staff HR assistant. A separate customer-facing interactive voice agent is a planned extension and should not be described as currently live or generally available.
+2. **Voice experience:** staff talk to the workspace assistant (the dock) by typing; the dock has no dictation or read-aloud. Local browser dictation and read-aloud exist only in the Sandbox assistant on the Chat page, for knowledge and product-information questions. A separate customer-facing interactive voice agent is a planned extension and should not be described as currently live or generally available.
 
 The wider platform includes customer-service, knowledge, order, ticket and escalation capabilities, plus staged booking, subscription and marketplace work. The web console gives staff and administrators a place to manage access, review activity and operate supported workflows.
 
@@ -41,7 +41,7 @@ The wider platform includes customer-service, knowledge, order, ticket and escal
 | Product and business problem | 2 minutes | Establish the value and audience context |
 | Platform overview | 3 minutes | Explain agents, runtime and console |
 | HR agent | 6 minutes | Highlight staff workflows and authority controls |
-| Voice experience | 3 minutes | Demonstrate staff dictation and set the customer voice boundary |
+| Voice experience | 3 minutes | Explain what voice exists today and set the customer voice boundary |
 | Other agents and console | 5 minutes | Show the wider product surface |
 | Walkthrough and questions | 5–10 minutes | Demonstrate a representative workflow and discuss fit |
 
@@ -138,6 +138,7 @@ HR access is not inferred from a general console role alone. Employee records ar
 
 #### HR assistant
 
+- The assistant is the workspace assistant dock, the only assistant in the console (the separate HR chat was retired).
 - The assistant can plan one permitted HR action from a submitted staff message.
 - It can request missing information or direct a staff member to the relevant workflow when a request is unsupported or requires human judgment.
 - The assistant cannot grant permissions, impersonate a user, approve/reject a request, read private CVs or operate payroll.
@@ -163,23 +164,21 @@ HR access is not inferred from a general console role alone. Employee records ar
 
 The term “voice agent” can refer to two different things in this product context. Keep them separate in the presentation.
 
-### Staff HR assistant: local dictation
+### Staff assistant: typed today
 
-The HR assistant includes an explicit browser dictation option:
+The workspace assistant dock is typed only. It has no dictation button and does not read answers aloud, so do not demonstrate or promise voice in the dock. Voice input for the dock is a planned follow-on.
 
-1. A staff member chooses **Dictate locally**.
-2. The browser attempts on-device speech recognition, subject to browser support and an installed language pack.
-3. Recognized text appears in the request field.
-4. The staff member can review or edit that text.
-5. The request is submitted through the normal authenticated HR assistant workflow.
+The Sandbox assistant on the Chat page (knowledge and product-information questions only, not HR actions) has an explicit local browser dictation option and local read-aloud:
 
-The HR assistant can also read a short status response aloud using an available local browser voice. If local speech support is missing, typed input remains available.
+1. The browser attempts on-device speech recognition, subject to browser support and an installed language pack.
+2. Recognized text fills a draft that the staff member reviews or edits before sending.
+3. If local speech support is missing, typed input remains available.
 
 **How to describe it:**
 
-> “The staff HR assistant supports local dictation in compatible browsers. The transcript is shown for review before submission, and staff can always type instead.”
+> “Staff type their requests to the workspace assistant today. The Sandbox assistant can take local dictation in compatible browsers for knowledge questions; voice for the workspace assistant is planned.”
 
-The code explicitly requires local recognition processing and does not select a cloud speech fallback. Actual support depends on browser capabilities and the installed local language pack. The current UI selects `en-MY`; do not claim broad language coverage without separate validation.
+The dictation code explicitly requires local recognition processing and does not select a cloud speech fallback. Actual support depends on browser capabilities and the installed local language pack. It selects `en-MY`; do not claim broad language coverage without separate validation.
 
 ### Customer-facing interactive voice agent
 
@@ -188,12 +187,12 @@ The codebase contains historical design work for voice-note transcription and pl
 Therefore:
 
 - Present interactive customer voice as **planned or under design**, unless the specific customer deployment has separate evidence that it is implemented, enabled and accepted.
-- Do not claim live phone answering, real-time voice conversation, multilingual speech support, transcription accuracy or production availability based only on the local HR dictation feature.
+- Do not claim live phone answering, real-time voice conversation, multilingual speech support, transcription accuracy or production availability based only on the Sandbox assistant's local dictation.
 - Treat a future interactive voice release as a separate capability with its own consent, retention, language, failure and operational acceptance decisions.
 
 ### Suggested answer if asked “Does CSA have a voice agent?”
 
-> “CSA has a local dictation experience in the staff HR assistant today in compatible browsers. A full customer-facing interactive voice agent is a separate planned capability; we would confirm its channels, languages, consent and deployment readiness for your environment before committing to availability.”
+> “Today staff type to the workspace assistant, and the Sandbox assistant offers local dictation for knowledge questions in compatible browsers. A full customer-facing interactive voice agent is a separate planned capability; we would confirm its channels, languages, consent and deployment readiness for your environment before committing to availability.”
 
 ---
 
@@ -269,7 +268,7 @@ The web console is the authenticated staff and administration surface for the pl
 
 - Provides directory, training, HR requests, automation and related tools according to the user's HR permissions.
 - Supports review and human confirmation paths.
-- Includes the HR assistant and local dictation controls for compatible browsers.
+- People actions (add, update, mark as leaving) can also be prepared in the workspace assistant dock, typed, and run only after **Confirm**.
 
 #### Tenant and team administration
 
@@ -315,7 +314,7 @@ Use this section if the customer asks how the product controls agent actions or 
 
 - Knowledge and business data are tenant scoped.
 - HR records use distinct authority and privacy controls.
-- Staff HR dictation is designed for local browser processing; the submitted text follows the normal HR assistant request path.
+- Staff requests to the workspace assistant are typed. The Sandbox assistant's dictation is designed for local browser processing, and the submitted text follows its normal request path.
 - Customer voice/media retention and multilingual behavior need separate design and acceptance before making claims.
 
 ---
@@ -351,16 +350,16 @@ Use a synthetic tenant and synthetic employee/customer records. Do not display r
 
 **Say:** “The agent can help prepare the work, but the assigned human owns the approval decision.”
 
-### Demo D: HR assistant voice dictation
+### Demo D: a people action in the workspace assistant dock
 
-1. Check that the demo browser is secure-context capable and has local speech recognition plus the needed local language pack.
-2. Choose **Dictate locally** and speak a non-sensitive synthetic request.
-3. Stop dictation and review/edit the text before sending.
-4. Submit and show the resulting clarification, request or workflow handoff.
-5. Optionally use local read-aloud for the short status result.
+1. Sign in as the synthetic HR owner (or a synthetic Manage people holder) and open the assistant dock.
+2. Type a non-sensitive question about a synthetic person, for example “Who reports to <synthetic manager>?”, and show the answer.
+3. Type a change, for example “Change <synthetic person>'s job title to Sales Lead”, and show the card the assistant prepares.
+4. Press **Confirm** and open the profile to show the change and its History row.
+5. Point out that the dock is typed: there is no dictation or read-aloud in it.
 6. If speech recognition is unavailable, continue with typed input and explain the browser dependency.
 
-**Say:** “This is local staff dictation into a reviewable text field. It is not a demonstration of a customer phone agent.”
+**Say:** “The assistant prepares the change, but nothing happens until you confirm it, and the HR service checks your access again when you do. Staff type their requests today; this is not a customer voice agent.”
 
 ### Demo E: customer-service handoff and inbox
 
@@ -390,11 +389,11 @@ No. HR access is separate from ordinary console roles and is governed by active 
 
 ### “Is the voice agent live?”
 
-The staff HR assistant includes local browser dictation and local read-aloud where supported. A customer-facing interactive voice agent is a separate planned capability and needs its own consent, session, language, retention and deployment acceptance.
+No. Staff type to the workspace assistant, which has no dictation or read-aloud. The Sandbox assistant offers local browser dictation and read-aloud for knowledge questions where supported. A customer-facing interactive voice agent is a separate planned capability and needs its own consent, session, language, retention and deployment acceptance.
 
 ### “Which languages does voice support?”
 
-The current HR browser dictation implementation selects `en-MY`, and availability depends on browser support and an installed on-device language pack. Do not promise other languages or transcription quality without validation in the customer's target browsers and environment.
+The Sandbox assistant's browser dictation selects `en-MY`, and availability depends on browser support and an installed on-device language pack. Do not promise other languages or transcription quality without validation in the customer's target browsers and environment.
 
 ### “Can the booking agent confirm a calendar booking?”
 
@@ -426,7 +425,7 @@ The HR implementation includes configurable and reviewable workflows, but it sho
 - “For a tenant where this capability is enabled and configured…”
 - “The assistant prepares the request for authorized review.”
 - “Access is checked against the staff member's current HR permissions.”
-- “This is local browser dictation, subject to browser and language-pack support.”
+- “Staff type to the workspace assistant today; voice for it is planned.”
 - “The console reports implementation and readiness separately.”
 - “We would verify this integration in your environment before confirming rollout.”
 
@@ -446,7 +445,7 @@ The HR implementation includes configurable and reviewable workflows, but it sho
 
 ### Content and scope
 
-- [ ] Confirm the presentation emphasis: HR and staff dictation are available for the demo; customer interactive voice is described as planned unless separately accepted.
+- [ ] Confirm the presentation emphasis: HR and the typed workspace assistant are available for the demo; voice in the dock and customer interactive voice are described as planned unless separately accepted.
 - [ ] Confirm which agent capabilities are enabled and configured in the actual demo environment.
 - [ ] Avoid implying that prepared-only booking/subscription requests execute external actions.
 - [ ] Confirm any claims about marketplace, invoice or provider connections against that specific tenant.
@@ -457,7 +456,7 @@ The HR implementation includes configurable and reviewable workflows, but it sho
 - [ ] Use a synthetic/demo tenant and records.
 - [ ] Confirm the presenter account has the intended console role and HR grants.
 - [ ] Prepare a synthetic training request and reviewer if showing human confirmation.
-- [ ] Confirm the browser supports local dictation and has the intended local language pack; have typed input ready as a fallback.
+- [ ] Prepare a synthetic person with a manager and a report for the dock demo, and confirm the presenter can see the Confirm card for them.
 - [ ] Prepare a known ingested knowledge source and an example agent activity record.
 - [ ] Do not open `.env.local`, secrets, production records or unrelated tenant data during screen sharing.
 
@@ -478,9 +477,9 @@ This brief reflects the repository's implementation and progress documentation, 
 - [Customer runtime capability registration](../../csa/turn/deps.py)
 - [HR agent dispatcher](../../csa/hr/agents.py)
 - [HR assistant planner](../../csa/hr/assistant.py)
-- [HR local voice implementation](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts)
-- [HR assistant interface](../../CSA_WebConsole/csa-console/web/components/console/HrAssistant.tsx)
-- [HR workspace interface](../../CSA_WebConsole/csa-console/web/components/console/HrWorkspace.tsx)
+- [Local voice implementation (Sandbox assistant only)](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts)
+- [Assistant dock](../../CSA_WebConsole/csa-console/web/components/console/AssistantDock.tsx) (the separate HR chat was retired)
+- [HR interface (shell and tabs)](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
 - [Agent catalogue and console roadmap](../langgraph-rebuild/LG13_agent_catalog_and_console.md)
 - [Voice ingress and transcription design](../langgraph-rebuild/LG03_ingress_gateway_channels.md)
 

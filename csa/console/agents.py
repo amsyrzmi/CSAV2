@@ -22,7 +22,11 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
     "ticket_agent": ("Support tickets", "local", "Tenant-scoped local support tickets."),
     "escalation_agent": ("Escalation", "local", "Required staff handoff safety capability."),
     "order_approval": ("Order approval", "local", "Required staff approval safety capability."),
-    "kb_agent": ("Knowledge base", "local", "Model-compatible KB retrieval; no live TEI probe."),
+    "kb_agent": (
+        "Business knowledge agent",
+        "local",
+        "Model-compatible KB retrieval; no live TEI probe.",
+    ),
     "invoice_agent": (
         "Invoices",
         "local",
@@ -52,7 +56,7 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
         "Email assistant",
         "local",
         "Staff-only Gmail triage, summaries and reply drafts in the Email tab. "
-        "Draft-only: nothing is sent; drafts are saved to the user's own Gmail drafts.",
+        "Drafts are saved to your own Gmail drafts. It sends an email only after you confirm.",
     ),
 }
 SPECIALIZED = frozenset(

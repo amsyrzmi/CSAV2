@@ -24,22 +24,41 @@ services:
   gateway:
     restart: unless-stopped
     environment:
+      # HR documents: the gateway is the only service that mounts the volume (below).
+      HR_UPLOAD_ROOT: /var/lib/csa/hr-uploads
       TEI_ENDPOINT: http://staging-embeddings:8080
       KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
       TEI_QUERY_PREFIX: "query: "
       TEI_PASSAGE_PREFIX: "passage: "
       # Meta calls the hooks hostname, not the console origin.
       WHATSAPP_CALLBACK_BASE_URL: ${CSA_STAGING_HOOKS_ORIGIN:?approved staging hooks HTTPS origin required}
+      # Invitation and reset mail. Off unless the owner sets CSA_STAGING_INVITE_MAIL=true.
+      INVITE_MAIL_ENABLED: ${CSA_STAGING_INVITE_MAIL:-false}
+      # Staff email assistant (Gmail). Off unless the owner sets CSA_STAGING_EMAIL_ASSISTANT=true.
+      EMAIL_ASSISTANT_ENABLED: ${CSA_STAGING_EMAIL_ASSISTANT:-false}
+      GOOGLE_OAUTH_REDIRECT_URI: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging origin required}/console/v1/email/oauth/callback
     secrets:
       - source: staging_whatsapp_app_secret
         target: WHATSAPP_APP_SECRET
       - source: staging_whatsapp_verify_token
         target: WHATSAPP_VERIFY_TOKEN
+      # Relay credentials; mail stays inactive unless the flag is on and both are present.
+      - source: staging_smtp_username
+        target: SMTP_USERNAME
+      - source: staging_smtp_password
+        target: SMTP_PASSWORD
+      # Google OAuth client; the assistant stays inactive unless the flag is on.
+      - source: staging_google_client_id
+        target: GOOGLE_CLIENT_ID
+      - source: staging_google_client_secret
+        target: GOOGLE_CLIENT_SECRET
     networks: ["data", "app", "embeddings", "provider-egress", "gateway-host"]
     # Loopback-only publish for the staging hooks Caddy site (POST /hooks/* only).
     # 18081 belongs to the development gateway; never reuse it here.
     ports:
       - "127.0.0.1:18031:8080"
+    # HR documents live on the gateway only; the worker and delivery never mount them.
+    volumes: ["staging-hr-uploads:/var/lib/csa/hr-uploads"]
 
   worker:
     restart: unless-stopped
@@ -178,6 +197,7 @@ networks:
 
 volumes:
   staging-embeddings:
+  staging-hr-uploads:
 
 secrets:
   staging_model_key:
@@ -189,3 +209,15 @@ secrets:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_whatsapp_app_secret
   staging_whatsapp_verify_token:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_whatsapp_verify_token
+  # Installed by `staging_secrets smtp-install` before a gateway with invitation mail is
+  # recreated: compose refuses to start a service whose secret file is missing.
+  staging_smtp_username:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/smtp_username
+  staging_smtp_password:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/smtp_password
+  # Written by the owner before a gateway with the email assistant is recreated (section 11
+  # of STAGING_PIPELINE.md): compose refuses to start a service whose secret file is missing.
+  staging_google_client_id:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/google_client_id
+  staging_google_client_secret:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/google_client_secret

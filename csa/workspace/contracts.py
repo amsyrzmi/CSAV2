@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal, Union
 from uuid import UUID
@@ -18,6 +18,9 @@ from pydantic import (
     model_validator,
 )
 
+from csa.hr.people_types import EmploymentType, LeavingReason
+
+Language = Literal["en", "ms"]
 PageKey = Literal["workspace_home", "business_orders", "business_order"]
 WorkspaceRole = Literal["platform_admin", "tenant_admin", "tenant_staff", "read_only"]
 BoundedText = Annotated[str, StringConstraints(min_length=1, max_length=100)]
@@ -62,6 +65,7 @@ TabKey = Literal[
     "business",
     "hr",
     "email",
+    "subscriptions",
     "activity",
     "chat",
 ]
@@ -124,19 +128,57 @@ class DirectoryLookupProposal(_Contract):
     query: str = Field(min_length=1, max_length=120)
 
 
+# A CC/BCC entry or new-email recipient: a directory employee id or a plain address. Addresses
+# are checked against the user's own words before anything is drafted (see the turn service).
+RecipientRef = Annotated[str, StringConstraints(min_length=3, max_length=254)]
+MAX_COPIES = 20
+
+
 class EmailComposeProposal(_Contract):
     action: Literal["email_compose"]
     recipient_employee_id: UUID | None = None
     recipient_address: str | None = Field(default=None, min_length=3, max_length=254)
+    cc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
+    bcc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
     subject: str = Field(min_length=1, max_length=200)
     instructions: str = Field(default="", max_length=1000)
     language: Literal["auto", "en", "ms"] = "auto"
+    # True only when the user clearly asked to send: the card is then a send card, not an export.
+    send: bool = False
 
     @model_validator(mode="after")
     def one_recipient(self) -> EmailComposeProposal:
         if (self.recipient_employee_id is None) == (self.recipient_address is None):
             raise ValueError("set exactly one of recipient_employee_id and recipient_address")
         return self
+
+
+class EmailReplyProposal(_Contract):
+    """A reply in a synced thread; its To comes from the thread, never from the model."""
+
+    action: Literal["email_reply"]
+    thread_id: str = Field(min_length=1, max_length=256)
+    instructions: str = Field(default="", max_length=1000)
+    cc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
+    bcc: list[RecipientRef] = Field(default_factory=list, max_length=MAX_COPIES)
+    language: Literal["auto", "en", "ms"] = "auto"
+    send: bool = False
+
+
+class EmailTeamProposal(_Contract):
+    """One email to the caller's direct reports, all in To; the server picks the people."""
+
+    action: Literal["email_team"]
+    subject: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(default="", max_length=1000)
+    language: Literal["auto", "en", "ms"] = "auto"
+    send: bool = False
+
+
+class InboxSummaryProposal(_Contract):
+    """Answers "what needs my attention" from synced mail, with no card."""
+
+    action: Literal["inbox_summary"]
 
 
 class TrainingSubmitProposal(_Contract):
@@ -173,15 +215,85 @@ class ClarificationProposal(_Contract):
     options: list[ClarificationOption] = Field(default_factory=list, max_length=5)
 
 
+# People actions (csa/workspace/hr_people.py resolves every name against People as the caller).
+# Names, titles and departments are the words the user wrote; the server finds the people.
+PersonText = Annotated[str, StringConstraints(min_length=1, max_length=120)]
+
+
+class HrPersonAddProposal(_Contract):
+    """Add a person; the server asks for a missing name, job title or start date."""
+
+    action: Literal["hr_person_add"]
+    display_name: PersonText | None = None
+    job_title: BoundedText | None = None
+    start_date: date | None = None
+    department: PersonText | None = None
+    manager: PersonText | None = None
+    employment_type: EmploymentType | None = None
+    work_email: PersonText | None = None
+
+
+class HrPersonUpdateProposal(_Contract):
+    """Change a person; ``person=None`` means the open employee record. Unset fields stay."""
+
+    action: Literal["hr_person_update"]
+    person: PersonText | None = None
+    job_title: BoundedText | None = None
+    department: PersonText | None = None
+    manager: PersonText | None = None
+    work_phone: PersonText | None = None
+    employment_type: EmploymentType | None = None
+    start_date: date | None = None
+
+
+class HrPersonLeaveProposal(_Contract):
+    """Mark a person as leaving; the server asks for a missing last day or reason."""
+
+    action: Literal["hr_person_leave"]
+    person: PersonText | None = None
+    last_day: date | None = None
+    reason: LeavingReason | None = None
+    note: PersonText | None = None
+
+
+class PeopleQueryProposal(_Contract):
+    """Who reports to someone, or who is in a department, within the caller's People access."""
+
+    action: Literal["people_query"]
+    reports_to: PersonText | None = None
+    department: PersonText | None = None
+
+    @model_validator(mode="after")
+    def something_to_ask(self) -> PeopleQueryProposal:
+        if self.reports_to is None and self.department is None:
+            raise ValueError("set reports_to or department")
+        return self
+
+
+class HrPersonOpenProposal(_Contract):
+    """Open a person's profile page."""
+
+    action: Literal["hr_person_open"]
+    person: PersonText
+
+
 WorkspaceProposal = Annotated[
     Union[  # noqa: UP007 - Annotated discriminated union of named members
         AnswerProposal,
         NavigateProposal,
         DirectoryLookupProposal,
         EmailComposeProposal,
+        EmailReplyProposal,
+        EmailTeamProposal,
+        InboxSummaryProposal,
         TrainingSubmitProposal,
         InboxDecisionProposal,
         ClarificationProposal,
+        HrPersonAddProposal,
+        HrPersonUpdateProposal,
+        HrPersonLeaveProposal,
+        PeopleQueryProposal,
+        HrPersonOpenProposal,
         GuidanceProposal,
         OrderReadProposal,
     ],
@@ -189,12 +301,31 @@ WorkspaceProposal = Annotated[
 ]
 WorkspaceActionProposal = WorkspaceProposal
 
-ProposalKind = Literal["email_export", "training_submit", "inbox_decision", "subscription_action"]
+ProposalKind = Literal[
+    "email_export",
+    "email_send",
+    "training_submit",
+    "inbox_decision",
+    "subscription_action",
+    "hr_person",
+]
 
 
 class EmailExportProposal(_Contract):
     action: Literal["email_export"]
     draft_id: UUID
+
+
+class EmailSendProposal(_Contract):
+    """The whole stored payload of a send card: no address, subject or body.
+
+    ``version`` is ``csa.email.models.draft_version`` of the draft when the card was made, so
+    any edit afterwards makes the card stale.
+    """
+
+    action: Literal["email_send"]
+    draft_id: UUID
+    version: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ProposalCreate(_Contract):
@@ -218,6 +349,7 @@ class ProposalCard(_Contract):
     fields: list[CardField]
     expires_at: AwareDatetime
     expected_version: str | None
+    language: Language = "en"
 
 
 class ProposalOut(_Contract):
@@ -235,6 +367,18 @@ class PersonOut(_Contract):
     display_name: str
     job_title: str | None
     work_email: str | None
+
+
+TeamReason = Literal[
+    "package_inactive",
+    "not_team_approver",
+    "no_employee_link",
+    "no_reports",
+    "no_work_email",
+    "team_too_large",
+]
+"""Why the caller's team cannot be emailed: no HR, no approves-team switch, no employee link,
+nobody reporting, no report with a work email, or more than 20 reports to email."""
 
 
 class MyPeopleOut(_Contract):
@@ -460,6 +604,8 @@ class NavigateResult(_Contract):
     section: str | None = None
     record: RecordRef | None = None
     resume: bool = False
+    # A console page to open instead of the tab's own (a person's profile); server-built only.
+    path: str | None = None
 
 
 class DirectoryResult(_Contract):
@@ -508,6 +654,7 @@ class WorkspaceTurnOut(_Contract):
     result: WorkspaceActionResult
     created_at: AwareDatetime
     duplicate: bool = False
+    language: Language = "en"
 
 
 class WorkspaceTurnPage(_Contract):

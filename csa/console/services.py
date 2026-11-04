@@ -16,6 +16,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from csa.console.access import tenant
 from csa.console.agents import REQUIRED, AgentOut, list_agents
 from csa.console.contracts import ConsoleActor, Role
+from csa.console.customer_replies import (
+    CustomerRepliesIn,
+    CustomerRepliesOut,
+    promote_to_pilot,
+    read_replies,
+    save_replies,
+)
+from csa.console.last_change import (
+    CAPABILITY_ACTIONS,
+    SERVICE_ACTIONS,
+    LastChange,
+    last_changes,
+)
 from csa.console.packages import BY_KEY, PACKAGES, Package
 from csa.core import db
 from csa.core.tenancy import tx
@@ -59,6 +72,7 @@ class ServiceOut(BaseModel):
     can_request: bool
     can_activate: bool
     can_suspend: bool
+    last_change: LastChange | None = None
 
 
 class ActivateIn(BaseModel):
@@ -188,9 +202,17 @@ async def list_services(
     kb_model: str | None,
     kb_tei_configured: bool,
 ) -> list[ServiceOut]:
+    platform = actor is not None and actor.platform_admin
+    members_of = sorted({name for pkg in PACKAGES for name in pkg.capabilities})
     async with tx(pool, str(client_id)) as conn:
         rows = await db.q.fetch_all("console/service_packages_list.sql", (client_id,), conn=conn)
         email = await db.q.fetch_one("email/settings_get.sql", (client_id,), conn=conn)
+        package_changes = await last_changes(
+            conn, client_id, [p.key for p in PACKAGES], SERVICE_ACTIONS, platform_admin=platform
+        )
+        member_changes = await last_changes(
+            conn, client_id, members_of, CAPABILITY_ACTIONS, platform_admin=platform
+        )
     if email is None:
         raise RuntimeError("email settings row missing for tenant")
     agents = {
@@ -203,9 +225,14 @@ async def list_services(
             kb_tei_configured=kb_tei_configured,
         )
     }
+    for name, change in member_changes.items():
+        agent = agents.get(name)
+        if agent is not None and agent.capability is not None:
+            agents[name] = agent.model_copy(
+                update={"capability": agent.capability.model_copy(update={"last_change": change})}
+            )
     by_key = {r["package"]: r for r in rows}
     statuses = _statuses(rows)
-    platform = actor is not None and actor.platform_admin
     result: list[ServiceOut] = []
     for pkg in PACKAGES:
         row = by_key.get(pkg.key)
@@ -245,6 +272,7 @@ async def list_services(
                 and status in ("available", "suspended"),
                 can_activate=platform and pkg.sellable and not active and requires_met,
                 can_suspend=platform and active,
+                last_change=package_changes.get(pkg.key),
             )
         )
     return result
@@ -332,6 +360,8 @@ async def activate_package(
                 conn, client_id, name, is_enabled=True, client_enabled=True, actor_id=actor.user_id
             )
         await _audit(conn, client_id, actor, "service.activated", key, before, row)
+        if key == "customer_support":
+            await promote_to_pilot(conn, client_id, actor.user_id)
     return await _service(pool, client_id, key, actor)
 
 
@@ -474,6 +504,20 @@ def build_services_router(kb_model: str | None, kb_tei_configured: bool) -> APIR
         if client_id is None:
             return {"packages": []}
         return {"packages": await active_packages(db_pool, client_id)}
+
+    replies_gate = Depends(package_gate("customer_support", statuses=("active", "suspended")))
+
+    @router.get("/customer-replies", response_model=CustomerRepliesOut, dependencies=[replies_gate])
+    async def get_customer_replies(
+        actor: Human, client_id: Tenant, db_pool: Pool
+    ) -> CustomerRepliesOut:
+        return await read_replies(db_pool, client_id, actor)
+
+    @router.put("/customer-replies", response_model=CustomerRepliesOut, dependencies=[replies_gate])
+    async def put_customer_replies(
+        body: CustomerRepliesIn, actor: Human, client_id: Tenant, db_pool: Pool
+    ) -> CustomerRepliesOut:
+        return await save_replies(db_pool, client_id, body, actor)
 
     @router.post("/{key}/request", response_model=ServiceOut)
     async def post_request(key: str, actor: Human, client_id: Tenant, db_pool: Pool) -> ServiceOut:

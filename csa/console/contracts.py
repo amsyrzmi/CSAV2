@@ -9,6 +9,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+# The B2 preset ids (csa.hr.access_switches.PresetId), spelled out so the contracts module stays
+# free of HR imports; tests/test_console_identity.py pins the two lists together.
+HrPreset = Literal["staff", "manager", "hr_team", "payroll_preparer", "payroll_reviewer"]
+
 
 class Role(StrEnum):
     PLATFORM_ADMIN = "platform_admin"
@@ -116,13 +120,17 @@ class InviteIn(EmailInput):
     client_id: UUID
     role: Literal["tenant_admin", "tenant_staff", "read_only"]
     display_name: str = Field(min_length=1, max_length=120)
+    hr_preset: HrPreset | None = None
 
 
 class IssuedTokenOut(Contract):
     id: UUID
-    token: str
+    # None when the link was emailed: the raw token then never leaves the server.
+    token: str | None
     expires_at: datetime
-    delivery: Literal["manual"] = "manual"
+    delivery: Literal["manual", "email"] = "manual"
+    # Why a link is shown for manual sharing: mail is switched off, or the send failed.
+    delivery_note: Literal["mail_off", "send_failed"] | None = None
 
 
 class MemberPatchIn(Contract):
@@ -141,6 +149,32 @@ class MemberOut(Contract):
     display_name: str
     role: str
     is_enabled: bool
+
+
+class HrOwnerPerson(Contract):
+    user_id: UUID
+    display_name: str
+    # False when their account or membership is disabled or their role is read_only.
+    usable: bool
+
+
+class HrOwnerOut(Contract):
+    # False when the company's HR package isn't active; owner is then null too.
+    available: bool
+    owner: HrOwnerPerson | None
+
+
+class HrOwnerMoveIn(Contract):
+    client_id: UUID
+    new_owner_id: UUID
+    # Required: null says "no owner yet" on purpose, it is never a field left out.
+    expected_owner_id: UUID | None
+
+
+class HrOwnerMoveOut(Contract):
+    # Who holds the title now. A retry after a later move names the later owner.
+    owner: HrOwnerPerson
+    mail: Literal["sent", "not_sent", "repeat"]
 
 
 class AuditOut(Contract):
@@ -169,3 +203,4 @@ class InvitationOut(Contract):
     consumed_at: datetime | None
     revoked_at: datetime | None
     created_at: datetime
+    hr_preset: HrPreset | None = None

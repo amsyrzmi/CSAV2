@@ -1,6 +1,6 @@
 """M6 local read models on disposable synthetic tenants; never call marketplaces."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -519,3 +519,356 @@ async def test_staff_connection_lifecycle_is_metadata_only_and_never_live(
     for action in ("connect", "reconnect"):
         assert (await w.mutate(member, f"{base}/{sample['id']}/{action}", {})).status_code == 404
     assert (await w.mutate(member, f"{base}/{sample['id']}", {})).status_code == 405
+
+
+ORDER_STATUSES = (
+    "draft",
+    "pending_confirmation",
+    "confirmed",
+    "processing",
+    "shipped",
+    "delivered",
+    "cancelled",
+    "refunded",
+)
+PAYMENT_STATUSES = ("unpaid", "cod_pending", "paid", "refunded", "failed")
+WINDOW_START = datetime(2026, 3, 10, 0, 0, tzinfo=UTC)
+ORDER_KEYS = {
+    "id",
+    "status",
+    "payment_status",
+    "total",
+    "currency",
+    "channel",
+    "external_order_id",
+    "external_shop_id",
+    "tracking_no",
+    "carrier",
+    "placed_at",
+    "shipped_at",
+    "created_at",
+    "updated_at",
+}
+
+
+async def put_order(
+    w: SessionWorld,
+    tenant: str,
+    *,
+    created_at: datetime,
+    status: str = "confirmed",
+    payment_status: str = "unpaid",
+    channel: str = "manual",
+    shop: str | None = None,
+    placed_at: datetime | None = None,
+    order_id: str | None = None,
+) -> str:
+    order_id = order_id or f"synthetic-{uuid4()}"
+    await w.q(
+        "INSERT INTO orders (id,client_id,status,payment_status,channel,external_shop_id,"
+        "total,placed_at,created_at) VALUES (%s,%s,%s,%s,%s,%s,10.00,%s,%s)",
+        order_id,
+        tenant,
+        status,
+        payment_status,
+        channel,
+        shop,
+        placed_at,
+        created_at,
+    )
+    return order_id
+
+
+def orders_path(tenant: str | None = None, **params: str | int) -> str:
+    query = {**({"client_id": tenant} if tenant else {}), **params}
+    return "/console/v1/business/orders?" + urlencode(query)
+
+
+def counts_path(tenant: str | None = None, **params: str | int) -> str:
+    query = {**({"client_id": tenant} if tenant else {}), **params}
+    return "/console/v1/business/orders/counts?" + urlencode(query)
+
+
+def expected_order(rows: dict[str, tuple[datetime, ...]], ids: list[str]) -> list[str]:
+    """Order ids newest first, ties broken by id descending, as the list sorts."""
+    return sorted(ids, key=lambda i: (rows[i][0], i), reverse=True)
+
+
+async def test_orders_filter_by_created_window_half_open(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    start, end = WINDOW_START, WINDOW_START + timedelta(days=1)
+    before = await put_order(w, tenant, created_at=start - timedelta(seconds=1))
+    at_from = await put_order(w, tenant, created_at=start)
+    inside = await put_order(w, tenant, created_at=start + timedelta(hours=5))
+    last = await put_order(w, tenant, created_at=end - timedelta(microseconds=1))
+    at_to = await put_order(w, tenant, created_at=end)
+    after = await put_order(w, tenant, created_at=end + timedelta(hours=1))
+
+    def ids(response: httpx.Response) -> set[str]:
+        assert response.status_code == 200, response.text
+        return {item["id"] for item in response.json()["items"]}
+
+    window = await w.admin.get(
+        orders_path(tenant, **{"from": start.isoformat(), "to": end.isoformat()})
+    )
+    assert ids(window) == {at_from, inside, last}, "from is inclusive, to is exclusive"
+    # The same instants written with a +08:00 offset select the same rows.
+    local = timedelta(hours=8)
+    shifted = await w.admin.get(
+        orders_path(
+            tenant,
+            **{
+                "from": start.astimezone(timezone(local)).isoformat(),
+                "to": end.astimezone(timezone(local)).isoformat(),
+            },
+        )
+    )
+    assert ids(shifted) == {at_from, inside, last}
+    only_from = await w.admin.get(orders_path(tenant, **{"from": start.isoformat()}))
+    assert ids(only_from) == {at_from, inside, last, at_to, after}
+    only_to = await w.admin.get(orders_path(tenant, **{"to": start.isoformat()}))
+    assert ids(only_to) == {before}
+    # Paging a window does not leak boundary rows either way.
+    paged = await w.admin.get(
+        orders_path(tenant, **{"from": start.isoformat(), "to": end.isoformat(), "limit": 2})
+    )
+    assert [i["id"] for i in paged.json()["items"]] == [last, inside]
+    assert paged.json()["next_cursor"] == inside
+
+
+async def test_orders_filter_by_status_and_payment_status(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    t = WINDOW_START
+    rows = {
+        "shipped_paid": await put_order(
+            w, tenant, created_at=t, status="shipped", payment_status="paid"
+        ),
+        "shipped_cod": await put_order(
+            w,
+            tenant,
+            created_at=t + timedelta(minutes=1),
+            status="shipped",
+            payment_status="cod_pending",
+        ),
+        "draft_paid": await put_order(
+            w, tenant, created_at=t + timedelta(minutes=2), status="draft", payment_status="paid"
+        ),
+        "refunded_failed": await put_order(
+            w,
+            tenant,
+            created_at=t + timedelta(minutes=3),
+            status="refunded",
+            payment_status="failed",
+        ),
+    }
+
+    async def ids(**params: str) -> set[str]:
+        response = await w.admin.get(orders_path(tenant, **params))
+        assert response.status_code == 200, response.text
+        return {item["id"] for item in response.json()["items"]}
+
+    assert await ids(status="shipped") == {rows["shipped_paid"], rows["shipped_cod"]}
+    assert await ids(payment_status="paid") == {rows["shipped_paid"], rows["draft_paid"]}
+    assert await ids(status="shipped", payment_status="paid") == {rows["shipped_paid"]}
+    assert await ids(status="cancelled") == set()
+    assert await ids(status="refunded", payment_status="failed") == {rows["refunded_failed"]}
+    for status in ORDER_STATUSES:
+        await ids(status=status)
+    for payment_status in PAYMENT_STATUSES:
+        await ids(payment_status=payment_status)
+    # Combines with the existing channel and shop filters.
+    store = await put_order(
+        w, tenant, created_at=t, status="shipped", channel="shopee", shop="SHOP-1"
+    )
+    assert await ids(status="shipped", channel="shopee", shop_id="SHOP-1") == {store}
+    assert await ids(status="shipped", channel="tiktok_shop") == set()
+
+
+async def test_orders_filters_combine_with_cursor_paging(sessions: SessionWorld) -> None:
+    w, tenant, other = sessions, sessions.tenants[0], sessions.tenants[1]
+    start, end = WINDOW_START, WINDOW_START + timedelta(days=1)
+    matching: dict[str, tuple[datetime, ...]] = {}
+    for index in range(7):
+        # Two rows share each timestamp so the id tie-breaker is exercised across pages.
+        created = start + timedelta(hours=index // 2)
+        order_id = await put_order(
+            w, tenant, created_at=created, status="shipped", payment_status="paid"
+        )
+        matching[order_id] = (created,)
+    # Noise: wrong status, wrong payment, outside the window, another tenant.
+    await put_order(w, tenant, created_at=start, status="draft", payment_status="paid")
+    await put_order(w, tenant, created_at=start, status="shipped", payment_status="unpaid")
+    await put_order(w, tenant, created_at=end, status="shipped", payment_status="paid")
+    await put_order(
+        w, tenant, created_at=start - timedelta(seconds=1), status="shipped", payment_status="paid"
+    )
+    await put_order(w, other, created_at=start, status="shipped", payment_status="paid")
+    params = {
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "status": "shipped",
+        "payment_status": "paid",
+    }
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page_params: dict[str, str | int] = {**params, "limit": 3}
+        if cursor:
+            page_params["before"] = cursor
+        response = await w.admin.get(orders_path(tenant, **page_params))
+        assert response.status_code == 200, response.text
+        page = response.json()
+        seen.extend(item["id"] for item in page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert cursor is None
+    assert len(seen) == len(set(seen)) == 7, "no gap and no repeat"
+    assert seen == expected_order(matching, list(matching))
+
+
+async def test_orders_without_filters_unchanged(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    rows: dict[str, tuple[datetime, ...]] = {}
+    for index, status in enumerate(("draft", "shipped", "cancelled", "shipped")):
+        created = WINDOW_START + timedelta(days=index // 2)
+        order_id = await put_order(w, tenant, created_at=created, status=status)
+        rows[order_id] = (created,)
+    response = await w.admin.get(orders_path(tenant))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == {"source", "marketplace_sync", "items", "next_cursor"}
+    assert [item["id"] for item in body["items"]] == expected_order(rows, list(rows))
+    assert all(set(item) == ORDER_KEYS for item in body["items"]), "no customer or line items"
+    assert body["next_cursor"] is None
+
+
+async def test_orders_reject_unknown_status_and_inverted_range(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    await put_order(w, tenant, created_at=WINDOW_START)
+    start, end = WINDOW_START, WINDOW_START + timedelta(days=1)
+    for path in (orders_path, counts_path):
+        response = await w.admin.get(path(tenant, payment_status="settled"))
+        assert (response.status_code, response.json()["detail"]) == (422, "invalid_payment_status")
+        response = await w.admin.get(path(tenant, payment_status=""))
+        assert (response.status_code, response.json()["detail"]) == (422, "invalid_payment_status")
+        inverted = await w.admin.get(
+            path(tenant, **{"from": end.isoformat(), "to": start.isoformat()})
+        )
+        assert (inverted.status_code, inverted.json()["detail"]) == (422, "invalid_range")
+        equal = await w.admin.get(
+            path(tenant, **{"from": start.isoformat(), "to": start.isoformat()})
+        )
+        assert (equal.status_code, equal.json()["detail"]) == (422, "invalid_range")
+        naive = await w.admin.get(path(tenant, **{"from": "2026-03-10T00:00:00"}))
+        assert naive.status_code == 422
+        garbage = await w.admin.get(path(tenant, **{"to": "yesterday"}))
+        assert garbage.status_code == 422
+    for status in ("sent", "", "SHIPPED", "shipped "):
+        response = await w.admin.get(orders_path(tenant, status=status))
+        assert (response.status_code, response.json()["detail"]) == (422, "invalid_status")
+    # The existing filter errors keep their codes.
+    assert (await w.admin.get(orders_path(tenant, shop_id="X"))).status_code == 400
+    assert (await w.admin.get(orders_path(tenant, channel="lazada"))).status_code == 422
+
+
+async def test_order_counts_ignore_the_status_filter_and_include_zeros(
+    sessions: SessionWorld,
+) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    t = WINDOW_START
+    plan = [
+        ("draft", "unpaid", t, "manual", None),
+        ("shipped", "paid", t + timedelta(hours=1), "manual", None),
+        ("shipped", "paid", t + timedelta(hours=2), "shopee", "SHOP-1"),
+        ("shipped", "cod_pending", t + timedelta(hours=3), "shopee", "SHOP-1"),
+        ("delivered", "paid", t + timedelta(days=2), "shopee", "SHOP-2"),
+    ]
+    for status, payment, created, channel, shop in plan:
+        await put_order(
+            w,
+            tenant,
+            created_at=created,
+            status=status,
+            payment_status=payment,
+            channel=channel,
+            shop=shop,
+        )
+
+    async def counts(**params: str) -> dict:
+        response = await w.admin.get(counts_path(tenant, **params))
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert set(body) == {"total", "by_status"}
+        assert list(body["by_status"]) == list(ORDER_STATUSES), "every status, zeros included"
+        assert body["total"] == sum(body["by_status"].values())
+        return body
+
+    everything = await counts()
+    assert everything["total"] == 5
+    assert everything["by_status"] == {
+        **dict.fromkeys(ORDER_STATUSES, 0),
+        "draft": 1,
+        "shipped": 3,
+        "delivered": 1,
+    }
+    # A status parameter is ignored so every chip shows its own number.
+    assert await counts(status="shipped") == everything
+    assert await counts(status="not-a-status") == everything
+    window = await counts(**{"from": t.isoformat(), "to": (t + timedelta(days=1)).isoformat()})
+    assert window["total"] == 4 and window["by_status"]["delivered"] == 0
+    paid = await counts(payment_status="paid", status="draft")
+    assert paid["total"] == 3 and paid["by_status"]["shipped"] == 2
+    shop = await counts(channel="shopee", shop_id="SHOP-1")
+    assert shop["total"] == 2 and shop["by_status"]["shipped"] == 2
+    assert (await w.admin.get(counts_path(tenant, shop_id="SHOP-1"))).status_code == 400
+    empty = await counts(channel="telegram")
+    assert empty == {"total": 0, "by_status": dict.fromkeys(ORDER_STATUSES, 0)}
+
+
+@pytest.mark.parametrize("role", ["tenant_admin", "tenant_staff"])
+async def test_order_counts_tenant_scoped(sessions: SessionWorld, role: str) -> None:
+    w = sessions
+    for _ in range(2):
+        await put_order(w, w.tenants[0], created_at=WINDOW_START, status="shipped")
+    for _ in range(3):
+        await put_order(w, w.tenants[1], created_at=WINDOW_START, status="cancelled")
+    member, _ = await w.member(role=role)
+    own = await member.get(counts_path())
+    assert own.status_code == 200, own.text
+    assert own.json()["total"] == 2
+    assert own.json()["by_status"]["shipped"] == 2 and own.json()["by_status"]["cancelled"] == 0
+    assert (await member.get(counts_path(w.tenants[1]))).status_code == 403
+    foreign = await w.admin.get(counts_path(w.tenants[1]))
+    assert foreign.json()["total"] == 3 and foreign.json()["by_status"]["cancelled"] == 3
+    # Same gating as the list: platform admin must pick a tenant; readers, anonymous denied.
+    assert (await w.admin.get(counts_path())).status_code == 400
+    reader, _ = await w.member(role="read_only")
+    assert (await reader.get(counts_path())).status_code == 403
+    assert (await (await w.browser()).get(counts_path())).status_code == 401
+    assert (await w.mutate(member, "/console/v1/business/orders/counts", {})).status_code == 405
+    # "counts" is a route, not an order id.
+    assert (await member.get("/console/v1/business/orders/counts")).json().get("total") == 2
+
+
+async def test_order_with_null_placed_at_is_listed(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    start, end = WINDOW_START, WINDOW_START + timedelta(days=1)
+    draft = await put_order(
+        w, tenant, created_at=start + timedelta(hours=1), status="draft", placed_at=None
+    )
+    placed = await put_order(
+        w,
+        tenant,
+        created_at=start + timedelta(hours=2),
+        status="draft",
+        placed_at=start - timedelta(days=30),
+    )
+    window = {"from": start.isoformat(), "to": end.isoformat()}
+    response = await w.admin.get(orders_path(tenant, **window))
+    assert response.status_code == 200, response.text
+    items = {item["id"]: item for item in response.json()["items"]}
+    assert set(items) == {draft, placed}, "the window is on created_at, not placed_at"
+    assert items[draft]["placed_at"] is None
+    counts = await w.admin.get(counts_path(tenant, **window))
+    assert counts.json()["by_status"]["draft"] == 2

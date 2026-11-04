@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { createContext, Fragment, useContext, useEffect, useId, useRef, useState, type RefObject } from "react";
+import SlideOver from "@/components/console/fs/SlideOver";
 import { api } from "@/lib/api";
+import { usePublishContext } from "@/lib/page-context";
 import type { Client, Me } from "@/lib/identity-contracts";
 import {
   availableActions,
@@ -11,6 +13,7 @@ import {
   eventSentence,
   formatDateTime,
   formatDay,
+  getSettings,
   getSubscription,
   listPlans,
   listRequests,
@@ -33,6 +36,18 @@ import {
   type SubscriptionStatus,
 } from "@/lib/subscriptions-api";
 import type { ProposalOut } from "@/lib/workspace-api";
+import {
+  customerChipOptions,
+  filterCustomers,
+  formatInTenantZone,
+  reviewSentence,
+  summaryCounts,
+  validTimeZone,
+  type CustomerView,
+  type SummaryCounts,
+} from "@/lib/subscriptions-view";
+import { useMediaQuery } from "./inbox/hooks";
+import { DetailsRow, StatusChips } from "./kit";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
@@ -52,11 +67,30 @@ const ACTION_LABELS: Record<SubscriptionAction, string> = {
 };
 const INTERVALS: Record<BillingInterval, string> = { month: "a month", year: "a year" };
 const textarea =
-  "min-h-20 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-600";
+  "min-h-20 w-full rounded-md border border-ink-300 bg-[var(--fs-surface)] px-3 py-2 text-sm outline-none focus:border-brand-600";
+/** A short "what this does" line under a field that uses the business's own jargon. */
+const helpText = "mt-1 text-xs text-ink-600";
+const ACTION_HELP: Record<SubscriptionAction, string> = {
+  pause: "The subscription is on hold until the day you choose, or until someone resumes it.",
+  resume:
+    "The subscription starts again. If its renewal date has passed, the next renewal is one billing period from today.",
+  change_plan:
+    "Moves the customer to another plan. Leave the start date empty to change it now. A special price only applies when the change starts now.",
+  cancel_at_period_end: "The subscription stays active until the current period ends, then it is cancelled.",
+  cancel_now:
+    "Ends the subscription straight away. A cancelled subscription cannot be started again, so add a new subscription instead.",
+  extend_renewal: "Moves the next renewal to the day you choose. The plan does not change.",
+};
 const cell = "border-b border-ink-100 px-3 py-2 align-top";
+/** On a phone each customer is one small block (name, then plan and status, then renewal and price) instead of a table that scrolls sideways. */
+const phoneCell = "max-sm:border-b-0 max-sm:px-0 max-sm:py-0 max-sm:before:block max-sm:before:text-xs max-sm:before:text-ink-600 max-sm:before:content-[attr(data-label)]";
 const head = "border-b border-ink-200 px-3 py-2 text-left font-medium text-ink-600";
 
 type PlanName = (code: string) => string;
+
+/** The tenant's time zone, so dates read the same for everyone; undefined until it loads. */
+const TimeZoneContext = createContext<string | undefined>(undefined);
+const useTimeZone = () => useContext(TimeZoneContext);
 
 function message(cause: unknown) {
   return cause instanceof Error ? cause.message : "The request failed. Try again.";
@@ -114,7 +148,33 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
   const [tab, setTab] = useState<Tab>("customers");
   const [plans, setPlans] = useState<PlanOut[]>([]);
   const [plansRevision, setPlansRevision] = useState(0);
+  const [timeZone, setTimeZone] = useState<string | undefined>(undefined);
+  usePublishContext({ tab: "subscriptions", section: tab });
   const [error, setError] = useState("");
+  // The summary row reads the first page of every customer and the open requests (the same two
+  // reads the tabs make). Until both arrive, or if either fails, there are no figures to show.
+  const [summary, setSummary] = useState<SummaryCounts | null>(null);
+  const [summaryRevision, setSummaryRevision] = useState(0);
+  useEffect(() => {
+    let live = true;
+    Promise.all([searchSubscriptions(tenantId, {}), listRequests(tenantId, "open")])
+      .then(([customers, requests]) => {
+        if (live)
+          setSummary(summaryCounts(customers.items, requests.items,
+            customers.next_cursor !== null, requests.next_cursor !== null, new Date()));
+      })
+      .catch(() => { if (live) setSummary(null); });
+    return () => { live = false; };
+  }, [tenantId, summaryRevision]);
+  const refreshSummary = () => setSummaryRevision((value) => value + 1);
+  useEffect(() => {
+    let live = true;
+    // Without it dates fall back to the browser's zone.
+    getSettings(tenantId)
+      .then((settings) => { if (live) setTimeZone(validTimeZone(settings.timezone) ?? undefined); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [tenantId]);
   useEffect(() => {
     let live = true;
     // Archived plans too: old timeline events and subscriptions still name them.
@@ -126,7 +186,7 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
   const names = new Map(plans.map((plan) => [plan.code, plan.name]));
   const planName: PlanName = (code) => names.get(code) ?? code;
   return (
-    <>
+    <TimeZoneContext.Provider value={timeZone}>
       <div role="tablist" aria-label="Subscription sections" className="mb-5 flex flex-wrap gap-2">
         {TABS.map(({ key, label }) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key}
@@ -135,11 +195,41 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
         ))}
       </div>
       {error && <div className="mb-5"><Notice error>{error}</Notice></div>}
-      {tab === "customers" && <Customers tenantId={tenantId} writer={writer} plans={plans} planName={planName} />}
+      {summary && <SummaryRow summary={summary} />}
+      {tab === "customers" && <Customers tenantId={tenantId} writer={writer} plans={plans} planName={planName}
+        onOpenPlans={() => setTab("plans")} onDataChanged={refreshSummary} />}
       {tab === "plans" && <Plans tenantId={tenantId} writer={writer} plans={plans}
         onChanged={() => setPlansRevision((value) => value + 1)} />}
-      {tab === "requests" && <Requests tenantId={tenantId} writer={writer} planName={planName} />}
-    </>
+      {tab === "requests" && <Requests tenantId={tenantId} writer={writer} planName={planName}
+        onDataChanged={refreshSummary} />}
+    </TimeZoneContext.Provider>
+  );
+}
+
+function SummaryRow({ summary }: { summary: SummaryCounts }) {
+  const tiles = [
+    { id: "active", value: summary.active, label: "Customers active" },
+    { id: "ending", value: summary.endingSoon, label: "Ending soon" },
+    { id: "requests", value: summary.requestsWaiting, label: "Requests waiting" },
+  ];
+  const partial = tiles.some((tile) => tile.value.endsWith("+"));
+  return (
+    <section aria-label="Summary" data-testid="subscriptions-summary" className="mb-5">
+      <ul className="grid grid-cols-3 gap-2 sm:gap-3">
+        {tiles.map((tile) => (
+          <li key={tile.id} data-testid={`summary-${tile.id}`}
+            className="min-w-0 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-3 py-2 sm:py-2.5">
+            <p data-testid={`summary-${tile.id}-value`}
+              className="font-(family-name:--fs-font-heading) text-xl font-semibold sm:text-2xl">{tile.value}</p>
+            <p data-testid={`summary-${tile.id}-label`} className="text-xs text-ink-600 sm:text-sm">{tile.label}</p>
+          </li>
+        ))}
+      </ul>
+      <p data-testid="subscriptions-summary-note" className="mt-2 text-xs text-ink-600">
+        Ending soon means set to cancel at the end of the period.
+        {partial ? " A plus sign means more are on the next page." : ""}
+      </p>
+    </section>
   );
 }
 
@@ -147,9 +237,11 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
 
 interface Filters { q: string; status: SubscriptionStatus | ""; plan: string }
 
-function Customers({ tenantId, writer, plans, planName }: {
+function Customers({ tenantId, writer, plans, planName, onOpenPlans, onDataChanged }: {
   tenantId: string | null; writer: boolean; plans: PlanOut[]; planName: PlanName;
+  onOpenPlans: () => void; onDataChanged: () => void;
 }) {
+  const timeZone = useTimeZone();
   const [draft, setDraft] = useState("");
   const [filters, setFilters] = useState<Filters>({ q: "", status: "", plan: "" });
   const [rows, setRows] = useState<SubscriptionOut[] | null>(null);
@@ -157,12 +249,17 @@ function Customers({ tenantId, writer, plans, planName }: {
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState("");
+  // The quick view narrows the rows already loaded; it never asks the server again.
+  const [view, setView] = useState<CustomerView>("all");
   useEffect(() => {
     let live = true;
     searchSubscriptions(tenantId, filters)
-      .then((page) => { if (live) { setRows(page.items); setNext(page.next_cursor); setError(""); } })
+      .then((page) => {
+        if (live) { setRows(page.items); setNext(page.next_cursor); setError(""); }
+      })
       .catch((cause) => { if (live) setError(message(cause)); });
     return () => { live = false; };
   }, [tenantId, filters, revision]);
@@ -177,6 +274,47 @@ function Customers({ tenantId, writer, plans, planName }: {
     }
   }
   const filtered = Boolean(filters.q || filters.status || filters.plan);
+  const shown = rows ? filterCustomers(rows, view) : null;
+  const hasActivePlan = plans.some((plan) => plan.is_active);
+  // Below `sm` the Status and Plan selects live under a closed "More filters" row.
+  const phone = useMediaQuery("(max-width: 639.98px)");
+  const statusHelpId = useId();
+  const activeHint = [
+    filters.status && `Status: ${STATUS_LABELS[filters.status]}`,
+    filters.plan && `Plan: ${plans.find((plan) => plan.code === filters.plan)?.name ?? filters.plan}`,
+  ].filter(Boolean).map((text) => ` · ${text}`).join("");
+  const statusField = (
+    <div>
+      <label className="mb-1 block text-sm font-medium" htmlFor="subscriptions-status">Status</label>
+      <select id="subscriptions-status" data-testid="subscriptions-status" className={field} value={filters.status}
+        aria-describedby={statusHelpId}
+        onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as Filters["status"] }))}>
+        <option value="">All statuses</option>
+        {(Object.keys(STATUS_LABELS) as SubscriptionStatus[]).map((status) =>
+          <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}
+      </select>
+    </div>
+  );
+  const planField = (
+    <div>
+      <label className="mb-1 block text-sm font-medium" htmlFor="subscriptions-plan">Plan</label>
+      <select id="subscriptions-plan" data-testid="subscriptions-plan" className={field} value={filters.plan}
+        onChange={(event) => setFilters((current) => ({ ...current, plan: event.target.value }))}>
+        <option value="">All plans</option>
+        {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
+      </select>
+    </div>
+  );
+  const statusHelp = (
+    <p id={statusHelpId} data-testid="help-status-filter" className="text-xs text-ink-600">
+      Status filters the whole list; the chips below only narrow what is loaded.
+    </p>
+  );
+  function clearFilters() {
+    setDraft("");
+    setView("all");
+    setFilters({ q: "", status: "", plan: "" });
+  }
   return (
     <Panel title="Customers">
       {notice && <div className="mb-4"><Notice>{notice}</Notice></div>}
@@ -186,64 +324,119 @@ function Customers({ tenantId, writer, plans, planName }: {
       )}
       {writer && adding && (
         <AddSubscription tenantId={tenantId} plans={plans} onCancel={() => setAdding(false)}
-          onAdded={(text) => { setAdding(false); setNotice(text); setRevision((value) => value + 1); }} />
+          onAdded={(text) => {
+            setAdding(false); setNotice(text); setRevision((value) => value + 1); onDataChanged();
+          }} />
       )}
-      <form className="mb-5 grid gap-3 md:grid-cols-[1fr_12rem_12rem_auto]" role="search"
+      <form className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_11rem_11rem]" role="search"
         onSubmit={(event) => { event.preventDefault(); setFilters((current) => ({ ...current, q: draft.trim() })); }}>
-        <label className="sr-only" htmlFor="subscriptions-search">Search customers</label>
-        <input id="subscriptions-search" data-testid="subscriptions-search" className={field} type="search"
-          maxLength={100} placeholder="Search by name, phone or email" value={draft}
-          onChange={(event) => setDraft(event.target.value)} />
-        <label className="sr-only" htmlFor="subscriptions-status">Status</label>
-        <select id="subscriptions-status" data-testid="subscriptions-status" className={field} value={filters.status}
-          onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as Filters["status"] }))}>
-          <option value="">All statuses</option>
-          {(Object.keys(STATUS_LABELS) as SubscriptionStatus[]).map((status) =>
-            <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}
-        </select>
-        <label className="sr-only" htmlFor="subscriptions-plan">Plan</label>
-        <select id="subscriptions-plan" data-testid="subscriptions-plan" className={field} value={filters.plan}
-          onChange={(event) => setFilters((current) => ({ ...current, plan: event.target.value }))}>
-          <option value="">All plans</option>
-          {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
-        </select>
-        <button className={action} data-testid="subscriptions-search-submit">Search</button>
+        <div className="sm:col-span-2 xl:col-span-1">
+          <label className="mb-1 block text-sm font-medium" htmlFor="subscriptions-search">Search customers</label>
+          <div className="flex flex-wrap gap-2">
+            <input id="subscriptions-search" data-testid="subscriptions-search"
+              className={`${field} min-w-[min(100%,17rem)] flex-1`} type="search"
+              maxLength={100} placeholder="Search by name, phone or email" value={draft}
+              onChange={(event) => setDraft(event.target.value)} />
+            <button className={action} data-testid="subscriptions-search-submit">Search</button>
+          </div>
+        </div>
+        {phone ? (
+          // On a phone the two selects fold away; the words beside the arrow say what is chosen.
+          <div className="min-w-0">
+            <DetailsRow testId="customers-filters" toggleLabel={`more filters${activeHint}`}
+              summary={(
+                <span className="text-sm font-medium">More filters
+                  {activeHint && <span data-testid="customers-filters-active" className="font-normal text-ink-600">{activeHint}</span>}
+                </span>
+              )}>
+              <div className="space-y-3">{statusField}{planField}{statusHelp}</div>
+            </DetailsRow>
+          </div>
+        ) : (
+          <>{statusField}{planField}<div className="sm:col-span-2 xl:col-span-3">{statusHelp}</div></>
+        )}
       </form>
+      {rows && rows.length > 0 && (
+        <div className="mb-4">
+          <p className="mb-1 text-sm font-medium">Show</p>
+          {/* One scrolling row on phones (a part of the next chip shows as the hint), wrapping from 640 px. */}
+          <div className="min-w-0 max-sm:[&>[role=group]]:flex-nowrap max-sm:[&>[role=group]]:overflow-x-auto max-sm:[&>[role=group]]:overscroll-x-contain max-sm:[&>[role=group]]:py-1 max-sm:[&>[role=group]>button]:shrink-0">
+            <StatusChips<CustomerView> mode="single" testId="customers-view" ariaLabel="Show customers"
+              options={customerChipOptions(rows, next !== null)} value={view}
+              onChange={(picked) => setView(picked as CustomerView)} />
+          </div>
+          {next && (
+            <p data-testid="customers-view-note" className="mt-2 text-xs text-ink-600">
+              These choices narrow only the customers loaded so far. Use Search, or show more customers, to look further.
+            </p>
+          )}
+        </div>
+      )}
       {error && <div className="mb-4"><Notice error>{error}</Notice></div>}
       {rows === null ? (!error && <Notice>Loading subscriptions…</Notice>) : rows.length === 0 ? (
-        <Notice>{filtered
-          ? "No subscriptions match. Try another name, phone or email, or clear the filters."
-          : writer
-            ? "Subscriptions will appear here. Add a subscription to put a customer on one of your plans."
-            : "Subscriptions will appear here once your team adds a customer to a plan."}</Notice>
+        <div className="space-y-3">
+          <Notice>{filtered
+            ? "No subscriptions match. Try another name, phone or email, or clear the filters."
+            : writer
+              ? "Subscriptions will appear here. Add a subscription to put a customer on one of your plans."
+              : "Subscriptions will appear here once your team adds a customer to a plan."}</Notice>
+          {filtered ? (
+            <button type="button" className={secondary} data-testid="customers-clear-filters"
+              onClick={clearFilters}>Clear filters</button>
+          ) : writer && !adding && (hasActivePlan ? (
+            <button type="button" className={action} data-testid="customers-empty-add"
+              onClick={() => { setAdding(true); setNotice(""); }}>Add your first subscription</button>
+          ) : (
+            <>
+              <p className="text-sm text-ink-600">A customer needs a plan to subscribe to, so start with a plan.</p>
+              <button type="button" className={action} data-testid="customers-empty-plans"
+                onClick={onOpenPlans}>Add a plan</button>
+            </>
+          ))}
+        </div>
+      ) : shown && shown.length === 0 ? (
+        <div className="space-y-3" data-testid="customers-view-empty">
+          <Notice>None of the customers loaded fit this choice.</Notice>
+          <button type="button" className={secondary} data-testid="customers-show-all"
+            onClick={() => setView("all")}>Show all customers</button>
+        </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[40rem] text-sm" data-testid="subscriptions-table">
-            <thead><tr>
+          <table className="w-full text-sm sm:min-w-[40rem]" data-testid="subscriptions-table">
+            <thead className="max-sm:sr-only"><tr>
               <th className={head}>Customer</th><th className={head}>Plan</th><th className={head}>Status</th>
               <th className={head}>Renews on</th><th className={head}>Price</th>
             </tr></thead>
             <tbody>
-              {rows.map((row) => (
-                <tr key={row.id} data-testid="subscription-row" className="cursor-pointer hover:bg-ink-50"
-                  onClick={() => setOpenId(row.id)}>
-                  <td className={cell}>
+              {(shown ?? []).map((row) => (
+                <tr key={row.id} data-testid="subscription-row"
+                  className="cursor-pointer hover:bg-ink-50 max-sm:grid max-sm:grid-cols-2 max-sm:gap-x-3 max-sm:gap-y-2 max-sm:border-b max-sm:border-ink-100 max-sm:px-1 max-sm:py-3"
+                  onClick={(event) => {
+                    // A click on the row itself leaves nothing focused; return to the name button.
+                    openerRef.current = event.currentTarget.querySelector("button");
+                    setOpenId(row.id);
+                  }}>
+                  <td className={`${cell} max-sm:col-span-2 max-sm:border-b-0 max-sm:p-0`}>
                     <button type="button" className="text-left font-medium text-brand-700 hover:underline"
-                      onClick={(event) => { event.stopPropagation(); setOpenId(row.id); }}>
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openerRef.current = event.currentTarget;
+                        setOpenId(row.id);
+                      }}>
                       {customerName(row.customer)}
                     </button>
                     {row.customer.full_name && (row.customer.phone || row.customer.email) && (
                       <p className="text-xs text-ink-500">{row.customer.phone || row.customer.email}</p>
                     )}
                   </td>
-                  <td className={cell}>{row.plan_name || planName(row.plan)}</td>
-                  <td className={cell}>
+                  <td data-label="Plan" className={`${cell} ${phoneCell}`}>{row.plan_name || planName(row.plan)}</td>
+                  <td data-label="Status" className={`${cell} ${phoneCell}`}>
                     <span data-testid="subscription-status">{STATUS_LABELS[row.status]}</span>
                     {row.cancel_at_period_end && row.status === "active" &&
                       <p className="text-xs text-ink-500">Cancels at period end</p>}
                   </td>
-                  <td className={cell}>{row.status === "cancelled" ? "—" : formatDay(row.renews_at)}</td>
-                  <td className={cell}>{money(row.price, row.currency)}</td>
+                  <td data-label="Renews on" className={`${cell} ${phoneCell}`}>{row.status === "cancelled" ? "—" : formatDay(row.renews_at, timeZone)}</td>
+                  <td data-label="Price" className={`${cell} ${phoneCell}`}>{money(row.price, row.currency)}</td>
                 </tr>
               ))}
             </tbody>
@@ -253,7 +446,8 @@ function Customers({ tenantId, writer, plans, planName }: {
       {next && <div className="mt-4"><button type="button" className={secondary} onClick={() => void more()}>
         Show more customers</button></div>}
       {openId && <Drawer key={openId} tenantId={tenantId} id={openId} writer={writer} plans={plans}
-        planName={planName} onClose={() => setOpenId(null)} onChanged={() => setRevision((value) => value + 1)} />}
+        planName={planName} returnFocusTo={openerRef} onClose={() => setOpenId(null)}
+        onChanged={() => { setRevision((value) => value + 1); onDataChanged(); }} />}
     </Panel>
   );
 }
@@ -357,15 +551,25 @@ function AddSubscription({ tenantId, plans, onAdded, onCancel }: {
   );
 }
 
-function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
+function Drawer({ tenantId, id, writer, plans, planName, returnFocusTo, onClose, onChanged }: {
   tenantId: string | null; id: string; writer: boolean; plans: PlanOut[]; planName: PlanName;
-  onClose: () => void; onChanged: () => void;
+  returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void; onChanged: () => void;
 }) {
+  const timeZone = useTimeZone();
+  // Mounted closed, opened by the effect: a native dialog that mounts already open is closed
+  // again by React's strict-mode effect cycle, and its close event would call onClose.
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const [detail, setDetail] = useState<SubscriptionDetail | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const [form, setForm] = useState<SubscriptionAction | null>(null);
   const [proposal, setProposal] = useState<ProposalOut | null>(null);
+  // What the person asked for, kept to describe it in plain words while the card is open.
+  const [reviewBody, setReviewBody] = useState<ActionIn | null>(null);
   useEffect(() => {
     let live = true;
     getSubscription(tenantId, id)
@@ -376,42 +580,57 @@ function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
   const subscription = detail?.subscription;
   const name = subscription ? customerName(subscription.customer) : "Subscription";
   const pending = proposal?.status === "requested";
+  const plan = subscription ? plans.find((item) => item.code === subscription.plan) : undefined;
+  const planPrice = (code: string) => {
+    const found = plans.find((item) => item.code === code);
+    return found ? `${money(found.price, found.currency)} ${INTERVALS[found.billing_interval]}` : null;
+  };
   const events = [...(detail?.events ?? [])].sort(
     (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
   return (
-    <aside role="dialog" aria-label={`Subscription for ${name}`} data-testid="subscription-drawer"
-      className="fixed inset-y-0 right-0 z-40 w-full max-w-lg overflow-y-auto border-l border-ink-200 bg-white p-5 shadow-xl sm:p-6">
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <h2 className="text-lg font-semibold">{name}</h2>
-        <button type="button" className={secondary} data-testid="subscription-close" onClick={onClose}>Close</button>
-      </div>
+    <SlideOver open={shown} onClose={onClose} title={name} returnFocusTo={returnFocusTo} widthClass="max-w-lg"
+      testId="subscription-drawer" closeTestId="subscription-close">
       {error && <div className="mb-4"><Notice error>{error}</Notice></div>}
       {!subscription ? (!error && <Notice>Loading the subscription…</Notice>) : (
         <>
-          <dl className="grid gap-2 text-sm sm:grid-cols-[9rem_1fr]" data-testid="subscription-details">
-            <Detail label="Phone" value={subscription.customer.phone} />
-            <Detail label="Email" value={subscription.customer.email} />
-            <Detail label="Plan" value={subscription.plan_name || planName(subscription.plan)} />
-            <Detail label="Status" value={STATUS_LABELS[subscription.status]} testId="subscription-detail-status" />
-            <Detail label="Price" value={money(subscription.price, subscription.currency)} />
-            <Detail label="Started on" value={formatDay(subscription.started_at)} />
-            {subscription.status !== "cancelled" && <Detail label="Renews on" value={formatDay(subscription.renews_at)} />}
-            {subscription.paused_at && <Detail label="Paused on" value={formatDay(subscription.paused_at)} />}
-            {subscription.status === "paused" && <Detail label="Resumes on"
-              value={subscription.resume_at ? formatDay(subscription.resume_at) : "When someone resumes it"} />}
-            {subscription.cancelled_at && <Detail label="Cancelled on" value={formatDay(subscription.cancelled_at)} />}
-            {subscription.pending_plan && <Detail label="Scheduled change"
-              value={`Moves to ${planName(subscription.pending_plan)} on ${formatDay(subscription.pending_effective_at)}`} />}
-            {subscription.cancel_at_period_end && <Detail label="Cancellation"
-              value={`Cancels when the period ends on ${formatDay(subscription.renews_at)}`} />}
-          </dl>
+          <div className="space-y-4" data-testid="subscription-details">
+            <DetailSection id="who" title="Who">
+              <Detail label="Phone" value={subscription.customer.phone} />
+              <Detail label="Email" value={subscription.customer.email} />
+            </DetailSection>
+            <DetailSection id="plan" title="Plan">
+              <Detail label="Plan" value={subscription.plan_name || planName(subscription.plan)} />
+              <Detail label="Status" value={STATUS_LABELS[subscription.status]} testId="subscription-detail-status" />
+              {subscription.pending_plan && <Detail label="Scheduled change"
+                value={`Moves to ${planName(subscription.pending_plan)} on ${formatDay(subscription.pending_effective_at, timeZone)}`} />}
+              {subscription.cancel_at_period_end && <Detail label="Cancellation"
+                value={`Cancels when the period ends on ${formatDay(subscription.renews_at, timeZone)}`} />}
+            </DetailSection>
+            <DetailSection id="price" title="Price">
+              <Detail label="Price" value={money(subscription.price, subscription.currency)} />
+              {plan && <Detail label="Billed" value={plan.billing_interval === "year" ? "Every year" : "Every month"} />}
+              {plan && Number(plan.price) !== Number(subscription.price) && <Detail label="Plan's current price"
+                value={`${money(plan.price, plan.currency)} ${INTERVALS[plan.billing_interval]}`} />}
+            </DetailSection>
+            <DetailSection id="when" title="When">
+              <Detail label="Started on" value={formatDay(subscription.started_at, timeZone)} />
+              {subscription.status !== "cancelled" && <Detail label="Renews on" value={formatDay(subscription.renews_at, timeZone)} />}
+              {subscription.paused_at && <Detail label="Paused on" value={formatDay(subscription.paused_at, timeZone)} />}
+              {subscription.status === "paused" && <Detail label="Resumes on"
+                value={subscription.resume_at ? formatDay(subscription.resume_at, timeZone) : "When someone resumes it"} />}
+              {subscription.cancelled_at && <Detail label="Cancelled on" value={formatDay(subscription.cancelled_at, timeZone)} />}
+            </DetailSection>
+          </div>
           {writer && !pending && (
-            <div className="mt-5 flex flex-wrap gap-2" data-testid="subscription-actions">
-              {availableActions(subscription).map((kind) => (
-                <button key={kind} type="button" className={kind === "cancel_now" ? secondary : action}
-                  data-testid={`subscription-action-${kind}`} aria-pressed={form === kind}
-                  onClick={() => { setForm(kind); setProposal(null); }}>{ACTION_LABELS[kind]}</button>
-              ))}
+            <div className="mt-5">
+              <h3 className="mb-2 font-semibold">Make a change</h3>
+              <div className="flex flex-wrap gap-2" data-testid="subscription-actions">
+                {availableActions(subscription).map((kind) => (
+                  <button key={kind} type="button" className={kind === "cancel_now" ? secondary : action}
+                    data-testid={`subscription-action-${kind}`} aria-pressed={form === kind}
+                    onClick={() => { setForm(kind); setProposal(null); setReviewBody(null); }}>{ACTION_LABELS[kind]}</button>
+                ))}
+              </div>
             </div>
           )}
           {writer && form && !pending && (
@@ -420,30 +639,90 @@ function Drawer({ tenantId, id, writer, plans, planName, onClose, onChanged }: {
               onSubmit={async (body) => {
                 const created = await proposeAction(tenantId, subscription.id, body);
                 setProposal(created);
+                setReviewBody(body);
                 setForm(null);
               }} />
           )}
           {proposal && (
-            <ProposalCard key={proposal.id} proposal={proposal} tenantId={tenantId}
-              onSettled={(settled) => { setProposal(settled); setRevision((value) => value + 1); onChanged(); }} />
+            <div className="mt-4">
+              {pending && reviewBody && (
+                <ReviewStep body={reviewBody} subscription={subscription} sentence={reviewSentence(reviewBody, {
+                  customer: name,
+                  currentPlan: subscription.plan_name || planName(subscription.plan),
+                  renewsAt: subscription.renews_at,
+                  timeZone: timeZone ?? null,
+                  planName,
+                  planPrice,
+                })} />
+              )}
+              <ProposalCard key={proposal.id} proposal={proposal} tenantId={tenantId}
+                onSettled={(settled) => { setProposal(settled); setRevision((value) => value + 1); onChanged(); }} />
+            </div>
           )}
-          <h3 className="mb-3 mt-6 font-semibold">Timeline</h3>
+          <h3 className="mb-1 mt-6 font-semibold">Timeline</h3>
+          <p data-testid="timeline-zone" className="mb-3 text-xs text-ink-600">
+            {timeZone
+              ? `Times are shown in your company's time zone: ${timeZone}.`
+              : "Times are shown in the time zone of this device."}
+          </p>
           {events.length === 0 ? <p className="text-sm text-ink-500">Changes to this subscription will appear here.</p> : (
             <ol className="space-y-3 text-sm" data-testid="subscription-timeline">
               {events.map((event) => (
                 <li key={event.id} className="border-l-2 border-brand-200 pl-3">
                   <p className="text-xs text-ink-500">
-                    <time dateTime={event.created_at}>{formatDateTime(event.created_at)}</time>
+                    <time dateTime={event.created_at}>{formatInTenantZone(event.created_at, timeZone ?? null)}</time>
                     {event.actor.startsWith("system:") ? " · Automatic" : ""}
                   </p>
-                  <p>{eventSentence(event, planName)}</p>
+                  <p>{eventSentence(event, planName, timeZone)}</p>
                 </li>
               ))}
             </ol>
           )}
         </>
       )}
-    </aside>
+    </SlideOver>
+  );
+}
+
+function DetailSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+  return (
+    <section aria-label={title} data-testid={`subscription-section-${id}`}
+      className="border-t border-[color:var(--fs-border)] pt-4 first:border-t-0 first:pt-0">
+      <h3 className="mb-2 font-semibold">{title}</h3>
+      <dl className="grid gap-2 text-sm sm:grid-cols-[9rem_1fr]">{children}</dl>
+    </section>
+  );
+}
+
+/** The sentence first; the exact values the page sent sit behind a closed arrow. */
+function ReviewStep({ body, subscription, sentence }: {
+  body: ActionIn; subscription: SubscriptionOut; sentence: string;
+}) {
+  const sent = Object.entries(body).filter(([, value]) => value !== null && value !== undefined && value !== "");
+  const rows: [string, string][] = [
+    ["subscription", subscription.id], ["version", String(subscription.version)],
+    ...sent.map(([key, value]): [string, string] => [key, String(value)]),
+  ];
+  return (
+    <section aria-label="Review this change" data-testid="review-step"
+      className="rounded-[var(--fs-radius-control)] border border-brand-200 p-4">
+      <h3 className="text-sm font-semibold">Review this change</h3>
+      <p data-testid="review-sentence" className="mt-1 text-sm">{sentence}</p>
+      <p className="mt-1 text-xs text-ink-600">Nothing changes until you confirm below.</p>
+      <div className="mt-2">
+        <DetailsRow testId="review-raw" toggleLabel="the values of this change"
+          summary={<span className="text-sm text-ink-600">The exact values behind this change</span>}>
+          <dl className="grid gap-1 sm:grid-cols-[9rem_1fr]">
+            {rows.map(([key, value]) => (
+              <Fragment key={key}>
+                <dt className="text-ink-600">{key}</dt>
+                <dd className="break-words">{value}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </DetailsRow>
+      </div>
+    </section>
   );
 }
 
@@ -469,6 +748,7 @@ function ActionForm({ kind, subscription, plans, onSubmit, onCancel }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const choices = plans.filter((plan) => plan.is_active);
+  const priceHelp = useId();
   const special = kind === "change_plan" && price.trim() !== "";
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -492,7 +772,10 @@ function ActionForm({ kind, subscription, plans, onSubmit, onCancel }: {
   return (
     <form className="mt-4 space-y-3 rounded-md border border-ink-200 p-4" data-testid="subscription-action-form"
       onSubmit={(event) => void submit(event)}>
-      <h3 className="font-semibold">{ACTION_LABELS[kind]}</h3>
+      <div>
+        <h3 className="font-semibold">{ACTION_LABELS[kind]}</h3>
+        <p data-testid={`help-${kind.replace(/_/g, "-")}`} className={helpText}>{ACTION_HELP[kind]}</p>
+      </div>
       {kind === "pause" && (
         <label className="block text-sm">Resume on (optional)
           <input className={field} type="date" min={dayAfter()} data-testid="action-resume-at" value={resumeOn}
@@ -513,10 +796,16 @@ function ActionForm({ kind, subscription, plans, onSubmit, onCancel }: {
             <input className={field} type="date" data-testid="action-effective-at" value={startsOn}
               onChange={(event) => setStartsOn(event.target.value)} />
           </label>
-          <label className="block text-sm">Special price in RM (optional; starts now)
-            <input className={field} type="number" min="0" step="0.01" inputMode="decimal"
-              data-testid="action-price" value={price} onChange={(event) => setPrice(event.target.value)} />
-          </label>
+          <div>
+            <label className="block text-sm">Special price in RM (optional; starts now)
+              <input className={field} type="number" min="0" step="0.01" inputMode="decimal"
+                aria-describedby={priceHelp}
+                data-testid="action-price" value={price} onChange={(event) => setPrice(event.target.value)} />
+            </label>
+            <p id={priceHelp} data-testid="help-special-price" className={helpText}>
+              Leave this empty to use the plan&apos;s normal price. A special price starts today and needs a reason below.
+            </p>
+          </div>
         </>
       )}
       {kind === "extend_renewal" && (
@@ -550,6 +839,7 @@ const featureList = (text: string) => text.split("\n").map((line) => line.trim()
 function Plans({ tenantId, writer, plans, onChanged }: {
   tenantId: string | null; writer: boolean; plans: PlanOut[]; onChanged: () => void;
 }) {
+  const codeHelp = useId();
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<PlanDraft>(EMPTY_PLAN);
   const [editing, setEditing] = useState<string | null>(null);
@@ -594,10 +884,16 @@ function Plans({ tenantId, writer, plans, onChanged }: {
             <input className={field} required maxLength={120} data-testid="plan-name" value={draft.name}
               onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
           </label>
-          <label className="block text-sm">Short code (lowercase letters, numbers, - or _; cannot change later)
-            <input className={field} required pattern="[a-z0-9_\-]{1,64}" maxLength={64} data-testid="plan-code"
-              value={draft.code} onChange={(event) => setDraft({ ...draft, code: event.target.value })} />
-          </label>
+          <div>
+            <label className="block text-sm">Short code (lowercase letters, numbers, - or _; cannot change later)
+              <input className={field} required pattern="[a-z0-9_\-]{1,64}" maxLength={64} data-testid="plan-code"
+                aria-describedby={codeHelp}
+                value={draft.code} onChange={(event) => setDraft({ ...draft, code: event.target.value })} />
+            </label>
+            <p id={codeHelp} data-testid="help-plan-code" className={helpText}>
+              A short name the system uses to tell your plans apart, such as basic or gold-2026. You cannot change it after you save.
+            </p>
+          </div>
           <PlanFields draft={draft} onChange={setDraft} prefix="plan" />
           <div className="flex flex-wrap gap-2 md:col-span-2">
             <button className={action} disabled={busy} data-testid="plan-save">Save plan</button>
@@ -606,8 +902,14 @@ function Plans({ tenantId, writer, plans, onChanged }: {
         </form>
       )}
       {plans.length === 0 ? (
-        <Notice>{writer ? "No plans yet. Add your first plan so customers can subscribe."
-          : "Plans will appear here once your team adds them."}</Notice>
+        <div className="space-y-3">
+          <Notice>{writer ? "No plans yet. Add your first plan so customers can subscribe."
+            : "Plans will appear here once your team adds them."}</Notice>
+          {writer && !adding && (
+            <button type="button" className={action} data-testid="plans-empty-add"
+              onClick={() => { setAdding(true); setDraft(EMPTY_PLAN); }}>Add your first plan</button>
+          )}
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[40rem] text-sm" data-testid="plans-table">
@@ -696,7 +998,9 @@ function PlanFields({ draft, onChange, prefix }: {
 
 // ---------------------------------------------------------------- Requests
 
-function Requests({ tenantId, writer, planName }: { tenantId: string | null; writer: boolean; planName: PlanName }) {
+function Requests({ tenantId, writer, planName, onDataChanged }: {
+  tenantId: string | null; writer: boolean; planName: PlanName; onDataChanged: () => void;
+}) {
   const [revision, setRevision] = useState(0);
   const [done, setDone] = useState("");
   return (
@@ -704,7 +1008,7 @@ function Requests({ tenantId, writer, planName }: { tenantId: string | null; wri
       {done && <Notice>{done}</Notice>}
       <Panel title="Open requests">
         <RequestList tenantId={tenantId} status="open" writer={writer} planName={planName} revision={revision}
-          onDecided={(text) => { setDone(text); setRevision((value) => value + 1); }} />
+          onDecided={(text) => { setDone(text); setRevision((value) => value + 1); onDataChanged(); }} />
       </Panel>
       <Panel title="Decided requests">
         <RequestList tenantId={tenantId} status="decided" writer={false} planName={planName} revision={revision}
@@ -761,12 +1065,13 @@ function RequestList({ tenantId, status, writer, planName, revision, onDecided }
 }
 
 function RequestSummary({ row, planName }: { row: RequestOut; planName: PlanName }) {
+  const timeZone = useTimeZone();
   return (
     <div className="min-w-0">
       <p className="font-medium">{customerName(row.customer)}</p>
       <p>{requestSentence(row, planName)}</p>
       {row.reason && <p className="text-ink-600">Reason: {row.reason}</p>}
-      <p className="text-xs text-ink-500">Requested {formatDateTime(row.requested_at)}</p>
+      <p className="text-xs text-ink-500">Requested {formatDateTime(row.requested_at, timeZone)}</p>
     </div>
   );
 }
@@ -844,12 +1149,13 @@ function OpenRequest({ row, tenantId, writer, planName, onDecided }: {
 }
 
 function DecidedRequest({ row, planName }: { row: RequestOut; planName: PlanName }) {
+  const timeZone = useTimeZone();
   return (
     <li className="flex flex-wrap items-start justify-between gap-3 py-3 text-sm" data-testid="request-decided">
       <RequestSummary row={row} planName={planName} />
       <div className="text-right">
         <p className="font-medium">{row.decision === "approved" ? "Approved" : "Declined"}</p>
-        {row.decided_at && <p className="text-xs text-ink-500">{formatDateTime(row.decided_at)}</p>}
+        {row.decided_at && <p className="text-xs text-ink-500">{formatDateTime(row.decided_at, timeZone)}</p>}
         {row.note && <p className="text-ink-600">Note: {row.note}</p>}
       </div>
     </li>

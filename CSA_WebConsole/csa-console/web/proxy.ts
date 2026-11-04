@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isHrPagePath } from "./lib/hr-paths";
 
 const publicPages = new Set(["/login", "/invite", "/forgot-password"]);
 const adoptedPages = new Set([
   "/",
   "/change-password",
+  "/password",
+  "/portal/password",
   "/settings/clients",
   "/settings/team",
   "/portal",
@@ -15,7 +18,14 @@ const adoptedPages = new Set([
   "/portal/services",
   "/portal/activity",
   "/knowledge-base",
+  "/knowledge-base/add",
+  "/knowledge-base/questions",
+  "/knowledge-base/maintenance",
   "/portal/faq",
+  "/portal/faq/add",
+  "/portal/faq/questions",
+  "/portal/faq/maintenance",
+  // The Sandbox assistant folded into Overview: these only redirect there (keeping client_id).
   "/chat",
   "/portal/chat",
   "/inbox",
@@ -23,7 +33,11 @@ const adoptedPages = new Set([
   "/hr",
   "/portal/hr",
   "/business",
+  "/business/products",
+  "/business/stores",
   "/portal/business",
+  "/portal/business/products",
+  "/portal/business/stores",
   "/subscriptions",
   "/portal/subscriptions",
   "/workspace",
@@ -37,7 +51,7 @@ export function proxy(req: NextRequest) {
   if (path.startsWith("/console/v1/")) return NextResponse.next();
   if (publicPages.has(path)) return NextResponse.next();
   // The legacy API and all deferred UI routes are deliberately inaccessible.
-  if (!adoptedPages.has(path))
+  if (!adoptedPages.has(path) && !isHrPagePath(path))
     return new NextResponse("Not found", { status: 404 });
   // Navigation only; CSAV2 verifies the session and role in every request.
   if (!req.cookies.has("csa_session"))
@@ -46,5 +60,5 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|brand/).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|brand/|fourstacks/).*)"],
 };

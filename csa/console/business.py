@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from psycopg import AsyncConnection
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from csa.agents.ecommerce.models import MarketplacePlatform
 from csa.agents.ecommerce.stores import StoreBinding, StoreConnection, StoreRecord, expiry_state
@@ -18,6 +18,18 @@ from csa.core import db
 from csa.core.tenancy import tx
 
 OrderChannel = Literal["telegram", "web", "tiktok_shop", "shopee", "manual"]
+# Mirrors the orders_status_chk and orders_payment_chk constraints in db/schema_baseline.sql.
+ORDER_STATUSES = (
+    "draft",
+    "pending_confirmation",
+    "confirmed",
+    "processing",
+    "shipped",
+    "delivered",
+    "cancelled",
+    "refunded",
+)
+PAYMENT_STATUSES = ("unpaid", "cod_pending", "paid", "refunded", "failed")
 
 
 class OrderFilters(Contract):
@@ -32,6 +44,35 @@ def order_filters(
     if shop_id is not None and channel is None:
         raise HTTPException(400, "shop_id requires a channel")
     return OrderFilters(channel=channel, shop_id=shop_id)
+
+
+class OrderWindow(Contract):
+    """Optional created_at window (from inclusive, to exclusive) and payment status."""
+
+    created_from: AwareDatetime | None = None
+    created_to: AwareDatetime | None = None
+    payment_status: str | None = None
+
+
+def order_window(
+    created_from: Annotated[AwareDatetime | None, Query(alias="from")] = None,
+    created_to: Annotated[AwareDatetime | None, Query(alias="to")] = None,
+    payment_status: Annotated[str | None, Query()] = None,
+) -> OrderWindow:
+    if payment_status is not None and payment_status not in PAYMENT_STATUSES:
+        raise HTTPException(422, "invalid_payment_status")
+    if created_from is not None and created_to is not None and created_from >= created_to:
+        raise HTTPException(422, "invalid_range")
+    return OrderWindow(
+        created_from=created_from, created_to=created_to, payment_status=payment_status
+    )
+
+
+class OrderCounts(Contract):
+    """Orders per status for the date, payment, channel and store filters; never status."""
+
+    total: int
+    by_status: dict[str, int]
 
 
 class BusinessOrder(Contract):
@@ -232,9 +273,13 @@ def build_business_router() -> APIRouter:
         request: Request,
         client_id: Annotated[UUID, Depends(tenant)],
         filters: Annotated[OrderFilters, Depends(order_filters)],
+        window: Annotated[OrderWindow, Depends(order_window)],
+        status: Annotated[str | None, Query()] = None,
         before: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
         limit: Annotated[int, Query(ge=1, le=50)] = 20,
     ) -> OrderPage:
+        if status is not None and status not in ORDER_STATUSES:
+            raise HTTPException(422, "invalid_status")
         async with tx(request.app.state.pool, str(client_id)) as conn:
             if before is not None and not await db.q.fetch_one(
                 "business/get_order.sql",
@@ -257,6 +302,14 @@ def build_business_router() -> APIRouter:
                     filters.channel,
                     filters.shop_id,
                     filters.shop_id,
+                    window.created_from,
+                    window.created_from,
+                    window.created_to,
+                    window.created_to,
+                    status,
+                    status,
+                    window.payment_status,
+                    window.payment_status,
                     before,
                     client_id,
                     before,
@@ -266,6 +319,38 @@ def build_business_router() -> APIRouter:
             )
         items = [BusinessOrder.model_validate(row) for row in rows[:limit]]
         return OrderPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
+
+    @router.get("/orders/counts", response_model=OrderCounts)
+    async def order_counts(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        filters: Annotated[OrderFilters, Depends(order_filters)],
+        window: Annotated[OrderWindow, Depends(order_window)],
+    ) -> OrderCounts:
+        """Per-status totals; any `status` query parameter is deliberately not read."""
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            rows = await db.q.fetch_all(
+                "business/order_counts.sql",
+                (
+                    client_id,
+                    filters.channel,
+                    filters.channel,
+                    filters.shop_id,
+                    filters.shop_id,
+                    window.created_from,
+                    window.created_from,
+                    window.created_to,
+                    window.created_to,
+                    window.payment_status,
+                    window.payment_status,
+                ),
+                conn=conn,
+            )
+        found = {row["status"]: int(row["n"]) for row in rows}
+        by_status = {status: found.pop(status, 0) for status in ORDER_STATUSES}
+        if found:
+            raise RuntimeError(f"orders hold statuses outside the schema enum: {sorted(found)}")
+        return OrderCounts(total=sum(by_status.values()), by_status=by_status)
 
     @router.get("/orders/{order_id}", response_model=BusinessOrder)
     async def order(

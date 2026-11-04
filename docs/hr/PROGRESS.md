@@ -6,6 +6,48 @@ Updated: 2026-10-22. PR #6 merged as `148c03e`; post-merge main CI
 Developer B's original uncommitted work in `/home/amsyrzmi/CSAV2-hr` on
 `feat/hr-foundation` was not modified.
 
+## People & HR 1a (2026-11-01)
+
+Branch `feat/hr-people`, migration `0520`. People & HR is now a set of sub-tabs with their own
+URLs (Home, People, Recruitment, Leave & attendance, Payroll, Training, Requests, Settings);
+the old single workspace and its “More HR tools” panel are gone, and every tool lives in its tab.
+New: the People list, org chart and departments, person profiles (Overview, Access, History),
+versioned edits, Add person, HR Home and My HR, and the `manage_people` access switch. The old
+`?section=` links below still work: they redirect to the tab’s own path. The full entry, the
+guards, the deferred items and the 1b seams are in the top entry of
+[../PROGRESS.md](../PROGRESS.md); the operating notes are in
+[SETUP.md](./SETUP.md#people-departments-and-manage-people) and the API in
+[../CONSOLE_API.md](../CONSOLE_API.md#people-departments-and-manage-people-project-1a-migration-0520).
+The directory/training browser scenario below now opens `/portal/hr/people` and
+`/portal/hr/training`.
+
+## People & HR 1b (2026-11-02)
+
+Branch `feat/hr-people-1b`, migration `0521`. A person's profile gains **Personal** (the personal
+details, with the IC or passport, bank account, tax, EPF and SOCSO numbers encrypted, masked and
+shown one at a time with an audited Show) and **Documents** (upload, list, download and remove),
+and the Overview gains **Mark as leaving**, **Undo leaving** and **Rehire**. A new access switch,
+`sensitive_details` ("Sensitive details", in no preset), lets a member see and edit personal
+details. A leaver's reports move on their last day and the leaver is finished the day after by the
+worker's `hr_leavers_round` (every 900 seconds) or HR Home's maintenance (the HR owner's open Home). My HR shows the person's
+own personal details and documents. The full entry is the top entry of
+[../PROGRESS.md](../PROGRESS.md); the operating notes are in
+[SETUP.md](./SETUP.md#personal-details-and-sensitive-details) (and the documents and leaving
+sections after it) and the API in
+[../CONSOLE_API.md](../CONSOLE_API.md#personal-details-documents-and-leaving-project-1b-migration-0521).
+The browser scenario `test_hr_owner_personal_documents_and_leaving` in
+[`test_hr_access_browser.py`](../../tests/test_hr_access_browser.py) covers Personal, Documents,
+Mark as leaving and Undo.
+
+## HR chat retired (project 1b)
+
+The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace
+assistant dock is the only assistant and now handles the HR actions (add or update a person,
+mark someone as leaving, who reports to whom). `POST /console/v1/hr/assistant` and
+`csa/hr/assistant.py` stay for one release, marked deprecated in
+[../CONSOLE_API.md](../CONSOLE_API.md), and are removed in a cleanup PR. Entries below that
+mention the HR chat or its UI describe the earlier state.
+
 ## Workspace HR guidance
 
 The staff workspace now has a separate deterministic People & HR guide. Its
@@ -163,8 +205,11 @@ stable path above. No environment file was read or copied.
 - Employee, console account and customer contact remain distinct. Account linking
   uses explicit tenant membership references, never inferred email matches.
 - Directory reads expose only the five approved fields through explicit self,
-  direct-manager or HR grants. Console roles create no HR permissions.
-- Client ownership requires a separately recorded, client-approved tenant assignment.
+  direct-manager or HR grants. Console roles create no HR permissions, with one exception: a
+  tenant admin may move the HR owner, including to themselves, in the open (everyone affected is
+  emailed and the move is on the record).
+- Client ownership is recorded by the move itself, made by the company's tenant admin or a
+  platform admin (migration 0522), or by the bootstrap script in isolated environments.
 - Training and employee-workflow decisions require an active assigned manager.
   The verified client owner may decide their own training request; ordinary
   managers cannot decide their own requests.
@@ -200,9 +245,10 @@ stable path above. No environment file was read or copied.
   [staff planner](../../csa/hr/assistant.py), [HTTP router](../../csa/hr/api.py).
 - [Core verified service](../../csa/hr/service.py), [ordered operations migration](../../db/migrations/0410_hr_operations.sql),
   [parameterized SQL](../../db/sql/hr/), [OpenAPI](../console_openapi.json).
-- [HR workspace](../../CSA_WebConsole/csa-console/web/components/console/HrWorkspace.tsx),
-  [remaining tools](../../CSA_WebConsole/csa-console/web/components/console/HrAutomation.tsx),
-  [assistant UI](../../CSA_WebConsole/csa-console/web/components/console/HrAssistant.tsx),
+- [HR shell and tabs](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
+  (replaced the single HR workspace and its remaining-tools panel in project 1a),
+  [assistant dock](../../CSA_WebConsole/csa-console/web/components/console/AssistantDock.tsx)
+  (the separate HR chat was retired in 1b; the dock is the only assistant),
   [local voice](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts).
 - [Owner bootstrap](../../scripts/bootstrap_hr_owner.py),
   [maintenance worker](../../scripts/run_hr_maintenance.py).

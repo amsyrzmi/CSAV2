@@ -12,7 +12,7 @@ function moduleUrl(source) {
 }
 const apiUrl = moduleUrl(await readFile(new URL("../lib/api.ts", import.meta.url), "utf8"));
 const source = await readFile(new URL("../lib/hr-api.ts", import.meta.url), "utf8");
-const { hrClient, isProposal } = await import(moduleUrl(source.replace('"./api"', JSON.stringify(apiUrl))));
+const { hrClient } = await import(moduleUrl(source.replace('"./api"', JSON.stringify(apiUrl))));
 const { localDictation, speakLocal } = await import(moduleUrl(await readFile(new URL("../lib/hr-voice.ts", import.meta.url), "utf8")));
 
 test("dictation requires local processing, emits text for review and aborts cleanly", () => {
@@ -112,7 +112,12 @@ test("HR pages are adopted but require sessions", async () => {
   const code = ts.transpileModule(await readFile(new URL("../proxy.ts", import.meta.url), "utf8"), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText;
-  const exports = {}; new Function("require", "exports", code)(require, exports);
+  const paths = ts.transpileModule(await readFile(new URL("../lib/hr-paths.ts", import.meta.url), "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const pathExports = {}; new Function("exports", paths)(pathExports);
+  const exports = {};
+  new Function("require", "exports", code)((name) => (name === "./lib/hr-paths" ? pathExports : require(name)), exports);
   const { NextRequest } = require("next/server");
   for (const path of ["/hr", "/portal/hr"]) {
     assert.equal(exports.proxy(new NextRequest(`https://example.test${path}`)).status, 307);
@@ -120,16 +125,4 @@ test("HR pages are adopted but require sessions", async () => {
       headers: { Cookie: "csa_session=synthetic-session" },
     })).status, 200);
   }
-});
-
-test("an assistant submit is recognised as a shared proposal, other replies are not", () => {
-  const card = { proposal_id: "p1", kind: "training_submit", title: "Submit training request", summary: "Submit", fields: [],
-    expires_at: "2026-10-26T00:15:00Z", expected_version: "0" };
-  assert.equal(isProposal({ id: "p1", kind: "training_submit", status: "requested", card, result: null,
-    created_at: "2026-10-26T00:00:00Z", expires_at: "2026-10-26T00:15:00Z" }), true);
-  assert.equal(isProposal({ kind: "confirmation_required", confirmation_id: "c1", request_id: "r1", action: "approve",
-    expected_version: 1, expires_at: "2026-10-26T00:15:00Z", command: { action: "approve", expected_version: 1 } }), false);
-  assert.equal(isProposal({ request_id: "r1", employee: { employee_id: "e1" }, content: { title: "T", learning_objective: "O" },
-    status: "draft", version: 0 }), false);
-  assert.equal(isProposal({ clarification: "request_details" }), false);
 });

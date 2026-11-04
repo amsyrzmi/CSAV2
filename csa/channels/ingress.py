@@ -480,6 +480,7 @@ class TelegramIngress:
             conn=conn,
         )
         if resolved is not None:
+            await self._set_username(conn, client_id, resolved["contact_id"], event)
             return resolved["contact_id"], resolved["first_contact"], resolved["full_name"]
 
         # A concurrent insert can be invisible to the statement's snapshot.
@@ -537,7 +538,23 @@ class TelegramIngress:
                 raise IngressError(409, "contact identity conflicts with an existing account")
             stored_name = existing["full_name"]
 
+        await self._set_username(conn, client_id, contact_id, event)
         return contact_id, created, stored_name
+
+    @staticmethod
+    async def _set_username(
+        conn: Any, client_id: UUID, contact_id: UUID, event: TelegramEvent
+    ) -> None:
+        """Store the sender's normalised @username (NULL when absent or invalid) if it changed.
+
+        The adapter already reduced the value to what the column check accepts, so this
+        statement cannot fail a message.
+        """
+        await db.q.execute(
+            "ingress/update_telegram_username.sql",
+            {"client_id": client_id, "contact_id": contact_id, "username": event.username},
+            conn=conn,
+        )
 
     async def _resolve_conversation(
         self,

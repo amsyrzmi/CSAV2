@@ -1,29 +1,30 @@
 @import "./fourstacks-tokens.css";
+@import "./themes.css";
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
-  --color-ink-950: #0a1222;
+  --color-ink-950: var(--fs-ink-950);
   --color-ink-900: var(--fs-text);
-  --color-ink-800: #1d2947;
-  --color-ink-700: #303d5e;
+  --color-ink-800: var(--fs-ink-800);
+  --color-ink-700: var(--fs-ink-700);
   --color-ink-600: var(--fs-text-secondary);
   --color-ink-500: var(--fs-text-secondary);
-  --color-ink-400: #99a3bc;
+  --color-ink-400: var(--fs-ink-400);
   --color-ink-300: var(--fs-border-control);
-  --color-ink-200: #e6eaf2;
-  --color-ink-100: #f0f3f8;
-  --color-ink-50: #f8f9fc;
+  --color-ink-200: var(--fs-ink-200);
+  --color-ink-100: var(--fs-ink-100);
+  --color-ink-50: var(--fs-ink-50);
 
   --color-brand-50: var(--fs-surface-blue);
-  --color-brand-100: #e1ebff;
-  --color-brand-200: #c8d8ff;
+  --color-brand-100: var(--fs-brand-100);
+  --color-brand-200: var(--fs-brand-200);
   --color-brand-500: var(--fs-primary);
   --color-brand-600: var(--fs-primary);
   --color-brand-700: var(--fs-primary-hover);
-  --color-brand-900: #1a2e6e;
+  --color-brand-900: var(--fs-brand-900);
 
   --animate-fade-up: fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-fade-in: fade-in 260ms ease-out both;
@@ -55,15 +56,19 @@
 }
 
 :root {
-  color-scheme: light;
+  /* color-scheme comes from themes.css, per theme. */
+  /* next/font variables (set on <html> in layout.tsx) in front of the token fallbacks. */
+  --fs-font-body: var(--font-inter), 'Inter', system-ui, sans-serif;
+  --fs-font-heading: var(--font-space-grotesk), 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --fs-font-brand: var(--font-manrope), 'Manrope', 'Inter', system-ui, sans-serif;
   --app-bg: var(--fs-bg);
   --surface: var(--fs-surface);
   --hairline: var(--fs-border);
-  --hairline-strong: #d8deea;
-  --shadow-xs: 0 1px 2px rgb(11 18 32 / 0.05);
-  --shadow-sm: 0 1px 2px rgb(11 18 32 / 0.05), 0 2px 8px -2px rgb(11 18 32 / 0.07);
-  --shadow-md: 0 1px 2px rgb(11 18 32 / 0.05), 0 10px 28px -10px rgb(11 18 32 / 0.13);
-  --shadow-lg: 0 24px 64px -16px rgb(11 18 32 / 0.22), 0 2px 6px rgb(11 18 32 / 0.06);
+  --hairline-strong: var(--fs-border-strong);
+  --shadow-xs: var(--fs-shadow-card);
+  --shadow-sm: var(--fs-shadow-card);
+  --shadow-md: var(--fs-shadow-popover);
+  --shadow-lg: var(--fs-shadow-dialog);
 }
 
 @layer base {
@@ -85,14 +90,16 @@
   ::selection { background: var(--color-brand-100); color: var(--color-ink-950); }
 
   :focus-visible {
-    outline: 2px solid var(--color-brand-500);
-    box-shadow: 0 0 0 4px rgb(69 112 240 / 0.12);
+    outline: 2px solid var(--fs-focus);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--fs-focus) 14%, transparent);
     outline-offset: 2px;
-    border-radius: 6px;
+    border-radius: var(--fs-radius-control);
   }
 
+  /* box-shadow is not transitioned: :focus-visible draws its halo with it, and a focus ring
+     must appear at once, not fade in. */
   button, a, input, select, textarea {
-    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-property: background-color, border-color, color, opacity, transform;
     transition-duration: 160ms;
     transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -101,15 +108,15 @@
 
   select {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238f97ab' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-image: var(--fs-select-chevron);
     background-repeat: no-repeat;
     background-position: right 0.65rem center;
     padding-right: 2.25rem !important;
   }
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-thumb { background: #d9dee8; border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
-  ::-webkit-scrollbar-thumb:hover { background: #c0c8d6; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb { background: var(--fs-border-strong); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fs-ink-400); border: 3px solid transparent; background-clip: content-box; }
   ::-webkit-scrollbar-track { background: transparent; }
 
   @media (prefers-reduced-motion: reduce) {
@@ -150,12 +157,11 @@
   }
 
   /* ---------- typography ---------- */
+  /* Labels and table heads are sentence case and untracked: the redesign has no tracked capitals. */
   .eyebrow {
     color: var(--color-ink-500);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
   }
   .page-title {
     color: var(--color-ink-900);
@@ -197,13 +203,11 @@
     top: 0;
     z-index: 1;
     border-bottom: 1px solid var(--hairline);
-    background: #f8fafd;
+    background: var(--fs-tile);
     padding: 0.7rem 1rem;
     color: var(--color-ink-500);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
     white-space: nowrap;
   }
   .table-frame tbody td {
@@ -214,7 +218,7 @@
   }
   .table-frame tbody tr:last-child td { border-bottom: 0; }
   .table-frame tbody tr { transition: background-color 140ms ease; }
-  .table-frame tbody tr:hover { background: #f6f9fe; }
+  .table-frame tbody tr:hover { background: var(--color-ink-50); }
   .table-frame tbody tr.row-link { cursor: pointer; }
   .table-frame tbody tr.row-link:hover td:first-child { box-shadow: inset 2px 0 0 var(--color-brand-500); }
 
@@ -269,15 +273,15 @@
   }
   .tab:hover { color: var(--color-ink-900); }
   .tab[aria-selected="true"] {
-    background: white;
+    background: var(--surface);
     color: var(--color-ink-900);
-    box-shadow: 0 1px 2px rgb(11 18 32 / 0.08), 0 0 0 1px rgb(11 18 32 / 0.04);
+    box-shadow: var(--fs-shadow-card);
   }
 
   /* ---------- feedback ---------- */
   .skeleton {
     border-radius: 8px;
-    background: linear-gradient(90deg, #f0f3f8 0px, #f8f9fc 120px, #f0f3f8 240px);
+    background: linear-gradient(90deg, var(--fs-skeleton) 0px, var(--fs-skeleton-shine) 120px, var(--fs-skeleton) 240px);
     background-size: 800px 100%;
     animation: var(--animate-shimmer);
   }
@@ -290,7 +294,7 @@
     border: 1px solid var(--hairline);
     border-bottom-width: 2px;
     border-radius: 5px;
-    background: white;
+    background: var(--surface);
     padding: 0 0.3rem;
     color: var(--color-ink-500);
     font-family: var(--font-sans);
@@ -311,8 +315,8 @@
 
   .grid-backdrop {
     background-image:
-      linear-gradient(to right, rgb(255 255 255 / 0.05) 1px, transparent 1px),
-      linear-gradient(to bottom, rgb(255 255 255 / 0.05) 1px, transparent 1px);
+      linear-gradient(to right, color-mix(in srgb, var(--fs-auth-text) 5%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--fs-auth-text) 5%, transparent) 1px, transparent 1px);
     background-size: 44px 44px;
   }
 }
@@ -327,54 +331,115 @@
   to { opacity: 1; transform: none; }
 }
 
+/* ---------- FourStacks motion (UI guide section 9) ----------
+   Feedback 120-180 ms, panels 180-240 ms, all on --fs-ease-out. Each class does nothing
+   under prefers-reduced-motion, or inside an ancestor with data-motion="off" (set from
+   useMotionAllowed so a pause setting, hidden tab or offscreen element can switch it off). */
+@keyframes fs-message-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fs-nudge {
+  0% { transform: none; }
+  40% { transform: translateX(-3px); }
+  70% { transform: translateX(2px); }
+  100% { transform: none; }
+}
+@keyframes fs-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fs-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fs-slide-in-right {
+  from { opacity: 0.4; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+
+.fs-message-in { animation: fs-message-in 180ms var(--fs-ease-out) both; }
+.fs-slide-in-right { animation: fs-slide-in-right 220ms var(--fs-ease-out) both; }
+.fs-nudge { animation: fs-nudge 160ms var(--fs-ease-out) both; }
+.fs-slide-up { animation: fs-slide-up 220ms var(--fs-ease-out) both; }
+.fs-fade { animation: fs-fade 140ms var(--fs-ease-out) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-message-in, .fs-nudge, .fs-slide-up, .fs-slide-in-right, .fs-fade, .skeleton { animation: none !important; }
+}
+[data-motion="off"] .fs-message-in,
+[data-motion="off"] .fs-nudge,
+[data-motion="off"] .fs-slide-up,
+[data-motion="off"] .fs-slide-in-right,
+[data-motion="off"] .skeleton,
+[data-motion="off"] .fs-fade { animation: none !important; }
+
+/* ---------- pixel avatars (AgentAvatar) ----------
+   The component renders idle frame 0 alone unless motion is allowed. Then it adds fs-px-anim and
+   the frames of its loop; each frame is shown for its own slot with a stepped opacity animation.
+   - idle (fs-px-anim): four frames, one-second loop, a quarter second each.
+   - working (fs-px-anim fs-px-work): eight working frames, 1.2 s loop, 0.15 s each.
+   - wake (fs-px-anim fs-px-wake): the eight working frames once over 1.5 s (0.1875 s each); the
+     last frame holds (fs-px-hold, fill forwards) until the parent switches the state to idle.
+   Reduced motion and data-motion="off" stop all three and show frame 0, in case the class lags. */
+.fs-px { display: block; }
+.fs-px-dim { filter: saturate(0.55) opacity(0.85); }
+@keyframes fs-px-show {
+  0% { opacity: 1; }
+  25% { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes fs-px-show8 {
+  0% { opacity: 1; }
+  12.5% { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes fs-px-hold {
+  0% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.fs-px-anim .fs-px-frame { opacity: 0; animation: fs-px-show 1s steps(1) infinite; }
+.fs-px-anim .fs-px-f0 { animation-delay: 0s; }
+.fs-px-anim .fs-px-f1 { animation-delay: 0.25s; }
+.fs-px-anim .fs-px-f2 { animation-delay: 0.5s; }
+.fs-px-anim .fs-px-f3 { animation-delay: 0.75s; }
+
+.fs-px-anim.fs-px-work .fs-px-frame { opacity: 0; animation: fs-px-show8 1.2s steps(1) infinite; }
+.fs-px-anim.fs-px-work .fs-px-f0 { animation-delay: 0s; }
+.fs-px-anim.fs-px-work .fs-px-f1 { animation-delay: 0.15s; }
+.fs-px-anim.fs-px-work .fs-px-f2 { animation-delay: 0.3s; }
+.fs-px-anim.fs-px-work .fs-px-f3 { animation-delay: 0.45s; }
+.fs-px-anim.fs-px-work .fs-px-f4 { animation-delay: 0.6s; }
+.fs-px-anim.fs-px-work .fs-px-f5 { animation-delay: 0.75s; }
+.fs-px-anim.fs-px-work .fs-px-f6 { animation-delay: 0.9s; }
+.fs-px-anim.fs-px-work .fs-px-f7 { animation-delay: 1.05s; }
+
+.fs-px-anim.fs-px-wake .fs-px-frame { opacity: 0; animation: fs-px-show8 1.5s steps(1) 1 forwards; }
+.fs-px-anim.fs-px-wake .fs-px-f0 { animation-delay: 0s; }
+.fs-px-anim.fs-px-wake .fs-px-f1 { animation-delay: 0.1875s; }
+.fs-px-anim.fs-px-wake .fs-px-f2 { animation-delay: 0.375s; }
+.fs-px-anim.fs-px-wake .fs-px-f3 { animation-delay: 0.5625s; }
+.fs-px-anim.fs-px-wake .fs-px-f4 { animation-delay: 0.75s; }
+.fs-px-anim.fs-px-wake .fs-px-f5 { animation-delay: 0.9375s; }
+.fs-px-anim.fs-px-wake .fs-px-f6 { animation-delay: 1.125s; }
+.fs-px-anim.fs-px-wake .fs-px-f7 { animation-name: fs-px-hold; animation-delay: 1.3125s; }
+
+/* Frame 0 is forced visible only under .fs-px-anim: AgentAvatar always pairs fs-px-work and
+   fs-px-wake with fs-px-anim, so a lone work/wake class (a class list lagging a render) would at
+   worst blank one sprite for a frame, never show the wrong pose. Harmless; kept simple. */
+@media (prefers-reduced-motion: reduce) {
+  .fs-px-anim .fs-px-frame,
+  .fs-px-work .fs-px-frame,
+  .fs-px-wake .fs-px-frame { animation: none !important; opacity: 0; }
+  .fs-px-anim .fs-px-f0 { opacity: 1 !important; }
+}
+[data-motion="off"] .fs-px-anim .fs-px-frame,
+[data-motion="off"] .fs-px-work .fs-px-frame,
+[data-motion="off"] .fs-px-wake .fs-px-frame { animation: none !important; opacity: 0; }
+[data-motion="off"] .fs-px-anim .fs-px-f0 { opacity: 1 !important; }
+
 /* ---------- app shell ---------- */
-.shell-sidebar {
-  background: #ffffff;
-  border-right: 1px solid var(--hairline);
-}
-.shell-nav-link {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  border-radius: 9px;
-  padding: 0.5rem 0.7rem;
-  color: var(--color-ink-600);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.shell-nav-link svg { flex-shrink: 0; color: var(--color-ink-400); transition: color 160ms ease; }
-.shell-nav-link:hover { background: var(--color-ink-50); color: var(--color-ink-900); }
-.shell-nav-link:hover svg { color: var(--color-ink-600); }
-.shell-nav-link[aria-current="page"] {
-  background: var(--color-brand-50);
-  color: var(--color-brand-700);
-  font-weight: 600;
-  box-shadow: none;
-}
-.shell-nav-link[aria-current="page"] svg { color: var(--color-brand-600); }
-.shell-nav-link[aria-current="page"]::before {
-  content: "";
-  position: absolute;
-  left: -0.75rem;
-  top: 50%;
-  height: 1.1rem;
-  width: 3px;
-  transform: translateY(-50%);
-  border-radius: 0 3px 3px 0;
-  background: var(--color-brand-600);
-  box-shadow: none;
-}
-.shell-collapsed .shell-nav-link { justify-content: center; padding: 0.55rem; }
-.shell-collapsed .shell-nav-link[aria-current="page"]::before { left: -0.5rem; }
-
-.topbar {
-  background: rgb(255 255 255 / 0.72);
-  backdrop-filter: saturate(180%) blur(14px);
-  -webkit-backdrop-filter: saturate(180%) blur(14px);
-}
-
 .subnav-link {
   position: relative;
   display: inline-flex;
@@ -404,22 +469,163 @@
 .cmdk-item[data-active="true"] { background: var(--color-ink-100); color: var(--color-ink-900); }
 .cmdk-item[data-active="true"] .cmdk-enter { opacity: 1; }
 
-/* auth backdrop */
-.auth-aside {
-  background:
-    radial-gradient(80% 60% at 100% 0%, rgb(69 112 240 / 0.4), transparent 60%),
-    radial-gradient(60% 50% at 0% 100%, rgb(16 185 129 / 0.14), transparent 60%),
-    linear-gradient(160deg, #101a30 0%, #0a1222 100%);
+/* auth brand panel: the same cobalt in every theme, with a faint 16 px pixel grid */
+.auth-brand {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(155deg, var(--fs-auth-from) 0%, var(--fs-auth-to) 100%);
+  color: var(--fs-auth-text);
 }
+.auth-brand::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--fs-auth-text) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--fs-auth-text) 5%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+.auth-brand > * { position: relative; }
+
+/* The four logo layers drop into place once, bottom layer first. The rules are on from the first
+   paint (the server render already carries the class), so there is no blink once the page
+   hydrates: they apply unless reduced motion is asked for or the root layout marked the document
+   data-calm (a pre-hydration hint from the stored pause preference). After mount the component sets
+   data-motion="off" when motion is not allowed (paused, hidden tab), which stops them. */
+@keyframes fs-logo-drop {
+  from { opacity: 0; transform: translateY(-26px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-calm]) .fs-logo-drop path { animation: fs-logo-drop 500ms var(--fs-ease-out) both; }
+  :root:not([data-calm]) .fs-logo-drop path:nth-child(2) { animation-delay: 250ms; }
+  :root:not([data-calm]) .fs-logo-drop path:nth-child(3) { animation-delay: 500ms; }
+  :root:not([data-calm]) .fs-logo-drop path:nth-child(4) { animation-delay: 750ms; }
+}
+.fs-logo-drop[data-motion="off"] path { animation: none !important; }
+
+/* ---------- Mito mark (components/brand/Mito.tsx) ----------
+   Cell division: the two lobes ease apart along the diagonal until the waist thins to a thread,
+   hold, then draw back together; the nuclei pulse once each, a beat apart. The same motion rules
+   as the logo drop above: data-motion "auto" lets CSS animate unless reduced motion is asked for
+   or the document is Calm; "off" (set after mount for a hidden tab or a paused preference) stops
+   it; the resting shape is the unmoving mark. */
+@keyframes mito-apart-a {
+  0%, 18%, 100% { transform: translate(0, 0); }
+  46%, 56% { transform: translate(-5.5px, -6.3px); }
+  82% { transform: translate(0, 0); }
+}
+@keyframes mito-apart-b {
+  0%, 18%, 100% { transform: translate(0, 0); }
+  46%, 56% { transform: translate(5.5px, 6.3px); }
+  82% { transform: translate(0, 0); }
+}
+@keyframes mito-pulse {
+  0%, 30%, 70%, 100% { transform: scale(1); }
+  50% { transform: scale(1.22); }
+}
+.mito-nucleus { transform-box: fill-box; transform-origin: center; }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-lobe-a { animation: mito-apart-a 4.6s cubic-bezier(0.45, 0, 0.25, 1) infinite; }
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-lobe-b { animation: mito-apart-b 4.6s cubic-bezier(0.45, 0, 0.25, 1) infinite; }
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-nucleus { animation: mito-pulse 4.6s ease-in-out infinite; }
+  :root:not([data-calm]) .mito-mark:not([data-motion="off"]) .mito-nucleus-b { animation-delay: 0.35s; }
+}
+.mito-mark[data-motion="off"] .mito-lobe, .mito-mark[data-motion="off"] .mito-nucleus { animation: none !important; }
+
+/* ---------- loading screen (FullPageLoading) ----------
+   Five agents bob in a staggered wave over a scrolling dashed ground line, "Loading" below with
+   animated dots. data-motion is "auto" on the server render (a full-screen load streams this as
+   a Suspense fallback that React does not hydrate), "on" or "off" once mounted. Auto animates
+   unless reduced motion is asked for or the root layout marked the document data-calm (the
+   stored Calm preference); off never animates. Reduced motion and an ancestor with
+   data-motion="off" are a final guard. Below 560 px the 96 px sprites are scaled by one half,
+   which maps each 2 px cell to exactly 1 px, so five agents fit and stay crisp. */
+@keyframes fs-load-step {
+  0%, 49% { transform: translateY(0); }
+  50%, 100% { transform: translateY(calc(-1 * var(--fs-load-bob))); }
+}
+@keyframes fs-load-ground {
+  from { background-position: 0 0; }
+  to { background-position: -48px 0; }
+}
+@keyframes fs-load-dots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+.fs-load {
+  --fs-load-bob: 5px;
+  display: grid;
+  place-items: center;
+  min-height: 60vh;
+  padding: 24px 16px;
+  box-sizing: border-box;
+  max-width: 100%;
+}
+.fs-load-full {
+  min-height: 100dvh;
+  background: var(--fs-bg);
+}
+.fs-load-block { display: block; max-width: 100%; }
+.fs-load-row { display: flex; gap: 6px; justify-content: center; }
+.fs-load-walker { flex: 0 0 auto; width: 96px; height: 96px; }
+.fs-load-sprite { display: flex; width: 96px; height: 96px; transform-origin: 0 0; }
+.fs-load-ground {
+  height: 6px;
+  margin-top: 6px;
+  width: 100%;
+  background: repeating-linear-gradient(90deg, var(--fs-primary) 0 18px, transparent 18px 24px);
+}
+.fs-load-word {
+  margin: 16px 0 0;
+  text-align: center;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--fs-primary);
+}
+.fs-load-word::after {
+  content: "";
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+}
+@media (max-width: 559.98px) {
+  .fs-load { --fs-load-bob: 3px; }
+  .fs-load-walker { width: 48px; height: 48px; }
+  .fs-load-sprite { transform: scale(0.5); }
+}
+.fs-load:is([data-motion="on"], [data-motion="auto"]) .fs-load-walker {
+  animation: fs-load-step 0.5s steps(1) infinite;
+}
+.fs-load:is([data-motion="on"], [data-motion="auto"]) .fs-load-ground {
+  animation: fs-load-ground 0.6s steps(4) infinite;
+}
+.fs-load:is([data-motion="on"], [data-motion="auto"]) .fs-load-word::after {
+  animation: fs-load-dots 1.2s steps(1) infinite;
+}
+[data-calm] .fs-load[data-motion="auto"] .fs-load-walker,
+[data-calm] .fs-load[data-motion="auto"] .fs-load-ground,
+[data-calm] .fs-load[data-motion="auto"] .fs-load-word::after { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .fs-load .fs-load-walker,
+  .fs-load .fs-load-ground,
+  .fs-load .fs-load-word::after { animation: none !important; }
+}
+[data-motion="off"] .fs-load .fs-load-walker,
+[data-motion="off"] .fs-load .fs-load-ground,
+[data-motion="off"] .fs-load .fs-load-word::after { animation: none !important; }
 
 /* recharts polish */
-.recharts-cartesian-axis-tick-value { fill: #8f97ab; font-size: 11px; }
-.recharts-tooltip-cursor { fill: rgb(69 112 240 / 0.07); }
-.recharts-cartesian-grid line { stroke: #f0f3f8; }
+.recharts-cartesian-axis-tick-value { fill: var(--fs-text-secondary); font-size: 11px; }
+.recharts-tooltip-cursor { fill: color-mix(in srgb, var(--fs-primary) 7%, transparent); }
+.recharts-cartesian-grid line { stroke: var(--color-ink-100); }
 .chart-tooltip {
   border: 1px solid var(--hairline);
   border-radius: 10px;
-  background: rgb(255 255 255 / 0.96);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
   padding: 0.6rem 0.75rem;
   box-shadow: var(--shadow-md);
   font-size: 12px;
@@ -427,5 +633,5 @@
 }
 
 /* FourStacks supplied UI guide: explicit light canvas and typography fallbacks. */
-h1, h2, h3, .page-title { font-family: "Space Grotesk", "Inter", system-ui, sans-serif; }
-.brand-wordmark { font-family: "Manrope", "Inter", system-ui, sans-serif; }
+h1, h2, h3, .page-title { font-family: var(--fs-font-heading); }
+.brand-wordmark { font-family: var(--fs-font-brand); }

@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from psycopg_pool import AsyncConnectionPool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from csa.agents.base import AgentContext
 from csa.agents.kb import KbAgent, KbInput
@@ -184,10 +184,24 @@ def build_router(
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         before_id: Annotated[int | None, Query(ge=1, le=runtime.MAX_RUN_ID)] = None,
         agent: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+        created_from: Annotated[AwareDatetime | None, Query(alias="from")] = None,
+        created_to: Annotated[AwareDatetime | None, Query(alias="to")] = None,
+        status: Annotated[str | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=timeline.MAX_PAGE)] = 50,
     ) -> runtime.RunPage:
+        if status is not None and status not in runtime.RUN_STATUS_FILTERS:
+            raise HTTPException(422, "invalid_status")
+        if created_from is not None and created_to is not None and created_from >= created_to:
+            raise HTTPException(422, "invalid_range")
         return await runtime.list_runs(
-            db_pool, client_id, before_id=before_id, agent=agent, limit=limit
+            db_pool,
+            client_id,
+            before_id=before_id,
+            agent=agent,
+            created_from=created_from,
+            created_to=created_to,
+            status=status,
+            limit=limit,
         )
 
     @router.get("/runs/{run_id}", response_model=runtime.RunOut)
@@ -291,11 +305,11 @@ def build_router(
         ]
 
     # Knowledge Base
-    support = package_gate("customer_support")
+    kb_package = package_gate("knowledge_base")
     orders = package_gate("orders_products")
 
     @router.get(
-        "/kb/documents", response_model=list[KbDocumentOut], dependencies=[Depends(support)]
+        "/kb/documents", response_model=list[KbDocumentOut], dependencies=[Depends(kb_package)]
     )
     async def list_kb_documents(
         client_id: Annotated[UUID, Depends(tenant)],
@@ -309,7 +323,7 @@ def build_router(
                 conn=conn,
             )
 
-    @router.post("/kb/documents", dependencies=[Depends(support), Depends(kb_enabled)])
+    @router.post("/kb/documents", dependencies=[Depends(kb_package), Depends(kb_enabled)])
     async def ingest_kb_document(
         doc: KbDocumentIn,
         client_id: Annotated[UUID, Depends(tenant)],
@@ -342,7 +356,7 @@ def build_router(
             )
         return {"status": "ok", "facts": [f.text for f in res.data.facts]}
 
-    @router.get("/kb/ingest-jobs", response_model=list[JobOut], dependencies=[Depends(support)])
+    @router.get("/kb/ingest-jobs", response_model=list[JobOut], dependencies=[Depends(kb_package)])
     async def list_kb_ingest_jobs(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
@@ -352,7 +366,9 @@ def build_router(
             rows = await db.q.fetch_all("kb/list_ingest_jobs.sql", (client_id, limit), conn=conn)
         return [public_job(row) for row in rows]
 
-    @router.get("/kb/ingest-jobs/{job_id}", response_model=JobOut, dependencies=[Depends(support)])
+    @router.get(
+        "/kb/ingest-jobs/{job_id}", response_model=JobOut, dependencies=[Depends(kb_package)]
+    )
     async def get_kb_ingest_job(
         job_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
@@ -364,7 +380,7 @@ def build_router(
             raise HTTPException(status_code=404, detail="ingest job not found")
         return public_job(row)
 
-    @router.get("/kb/gaps", response_model=list[KbGapOut], dependencies=[Depends(support)])
+    @router.get("/kb/gaps", response_model=list[KbGapOut], dependencies=[Depends(kb_package)])
     async def list_kb_gaps(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
@@ -377,7 +393,9 @@ def build_router(
                 conn=conn,
             )
 
-    @router.post("/kb/gaps/{gap_id}/resolve", dependencies=[Depends(support), Depends(kb_enabled)])
+    @router.post(
+        "/kb/gaps/{gap_id}/resolve", dependencies=[Depends(kb_package), Depends(kb_enabled)]
+    )
     async def resolve_kb_gap(
         gap_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],

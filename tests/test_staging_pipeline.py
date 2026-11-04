@@ -74,6 +74,26 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
         assert "provider-egress" in services[name]["networks"]
     gateway_secrets = {s["target"]: s["source"] for s in services["gateway"]["secrets"]}
     assert gateway_secrets["LG_DATABASE_URL"] == "staging_checkpoint_dsn"
+    # Invitation mail: relay credentials on the gateway only, and off unless switched on.
+    assert gateway_secrets["SMTP_USERNAME"] == "staging_smtp_username"
+    assert gateway_secrets["SMTP_PASSWORD"] == "staging_smtp_password"
+    assert services["gateway"]["environment"]["INVITE_MAIL_ENABLED"] == "false"
+    for name in ("worker", "delivery"):
+        assert not {"SMTP_USERNAME", "SMTP_PASSWORD"} & {
+            s["target"] for s in services[name]["secrets"]
+        }
+    # Staff email assistant: the Google OAuth client on the gateway only, off by default.
+    assert gateway_secrets["GOOGLE_CLIENT_ID"] == "staging_google_client_id"
+    assert gateway_secrets["GOOGLE_CLIENT_SECRET"] == "staging_google_client_secret"
+    gateway_env = services["gateway"]["environment"]
+    assert gateway_env["EMAIL_ASSISTANT_ENABLED"] == "false"
+    assert gateway_env["GOOGLE_OAUTH_REDIRECT_URI"] == (
+        "https://staging.invalid/console/v1/email/oauth/callback"
+    )
+    for name in ("worker", "delivery"):
+        assert not {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"} & {
+            s["target"] for s in services[name]["secrets"]
+        }
     # Queue claims run under RLS; only the owner role sees unscoped rows.
     for name in ("worker", "delivery"):
         targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
@@ -103,6 +123,26 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
     for name in ("worker", "delivery", "staging-db"):
         assert "gateway-host" not in services[name]["networks"]
     assert "/tmp/worker.alive" in services["worker"]["healthcheck"]["test"][-1]
+
+
+def test_pipeline_switches_invitation_mail_on_from_the_environment(tmp_path: Path) -> None:
+    config = render(
+        tmp_path,
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_INVITE_MAIL": "true"},
+    )
+    assert config["services"]["gateway"]["environment"]["INVITE_MAIL_ENABLED"] == "true"
+
+
+def test_pipeline_switches_the_email_assistant_on_from_the_environment(tmp_path: Path) -> None:
+    config = render(
+        tmp_path,
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_EMAIL_ASSISTANT": "true"},
+    )
+    assert config["services"]["gateway"]["environment"]["EMAIL_ASSISTANT_ENABLED"] == "true"
 
 
 def test_pipeline_keeps_one_shot_and_migration_services_out_of_normal_startup(
@@ -373,6 +413,17 @@ def test_gateway_workspace_assistant_is_opt_in(tmp_path: Path) -> None:
     assert "provider-egress" in gateway["networks"]
     worker_sources = {s["target"]: s["source"] for s in enabled["worker"]["secrets"]}
     assert worker_sources["GROQ_API_KEY"] == "staging_model_key"
+
+
+def test_hr_documents_volume_and_root_belong_to_the_gateway_only(tmp_path: Path) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    gateway = services["gateway"]
+    assert gateway["environment"]["HR_UPLOAD_ROOT"] == "/var/lib/csa/hr-uploads"
+    mounts = {v["target"]: v["source"] for v in gateway["volumes"]}
+    assert mounts["/var/lib/csa/hr-uploads"] == "staging-hr-uploads"
+    for name in ("worker", "delivery"):
+        assert "HR_UPLOAD_ROOT" not in services[name]["environment"]
+        assert "staging-hr-uploads" not in {v["source"] for v in services[name].get("volumes", [])}
 
 
 def test_gateway_and_delivery_carry_both_whatsapp_secrets(tmp_path: Path) -> None:

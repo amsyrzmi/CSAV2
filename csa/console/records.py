@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from csa.hr.access_switches import PresetId
+
 TenantRole = Literal["tenant_admin", "tenant_staff", "read_only"]
 
 
@@ -62,6 +64,8 @@ class TokenRecord(Record):
     revoked_at: datetime | None
     created_by: UUID
     created_at: datetime
+    hr_preset: PresetId | None
+    hr_preset_chosen_by: UUID | None
 
 
 class TokenDetails(TokenRecord):

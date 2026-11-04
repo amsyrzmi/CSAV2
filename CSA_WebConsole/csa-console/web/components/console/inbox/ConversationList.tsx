@@ -1,0 +1,195 @@
+"use client";
+
+import { useId, useRef } from "react";
+import { BellRing, Search, SearchX, X } from "lucide-react";
+import CustomerAvatar from "@/components/console/fs/CustomerAvatar";
+import { ListState } from "@/components/console/fs/ListStates";
+import StatusLabel from "@/components/console/fs/StatusLabel";
+import { field, secondary } from "@/components/console/ui";
+import { StatusChips } from "@/components/console/kit";
+import { rowTitle, secondaryLine, senderLabel } from "@/lib/customer-identity";
+import { listTime, type ChannelFilter, type Contact, type Conversation } from "@/lib/inbox-api";
+import { cleanContact, rowSubtitle } from "@/lib/inbox-thread";
+
+export const CHANNEL_NAME = { telegram: "Telegram", whatsapp: "WhatsApp" } as const;
+export const NO_CONTACT: Contact = {
+  display_name: null, telegram_username: null, phone_masked: null, phone: null, kind: "customer", known: false,
+};
+export type View = "all" | "review" | "known" | "new";
+
+/** A contact the identity helpers can trust: present, and with a single-@ username. */
+export function contactOf(conversation: Pick<Conversation, "contact">): Contact {
+  return cleanContact(conversation.contact ?? NO_CONTACT);
+}
+
+/** The channel pill. Sky tint from the approved mockup; the --fs-channel-* pair is contrast-tested in every theme. */
+export function ChannelBadge({ channel, testId }: { channel: Conversation["channel"]; testId: string }) {
+  return <span data-testid={testId}
+    className="inline-flex items-center whitespace-nowrap rounded-full bg-[var(--fs-channel-bg)] px-2 py-0.5 text-xs font-semibold text-[color:var(--fs-channel-text)]">
+    {CHANNEL_NAME[channel]}</span>;
+}
+
+/** Customer (blue) or New sender (neutral with a dashed edge); the words carry the meaning. */
+export function SenderLabel({ known }: { known: boolean }) {
+  const text = senderLabel(known);
+  return known ? <StatusLabel tone="customer">{text}</StatusLabel>
+    : <span className="inline-flex rounded-full outline-1 -outline-offset-1 outline-[color:var(--fs-border-control)] outline-dashed">
+      <StatusLabel tone="neutral">{text}</StatusLabel></span>;
+}
+
+export function OwnerLabel({ humanMuted }: { humanMuted: boolean }) {
+  return humanMuted ? <StatusLabel tone="team">Staff has taken over</StatusLabel>
+    : <StatusLabel tone="neutral">Assistant</StatusLabel>;
+}
+
+const CHIPS: { view: View; label: string; testId: string }[] = [
+  { view: "all", label: "All", testId: "inbox-filter-all" },
+  { view: "review", label: "Needs review", testId: "inbox-filter-needs-review" },
+  { view: "known", label: "Customers", testId: "inbox-filter-customers" },
+  { view: "new", label: "New senders", testId: "inbox-filter-new-senders" },
+];
+
+export type ListStatus = {
+  loaded: boolean; error: string; forbidden: boolean; partial: boolean; nextCursor: boolean;
+  /** The server's plain-words refusal to show instead of the default no-access copy. */
+  refusal: string | null;
+};
+
+export function ConversationList({
+  items, status, selected, blocked, now, search, onSearch, view, onView, channel, onChannel,
+  reviewCount, nudge, filtered, searching, connectHref, onSelect, onRetry, onLoadOlder,
+  onClearFilters, onClearSearch,
+}: {
+  items: Conversation[]; status: ListStatus; selected: string; blocked: boolean; now: number;
+  search: string; onSearch: (value: string) => void; view: View; onView: (view: View) => void;
+  channel: ChannelFilter; onChannel: (channel: ChannelFilter) => void;
+  /** The server's count for the whole tenant, or null before the first answer. */
+  reviewCount: number | null; nudge: number; filtered: boolean; searching: boolean;
+  connectHref: string | null; onSelect: (id: string) => void; onRetry: () => void; onLoadOlder: () => void;
+  onClearFilters: () => void; onClearSearch: () => void;
+}) {
+  const searchId = useId();
+  const hintId = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const short = [...search.trim()].length === 1;
+  const showRows = !status.forbidden && items.length > 0;
+  return <section aria-labelledby={`${searchId}-title`} className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="space-y-3 border-b border-[color:var(--fs-ink-100)] p-3">
+      <h2 id={`${searchId}-title`} tabIndex={-1} data-conversation-list-heading
+        className="text-base font-semibold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">Conversations</h2>
+      <div>
+        <label htmlFor={searchId} className="mb-1 block text-xs font-medium text-ink-700">Search customers</label>
+        <div className="relative">
+          <Search aria-hidden size={16} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-500" />
+          <input ref={searchRef} id={searchId} type="search" data-testid="inbox-search" className={`${field} pr-11 pl-9`}
+            value={search} maxLength={64} autoComplete="off" placeholder="Name or phone"
+            aria-describedby={short ? hintId : undefined} onChange={(event) => onSearch(event.target.value)} />
+          {search !== "" && <button type="button" data-testid="inbox-search-clear" aria-label="Clear the search box"
+            onClick={() => { onClearSearch(); searchRef.current?.focus(); }}
+            className="absolute top-1/2 right-1 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-[var(--fs-radius-control)] text-ink-700 hover:bg-[var(--fs-tile)] hover:text-ink-900 focus-visible:outline-3 focus-visible:outline-offset-0 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:size-10">
+            <X aria-hidden size={16} /></button>}
+        </div>
+        {short && <p id={hintId} className="mt-1 text-xs text-ink-600">Type at least two characters to search.</p>}
+      </div>
+      <StatusChips mode="single" testId="inbox-view" ariaLabel="Show conversations" value={view}
+        onChange={(next) => onView(next as View)}
+        options={CHIPS.map((chip) => ({
+          value: chip.view, label: chip.label, testId: chip.testId,
+          // The tenant-wide count keeps its own id and its "–" while the first answer loads.
+          badge: chip.view === "review" ? <span key={nudge} data-testid="inbox-needs-review-count"
+            aria-label={reviewCount === null ? "count loading" : undefined}
+            className={`inline-block rounded-full bg-[var(--fs-warning-bg)] px-1.5 text-xs font-semibold text-[color:var(--fs-warning)] ${nudge > 0 ? "fs-nudge" : ""}`}>
+            {reviewCount ?? "–"}</span> : undefined,
+        }))} />
+      <label className="block"><span className="text-xs font-medium text-ink-700">Channel</span>
+        <select className={`${field} mt-1`} value={channel} data-testid="inbox-channel-filter"
+          onChange={(event) => onChannel(event.target.value as ChannelFilter)}>
+          <option value="">All channels</option>
+          <option value="whatsapp">WhatsApp</option>
+          <option value="telegram">Telegram</option>
+        </select>
+      </label>
+    </div>
+    <div className="min-h-0 flex-1 md:overflow-y-auto" data-inbox-list-scroll>
+      <div aria-live="polite">
+        {status.forbidden ? <ListState kind="forbidden" message={status.refusal ?? undefined} />
+          : !status.loaded && !status.error ? <ListState kind="loading" />
+          : !status.loaded ? <ListState kind="unavailable" onRetry={onRetry} />
+          : status.error ? <div className="p-3"><ListState kind={status.partial ? "partial" : "unavailable"} variant="banner"
+            onRetry={onRetry} onLoadOlder={onRetry} /></div>
+          : items.length === 0 ? (filtered || searching
+            ? <NoMatch searching={searching} filtered={filtered} onClearSearch={onClearSearch}
+              onClearFilters={onClearFilters} />
+            : <ListState kind="empty" connectHref={connectHref} />)
+          : null}
+      </div>
+      {showRows && <ul aria-label="Conversations">{items.map((item) => <Row key={item.id} item={item}
+        selected={item.id === selected} disabled={blocked} now={now} onSelect={onSelect} />)}</ul>}
+      {showRows && status.nextCursor && !status.error && <div className="p-3">
+        <button type="button" className={`${secondary} w-full`} onClick={onLoadOlder}>Load older conversations</button>
+      </div>}
+    </div>
+  </section>;
+}
+
+/** Nothing matched: the old sentence, a plain hint, and the one action that gets rows back. */
+function NoMatch({ searching, filtered, onClearSearch, onClearFilters }: {
+  searching: boolean; filtered: boolean; onClearSearch: () => void; onClearFilters: () => void;
+}) {
+  const both = searching && filtered;
+  return <div data-testid="inbox-no-match" className="flex flex-col items-center gap-3 px-4 py-8 text-center text-sm">
+    <SearchX aria-hidden size={28} className="text-ink-500" />
+    <div className="space-y-1">
+      <p className="font-medium">{searching ? "No conversations match your search." : "No conversations match these filters."}</p>
+      <p className="text-xs text-ink-700">{searching
+        ? "Check the spelling, or try part of the name or the phone number."
+        : "Show everyone to see all the conversations your customers have started."}</p>
+    </div>
+    {both ? <button type="button" className={secondary} data-testid="inbox-no-match-action"
+      onClick={() => { onClearSearch(); onClearFilters(); }}>Clear search and filters</button>
+      : searching ? <button type="button" className={secondary} data-testid="inbox-no-match-action"
+        onClick={onClearSearch}>Clear search</button>
+        : <button type="button" className={secondary} data-testid="inbox-no-match-action"
+          onClick={onClearFilters}>Clear filters</button>}
+  </div>;
+}
+
+/** Small marker for a row with a held reply: an icon and the words, never colour alone. */
+function ReviewMarker() {
+  return <span data-testid="inbox-row-review"
+    className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-[var(--fs-warning-bg)] px-2 py-0.5 text-xs font-semibold text-[color:var(--fs-warning)]">
+    <BellRing aria-hidden size={12} />Needs review</span>;
+}
+
+function Row({ item, selected, disabled, now, onSelect }: {
+  item: Conversation; selected: boolean; disabled: boolean; now: number; onSelect: (id: string) => void;
+}) {
+  const contact = contactOf(item);
+  const title = rowTitle(contact);
+  const subtitle = rowSubtitle(title, secondaryLine(contact, item.channel), CHANNEL_NAME[item.channel]);
+  const preview = item.last_message?.preview ?? "";
+  const time = now ? listTime(item.last_message?.at ?? item.opened_at, now) : "";
+  const review = (item.pending_approvals ?? 0) > 0;
+  return <li>
+    <button type="button" data-conversation-id={item.id} aria-current={selected ? "true" : undefined}
+      disabled={disabled} onClick={() => onSelect(item.id)}
+      className={`flex w-full min-w-0 items-start gap-3 border-b border-[color:var(--fs-ink-100)] px-3 py-3.5 text-left focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-60 ${selected
+        ? "bg-[var(--fs-surface-blue)] shadow-[inset_3px_0_0_var(--fs-primary)]" : "bg-[var(--fs-surface)] hover:bg-[var(--fs-tile)]"}`}>
+      <CustomerAvatar id={item.id} name={contact.display_name} size={40} />
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
+          {time && <span data-testid="inbox-row-time" className="shrink-0 text-[11px] text-ink-600">{time}</span>}
+        </span>
+        {preview && <span data-testid="inbox-row-preview" className="block truncate text-xs text-ink-900">{preview}</span>}
+        {subtitle && <span className="truncate text-xs text-ink-600">{subtitle}</span>}
+        <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1">
+          {review && <ReviewMarker />}
+          <SenderLabel known={contact.known} />
+          <OwnerLabel humanMuted={item.human_muted} />
+          <ChannelBadge channel={item.channel} testId="inbox-channel-badge" />
+        </span>
+      </span>
+    </button>
+  </li>;
+}

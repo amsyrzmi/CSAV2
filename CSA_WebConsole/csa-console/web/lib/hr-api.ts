@@ -1,11 +1,17 @@
 import { api } from "./api";
-import type { ProposalOut } from "./workspace-api";
+import type { SwitchId } from "./hr-access-api";
 
 export interface HrContext {
   employee: { tenant_id: string; employee_id: string } | null;
   client_owner: boolean;
   private_areas: ("recruitment" | "attendance" | "payroll")[];
   actions: string[];
+  /** The access switches that are on for the viewer, in switch order. */
+  switches: SwitchId[];
+  /** The `domain.action` workflows the viewer may use, sorted and unique. */
+  workflows: string[];
+  /** True for the HR owner and for anyone holding a switch beyond directory and own requests. */
+  hr_duties: boolean;
 }
 export interface Employee {
   employee: { tenant_id: string; employee_id: string };
@@ -42,12 +48,7 @@ export interface Confirmation {
   expires_at: string;
   command: { action: string; expected_version: number; decision_note?: string | null };
 }
-export type AgentResult = { operation: string; status: string; resource_id: string } | Confirmation | { kind: "persisted_training"; request: Training } | Workflow | Employee | Training | { clarification: string; action?: null } | ProposalOut;
-
-/** A planned training submit comes back as a shared proposal (201) to confirm on its card. */
-export function isProposal(result: AgentResult): result is ProposalOut {
-  return "card" in result && "id" in result;
-}
+export type AgentResult = { operation: string; status: string; resource_id: string } | Confirmation | { kind: "persisted_training"; request: Training } | Workflow | Employee | Training | { clarification: string; action?: null };
 export interface Page<T> { items: T[]; next_cursor: string | null }
 
 /** Keys stay with an exact operation after an uncertain response. No HR data is stored locally. */
@@ -70,7 +71,6 @@ export function hrClient(tenant: string) {
     operation: (body: unknown) => write<{ operation: string; resource_id: string; version: number; status: string; duplicate: boolean }>("/operations", body),
     records: <T>(area: string) => api<{ items: T[] }>(`/console/v1/hr/records/${encodeURIComponent(area)}${suffix}`),
     privateRecord: <T>(area: string, id: string) => api<{ items: T[] }>(`/console/v1/hr/private/${encodeURIComponent(area)}/${encodeURIComponent(id)}${suffix}`),
-    chat: (message: string, source: "text" | "voice") => write<AgentResult>("/assistant", { message, source }),
     context: () => api<HrContext>(`/console/v1/hr/context${suffix}`),
     directory: (after?: string) => page<Employee>("/employees", after),
     training: (after?: string) => page<Training>("/training-requests", after),

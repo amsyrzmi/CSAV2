@@ -1,0 +1,88 @@
+"use client";
+
+import type { ReactNode } from "react";
+import { chipLabel, isPressed, nextSingle, toggleChip } from "@/lib/chips";
+
+const chip =
+  "relative inline-flex min-h-10 items-center justify-center gap-1.5 rounded-[var(--fs-radius-round)] border px-[1.375rem] py-1.5 pointer-coarse:min-h-11 " +
+  "transition-[background-color,border-color,color] duration-150 ease-(--fs-ease-out) motion-reduce:transition-none";
+const idle =
+  "border-[color:var(--fs-border-control)] bg-[var(--fs-surface)] text-[color:var(--fs-text)] hover:border-[color:var(--fs-primary)]";
+// The inset ring doubles the pressed border to 2px without changing the chip's size.
+const pressed =
+  "border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] text-[color:var(--fs-text)] shadow-[inset_0_0_0_1px_var(--fs-primary)]";
+
+/**
+ * A wrapping row of toggle chips. Pressed state is a check mark and a doubled border as well
+ * as colour (the weight and box stay constant so a pressed chip keeps its size). `single`
+ * always has one chip pressed; `multi` lets any number be pressed (an "All" chip, if the page
+ * wants one, is an ordinary option the caller handles in `onChange`).
+ */
+export default function StatusChips<T extends string>({
+  options,
+  value,
+  onChange,
+  mode,
+  testId,
+  ariaLabel,
+}: {
+  /**
+   * `testId` replaces the generated `${testId}-${value}` for a page that already has stable
+   * ids, and `badge` is drawn after the label (a live count with its own id, for example).
+   */
+  options: { value: T; label: string; count?: number | null; testId?: string; badge?: ReactNode }[];
+  value: T | T[];
+  onChange: (next: T | T[]) => void;
+  mode: "single" | "multi";
+  testId: string;
+  ariaLabel: string;
+}) {
+  const press = (picked: T) => {
+    if (mode === "multi") {
+      onChange(toggleChip(Array.isArray(value) ? value : [value], picked));
+    } else {
+      onChange(nextSingle(Array.isArray(value) ? value[0] : value, picked));
+    }
+  };
+  return (
+    <div role="group" aria-label={ariaLabel} data-testid={testId} className="flex flex-wrap gap-2">
+      {options.map((option) => {
+        const on = isPressed(value, option.value);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={on}
+            data-testid={option.testId ?? `${testId}-${option.value}`}
+            onClick={() => press(option.value)}
+            className={`${chip} ${on ? pressed : idle}`}
+          >
+            {/* The check sits in the left padding (equal on both sides), so the label is centred on a
+                pressed and an idle chip alike and pressing never changes the chip's size. */}
+            <span aria-hidden="true" className="absolute top-1/2 left-[7px] inline-flex size-3.5 -translate-y-1/2 items-center justify-center">
+              {on ? (
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m5 12 5 5 9-10" />
+                </svg>
+              ) : null}
+            </span>
+            {/* Sized on a span: the tokens' unlayered `font: inherit` on buttons beats utilities. */}
+            <span className="min-w-0 text-[length:var(--fs-text-sm)] font-semibold [overflow-wrap:anywhere]">
+              {chipLabel(option)}
+            </span>
+            {option.badge}
+          </button>
+        );
+      })}
+    </div>
+  );
+}

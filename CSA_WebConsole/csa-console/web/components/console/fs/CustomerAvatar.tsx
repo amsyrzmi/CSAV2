@@ -1,0 +1,52 @@
+import { initialsFor, tintIndex } from "@/lib/customer-identity";
+
+/** Initials are not pixel art, so a customer keeps its own, wider set of sizes. */
+export type CustomerAvatarSize = 24 | 32 | 40 | 48 | 64 | 96;
+
+/**
+ * A customer is a circle of initials in one of four tints (theme tokens, blue in Cobalt), or a dashed circle with "?"
+ * when there is no real name. Agents are never round, so the two cannot be confused.
+ * Decorative unless a label is given: the row text already carries the name.
+ */
+export default function CustomerAvatar({
+  id,
+  name,
+  size = 40,
+  label,
+}: {
+  id: string;
+  name: string | null;
+  size?: CustomerAvatarSize;
+  /** Only when no name is printed beside the avatar. */
+  label?: string;
+}) {
+  const initials = initialsFor(name);
+  const tint = tintIndex(id) + 1;
+  const accessible = label ? { role: "img", "aria-label": label } : { "aria-hidden": true };
+  return (
+    <span
+      {...accessible}
+      style={{
+        display: "inline-flex",
+        flex: "0 0 auto",
+        alignItems: "center",
+        justifyContent: "center",
+        verticalAlign: "middle",
+        boxSizing: "border-box",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        fontFamily: "var(--fs-font-heading, inherit)",
+        fontWeight: 700,
+        fontSize: Math.round(size * 0.38),
+        lineHeight: 1,
+        userSelect: "none",
+        ...(initials
+          ? { background: `var(--fs-customer-${tint}-bg)`, color: `var(--fs-customer-${tint}-text)` }
+          : { background: "var(--fs-surface)", color: "var(--fs-text-secondary)", border: "1.5px dashed var(--fs-border-control)" }),
+      }}
+    >
+      {initials ?? "?"}
+    </span>
+  );
+}

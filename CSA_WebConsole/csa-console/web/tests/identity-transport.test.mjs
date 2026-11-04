@@ -41,8 +41,17 @@ const proxyCode = ts.transpileModule(proxySource, {
     module: ts.ModuleKind.CommonJS,
   },
 }).outputText;
+const hrPathsCode = ts.transpileModule(
+  await readFile(new URL("../lib/hr-paths.ts", import.meta.url), "utf8"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
+).outputText;
+const hrPathsExports = {};
+new Function("exports", hrPathsCode)(hrPathsExports);
 const proxyExports = {};
-new Function("require", "exports", proxyCode)(require, proxyExports);
+new Function("require", "exports", proxyCode)(
+  (name) => (name === "./lib/hr-paths" ? hrPathsExports : require(name)),
+  proxyExports,
+);
 const { NextRequest } = require("next/server");
 
 test("A1 staff workspace pages are adopted but require a session cookie", () => {
@@ -214,12 +223,46 @@ test("multipart preserves file body, browser boundary, idempotency and CSRF", as
   } finally { globalThis.fetch = original; }
 });
 
+test("HR tab and People pages are adopted, anything else under HR stays deferred", () => {
+  const profile = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  for (const route of ["/hr/people", "/portal/hr/leave", "/portal/hr/people/org-chart", `/portal/hr/people/${profile}`]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307, route);
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 200, route);
+  }
+  for (const route of ["/hr/onboarding", "/portal/hr/people/nope", "/portal/hrx", `/hr/people/${profile}/x`]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 404, route);
+  }
+});
+
 test("M3 KB screens are adopted but still require a session", () => {
   for (const route of ["/knowledge-base", "/portal/faq"]) {
     assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307);
     assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
       headers: { cookie: "csa_session=synthetic" },
     })).status, 200);
+  }
+});
+
+test("sub-page routes require a session and unknown sub-paths stay hidden", () => {
+  const pages = [
+    "/portal/business/products", "/portal/business/stores", "/business/products", "/business/stores",
+    "/portal/faq/add", "/portal/faq/questions", "/portal/faq/maintenance",
+    "/knowledge-base/add", "/knowledge-base/questions", "/knowledge-base/maintenance",
+  ];
+  for (const route of pages) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`)).status, 307, route);
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 200, route);
+  }
+  for (const route of ["/portal/business/xyz", "/portal/faq/add/extra", "/business/products/1", "/portal/faq/library"]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`http://console.example.test${route}`, {
+      headers: { cookie: "csa_session=synthetic" },
+    })).status, 404, route);
   }
 });
 
@@ -376,7 +419,7 @@ test("M6 synthetic demo listings are temporary local state with explicit no-API 
   assert.equal(added.length, 3);
   assert.equal(added[2].name, "Sample listing 3");
   assert.equal(added[2].status, "Demo draft");
-  assert.match(businessWorkspaceSource, /DEMO MODE — fictional sample data only\. Not connected to TikTok; no TikTok API request/);
+  assert.match(businessWorkspaceSource, /Example data only, made up for this view\. Not connected to TikTok; nothing here is sent\s+to TikTok/);
   assert.match(businessWorkspaceSource, /No TikTok request was made/);
   const demoSection = businessWorkspaceSource.split("function DemoBusinessWorkspace()")[1]
     .split("function BusinessRecords")[0];

@@ -25,8 +25,8 @@ async def test_stream_limits_and_failure_spool_cleanup(
     parser_type = multipart.BoundedParser
 
     class Tracking(parser_type):
-        def __init__(self, request: Request) -> None:
-            super().__init__(request)
+        def __init__(self, request: Request, **options: Any) -> None:
+            super().__init__(request, **options)
             captured.append(self)
 
     monkeypatch.setattr(multipart, "BoundedParser", Tracking)
@@ -148,3 +148,48 @@ async def test_download_descriptor_survives_unlink_and_always_closes(
         await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
         assert b"".join(received) == data
     assert stream.closed
+
+
+def one_file_app(**options: Any) -> FastAPI:
+    app = FastAPI()
+
+    @app.post("/")
+    async def accept(request: Request) -> dict[str, Any]:
+        async with multipart.upload_form(request, **options) as form:
+            return {"names": [name for name, _ in form.multi_items()]}
+
+    return app
+
+
+async def post_parts(app: FastAPI, *parts: tuple[str, bytes]) -> httpx.Response:
+    body = (
+        b"".join(
+            b'--x\r\nContent-Disposition: form-data; name="'
+            + name.encode()
+            + b'"; filename="f.pdf"\r\n\r\n'
+            + data
+            + b"\r\n"
+            for name, data in parts
+        )
+        + b"--x--\r\n"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://synthetic"
+    ) as client:
+        return await client.post(
+            "/", content=body, headers={"Content-Type": "multipart/form-data; boundary=x"}
+        )
+
+
+async def test_parser_limits_follow_the_options() -> None:
+    app = one_file_app(max_files=1, max_body=2048, field="file")
+    assert (await post_parts(app, ("file", b"a"))).json() == {"names": ["file"]}
+    # A second file, a part with another name and a body over max_body are all refused.
+    assert (await post_parts(app, ("file", b"a"), ("file", b"b"))).status_code == 422
+    assert (await post_parts(app, ("files", b"a"))).status_code == 422
+    assert (await post_parts(app, ("file", b"a" * 4096))).status_code == 413
+    # The defaults are the knowledge base's: up to three files in "files".
+    default = one_file_app()
+    assert (await post_parts(default, *[("files", b"a")] * 3)).status_code == 200
+    assert (await post_parts(default, *[("files", b"a")] * 4)).status_code == 422
+    assert (await post_parts(default, ("file", b"a"))).status_code == 422
