@@ -140,22 +140,6 @@ async def set_deployment_mode(
     return dict(row) if row is not None else None
 
 
-async def set_runtime(
-    conn: psycopg.AsyncConnection[Any],
-    client_id: UUID,
-    runtime: str,
-) -> dict[str, Any] | None:
-    """Strangler cutover / rollback: flip runtime between n8n and langgraph."""
-    if runtime not in ("n8n", "langgraph"):
-        raise ValueError(f"invalid runtime: {runtime}")
-    row = await db.q.fetch_one(
-        "ops/update_client_runtime.sql",
-        (runtime, client_id),
-        conn=conn,
-    )
-    return dict(row) if row is not None else None
-
-
 async def expire_stuck_approvals(
     conn: psycopg.AsyncConnection[Any],
     client_id: UUID,

@@ -2,7 +2,7 @@
 #
 # Runs ONLY a throwaway PostGIS+pgvector Postgres for development. It is a
 # separate compose project with its own container, volume and default network:
-# it is NOT attached to `csa-net` and must never reach production `csa_db`.
+# it must never reach a production database.
 # The app processes run on the host via `make run-dev`, not in this file.
 #
 # Build the image once with `make db-image` (the tests build the same image).

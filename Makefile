@@ -1,7 +1,7 @@
 # CSA developer Makefile (LG01 §9.3).
 #
 # Dev values come from the ignored .env.local. They apply ONLY to the throwaway
-# csa_dev_db container (compose project csa-dev), never to production csa_db.
+# csa_dev_db container (compose project csa-dev), never to a production database.
 ifneq ($(NO_LOCAL_ENV),1)
 -include .env.local
 endif

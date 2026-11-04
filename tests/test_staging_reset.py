@@ -1170,6 +1170,32 @@ def test_a_mistyped_bootstrap_password_gets_another_try(reset_env: Path, tmp_pat
     assert len(runner.file_calls) == 3
 
 
+WAIT_FOR_PROMPT = (
+    "Wait for the password prompt before you type: it can take a few seconds, "
+    "and anything typed before it shows on screen."
+)
+
+
+def test_wipe_says_to_wait_for_the_prompt_before_each_try(reset_env: Path, tmp_path: Path) -> None:
+    runner = wipe_runner()
+    codes = iter([2, 0])
+    runner.tty_answer = lambda argv: next(codes)
+    code, lines = _wipe(runner, reset_env, tmp_path)
+    assert code == 0, lines
+    assert sum(WAIT_FOR_PROMPT in line for line in lines) == 2
+
+
+def test_accounts_says_to_wait_for_the_prompt_before_adding_an_admin(
+    reset_env: Path, tmp_path: Path
+) -> None:
+    runner = accounts_runner()
+    code, lines = _accounts(runner, reset_env, tmp_path)
+    assert code == 0, lines
+    adding = [line for line in lines if "Adding platform admin" in line]
+    assert len(adding) == 2
+    assert all(WAIT_FOR_PROMPT in line for line in adding)
+
+
 def test_three_failed_bootstrap_tries_stop_as_before(reset_env: Path, tmp_path: Path) -> None:
     runner = wipe_runner()
     codes = iter([2, 2, 2])

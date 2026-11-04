@@ -50,7 +50,6 @@ class IngressReceipt:
     accepted: bool
     duplicate: bool
     trace_id: UUID
-    proxied: bool = False
 
 
 class EndpointRateLimiter:
@@ -250,34 +249,6 @@ class TelegramIngress:
             ):
                 raise IngressError(429, "endpoint rate limit exceeded")
 
-            runtime = (route["runtime"] or "langgraph").strip().lower()
-            deployment_mode = (route["deployment_mode"] or "auto").strip().lower()
-            n8n_url = route["n8n_webhook_url"]
-
-            if runtime == "n8n":
-                if not n8n_url:
-                    raise IngressError(503, "n8n webhook URL not configured")
-                await self._proxy_to_n8n(n8n_url, supplied_secret, body)
-                if deployment_mode != "shadow":
-                    logger.info(
-                        "ingress_proxied_to_n8n",
-                        client_id=str(client_id),
-                        endpoint_id=str(endpoint_id),
-                        trace_id=str(trace_id),
-                    )
-                    return IngressReceipt(
-                        accepted=True,
-                        duplicate=False,
-                        trace_id=trace_id,
-                        proxied=True,
-                    )
-                logger.info(
-                    "ingress_shadow_mode_enqueued",
-                    client_id=str(client_id),
-                    endpoint_id=str(endpoint_id),
-                    trace_id=str(trace_id),
-                )
-
             try:
                 event = self._adapter.parse(body, public_id=public_id)
             except TelegramUpdateError as exc:
@@ -421,38 +392,7 @@ class TelegramIngress:
             accepted=True,
             duplicate=duplicate,
             trace_id=trace_id,
-            proxied=(runtime == "n8n"),
         )
-
-    async def _proxy_to_n8n(
-        self,
-        url: str,
-        supplied_secret: str | None,
-        body: bytes,
-    ) -> None:
-        headers = {"Content-Type": "application/json"}
-        if supplied_secret:
-            headers["X-Telegram-Bot-Api-Secret-Token"] = supplied_secret
-        client = self._http_client
-        close_client = False
-        if client is None:
-            client = httpx.AsyncClient(timeout=15.0)
-            close_client = True
-        try:
-            resp = await client.post(url, content=body, headers=headers)
-            if resp.status_code >= 400:
-                logger.error(
-                    "n8n_proxy_response_error",
-                    status_code=resp.status_code,
-                    body=resp.text[:200],
-                )
-                raise IngressError(502, f"n8n proxy error ({resp.status_code})")
-        except httpx.RequestError as exc:
-            logger.error("n8n_proxy_connection_error", error=str(exc))
-            raise IngressError(502, "n8n proxy connection failed") from exc
-        finally:
-            if close_client:
-                await client.aclose()
 
     async def _resolve_endpoint(self, public_id: str) -> dict[str, Any] | None:
         async with self._pool.connection() as conn:

@@ -1171,9 +1171,7 @@ Before any separately approved execution:
    preservation. Keep M6 local-only/unverified/setup-required/synthetic-demo
    labels. No live TikTok/Gmail/Calendar or authoritative inventory is enabled.
 
-The historical [compose.yml](./compose.yml) remains reference only: it assumes
-the legacy database/network, automatic migrations and occupied host port 8080.
-Do not run it for this release. Protected promotion, rollback compatibility,
+Protected promotion, rollback compatibility,
 backup restore and ingress acceptance remain separate release gates. Historical
 latency failures and unchanged `<200 ms` thresholds remain in
 [progress](../docs/PROGRESS.md); packaging success cannot waive them.

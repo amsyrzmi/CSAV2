@@ -89,9 +89,6 @@ class WhatsAppIngress:
             return None
         client_id: UUID = route["client_id"]
         endpoint_id: UUID = route["endpoint_id"]
-        if (route["runtime"] or "langgraph").strip().lower() == "n8n":
-            logger.warning("whatsapp_runtime_unsupported", client_id=str(client_id))
-            return None
 
         if event.kind == "status":
             await self._record_status(client_id, event)

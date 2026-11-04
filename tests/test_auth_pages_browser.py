@@ -359,6 +359,29 @@ async def test_auth_logo_is_still_under_reduced_motion(console: Console) -> None
             await browser.close()
 
 
+async def test_the_browser_tab_shows_the_mito_icon_before_sign_in(console: Console) -> None:
+    """The sign-in rules would redirect an unlisted path, leaving the tab with a blank icon."""
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            context = await new_context(console, browser)
+            page = await open_route(context, console, "/login")
+            icons = page.locator('head link[rel="icon"]')
+            hrefs = await icons.evaluate_all(
+                "links => links.map((link) => link.getAttribute('href'))"
+            )
+            assert "/brand/mito-icon.svg" in hrefs
+            for href in [*hrefs, "/brand/mito-apple-touch-icon.png"]:
+                response = await context.request.get(f"{console.base}{href}", max_redirects=0)
+                assert response.status == 200, href
+                assert response.headers["content-type"].startswith("image/"), href
+            apple = page.locator('head link[rel="apple-touch-icon"]')
+            assert await apple.get_attribute("href") == "/brand/mito-apple-touch-icon.png"
+            await context.close()
+        finally:
+            await browser.close()
+
+
 async def test_login_form_still_works(console: Console) -> None:
     console.posts.clear()
     async with async_playwright() as playwright:
