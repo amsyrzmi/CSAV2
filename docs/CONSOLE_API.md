@@ -1593,12 +1593,19 @@ how it went and is set only on the answer to a staff action:
 |---|---|
 | `POST /bookings`, `/confirm` | An invitation (`METHOD:REQUEST`). A booking still `pending` goes to its people as `TENTATIVE` and not to the customer, so the confirm is the customer's first mail |
 | `PATCH /bookings/{id}` | The same `UID` with a higher `SEQUENCE` (the booking's `version`) and the new time |
-| `/cancel`, `/decline` | `METHOD:CANCEL`, `STATUS:CANCELLED`, same `UID`, higher `SEQUENCE` |
+| `/cancel`, `/decline` | `METHOD:CANCEL`, `STATUS:CANCELLED`, same `UID`, higher `SEQUENCE`. A booking that was never confirmed (cancelled or declined while `pending`) is cancelled for its people and guests only: the customer was never told about it, so they are not told it is gone. A booking that was confirmed first still tells the customer |
 | `/no-show` | Nothing; `email` is null |
 
-`email` is `"none"` when nobody has an address, else `"off"` when mail is switched off, else `"failed"`
-when any send failed (the others still went), else `"sent"`. It is null on every read, on a no-show,
-and on a redacted private meeting, so an Admin who is not part of one learns nothing about it.
+`email` reports on whoever was to be mailed. It is `"none"` when nobody was (no address, or only a
+customer who is not to be told), else `"off"` when mail is switched off, else `"failed"` when any send
+failed (the others still went), else `"sent"`. It is null on every read, on a no-show, and on a
+redacted private meeting, so an Admin who is not part of one learns nothing about it.
+
+The server waits at most 15 seconds for the mail, so the answer is never held up by a slow relay.
+Past that, sends not yet started are dropped and `email` is `"failed"`; a send already in flight
+cannot be taken back and may still arrive. So `"failed"` means some mail may not have gone, not that
+none did. Any error after the commit (reading the company's details, building a message) is also
+`"failed"`, logged by category only, and never changes the status code or the booking.
 
 Who gets mail, once each by address: the customer (if their contact has an email), each person on the
 booking with an address (their own, or their account's), and each outside guest. The person who made

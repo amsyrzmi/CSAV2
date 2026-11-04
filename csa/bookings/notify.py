@@ -7,7 +7,8 @@ each outside guest. A private meeting goes to its attendees only. Nobody else is
 each recipient gets their own file naming only themselves, so a customer cannot learn a staff or
 guest address.
 
-The result is one word for the whole booking, the worst outcome across recipients. Logs carry the
+The result is one word for the whole booking, the worst outcome across recipients. It reports on
+whoever was to be mailed: "none" if that is nobody. Logs carry the
 category only, never an address or a title.
 """
 
@@ -37,7 +38,9 @@ logger = structlog.get_logger(__name__)
 Change = Literal["created", "moved", "cancelled"]
 
 SIMULTANEOUS = 8  # sends at once, so a slow relay holds up a booking with many guests the least
-SEND_LIMIT = 60.0  # seconds for all of one booking's mail
+# Seconds the staff member waits for all of one booking's mail, under any proxy's read timeout.
+# Past it, sends not yet started are dropped; one already in flight cannot be taken back.
+SEND_LIMIT = 15.0
 _EMAIL = TypeAdapter(Email)
 
 
@@ -76,6 +79,13 @@ def _clean(address: object) -> str | None:
         return None
 
 
+def never_confirmed(booking: BookingRecord) -> bool:
+    """Still pending, or cancelled or declined while it was: the customer was never told of it."""
+    return booking.status == "pending" or (
+        booking.status == "cancelled" and booking.previous_status == "pending"
+    )
+
+
 def recipients(booking: BookingRecord, facts: MailFacts) -> list[Recipient]:
     """Everyone with an address who should hear about this booking, once each."""
     found: dict[str, Recipient] = {}
@@ -86,8 +96,9 @@ def recipients(booking: BookingRecord, facts: MailFacts) -> list[Recipient]:
             found.setdefault(clean.casefold(), Recipient(clean, name))
 
     customer = booking.customer
-    # A private meeting is for its attendees. A customer hears nothing until staff confirm.
-    if customer is not None and not booking.private and booking.status != "pending":
+    # A private meeting is for its attendees. A customer hears nothing until staff confirm, and
+    # nothing about a booking that was cancelled without ever being confirmed.
+    if customer is not None and not booking.private and not never_confirmed(booking):
         add(customer.email, customer.full_name)
     for person in booking.people:
         own = _clean(person.email) if person.email else None
@@ -158,11 +169,20 @@ async def notify_after_commit(
     booking: BookingRecord,
     change: Change,
 ) -> EmailSummary:
-    """Read the company's facts in a new transaction, then notify. Never raises."""
+    """Read the company's facts in a new transaction, then notify.
+
+    Never raises: the booking has committed, so an error here must not become a 500 that a retry
+    would turn into "That time was just taken." Anything that goes wrong is "failed", logged by
+    category only.
+    """
     try:
-        async with tx(pool, str(booking.client_id)) as conn:
-            facts = await load_facts(conn, booking.client_id)
+        try:
+            async with tx(pool, str(booking.client_id)) as conn:
+                facts = await load_facts(conn, booking.client_id)
+        except Exception:
+            logger.warning("bookings_mail_failed", category="facts_unavailable")
+            return "failed"
+        return await notify(mailer, booking, change, facts)
     except Exception:
-        logger.warning("bookings_mail_failed", category="facts_unavailable")
+        logger.warning("bookings_mail_failed", category="unexpected")
         return "failed"
-    return await notify(mailer, booking, change, facts)

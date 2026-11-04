@@ -165,6 +165,9 @@ class BookingRecord:
     resources: tuple[BookingResourceRef, ...]
     guests: tuple[BookingGuestOut, ...]
     conflict: bool
+    # The status before the change this record came back from, so mail can tell a booking that was
+    # never confirmed from one that was. Null on a plain read.
+    previous_status: str | None = None
 
 
 def involved(record: BookingRecord, user_id: UUID) -> bool:
@@ -914,8 +917,15 @@ async def _finish(
     await audit(conn, actor, client_id, f"bookings.booking.{action}", str(record.id))
     if free:
         # The rooms live on the holds, which are gone now: keep them on the returned record.
-        return replace(record, status=status, version=record.version + 1, conflict=False)
-    return (await read_records(conn, client_id, booking_id=record.id))[0]
+        return replace(
+            record,
+            status=status,
+            version=record.version + 1,
+            conflict=False,
+            previous_status=record.status,
+        )
+    fresh = (await read_records(conn, client_id, booking_id=record.id))[0]
+    return replace(fresh, previous_status=record.status)
 
 
 async def cancel_booking(

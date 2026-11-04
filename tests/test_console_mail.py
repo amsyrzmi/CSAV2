@@ -488,7 +488,9 @@ def test_a_message_without_a_calendar_is_unchanged(monkeypatch: pytest.MonkeyPat
     assert MAIL.calendar is None
 
 
-@pytest.mark.parametrize("bad", ["a@example.test\nBcc: x@example.test", "a@example.test\r", "a b"])
+@pytest.mark.parametrize(
+    "bad", ["a@example.test\nBcc: x@example.test", "a@example.test\r", "a\u2028b"]
+)
 async def test_a_new_line_in_an_address_is_refused(
     monkeypatch: pytest.MonkeyPatch, bad: str
 ) -> None:

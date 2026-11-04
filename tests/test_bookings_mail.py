@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+import threading
+import time
 from typing import Any
 
 import pytest
+from csa.bookings import notify
 from csa.bookings.api import build_bookings_router
 from csa.console.mailer import Mailer, OutgoingMail
 from structlog.testing import capture_logs
@@ -176,12 +180,23 @@ async def test_nobody_without_an_address_gets_one(
     )
     assert made["email"] == "none"
     assert relay.sent == []
-    # An address that is not one (a contact imported with free text) is no address.
-    await sessions.q("UPDATE contacts SET email = 'call me' WHERE full_name = 'Phone Only'")
-    moved = await send(
-        team, team.staff, f"/bookings/{made['id']}", {"version": 1, "starts_at": at(3)}, "PATCH"
-    )
-    assert moved.status_code == 200 and moved.json()["email"] == "none"
+    # An address that is not one (free text, a line break, a list) is no address, and never
+    # reaches the relay.
+    stored_values = [
+        "call me",
+        "c@example.test\nBcc: x@example.test",
+        "c@example.test,x@example.test",
+    ]
+    for version, stored in enumerate(stored_values, start=1):
+        await sessions.q("UPDATE contacts SET email = %s WHERE full_name = 'Phone Only'", stored)
+        moved = await send(
+            team,
+            team.staff,
+            f"/bookings/{made['id']}",
+            {"version": version, "starts_at": at(2 + version)},
+            "PATCH",
+        )
+        assert moved.status_code == 200 and moved.json()["email"] == "none", stored
     assert relay.sent == []
 
 
@@ -343,12 +358,60 @@ async def test_a_pending_booking_tells_the_customer_nothing_until_it_is_confirme
         assert ics_value(mail, "UID") == [f"{pending['id']}@fourstacks.my"]
     relay.sent.clear()
 
-    other = await booked(team, team.staff, {**ask, "starts_at": at(4)})
-    relay.sent.clear()
-    declined = await send(team, team.admin, f"/bookings/{other['id']}/decline")
-    assert declined.status_code == 200 and declined.json()["email"] == "sent"
+    # Cancelled after it was confirmed: the customer was told, so they are told this too.
+    gone = await send(team, team.staff, f"/bookings/{pending['id']}/cancel")
+    assert gone.status_code == 200 and gone.json()["email"] == "sent"
     assert relay.to() == ["aina@example.test", "c@example.test"]
     assert all(m.calendar and m.calendar.method == "CANCEL" for m in relay.sent)
+
+
+@pytest.mark.parametrize("how", ["cancel", "decline"])
+async def test_a_booking_never_confirmed_does_not_tell_the_customer_it_is_gone(
+    team: Team, relay: FakeTransport, how: str
+) -> None:
+    person = await make_person(team, "Aina", email="aina@example.test")
+    kind = await make_type(
+        team, needs_confirmation=True, delivery="named", person_ids=[person["id"]]
+    )
+    pending = await booked(
+        team,
+        team.staff,
+        {
+            "type_id": kind["id"],
+            "people": [person["id"]],
+            "starts_at": TEN_KL,
+            "walk_in": {"name": "Customer", "email": "c@example.test"},
+        },
+    )
+    relay.sent.clear()
+    gone = await send(team, team.admin, f"/bookings/{pending['id']}/{how}")
+    assert gone.status_code == 200 and gone.json()["status"] == "cancelled"
+    assert gone.json()["email"] == "sent"
+    assert relay.to() == ["aina@example.test"]  # the person delivering it, not the customer
+    assert relay.sent[0].calendar is not None and relay.sent[0].calendar.method == "CANCEL"
+
+
+@pytest.mark.parametrize("how", ["cancel", "decline"])
+async def test_nobody_is_told_when_only_the_customer_had_an_address(
+    team: Team, relay: FakeTransport, how: str
+) -> None:
+    quiet = await make_person(team, "No Address")
+    kind = await make_type(
+        team, needs_confirmation=True, delivery="named", person_ids=[quiet["id"]]
+    )
+    pending = await booked(
+        team,
+        team.staff,
+        {
+            "type_id": kind["id"],
+            "people": [quiet["id"]],
+            "starts_at": TEN_KL,
+            "walk_in": {"name": "Customer", "email": "c@example.test"},
+        },
+    )
+    gone = await send(team, team.admin, f"/bookings/{pending['id']}/{how}")
+    assert gone.status_code == 200 and gone.json()["email"] == "none"
+    assert relay.sent == []
 
 
 async def test_a_no_show_sends_nothing(
@@ -361,6 +424,81 @@ async def test_a_no_show_sends_nothing(
     assert marked.status_code == 200 and marked.json()["status"] == "no_show"
     assert marked.json()["email"] is None
     assert relay.sent == []
+
+
+# --- mail can never hold up or break a committed booking -------------------------------------
+
+
+async def test_a_slow_relay_cannot_hold_the_response(
+    sessions: SessionWorld, team: Team, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert notify.SEND_LIMIT <= 15  # below any proxy's read timeout
+    release = threading.Event()
+    started: list[str] = []
+
+    class Stuck:
+        def send(self, mail: OutgoingMail, sender: str) -> None:
+            started.append(mail.to)
+            release.wait(20)
+
+    # A relay that does not answer, a per-send limit well above the cap, and one send at a time.
+    sessions.app.state.mailer = Mailer(Stuck(), SENDER, limit=30)
+    monkeypatch.setattr(notify, "SEND_LIMIT", 0.5)
+    monkeypatch.setattr(notify, "SIMULTANEOUS", 1)
+    people = [await make_person(team, f"Person {n}", email=f"p{n}@example.test") for n in range(3)]
+    try:
+        began = time.monotonic()
+        made = await send(team, team.staff, "/bookings", meeting(*people, start=TEN_KL))
+        took = time.monotonic() - began
+    finally:
+        release.set()
+    assert made.status_code == 201, made.text
+    assert made.json()["email"] == "failed"
+    assert took < 5
+    rows = await sessions.q("SELECT status FROM bookings WHERE id=%s", made.json()["id"])
+    assert rows == [{"status": "confirmed"}]
+    # The send in flight cannot be taken back; the ones not started were cancelled, not sent late.
+    await asyncio.sleep(0.5)
+    assert len(started) == 1
+
+
+@pytest.mark.parametrize(
+    ("target", "category"),
+    [
+        ("load_facts", "facts_unavailable"),
+        ("booking_mail", "build_error"),
+        ("recipients", "unexpected"),
+    ],
+)
+async def test_a_failure_anywhere_after_the_commit_is_failed_not_a_500(
+    sessions: SessionWorld,
+    team: Team,
+    relay: FakeTransport,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    category: str,
+) -> None:
+    def explode(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("boom for aina@example.test in Secret Title Words")
+
+    async def explode_later(*_: Any, **__: Any) -> Any:
+        explode()
+
+    monkeypatch.setattr(notify, target, explode_later if target == "load_facts" else explode)
+    person = await make_person(team, "Aina", email="aina@example.test")
+    with capture_logs() as logs:
+        made = await send(
+            team, team.staff, "/bookings", meeting(person, start=TEN_KL, title="Secret Title Words")
+        )
+    assert made.status_code == 201, made.text
+    assert made.json()["email"] == "failed"
+    rows = await sessions.q("SELECT status FROM bookings WHERE id=%s", made.json()["id"])
+    assert rows == [{"status": "confirmed"}]
+    assert relay.sent == []
+    ours = [entry for entry in logs if entry["event"] == "bookings_mail_failed"]
+    assert [entry["category"] for entry in ours] == [category]
+    for secret in ("example.test", "Secret Title", "boom"):
+        assert secret not in repr(logs)
 
 
 # --- private meetings, and what the words say --------------------------------------------------
