@@ -92,6 +92,30 @@ const explained: Record<string, string> = {
   subscription_not_found: "That subscription no longer exists. Refresh the page.",
   request_not_found: "That request no longer exists. Refresh the page.",
   contact_not_found: "That customer no longer exists. Refresh the page.",
+  // Bookings setup (csa/bookings/setup.py). Booking and calendar refusals carry their own sentence.
+  "bookings setup requires an administrator": "Only an Admin can change the Bookings setup.",
+  "bookings tenant is not authorized": "You can't open Bookings for this company.",
+  version_conflict: "Someone else changed this while you were editing. Reload to see the latest, then try again.",
+  person_exists: "That person is already on the list.",
+  person_not_found: "That person is no longer on the list. Reload the page.",
+  member_not_found: "That team member is not available. Reload the page.",
+  employee_not_found: "That HR record is not available. Reload the page.",
+  resource_not_found: "That room or shared thing is no longer on the list. Reload the page.",
+  type_not_found: "That booking type no longer exists. Reload the page.",
+  type_invalid: "Check the booking type's details and try again.",
+  type_needs_people: "Choose at least one person for this booking type.",
+  type_needs_resources: "Choose at least one room or shared thing for this booking type.",
+  type_needs_address: "Enter the address where people meet.",
+  type_needs_link: "Enter the meeting link. It must start with https://.",
+  hours_invalid:
+    "Each period must open before it closes. Hours can't run past midnight, so the latest closing time is 23:59.",
+  hours_overlap: "Two periods on the same day overlap. Change one of them.",
+  subject_not_found: "That person or room is no longer on the list. Reload the page.",
+  subject_invalid: "Choose a person or a room.",
+  closed_day_not_found: "That closed day is no longer there. Reload the page.",
+  block_times_invalid: "The end must be after the start.",
+  block_not_found: "That unavailable time is no longer there. Reload the page.",
+  slot_taken: "That time was just taken.",
 };
 
 async function decode<T>(response: Response): Promise<T> {

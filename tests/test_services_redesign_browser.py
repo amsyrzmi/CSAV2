@@ -134,7 +134,7 @@ def default_services() -> dict[str, dict[str, Any]]:
             last_change=change("requested", 25, "Tenant Admin Lee"),
             agents=[make_agent("subscription_agent", "Subscriptions agent", active=False)],
         ),
-        make_service("bookings", "Bookings", "addon", "available", can_request=True),
+        make_service("bookings", "Bookings", "standalone", "available", can_request=True),
         make_service("marketplaces", "Marketplaces", "addon", "available", can_request=True),
         make_service("e_invoicing", "E-invoicing", "addon", "available", sellable=False),
         make_service("hr", "People and HR", "standalone", "active", can_suspend=True),
@@ -699,9 +699,17 @@ async def test_headings_keep_the_page_outline_valid(site: Site) -> None:
         )
         titles = page.get_by_role("heading", level=3)
         await expect(titles.filter(has_text="Customer support")).to_have_count(1)
-        for kind, count in (("base", 1), ("addon", 5), ("standalone", 2)):
+        for kind, count in (("base", 1), ("addon", 4), ("standalone", 3)):
             group = page.get_by_test_id(f"services-group-{kind}")
             await expect(group.get_by_role("heading", level=3)).to_have_count(count)
+        # Bookings stands on its own, so it sits under "Separate services", not under Add-ons.
+        separate = page.get_by_test_id("services-group-standalone")
+        await expect(
+            separate.get_by_role("heading", level=3).filter(has_text="Bookings")
+        ).to_have_count(1)
+        await expect(
+            page.get_by_test_id("services-group-addon").get_by_role("heading", level=3)
+        ).not_to_contain_text(["Bookings"])
         # Agent cards open under their service row: their titles are h4, never another h3.
         row = row_of(page, "customer_support")
         await row.get_by_test_id("services-agents-toggle-customer_support").click()

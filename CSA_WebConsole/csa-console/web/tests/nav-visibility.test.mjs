@@ -9,7 +9,7 @@ function moduleUrl(source) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
-const { navigationFor, businessPages, knowledgePages, currentChild, entryForPath, groupParentCurrent } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
+const { navigationFor, businessPages, knowledgePages, bookingsPages, currentChild, entryForPath, groupParentCurrent } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
 
 const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t", csrf_token: "" };
 const active = (...keys) => keys.map((key) => ({ key, status: "active" }));
@@ -74,6 +74,41 @@ test("Subscriptions follows its package for members and is always there for plat
   assert.equal(admin.find((l) => l.label === "Subscriptions")?.href, "/subscriptions");
 });
 
+test("Bookings follows its own package, with or without Customer support, and platform admins keep it", () => {
+  for (const role of ["tenant_admin", "tenant_staff", "read_only"]) {
+    const alone = navigationFor({ ...staff, role }, active("bookings"));
+    const link = alone.find((l) => l.label === "Bookings");
+    assert.equal(link?.key, "bookings", role);
+    assert.equal(link?.href, "/portal/bookings", role);
+    assert.ok(!alone.some((l) => l.label === "Customer inbox"), "Bookings needs no Customer support");
+  }
+  const withOthers = labels(staff, active("bookings", "subscriptions", "orders_products"));
+  assert.equal(withOthers.indexOf("Bookings"), withOthers.indexOf("Subscriptions") + 1);
+  for (const packages of [[], active("customer_support", "subscriptions"), [{ key: "bookings", status: "suspended" }],
+    [{ key: "bookings", status: "requested" }], [{ key: "bookings", status: "available" }]]) {
+    assert.ok(!labels(staff, packages).includes("Bookings"), JSON.stringify(packages));
+  }
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  assert.equal(admin.find((l) => l.label === "Bookings")?.href, "/bookings");
+});
+
+test("Bookings carries Calendar, Booking types and People & rooms, Calendar on the group's own URL", () => {
+  const brief = (items) => items.map(({ key, label, href, testId }) => [key, label, href, testId]);
+  for (const [links, base] of [[navigationFor(staff, active("bookings")), "/portal/bookings"],
+    [navigationFor({ ...staff, role: "platform_admin" }, []), "/bookings"]]) {
+    const entry = links.find((l) => l.key === "bookings");
+    assert.equal(entry.href, base);
+    assert.deepEqual(brief(entry.children), [
+      ["calendar", "Calendar", base, "bookings-subnav-calendar"],
+      ["types", "Booking types", `${base}/types`, "bookings-subnav-types"],
+      ["people", "People & rooms", `${base}/people-and-rooms`, "bookings-subnav-people"],
+    ]);
+  }
+  assert.equal(bookingsPages(false)[2].href, "/portal/bookings/people-and-rooms");
+  const links = navigationFor(staff, active("bookings"));
+  assert.equal(entryForPath(links, "/portal/bookings/people-and-rooms")?.key, "bookings");
+});
+
 test("Password opens the in-shell page: /password for platform admins, /portal/password for tenant roles", () => {
   const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
   assert.equal(admin.find((l) => l.key === "password")?.href, "/password");
@@ -122,18 +157,18 @@ test("business and knowledge entries carry their sub-pages in order", () => {
 });
 
 test("children never add a top-level key", () => {
-  const all = active("orders_products", "customer_support", "knowledge_base", "hr", "staff_email", "subscriptions");
+  const all = active("orders_products", "customer_support", "knowledge_base", "hr", "staff_email", "subscriptions", "bookings");
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
-  assert.equal(keys.size, 13);
+  assert.equal(keys.size, 14);
 });
 
 test("child literals are href-first so the contract regex never reads them", async () => {
   const source = await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8");
   const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(keys, [
-    "activity", "business", "email", "hr", "inbox", "knowledge_base", "members", "overview",
+    "activity", "bookings", "business", "email", "hr", "inbox", "knowledge_base", "members", "overview",
     "password", "services", "subscriptions", "team", "tenants",
   ]);
 });
