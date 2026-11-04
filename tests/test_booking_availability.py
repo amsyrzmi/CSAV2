@@ -169,20 +169,6 @@ def test_leave_covers_whole_local_days() -> None:
     ]
 
 
-def test_a_slot_straddling_the_start_of_leave_is_not_offered() -> None:
-    person = uuid.uuid4()
-    cal = _calendar(company_hours=ALL_DAY, leave={person: [(date(2026, 11, 3), date(2026, 11, 3))]})
-    slots = _slots(
-        cal,
-        _at(2, 23, 0),
-        _at(3, 1, 0),
-        required_people=(person,),
-        duration=timedelta(minutes=30),
-        step=timedelta(minutes=30),
-    )
-    assert _local_starts(slots) == [(2, 23, 0)]
-
-
 def test_any_free_person_needs_only_one_free() -> None:
     first, second = uuid.uuid4(), uuid.uuid4()
     busy = Busy("person", first, _at(2, 10).astimezone(UTC), _at(2, 11).astimezone(UTC))

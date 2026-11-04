@@ -170,6 +170,37 @@ def test_leave_covers_whole_local_days_in_findings() -> None:
     assert "on_leave" in found
 
 
+def test_a_slot_running_into_a_leave_day_or_closed_day_is_found() -> None:
+    # 23:30 on Monday to 00:30 on Tuesday: it starts on an open day and ends on the next one.
+    person = uuid.uuid4()
+    tuesday = date(2026, 11, 3)
+    start = datetime(2026, 11, 2, 23, 30, tzinfo=KL)
+    leave = _calendar(leave={person: [(tuesday, tuesday)]})
+    assert "on_leave" in _findings(leave, start, people=(person,))
+    closed = _calendar(closed_days=frozenset({tuesday}))
+    assert "closed_day" in _findings(closed, start)
+
+
+def test_a_slot_running_out_of_a_leave_day_or_closed_day_is_found() -> None:
+    person = uuid.uuid4()
+    monday = date(2026, 11, 2)
+    start = datetime(2026, 11, 2, 23, 30, tzinfo=KL)
+    leave = _calendar(leave={person: [(monday, monday)]})
+    assert "on_leave" in _findings(leave, start, people=(person,))
+    closed = _calendar(closed_days=frozenset({monday}))
+    assert "closed_day" in _findings(closed, start)
+
+
+def test_a_slot_ending_exactly_at_midnight_does_not_touch_the_next_day() -> None:
+    person = uuid.uuid4()
+    tuesday = date(2026, 11, 3)
+    start = datetime(2026, 11, 2, 23, 0, tzinfo=KL)
+    cal = _calendar(leave={person: [(tuesday, tuesday)]}, closed_days=frozenset({tuesday}))
+    found = _findings(cal, start, people=(person,))
+    assert "on_leave" not in found
+    assert "closed_day" not in found
+
+
 def test_busy_periods_are_not_a_finding() -> None:
     # Double bookings are refused for everyone by the database, so they are not an override.
     person = uuid.uuid4()
