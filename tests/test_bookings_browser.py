@@ -124,6 +124,7 @@ def booking(booking_id: int, start: str, end: str, **extra: Any) -> dict[str, An
         "address": None,
         "meeting_link": None,
         "conflict": None,
+        "can_change": True,
         "email": None,
     } | extra
 
@@ -386,7 +387,9 @@ class World:
         return 204, None
 
     def in_window(self, row: dict[str, Any], params: dict[str, str]) -> bool:
-        return instant(params["from"]) <= instant(row["starts_at"]) < instant(params["to"])
+        return instant(row["ends_at"]) > instant(params["from"]) and instant(
+            row["starts_at"]
+        ) < instant(params["to"])
 
     def do_calendar(
         self, method: str, route: str, params: dict[str, str], body: Any
@@ -405,14 +408,16 @@ class World:
         # A private meeting the viewer is not part of is a bare busy time when filtered.
         rows = [r for r in rows if not (filtered and r["redacted"])]
         if self.upstream.me["role"] == "read_only":
-            rows = [r | {"customer": None, "guests": []} for r in rows]
+            rows = [r | {"customer": None, "guests": [], "can_change": False} for r in rows]
         busy = [b for b in self.busy if self.in_window(b, params)] if filtered else []
         return 200, {"items": rows, "busy": busy}
 
     def do_availability(
         self, method: str, route: str, params: dict[str, str], body: Any
     ) -> tuple[int, Any]:
-        found = [s for s in self.slots if self.in_window({"starts_at": s}, params)]
+        found = [
+            s for s in self.slots if instant(params["from"]) <= instant(s) < instant(params["to"])
+        ]
         return 200, [
             {
                 "starts_at": s,
@@ -855,16 +860,25 @@ async def test_staff_book_a_meeting_and_a_walk_in_customer(site: Site) -> None:
         day = date(2099, 11, 10)
         world.slots = [utc_at(day, "10:00"), utc_at(day, "11:00")]
         monday = monday_of(COMPANY_ZONE)
-        # Two bookings this week: one the staff member is part of, one that is not.
-        world.people[0]["user_id"] = ME
+        # Three bookings this week. The server says which ones this staff member may change: one
+        # they attend, one they made for someone else (not on it), and one that is not theirs.
+        siti = {"id": SITI, "display_name": "Siti Nur", "is_active": True}
         world.bookings = [
-            booking(1, utc_at(monday, "09:00"), utc_at(monday, "10:00"), title="Mine"),
+            booking(1, utc_at(monday, "09:00"), utc_at(monday, "10:00"), title="Attending"),
             booking(
                 2,
+                utc_at(monday, "11:00"),
+                utc_at(monday, "12:00"),
+                title="Made by me",
+                people=[siti],
+            ),
+            booking(
+                3,
                 utc_at(monday, "13:00"),
                 utc_at(monday, "14:00"),
                 title="Theirs",
-                people=[{"id": SITI, "display_name": "Siti Nur", "is_active": True}],
+                people=[siti],
+                can_change=False,
             ),
         ]
         async with bookings_page(
@@ -872,15 +886,27 @@ async def test_staff_book_a_meeting_and_a_walk_in_customer(site: Site) -> None:
         ) as page:
             await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
 
-            # Staff may change what they are part of; the server decides for the rest.
-            await page.get_by_test_id("booking").filter(has_text="Mine").click()
+            # Staff get Move and Cancel where the server says they may: on what they attend and on
+            # what they made for someone else, also after a reload and a visit to another page.
+            for mine in ("Attending", "Made by me"):
+                await page.get_by_test_id("booking").filter(has_text=mine).click()
+                await expect(page.get_by_test_id("details-move")).to_be_visible()
+                await expect(page.get_by_test_id("details-cancel")).to_be_visible()
+                await page.keyboard.press("Escape")
+                await expect(page.get_by_test_id("booking-details")).to_have_count(0)
+            await page.reload()
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            await page.get_by_test_id("bookings-subnav-types").click()
+            await expect(page.get_by_test_id("type-card")).to_have_count(1, timeout=WAIT)
+            await page.get_by_test_id("bookings-subnav-calendar").click()
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            await page.get_by_test_id("booking").filter(has_text="Made by me").click()
             await expect(page.get_by_test_id("details-move")).to_be_visible()
             await expect(page.get_by_test_id("details-cancel")).to_be_visible()
             await page.keyboard.press("Escape")
-            await expect(page.get_by_test_id("booking-details")).to_have_count(0)
             await page.get_by_test_id("booking").filter(has_text="Theirs").click()
             await expect(page.get_by_test_id("details-readonly")).to_have_text(
-                "You can only change bookings you made or are part of."
+                "Only the person who made a booking, or someone on it, can change it."
             )
             await expect(page.get_by_test_id("details-move")).to_have_count(0)
             await expect(page.get_by_test_id("details-cancel")).to_have_count(0)
@@ -1074,6 +1100,11 @@ async def test_calendar_and_blocks_follow_the_company_zone_not_the_browser(site:
                 status="pending",
             ),
         ]
+        # Sunday 22:00 to Monday 02:00: it began in the week before, and goes on into this one.
+        sunday = monday - timedelta(days=1)
+        world.bookings.append(
+            booking(6, utc_at(sunday, "22:00"), utc_at(monday, "02:00"), title="Overnight")
+        )
         world.busy = [
             {
                 "starts_at": utc_at(monday, "14:00"),
@@ -1102,12 +1133,27 @@ async def test_calendar_and_blocks_follow_the_company_zone_not_the_browser(site:
 
             column = page.locator(f'[data-testid="calendar-day"][data-day="{monday}"]')
             monday_bookings = column.get_by_test_id("booking")
-            await expect(monday_bookings).to_have_count(2)
-            await expect(monday_bookings.first).to_contain_text("10:00")
+            await expect(monday_bookings).to_have_count(3)
+            first = monday_bookings.filter(has_text="Consultation")
+            second = monday_bookings.filter(has_text="Site visit")
+            await expect(first).to_contain_text("10:00-11:00")
             # Overlapping bookings of different people sit side by side.
-            one = await monday_bookings.nth(0).bounding_box()
-            two = await monday_bookings.nth(1).bounding_box()
+            one, two = await first.bounding_box(), await second.bounding_box()
             assert one and two and one["x"] + one["width"] <= two["x"] + 1, (one, two)
+
+            # The part of the overnight booking after midnight is drawn at the top of Monday,
+            # with its real start and end, and opens the same booking.
+            overnight = monday_bookings.filter(has_text="Overnight")
+            await expect(overnight).to_contain_text("22:00-02:00")
+            top, held = await column.bounding_box(), await overnight.bounding_box()
+            assert top and held and abs(held["y"] - top["y"]) <= 3, (top, held)
+            assert 90 <= held["height"] <= 100, held  # two hours at 48 px an hour
+            await overnight.click()
+            await expect(page.get_by_test_id("details-when")).to_have_text(
+                f"{sunday.day} {sunday.strftime('%b')} {sunday.year}, 22:00 to "
+                f"{monday.day} {monday.strftime('%b')} {monday.year}, 02:00"
+            )
+            await page.keyboard.press("Escape")
 
             # A pending booking says so, and a conflict is flagged.
             await expect(
@@ -1115,6 +1161,18 @@ async def test_calendar_and_blocks_follow_the_company_zone_not_the_browser(site:
             ).to_have_attribute("aria-label", re.compile("waiting to be confirmed"))
             await expect(page.get_by_test_id("booking-conflict")).to_have_count(1)
             assert "leave" not in (await page.get_by_test_id("calendar").inner_text()).lower()
+            # The flag is on a 30-minute block's first line, inside its box, with its sentence.
+            clash = page.get_by_test_id("booking").filter(has_text="Clash")
+            flag = clash.get_by_test_id("booking-conflict")
+            await expect(flag).to_have_attribute(
+                "aria-label", "Someone on this booking is unavailable"
+            )
+            block, mark = await clash.bounding_box(), await flag.bounding_box()
+            assert block and mark and block["height"] < 30, (block, mark)
+            assert mark["width"] > 0 and mark["height"] > 0, mark
+            assert block["x"] <= mark["x"] and block["y"] <= mark["y"], (block, mark)
+            assert mark["x"] + mark["width"] <= block["x"] + block["width"], (block, mark)
+            assert mark["y"] + mark["height"] <= block["y"] + block["height"], (block, mark)
 
             # A redacted private meeting is "Busy" with no details; an Admin can still change it.
             hidden = page.get_by_test_id("booking-busy")
@@ -1147,6 +1205,23 @@ async def test_calendar_and_blocks_follow_the_company_zone_not_the_browser(site:
             )
             assert calendar_reads(world)[-1]["from"] == as_sent(
                 utc_at(monday + timedelta(days=7), "00:00")
+            )
+            await page.get_by_test_id("calendar-today").click()
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(week_title(monday))
+
+            # The first part of the overnight booking is on the Sunday of the week before.
+            await page.get_by_test_id("calendar-prev").click()
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(
+                week_title(monday - timedelta(days=7))
+            )
+            before = page.locator(f'[data-testid="calendar-day"][data-day="{sunday}"]')
+            piece = before.get_by_test_id("booking").filter(has_text="Overnight")
+            await expect(piece).to_contain_text("22:00-02:00")
+            night, held = await before.bounding_box(), await piece.bounding_box()
+            assert night and held
+            assert abs(held["y"] + held["height"] - (night["y"] + night["height"])) <= 3, (
+                night,
+                held,
             )
             await page.get_by_test_id("calendar-today").click()
             await expect(page.get_by_test_id("calendar-range")).to_have_text(week_title(monday))
@@ -1404,6 +1479,12 @@ async def test_calendar_is_an_agenda_at_390_and_a_week_from_768(site: Site, them
         tuesday = monday + timedelta(days=1)
         long_title = "A synthetic booking with a very long title that must wrap and never overflow"
         world.bookings = [
+            booking(
+                0,
+                utc_at(monday - timedelta(days=1), "22:00"),
+                utc_at(monday, "02:00"),
+                title="Overnight",
+            ),
             booking(1, utc_at(monday, "10:00"), utc_at(monday, "11:00"), title=long_title),
             booking(
                 2,
@@ -1435,7 +1516,10 @@ async def test_calendar_is_an_agenda_at_390_and_a_week_from_768(site: Site, them
         ) as page:
             await expect(page.get_by_test_id("calendar-agenda")).to_be_visible(timeout=WAIT)
             await expect(page.get_by_test_id("calendar-week")).to_have_count(0)
-            await expect(page.get_by_test_id("booking")).to_have_count(3)
+            await expect(page.get_by_test_id("booking")).to_have_count(4)
+            await expect(page.get_by_test_id("calendar-agenda")).to_contain_text(
+                "Continues from the day before"
+            )
             await expect(page.get_by_test_id("booking-conflict")).to_have_count(1)
             for width in (320, 390):
                 await page.set_viewport_size({"width": width, "height": 900})

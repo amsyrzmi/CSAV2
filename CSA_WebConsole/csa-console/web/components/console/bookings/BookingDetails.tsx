@@ -283,7 +283,7 @@ export default function BookingDetails({
         )}
         {!canChange && scope.canBook && !booking.redacted && ["pending", "confirmed"].includes(booking.status) && (
           <p className={mutedText} data-testid="details-readonly">
-            You can only change bookings you made or are part of.
+            Only the person who made a booking, or someone on it, can change it.
           </p>
         )}
       </div>

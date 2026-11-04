@@ -2196,6 +2196,10 @@
             ],
             "title": "Address"
           },
+          "can_change": {
+            "title": "Can Change",
+            "type": "boolean"
+          },
           "conflict": {
             "anyOf": [
               {
@@ -2370,7 +2374,8 @@
           "location_kind",
           "address",
           "meeting_link",
-          "conflict"
+          "conflict",
+          "can_change"
         ],
         "title": "BookingOut",
         "type": "object"

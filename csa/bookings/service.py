@@ -120,11 +120,13 @@ class Viewer:
 
     user_id: UUID
     read_only: bool
+    admin: bool = False
 
 
 def viewer_of(actor: ConsoleActor) -> Viewer:
     read_only = not actor.platform_admin and actor.role == Role.READ_ONLY
-    return Viewer(actor.user_id, read_only=read_only)
+    admin = actor.platform_admin or actor.role in (Role.PLATFORM_ADMIN, Role.TENANT_ADMIN)
+    return Viewer(actor.user_id, read_only=read_only, admin=admin)
 
 
 # --- the booking as the server knows it, and as one viewer may see it -------------------------
@@ -180,6 +182,15 @@ def hidden_from(record: BookingRecord, viewer: Viewer) -> bool:
     return record.private and not involved(record, viewer.user_id)
 
 
+def may_change(record: BookingRecord, viewer: Viewer) -> bool:
+    """The rule `_for_change` enforces: an Admin changes any booking (a private meeting they are not
+    part of included), staff change what they created or attend, read-only members change nothing.
+    """
+    if viewer.admin:
+        return True
+    return not viewer.read_only and involved(record, viewer.user_id)
+
+
 def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
     """The one function every read goes through.
 
@@ -207,6 +218,7 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
             address=None,
             meeting_link=None,
             conflict=None,
+            can_change=may_change(record, viewer),
         )
     return BookingOut(
         id=record.id,
@@ -230,6 +242,7 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
         address=record.address,
         meeting_link=record.meeting_link,
         conflict="unavailable" if record.conflict else None,
+        can_change=may_change(record, viewer),
     )
 
 

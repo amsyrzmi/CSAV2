@@ -20,7 +20,7 @@ const {
   blockWhen, emailForViewer, todayInZone,
   weekDays, layoutDay, findingCopy, emailNote, addDays, timeInZone, dayInZone, shiftWeek, weekTitle,
   bookingTitle, mapsLink, wazeLink, safeMeetingLink, canChangeBooking,
-  emptyBookingForm, bookingProblem, formToBookingIn, isPhone,
+  emptyBookingForm, bookingProblem, formToBookingIn, isPhone, entriesOnDay,
 } = view;
 
 const week = (opens, closes, days = [0, 1, 2, 3, 4]) => days.map((weekday) => ({ weekday, opens, closes }));
@@ -407,15 +407,67 @@ test("titles, links and who may change a booking", () => {
   assert.equal(safeMeetingLink("javascript:alert(1)"), null);
   assert.equal(safeMeetingLink(null), null);
 
-  const booking = { id: "b1", people: [{ id: "p1" }], redacted: false, status: "confirmed" };
-  const admin = { admin: true, staff: false, myPersonIds: [], mine: [] };
-  const staff = (extra) => ({ admin: false, staff: true, myPersonIds: [], mine: [], ...extra });
-  assert.equal(canChangeBooking(booking, admin), true);
-  assert.equal(canChangeBooking({ ...booking, redacted: true, people: [] }, admin), true);
-  assert.equal(canChangeBooking(booking, staff({ myPersonIds: ["p1"] })), true);
-  assert.equal(canChangeBooking(booking, staff({ myPersonIds: ["p9"], mine: ["b1"] })), true);
-  assert.equal(canChangeBooking(booking, staff({ myPersonIds: ["p9"] })), false);
-  assert.equal(canChangeBooking({ ...booking, redacted: true, people: [] }, staff({ myPersonIds: ["p1"] })), false);
-  assert.equal(canChangeBooking(booking, { admin: false, staff: false, myPersonIds: ["p1"], mine: ["b1"] }), false);
-  assert.equal(canChangeBooking({ ...booking, status: "cancelled" }, admin), false);
+  // The server says who may change a booking; the page adds only that it is still live.
+  const live = { can_change: true, status: "confirmed" };
+  assert.equal(canChangeBooking(live), true);
+  assert.equal(canChangeBooking({ can_change: true, status: "pending" }), true);
+  assert.equal(canChangeBooking({ can_change: false, status: "confirmed" }), false);
+  assert.equal(canChangeBooking({ can_change: true, status: "cancelled" }), false);
+  assert.equal(canChangeBooking({ can_change: true, status: "no_show" }), false);
+});
+
+const day = (days, iso) => days.find((d) => d.day === iso);
+
+test("a booking is split across each day it touches, in the company's zone", () => {
+  // Sunday 8 Nov 22:00 to Monday 9 Nov 02:00 in Kuala Lumpur.
+  const overnight = { id: "o", starts_at: "2026-11-08T14:00:00Z", ends_at: "2026-11-08T18:00:00Z" };
+  const days = weekDays(new Date("2026-11-11T04:00:00Z"), KL);
+  assert.equal(days[0].day, "2026-11-09");
+  // It started last week, and still belongs on this week's Monday.
+  const monday = entriesOnDay([overnight], day(days, "2026-11-09"));
+  assert.deepEqual(monday.map((i) => i.id), ["o"]);
+  const [piece] = layoutDay(monday, KL, day(days, "2026-11-09"));
+  assert.deepEqual([piece.startMinute, piece.endMinute], [0, 120]);
+  assert.deepEqual([piece.continuesBefore, piece.continuesAfter], [true, false]);
+  assert.equal(piece.item, overnight);
+  // Its first part, on the Sunday of the week before.
+  const before = weekDays(new Date("2026-11-04T04:00:00Z"), KL);
+  const sunday = day(before, "2026-11-08");
+  const [first] = layoutDay(entriesOnDay([overnight], sunday), KL, sunday);
+  assert.deepEqual([first.startMinute, first.endMinute], [22 * 60, 1440]);
+  assert.deepEqual([first.continuesBefore, first.continuesAfter], [false, true]);
+  // And on no other day.
+  assert.deepEqual(entriesOnDay([overnight], day(before, "2026-11-07")), []);
+  assert.deepEqual(entriesOnDay([overnight], day(days, "2026-11-10")), []);
+});
+
+test("a long booking fills the days between, and one ending at midnight stops there", () => {
+  const days = weekDays(new Date("2026-11-11T04:00:00Z"), KL);
+  // Monday 22:00 to Wednesday 02:00 (Tuesday at 18:00Z is Wednesday 02:00 in Kuala Lumpur).
+  const long = { starts_at: "2026-11-09T14:00:00Z", ends_at: "2026-11-10T18:00:00Z" };
+  const placed = days.map((d) => layoutDay(entriesOnDay([long], d), KL, d)[0]);
+  assert.deepEqual(placed.slice(0, 4).map((p) => p && [p.startMinute, p.endMinute]), [
+    [22 * 60, 1440], [0, 1440], [0, 120], undefined,
+  ]);
+  assert.deepEqual(placed[1] && [placed[1].continuesBefore, placed[1].continuesAfter], [true, true]);
+  // Ends exactly at Tuesday 00:00: nothing on Tuesday.
+  const ends = { starts_at: "2026-11-09T14:00:00Z", ends_at: "2026-11-09T16:00:00Z" };
+  assert.equal(entriesOnDay([ends], days[1]).length, 0);
+  assert.equal(layoutDay(entriesOnDay([ends], days[0]), KL, days[0])[0].continuesAfter, false);
+});
+
+test("a busy row is split across days the same way", () => {
+  const days = weekDays(new Date("2026-11-11T04:00:00Z"), KL);
+  const busy = { starts_at: "2026-11-08T14:00:00Z", ends_at: "2026-11-08T18:00:00Z", label: "Busy" };
+  const [piece] = layoutDay(entriesOnDay([busy], days[0]), KL, days[0]);
+  assert.deepEqual([piece.startMinute, piece.endMinute, piece.continuesBefore], [0, 120, true]);
+});
+
+test("on a day with a clock change the minutes still read on the wall clock", () => {
+  // New York, 1 Nov 2026 has 25 hours; a booking 23:00 to 01:00 next day.
+  const days = weekDays(new Date("2026-11-01T12:00:00Z"), NY);
+  const sunday = day(days, "2026-11-01");
+  const late = { starts_at: "2026-11-02T03:00:00Z", ends_at: "2026-11-02T06:00:00Z" };
+  const [piece] = layoutDay(entriesOnDay([late], sunday), NY, sunday);
+  assert.deepEqual([piece.startMinute, piece.endMinute, piece.continuesAfter], [22 * 60, 1440, true]);
 });

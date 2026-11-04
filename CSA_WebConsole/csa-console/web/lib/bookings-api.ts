@@ -324,6 +324,8 @@ export interface BookingOut {
   meeting_link: string | null;
   /** "unavailable" when a person on it now has time off over it; never says why. */
   conflict: "unavailable" | null;
+  /** Whether this viewer may move or cancel it, by the rule the server enforces (never says who made it). */
+  can_change: boolean;
   email?: BookingMail | null;
 }
 

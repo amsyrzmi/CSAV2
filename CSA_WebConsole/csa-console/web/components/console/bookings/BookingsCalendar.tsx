@@ -16,6 +16,7 @@ import {
   canChangeBooking,
   dayInZone,
   emailNote,
+  entriesOnDay,
   layoutDay,
   shiftWeek,
   timeInZone,
@@ -81,12 +82,15 @@ function describe(entry: Entry, zone: string): string {
   return parts.join(", ");
 }
 
+const CONFLICT = "Someone on this booking is unavailable";
+
+/** A compact flag for the first line of a block; its name carries the sentence. */
 function Flag({ entry }: { entry: Entry }) {
   if (!isBooking(entry) || !entry.conflict) return null;
   return (
-    <span data-testid="booking-conflict" className="inline-flex items-center gap-1">
-      <TriangleAlert aria-hidden="true" size={12} className="text-[color:var(--fs-warning)]" />
-      <span className="sr-only">Someone is unavailable</span>
+    <span data-testid="booking-conflict" role="img" aria-label={CONFLICT} title={CONFLICT}
+      className="inline-flex shrink-0 text-[color:var(--fs-warning)]">
+      <TriangleAlert aria-hidden="true" size={12} />
     </span>
   );
 }
@@ -94,17 +98,17 @@ function Flag({ entry }: { entry: Entry }) {
 function WeekGrid({
   days,
   zone,
-  items,
+  entries,
   today,
   onOpen,
 }: {
   days: WeekDay[];
   zone: string;
-  items: Map<string, Entry[]>;
+  entries: Entry[];
   today: string;
   onOpen: (booking: BookingOut) => void;
 }) {
-  const placed = days.map((day) => layoutDay(items.get(day.day) ?? [], zone));
+  const placed = days.map((day) => layoutDay(entriesOnDay(entries, day), zone, day));
   const all = placed.flat();
   const first = Math.min(DEFAULT_FROM, ...all.map((p) => Math.floor(p.startMinute / 60)));
   const last = Math.max(DEFAULT_TO, ...all.map((p) => Math.ceil(p.endMinute / 60)));
@@ -167,9 +171,13 @@ function Block({
   };
   const text = (
     <>
-      <span className="block truncate font-medium">{timeInZone(item.starts_at, zone)}</span>
+      <span className="flex items-center gap-1 font-medium">
+        <Flag entry={item} />
+        <span className="min-w-0 truncate">
+          {timeInZone(item.starts_at, zone)}-{timeInZone(item.ends_at, zone)}
+        </span>
+      </span>
       <span className="block truncate">{isBooking(item) ? bookingTitle(item) : "Busy"}</span>
-      <Flag entry={item} />
     </>
   );
   const shared = `absolute overflow-hidden rounded-[var(--fs-radius-control)] border px-1 py-0.5 text-left leading-tight ${blockTone(item)}`;
@@ -189,15 +197,15 @@ function Block({
 function Agenda({
   days,
   zone,
-  items,
+  entries,
   onOpen,
 }: {
   days: WeekDay[];
   zone: string;
-  items: Map<string, Entry[]>;
+  entries: Entry[];
   onOpen: (booking: BookingOut) => void;
 }) {
-  const busyDays = days.filter((day) => (items.get(day.day) ?? []).length > 0);
+  const busyDays = days.filter((day) => entriesOnDay(entries, day).length > 0);
   if (busyDays.length === 0) {
     return <p data-testid="calendar-empty" className={mutedText}>Nothing is booked this week.</p>;
   }
@@ -207,7 +215,7 @@ function Agenda({
         <section key={day.day} aria-label={day.label}>
           <h3 className="mb-1 text-sm font-semibold">{day.label}</h3>
           <ul className="space-y-2">
-            {layoutDay(items.get(day.day) ?? [], zone).map((slot) => {
+            {layoutDay(entriesOnDay(entries, day), zone, day).map((slot) => {
               const item = slot.item;
               const inner = (
                 <>
@@ -221,13 +229,15 @@ function Agenda({
                   {isBooking(item) && !item.redacted && item.people.length > 0 && (
                     <span className={`block ${mutedText}`}>{item.people.map((p) => p.display_name).join(", ")}</span>
                   )}
+                  {slot.continuesBefore && <span className={`block ${mutedText}`}>Continues from the day before</span>}
+                  {slot.continuesAfter && <span className={`block ${mutedText}`}>Continues the next day</span>}
                   {isBooking(item) && item.status === "pending" && !item.redacted && (
                     <span className={`block ${mutedText}`}>Waiting to be confirmed</span>
                   )}
                   {isBooking(item) && item.conflict && (
                     <span data-testid="booking-conflict" className="mt-1 inline-flex items-center gap-1 font-medium">
                       <TriangleAlert aria-hidden="true" size={14} className="text-[color:var(--fs-warning)]" />
-                      Someone is unavailable
+                      {CONFLICT}
                     </span>
                   )}
                 </>
@@ -272,7 +282,6 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
-  const [mine, setMine] = useState<string[]>([]);
   const people = useLoaded(() => listPeople(scope.tenantId));
   const rooms = useLoaded(() => listResources(scope.tenantId));
   const types = useLoaded(() => listTypes(scope.tenantId));
@@ -301,25 +310,14 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
   const loading = read?.key !== key;
   const shown = read?.data;
   const today = dayInZone(new Date(), zone);
-  const items = useMemo(() => {
-    const byDay = new Map<string, Entry[]>();
-    const entries: Entry[] = [...(shown?.items ?? []), ...(shown?.busy ?? [])];
-    for (const entry of entries) {
-      const day = dayInZone(entry.starts_at, zone);
-      byDay.set(day, [...(byDay.get(day) ?? []), entry]);
-    }
-    return byDay;
-  }, [shown, zone]);
+  const entries = useMemo<Entry[]>(() => [...(shown?.items ?? []), ...(shown?.busy ?? [])], [shown]);
 
-  const myPersonIds = (people.data ?? []).filter((p) => p.user_id === scope.userId).map((p) => p.id);
   const opened = shown?.items.find((booking) => booking.id === openId) ?? null;
-  const who = { admin: scope.canEdit, staff: scope.canBook && !scope.canEdit, myPersonIds, mine };
 
   const reload = () => setRound((value) => value + 1);
   function finish(booking: BookingOut, change: Change | "created") {
     setOpenId(null);
     setCreating(false);
-    if (change === "created") setMine((ids) => [...ids, booking.id]);
     setNotice([SAID[change], emailNote(booking.email)].filter(Boolean).join(" "));
     reload();
   }
@@ -381,9 +379,9 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
         {!shown ? (
           read?.error && !loading ? null : <p role="status" className={mutedText}>Loading the calendar…</p>
         ) : wide ? (
-          <WeekGrid days={days} zone={zone} items={items} today={today} onOpen={(b) => setOpenId(b.id)} />
+          <WeekGrid days={days} zone={zone} entries={entries} today={today} onOpen={(b) => setOpenId(b.id)} />
         ) : (
-          <Agenda days={days} zone={zone} items={items} onOpen={(b) => setOpenId(b.id)} />
+          <Agenda days={days} zone={zone} entries={entries} onOpen={(b) => setOpenId(b.id)} />
         )}
       </div>
       {creating && types.data && people.data && rooms.data && (
@@ -391,7 +389,7 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
           onClose={() => setCreating(false)} onBooked={(booking) => finish(booking, "created")} />
       )}
       {opened && (
-        <BookingDetails scope={scope} zone={zone} booking={opened} canChange={canChangeBooking(opened, who)}
+        <BookingDetails scope={scope} zone={zone} booking={opened} canChange={canChangeBooking(opened)}
           onClose={() => setOpenId(null)} onChanged={finish}
           onReload={() => { setOpenId(null); reload(); }} />
       )}

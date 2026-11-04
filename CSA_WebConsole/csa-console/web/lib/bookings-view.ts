@@ -414,32 +414,61 @@ export function weekTitle(days: WeekDay[]): string {
 
 export interface Placed<T> {
   item: T;
-  /** Minutes after midnight on the company's clock; the end stops at midnight. */
+  /** Minutes after midnight on the company's clock; a piece stops at that day's end. */
   startMinute: number;
   endMinute: number;
   /** Column among those that overlap, and how many columns that group needs. */
   lane: number;
   lanes: number;
+  /** This piece is the middle or end of a booking that began on an earlier day, or goes on past it. */
+  continuesBefore: boolean;
+  continuesAfter: boolean;
 }
 
 /** The shortest a booking is drawn, so a short one can still be read and pressed. */
 const MIN_DRAWN = 30;
 
+type Span = { starts_at: string; ends_at: string };
+
+/** The bookings (or busy rows) that touch this day, including ones that began on an earlier day. */
+export function entriesOnDay<T extends Span>(items: T[], day: Pick<WeekDay, "start" | "end">): T[] {
+  const start = new Date(day.start).getTime();
+  const end = new Date(day.end).getTime();
+  return items.filter(
+    (item) => new Date(item.starts_at).getTime() < end && new Date(item.ends_at).getTime() > start,
+  );
+}
+
 /**
- * Places one day's bookings on a 24-hour grid. Bookings that overlap in time (different people
- * or rooms) sit in side-by-side columns; one that overlaps nothing takes the full width.
+ * Places one day's pieces of bookings on a 24-hour grid. Bookings that overlap in time (different
+ * people or rooms) sit in side-by-side columns; one that overlaps nothing takes the full width.
+ * With `day`, a booking is clipped to that day and says whether it continues from the day before
+ * or into the next; without it, only the start day is drawn and it stops at midnight.
  */
-export function layoutDay<T extends { starts_at: string; ends_at: string }>(
+export function layoutDay<T extends Span>(
   items: T[],
   timezone: string,
+  day?: Pick<WeekDay, "start" | "end">,
 ): Placed<T>[] {
+  const dayStart = day ? new Date(day.start).getTime() : null;
+  const dayEnd = day ? new Date(day.end).getTime() : null;
   const minutes = items.map((item) => {
-    const starts = zoneParts(new Date(item.starts_at).getTime(), timezone);
-    const ends = zoneParts(new Date(item.ends_at).getTime(), timezone);
-    const startMinute = starts.hour * 60 + starts.minute;
+    const from = new Date(item.starts_at).getTime();
+    const to = new Date(item.ends_at).getTime();
+    const starts = zoneParts(from, timezone);
+    const ends = zoneParts(to, timezone);
+    const continuesBefore = dayStart !== null && from < dayStart;
     const sameDay = starts.year === ends.year && starts.month === ends.month && starts.day === ends.day;
-    const endMinute = sameDay ? ends.hour * 60 + ends.minute : 1440;
-    return { item, startMinute, endMinute: Math.min(1440, Math.max(endMinute, startMinute + MIN_DRAWN)) };
+    const continuesAfter = dayEnd !== null ? to > dayEnd : !sameDay;
+    const startMinute = continuesBefore ? 0 : starts.hour * 60 + starts.minute;
+    const endMinute = continuesAfter ? 1440 : ends.hour * 60 + ends.minute;
+    return {
+      item,
+      startMinute,
+      endMinute: Math.min(1440, Math.max(endMinute, startMinute + MIN_DRAWN)),
+      continuesBefore,
+      continuesAfter,
+    };
   });
   minutes.sort((a, b) => a.startMinute - b.startMinute || b.endMinute - a.endMinute);
   const placed: Placed<T>[] = [];
@@ -504,18 +533,11 @@ export function safeMeetingLink(link: string | null | undefined): string | null 
 }
 
 /**
- * Whether to offer Move and Cancel. An Admin may change any booking, including a redacted private
- * meeting. Staff may change what they are on, or made in this session: the API names no creator,
- * so the server has the final say (403) for the rest. Read-only members change nothing.
+ * Whether to offer Move and Cancel: the server says who may change a booking (`can_change`, by the
+ * rule the change routes enforce), and only a live booking can be changed.
  */
-export function canChangeBooking(
-  booking: { id: string; people: { id: string }[]; redacted: boolean; status: string },
-  who: { admin: boolean; staff: boolean; myPersonIds: string[]; mine: string[] },
-): boolean {
-  if (booking.status !== "pending" && booking.status !== "confirmed") return false;
-  if (who.admin) return true;
-  if (!who.staff || booking.redacted) return false;
-  return booking.people.some((person) => who.myPersonIds.includes(person.id)) || who.mine.includes(booking.id);
+export function canChangeBooking(booking: { can_change: boolean; status: string }): boolean {
+  return booking.can_change && (booking.status === "pending" || booking.status === "confirmed");
 }
 
 const PHONE = /^\+?[0-9][0-9 ()\-.]*$/;

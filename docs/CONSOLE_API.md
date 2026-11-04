@@ -1578,7 +1578,12 @@ returned or shown beyond the dates the server reads. A double booking is refused
 the viewer did not create and does not attend is `redacted: true` with `title: "Busy"` and only the
 times, `status` and `version`, for everyone including Admins and platform admins, who can still move
 or cancel it (the answer stays redacted).
-Read-only members get `customer: null` and no `guests`. `conflict` is `"unavailable"` when a person on
+Read-only members get `customer: null` and no `guests`. `can_change` is true when this viewer may
+move, cancel or otherwise change the booking, by the same rule the change routes enforce (one
+function, `service.may_change`, next to `_for_change`): an Admin or platform admin, always, a redacted
+private meeting included; staff when they created it or a person linked to their account is on it
+(the creator is never put on the wire); read-only members never. It says nothing about the status, so
+a client also checks `pending` or `confirmed` before offering a move. `conflict` is `"unavailable"` when a person on
 a pending or confirmed booking now has approved leave over it, computed on every read.
 Every change writes `bookings.booking.created|moved|cancelled|confirmed|declined|no_show` with the
 booking id as target and no customer details.

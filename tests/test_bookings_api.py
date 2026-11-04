@@ -740,6 +740,59 @@ async def test_staff_change_their_own_or_attended_bookings_only(
     assert moved.status_code == 403
 
 
+async def test_can_change_says_what_each_viewer_may_do_and_the_server_agrees(
+    sessions: SessionWorld, team: Team
+) -> None:
+    """`can_change` is computed by the rule `_for_change` enforces, so the buttons never lie."""
+    w = sessions
+    mine = await make_person(team, "Staff Person", user_id=team.staff_info["user"]["id"])
+    theirs = await make_person(team, "Someone Else")
+    window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
+
+    async def seen(who: httpx.AsyncClient, extra: str = "") -> dict[str, dict[str, Any]]:
+        read = await who.get(f"{BASE}/calendar{window}{extra}")
+        assert read.status_code == 200, read.text
+        return {b["id"]: b for b in read.json()["items"]}
+
+    # Staff created it for someone else and are not attending it.
+    created = await booked(team, team.staff, meeting(theirs, start=at(9)))
+    assert created["can_change"] is True
+    # An Admin made it for someone else; staff neither made it nor attend it.
+    foreign = await booked(team, team.admin, meeting(theirs, start=at(10)))
+    assert foreign["can_change"] is True
+    # An Admin made it and a linked staff person attends it.
+    attended = await booked(team, team.admin, meeting(mine, start=at(11)))
+    # A private meeting the staff member is not part of, and one they are.
+    hidden = await booked(team, team.admin, meeting(theirs, start=at(12), private=True))
+    shared = await booked(team, team.admin, meeting(mine, start=at(13), private=True))
+
+    staff = await seen(team.staff)
+    assert {k: v["can_change"] for k, v in staff.items()} == {
+        created["id"]: True,
+        foreign["id"]: False,
+        attended["id"]: True,
+        hidden["id"]: False,
+        shared["id"]: True,
+    }
+    assert staff[hidden["id"]]["redacted"] is True
+    # Admins and platform admins may change everything, a redacted private meeting included.
+    platform = await seen(w.admin, f"&client_id={w.tenants[0]}")
+    assert platform[hidden["id"]]["redacted"] is True
+    for admin in (await seen(team.admin), platform):
+        assert {v["can_change"] for v in admin.values()} == {True}
+    # Read-only members may change nothing.
+    assert {v["can_change"] for v in (await seen(team.reader)).values()} == {False}
+    # The server agrees, both ways.
+    refused = await team.send(team.staff, f"/bookings/{foreign['id']}/cancel")
+    assert refused.status_code == 403 and refused.json()["detail"] == "own_bookings_only"
+    for allowed in (created, attended, shared):
+        done = await team.send(team.staff, f"/bookings/{allowed['id']}/cancel")
+        assert done.status_code == 200, done.text
+        assert done.json()["can_change"] is True
+    denied = await team.send(team.reader, f"/bookings/{foreign['id']}/cancel")
+    assert denied.status_code == 403
+
+
 async def test_another_company_cannot_read_or_change_a_booking(
     sessions: SessionWorld, team: Team
 ) -> None:

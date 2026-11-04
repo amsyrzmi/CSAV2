@@ -393,6 +393,10 @@ class BookingOut(Contract):
     meeting_link: str | None
     # "unavailable" when a person on the booking now has approved leave over it. Never why.
     conflict: Literal["unavailable"] | None
+    # Whether this viewer may move, cancel or otherwise change it, by the rule the change routes
+    # enforce: an Admin may change any booking, staff what they created or attend, read-only none.
+    # It says nothing about the booking's status.
+    can_change: bool
     # Only on the answer to a staff change that sends mail (book, move, cancel, confirm, decline);
     # null on every read, on a no-show, and on a private meeting the viewer is not part of.
     email: EmailSummary | None = None

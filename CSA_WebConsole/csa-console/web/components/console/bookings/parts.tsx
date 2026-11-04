@@ -14,8 +14,6 @@ export interface BookingsScope {
   canEdit: boolean;
   /** An Admin, a platform admin or staff: who may make bookings. Read-only members may not. */
   canBook: boolean;
-  /** The signed-in account, to find which of the listed people is them. */
-  userId: string;
   /** The company's IANA time zone; set only once it has been read and is valid. */
   zone: string | null;
   zoneState: ZoneState;

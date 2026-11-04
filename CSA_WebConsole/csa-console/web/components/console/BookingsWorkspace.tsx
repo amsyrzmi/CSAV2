@@ -78,7 +78,7 @@ export function BookingsWorkspace({ me, section = "calendar" }: { me: Me; sectio
   const canEdit = platform || me.role === "tenant_admin";
   const canBook = canEdit || me.role === "tenant_staff";
   const scope: BookingsScope = {
-    tenantId: platform ? tenant : null, canEdit, canBook, userId: me.user.id, zone, zoneState, query: tenantQuery,
+    tenantId: platform ? tenant : null, canEdit, canBook, zone, zoneState, query: tenantQuery,
   };
   const chooseTenant = (value: string) => {
     router.replace(value ? `${pathname}?client_id=${encodeURIComponent(value)}` : pathname, { scroll: false });
