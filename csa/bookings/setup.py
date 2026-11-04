@@ -80,13 +80,34 @@ async def lock_subjects(conn: Conn, client_id: UUID, subjects: Iterable[tuple[st
 
 def person_out(row: dict[str, Any]) -> BookingPersonOut:
     """A people row as the API shows it."""
-    return BookingPersonOut.model_validate(row)
+    return BookingPersonOut.model_validate(
+        {**row, "linked_to_hr": row.get("employee_id") is not None}
+    )
 
 
 async def list_people(conn: Conn, client_id: UUID) -> list[BookingPersonOut]:
     """Everyone who can be booked, active or not."""
     rows = await db.q.fetch_all("bookings/people_list.sql", {"client_id": client_id}, conn=conn)
     return [person_out(row) for row in rows]
+
+
+async def people_for(conn: Conn, client_id: UUID, *, admin: bool) -> list[BookingPersonOut]:
+    """The list as one viewer may see it. Everyone learns whether a person is linked to HR (by the
+    stored id or by their account's link), but only an Admin is sent the address and the HR id.
+    """
+    people = await list_people(conn, client_id)
+    linked: set[UUID] = set()
+    if any(p.user_id is not None for p in people):
+        linked = {m["user_id"] for m in await team_members(conn, client_id) if m["employee_id"]}
+    shown = []
+    for person in people:
+        changes: dict[str, Any] = {
+            "linked_to_hr": person.employee_id is not None or person.user_id in linked
+        }
+        if not admin:
+            changes |= {"email": None, "employee_id": None}
+        shown.append(person.model_copy(update=changes))
+    return shown
 
 
 async def team_members(conn: Conn, client_id: UUID) -> list[dict[str, Any]]:

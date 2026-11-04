@@ -548,6 +548,7 @@ async def test_a_private_meeting_mails_only_its_attendees(
     for response in (moved, cancelled):
         body = response.json()
         assert body["redacted"] is True and body["title"] == "Busy" and body["email"] is None
+        assert body["customer_told"] is None
         for secret in ("Redundancy", "example.test", "Colleague", "Adviser", "Jalan"):
             assert secret not in response.text
     # The attendees' own mail does say what it is.
@@ -609,3 +610,89 @@ async def test_a_refused_booking_sends_nothing(team: Team, relay: FakeTransport)
     clash = await book(team, team.staff, meeting(person, start=TEN_KL))
     assert clash.status_code == 409
     assert relay.sent == []
+
+
+# --- whether the customer was told -------------------------------------------------------------
+
+
+async def test_customer_told_says_whether_the_customer_got_it(
+    sessions: SessionWorld, team: Team, relay: FakeTransport
+) -> None:
+    person = await make_person(team, "Aina", email="aina@example.test")
+    # A customer with an address is told.
+    told = await booked(
+        team,
+        team.staff,
+        meeting(person, start=TEN_KL, walk_in={"name": "Emailed", "email": "c@example.test"}),
+    )
+    assert told["email"] == "sent" and told["customer_told"] is True
+    # A phone-only customer is not told, even though the person delivering it was mailed.
+    phone = await booked(
+        team,
+        team.staff,
+        meeting(person, start=at(3), walk_in={"name": "Phone Only", "phone": "0123456789"}),
+    )
+    assert phone["email"] == "sent" and phone["customer_told"] is False
+    moved = await send(
+        team, team.staff, f"/bookings/{phone['id']}", {"version": 1, "starts_at": at(4)}, "PATCH"
+    )
+    assert moved.json()["email"] == "sent" and moved.json()["customer_told"] is False
+    # No customer at all: nothing to say. A read says nothing either.
+    meeting_only = await booked(team, team.staff, meeting(person, start=at(5)))
+    assert meeting_only["customer_told"] is None
+    shown = await team.staff.get(
+        f"{BASE}/calendar?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
+    )
+    assert {item["customer_told"] for item in shown.json()["items"]} == {None}
+    # A customer whose message failed was not told.
+    relay.fail = {"c@example.test"}
+    failed = await booked(
+        team,
+        team.staff,
+        meeting(person, start=at(6), walk_in={"name": "Bounced", "email": "c@example.test"}),
+    )
+    assert failed["email"] == "failed" and failed["customer_told"] is False
+
+
+async def test_customer_told_is_false_when_mail_is_off(sessions: SessionWorld, team: Team) -> None:
+    sessions.app.state.mailer = Mailer(None, SENDER)
+    person = await make_person(team, "Aina", email="aina@example.test")
+    off = await booked(
+        team,
+        team.staff,
+        meeting(person, start=TEN_KL, walk_in={"name": "Emailed", "email": "c@example.test"}),
+    )
+    assert off["email"] == "off" and off["customer_told"] is False
+    quiet = await make_person(team, "No Address")
+    nobody = await booked(
+        team,
+        team.staff,
+        meeting(quiet, start=at(3), walk_in={"name": "Phone Only", "phone": "0123456789"}),
+    )
+    assert nobody["email"] == "none" and nobody["customer_told"] is False
+
+
+async def test_customer_told_waits_for_a_pending_booking_and_ignores_a_no_show(
+    sessions: SessionWorld, team: Team, relay: FakeTransport
+) -> None:
+    person = await make_person(team, "Aina", email="aina@example.test")
+    kind = await make_type(
+        team, needs_confirmation=True, delivery="named", person_ids=[person["id"]]
+    )
+    ask = {
+        "type_id": kind["id"],
+        "people": [person["id"]],
+        "walk_in": {"name": "Customer", "email": "c@example.test"},
+    }
+    pending = await booked(team, team.staff, {**ask, "starts_at": TEN_KL})
+    assert pending["customer_told"] is None  # staff confirm first; nobody owes the customer yet
+    confirmed = await send(team, team.staff, f"/bookings/{pending['id']}/confirm", {"version": 1})
+    assert confirmed.json()["customer_told"] is True
+    # Declining one that was never confirmed tells the customer nothing, and that is the rule.
+    again = await booked(team, team.staff, {**ask, "starts_at": at(4)})
+    gone = await send(team, team.admin, f"/bookings/{again['id']}/decline")
+    assert gone.json()["customer_told"] is None
+    # A no-show sends nothing and says nothing about it.
+    past = await booked(team, team.staff, meeting(person, start="2020-01-07T02:00:00Z"))
+    marked = await send(team, team.staff, f"/bookings/{past['id']}/no-show", {"version": 1})
+    assert marked.json()["customer_told"] is None

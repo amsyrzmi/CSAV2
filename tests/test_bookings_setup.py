@@ -800,6 +800,68 @@ async def test_from_team_stores_no_unclean_address(sessions: SessionWorld, team:
     assert by_user[team.admin_info["user"]["id"]]["email"].endswith("@example.test")
 
 
+async def test_only_an_admin_is_sent_a_persons_address_and_hr_id(
+    sessions: SessionWorld, team: Team
+) -> None:
+    tenant = sessions.tenants[0]
+    employee, late_employee = str(uuid.uuid4()), str(uuid.uuid4())
+    for hr_id in (employee, late_employee):
+        await sessions.q(
+            "INSERT INTO hr_employees (client_id, id, display_name) VALUES (%s,%s,'Synthetic')",
+            tenant,
+            hr_id,
+        )
+    await make_person(team, "Linked By Hand", email="linked@example.test", employee_id=employee)
+    await make_person(team, "Not Linked", email="plain@example.test")
+    late = await make_person(team, "Late Link", user_id=team.staff_info["user"]["id"])
+    assert late["linked_to_hr"] is False
+    # An account linked to HR after the person was added counts as linked.
+    await sessions.q(
+        "INSERT INTO hr_employee_accounts (client_id, user_id, employee_id) VALUES (%s,%s,%s)",
+        tenant,
+        team.staff_info["user"]["id"],
+        late_employee,
+    )
+    admin = {p["display_name"]: p for p in (await team.admin.get(f"{BASE}/people")).json()}
+    assert admin["Linked By Hand"]["email"] == "linked@example.test"
+    assert admin["Linked By Hand"]["employee_id"] == employee
+    assert admin["Linked By Hand"]["linked_to_hr"] is True
+    assert admin["Late Link"]["linked_to_hr"] is True
+    assert admin["Not Linked"]["linked_to_hr"] is False
+    for who in (team.staff, team.reader):
+        seen = {p["display_name"]: p for p in (await who.get(f"{BASE}/people")).json()}
+        for person in seen.values():
+            assert person["email"] is None and person["employee_id"] is None
+        assert seen["Linked By Hand"]["linked_to_hr"] is True
+        assert seen["Late Link"]["linked_to_hr"] is True
+        assert seen["Not Linked"]["linked_to_hr"] is False
+        assert "example.test" not in str(seen) and employee not in str(seen)
+    # A platform admin who chose the company is an Admin.
+    chosen = await sessions.admin.get(f"{BASE}/people?client_id={tenant}")
+    assert {p["email"] for p in chosen.json()} >= {"linked@example.test", "plain@example.test"}
+
+
+async def test_a_block_with_an_extreme_date_is_refused_not_a_crash(
+    sessions: SessionWorld, team: Team
+) -> None:
+    person = await make_person(team, "Aina")
+    for starts, ends in (
+        ("0001-01-01T00:00:00Z", "0001-01-02T00:00:00Z"),
+        ("9999-12-30T00:00:00Z", "9999-12-31T00:00:00Z"),
+    ):
+        made = await team.send(
+            team.admin,
+            "/blocks",
+            {
+                "subject_kind": "person",
+                "subject_id": person["id"],
+                "starts_at": starts,
+                "ends_at": ends,
+            },
+        )
+        assert made.status_code == 422, made.text
+
+
 # --- 0511: the team read ------------------------------------------------------------------------
 
 

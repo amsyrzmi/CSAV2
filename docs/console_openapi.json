@@ -2222,6 +2222,17 @@
               }
             ]
           },
+          "customer_told": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Told"
+          },
           "email": {
             "anyOf": [
               {
@@ -2499,6 +2510,11 @@
           },
           "is_active": {
             "title": "Is Active",
+            "type": "boolean"
+          },
+          "linked_to_hr": {
+            "default": false,
+            "title": "Linked To Hr",
             "type": "boolean"
           },
           "user_id": {

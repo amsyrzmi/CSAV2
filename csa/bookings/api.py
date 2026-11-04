@@ -35,7 +35,6 @@ from csa.bookings.contracts import (
     BookingTypeIn,
     BookingTypeOut,
     BookingTypePatch,
-    EmailSummary,
     HoursKind,
 )
 from csa.console.access import authenticate, tenant
@@ -103,7 +102,7 @@ MAIL_FOR: dict[Change, notify.Change] = {
 
 async def after_commit(
     request: Request, record: service.BookingRecord, change: Change
-) -> EmailSummary | None:
+) -> notify.Outcome | None:
     """Runs once the booking's transaction has committed, with the unredacted record.
 
     Sends the invitation, change or cancellation email from this one place, so a failed email can
@@ -142,18 +141,23 @@ def build_bookings_router() -> APIRouter:
     async def respond(
         request: Request, actor: ConsoleActor, record: service.BookingRecord, change: Change
     ) -> BookingOut:
-        summary = await after_commit(request, record, change)
+        outcome = await after_commit(request, record, change)
         out = service.to_out(record, service.viewer_of(actor))
         # A redacted answer says nothing about the meeting, not even whether it had addresses.
-        return out if out.redacted else out.model_copy(update={"email": summary})
+        if out.redacted or outcome is None:
+            return out
+        return out.model_copy(
+            update={"email": outcome.email, "customer_told": outcome.customer_told}
+        )
 
     # --- people ------------------------------------------------------------------------------
 
     @router.get("/people", response_model=list[BookingPersonOut])
     async def people(request: Request, client_id: Tenant) -> list[BookingPersonOut]:
         reader(request, client_id)
+        admin = request.state.console_actor.role in WRITE_ROLES
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            return await setup.list_people(conn, client_id)
+            return await setup.people_for(conn, client_id, admin=admin)
 
     @router.post("/people", response_model=BookingPersonOut, status_code=201)
     async def add_person(

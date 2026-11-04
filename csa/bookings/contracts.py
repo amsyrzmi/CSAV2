@@ -79,8 +79,12 @@ class BookingPersonOut(Contract):
     id: UUID
     display_name: str
     user_id: UUID | None
+    # Only an Admin is sent the address and the HR id; everyone else gets null for both.
     employee_id: UUID | None
     email: str | None
+    # Whether the person is linked to an HR person, by the stored id or by their account. Everyone
+    # is told this, and nothing else about the link.
+    linked_to_hr: bool = False
     is_active: bool
     version: int
 
@@ -225,11 +229,24 @@ class BookingClosedDayOut(Contract):
     note: str | None
 
 
+def _sane_time(value: datetime) -> datetime:
+    """A year between 2000 and 2100, in the time zone given and in UTC. Anything outside it is a
+    typo, and the far ends of the calendar overflow the date arithmetic.
+    """
+    if not 2000 <= value.year <= 2100 or not 2000 <= value.astimezone(UTC).year <= 2100:
+        raise ValueError("must be a time between the years 2000 and 2100")
+    return value
+
+
+# The one time type on every booking and availability input: with an offset, and in a sane range.
+BookingTime = Annotated[AwareDatetime, AfterValidator(_sane_time)]
+
+
 class BookingBlockIn(Contract):
     subject_kind: SubjectKind
     subject_id: UUID
-    starts_at: AwareDatetime
-    ends_at: AwareDatetime
+    starts_at: BookingTime
+    ends_at: BookingTime
     note: Note | None = None
 
 
@@ -253,18 +270,6 @@ Phone = Annotated[
     AfterValidator(_one_line),
 ]
 
-
-def _sane_time(value: datetime) -> datetime:
-    """A year between 2000 and 2100, in the time zone given and in UTC. Anything outside it is a
-    typo, and the far ends of the calendar overflow the date arithmetic.
-    """
-    if not 2000 <= value.year <= 2100 or not 2000 <= value.astimezone(UTC).year <= 2100:
-        raise ValueError("must be a time between the years 2000 and 2100")
-    return value
-
-
-# The one time type on every booking and availability input: with an offset, and in a sane range.
-BookingTime = Annotated[AwareDatetime, AfterValidator(_sane_time)]
 
 BookingStatus = Literal["pending", "confirmed", "cancelled", "no_show"]
 BookingKind = Literal["appointment", "meeting"]
@@ -400,6 +405,11 @@ class BookingOut(Contract):
     # Only on the answer to a staff change that sends mail (book, move, cancel, confirm, decline);
     # null on every read, on a no-show, and on a private meeting the viewer is not part of.
     email: EmailSummary | None = None
+    # Whether the customer got a message about this change: true if mailed, false if the booking has
+    # a customer who was not (no address, mail off or failed), null if there is no customer, on a
+    # read, a no-show or a private meeting the viewer is not part of, and while a booking still
+    # waits for confirmation (the customer is told nothing then, by design).
+    customer_told: bool | None = None
 
 
 class BookingSlotOut(Contract):

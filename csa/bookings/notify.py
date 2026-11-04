@@ -8,8 +8,10 @@ each recipient gets their own file naming only themselves, so a customer cannot 
 guest address.
 
 The result is one word for the whole booking, the worst outcome across recipients. It reports on
-whoever was to be mailed: "none" if that is nobody. Logs carry the
-category only, never an address or a title.
+whoever was to be mailed: "none" if that is nobody. It also says whether the customer was told:
+true if they were mailed, false if the booking has a customer who was not (no address, mail off or
+failed, a private meeting), and null when there is no customer or none is owed a message yet. Logs
+carry the category only, never an address or a title.
 """
 
 from __future__ import annotations
@@ -42,6 +44,14 @@ SIMULTANEOUS = 8  # sends at once, so a slow relay holds up a booking with many 
 # Past it, sends not yet started are dropped; one already in flight cannot be taken back.
 SEND_LIMIT = 15.0
 _EMAIL = TypeAdapter(Email)
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """How the mail went for the whole booking, and whether its customer got a message."""
+
+    email: EmailSummary
+    customer_told: bool | None
 
 
 @dataclass(frozen=True)
@@ -83,6 +93,23 @@ def never_confirmed(booking: BookingRecord) -> bool:
     """Still pending, or cancelled or declined while it was: the customer was never told of it."""
     return booking.status == "pending" or (
         booking.status == "cancelled" and booking.previous_status == "pending"
+    )
+
+
+def owes_customer(booking: BookingRecord) -> bool:
+    """The booking has a customer, and they are owed a message about this change."""
+    return booking.customer is not None and not never_confirmed(booking)
+
+
+def customer_reached(booking: BookingRecord, people: list[Recipient], results: list[bool]) -> bool:
+    """Whether the customer's own message went. A private meeting never mails its customer."""
+    customer = booking.customer
+    address = _clean(customer.email) if customer and customer.email else None
+    if address is None or booking.private:
+        return False
+    wanted = address.casefold()
+    return any(
+        ok for one, ok in zip(people, results, strict=True) if one.address.casefold() == wanted
     )
 
 
@@ -143,13 +170,14 @@ async def _deliver(
 
 async def notify(
     mailer: Mailer | None, booking: BookingRecord, change: Change, facts: MailFacts
-) -> EmailSummary:
+) -> Outcome:
     """Send the invitation, the new time or the cancellation; say how it went."""
+    owed = owes_customer(booking)
     people = recipients(booking, facts)
     if not people:
-        return "none"
+        return Outcome("none", False if owed else None)
     if mailer is None or not mailer.enabled:
-        return "off"
+        return Outcome("off", False if owed else None)
     try:
         ZoneInfo(facts.timezone)
         gate = asyncio.Semaphore(SIMULTANEOUS)
@@ -159,8 +187,9 @@ async def notify(
         )
     except Exception:
         logger.warning("bookings_mail_failed", category="send_error")
-        return "failed"
-    return "sent" if all(results) else "failed"
+        return Outcome("failed", False if owed else None)
+    told = customer_reached(booking, people, list(results)) if owed else None
+    return Outcome("sent" if all(results) else "failed", told)
 
 
 async def notify_after_commit(
@@ -168,7 +197,7 @@ async def notify_after_commit(
     mailer: Mailer | None,
     booking: BookingRecord,
     change: Change,
-) -> EmailSummary:
+) -> Outcome:
     """Read the company's facts in a new transaction, then notify.
 
     Never raises: the booking has committed, so an error here must not become a 500 that a retry
@@ -181,8 +210,8 @@ async def notify_after_commit(
                 facts = await load_facts(conn, booking.client_id)
         except Exception:
             logger.warning("bookings_mail_failed", category="facts_unavailable")
-            return "failed"
+            return Outcome("failed", False if owes_customer(booking) else None)
         return await notify(mailer, booking, change, facts)
     except Exception:
         logger.warning("bookings_mail_failed", category="unexpected")
-        return "failed"
+        return Outcome("failed", False if owes_customer(booking) else None)
