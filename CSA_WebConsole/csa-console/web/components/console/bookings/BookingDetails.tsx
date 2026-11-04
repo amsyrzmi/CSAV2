@@ -12,6 +12,7 @@ import {
   bookingTitle,
   blockWhen,
   dayInZone,
+  inactiveNotes,
   locationLabel,
   mapsLink,
   safeMeetingLink,
@@ -80,6 +81,8 @@ export default function BookingDetails({
   const [day, setDay] = useState(dayInZone(booking.starts_at, zone));
   const [time, setTime] = useState(timeInZone(booking.starts_at, zone));
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  // Bumped when a time turns out to be taken, so the free times are read again.
+  const [round, setRound] = useState(0);
   const { busy, run } = useAction();
   const status = STATUS[booking.status];
   const title = bookingTitle(booking);
@@ -100,7 +103,11 @@ export default function BookingDetails({
       }
     });
     if (done) return onChanged(done, change);
-    if (failure) setRefusal(readRefusal(failure));
+    if (failure) {
+      const found = readRefusal(failure);
+      setRefusal(found);
+      if (found.kind === "taken") setRound((value) => value + 1);
+    }
   }
 
   function move(acknowledged: BookingFinding[] = []) {
@@ -125,6 +132,9 @@ export default function BookingDetails({
           <Notice warning testId="booking-conflict-note">
             Someone on this booking is no longer available at this time.
           </Notice>
+        )}
+        {inactiveNotes(booking).length > 0 && (
+          <Notice warning testId="booking-inactive-note">{inactiveNotes(booking).join(" ")}</Notice>
         )}
         <dl className="space-y-2">
           <Row label="When" testId="details-when">{blockWhen(booking.starts_at, booking.ends_at, zone)}</Row>
@@ -212,10 +222,13 @@ export default function BookingDetails({
               </Field>
             </div>
             {!booking.redacted && day && (
-              <FreeTimes scope={scope} zone={zone} day={day} time={time} onPick={setTime}
-                query={booking.type_id
-                  ? { typeId: booking.type_id, people: [], resources: [] }
-                  : { people: booking.people.map((p) => p.id), resources: booking.resources.map((r) => r.id), minutes } } />
+              <FreeTimes scope={scope} zone={zone} day={day} time={time} onPick={setTime} round={round}
+                query={{
+                  typeId: booking.type_id ?? undefined,
+                  people: booking.people.map((p) => p.id),
+                  resources: booking.resources.map((r) => r.id),
+                  minutes: booking.type_id ? undefined : minutes,
+                }} />
             )}
             <div className="flex flex-wrap gap-2">
               <button type="submit" className={action} disabled={busy} data-testid="move-save">Move it</button>

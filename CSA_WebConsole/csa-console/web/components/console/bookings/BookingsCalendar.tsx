@@ -14,9 +14,11 @@ import {
 import {
   bookingTitle,
   canChangeBooking,
+  customerNote,
   dayInZone,
   emailNote,
   entriesOnDay,
+  inactiveNotes,
   layoutDay,
   shiftWeek,
   timeInZone,
@@ -78,20 +80,35 @@ function describe(entry: Entry, zone: string): string {
     if (entry.people.length) parts.push(entry.people.map((p) => p.display_name).join(", "));
     if (entry.status === "pending") parts.push("waiting to be confirmed");
     if (entry.conflict) parts.push("someone is unavailable");
+    parts.push(...inactiveNotes(entry));
   }
   return parts.join(", ");
 }
 
 const CONFLICT = "Someone on this booking is unavailable";
 
-/** A compact flag for the first line of a block; its name carries the sentence. */
+/**
+ * Compact flags for the first line of a block; each one's name carries its sentence. One is for a
+ * person with time off over it, the other for someone or somewhere switched off since it was made.
+ */
 function Flag({ entry }: { entry: Entry }) {
-  if (!isBooking(entry) || !entry.conflict) return null;
+  if (!isBooking(entry)) return null;
+  const off = inactiveNotes(entry).join(" ");
   return (
-    <span data-testid="booking-conflict" role="img" aria-label={CONFLICT} title={CONFLICT}
-      className="inline-flex shrink-0 text-[color:var(--fs-warning)]">
-      <TriangleAlert aria-hidden="true" size={12} />
-    </span>
+    <>
+      {entry.conflict && (
+        <span data-testid="booking-conflict" role="img" aria-label={CONFLICT} title={CONFLICT}
+          className="inline-flex shrink-0 text-[color:var(--fs-warning)]">
+          <TriangleAlert aria-hidden="true" size={12} />
+        </span>
+      )}
+      {off && (
+        <span data-testid="booking-inactive" role="img" aria-label={off} title={off}
+          className="inline-flex shrink-0 text-[color:var(--fs-warning)]">
+          <TriangleAlert aria-hidden="true" size={12} />
+        </span>
+      )}
+    </>
   );
 }
 
@@ -240,6 +257,12 @@ function Agenda({
                       {CONFLICT}
                     </span>
                   )}
+                  {isBooking(item) && inactiveNotes(item).map((note) => (
+                    <span key={note} data-testid="booking-inactive" className="mt-1 flex items-center gap-1 font-medium">
+                      <TriangleAlert aria-hidden="true" size={14} className="shrink-0 text-[color:var(--fs-warning)]" />
+                      {note}
+                    </span>
+                  ))}
                 </>
               );
               const box = `block w-full rounded-[var(--fs-radius-panel)] border p-3 text-left text-sm ${blockTone(item)}`;
@@ -318,7 +341,9 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
   function finish(booking: BookingOut, change: Change | "created") {
     setOpenId(null);
     setCreating(false);
-    setNotice([SAID[change], emailNote(booking.email)].filter(Boolean).join(" "));
+    setNotice(
+      [SAID[change], emailNote(booking.email), customerNote(booking.customer_told)].filter(Boolean).join(" "),
+    );
     reload();
   }
 
@@ -354,16 +379,23 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
           <select className={`${input} mt-1`} data-testid="calendar-filter" value={filter}
             onChange={(event) => setFilter(event.target.value)}>
             <option value="">Everyone</option>
-            {(people.data ?? []).filter((p) => p.is_active).length > 0 && (
+            {/* Someone or somewhere switched off keeps their place, so their bookings can still be listed. */}
+            {(people.data ?? []).length > 0 && (
               <optgroup label="People">
-                {(people.data ?? []).filter((p) => p.is_active)
-                  .map((p) => <option key={p.id} value={`person:${p.id}`}>{p.display_name}</option>)}
+                {(people.data ?? []).map((p) => (
+                  <option key={p.id} value={`person:${p.id}`}>
+                    {p.is_active ? p.display_name : `${p.display_name} (not taking bookings)`}
+                  </option>
+                ))}
               </optgroup>
             )}
-            {(rooms.data ?? []).filter((r) => r.is_active).length > 0 && (
+            {(rooms.data ?? []).length > 0 && (
               <optgroup label="Rooms and shared things">
-                {(rooms.data ?? []).filter((r) => r.is_active)
-                  .map((r) => <option key={r.id} value={`resource:${r.id}`}>{r.name}</option>)}
+                {(rooms.data ?? []).map((r) => (
+                  <option key={r.id} value={`resource:${r.id}`}>
+                    {r.is_active ? r.name : `${r.name} (not available)`}
+                  </option>
+                ))}
               </optgroup>
             )}
           </select>

@@ -45,6 +45,14 @@ test("the small home links to what the company has, in order, and always to Serv
   assert.deepEqual(asMember([pkg("hr")]).map((l) => l.href), ["/portal/hr", "/portal/services"]);
 });
 
+test("a company with only Bookings gets a link to Bookings, before Services", () => {
+  const names = (packages, role) => asMember(packages, role).map((l) => l.label);
+  assert.deepEqual(names([pkg("bookings")]), ["Bookings", "Services"]);
+  assert.deepEqual(names([pkg("bookings"), pkg("hr")]), ["People & HR", "Bookings", "Services"]);
+  assert.deepEqual(asMember([pkg("bookings")]).map((l) => l.href), ["/portal/bookings", "/portal/services"]);
+  assert.deepEqual(names([pkg("bookings", "requested")]), ["Services"]);
+});
+
 test("a platform admin's links are the admin pages for the chosen company", () => {
   // What a member of that company would see, as the page computes it for a platform admin.
   const rail = navigationFor(member("tenant_admin"), [pkg("hr")]);

@@ -11,8 +11,11 @@ export interface BookingPersonOut {
   id: string;
   display_name: string;
   user_id: string | null;
+  /** Only an Admin is sent the HR id and the address; everyone else gets null for both. */
   employee_id: string | null;
   email: string | null;
+  /** Whether this person is linked to an HR person, for everyone. */
+  linked_to_hr: boolean;
   is_active: boolean;
   version: number;
 }
@@ -327,6 +330,8 @@ export interface BookingOut {
   /** Whether this viewer may move or cancel it, by the rule the server enforces (never says who made it). */
   can_change: boolean;
   email?: BookingMail | null;
+  /** false when the customer was not mailed; null for no customer, a read, or nothing owed yet. */
+  customer_told?: boolean | null;
 }
 
 /** A private meeting the viewer is not part of, on a filtered read: times only, and no id. */

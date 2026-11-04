@@ -18,6 +18,8 @@ import {
   formToBookingIn,
   LOCATIONS,
   locationLabel,
+  severalSwitchedOff,
+  switchedOffPeople,
   takesCustomer,
   todayInZone,
   type BookingForm as FormState,
@@ -156,11 +158,14 @@ export default function BookingForm({
   }));
   const [problem, setProblem] = useState("");
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  // Bumped when a time turns out to be taken, so the free times are read again.
+  const [round, setRound] = useState(0);
   const { busy, run } = useAction();
   const timeInput = useRef<HTMLInputElement>(null);
   const type = usable.find((item) => item.id === form.typeId) ?? null;
   const activePeople = people.filter((person) => person.is_active);
   const activeRooms = rooms.filter((room) => room.is_active);
+  const activeIds = new Set(activePeople.map((person) => person.id));
   const names = new Map([...people.map((p) => [p.id, p.display_name] as const), ...rooms.map((r) => [r.id, r.name] as const)]);
 
   function set(change: Partial<FormState>) {
@@ -189,7 +194,11 @@ export default function BookingForm({
       }
     });
     if (booked) return onBooked(booked);
-    if (failure) setRefusal(readRefusal(failure));
+    if (failure) {
+      const found = readRefusal(failure);
+      setRefusal(found);
+      if (found.kind === "taken") setRound((value) => value + 1);
+    }
   }
 
   const meetingMinutes = Number(form.minutes);
@@ -230,7 +239,7 @@ export default function BookingForm({
             {type.delivery === "named" && (
               <fieldset className="space-y-1" data-testid="booking-people">
                 <legend className="text-sm font-medium">Who is it with?</legend>
-                {type.person_ids.map((id) => (
+                {type.person_ids.filter((id) => activeIds.has(id)).map((id) => (
                   <Check key={id} checked={form.personIds.includes(id)}
                     onChange={() => setWhen({ personIds: toggle(form.personIds, id) })}>
                     {names.get(id) ?? "Someone"}
@@ -239,9 +248,16 @@ export default function BookingForm({
               </fieldset>
             )}
             {type.delivery === "several" && (
-              <p className={mutedText}>
-                With {type.person_ids.map((id) => names.get(id) ?? "someone").join(", ")}, all together.
-              </p>
+              <>
+                <p className={mutedText}>
+                  With {type.person_ids.map((id) => names.get(id) ?? "someone").join(", ")}, all together.
+                </p>
+                {switchedOffPeople(type.person_ids, people).length > 0 && (
+                  <Notice warning testId="booking-type-inactive">
+                    {severalSwitchedOff(switchedOffPeople(type.person_ids, people))}
+                  </Notice>
+                )}
+              </>
             )}
             {type.delivery === "any" && <p className={mutedText}>Whoever is free is picked for you.</p>}
             {type.resource_rule === "specific" && (
@@ -322,7 +338,7 @@ export default function BookingForm({
             </Field>
           </div>
           {form.day && (
-            <FreeTimes scope={scope} zone={zone} day={form.day} query={slotQuery} time={form.time}
+            <FreeTimes scope={scope} zone={zone} day={form.day} query={slotQuery} time={form.time} round={round}
               onPick={(time) => setWhen({ time })} />
           )}
         </div>

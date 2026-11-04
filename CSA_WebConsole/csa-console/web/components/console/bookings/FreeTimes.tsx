@@ -27,6 +27,7 @@ export default function FreeTimes({
   day,
   query,
   time,
+  round = 0,
   onPick,
 }: {
   scope: BookingsScope;
@@ -34,12 +35,14 @@ export default function FreeTimes({
   day: string;
   query: Query;
   time: string;
+  /** Bumped by the caller when the times it showed are out of date (a time was just taken). */
+  round?: number;
   onPick: (time: string) => void;
 }) {
   const bounds = dayWindow(day, zone);
   const ready = Boolean(bounds) && (query.typeId || ((query.people.length || query.resources.length) && query.minutes));
   const key = ready
-    ? [bounds?.from, query.typeId, query.minutes, query.people.join(","), query.resources.join(",")].join("|")
+    ? [bounds?.from, query.typeId, query.minutes, query.people.join(","), query.resources.join(","), round].join("|")
     : "";
   const [read, setRead] = useState<{ key: string; times: string[] | null } | null>(null);
 

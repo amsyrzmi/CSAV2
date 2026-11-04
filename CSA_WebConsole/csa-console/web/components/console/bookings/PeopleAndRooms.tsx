@@ -101,7 +101,7 @@ export default function PeopleAndRooms({ scope }: { scope: BookingsScope }) {
                       {!person.is_active && <StatusLabel tone="neutral">Not taking bookings</StatusLabel>}
                     </div>
                     {email && <p className={`mt-1 ${mutedText}`}>{email}</p>}
-                    {person.employee_id && <p className={mutedText}>Linked to HR</p>}
+                    {person.linked_to_hr && <p className={mutedText}>Linked to HR</p>}
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button type="button" className={secondary} aria-label={`Working hours for ${person.display_name}`}
                         data-testid="person-hours"

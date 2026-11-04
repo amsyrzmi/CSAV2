@@ -194,6 +194,15 @@ test("a setup refusal reads as a plain sentence, never the code", async () => {
     hours_invalid: /23:59/,
     slot_taken: /^That time was just taken\.$/,
     "bookings setup requires an administrator": /^Only an Admin can change/,
+    person_inactive: /^That person isn't taking bookings any more\./,
+    resource_inactive: /^That room isn't available any more\./,
+    type_inactive: /^That booking type is switched off\./,
+    times_invalid: /^The booking must end after it starts\./,
+    minutes_required: /^Enter how long it lasts/,
+    people_or_resources_required: /^Choose a person or a room/,
+    window_invalid: /^The end of the period must be after its start\./,
+    no_room_available: /^No room is free for this booking type\./,
+    "bookings changes require staff or an administrator": /^Only staff and Admins can change bookings\./,
   };
   for (const [code, expected] of Object.entries(cases)) {
     const status = code.startsWith("version") ? 409 : 422;

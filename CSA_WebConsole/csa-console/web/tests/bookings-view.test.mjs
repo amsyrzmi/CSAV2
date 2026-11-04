@@ -21,6 +21,7 @@ const {
   weekDays, layoutDay, findingCopy, emailNote, addDays, timeInZone, dayInZone, shiftWeek, weekTitle,
   bookingTitle, mapsLink, wazeLink, safeMeetingLink, canChangeBooking,
   emptyBookingForm, bookingProblem, formToBookingIn, isPhone, entriesOnDay,
+  inactiveNotes, customerNote, switchedOffPeople, severalSwitchedOff,
 } = view;
 
 const week = (opens, closes, days = [0, 1, 2, 3, 4]) => days.map((weekday) => ({ weekday, opens, closes }));
@@ -490,4 +491,52 @@ test("on a day with a clock change the minutes still read on the wall clock", ()
   const late = { starts_at: "2026-11-02T03:00:00Z", ends_at: "2026-11-02T06:00:00Z" };
   const [piece] = layoutDay(entriesOnDay([late], sunday), NY, sunday);
   assert.deepEqual([piece.startMinute, piece.endMinute, piece.continuesAfter], [22 * 60, 1440, true]);
+});
+
+test("a booking says who on it is switched off, and names nobody on a redacted one", () => {
+  const person = (name, is_active) => ({ id: name, display_name: name, is_active });
+  const room = (name, is_active) => ({ id: name, name, is_active });
+  const base = { redacted: false, people: [], resources: [] };
+  assert.deepEqual(inactiveNotes(base), []);
+  assert.deepEqual(inactiveNotes({ ...base, people: [person("Aina", true)], resources: [room("Room A", true)] }), []);
+  assert.deepEqual(inactiveNotes({ ...base, people: [person("Aina", false)] }), ["Aina isn't taking bookings any more."]);
+  assert.deepEqual(
+    inactiveNotes({ ...base, people: [person("Aina", false), person("Bakar", false), person("Chen", true)] }),
+    ["Aina and Bakar aren't taking bookings any more."],
+  );
+  assert.deepEqual(
+    inactiveNotes({ ...base, people: [person("Aina", false), person("Bakar", false), person("Chen", false)] }),
+    ["Aina, Bakar and Chen aren't taking bookings any more."],
+  );
+  assert.deepEqual(inactiveNotes({ ...base, resources: [room("Room A", false)] }), ["Room A isn't available any more."]);
+  assert.deepEqual(
+    inactiveNotes({ ...base, people: [person("Aina", false)], resources: [room("Room A", false)] }),
+    ["Aina isn't taking bookings any more.", "Room A isn't available any more."],
+  );
+  assert.deepEqual(inactiveNotes({ ...base, redacted: true, people: [person("Aina", false)] }), []);
+});
+
+test("the people a type names who are switched off", () => {
+  const people = [
+    { id: "a", display_name: "Aina", is_active: false },
+    { id: "b", display_name: "Bakar", is_active: true },
+  ];
+  assert.deepEqual(switchedOffPeople(["a", "b", "zzz"], people), ["Aina"]);
+  assert.deepEqual(switchedOffPeople(["b"], people), []);
+});
+
+test("a several-people type with someone switched off says so in a sentence", () => {
+  assert.equal(severalSwitchedOff([]), null);
+  assert.equal(
+    severalSwitchedOff(["Aina"]),
+    "Aina isn't taking bookings any more, so this booking type can't be booked until an Admin changes it.",
+  );
+  assert.match(severalSwitchedOff(["Aina", "Bakar"]), /^Aina and Bakar aren't taking bookings any more/);
+});
+
+test("the customer note appears only when the customer was not told", () => {
+  assert.equal(customerNote(false), "Customer wasn't told.");
+  assert.equal(customerNote(true), null);
+  assert.equal(customerNote(null), null);
+  assert.equal(customerNote(undefined), null);
 });

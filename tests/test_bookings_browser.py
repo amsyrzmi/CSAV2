@@ -126,6 +126,7 @@ def booking(booking_id: int, start: str, end: str, **extra: Any) -> dict[str, An
         "conflict": None,
         "can_change": True,
         "email": None,
+        "customer_told": None,
     } | extra
 
 
@@ -135,6 +136,7 @@ def person(person_id: str, name: str, email: str | None, **extra: Any) -> dict[s
         "display_name": name,
         "user_id": None,
         "employee_id": None,
+        "linked_to_hr": extra.get("employee_id") is not None,
         "email": email,
         "is_active": True,
         "version": 1,
@@ -198,6 +200,7 @@ class World:
         # Queued refusals, each answers one booking or move: (status, body).
         self.refusals: list[tuple[int, dict[str, Any]]] = []
         self.mail = "sent"
+        self.customer_told: bool | None = None
         self.profile_status = 200
         self.profile_delay = 0.0
         if rich:
@@ -456,6 +459,7 @@ class World:
                 type_id=body.get("type_id"),
                 kind="meeting" if body.get("title") else "appointment",
                 email=self.mail,
+                customer_told=self.customer_told,
             )
             self.bookings.append(row)
             return 201, row
@@ -475,7 +479,7 @@ class World:
             status = {"cancel": "cancelled", "decline": "cancelled", "confirm": "confirmed"}
             row["status"] = status.get(route.rsplit("/", 1)[1], row["status"])
         row["version"] += 1
-        return 200, row | {"email": self.mail}
+        return 200, row | {"email": self.mail, "customer_told": self.customer_told}
 
     def do_blocks(
         self, method: str, route: str, params: dict[str, str], body: Any
@@ -1549,5 +1553,228 @@ async def test_calendar_is_an_agenda_at_390_and_a_week_from_768(site: Site, them
             await expect(page.get_by_test_id("calendar-agenda")).to_have_count(0)
             measured = await overflow(page)
             assert measured["scroll"] <= measured["inner"], ("week", theme, measured)
+
+    await with_browser(body)
+
+
+# --- the review's fixes: flags, free times after a refusal, sentences, the customer ------------
+
+
+async def test_a_booking_with_someone_switched_off_is_flagged_everywhere(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        world.people[1]["is_active"] = False
+        world.resources[0]["is_active"] = False
+        monday = monday_of(COMPANY_ZONE)
+        siti = {"id": SITI, "display_name": "Siti Nur", "is_active": False}
+        room = {"id": ROOM, "name": "Meeting room", "is_active": False}
+        world.bookings = [
+            booking(
+                1, utc_at(monday, "09:00"), utc_at(monday, "10:00"),
+                title="Gone person", people=[siti],
+            ),
+            booking(
+                2, utc_at(monday, "11:00"), utc_at(monday, "12:00"),
+                title="Closed room", resources=[room],
+            ),
+            booking(3, utc_at(monday, "13:00"), utc_at(monday, "14:00"), title="All well"),
+            booking(
+                4, utc_at(monday, "15:00"), utc_at(monday, "16:00"),
+                title="Busy", redacted=True, private=True, people=[], customer=None,
+            ),
+        ]  # fmt: skip
+        sentence = "Siti Nur isn't taking bookings any more."
+        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            block = page.get_by_test_id("booking").filter(has_text="Gone person")
+            flag = block.get_by_test_id("booking-inactive")
+            await expect(flag).to_have_attribute("aria-label", sentence)
+            await expect(
+                page.get_by_test_id("booking")
+                .filter(has_text="Closed room")
+                .get_by_test_id("booking-inactive")
+            ).to_have_attribute("aria-label", "Meeting room isn't available any more.")
+            await expect(page.get_by_test_id("booking-inactive")).to_have_count(2)
+            # An ordinary booking and a redacted private meeting carry no flag and name nobody.
+            busy = page.get_by_test_id("booking-busy")
+            await expect(busy.get_by_test_id("booking-inactive")).to_have_count(0)
+            await expect(busy).to_have_attribute(
+                "aria-label", re.compile(r"^\d\d:\d\d to \d\d:\d\d, Busy$")
+            )
+            # Their bookings can still be listed: both stay in the filter, marked.
+            filter_ = page.get_by_test_id("calendar-filter")
+            await expect(filter_.locator(f'option[value="person:{SITI}"]')).to_have_text(
+                "Siti Nur (not taking bookings)"
+            )
+            await expect(filter_.locator(f'option[value="resource:{ROOM}"]')).to_have_text(
+                "Meeting room (not available)"
+            )
+            await block.click()
+            note = page.get_by_test_id("booking-details").get_by_test_id("booking-inactive-note")
+            await expect(note).to_have_text(sentence)
+            await page.keyboard.press("Escape")
+            await page.get_by_test_id("booking").filter(has_text="All well").click()
+            await expect(page.get_by_test_id("booking-inactive-note")).to_have_count(0)
+            await page.keyboard.press("Escape")
+            await busy.click()
+            await expect(page.get_by_test_id("booking-inactive-note")).to_have_count(0)
+
+        async with bookings_page(browser, site, world, path="/portal/bookings", width=390) as page:
+            agenda = page.get_by_test_id("calendar-agenda")
+            await expect(agenda).to_be_visible(timeout=WAIT)
+            await expect(agenda).to_contain_text(sentence)
+            await expect(agenda).to_contain_text("Meeting room isn't available any more.")
+            await expect(agenda.get_by_test_id("booking-inactive")).to_have_count(2)
+
+    await with_browser(body)
+
+
+async def test_after_a_taken_time_the_free_times_are_read_again(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        day = date(2099, 11, 10)
+        ten, eleven = utc_at(day, "10:00"), utc_at(day, "11:00")
+        world.slots = [ten, eleven]
+        monday = monday_of(COMPANY_ZONE)
+        world.bookings = [
+            booking(
+                1, utc_at(monday, "09:00"), utc_at(monday, "10:00"), title="To move",
+                resources=[{"id": ROOM, "name": "Meeting room", "is_active": True}],
+            )
+        ]  # fmt: skip
+        taken = (409, {"detail": "slot_taken", "message": "That time was just taken."})
+
+        def reads() -> int:
+            return len([c for c in world.calls if c["path"] == "bookings/availability"])
+
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            # Booking: someone else takes 10:00 while the form is open.
+            await page.get_by_test_id("booking-new").click()
+            dialog = page.get_by_test_id("booking-dialog")
+            await fill_meeting(dialog, "Race")
+            await expect(dialog.get_by_test_id("free-times-10:00")).to_be_visible()
+            before = reads()
+            world.slots = [eleven]
+            world.refusals = [taken]
+            await dialog.get_by_test_id("booking-save").click()
+            await expect(dialog.get_by_test_id("booking-taken")).to_be_visible()
+            await expect(dialog.get_by_test_id("free-times-10:00")).to_have_count(0)
+            await expect(dialog.get_by_test_id("free-times-11:00")).to_be_visible()
+            assert reads() > before
+            await page.keyboard.press("Escape")
+
+            # Moving: the same, and the read names the booking's own people and rooms.
+            world.slots = [ten, eleven]
+            await page.get_by_test_id("booking").filter(has_text="To move").click()
+            details = page.get_by_test_id("booking-details")
+            await details.get_by_test_id("details-move").click()
+            await details.get_by_test_id("move-day").fill(str(day))
+            await expect(details.get_by_test_id("free-times-10:00")).to_be_visible()
+            asked = availability_asked(world)
+            assert asked["type_id"] == TYPE
+            assert asked["people"] == AIMAN and asked["resources"] == ROOM
+            before = reads()
+            world.slots = [eleven]
+            world.refusals = [taken]
+            await details.get_by_test_id("move-time").fill("10:00")
+            await details.get_by_test_id("move-save").click()
+            await expect(details.get_by_test_id("booking-taken")).to_be_visible()
+            await expect(details.get_by_test_id("free-times-10:00")).to_have_count(0)
+            await expect(details.get_by_test_id("free-times-11:00")).to_be_visible()
+            assert reads() > before
+
+    await with_browser(body)
+
+
+async def test_refusals_for_switched_off_things_are_sentences_and_the_form_says_so(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        world.people[1]["is_active"] = False
+        world.types = [
+            booking_type(TYPE, "Consultation", 60, delivery="named", person_ids=[AIMAN, SITI]),
+            booking_type(
+                "66666666-6666-4666-8666-000000000009",
+                "Team session",
+                45,
+                delivery="several",
+                audience="staff",
+                person_ids=[AIMAN, SITI],
+            ),
+        ]
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            await page.get_by_test_id("booking-new").click()
+            dialog = page.get_by_test_id("booking-dialog")
+            # A named person who is switched off is not offered.
+            people = dialog.get_by_test_id("booking-people")
+            await expect(people.get_by_label("Aiman Hakim")).to_be_visible()
+            await expect(people.get_by_label("Siti Nur")).to_have_count(0)
+            # A several-people type that includes them says so before anything is filled in.
+            await dialog.get_by_test_id("booking-type").select_option(
+                value="66666666-6666-4666-8666-000000000009"
+            )
+            await expect(dialog.get_by_test_id("booking-type-inactive")).to_have_text(
+                "Siti Nur isn't taking bookings any more, so this booking type can't be booked "
+                "until an Admin changes it."
+            )
+            # And a refusal that comes back is a sentence, never its code.
+            world.refusals = [(422, {"detail": "person_inactive"})]
+            await dialog.get_by_test_id("booking-day").fill("2099-11-10")
+            await dialog.get_by_test_id("booking-time").fill("10:00")
+            await dialog.get_by_test_id("booking-save").click()
+            await expect(dialog.get_by_test_id("booking-error")).to_have_text(
+                "That person isn't taking bookings any more. Choose someone else."
+            )
+            assert "person_inactive" not in await dialog.inner_text()
+
+    await with_browser(body)
+
+
+async def test_a_change_says_when_the_customer_was_not_told(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        monday = monday_of(COMPANY_ZONE)
+        world.bookings = [
+            booking(1, utc_at(monday, "09:00"), utc_at(monday, "10:00"), title="Phone walk-in"),
+            booking(2, utc_at(monday, "11:00"), utc_at(monday, "12:00"), title="Emailed one"),
+            booking(3, utc_at(monday, "13:00"), utc_at(monday, "14:00"), title="No customer"),
+        ]
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            details = page.get_by_test_id("booking-details")
+            notice = page.get_by_test_id("calendar-notice")
+            later = str(monday + timedelta(days=7))
+
+            async def move(title: str) -> None:
+                await page.get_by_test_id("booking").filter(has_text=title).click()
+                await details.get_by_test_id("details-move").click()
+                await details.get_by_test_id("move-day").fill(later)
+                await details.get_by_test_id("move-time").fill("15:00")
+                await details.get_by_test_id("move-save").click()
+                await expect(details).to_have_count(0)
+
+            # Phone-only customer: the person delivering it was emailed, the customer was not.
+            world.mail, world.customer_told = "sent", False
+            await move("Phone walk-in")
+            await expect(notice).to_have_text("Moved. Customer wasn't told.")
+            # Said whatever the mail summary says.
+            world.mail, world.customer_told = "none", False
+            await move("Emailed one")
+            await expect(notice).to_have_text(
+                "Moved. Nobody on this booking has an email address. Customer wasn't told."
+            )
+            # Told, or no customer: nothing more to say.
+            world.mail, world.customer_told = "sent", None
+            await move("No customer")
+            await expect(notice).to_have_text("Moved.")
 
     await with_browser(body)

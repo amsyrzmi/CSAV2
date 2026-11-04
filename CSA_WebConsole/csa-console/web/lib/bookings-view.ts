@@ -520,6 +520,46 @@ export function emailNote(status: string | null | undefined): string | null {
   return (status && MAIL_NOTES[status]) || null;
 }
 
+const joined = (names: string[]) =>
+  names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+/**
+ * What to say of the people and rooms on a booking that were switched off after it was made: the
+ * booking stays, so staff must see it. A redacted private meeting names nobody (it carries no one).
+ */
+export function inactiveNotes(booking: {
+  redacted: boolean;
+  people: { display_name: string; is_active: boolean }[];
+  resources: { name: string; is_active: boolean }[];
+}): string[] {
+  if (booking.redacted) return [];
+  const off = booking.people.filter((p) => !p.is_active).map((p) => p.display_name);
+  const rooms = booking.resources.filter((r) => !r.is_active).map((r) => r.name);
+  const notes: string[] = [];
+  if (off.length) notes.push(`${joined(off)} ${off.length === 1 ? "isn't" : "aren't"} taking bookings any more.`);
+  if (rooms.length) notes.push(`${joined(rooms)} ${rooms.length === 1 ? "isn't" : "aren't"} available any more.`);
+  return notes;
+}
+
+/** The names of those on a booking type who are switched off, so the form can say so first. */
+export function switchedOffPeople(ids: string[], people: { id: string; display_name: string; is_active: boolean }[]): string[] {
+  return ids.flatMap((id) => {
+    const person = people.find((p) => p.id === id);
+    return person && !person.is_active ? [person.display_name] : [];
+  });
+}
+
+/** What the form says, before it is filled in, about a "several people" type that names someone switched off. */
+export function severalSwitchedOff(names: string[]): string | null {
+  if (names.length === 0) return null;
+  return `${joined(names)} ${names.length === 1 ? "isn't" : "aren't"} taking bookings any more, so this booking type can't be booked until an Admin changes it.`;
+}
+
+/** Said after a change when the customer has a contact on the booking but was not mailed. */
+export function customerNote(told: boolean | null | undefined): string | null {
+  return told === false ? "Customer wasn't told." : null;
+}
+
 /** What a booking is called on the calendar. A private meeting the viewer is not part of is "Busy". */
 export function bookingTitle(booking: { redacted: boolean; title: string | null; kind: string }): string {
   if (booking.redacted) return "Busy";
