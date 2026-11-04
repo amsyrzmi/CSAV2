@@ -17,13 +17,20 @@
 --   (pending, confirmed, cancelled, no_show) become 'cancelled' first, with a NOTICE count. An old
 --   row whose end is not after its start is left alone: the time check is added NOT VALID and is
 --   validated only when no such row exists, so new rows are always checked.
--- Rollback: DROP FUNCTION public.booking_leave_days(uuid, uuid[], date, date); DROP TABLE the ten
---   booking_* tables (holds first, then attendees, blocks, closed_days, hours, type_resources,
---   type_people, types, resources, people); drop bookings_status_chk, bookings_times_chk,
---   bookings_kind_chk, bookings_source_chk, bookings_client_id_id_key and bookings.type_id, title,
---   kind, created_by, source, private, location_kind, address, meeting_link, version once nothing
---   reads them. bookings.service stays nullable (set it NOT NULL again only if no meeting rows
---   remain). btree_gist stays installed.
+-- Rollback, in this order (booking_types cannot be dropped while bookings_type_fk exists, and
+--   bookings_client_id_id_key cannot be dropped while holds and attendees refer to it):
+--   ALTER TABLE public.bookings DROP CONSTRAINT bookings_type_fk;
+--   DROP FUNCTION public.booking_leave_days(uuid, uuid[], date, date);
+--   DROP TABLE the ten booking_* tables (holds first, then attendees, blocks, closed_days, hours,
+--   type_resources, type_people, types, resources, people);
+--   then drop bookings_status_chk, bookings_times_chk, bookings_kind_chk, bookings_source_chk,
+--   bookings_location_kind_chk, bookings_client_id_id_key, the index bookings_client_starts and
+--   the columns bookings.type_id, title, kind, created_by, source, private, location_kind,
+--   address, meeting_link, version, once nothing reads them. bookings.service stays nullable (set
+--   it NOT NULL again only if no meeting rows remain). btree_gist stays installed. Legacy statuses
+--   that became 'cancelled' above cannot be restored: the old values are not kept. Finally delete
+--   the schema_migrations rows for 0510 and 0511, or the runner thinks they are still applied.
+--   (0511 adds public.booking_team_members, which has its own rollback.)
 
 DO $$
 BEGIN
