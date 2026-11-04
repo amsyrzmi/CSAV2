@@ -338,6 +338,66 @@ async def test_a_person_with_their_own_hours_is_checked_against_them(
     assert (await book(team, team.staff, meeting(person, start=at(12)))).status_code == 201
 
 
+async def link_to_hr(t: Team, user_id: str) -> str:
+    """An HR person linked to an account after the booking person was made, as an owner fixture."""
+    employee = str(uuid.uuid4())
+    await t.w.q(
+        "INSERT INTO hr_employees (client_id, id, display_name) VALUES (%s,%s,'Synthetic')",
+        t.w.tenants[0],
+        employee,
+    )
+    await t.w.q(
+        "INSERT INTO hr_employee_accounts (client_id, user_id, employee_id) VALUES (%s,%s,%s)",
+        t.w.tenants[0],
+        user_id,
+        employee,
+    )
+    return employee
+
+
+async def test_leave_follows_an_account_linked_to_hr_after_the_person_was_added(
+    sessions: SessionWorld, team: Team
+) -> None:
+    day = soon_tuesday()
+    next_day = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    person = await make_person(team, "Late Link", user_id=team.staff_info["user"]["id"])
+    assert person["employee_id"] is None
+    kind = await make_type(team, delivery="named", person_ids=[person["id"]], max_advance_days=60)
+    before = await booked(team, team.staff, meeting(person, start=at(10, day=next_day)))
+    employee = await link_to_hr(team, team.staff_info["user"]["id"])
+    await approve_leave(sessions, employee, day, day)
+    # Not offered, whatever the stored column says.
+    window = f"from={day}T00:00:00Z&to={next_day}T23:59:00Z"
+    got = await team.staff.get(
+        f"{BASE}/availability?type_id={kind['id']}&people={person['id']}&{window}"
+    )
+    assert {s["starts_at"][:10] for s in got.json()} == {next_day}
+    no_leave_words(got)
+    # Staff are refused, and nothing says why.
+    asked = await book(team, team.staff, meeting(person, start=at(10, day=day)))
+    assert asked.status_code == 409
+    assert asked.json()["message"] == "Not available that day."
+    assert asked.json()["findings"] == ["unavailable"]
+    no_leave_words(asked)
+    # A booking already there on a leave day shows the flag.
+    await approve_leave(sessions, employee, next_day, next_day)
+    window = f"?from={next_day}T00:00:00Z&to={next_day}T23:59:00Z"
+    shown = await team.reader.get(f"{BASE}/calendar{window}")
+    assert {b["id"]: b["conflict"] for b in shown.json()["items"]}[before["id"]] == "unavailable"
+    no_leave_words(shown)
+
+
+async def test_an_account_person_without_an_hr_link_books_normally(
+    sessions: SessionWorld, team: Team
+) -> None:
+    person = await make_person(team, "No HR", user_id=team.staff_info["user"]["id"])
+    made = await booked(team, team.staff, meeting(person))
+    assert made["conflict"] is None
+    window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
+    shown = await team.reader.get(f"{BASE}/calendar{window}")
+    assert [b["conflict"] for b in shown.json()["items"]] == [None]
+
+
 async def test_staff_cannot_book_a_person_on_leave(sessions: SessionWorld, team: Team) -> None:
     person = await person_on_leave(team)
     asked = await book(team, team.staff, meeting(person))

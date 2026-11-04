@@ -282,17 +282,29 @@ def default_hours() -> dict[int, list[tuple[time, time]]]:
 
 
 async def _leave_by_person(
-    conn: Conn, client_id: UUID, people: Iterable[tuple[UUID, UUID | None]], days: list[date]
+    conn: Conn,
+    client_id: UUID,
+    people: Iterable[tuple[UUID, UUID | None, UUID | None]],
+    days: list[date],
 ) -> dict[UUID, list[tuple[date, date]]]:
     """Approved leave over `days`, dates only, keyed by booking person.
 
-    Leave belongs to an HR employee, so each person is translated through their `employee_id`. A
-    person with no HR link has no leave.
+    `people` holds (person, account, stored HR person). Leave belongs to an HR employee. A person
+    with an account is looked up live through the account's HR link, so a link made after the
+    person was added still counts; the stored `employee_id` counts as well. A person with neither
+    has no leave, and a company without the HR package has no link rows.
     """
-    by_employee: dict[UUID, list[UUID]] = {}
-    for person_id, employee_id in people:
-        if employee_id is not None:
-            by_employee.setdefault(employee_id, []).append(person_id)
+    listed = list(people)
+    linked: dict[UUID, UUID] = {}
+    if any(user_id is not None for _, user_id, _ in listed):
+        for member in await setup.team_members(conn, client_id):
+            if member["employee_id"] is not None:
+                linked[member["user_id"]] = member["employee_id"]
+    by_employee: dict[UUID, set[UUID]] = {}
+    for person_id, user_id, stored in listed:
+        for employee_id in (stored, linked.get(user_id) if user_id is not None else None):
+            if employee_id is not None:
+                by_employee.setdefault(employee_id, set()).add(person_id)
     if not by_employee:
         return {}
     rows = await db.q.fetch_all(
@@ -340,7 +352,9 @@ async def load_calendar(
         conn=conn,
     )
     hours: Hours = company or default_hours()
-    leave = await _leave_by_person(conn, client_id, [(p.id, p.employee_id) for p in people], days)
+    leave = await _leave_by_person(
+        conn, client_id, [(p.id, p.user_id, p.employee_id) for p in people], days
+    )
     return Calendar(
         timezone=zone,
         company_hours=hours,
@@ -446,8 +460,10 @@ async def _conflicts(
     nothing is stored and no reason is ever looked at.
     """
     live = [r for r in rows if r["status"] in ("pending", "confirmed")]
-    linked = [(a.person_id, a.employee_id) for r in live for a in people.get(r["id"], ())]
-    if not any(employee for _, employee in linked):
+    linked = [
+        (a.person_id, a.user_id, a.employee_id) for r in live for a in people.get(r["id"], ())
+    ]
+    if not any(user or employee for _, user, employee in linked):
         return set()
     zone = await company_zone(conn, client_id)
     days = touched_dates(zone, min(r["starts_at"] for r in live), max(r["ends_at"] for r in live))
