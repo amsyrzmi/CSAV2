@@ -108,6 +108,12 @@ STDERR_TAIL_LINES = 5
 MIGRATION_ERROR_PREFIX = "migration error:"  # scripts/migrate.py; its texts name no connection
 BOOTSTRAP_APPROVAL = ("CSA_STAGING_ADMIN_BOOTSTRAP_APPROVAL", "approved-isolated-staging")
 BOOTSTRAP_TRIES = 3  # safe to repeat: bootstrap closes for good once one admin exists
+# The prompts come from a container that takes seconds to start, and until one appears the
+# terminal still echoes, so a password typed early lands on screen and in scrollback.
+WAIT_FOR_PROMPT = (
+    "Wait for the password prompt before you type: it can take a few seconds, "
+    "and anything typed before it shows on screen."
+)
 ADMIN_ADD_APPROVAL = ("CSA_STAGING_ADMIN_ADD_APPROVAL", "approved-isolated-staging")
 GATEWAY_CONTAINER = f"{PROJECT}-gateway-1"
 # One-off containers: no network, nothing writable but a mount, no secrets, no capabilities.
@@ -775,7 +781,7 @@ def _create_first_admin(
         out(
             f"The first platform admin was not created (exit {code}); try again, attempt "
             f"{attempt} of {BOOTSTRAP_TRIES}. The password needs at least 12 characters, typed "
-            "the same both times."
+            f"the same both times. {WAIT_FOR_PROMPT}"
         )
         code = runner.run_tty(argv, env=approved)
     if code != 0:
@@ -926,7 +932,7 @@ def _rebuild(
         f"{SERVICES_STOPPED}; {DATABASE} is at {context.newest_migration} with no platform admin; "
         f"{UPLOADS_EMPTY}"
     )
-    out("Creating the first platform admin; type an initial password when asked.")
+    out(f"Creating the first platform admin, with an initial password. {WAIT_FOR_PROMPT}")
     _create_first_admin(runner, env, first.email, first.display_name, out)
 
     stage.state = (
@@ -1038,7 +1044,7 @@ def _add_admins(runner: ResetRunner, context: ResetContext, out: Callable[[str],
             continue
         out(
             f"Adding platform admin {admin.email}: type {first.email}'s password, "
-            "then an initial password for them to change at first sign-in."
+            f"then an initial password for them to change at first sign-in. {WAIT_FOR_PROMPT}"
         )
         code = runner.run_tty(
             [
