@@ -12,6 +12,46 @@ from csa.contracts.envelope import Channel, ContractModel, Envelope
 from csa.contracts.facts import AgentError, AgentResult, Fact, Ui
 from csa.contracts.plan import Intent, Plan, Task
 
+RECENT_MESSAGES = 6
+RECENT_CHARS = 300
+
+
+class BookingType(ContractModel):
+    """A service this customer may book, for the planner to name by its id."""
+
+    id: UUID
+    name: str = Field(max_length=120)
+    minutes: int = Field(ge=1)
+
+
+class BookingRef(ContractModel):
+    """One of this customer's own upcoming bookings, for the planner to name by its id."""
+
+    id: UUID
+    name: str = Field(max_length=160)
+    when: str = Field(max_length=80)
+    status: Literal["pending", "confirmed"]
+
+
+class RecentMessage(ContractModel):
+    """An earlier message of this conversation: redacted text, which the customer controls."""
+
+    author: Literal["customer", "assistant"]
+    text: str = Field(max_length=RECENT_CHARS)
+
+
+class BookingContext(ContractModel):
+    """What the classifier and planner need to turn "3 pm please" into a booking.
+
+    Only set for a company whose customers can book. `recent` is untrusted, like the message.
+    """
+
+    today: str = Field(max_length=40)
+    timezone: str = Field(max_length=64)
+    types: list[BookingType] = Field(default_factory=list, max_length=20)
+    upcoming: list[BookingRef] = Field(default_factory=list, max_length=10)
+    recent: list[RecentMessage] = Field(default_factory=list, max_length=RECENT_MESSAGES)
+
 
 class Context(ContractModel):
     summary: str | None = Field(default=None, max_length=4000)
@@ -20,6 +60,7 @@ class Context(ContractModel):
     active_order_ids: list[str] = Field(default_factory=list, max_length=10)
     clarify_count: int = Field(default=0, ge=0)
     flags: dict[str, bool] = Field(default_factory=dict)
+    booking: BookingContext | None = None
 
 
 class GuardResult(ContractModel):

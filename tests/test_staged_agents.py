@@ -53,6 +53,8 @@ from tests.conftest import requires_docker
         {"action": "reschedule", "starts_at": "2030-01-01T09:00"},
         {"action": "cancel"},
         {"action": "status"},
+        {"action": "save_details"},
+        {"action": "save_details", "customer_name": " "},
         {"action": "request_book"},
         {"action": "request_cancel", "booking_id": str(uuid4())},
         {"action": "list", "client_id": str(uuid4())},
@@ -77,6 +79,7 @@ def test_the_booking_input_names_only_the_new_actions() -> None:
         "cancel",
         "list",
         "status",
+        "save_details",
     ]
     assert set(schema["properties"]) == {
         "action",
@@ -119,6 +122,15 @@ def test_a_model_that_fills_unused_fields_with_blanks_is_understood() -> None:
         }
     )
     assert inp.model_dump(exclude_none=True) == {"action": "list"}
+
+
+def test_saving_details_is_a_commit_that_has_something_to_save() -> None:
+    only_email = BookingInput(action="save_details", customer_email="aina@example.test")
+    only_name = BookingInput(action="save_details", customer_name="Aina Binti Test")
+    agent = BookingAgent()
+    assert agent.risk(only_email) == "commit" and agent.risk(only_name) == "commit"
+    assert agent.ACTION_RISK["save_details"] == "commit"
+    assert (agent.side_effects, agent.max_retries, agent.timeout_ms) == ("irreversible", 0, 10000)
 
 
 def test_a_customer_email_and_name_are_checked_and_trimmed() -> None:

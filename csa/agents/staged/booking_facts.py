@@ -27,9 +27,10 @@ NOT_FOUND = "That could not be found. Nothing was changed."
 OFF = "Booking by message is not available at the moment. Nothing was changed."
 NO_EMAIL = (
     "This customer has no email address on file, so no confirmation email goes out. "
-    "You may ask whether they would like to give one for their next booking; "
-    "it is fine if they say no."
+    "You may ask whether they would like to give one; it will be used for reminders, including "
+    "for this booking. It is fine if they say no."
 )
+REMINDERS = " It will be used for reminders, including for the booking just made."
 NEEDS_NAME = (
     "A name is needed to make the booking and none is on file. Ask the customer for their name. "
     "Nothing has been booked yet."
@@ -49,13 +50,6 @@ HANDOFF: dict[str, tuple[str, str]] = {
     ),
 }
 
-# Mail that went to the customer, by the `notify` change that sent it.
-MAIL = {
-    "created": "A confirmation email was sent to the customer.",
-    "moved": "An email with the new time was sent to the customer.",
-    "cancelled": "A cancellation email was sent to the customer.",
-}
-
 LIVE = ("confirmed", "pending")
 
 
@@ -68,7 +62,6 @@ class Scene:
     original: BookingRecord | None = None  # the booking a pending request to move belongs to
     type_id: UUID | None = None  # the service the call was about, for naming fresh times
     ask_email: bool = False
-    mail: str | None = None  # a `MAIL` key, when the customer was told by email
 
 
 def state_of(booking: BookingRecord) -> str:
@@ -186,13 +179,41 @@ def facts_for(outcome: BotOutcome, scene: Scene) -> list[str]:
         return [NOT_FOUND]
     if code == "change_withdrawn":
         return [withdrawn(booking, scene)]
-    line = booking_line(code, booking, scene)
-    if scene.mail in MAIL:
-        line += " " + MAIL[scene.mail]
-    lines = [line]
+    lines = [booking_line(code, booking, scene)]
     if scene.ask_email and booking.status in LIVE:
         lines.append(NO_EMAIL)
     return lines
+
+
+def saved_line(
+    before: dict[str, str | None],
+    after: dict[str, str | None],
+    *,
+    name: str | None,
+    email: str | None,
+) -> str:
+    """What `save_details` did with the name and email just given, from the contact before and
+    after. A detail already on file is never replaced; an address another contact has is "could not
+    be saved", with no word about whose it is.
+    """
+    said: list[str] = []
+    on_file: list[str] = []
+    if name is not None:
+        if not before.get("full_name") and after.get("full_name") == name:
+            said.append("The name is saved.")
+        else:
+            on_file.append("a name")
+    if email is not None:
+        if before.get("email"):
+            on_file.append("an email address")
+        elif (after.get("email") or "").casefold() == email.casefold():
+            said.append("The email address is saved." + REMINDERS)
+        else:
+            said.append("That email address could not be saved.")
+    if not said:
+        verb = "are" if len(on_file) > 1 else "is"
+        return f"Nothing was changed: {' and '.join(on_file)} {verb} already on file."
+    return " ".join(said)
 
 
 def handoff_of(outcome: BotOutcome) -> str | None:

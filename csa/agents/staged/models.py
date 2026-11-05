@@ -38,11 +38,15 @@ class BookingInput(DraftModel):
     time is checked by the server: a wrong or invented one only gets the customer other times.
     """
 
-    action: Literal["availability", "book", "reschedule", "cancel", "list", "status"] = Field(
+    action: Literal[
+        "availability", "book", "reschedule", "cancel", "list", "status", "save_details"
+    ] = Field(
         description=(
             "availability: what can be booked, or the free times for one service. book: make a "
             "booking. reschedule: move one of the customer's bookings. cancel: cancel one. "
-            "list: the customer's own bookings. status: one of the customer's bookings."
+            "list: the customer's own bookings. status: one of the customer's bookings. "
+            "save_details: save the customer's name or email, only what they gave in their "
+            "message (for example when they answer a request for their email)."
         )
     )
     type_id: UUID | None = Field(
@@ -76,11 +80,16 @@ class BookingInput(DraftModel):
     )
     customer_name: Name | None = Field(
         default=None,
-        description="book: the customer's name, only if they gave it in their message.",
+        description=(
+            "book and save_details: the customer's name, only if they gave it in their message."
+        ),
     )
     customer_email: Email | None = Field(
         default=None,
-        description="The customer's email address, only if they gave one in their message.",
+        description=(
+            "book and save_details: the customer's email address, only if they gave one in their "
+            "message."
+        ),
     )
 
     @field_validator("*", mode="before")
@@ -100,6 +109,8 @@ class BookingInput(DraftModel):
         for name in needs.get(self.action, ()):
             if getattr(self, name) is None:
                 raise ValueError(f"{name} required")
+        if self.action == "save_details" and not (self.customer_name or self.customer_email):
+            raise ValueError("customer_name or customer_email required")
         return self
 
 

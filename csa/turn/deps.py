@@ -9,7 +9,7 @@ spokes are the LG05 order and escalation agents.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -31,12 +31,14 @@ from csa.agents.runner import SpokeRunner
 from csa.agents.staged.service import BookingAgent, SubscriptionAgent
 from csa.agents.tickets.agent import TicketAgent
 from csa.approval.service import hold_reply
+from csa.bookings.turn_context import booking_context
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
 from csa.contracts.envelope import Channel, Envelope
 from csa.contracts.facts import AgentResult
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
 from csa.contracts.registry import CapabilityRegistry
 from csa.contracts.state import (
+    BookingContext,
     Context,
     Draft,
     GateVerdict,
@@ -176,7 +178,37 @@ class PostgresTurnDependencies:
             clarify_count=row["clarify_count"],
             active_order_ids=row["active_order_ids"],
             flags={"human_muted": bool(row["human_muted"])},
+            booking=await self._booking_context(envelope, conversation_id),
         )
+
+    async def _booking_context(
+        self, envelope: Envelope, conversation_id: UUID
+    ) -> BookingContext | None:
+        """What the planner needs to book; None where the bot cannot, or if reading it fails.
+
+        A failure here must never fail the turn: the turn then runs as it always did.
+        """
+        contact_id = envelope.contact.id
+        if contact_id is None:
+            return None
+        try:
+            async with tx(self._pool, str(envelope.client_id)) as conn:
+                return await booking_context(
+                    conn,
+                    envelope.client_id,
+                    contact_id,
+                    conversation_id,
+                    envelope.trace_id,
+                    datetime.now(UTC),
+                )
+        except Exception as exc:
+            logger.warning(
+                "turn_context_degraded",
+                category="booking_context_failed",
+                error_type=type(exc).__name__,
+                trace_id=str(envelope.trace_id),
+            )
+            return None
 
     async def guard(self, envelope: Envelope, context: Context) -> GuardResult:
         return GuardResult(allowed=True)

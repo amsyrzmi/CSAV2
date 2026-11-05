@@ -6,6 +6,7 @@ different: it really books, through `csa.bookings.bot`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -13,6 +14,7 @@ from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import structlog
 from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
@@ -26,6 +28,7 @@ from csa.agents.staged.booking_facts import (
     booking_line,
     facts_for,
     handoff_of,
+    saved_line,
     times,
     type_line,
 )
@@ -47,6 +50,8 @@ from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, 
 from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.tenancy import tx
+
+logger = structlog.get_logger(__name__)
 
 
 def result(
@@ -132,7 +137,7 @@ async def contact_exists(conn: AsyncConnection[Any], ctx: AgentContext) -> bool:
     )
 
 
-WRITES = ("book", "reschedule", "cancel")
+WRITES = ("book", "reschedule", "cancel", "save_details")
 BOOKING = "booking_agent"
 
 
@@ -195,7 +200,7 @@ class BookingAgent:
     name = BOOKING
     Input = BookingInput
     side_effects: SideEffects = "irreversible"
-    timeout_ms = 25000
+    timeout_ms = 10000
     max_retries = 0
     ACTION_RISK: dict[str, RiskClass] = {
         "availability": "read",
@@ -204,10 +209,13 @@ class BookingAgent:
         "book": "commit",
         "reschedule": "commit",
         "cancel": "commit",
+        "save_details": "commit",
     }
 
     def __init__(self, mailer: Mailer | None = None) -> None:
         self._mailer = mailer
+        # Mail still on its way. Held here so a task is not forgotten before it finishes.
+        self._mail_tasks: set[asyncio.Task[None]] = set()
 
     def risk(self, inp: BaseModel) -> RiskClass:
         assert isinstance(inp, BookingInput)
@@ -226,16 +234,34 @@ class BookingAgent:
             if not await contact_exists(conn, ctx):
                 return result(ctx, self.name, "Contact not found.", code="contact_not_found")
             acted = await self._act(conn, ctx, inp)
-        # The transaction has committed: only now may the customer be told by email.
-        outcome, scene = acted.outcome, acted.scene
+        # The transaction has committed. Mail goes in the background: the reply never waits for
+        # the relay, and it cannot claim mail it has not seen arrive.
+        outcome = acted.outcome
         if outcome is None:
             return reply(ctx, acted.lines)
         change = mail_for(outcome)
         if change is not None and outcome.booking is not None:
-            sent = await notify.notify_after_commit(ctx.pool, self._mailer, outcome.booking, change)
-            if sent.customer_told:
-                scene = replace(scene, mail=change)
-        return reply(ctx, [*facts_for(outcome, scene), *acted.lines], handoff=handoff_of(outcome))
+            self._mail_later(ctx, outcome.booking, change)
+        return reply(
+            ctx, [*facts_for(outcome, acted.scene), *acted.lines], handoff=handoff_of(outcome)
+        )
+
+    def _mail_later(self, ctx: AgentContext, booking: BookingRecord, change: notify.Change) -> None:
+        task = asyncio.create_task(self._mail(ctx.pool, booking, change))
+        self._mail_tasks.add(task)
+        task.add_done_callback(self._mail_tasks.discard)
+
+    async def _mail(self, pool: Any, booking: BookingRecord, change: notify.Change) -> None:
+        """Never raises: the booking has committed, and a lost mail is only a lost mail."""
+        try:
+            await notify.notify_after_commit(pool, self._mailer, booking, change)
+        except Exception:
+            logger.warning("bookings_mail_failed", category="unexpected")
+
+    async def drain(self) -> None:
+        """Wait for the mail still on its way (a worker shutting down, or a test)."""
+        while self._mail_tasks:
+            await asyncio.gather(*list(self._mail_tasks), return_exceptions=True)
 
     async def _act(self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput) -> Acted:
         zone = await core.company_zone(conn, ctx.client_id)
@@ -250,28 +276,37 @@ class BookingAgent:
             return Acted(scene, lines=await self._list(conn, ctx, scene))
         if inp.action == "status":
             return await self._status(conn, ctx, inp, scene)
-        details = await self._details(conn, ctx, inp)
+        if inp.action == "save_details":
+            return await self._save_details(conn, ctx, inp, scene)
+        details = await self._details(conn, ctx, inp.customer_name, inp.customer_email)
         if inp.action == "book":
             return await self._book(conn, ctx, inp, scene, details)
         return await self._change(conn, ctx, inp, scene)
 
     async def _details(
-        self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput
+        self, conn: AsyncConnection[Any], ctx: AgentContext, name: str | None, email: str | None
     ) -> dict[str, Any]:
         """The customer's name and email, after saving what they just said into empty fields."""
-        params = {"client_id": ctx.client_id, "id": ctx.contact_id, "name": inp.customer_name}
+        params = {"client_id": ctx.client_id, "id": ctx.contact_id, "name": name}
         try:
             async with conn.transaction():
                 row = await db.q.fetch_one(
-                    "bookings/contact_details_fill.sql",
-                    {**params, "email": inp.customer_email},
-                    conn=conn,
+                    "bookings/contact_details_fill.sql", {**params, "email": email}, conn=conn
                 )
         except UniqueViolation:  # another contact took the address a moment ago
             row = await db.q.fetch_one(
                 "bookings/contact_details_fill.sql", {**params, "email": None}, conn=conn
             )
         return dict(row or {})
+
+    async def _save_details(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
+    ) -> Acted:
+        """Save the name or email the customer just gave into the fields that are empty."""
+        before = await self._details(conn, ctx, None, None)
+        after = await self._details(conn, ctx, inp.customer_name, inp.customer_email)
+        line = saved_line(before, after, name=inp.customer_name, email=inp.customer_email)
+        return Acted(scene, lines=[line])
 
     async def _availability(
         self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene

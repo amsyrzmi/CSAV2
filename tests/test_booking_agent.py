@@ -6,6 +6,9 @@ does (an `AgentContext` with the turn's key) and read the facts the reply is wri
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,10 +17,13 @@ import pytest
 from csa.agents.base import AgentContext
 from csa.agents.staged.models import BookingInput
 from csa.agents.staged.service import BookingAgent
+from csa.bookings.turn_context import booking_context
 from csa.console.mailer import Mailer
 from csa.contracts.callbacks import PendingActionStore
 from csa.contracts.facts import AgentResult
 from csa.contracts.plan import Intent, Plan
+from csa.contracts.state import BookingContext, Context
+from csa.core.tenancy import tx
 from csa.graph.policy.handoff import decide_handoff
 
 from tests.conftest import requires_docker
@@ -25,6 +31,7 @@ from tests.test_bookings_api import booked, meeting
 from tests.test_bookings_bot import ELEVEN, NOW, TEN, TWO, Shop, a_type, pending_change, shop
 from tests.test_bookings_mail import SENDER, FakeTransport
 from tests.test_bookings_setup import make_person, make_type
+from tests.test_coordinator import make_envelope
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
@@ -65,11 +72,11 @@ async def ask(
     key: str = KEY,
     channel: str = "telegram",
     now: datetime = NOW,
-    mailer: Mailer | None = None,
+    agent: BookingAgent | None = None,
     **fields: Any,
 ) -> AgentResult:
     inp = BookingInput.model_validate({"action": action, **fields})
-    return await BookingAgent(mailer).run(
+    return await (agent or BookingAgent()).run(
         context(shop, contact, key=key, channel=channel, now=now), inp
     )
 
@@ -583,6 +590,7 @@ async def test_a_whatsapp_booking_asks_for_an_email(shop: Shop) -> None:
     texts = [f.text for f in result.facts]
     assert texts[0].startswith("Booking confirmed")
     assert "no email address on file" in texts[1] and "fine if they say no" in texts[1]
+    assert "reminders" in texts[1]
     (row,) = await shop.rows()
     assert row["status"] == "confirmed"  # asking for an email never holds the booking back
     # Telegram is not asked, and an email given is saved and not asked for again.
@@ -713,69 +721,75 @@ async def test_list_with_no_bookings_says_so(shop: Shop) -> None:
 
 
 # --- email --------------------------------------------------------------------------------------
+#
+# Mail goes out after the booking has committed, in the background: the reply never waits for the
+# relay. `agent.drain()` waits for the mail still on its way, so a test can look at what arrived.
 
 
-async def with_mail(shop: Shop) -> tuple[uuid.UUID, FakeTransport, Mailer]:
+async def with_mail(shop: Shop) -> tuple[uuid.UUID, FakeTransport, BookingAgent]:
     contact = await shop.customer()
     await shop.w.q("UPDATE contacts SET email = 'aina@example.test' WHERE id = %s", str(contact))
     transport = FakeTransport()
-    return contact, transport, Mailer(transport, SENDER)
+    return contact, transport, BookingAgent(Mailer(transport, SENDER))
 
 
 async def test_a_confirmed_booking_sends_the_invitation(shop: Shop) -> None:
     kind = await a_type(shop)
-    contact, transport, mailer = await with_mail(shop)
-    text = said(await make_it(shop, contact, kind, mailer=mailer))
+    contact, transport, agent = await with_mail(shop)
+    text = said(await make_it(shop, contact, kind, agent=agent))
+    await agent.drain()
     assert transport.to() == ["aina@example.test"]
-    assert text.endswith("A confirmation email was sent to the customer.")
+    assert "email" not in text  # the reply claims nothing about mail it has not seen arrive
     # A retried message changes nothing, so it sends nothing more.
-    again = said(await make_it(shop, contact, kind, mailer=mailer))
-    assert len(transport.sent) == 1 and "email was sent" not in again
+    await make_it(shop, contact, kind, agent=agent)
+    await agent.drain()
+    assert len(transport.sent) == 1
 
 
 async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: Shop) -> None:
     kind = await a_type(shop)
-    contact, transport, mailer = await with_mail(shop)
+    contact, transport, agent = await with_mail(shop)
     made = await shop.book(contact, kind["id"])
     assert made.booking is not None
-    moved = said(
-        await ask(
-            shop,
-            contact,
-            "reschedule",
-            mailer=mailer,
-            booking_id=str(made.booking.id),
-            starts_at="2031-03-04T11:00",
-        )
+    moved = await ask(
+        shop,
+        contact,
+        "reschedule",
+        agent=agent,
+        booking_id=str(made.booking.id),
+        starts_at="2031-03-04T11:00",
     )
-    assert moved.endswith("An email with the new time was sent to the customer.")
-    gone = said(
-        await ask(
-            shop,
-            contact,
-            "cancel",
-            mailer=mailer,
-            key="e2:t0-booking_agent",
-            booking_id=str(made.booking.id),
-        )
+    assert said(moved).startswith("Booking moved and confirmed")
+    await agent.drain()
+    assert len(transport.sent) == 1 and "11:00" in transport.sent[0].text
+    gone = await ask(
+        shop,
+        contact,
+        "cancel",
+        agent=agent,
+        key="e2:t0-booking_agent",
+        booking_id=str(made.booking.id),
     )
-    assert gone.endswith("A cancellation email was sent to the customer.")
+    assert said(gone).startswith("Booking cancelled")
+    await agent.drain()
     assert len(transport.sent) == 2
     await shop.mode("suggest")
     held = said(
         await make_it(
-            shop, contact, kind, "2031-03-04T14:00", key="e3:t0-booking_agent", mailer=mailer
+            shop, contact, kind, "2031-03-04T14:00", key="e3:t0-booking_agent", agent=agent
         )
     )
-    assert HOLD in held and "email was sent" not in held and len(transport.sent) == 2
+    await agent.drain()
+    assert HOLD in held and len(transport.sent) == 2
 
 
 async def test_a_mail_failure_does_not_change_the_result(shop: Shop) -> None:
     kind = await a_type(shop)
-    contact, transport, mailer = await with_mail(shop)
+    contact, transport, agent = await with_mail(shop)
     transport.explode = RuntimeError("relay down")
-    text = said(await make_it(shop, contact, kind, mailer=mailer))
-    assert text.startswith("Booking confirmed") and "email was sent" not in text
+    text = said(await make_it(shop, contact, kind, agent=agent))
+    await agent.drain()  # and nothing is raised from the background
+    assert text.startswith("Booking confirmed") and "email" not in text
     (row,) = await shop.rows()
     assert row["status"] == "confirmed"
 
@@ -783,8 +797,45 @@ async def test_a_mail_failure_does_not_change_the_result(shop: Shop) -> None:
 async def test_with_no_mailer_the_booking_stands_and_no_mail_is_claimed(shop: Shop) -> None:
     kind = await a_type(shop)
     contact, _, _ = await with_mail(shop)
-    text = said(await make_it(shop, contact, kind))
+    agent = BookingAgent()
+    text = said(await make_it(shop, contact, kind, agent=agent))
+    await agent.drain()
     assert text.startswith("Booking confirmed") and "email" not in text
+
+
+class Slow:
+    """A relay that does not answer until it is told to."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.started = threading.Event()
+        self.sent: list[Any] = []
+
+    def send(self, mail: Any, sender: str) -> None:
+        self.started.set()
+        assert self.release.wait(20), "the test never released the relay"
+        self.sent.append(mail)
+
+
+async def test_a_slow_relay_does_not_delay_the_reply_and_the_mail_still_arrives(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await shop.w.q("UPDATE contacts SET email = 'aina@example.test' WHERE id = %s", str(contact))
+    relay = Slow()
+    agent = BookingAgent(Mailer(relay, SENDER, limit=30))
+    try:
+        began = time.monotonic()
+        result = await asyncio.wait_for(make_it(shop, contact, kind, agent=agent), 5)
+        took = time.monotonic() - began
+        assert said(result).startswith("Booking confirmed") and took < 5
+        assert await asyncio.to_thread(relay.started.wait, 5)  # the mail is on its way...
+        assert relay.sent == []  # ...and has not left, though the reply is here
+    finally:
+        relay.release.set()
+    await agent.drain()
+    assert len(relay.sent) == 1 and relay.sent[0].to == "aina@example.test"
 
 
 async def test_a_mail_is_sent_after_the_booking_has_committed(
@@ -793,7 +844,7 @@ async def test_a_mail_is_sent_after_the_booking_has_committed(
     from csa.bookings import notify
 
     kind = await a_type(shop)
-    contact, _, mailer = await with_mail(shop)
+    contact, _, agent = await with_mail(shop)
     seen: list[int] = []
     real = notify.notify_after_commit
 
@@ -803,8 +854,282 @@ async def test_a_mail_is_sent_after_the_booking_has_committed(
         return await real(pool, mail, booking, change)
 
     monkeypatch.setattr(notify, "notify_after_commit", look)
-    await make_it(shop, contact, kind, mailer=mailer)
+    await make_it(shop, contact, kind, agent=agent)
+    await agent.drain()
     assert seen == [1]
+
+
+async def test_a_mail_that_raises_is_swallowed_and_logged_by_category(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.bookings import notify
+    from structlog.testing import capture_logs
+
+    async def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("aina@example.test is unreachable")
+
+    monkeypatch.setattr(notify, "notify_after_commit", boom)
+    kind = await a_type(shop)
+    contact, _, agent = await with_mail(shop)
+    with capture_logs() as logs:
+        text = said(await make_it(shop, contact, kind, agent=agent))
+        await agent.drain()
+    assert text.startswith("Booking confirmed")
+    assert "aina@example.test" not in repr(logs)
+    assert any(entry.get("category") == "unexpected" for entry in logs)
+
+
+# --- saving what the customer says about themselves ----------------------------------------------
+
+
+async def test_a_whatsapp_customer_can_give_an_email_after_booking(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    booked_ = await make_it(shop, contact, kind, channel="whatsapp")
+    ask_text = booked_.facts[1].text
+    assert "reminders" in ask_text and "including for this booking" in ask_text
+    assert "fine if they say no" in ask_text
+    saved = await ask(
+        shop,
+        contact,
+        "save_details",
+        key="event-2:t0-booking_agent",
+        channel="whatsapp",
+        customer_email="aina@example.test",
+    )
+    assert said(saved) == (
+        "The email address is saved. It will be used for reminders, including for the booking "
+        "just made."
+    )
+    assert (await details(shop, contact))["email"] == "aina@example.test"
+    (row,) = await shop.rows()
+    assert row["status"] == "confirmed"  # saving details books and changes nothing
+
+
+async def test_save_details_saves_a_name_and_an_email_and_only_into_empty_fields(
+    shop: Shop,
+) -> None:
+    contact = await nameless(shop)
+    both = await ask(
+        shop,
+        contact,
+        "save_details",
+        customer_name="Aina Binti Test",
+        customer_email="a@example.test",
+    )
+    assert said(both) == (
+        "The name is saved. The email address is saved. It will be used for reminders, "
+        "including for the booking just made."
+    )
+    again = await ask(
+        shop, contact, "save_details", customer_name="Someone Else", customer_email="b@example.test"
+    )
+    assert said(again) == ("Nothing was changed: a name and an email address are already on file.")
+    assert await details(shop, contact) == {
+        "full_name": "Aina Binti Test",
+        "email": "a@example.test",
+    }
+
+
+async def test_an_email_another_customer_has_cannot_be_saved_and_is_not_revealed(
+    shop: Shop,
+) -> None:
+    first, second = await shop.customer(), await shop.customer()
+    await shop.w.q("UPDATE contacts SET email = 'taken@example.test' WHERE id = %s", str(first))
+    text = said(await ask(shop, second, "save_details", customer_email="Taken@Example.test"))
+    assert text == "That email address could not be saved."
+    assert (await details(shop, second))["email"] is None
+    assert (await details(shop, first))["email"] == "taken@example.test"
+
+
+@pytest.mark.parametrize("how", ["replies_off", "service_off"])
+async def test_save_details_writes_nothing_when_the_bot_is_off(shop: Shop, how: str) -> None:
+    contact = await nameless(shop)
+    if how == "replies_off":
+        await shop.mode("shadow")
+    else:
+        await shop.suspend()
+    text = said(
+        await ask(
+            shop, contact, "save_details", customer_name="Aina", customer_email="a@example.test"
+        )
+    )
+    assert text == "Booking by message is not available at the moment. Nothing was changed."
+    assert await details(shop, contact) == {"full_name": None, "email": None}
+
+
+# --- the context the classifier and planner are given ---------------------------------------------
+
+
+async def conversation(shop: Shop, contact: uuid.UUID) -> uuid.UUID:
+    made = uuid.uuid4()
+    await shop.w.q(
+        "INSERT INTO conversations (id, client_id, contact_id, channel, channel_thread)"
+        " VALUES (%s, %s, %s, 'telegram', %s)",
+        str(made),
+        shop.tenant,
+        str(contact),
+        f"thread-{made}",
+    )
+    return made
+
+
+async def say(
+    shop: Shop,
+    chat: uuid.UUID,
+    number: int,
+    direction: str,
+    body: str,
+    *,
+    redacted: str | None | bool = True,
+    trace: uuid.UUID | None = None,
+) -> None:
+    """A stored message; `number` orders them; `redacted=True` redacts nothing."""
+    shown = body if redacted is True else redacted
+    await shop.w.q(
+        "INSERT INTO messages (client_id, conversation_id, direction, author, body, redacted_body,"
+        " idempotency_key, trace_id, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        shop.tenant,
+        str(chat),
+        direction,
+        "contact" if direction == "inbound" else "assistant",
+        body,
+        shown,
+        f"msg-{uuid.uuid4()}",
+        str(trace) if trace else None,
+        NOW + timedelta(seconds=number),
+    )
+
+
+async def build_context(
+    shop: Shop, contact: uuid.UUID, chat: uuid.UUID, trace: uuid.UUID | None = None
+) -> BookingContext | None:
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        return await booking_context(conn, shop.client, contact, chat, trace or uuid.uuid4(), NOW)
+
+
+async def test_the_booking_context_holds_today_types_upcoming_and_recent(shop: Shop) -> None:
+    kind = await a_type(shop)
+    staffer = await make_person(shop.team, "Aina")
+    await make_type(shop.team, name="Staff sync", audience="staff", person_ids=[staffer["id"]])
+    mine, other = await shop.customer(), await shop.customer()
+    own = await shop.book(mine, kind["id"])
+    assert own.booking is not None
+    await shop.book(other, kind["id"], ELEVEN)
+    await booked(
+        shop.team,
+        shop.team.admin,
+        meeting(staffer, contact_id=str(mine), private=True, start="2031-03-06T10:00:00Z"),
+    )
+    await shop.w.q(
+        "INSERT INTO bookings (client_id, contact_id, service, status, starts_at, ends_at)"
+        " VALUES (%s, %s, 'Old', 'confirmed', %s, %s)",
+        shop.tenant,
+        str(mine),
+        "2031-02-03T10:00Z",
+        "2031-02-03T10:30Z",
+    )
+    chat = await conversation(shop, mine)
+    now_trace = uuid.uuid4()
+    for n in range(8):
+        await say(shop, chat, n, "inbound" if n % 2 else "outbound", f"message {n}")
+    await say(shop, chat, 8, "inbound", "call me on 0123456789", redacted="call me on [phone]")
+    await say(shop, chat, 9, "outbound", "secret raw only", redacted=None)
+    await say(shop, chat, 10, "inbound", "x" * 500)
+    await say(shop, chat, 11, "inbound", "the message being answered now", trace=now_trace)
+
+    ctx = await build_context(shop, mine, chat, now_trace)
+    assert ctx is not None
+    assert ctx.today == "Monday 2031-03-03" and ctx.timezone == "UTC"
+    assert [(t.id, t.name, t.minutes) for t in ctx.types] == [
+        (uuid.UUID(kind["id"]), "Haircut", 30)
+    ]
+    assert [(u.id, u.name, u.when, u.status) for u in ctx.upcoming] == [
+        (own.booking.id, "Haircut", TEN_TEXT, "confirmed")
+    ]
+    assert [(m.author, m.text) for m in ctx.recent] == [
+        ("assistant", "message 4"),
+        ("customer", "message 5"),
+        ("assistant", "message 6"),
+        ("customer", "message 7"),
+        ("customer", "call me on [phone]"),
+        ("customer", "x" * 300),
+    ]
+
+
+async def test_the_booking_context_is_off_where_the_bot_cannot_book(shop: Shop) -> None:
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    assert await build_context(shop, contact, chat) is not None
+    assert await build_context(shop, uuid.uuid4(), chat) is None  # no such contact
+    await shop.suspend()
+    assert await build_context(shop, contact, chat) is None
+    await shop.w.q(
+        "UPDATE console_service_packages SET status = 'active' WHERE client_id = %s", shop.tenant
+    )
+    assert await build_context(shop, contact, chat) is not None
+    await shop.w.q(
+        "UPDATE capability_registry SET client_enabled = false"
+        " WHERE client_id = %s AND name = 'booking_agent'",
+        shop.tenant,
+    )
+    assert await build_context(shop, contact, chat) is None
+
+
+def envelope_for(shop: Shop, contact: uuid.UUID, chat: uuid.UUID) -> Any:
+    plain = make_envelope("3 pm please")
+    return plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid.uuid4(),
+            "contact": plain.contact.model_copy(update={"id": contact}),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+        }
+    )
+
+
+async def test_load_context_fills_the_booking_context_and_a_failure_leaves_it_empty(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.turn import deps
+    from structlog.testing import capture_logs
+
+    await a_type(shop)
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    envelope = envelope_for(shop, contact, chat)
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    filled = await real.load_context(envelope)
+    assert filled.booking is not None and filled.booking.timezone == "UTC"
+
+    async def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("the database said aina@example.test")
+
+    monkeypatch.setattr(deps, "booking_context", boom)
+    with capture_logs() as logs:
+        failed = await real.load_context(envelope)
+    assert failed.booking is None and failed.active_order_ids == []  # the turn goes on
+    assert any(entry.get("category") == "booking_context_failed" for entry in logs)
+    assert "aina@example.test" not in repr(logs)
+
+
+async def test_a_company_without_bookings_gets_the_context_it_always_had(shop: Shop) -> None:
+    from csa.turn import deps
+
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    await shop.w.q(
+        "UPDATE capability_registry SET client_enabled = false"
+        " WHERE client_id = %s AND name = 'booking_agent'",
+        shop.tenant,
+    )
+    loaded = await deps.PostgresTurnDependencies(shop.w.pool).load_context(
+        envelope_for(shop, contact, chat)
+    )
+    assert loaded.booking is None
+    assert loaded.model_dump(exclude={"booking"}) == Context(
+        flags={"human_muted": False}
+    ).model_dump(exclude={"booking"})
 
 
 # --- the agent's declared shape -----------------------------------------------------------------
@@ -819,6 +1144,7 @@ def test_the_agent_declares_reads_commits_and_one_attempt() -> None:
         "book": "commit",
         "reschedule": "commit",
         "cancel": "commit",
+        "save_details": "commit",
     }
-    assert (agent.side_effects, agent.max_retries, agent.timeout_ms) == ("irreversible", 0, 25000)
+    assert (agent.side_effects, agent.max_retries, agent.timeout_ms) == ("irreversible", 0, 10000)
     assert ELEVEN > TEN and TWO > ELEVEN

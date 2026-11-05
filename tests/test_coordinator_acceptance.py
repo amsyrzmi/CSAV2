@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import statistics
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -25,6 +26,7 @@ from csa.turn.deps import PostgresTurnDependencies, build_llm_provider
 from langgraph.checkpoint.memory import InMemorySaver
 
 from tests.conftest import CSA_APP_PASSWORD, requires_docker
+from tests.test_booking_agent import conversation, say
 from tests.test_bookings_api import soon_tuesday
 from tests.test_bookings_bot import Shop, a_type, shop
 from tests.test_coordinator import (
@@ -590,3 +592,150 @@ async def test_two_booking_tasks_in_one_plan_have_two_keys() -> None:
         f"{envelope.idempotency_key}:t0-booking_agent",
         f"{envelope.idempotency_key}:t1-booking_agent",
     ]
+
+
+# --- a booking that takes two messages ----------------------------------------------------------
+
+
+class ContextualModel:
+    """A fake model that, like a real one, may use only what its prompt shows it."""
+
+    model = "contextual"
+
+    def __init__(self) -> None:
+        self.plan_prompts: list[str] = []
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            self.plan_prompts.append(user)
+            return self.plan(user)
+        if schema is StepOut:
+            return StepOut(done=True)
+        if schema is ReviewOut:
+            return ReviewOut(ok=True)
+        if schema is ComposeOut:
+            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            if not facts:
+                return ComposeOut(reply="Which service and time do you mean?")
+            return ComposeOut(
+                reply=" ".join(f["text"] for f in facts), used_fact_ids=[f["id"] for f in facts]
+            )
+        raise AssertionError(schema)
+
+    @staticmethod
+    def plan(user: str) -> PlanOut:
+        booking = json.loads(user.split("\n")[0])["context"].get("booking")
+        message = re.search(r"<message>(.*)</message>", user, re.S)
+        recent = re.search(r"<recent_messages>(.*?)</recent_messages>", user, re.S)
+        asked = PlanOut(tasks=[], reply_strategy="ask_clarifying")
+        if booking is None or message is None:
+            return asked
+        text = message.group(1).lower()
+        service = booking["types"][0]["id"]
+        if "free" in text:
+            today = date.fromisoformat(booking["today"].split()[1])
+            tuesday = today + timedelta(days=(1 - today.weekday()) % 7 or 7)
+            task = {"action": "availability", "type_id": service, "day": tuesday.isoformat()}
+        else:
+            hour = re.search(r"(\d+) pm", text)
+            day = re.search(r"(\d{1,2} [A-Z][a-z]+ \d{4})", recent.group(1) if recent else "")
+            if hour is None or day is None:
+                return asked
+            when = datetime.strptime(day.group(1), "%d %B %Y").date()
+            start = f"{when.isoformat()}T{int(hour.group(1)) + 12:02d}:00"
+            task = {"action": "book", "type_id": service, "starts_at": start}
+        return PlanOut(
+            tasks=[PlannedTask(agent="booking_agent", input=task)], reply_strategy="auto_reply"
+        )
+
+
+class ContextualTurn(BookingTurn):
+    async def load_context(self, envelope: Any) -> Context:
+        return await self.real.load_context(envelope)
+
+
+async def message_in_chat(
+    shop: Shop, contact: UUID, chat: UUID, model: ContextualModel, body: str
+) -> tuple[ContextualTurn, TurnState, Envelope]:
+    plain = make_envelope(body)
+    envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": plain.contact.model_copy(update={"id": contact}),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+        }
+    )
+    provider = build_llm_provider(model)  # type: ignore[arg-type]
+    deps = ContextualTurn(PostgresTurnDependencies(shop.w.pool, llm=provider))
+    return deps, await run_turn(envelope, deps), envelope  # type: ignore[arg-type]
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_two_messages_book_a_slot_with_the_id_and_the_day_taken_from_the_context(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    model = ContextualModel()
+
+    first, _, _ = await message_in_chat(shop, contact, chat, model, "What's free on Tuesday?")
+    asked = first.emitted[0].body
+    assert asked.startswith("Free times for Haircut: ") and await shop.rows() == []
+    # What the worker stores between the two messages.
+    await say(shop, chat, 0, "inbound", "What's free on Tuesday?")
+    await say(shop, chat, 1, "outbound", asked)
+
+    second, state, envelope = await message_in_chat(shop, contact, chat, model, "3 pm please")
+    (row,) = await shop.rows()
+    assert row["status"] == "confirmed" and row["source"] == "bot"
+    assert row["starts_at"].hour == 15 and row["starts_at"].weekday() == 1  # a Tuesday, 3 pm
+    # Nothing in the second message names the service or the day: they came from the context.
+    assert kind["id"] in model.plan_prompts[1] and "<recent_messages>" in model.plan_prompts[1]
+    assert envelope.message.body_redacted == "3 pm please"
+    reply = second.emitted[0].body
+    facts = [f.text for f in state.facts]
+    assert "3:00 pm" in reply and ungrounded(reply, [envelope.message.body_redacted, *facts]) == []
+    # The first message had no earlier messages to show.
+    assert "<recent_messages>" not in model.plan_prompts[0]
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_message_that_leaves_the_service_unclear_is_asked_about_not_guessed(
+    shop: Shop,
+) -> None:
+    await a_type(shop)
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    deps, _, _ = await message_in_chat(shop, contact, chat, ContextualModel(), "3 pm please")
+    assert await shop.rows() == [] and deps.executed_tasks == []
+    assert deps.emitted[0].body == "Which service and time do you mean?"
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_company_without_bookings_is_planned_exactly_as_before(shop: Shop) -> None:
+    await a_type(shop)
+    await shop.w.q(
+        "UPDATE capability_registry SET client_enabled = false"
+        " WHERE client_id = %s AND name = 'booking_agent'",
+        shop.tenant,
+    )
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    await say(shop, chat, 0, "inbound", "an earlier message")
+    model = ContextualModel()
+    deps, state, _ = await message_in_chat(shop, contact, chat, model, "What's free on Tuesday?")
+    (prompt,) = model.plan_prompts
+    assert "recent_messages" not in prompt and '"booking":' not in prompt
+    assert json.loads(prompt.split("\n")[0])["context"].keys() == {
+        "summary",
+        "has_active_orders",
+        "first_contact",
+    }
+    assert await shop.rows() == [] and deps.executed_tasks == []
+    assert len(deps.emitted) == 1 and state.verified is True
