@@ -13,9 +13,11 @@ import {
   blockWhen,
   dayInZone,
   inactiveNotes,
+  isChangeRequest,
   locationLabel,
   mapsLink,
   safeMeetingLink,
+  sourceNote,
   timeInZone,
   wazeLink,
   zonedToUtc,
@@ -63,6 +65,8 @@ export default function BookingDetails({
   zone,
   booking,
   canChange,
+  asked,
+  waiting,
   onClose,
   onChanged,
   onReload,
@@ -71,6 +75,10 @@ export default function BookingDetails({
   zone: string;
   booking: BookingOut;
   canChange: boolean;
+  /** For a customer's request to move a booking: what it asks, as a sentence. */
+  asked: string | null;
+  /** A request to move this booking is waiting for staff. */
+  waiting: boolean;
   onClose: () => void;
   onChanged: (booking: BookingOut, change: Change) => void;
   /** The booking changed under us: close this and read the calendar again. */
@@ -86,6 +94,8 @@ export default function BookingDetails({
   const { busy, run } = useAction();
   const status = STATUS[booking.status];
   const title = bookingTitle(booking);
+  const request = isChangeRequest(booking);
+  const source = sourceNote(booking);
   const [now] = useState(() => Date.now());
   const started = new Date(booking.starts_at).getTime() <= now;
   const link = safeMeetingLink(booking.meeting_link);
@@ -120,7 +130,9 @@ export default function BookingDetails({
   }
 
   function post(change: Exclude<Change, "moved">) {
-    void attempt(() => changeBooking(scope.tenantId, booking.id, POSTS[change], booking.version), change);
+    // Confirming a request moves the booking it replaces: the answer is that booking, moved.
+    const said = request && change === "confirmed" ? "moved" : change;
+    void attempt(() => changeBooking(scope.tenantId, booking.id, POSTS[change], booking.version), said);
   }
 
   const actions = canChange && !ask && !moving;
@@ -147,7 +159,19 @@ export default function BookingDetails({
               <Row label="Status">
                 {status ? <StatusLabel tone={status.tone}>{status.text}</StatusLabel> : booking.status}
                 {booking.private && <span className="ml-2"><StatusLabel tone="info">Private</StatusLabel></span>}
+                {source && (
+                  <span data-testid="details-source" className="mt-1 block text-sm text-[color:var(--fs-text-secondary)]">
+                    {source}
+                  </span>
+                )}
+                {waiting && (
+                  <span data-testid="details-change-waiting"
+                    className="mt-1 block text-sm text-[color:var(--fs-text-secondary)]">
+                    A change is waiting.
+                  </span>
+                )}
               </Row>
+              {asked && <Row label="Change" testId="details-change">{asked}</Row>}
               {booking.people.length > 0 && (
                 <Row label="With" testId="details-people">
                   {booking.people.map((person) => person.display_name).join(", ")}
@@ -163,7 +187,7 @@ export default function BookingDetails({
                   {booking.customer.full_name ?? "No name"}
                   {booking.customer.phone && <span className="block">{booking.customer.phone}</span>}
                   {booking.customer.email && <span className="block">{booking.customer.email}</span>}
-                  {!booking.customer.email && booking.customer.given_email && (
+                  {scope.canBook && !booking.customer.email && booking.customer.given_email && (
                     <span className="block" data-testid="details-given-email">
                       {booking.customer.given_email}
                       <span className="block text-sm text-[color:var(--fs-text-secondary)]">
@@ -251,8 +275,9 @@ export default function BookingDetails({
           <div className="space-y-3 rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] p-3"
             data-testid="details-ask">
             <p className="text-sm">
-              {ask === "cancelled" ? "Cancel this booking?" : "Decline this booking?"} Everyone on it who has an
-              email address is told.
+              {request
+                ? "Decline this request? The booking stays on its time."
+                : `${ask === "cancelled" ? "Cancel this booking?" : "Decline this booking?"} Everyone on it who has an email address is told.`}
             </p>
             <div className="flex flex-wrap gap-2">
               <button type="button" className={action} disabled={busy} data-testid="details-ask-yes"
@@ -280,10 +305,12 @@ export default function BookingDetails({
                 Confirm
               </button>
             )}
-            <button type="button" className={secondary} disabled={busy} data-testid="details-move"
-              onClick={() => setMoving(true)}>
-              Move
-            </button>
+            {!request && (
+              <button type="button" className={secondary} disabled={busy} data-testid="details-move"
+                onClick={() => setMoving(true)}>
+                Move
+              </button>
+            )}
             {booking.status === "pending" && (
               <button type="button" className={secondary} disabled={busy} data-testid="details-decline"
                 onClick={() => setAsk("declined")}>
@@ -296,10 +323,12 @@ export default function BookingDetails({
                 Mark as no-show
               </button>
             )}
-            <button type="button" className={secondary} disabled={busy} data-testid="details-cancel"
-              onClick={() => setAsk("cancelled")}>
-              Cancel booking
-            </button>
+            {!request && (
+              <button type="button" className={secondary} disabled={busy} data-testid="details-cancel"
+                onClick={() => setAsk("cancelled")}>
+                Cancel booking
+              </button>
+            )}
           </div>
         )}
         {!canChange && scope.canBook && !booking.redacted && ["pending", "confirmed"].includes(booking.status) && (

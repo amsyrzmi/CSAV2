@@ -12,6 +12,8 @@ import type {
   BookingLocationKind,
   BookingPeriod,
   BookingResourceRule,
+  BookingSettings,
+  BookingSettingsIn,
   BookingTypeIn,
   BookingTypeOut,
   BookingTypePatch,
@@ -324,6 +326,12 @@ export function blockWhen(startsAt: string, endsAt: string, zone: string): strin
     : `${start.date}, ${start.time} to ${end.date}, ${end.time}`;
 }
 
+/** "5 Nov 2026, 09:00": one moment on the company's clock. */
+export function momentText(instant: string, zone: string): string {
+  const p = zoneParts(new Date(instant).getTime(), zone);
+  return `${p.day} ${MONTHS[p.month - 1]} ${p.year}, ${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+}
+
 /** "5 Nov 2026" for a date written "2026-11-05". */
 export function dayText(day: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
@@ -560,6 +568,51 @@ export function customerNote(told: boolean | null | undefined): string | null {
   return told === false ? "Customer wasn't told." : null;
 }
 
+/** Whether a booking is the customer's request to move another one, still waiting for staff. */
+export function isChangeRequest(booking: { status: string; replaces_booking_id?: string | null }): boolean {
+  return booking.status === "pending" && Boolean(booking.replaces_booking_id);
+}
+
+/** "Booked by the customer" for a booking the customer's own chat made; otherwise null. */
+export function sourceNote(booking: { redacted: boolean; source?: string | null }): string | null {
+  return !booking.redacted && booking.source === "bot" ? "Booked by the customer" : null;
+}
+
+export interface ChangeMarks {
+  /** For each request to move a booking (by the request's id): what it asks, as a sentence. */
+  asked: Map<string, string>;
+  /** The ids of bookings a request is waiting to move. */
+  waiting: Set<string>;
+}
+
+/**
+ * Reads the requests among the bookings on screen. The original may be on another week than its
+ * request, and then only the new time can be named.
+ */
+export function changeMarks(
+  items: {
+    id: string;
+    status: string;
+    replaces_booking_id?: string | null;
+    starts_at: string;
+    ends_at: string;
+  }[],
+  zone: string,
+): ChangeMarks {
+  const marks: ChangeMarks = { asked: new Map(), waiting: new Set() };
+  for (const item of items) {
+    if (!isChangeRequest(item) || !item.replaces_booking_id) continue;
+    const original = items.find((other) => other.id === item.replaces_booking_id);
+    const to = momentText(item.starts_at, zone);
+    marks.asked.set(
+      item.id,
+      original ? `Asked to move from ${momentText(original.starts_at, zone)} to ${to}` : `Asked to move to ${to}`,
+    );
+    marks.waiting.add(item.replaces_booking_id);
+  }
+  return marks;
+}
+
 /** What a booking is called on the calendar. A private meeting the viewer is not part of is "Busy". */
 export function bookingTitle(booking: { redacted: boolean; title: string | null; kind: string }): string {
   if (booking.redacted) return "Busy";
@@ -712,4 +765,79 @@ export function todayInZone(zone: string | null, now: Date = new Date()): string
   } catch {
     return null;
   }
+}
+
+// ---- Settings ---------------------------------------------------------------------------------
+
+export type ReminderUnit = "minutes" | "hours" | "days";
+const UNIT_MINUTES: Record<ReminderUnit, number> = { minutes: 1, hours: 60, days: 1440 };
+const REMINDER_RANGE = { min: 15, max: 10080 };
+const PENDING_RANGE = { min: 1, max: 168 };
+const LIMIT_RANGE = { min: 1, max: 50 };
+
+/** The settings form; numbers stay text while they are typed. */
+export interface SettingsForm {
+  reminder: string;
+  /** "minutes" appears only for a stored time that hours cannot say exactly. */
+  reminderUnit: ReminderUnit;
+  pendingHours: string;
+  limit: string;
+}
+
+/** The reminder time in days when it is whole days, else in hours, else (never rounded) in minutes. */
+export function settingsToForm(
+  settings: Pick<BookingSettings, "reminder_minutes" | "pending_hours" | "customer_limit">,
+): SettingsForm {
+  const minutes = settings.reminder_minutes;
+  let reminder = String(minutes);
+  let reminderUnit: ReminderUnit = "minutes";
+  if (minutes % 1440 === 0) {
+    reminder = String(minutes / 1440);
+    reminderUnit = "days";
+  } else if (minutes % 3 === 0) {
+    reminder = String(Number((minutes / 60).toFixed(2)));
+    reminderUnit = "hours";
+  }
+  return {
+    reminder, reminderUnit, pendingHours: String(settings.pending_hours), limit: String(settings.customer_limit),
+  };
+}
+
+/** The reminder time in whole minutes, or null when it is not a number the server can be sent. */
+function reminderMinutes(form: Pick<SettingsForm, "reminder" | "reminderUnit">): number | null {
+  const text = form.reminder.trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) return null;
+  const hundredths = Math.round(Number(text) * 100);
+  const scaled = hundredths * UNIT_MINUTES[form.reminderUnit];
+  return scaled % 100 === 0 ? scaled / 100 : null;
+}
+
+const inRange = (value: number | null, range: { min: number; max: number }): value is number =>
+  value !== null && value >= range.min && value <= range.max;
+
+/** The first thing the server would refuse, as a sentence, or null when the form can be sent. */
+export function settingsProblem(form: SettingsForm): string | null {
+  const minutes = reminderMinutes(form);
+  if (minutes === null) {
+    return "Enter how long before a booking to remind people, as a number of hours or days, such as 2 hours or 1 day.";
+  }
+  if (minutes < REMINDER_RANGE.min) return "Remind people at least 15 minutes before a booking.";
+  if (minutes > REMINDER_RANGE.max) return "Remind people at most 7 days before a booking.";
+  if (!inRange(whole(form.pendingHours), PENDING_RANGE)) {
+    return "Enter how long a request waits for staff as a whole number of hours, from 1 to 168.";
+  }
+  if (!inRange(whole(form.limit), LIMIT_RANGE)) {
+    return "Enter the most upcoming bookings one customer can hold as a whole number, from 1 to 50.";
+  }
+  return null;
+}
+
+/** The request body. Call it on a form with no problem; `version` is the one last read. */
+export function formToSettingsIn(form: SettingsForm, version: number): BookingSettingsIn {
+  return {
+    reminder_minutes: reminderMinutes(form) ?? 0,
+    pending_hours: Number(form.pendingHours.trim()),
+    customer_limit: Number(form.limit.trim()),
+    version,
+  };
 }

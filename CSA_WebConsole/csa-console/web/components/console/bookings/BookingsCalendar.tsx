@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, TriangleAlert } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   getCalendar,
@@ -14,6 +14,7 @@ import {
 import {
   bookingTitle,
   canChangeBooking,
+  changeMarks,
   customerNote,
   dayInZone,
   emailNote,
@@ -21,9 +22,11 @@ import {
   inactiveNotes,
   layoutDay,
   shiftWeek,
+  sourceNote,
   timeInZone,
   weekDays,
   weekTitle,
+  type ChangeMarks,
   type Placed,
   type WeekDay,
 } from "@/lib/bookings-view";
@@ -71,7 +74,7 @@ const blockTone = (entry: Entry) =>
       : "border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] text-[color:var(--fs-text)]";
 
 /** What a booking says about itself on the calendar; a redacted one says only "Busy". */
-function describe(entry: Entry, zone: string): string {
+function describe(entry: Entry, zone: string, marks: ChangeMarks): string {
   const when = `${timeInZone(entry.starts_at, zone)} to ${timeInZone(entry.ends_at, zone)}`;
   if (!isBooking(entry)) return `${when}, Busy`;
   const parts = [when, bookingTitle(entry)];
@@ -79,6 +82,9 @@ function describe(entry: Entry, zone: string): string {
     if (entry.customer?.full_name) parts.push(entry.customer.full_name);
     if (entry.people.length) parts.push(entry.people.map((p) => p.display_name).join(", "));
     if (entry.status === "pending") parts.push("waiting to be confirmed");
+    const asked = marks.asked.get(entry.id);
+    if (asked) parts.push(asked);
+    if (marks.waiting.has(entry.id)) parts.push(WAITING.toLowerCase());
     if (entry.conflict) parts.push("someone is unavailable");
     parts.push(...inactiveNotes(entry));
   }
@@ -86,16 +92,24 @@ function describe(entry: Entry, zone: string): string {
 }
 
 const CONFLICT = "Someone on this booking is unavailable";
+const WAITING = "A change is waiting";
 
 /**
  * Compact flags for the first line of a block; each one's name carries its sentence. One is for a
- * person with time off over it, the other for someone or somewhere switched off since it was made.
+ * person with time off over it, one for someone or somewhere switched off since it was made, and
+ * one for a customer's request to move it that staff have not answered.
  */
-function Flag({ entry }: { entry: Entry }) {
+function Flag({ entry, marks }: { entry: Entry; marks: ChangeMarks }) {
   if (!isBooking(entry)) return null;
   const off = inactiveNotes(entry).join(" ");
   return (
     <>
+      {marks.waiting.has(entry.id) && (
+        <span data-testid="booking-change-waiting" role="img" aria-label={WAITING} title={WAITING}
+          className="inline-flex shrink-0 text-[color:var(--fs-primary)]">
+          <Clock aria-hidden="true" size={12} />
+        </span>
+      )}
       {entry.conflict && (
         <span data-testid="booking-conflict" role="img" aria-label={CONFLICT} title={CONFLICT}
           className="inline-flex shrink-0 text-[color:var(--fs-warning)]">
@@ -117,12 +131,14 @@ function WeekGrid({
   zone,
   entries,
   today,
+  marks,
   onOpen,
 }: {
   days: WeekDay[];
   zone: string;
   entries: Entry[];
   today: string;
+  marks: ChangeMarks;
   onOpen: (booking: BookingOut) => void;
 }) {
   const placed = days.map((day) => layoutDay(entriesOnDay(entries, day), zone, day));
@@ -157,7 +173,7 @@ function WeekGrid({
               style={{ top: (hour - first) * HOUR_PX }} />
           ))}
           {placed[index].map((slot) => (
-            <Block key={slotKey(slot)} slot={slot} zone={zone} first={first} onOpen={onOpen} />
+            <Block key={slotKey(slot)} slot={slot} zone={zone} first={first} marks={marks} onOpen={onOpen} />
           ))}
         </div>
       ))}
@@ -172,11 +188,13 @@ function Block({
   slot,
   zone,
   first,
+  marks,
   onOpen,
 }: {
   slot: Placed<Entry>;
   zone: string;
   first: number;
+  marks: ChangeMarks;
   onOpen: (booking: BookingOut) => void;
 }) {
   const { item } = slot;
@@ -189,7 +207,7 @@ function Block({
   const text = (
     <>
       <span className="flex items-center gap-1 font-medium">
-        <Flag entry={item} />
+        <Flag entry={item} marks={marks} />
         <span className="min-w-0 truncate">
           {timeInZone(item.starts_at, zone)}-{timeInZone(item.ends_at, zone)}
         </span>
@@ -200,12 +218,12 @@ function Block({
   const shared = `absolute overflow-hidden rounded-[var(--fs-radius-control)] border px-1 py-0.5 text-left leading-tight ${blockTone(item)}`;
   return isBooking(item) ? (
     <button type="button" data-testid={item.redacted ? "booking-busy" : "booking"} style={style}
-      aria-label={describe(item, zone)} title={describe(item, zone)} onClick={() => onOpen(item)}
+      aria-label={describe(item, zone, marks)} title={describe(item, zone, marks)} onClick={() => onOpen(item)}
       className={`${shared} hover:border-[color:var(--fs-primary)] focus-visible:outline-3 focus-visible:outline-offset-1 focus-visible:outline-[color:var(--fs-focus)]`}>
       {text}
     </button>
   ) : (
-    <div data-testid="busy" style={style} title={describe(item, zone)} className={shared}>
+    <div data-testid="busy" style={style} title={describe(item, zone, marks)} className={shared}>
       {text}
     </div>
   );
@@ -215,11 +233,13 @@ function Agenda({
   days,
   zone,
   entries,
+  marks,
   onOpen,
 }: {
   days: WeekDay[];
   zone: string;
   entries: Entry[];
+  marks: ChangeMarks;
   onOpen: (booking: BookingOut) => void;
 }) {
   const busyDays = days.filter((day) => entriesOnDay(entries, day).length > 0);
@@ -251,6 +271,17 @@ function Agenda({
                   {isBooking(item) && item.status === "pending" && !item.redacted && (
                     <span className={`block ${mutedText}`}>Waiting to be confirmed</span>
                   )}
+                  {isBooking(item) && marks.asked.get(item.id) && (
+                    <span data-testid="booking-asked" className="block text-sm font-medium">
+                      {marks.asked.get(item.id)}
+                    </span>
+                  )}
+                  {isBooking(item) && marks.waiting.has(item.id) && (
+                    <span data-testid="booking-change-waiting" className={`block ${mutedText}`}>{WAITING}</span>
+                  )}
+                  {isBooking(item) && sourceNote(item) && (
+                    <span className={`block ${mutedText}`}>{sourceNote(item)}</span>
+                  )}
                   {isBooking(item) && item.conflict && (
                     <span data-testid="booking-conflict" className="mt-1 inline-flex items-center gap-1 font-medium">
                       <TriangleAlert aria-hidden="true" size={14} className="text-[color:var(--fs-warning)]" />
@@ -270,7 +301,7 @@ function Agenda({
                 <li key={slotKey(slot)}>
                   {isBooking(item) ? (
                     <button type="button" data-testid={item.redacted ? "booking-busy" : "booking"} className={box}
-                      aria-label={describe(item, zone)} onClick={() => onOpen(item)}>
+                      aria-label={describe(item, zone, marks)} onClick={() => onOpen(item)}>
                       {inner}
                     </button>
                   ) : (
@@ -336,6 +367,7 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
   const entries = useMemo<Entry[]>(() => [...(shown?.items ?? []), ...(shown?.busy ?? [])], [shown]);
 
   const opened = shown?.items.find((booking) => booking.id === openId) ?? null;
+  const marks = useMemo(() => changeMarks(shown?.items ?? [], zone), [shown, zone]);
 
   const reload = () => setRound((value) => value + 1);
   function finish(booking: BookingOut, change: Change | "created") {
@@ -411,9 +443,10 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
         {!shown ? (
           read?.error && !loading ? null : <p role="status" className={mutedText}>Loading the calendar…</p>
         ) : wide ? (
-          <WeekGrid days={days} zone={zone} entries={entries} today={today} onOpen={(b) => setOpenId(b.id)} />
+          <WeekGrid days={days} zone={zone} entries={entries} today={today} marks={marks}
+            onOpen={(b) => setOpenId(b.id)} />
         ) : (
-          <Agenda days={days} zone={zone} entries={entries} onOpen={(b) => setOpenId(b.id)} />
+          <Agenda days={days} zone={zone} entries={entries} marks={marks} onOpen={(b) => setOpenId(b.id)} />
         )}
       </div>
       {creating && types.data && people.data && rooms.data && (
@@ -422,6 +455,7 @@ function Calendar({ scope, zone }: { scope: BookingsScope; zone: string }) {
       )}
       {opened && (
         <BookingDetails scope={scope} zone={zone} booking={opened} canChange={canChangeBooking(opened)}
+          asked={marks.asked.get(opened.id) ?? null} waiting={marks.waiting.has(opened.id)}
           onClose={() => setOpenId(null)} onChanged={finish}
           onReload={() => { setOpenId(null); reload(); }} />
       )}
