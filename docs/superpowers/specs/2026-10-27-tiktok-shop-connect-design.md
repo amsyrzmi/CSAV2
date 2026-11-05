@@ -1,7 +1,29 @@
 # TikTok Shop connect, orders and products (Project 1) design
 
-Date: 27 Oct 2026. Approved by the owner 28 Oct 2026. Its own track, separate from lane A's A2. Branch `feat/tiktok-shop-connect`, based on main `225bfd2`.
+Date: 27 Oct 2026. Approved by the owner 28 Oct 2026. Its own track, separate from lane A's A2. Branch `feat/tiktok-shop-connect`, based on main `225bfd2`; merged with main `08a61e0` (schema `0530`) on 4 Nov 2026.
 Follow-on: Project 2, the TikTok chat channel. It is designed separately and reuses everything here.
+
+## 0. Revision of 4 Nov 2026 (after merging main) — approved by the owner 4 Nov 2026
+
+The 28 Oct approval stands for everything not listed here. Main moved 477 commits (console redesign, Go live, Business knowledge, HR). Checking every claim against main found what is below. Each affected section carries a **[4 Nov]** tag.
+
+**What changed in the product around us**
+
+1. Business management is now three pages: **Orders**, **Products & stock** and **Store connections** (`/business/...` for platform admins, `/portal/business/...` for company users). The old "Stores card on the Business tab" is the Store connections page. The orders page already has a source filter that lists TikTok Shop.
+2. The Business pages are built from the redesign's kit (`components/console/kit`, `business/cards.tsx`, `lib/business-view.ts`) and theme tokens. New screens follow them and are checked in all three themes.
+3. The console order contract carries no items and no ship-to. "Staff see everything" therefore needs a new order detail read (§6.5).
+4. Roles in screens and messages are **Admin**, **Staff** and **Read-only**. Read-only members never see the Business pages.
+
+**What the code check found (these are real gaps, not wording)**
+
+5. **The callback moves to the console origin.** Gmail's callback already works this way (`/console/v1/email/oauth/callback`): it runs behind the signed-in session and answers with a 303 redirect carrying a safe code. TikTok does the same. This settles three known gaps at once (the connect route behind an Admin session, no HTML to escape, the right page to return to for both platform admins and company users) and needs no hooks-host route for the callback. Only the webhook stays on the hooks host. The redirect URL registered in Partner Center changes accordingly (§6.1, §6.2).
+6. **M6B cannot do a first connect as it stands.** Its store binding, authorization context, credential lock and verifier all require an existing `shop_id`. A first connect (pending store, no shop yet) means changing those, not just adding a branch (§6.2).
+7. **M6B only knows order and shop permissions.** Product reads need the product permission checked at connect, and the store status query that hard-codes the permissions must follow (§6.2).
+8. **The M6B reader is built for one order at a time.** Each page of a sync is its own single-use operation plus a fresh authorized-shops call, it searches orders by status only (no time window), and its order snapshot has no ship-to, tracking, timestamps, payment breakdown or quantity (TikTok's 202309 orders list one line per unit). All of that is extended in §6.3 and §6.4.
+9. **The old `EcommerceAgent` can write to TikTok.** It is unwired today, but it carries `sync_inventory`, `fulfill_order`, `cancel_order` and `approve_refund`, and its order lookup returns items and totals. Wiring a real adapter into it would break two anti-goals. §6.7 replaces it with a read-only surface.
+10. **Staging cannot test a package that is not sellable.** The staging roster and Services both refuse unsellable packages, so the proof on staging needs the flag flipped first. §3 and §8 say how that stays safe.
+
+**Left exactly as approved:** intent, goals and non-goals, approach C, every owner decision, retention (30 and 90 days), the customer rules (order number gives status and tracking only; own catalogue first for stock), and the read-only workspace assistant.
 
 ## 1. Intent
 
@@ -25,7 +47,7 @@ The owner wants us to work from **our own copy** of the shop's orders and produc
 
 ### Goals
 
-- A client admin clicks **Connect TikTok Shop** on the Business tab, approves on TikTok, and lands back on the Business tab with the shop connected. Reconnect works the same way.
+- A client admin clicks **Connect TikTok Shop** on the Store connections page, approves on TikTok, and lands back on that page with the shop connected. Reconnect works the same way.
 - On first connect, the last 90 days of orders and the full product catalogue are copied in.
 - New and changed orders and products then arrive without anyone acting.
 - Staff browse and search TikTok orders in full detail on the existing Business orders views. They also browse TikTok products, with variants, price and stock, on the Business products view, labelled by source.
@@ -78,6 +100,10 @@ These would make this a failure even if it technically worked:
 | Buyer details while connected (28 Oct) | Cleared from each TikTok order 90 days after it is delivered or cancelled; number, totals and statuses stay. If TikTok's partner data policy sets a shorter limit, that limit wins |
 | Token refresh (my call, accepted 28 Oct) | A refresh is a sanctioned extension of M6B (§6.2) |
 | Legacy stores (my call, accepted 28 Oct) | Stores written by the old unauthenticated flow are removed by migration (§6.2) |
+| **[4 Nov, proposed]** Where TikTok returns the seller | To the **console origin**, behind the Admin's signed-in session, like Gmail's callback. Not to the hooks host. The webhook stays on the hooks host |
+| **[4 Nov, proposed]** When `marketplaces` becomes sellable | In the **last commit** of this project's PR, after every other part works and its tests pass. The flag cannot be flipped earlier in a useful way, because staging refuses unsellable packages. A company only gets it when a platform admin enables it for them, and the owner's staging proof comes before any client does |
+| **[4 Nov, proposed]** Customer agent surface | Read-only: order status by number, and stock questions. The old write actions are removed from what the planner can reach (§6.7) |
+| **[4 Nov, proposed]** Permission to approve | Connect needs the order, shop and product permissions. A seller who leaves one out gets "TikTok didn't give us all the access we need. Connect again and allow every permission." |
 
 ## 4. Constraints
 
@@ -89,9 +115,10 @@ These would make this a failure even if it technically worked:
 
 **Program rules** ([client growth program](2026-10-27-client-growth-program-design.md) §5, §9):
 - TikTok has its own migration range, `0490`–`0499`, so it never collides with lane A (`0470`–`0479`, A2 support refinements) or lane B (`0480`–`0489`). The first migration also adds this range to `db/migrations/README.md`.
-- `EXPECTED_SCHEMA_VERSION` is set at merge to the highest merged version. Main is on `0480` as of `225bfd2`.
-- A new console router is registered in `scripts/export_console_openapi.py`, and `docs/console_openapi.json` is regenerated as the last commit.
-- Do not touch `csa/console/packages.py`. The one owner-sanctioned exception is setting `marketplaces` to `sellable=True`, along with the test in `tests/test_console_services.py` that asserts it is refused.
+- `EXPECTED_SCHEMA_VERSION` stays at the highest applied version. Main is on `0530` as of `08a61e0`, so it stays `0530` or higher. TikTok's migrations `0490`–`0499` apply after `0530` already has (`scripts/migrate.py` applies every unrecorded file in filename order). **[4 Nov]** Tests import the constant and never hardcode it.
+- **[4 Nov]** The new connect and callback routes sit inside the existing Business router (`csa/console/business.py`), which is already registered in `scripts/export_console_openapi.py`. `docs/console_openapi.json` is regenerated as the last commit.
+- Do not touch `csa/console/packages.py`. The one owner-sanctioned exception is setting `marketplaces` to `sellable=True` and rewriting its summary. **[4 Nov]** The tests that assert it is refused change in the same commit: `tests/test_console_packages.py`, `tests/test_console_services.py` (two places), `tests/test_staging_roster.py`, and the `sellable=False` stubs in `tests/test_services_browser.py` and `tests/test_services_redesign_browser.py`. The Bookings project edits the same file and the navigation; whichever merges second resolves the conflict, so this commit stays last and small.
+- **[4 Nov]** Screens use the redesign's kit and theme tokens, work in all three themes, and say "Admin", never "tenant admin".
 - UI text follows `docs/WRITING_GUIDE.md`.
 
 **Tenant isolation:**
@@ -136,16 +163,17 @@ The owner picked **C**. Orders are already per-channel, so nothing collides. Pro
 | `TIKTOK_APP_KEY` | `str \| None` | app key | exists |
 | `TIKTOK_APP_SECRET` | `SecretStr \| None` | app secret; also the webhook HMAC key | exists |
 | `TIKTOK_SERVICE_ID` | `str \| None` | goes in the authorize URL | new |
-| `TIKTOK_CALLBACK_BASE_URL` | `HttpUrl \| None` | base for the callback URL; the WhatsApp precedent falls back to `PUBLIC_BASE_URL` | new |
+| ~~`TIKTOK_CALLBACK_BASE_URL`~~ | | **[4 Nov] dropped.** The callback is on the console origin, which is `PUBLIC_BASE_URL` (staging sets it from `CSA_STAGING_CONSOLE_ORIGIN`). No new setting | |
 | `TIKTOK_APP_ID` | `str` | registry id, default `tiktok_shop` | new |
 
 - The legacy code passes the app key as `service_id`. That is the bug this design removes.
+- **[4 Nov]** The Service ID is public (it appears in authorize URLs), but it still gets its own setting rather than a constant, so a second app can be added without a code change.
 - `TIKTOK_APP_KEY`, `TIKTOK_APP_SECRET` and `TIKTOK_SERVICE_ID` follow the WhatsApp convention: unset, empty or `disabled` means TikTok is off.
 - **When TikTok is off:**
   - connect endpoints return 503 `tiktok_unavailable`;
-  - the webhook returns 404;
+  - the webhook returns 404 and the callback redirects with `reason=tiktok_unavailable`;
   - sync jobs skip;
-  - the Business tab shows Connect disabled with "TikTok Shop isn't set up on this server yet."
+  - **[4 Nov]** the Store connections page shows Connect disabled with "TikTok Shop isn't set up on this server yet."
 
 **App registry (`load_app`).** This is the first real implementation of `TikTokAppMaterial` loading, which until now existed only in tests.
 - It returns the key and secret from settings, paired with the current row in `ecommerce_apps` for `TIKTOK_APP_ID`.
@@ -163,8 +191,9 @@ The owner picked **C**. Orders are already per-channel, so nothing collides. Pro
 
 **Staging wiring:**
 - `scripts/staging_secrets.py` gains a `tiktok-defaults` action that writes `disabled` placeholders.
-- `deploy/compose.staging-pipeline.yml` mounts the three secret files, sets `TIKTOK_CALLBACK_BASE_URL` from `CSA_STAGING_HOOKS_ORIGIN`, and adds the `tiktok-app` profile.
-- `deploy/staging-hooks.Caddyfile` forwards `GET /api/v1/channels/tiktok_shop/oauth/callback` and `POST /api/v1/channels/tiktok_shop/webhook` to the gateway.
+- `deploy/compose.staging-pipeline.yml` mounts the three secret files (gateway, worker and the one-shot) and adds the `tiktok-app` profile. **[4 Nov]** No callback-base variable.
+- `deploy/staging-hooks.Caddyfile` forwards `POST /api/v1/channels/tiktok_shop/webhook` to the gateway. **[4 Nov]** The live hooks Caddy block is edited by the owner with sudo, and it still has no WhatsApp matcher (PROGRESS, WhatsApp A1 rollout notes). Do both in one edit, with the numbered commands in `deploy/STAGING_PIPELINE.md`. The console Caddy needs no change.
+- **[4 Nov]** The repository's rollout tooling (`scripts/staging_rollout.py`, the `staging-rollout` skill) knows nothing of WhatsApp's `whatsapp-defaults` step, so `tiktok-defaults` is a manual step in the runbook, run before the rollout.
 - `deploy/STAGING_PIPELINE.md` gains a TikTok section with:
   - secret files;
   - the app enable step;
@@ -172,7 +201,7 @@ The owner picked **C**. Orders are already per-channel, so nothing collides. Pro
   - a test connect.
 
 **Partner Center settings** (owner):
-- Redirect URL: `https://hooks.fourstacks.my/api/v1/channels/tiktok_shop/oauth/callback`. This path is unchanged.
+- **[4 Nov]** Redirect URL: `https://staging-console.fourstacks.my/console/v1/business/stores/tiktok/callback` (the console origin, like Gmail's). This replaces the hooks-host URL in the 28 Oct design. The app is unpublished and the owner had not registered a redirect URL yet.
 - Webhook URL: `https://hooks.fourstacks.my/api/v1/channels/tiktok_shop/webhook`.
 - Events: order status change, product status/audit change, seller deauthorization.
 
@@ -181,8 +210,8 @@ Exact event names and type numbers must be checked against Partner Center when b
 ### 6.2 Connect and reconnect
 
 **Who:**
-- `tenant_admin` and `platform_admin` can connect, reconnect and disconnect.
-- `tenant_staff` see status only.
+- Admins and platform admins can connect, reconnect and disconnect. **[4 Nov]** The Business router also admits Staff, so the connect and disconnect routes add their own Admin check.
+- Staff see status only. Read-only members never see the Business pages.
 - Access requires the `marketplaces` package.
 
 Connecting hands over the shop's data, so it is an admin act.
@@ -190,7 +219,7 @@ Connecting hands over the shop's data, so it is an admin act.
 **Flow:**
 
 1. **Start.** The admin clicks **Connect TikTok Shop**, or **Reconnect** on an existing store.
-   - The console calls `POST /console/v1/business/stores/tiktok/connect`. For a reconnect it sends the `store_id`.
+   - **[4 Nov]** The button is on the Store connections page. The console calls `POST /console/v1/business/stores/tiktok/connect`. For a reconnect it sends the `store_id`. Platform admins send the chosen `client_id`, as every Business call does.
    - The server calls `begin_authorization` under the tenant's transaction.
    - It returns the TikTok authorize URL:
      - `https://services.tiktokshop.com/open/authorize?service_id=<TIKTOK_SERVICE_ID>&state=<state>`;
@@ -199,23 +228,24 @@ Connecting hands over the shop's data, so it is an admin act.
      - the authorize host for the Malaysia market must be checked when building.
    - The frontend navigates the browser to that URL.
 2. **Approve.** The seller approves on TikTok. TikTok redirects to the callback with `code` and `state`.
-3. **Callback.** `GET /api/v1/channels/tiktok_shop/oauth/callback` is unauthenticated by nature: the state is the authority.
-   - It finds the attempt by the state hash and calls `complete_authorization` with the real `TikTokAuthorizationVerifier`. The attempt is burned before the token exchange.
+3. **Callback.** **[4 Nov]** `GET /console/v1/business/stores/tiktok/callback`, behind the Admin's session (the browser that started the connect carries it back). The session is one more check on top of the state, not a replacement for it.
+   - `complete_authorization` needs the client and the attempt id, not just a state. The state therefore carries them as a plain prefix (neither is secret); only the random tail is secret, and only its sha256 is stored, as today. The session's tenant must equal the prefix's client, or a platform admin's chosen client.
+   - It calls `complete_authorization` with the real `TikTokAuthorizationVerifier`. The attempt is burned before the token exchange.
    - The verifier exchanges the code once and fetches the authorized shops fresh.
    - The persistence step then, atomically:
      - stores encrypted tokens;
      - stores the grant and its scopes;
      - stores the shop binding with an encrypted shop cipher;
      - bumps `credential_generation`.
-   - The response is a **303 redirect** to `{PUBLIC_BASE_URL}/business?tiktok=connected` or `?tiktok=failed&reason=<safe_code>`. No HTML page is rendered, which removes the unescaped-HTML and leaked-exception defects.
-4. **Result.** The Business tab shows the outcome in plain words and queues the first sync (§6.4).
+   - The response is a **303 redirect** with `Cache-Control: no-store`, like Gmail's: to `/portal/business/stores?tiktok=connected` for company users, or `/business/stores?client_id=…&tiktok=connected` for platform admins, or `?tiktok=failed&reason=<safe_code>`. No HTML page is rendered, which removes the unescaped-HTML and leaked-exception defects. Error text never comes from TikTok or from an exception.
+4. **Result.** The Store connections page shows the outcome in plain words and queues the first sync (§6.4).
 
-**First connect (deliberate extension of M6B).** M6B assumes the store row and its `shop_id` already exist and checks the fresh shop against them. A brand-new client has no store row and doesn't know its shop ID, so:
+**First connect (deliberate extension of M6B).** M6B assumes the store row and its `shop_id` already exist and checks the fresh shop against them. A brand-new client has no store row and doesn't know its shop ID. **[4 Nov] This is a larger change than the 28 Oct text said:** `StoreBinding.shop_id`, `TikTokAuthorizationContext`, `lock_credential.sql`, `replace_authorized_credential.sql` and the verifier's `authorized_shop_cipher(shop_id)` all require a shop ID. The builder makes `shop_id` optional for the first-connect context only, adds a first-connect verifier path that selects the single shop, keeps reconnect exactly as strict as today, and ledgers the ruling. A pending store is never readable: every read path still requires a bound shop.
 
 - A first connect creates a **pending store**: a `channel_credentials` row with `channel='tiktok_shop'` and `shop_id` NULL, shown as "Waiting for TikTok approval". The attempt context binds to that row.
-- At completion, if the fresh authorized-shops response contains **exactly one** shop, that shop is bound and the row's `shop_id` is set in the same transaction.
+- At completion, if the fresh authorized-shops response contains **exactly one** shop, that shop is bound and the row's `shop_id` is set in the same transaction. The grant must carry the order, shop **and product** permissions (**[4 Nov]**: `require_tiktok_scopes` and the permission list in `db/sql/business/store_connections.sql` both learn the product permission; the exact scope key is checked in Partner Center when building). Otherwise the result is `insufficient_scope`.
 - If it contains **several** shops, completion fails with `multiple_shops`: "This TikTok account has more than one shop. Contact support to connect the right one." Choosing among several shops is deferred.
-- **Reconnect keeps M6B's rule:** the fresh shop must exactly match the stored `shop_id`. Otherwise the result is `shop_mismatch`, and nothing already stored changes.
+- **Reconnect keeps M6B's rule:** the fresh shop must exactly match the stored `shop_id`. Otherwise nothing already stored changes. **[Build, 4 Nov]** The result keeps the verifier's existing safe code `authorized_shop_verification_failed` (it cannot tell a different shop from a failed lookup), and the callback redirect reason is `connect_failed`, with a sentence that covers both: "We couldn't confirm the shop you approved. If you chose a different shop than before, connect the original one." A separate `shop_mismatch` reason was dropped; a later verifier change can add it.
 - **A shop belongs to one client at a time.** Add a global unique index on active TikTok `shop_id`. Connecting a shop that is already active for another client fails with `shop_in_use`, which reveals nothing about the other client.
 - Abandoned pending stores, whose attempts expired with no binding, are removed by the purge job (§6.6).
 
@@ -228,7 +258,7 @@ Connecting hands over the shop's data, so it is an admin act.
 - **The sanctioned extension.** A refresh becomes a verified event of its own:
   1. Call the refresh endpoint once.
   2. With the new access token, fetch the authorized shops fresh. The stored `shop_id` must match exactly, and the cipher check follows the existing `require_authorized_shop` rule.
-  3. Then, in one transaction under the attempt-free credential fence:
+  3. Then, in one transaction under the attempt-free credential fence (**[4 Nov]** `TikTokGrantState.source` is a one-value literal today; it and the column's check constraint gain `verified_token_refresh`):
      - replace the encrypted tokens and bump the generation;
      - record a **new grant** with source `verified_token_refresh` (a new allowed value), scopes from the refresh response (or carried over from the previous grant if the response omits them; the builder verifies which), and expiry as the earlier of grant and access-token expiry;
      - record a new shop binding.
@@ -240,7 +270,7 @@ Connecting hands over the shop's data, so it is an admin act.
 **Legacy removal:**
 - `csa/channels/marketplace/oauth.py` is deleted: `build_tiktok_shop_auth_url`, `exchange_tiktok_shop_token`, `save_tiktok_shop_credentials`, `create/verify_oauth_state`.
 - The legacy authorize route and the `/webhook/{public_id}` variant are deleted from `router.py`, and the legacy tests go with them.
-- The callback path is kept, rewired to the flow above.
+- **[4 Nov]** The legacy callback route is deleted too, not rewired: the new callback lives in the console router. The gateway then serves only the webhook for TikTok. The old `/api/v1/channels/tiktok_shop/oauth/*` paths are already refused by the console edge (`deploy/STAGING_INGRESS.md`).
 - Shopee/Lazada draft routes are untouched.
 - **Existing legacy stores.** The old callback took `client_id` from an unauthenticated query parameter, so any TikTok store it wrote was never verified.
   - A migration deletes every `channel_credentials` row with `channel='tiktok_shop'` that has no verified grant, together with its `webhook_endpoints` rows. It runs before the new global unique index on `shop_id` is created.
@@ -249,12 +279,14 @@ Connecting hands over the shop's data, so it is an admin act.
 
 ### 6.3 Data model (migrations 0490+)
 
+**What the M6B snapshot lacks (4 Nov).** `TikTokOrderSnapshot` carries only the order ID, status, payment total and currency, and lines (ID, SKU, name, sale price). The builder extends it, from the docs and synthetic fixtures, with: create and update times; payment breakdown (subtotal, shipping, discount); the delivery address as TikTok gives it (often masked); the packages' tracking number and carrier; and a paid indicator. TikTok's 202309 orders list **one line per unit**, so lines with the same SKU fold into one `order_items` row with `qty` = the count, and the unit price comes from the line's sale price. The same models stay `extra="ignore"`. **[Build, 4 Nov]** The recipient's name, phone and address are part of the ship-to the owner decided staff may see in full, so the snapshot does carry them. They live only in `orders.ship_to` and are cleared with it by the retention rules in §6.6; no buyer name or phone is kept anywhere else.
+
 **Orders.** These go into the existing `public.orders` and `public.order_items` tables.
 - `channel='tiktok_shop'`.
 - `external_order_id` is TikTok's order ID and `external_shop_id` is the shop.
 - New `store_id uuid` references the `channel_credentials` row.
 - New `synced_at timestamptz` and `provider_updated_at timestamptz`.
-- `orders.id` for synced rows is a server-generated text ID; the builder picks the format.
+- `orders.id` for synced rows is a server-generated text ID. **[Build, 4 Nov]** It is tenant-scoped: `tt_<client id as hex>_<external order id>`, so a shop that moves to another tenant can never collide with the old row's primary key. Lookups and the console use `external_order_id`, not `id`.
 - A unique partial index on `(client_id, channel, external_order_id)` for marketplace rows makes upserts idempotent.
 - `contact_id` stays NULL in Project 1.
 
@@ -311,17 +343,18 @@ A partial unique index on `(client_id, store_id, kind, target)` for `status='pen
   - It requeues stale claims.
   - It retries with backoff up to a cap, then marks the job `failed` and raises one `notify` per store, not per job.
   - Every TikTok call goes through the verified, fenced reader path (`TikTokStoredCredentialResolver` → `BoundTikTokReader` → `dispatch_read`). M6B built that path for order reads; it gains operations for:
-    - order search;
+    - order search by time window (**[4 Nov]** today it searches by status only);
     - product search;
     - product detail;
     - inventory read.
 
-    These operations follow the same evidence and fence rules.
+    These operations follow the same evidence and fence rules. **[4 Nov] What that costs:** every page is a new single-use operation row plus a fresh authorized-shops call before the read, so each page costs two TikTok calls. The design keeps that strictness for the first release, because a lighter path would be a new security ruling. The builder measures a backfill on staging; if the cost is a problem, a "verify once per job" ruling comes back to the owner. TikTok's real rate limits have not been checked yet.
 - **Backfill.** After a successful connect or reconnect, the connect code queues `backfill_orders` (last 90 days, by `update_time`) and `backfill_products` (full catalogue). Backfills page through the results and checkpoint their cursor, so a crash resumes where it stopped.
-- **Webhooks.** `POST /tiktok_shop/webhook` verifies the HMAC with `TIKTOK_APP_SECRET` as today, then resolves `shop_id` to a client and store.
+- **Webhooks.** `POST /tiktok_shop/webhook` verifies the HMAC with `TIKTOK_APP_SECRET`, then resolves `shop_id` to a client and store.
   - **Order event:** queue `order_refresh(order_id)`. The job fetches that order's full detail and upserts it, because the webhook only says something changed.
   - **Product event:** queue `product_refresh(product_id)`.
-  - **Deauthorization:** mark the store `disconnected` (§6.6).
+  - **Deauthorization:** mark the store `disconnected` (§6.6). **[Build, 4 Nov]** The build maps type `6` to this; the type numbers (and whether deauthorization is `6` or `12`) are unverified until read in Partner Center.
+  - **[Build, 4 Nov] Signature:** two recipes are accepted until one is verified: A, HMAC-SHA256 of the raw body with the app secret; B, the same over the app key followed by the body. Both need the app secret, so accepting two does not weaken the key requirement. The unreal one is deleted after Partner Center is read; whether TikTok signs a timestamp (for a replay check) is also unknown.
   - **Unknown event:** acknowledge and drop.
   - **Unknown shop:** acknowledge with 200 and drop, so TikTok doesn't retry.
   - **Raw-payload storage:** the webhook **no longer writes `ingress_events`**. Today those rows reach the turn worker, fail "no valid envelope" and dead-letter. Already-stored legacy TikTok rows are cleaned by a one-off migration step (§8).
@@ -330,26 +363,28 @@ A partial unique index on `(client_id, store_id, kind, target)` for `status='pen
 - **Rate limits.** The processor respects TikTok's API limits with a per-store concurrency of 1 and a small delay between pages. The builder sets the constants.
 - **Freshness.** `synced_at` is written on every upsert. Store-level `orders_synced_at`/`products_synced_at` update when a backfill or catch-up completes.
 
-### 6.5 Business tab (console)
+### 6.5 Business pages (console)
 
-Changes go in `CSA_WebConsole/csa-console/web/components/console/BusinessWorkspace.tsx` and `csa/console/business.py`, following the writing guide.
+**[4 Nov]** Changes go in `CSA_WebConsole/csa-console/web/components/console/BusinessWorkspace.tsx`, `components/console/business/cards.tsx`, `lib/business-view.ts` and `csa/console/business.py`, following the writing guide and the redesign's kit. Every new line is checked in all three themes and on a phone. The `business-*` test ids are kept where the page is unchanged.
 
-**Stores card:**
-- The disabled "Connect unavailable" and "Reconnect unavailable" buttons become working **Connect TikTok Shop** and **Reconnect** buttons for admins.
+**Store connections page** (was "Stores card"):
+- The disabled "Connect unavailable" and "Reconnect unavailable" buttons become working **Connect TikTok Shop** and **Reconnect** buttons for admins. The page's "saved records only", "Live integration: unavailable" and "Partner Center eligibility" notices are replaced with true statements, and the `Literal["unavailable"]` fields on `StoreRecord`, `StoreConnection` and `StorePage` become real values (the console contract snapshot and `docs/console_openapi.json` change with them).
+- A pending store reuses the existing "Store ID missing" state, worded "Waiting for TikTok approval".
 - **Disconnect** appears for admins, behind a confirm: "Stop syncing this shop? Orders stay visible for 30 days, then customer details are removed."
 - Each store shows:
   - plain status: Connected, Waiting for TikTok approval, Needs reconnecting, Disconnected;
   - "Orders synced 3 min ago" and "Products synced 1 h ago";
   - a problem line when sync is failing.
 - The "Live integration: unavailable" constant and the local-only notices are replaced with true statements.
-- Returning from TikTok with `?tiktok=…` shows a one-line result, then clears the query.
+- Returning from TikTok with `?tiktok=…` shows a one-line result, then clears the query. Platform admins keep their `client_id`.
 
-**Orders list and detail** (existing views):
-- TikTok rows show a "TikTok" source badge, TikTok's status beside ours and "Synced 3 min ago".
-- The detail shows everything we hold: items, totals, ship-to as TikTok provides it, tracking.
-- A source filter (All / Telegram / TikTok …) is added if the list lacks one.
+**Orders page** (the list is cards with an expandable detail, not a separate page):
+- TikTok rows show a "TikTok" source badge, TikTok's status beside ours and "Synced 3 min ago". The card's "Local update … not a marketplace sync timestamp" line is replaced for TikTok rows.
+- **[4 Nov]** The order contract (`BusinessOrder`) has no items and no ship-to today. A new staff order detail read returns items, totals breakdown, ship-to as TikTok provides it, tracking, `provider_status` and the cleared-after-90-days note. It is Business-gated and tenant-scoped like the list.
+- The source filter already exists under "More filters" and already lists TikTok Shop. It stays. The "Not a live TikTok Shop feed" and "What this page does not do yet" folds are rewritten to what is true.
+- The open order is published as page context (`RecordRef(kind="order")`), which the page does not do today (§6.8).
 
-**Products list:**
+**Products & stock page:**
 - Gains a source switch: **Your catalogue** (today's local view, unchanged) and **TikTok Shop** (listings: product, variant, SKU, price, stock, status, "Synced …", and "Same SKU as …" when matched).
 - `ProductPage.source` and `marketplace_sync` stop being constants.
 - The listing detail shows all variants of the product. A **Check live stock** button for staff is the builder's call; the workspace assistant covers this need either way.
@@ -381,8 +416,10 @@ Reconnecting the same shop within 30 days resumes, with a catch-up from the curs
 
 ### 6.7 Customer assistant
 
-- **Where it lives.** The existing `EcommerceAgent` spoke answers TikTok questions. It is gated by the `marketplaces` package (already mapped in `csa/console/packages.py`; no change there).
+- **Where it lives.** The existing `EcommerceAgent` spoke answers TikTok questions. It is gated by the `marketplaces` package (already mapped in `csa/console/packages.py`; no change there beyond the sellable flag).
   - Its unverified adapter path is replaced. It is wired today with no adapters and always returns `unsupported_platform`.
+  - **[4 Nov] It becomes read-only.** `sync_inventory`, `fulfill_order`, `cancel_order` and `approve_refund` are removed from what the planner and the spoke accept, and its `get_order` no longer returns items or totals. Its inputs are narrowed to the two customer questions below, so a customer message can never plan a TikTok write. The Shopee and Lazada adapter files stay untouched and unreachable.
+  - The Agents page text for E-commerce ("No marketplace adapters are wired… Setup is required", forced `setup_required`) in `csa/console/agents.py` becomes true: ready when a shop is connected, set up otherwise.
   - The coordinator and planner learn to route "TikTok order number" and "is X in stock" questions to it when the tenant has a connected TikTok store.
   - `OrderAgent` and its contact-scoped reads are unchanged.
 - **Order lookup by number.**
@@ -406,7 +443,7 @@ Reconnecting the same shop within 30 days resumes, with a catch-up from the curs
 **Orders.** These come almost for free: `get_local_order` already reads `orders`, so an open TikTok order summarises as today, plus "TikTok · synced 3 min ago". The frontend publishes the open order as page context, `RecordRef(kind="order")`, which `BusinessWorkspace.tsx` doesn't do today.
 
 **Products.** The changes are:
-- Add a `"product"` record kind. TikTok listings are referenced as `kind="product"` with source `tiktok_shop`; the builder picks the reference shape.
+- Add a `"product"` record kind (**[4 Nov]** `RecordRef.kind` is now `conversation`, `approval`, `training_request`, `draft`, `order`, `employee`; `_RECORD_GATES` and `_summarize` in `csa/workspace/service.py` are where the branches go). TikTok listings are referenced as `kind="product"` with source `tiktok_shop`; the builder picks the reference shape.
 - Add a `business_products`/`business_product` page hint and a product read proposal.
 - Add `_RECORD_GATES["product"]` with the business gate, and a `_summarize` branch.
 - Add a **stock read** that finds the listing in our copy, then reads live with the same verified reader as §6.7.
@@ -419,7 +456,7 @@ Reconnecting the same shop within 30 days resumes, with a catch-up from the curs
 - **Synthetic fixtures only.** Every TikTok call uses `httpx.MockTransport` with recorded-shape fixtures written from docs, not from live captures containing real data. Testcontainers only.
 - **Connect:**
   - start → callback → redirect, for first connect and reconnect;
-  - `multiple_shops`, `shop_mismatch` and `shop_in_use`;
+  - `multiple_shops`, a reconnect that approves a different shop (`connect_failed`) and `shop_in_use`;
   - burned-state replay;
   - a non-admin denied;
   - TikTok off returns 503 or 404;
@@ -443,20 +480,22 @@ Reconnecting the same shop within 30 days resumes, with a catch-up from the curs
   - the workspace product summary and stock read;
   - package gate denial.
 - **Browser:**
-  - Business tab: connect button visibility by role, statuses, products source switch;
-  - update the `test_services_browser` and `test_packaged_console` stubs for any new console calls. The A1 lesson is to run both before pushing.
+  - Store connections page: connect button visibility by role, statuses, the returned `?tiktok=` result; Orders page TikTok badge; Products & stock source switch; each in the three themes;
+  - update the `test_services_browser`, `test_services_redesign_browser` and `test_packaged_console` stubs for any new console calls. The A1 lesson is to run them before pushing.
+- **[4 Nov] Added:** the callback refuses a missing or foreign session; a platform admin returns to the right page; the read-only agent cannot be planned into a write; a seller who withholds the product permission gets `insufficient_scope`; the sellable flip's tests (listed in §4).
+- **[4 Nov] Checking order:** on this host only changed files' tests, one file at a time, plus `make lint` and the web checks. The full suite runs in PR CI.
 
 ## 8. Rollout
 
-1. Merge with migrations `0490+`. Set the expected schema version to the highest merged version.
+1. Merge with migrations `0490+`. **[4 Nov]** `EXPECTED_SCHEMA_VERSION` stays at the highest applied version (`0530` or higher). The rollout follows the `staging-rollout` skill (plan, then apply with the owner's go); migrations stop all four services.
 2. On staging:
    1. Run `tiktok-defaults`.
    2. Run `migrate`.
    3. Recreate the gateway, worker, delivery and frontend. TikTok stays off.
    4. One-off: mark legacy TikTok `ingress_events` rows as dead or done, so they never reach the turn worker. The builder chooses whether that is a migration or a runbook step.
-   5. Owner: write the real secret files, recreate the services, then `tiktok-app register` and `enable`. A platform admin enables the **Marketplaces** package for the client on Services.
+   5. Owner: write the real secret files **with `read -s` (the App Key, App Secret and Service ID never pass through chat or the repository)**, recreate the services, then `tiktok-app register` and `enable`. A platform admin enables the **Marketplaces** package for the client on Services.
    6. Owner: confirm in Partner Center whether a shop that isn't the owner's can authorize the app while it is unpublished, or whether the app must first be published or the shop allow-listed. Do that step before connecting the client's shop.
-   7. Owner: set the Partner Center redirect URL, webhook URL and events.
+   7. Owner: set the Partner Center redirect URL (**[4 Nov]** the console-origin callback), the webhook URL (hooks host, which needs the live Caddy edit) and the events.
    8. Connect the owner's own shop, or a test shop, first.
    9. Check the "done means" list (§2), then connect the client's shop.
 3. Record the rollout in `docs/PROGRESS.md`.
@@ -473,6 +512,7 @@ Reconnecting the same shop within 30 days resumes, with a catch-up from the curs
 - Whether a staff **Check live stock** button ships.
 - Whether a failed customer stock check raises a staff handoff.
 - Exact TikTok endpoint versions, event type numbers, status names and the Malaysia authorize host. Verify each against current Partner Center docs and record the source in the ledger.
+- **[4 Nov]** The wording of the state prefix, the sync-state storage and the exact extended snapshot fields.
 - Any change to who may call what, to retention, or to what customers see goes back to the owner.
 
 ## 10. Sources
