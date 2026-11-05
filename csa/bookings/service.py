@@ -17,12 +17,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from psycopg import AsyncConnection, errors
+from psycopg.types.json import Jsonb
 
 from csa.bookings import setup
 from csa.bookings.availability import (
@@ -52,7 +53,6 @@ from csa.bookings.contracts import (
 )
 from csa.bookings.rules import Actor, Finding, decide, findings_for
 from csa.console.contracts import ConsoleActor, Role
-from csa.console.kb_uploads import audit
 from csa.core import db
 
 Conn = AsyncConnection[Any]
@@ -127,6 +127,32 @@ def viewer_of(actor: ConsoleActor) -> Viewer:
     read_only = not actor.platform_admin and actor.role == Role.READ_ONLY
     admin = actor.platform_admin or actor.role in (Role.PLATFORM_ADMIN, Role.TENANT_ADMIN)
     return Viewer(actor.user_id, read_only=read_only, admin=admin)
+
+
+@dataclass(frozen=True)
+class Author:
+    """Who a write is made for: the rules it follows, the account it is recorded against (the bot
+    has none) and where it came from.
+    """
+
+    acting: Actor
+    user_id: UUID | None
+    source: Literal["staff", "assistant", "bot"]
+
+
+def author_of(actor: ConsoleActor) -> Author:
+    """A person at the console."""
+    return Author(acting_as(actor), actor.user_id, "staff")
+
+
+BOT = Author("bot", None, "bot")
+
+
+async def _audit(conn: Conn, author: Author, client_id: UUID, action: str, target: str) -> None:
+    """The audit row: the id and the action only, against the account when there is one."""
+    await db.q.execute(
+        "console/audit.sql", (author.user_id, client_id, action, target, Jsonb({})), conn=conn
+    )
 
 
 # --- the booking as the server knows it, and as one viewer may see it -------------------------
@@ -523,15 +549,19 @@ def _check_time(
     min_notice: timedelta,
     now: datetime,
     acknowledged: Iterable[BookingFinding],
+    max_advance: timedelta | None = None,
 ) -> None:
     """Refuse a taken time, then apply the owner's table to what is left.
 
     Nothing here names a person, a title or a reason: leave is only ever "Not available that day."
-    and the code "unavailable".
+    and the code "unavailable". `max_advance` is the bot's: a time further off than that is refused
+    like any other finding.
     """
     subjects = [("person", p) for p in people] + [("resource", r) for r in resources]
     if _taken(calendar, subjects, start, hold_end):
         raise slot_taken()
+    if max_advance is not None and start - now > max_advance:
+        raise Refusal(409, "refused", NOT_AVAILABLE, findings=["too_far_ahead"])
     found = findings_for(calendar, start, end, people, resources, min_notice, now)
     agreed: set[Finding] = {FROM_WIRE.get(f, f) for f in acknowledged}  # type: ignore[misc]
     decision = decide(acting, found, agreed)
@@ -710,6 +740,12 @@ async def _customer(conn: Conn, client_id: UUID, data: BookingIn) -> UUID | None
     return row["id"]  # type: ignore[no-any-return]
 
 
+def _max_advance(author: Author, booking_type: BookingTypeOut | None) -> timedelta | None:
+    if author.source != "bot" or booking_type is None:
+        return None
+    return timedelta(days=booking_type.max_advance_days)
+
+
 async def create_booking(
     conn: Conn,
     client_id: UUID,
@@ -722,7 +758,26 @@ async def create_booking(
 
     The caller sends the result through `to_out`, and runs the mail step after the commit.
     """
-    acting = acting_as(actor)
+    return await create_for(conn, client_id, author_of(actor), data, now=now)
+
+
+async def create_for(
+    conn: Conn,
+    client_id: UUID,
+    author: Author,
+    data: BookingIn,
+    *,
+    now: datetime | None = None,
+    force_pending: bool = False,
+    turn_key: str | None = None,
+    conversation_id: UUID | None = None,
+    expires_at: datetime | None = None,
+    replaces_booking_id: UUID | None = None,
+) -> BookingRecord:
+    """`create_booking` for any author. The bot is refused a time further off than the type allows,
+    and picks the person for a type that names one, because a customer does not choose.
+    """
+    acting = author.acting
     now = now or datetime.now(UTC)
     booking_type = await _type_for(conn, client_id, data.type_id) if data.type_id else None
     if data.private and booking_type is not None:
@@ -739,7 +794,12 @@ async def create_booking(
     rooms = await setup.list_resources(conn, client_id)
     given_people = list(dict.fromkeys(data.people))
     given_rooms = list(dict.fromkeys(data.resources))
-    if booking_type and booking_type.delivery == "named" and not given_people:
+    if (
+        booking_type
+        and booking_type.delivery == "named"
+        and not given_people
+        and author.source != "bot"
+    ):
         raise HTTPException(422, "people_required")
     crew = crew_for(
         booking_type,
@@ -789,6 +849,7 @@ async def create_booking(
         min_notice=min_notice,
         now=now,
         acknowledged=data.acknowledged,
+        max_advance=_max_advance(author, booking_type),
     )
 
     row = await db.q.fetch_one(
@@ -798,14 +859,19 @@ async def create_booking(
             "contact_id": await _customer(conn, client_id, data),
             "service": booking_type.name if booking_type else None,
             "status": "pending"
-            if booking_type and booking_type.needs_confirmation
+            if force_pending or (booking_type and booking_type.needs_confirmation)
             else "confirmed",
             "starts_at": start,
             "ends_at": end,
             "type_id": data.type_id,
             "title": None if booking_type else data.title,
             "kind": "appointment" if booking_type else "meeting",
-            "created_by": actor.user_id,
+            "created_by": author.user_id,
+            "source": author.source,
+            "turn_key": turn_key,
+            "conversation_id": conversation_id,
+            "expires_at": expires_at,
+            "replaces_booking_id": replaces_booking_id,
             "private": data.private,
             # The place is copied from the type, so editing the type later moves no booking. A
             # meeting with no type brings its own.
@@ -841,7 +907,7 @@ async def create_booking(
         start,
         hold_end,
     )
-    await audit(conn, actor, client_id, "bookings.booking.created", str(booking_id))
+    await _audit(conn, author, client_id, "bookings.booking.created", str(booking_id))
     return (await read_records(conn, client_id, booking_id=booking_id))[0]
 
 
@@ -885,14 +951,38 @@ async def move_booking(
     and the holds are replaced in the same transaction, so a refusal leaves everything as it was.
     The new time meets the same rules as a new booking.
     """
-    acting = acting_as(actor)
-    now = now or datetime.now(UTC)
+    author = author_of(actor)
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
+    return await move_to(
+        conn,
+        client_id,
+        author,
+        record,
+        data.starts_at,
+        acknowledged=data.acknowledged,
+        now=now,
+    )
+
+
+async def move_to(
+    conn: Conn,
+    client_id: UUID,
+    author: Author,
+    record: BookingRecord,
+    starts_at: datetime,
+    *,
+    acknowledged: Iterable[BookingFinding] = (),
+    now: datetime | None = None,
+) -> BookingRecord:
+    """The move itself, for a booking already locked, checked and live."""
+    acting = author.acting
+    now = now or datetime.now(UTC)
+    booking_id = record.id
     booking_type = None
     if record.type_id is not None:
         booking_type = next(iter(await setup.list_types(conn, client_id, record.type_id)), None)
-    start = data.starts_at.astimezone(UTC)
+    start = starts_at.astimezone(UTC)
     end = window_end(start, int((record.ends_at - record.starts_at).total_seconds() // 60))
     hold_end = end + timedelta(minutes=booking_type.buffer_minutes if booking_type else 0)
     min_notice = timedelta(minutes=booking_type.min_notice_minutes if booking_type else 0)
@@ -918,7 +1008,8 @@ async def move_booking(
         resources=rooms,
         min_notice=min_notice,
         now=now,
-        acknowledged=data.acknowledged,
+        acknowledged=acknowledged,
+        max_advance=_max_advance(author, booking_type),
     )
     await db.q.execute(
         "bookings/holds_delete.sql", {"client_id": client_id, "booking_id": booking_id}, conn=conn
@@ -929,14 +1020,14 @@ async def move_booking(
         {"client_id": client_id, "id": booking_id, "starts_at": start, "ends_at": end},
         conn=conn,
     )
-    await audit(conn, actor, client_id, "bookings.booking.moved", str(booking_id))
+    await _audit(conn, author, client_id, "bookings.booking.moved", str(booking_id))
     return (await read_records(conn, client_id, booking_id=booking_id))[0]
 
 
 async def _finish(
     conn: Conn,
     client_id: UUID,
-    actor: ConsoleActor,
+    author: Author,
     record: BookingRecord,
     status: str,
     action: str,
@@ -955,7 +1046,7 @@ async def _finish(
         {"client_id": client_id, "id": record.id, "status": status},
         conn=conn,
     )
-    await audit(conn, actor, client_id, f"bookings.booking.{action}", str(record.id))
+    await _audit(conn, author, client_id, f"bookings.booking.{action}", str(record.id))
     if free:
         # The rooms live on the holds, which are gone now: keep them on the returned record.
         return replace(
@@ -969,13 +1060,20 @@ async def _finish(
     return replace(fresh, previous_status=record.status)
 
 
+async def cancel_for(
+    conn: Conn, client_id: UUID, author: Author, record: BookingRecord
+) -> BookingRecord:
+    """Cancel a booking already locked and checked as live: its holds go, so the time is free."""
+    return await _finish(conn, client_id, author, record, "cancelled", "cancelled", free=True)
+
+
 async def cancel_booking(
     conn: Conn, client_id: UUID, actor: ConsoleActor, booking_id: UUID, data: BookingActionIn
 ) -> BookingRecord:
     """Cancel a pending or confirmed booking; its holds are deleted, so the time is free again."""
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
-    return await _finish(conn, client_id, actor, record, "cancelled", "cancelled", free=True)
+    return await cancel_for(conn, client_id, author_of(actor), record)
 
 
 async def decline_booking(
@@ -985,7 +1083,9 @@ async def decline_booking(
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     if record.status != "pending":
         raise HTTPException(409, "wrong_status")
-    return await _finish(conn, client_id, actor, record, "cancelled", "declined", free=True)
+    return await _finish(
+        conn, client_id, author_of(actor), record, "cancelled", "declined", free=True
+    )
 
 
 async def confirm_booking(
@@ -995,7 +1095,9 @@ async def confirm_booking(
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     if record.status != "pending":
         raise HTTPException(409, "wrong_status")
-    return await _finish(conn, client_id, actor, record, "confirmed", "confirmed", free=False)
+    return await _finish(
+        conn, client_id, author_of(actor), record, "confirmed", "confirmed", free=False
+    )
 
 
 async def mark_no_show(
@@ -1013,7 +1115,9 @@ async def mark_no_show(
         raise HTTPException(409, "wrong_status")
     if record.starts_at > (now or datetime.now(UTC)):
         raise HTTPException(409, "not_started")
-    return await _finish(conn, client_id, actor, record, "no_show", "no_show", free=False)
+    return await _finish(
+        conn, client_id, author_of(actor), record, "no_show", "no_show", free=False
+    )
 
 
 # --- availability ----------------------------------------------------------------------------
