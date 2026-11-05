@@ -16,7 +16,6 @@ from zoneinfo import ZoneInfo
 
 import structlog
 from psycopg import AsyncConnection
-from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
@@ -24,6 +23,8 @@ from csa.agents.base import AgentContext, SideEffects
 from csa.agents.staged.booking_facts import (
     NEEDS_NAME,
     NOT_FOUND,
+    REMINDERS_LATER,
+    REMINDERS_NOW,
     Scene,
     booking_line,
     facts_for,
@@ -49,6 +50,7 @@ from csa.console.mailer import Mailer
 from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta
 from csa.contracts.plan import RiskClass
 from csa.core import db
+from csa.core.pii import is_email_placeholder
 from csa.core.tenancy import tx
 
 logger = structlog.get_logger(__name__)
@@ -163,7 +165,7 @@ def reply(ctx: AgentContext, texts: list[str], *, handoff: str | None = None) ->
 @dataclass(frozen=True)
 class Acted:
     """What a call did inside its transaction. With an outcome, the facts are built after it
-    commits, because they may report the mail that went out.
+    commits, from the booking as it then stands.
     """
 
     scene: Scene
@@ -174,6 +176,17 @@ class Acted:
 def local(value: datetime, zone: ZoneInfo) -> datetime:
     """A time with no offset is the company's own local time, never the host's."""
     return value.replace(tzinfo=zone) if value.tzinfo is None else value
+
+
+def _real(address: str | None) -> str | None:
+    """The address, unless it is still the planner's placeholder: the server swaps those for the
+    customer's own address before the agent runs, so one that is left is not an address."""
+    return None if address is None or is_email_placeholder(address) else address
+
+
+def _address(details: dict[str, Any]) -> str:
+    """Any address the customer can be mailed at: the contact's own, else the one they gave."""
+    return str(details.get("email") or details.get("customer_given_email") or "").strip()
 
 
 def mail_for(outcome: BotOutcome) -> notify.Change | None:
@@ -266,7 +279,7 @@ class BookingAgent:
     async def _act(self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput) -> Acted:
         zone = await core.company_zone(conn, ctx.client_id)
         names = {t.id: t.name for t in await setup.list_types(conn, ctx.client_id)}
-        scene = Scene(zone, names)
+        scene = Scene(zone, names, reminders=self._sends_mail())
         blocked, _ = await bot.gate(conn, ctx.client_id)
         if blocked is not None:
             return Acted(scene, BotOutcome(blocked))
@@ -278,35 +291,54 @@ class BookingAgent:
             return await self._status(conn, ctx, inp, scene)
         if inp.action == "save_details":
             return await self._save_details(conn, ctx, inp, scene)
-        details = await self._details(conn, ctx, inp.customer_name, inp.customer_email)
+        details = await self._details(conn, ctx, inp.customer_name, _real(inp.customer_email))
         if inp.action == "book":
             return await self._book(conn, ctx, inp, scene, details)
         return await self._change(conn, ctx, inp, scene)
+
+    def _sends_mail(self) -> bool:
+        """Something is connected that can send a customer mail (and so reminders)."""
+        return self._mailer is not None and self._mailer.enabled
 
     async def _details(
         self, conn: AsyncConnection[Any], ctx: AgentContext, name: str | None, email: str | None
     ) -> dict[str, Any]:
         """The customer's name and email, after saving what they just said into empty fields."""
-        params = {"client_id": ctx.client_id, "id": ctx.contact_id, "name": name}
-        try:
-            async with conn.transaction():
-                row = await db.q.fetch_one(
-                    "bookings/contact_details_fill.sql", {**params, "email": email}, conn=conn
-                )
-        except UniqueViolation:  # another contact took the address a moment ago
-            row = await db.q.fetch_one(
-                "bookings/contact_details_fill.sql", {**params, "email": None}, conn=conn
-            )
+        row = await db.q.fetch_one(
+            "bookings/contact_details_fill.sql",
+            {"client_id": ctx.client_id, "id": ctx.contact_id, "name": name, "email": email},
+            conn=conn,
+        )
         return dict(row or {})
 
     async def _save_details(
         self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
     ) -> Acted:
         """Save the name or email the customer just gave into the fields that are empty."""
+        email = _real(inp.customer_email)
         before = await self._details(conn, ctx, None, None)
-        after = await self._details(conn, ctx, inp.customer_name, inp.customer_email)
-        line = saved_line(before, after, name=inp.customer_name, email=inp.customer_email)
+        after = await self._details(conn, ctx, inp.customer_name, email)
+        line = saved_line(
+            before,
+            after,
+            name=inp.customer_name,
+            email=email,
+            reminders=await self._reminders_sentence(conn, ctx),
+        )
         return Acted(scene, lines=[line])
+
+    async def _reminders_sentence(self, conn: AsyncConnection[Any], ctx: AgentContext) -> str:
+        """What a saved address will be used for. Nothing while no mailer is connected, and "the
+        booking just made" only if the customer holds an upcoming booking.
+        """
+        if not self._sends_mail():
+            return ""
+        held = await db.q.fetch_one(
+            "bookings/customer_upcoming_count.sql",
+            {"client_id": ctx.client_id, "contact_id": ctx.contact_id, "now": ctx.now()},
+            conn=conn,
+        )
+        return REMINDERS_NOW if held is not None and held["n"] > 0 else REMINDERS_LATER
 
     async def _availability(
         self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
@@ -325,11 +357,14 @@ class BookingAgent:
             type_id=inp.type_id,
             day_from=inp.day or now.astimezone(scene.zone).date(),
             now=now,
+            spread=True,
+            part=inp.part_of_day,
         )
         name = scene.type_names.get(inp.type_id, "this service")
+        part = f" {inp.part_of_day}" if inp.part_of_day else ""
         if not offers:
-            return [f"No free times for {name} were found soon."]
-        return [f"Free times for {name}: {times(offers)}."]
+            return [f"No free{part} times for {name} were found soon."]
+        return [f"Free{part} times for {name}: {times(offers)}."]
 
     async def _list(self, conn: AsyncConnection[Any], ctx: AgentContext, scene: Scene) -> list[str]:
         now = ctx.now()
@@ -344,16 +379,18 @@ class BookingAgent:
         for row in rows:
             line = await self._line(conn, ctx, scene, row["id"])
             past = "This booking is in the past. " if row["ends_at"] < now else ""
-            lines.append(f"{past}{line} (booking id {row['id']}, for lookups only; never show it)")
+            lines.append(f"{past}{line}")
         return lines
 
     async def _status(
         self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
     ) -> Acted:
         assert inp.booking_id is not None
-        if await self._own(conn, ctx, inp.booking_id) is None:
+        own = await self._own(conn, ctx, inp.booking_id)
+        if own is None:
             return Acted(scene, lines=[NOT_FOUND])
-        return Acted(scene, lines=[await self._line(conn, ctx, scene, inp.booking_id)])
+        past = "This booking is in the past. " if own["ends_at"] < ctx.now() else ""
+        return Acted(scene, lines=[past + await self._line(conn, ctx, scene, inp.booking_id)])
 
     async def _own(
         self, conn: AsyncConnection[Any], ctx: AgentContext, booking_id: UUID
@@ -410,13 +447,13 @@ class BookingAgent:
         scene = replace(
             scene,
             type_id=inp.type_id,
-            ask_email=ctx.channel == "whatsapp" and not (details.get("email") or "").strip(),
+            ask_email=ctx.channel == "whatsapp" and not _address(details),
         )
         if outcome.booking is not None:
             scene = await self._scene_for(conn, ctx, scene, outcome.booking)
         lines: list[str] = []
         if outcome.code == "not_found":  # tell the model what can be booked, as availability does
-            lines = [type_line(t) for t in await bot.customer_types(conn, ctx.client_id)]
+            lines = [type_line(t, ids=False) for t in await bot.customer_types(conn, ctx.client_id)]
         return Acted(scene, outcome, lines)
 
     async def _change(

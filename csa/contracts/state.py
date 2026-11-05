@@ -49,6 +49,8 @@ class BookingContext(ContractModel):
     today: str = Field(max_length=40)
     timezone: str = Field(max_length=64)
     types: list[BookingType] = Field(default_factory=list, max_length=20)
+    # True when the company offers more services than `types` holds (the list is cut at 20).
+    more_types: bool = False
     upcoming: list[BookingRef] = Field(default_factory=list, max_length=10)
     recent: list[RecentMessage] = Field(default_factory=list, max_length=RECENT_MESSAGES)
 

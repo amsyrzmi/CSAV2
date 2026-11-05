@@ -24,6 +24,7 @@ from csa.contracts.state import (
 from csa.core import db
 
 UPCOMING = 10
+MAX_TYPES = 20  # the contract's limit (`BookingContext.types`)
 
 
 async def booking_context(
@@ -50,9 +51,11 @@ async def booking_context(
     zone = await service.company_zone(conn, client_id)
     local = now.astimezone(zone)
     names = {t.id: t.name for t in await setup.list_types(conn, client_id)}
+    offered = await bot.customer_types(conn, client_id)
+    # The contract holds at most 20. More must not switch the whole context off: the planner is
+    # told the list is partial, and can ask `availability` for the rest.
     types = [
-        BookingType(id=t.id, name=t.name, minutes=t.duration_minutes)
-        for t in await bot.customer_types(conn, client_id)
+        BookingType(id=t.id, name=t.name, minutes=t.duration_minutes) for t in offered[:MAX_TYPES]
     ]
     # The same read as the customer's booking list: their own, never private, pending only if
     # the bot made it. Upcoming comes first there, so the next booking is never cut off.
@@ -97,6 +100,7 @@ async def booking_context(
         today=f"{local:%A} {local.date().isoformat()}",
         timezone=str(zone.key),
         types=types,
+        more_types=len(offered) > MAX_TYPES,
         upcoming=upcoming,
         recent=recent,
     )

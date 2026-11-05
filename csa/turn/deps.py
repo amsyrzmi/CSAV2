@@ -8,6 +8,7 @@ spokes are the LG05 order and escalation agents.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,13 +29,14 @@ from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
 from csa.agents.recorder import PostgresBreakerStore, PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
-from csa.agents.staged.service import BookingAgent, SubscriptionAgent
+from csa.agents.staged.booking_facts import EMAIL_NOT_SEEN
+from csa.agents.staged.service import BookingAgent, SubscriptionAgent, reply
 from csa.agents.tickets.agent import TicketAgent
 from csa.approval.service import hold_reply
 from csa.bookings.turn_context import booking_context
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
 from csa.contracts.envelope import Channel, Envelope
-from csa.contracts.facts import AgentResult
+from csa.contracts.facts import AgentResult, Fact
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
 from csa.contracts.registry import CapabilityRegistry
 from csa.contracts.state import (
@@ -49,7 +51,7 @@ from csa.contracts.state import (
     Verification,
 )
 from csa.core import db
-from csa.core.pii import redact
+from csa.core.pii import real_email, redact
 from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
 from csa.decide.jev import JevProvider
@@ -60,6 +62,9 @@ from csa.staff.ownership import automation_allowed, replies_off
 
 logger = structlog.get_logger(__name__)
 
+# The booking read's own share of the context node's 2 s: longer and the customer is planned for
+# without it, as every other company is.
+BOOKING_CONTEXT_BUDGET_S = 1.0
 FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
 HANDOFF_TEXT = "I've passed this to a team member who will get back to you shortly."
 SANDBOX_SCOPE_TEXT = (
@@ -91,6 +96,43 @@ CAPABILITIES = {
     ),
     "subscription_agent": "Plan/status lookup and unexecuted requests; no billing changes",
 }
+
+
+def booking_write_facts(state: TurnState) -> list[tuple[str, Fact]]:
+    """The facts (with their turn ids) of every booking write that ran in this turn."""
+    if state.plan is None:
+        return []
+    writes = {
+        task.task_id
+        for task in state.plan.tasks
+        if task.agent == "booking_agent"
+        and BookingAgent.ACTION_RISK.get(str(task.input.get("action"))) == "commit"
+    }
+    return [
+        (f"{result.task_id}:{fact.id}", fact)
+        for result in state.results
+        if result.ok and result.task_id in writes
+        for fact in result.facts
+    ]
+
+
+def with_real_email(task: Task, raw: str) -> Task | None:
+    """The booking task with its email swapped for the address the customer really wrote.
+
+    The planner may name `[EMAIL_n]` (or a literal address, which is only a guess); only an
+    address that is in the raw message survives, so a model can never invent one. Without one the
+    field is dropped. None when that leaves a `save_details` with nothing to save.
+    """
+    given = task.input.get("customer_email")
+    if given is None:
+        return task
+    payload = {k: v for k, v in task.input.items() if k != "customer_email"}
+    address = real_email(str(given), raw)
+    if address is not None:
+        payload["customer_email"] = address
+    elif task.input.get("action") == "save_details" and not payload.get("customer_name"):
+        return None
+    return task.model_copy(update={"input": payload})
 
 
 def build_llm_provider(
@@ -189,19 +231,23 @@ class PostgresTurnDependencies:
         A failure here must never fail the turn: the turn then runs as it always did.
         """
         contact_id = envelope.contact.id
-        if contact_id is None:
+        # A preview is not a customer: its sandbox contact has no bookings to plan with.
+        if contact_id is None or envelope.channel == Channel.WEB:
             return None
         try:
-            async with tx(self._pool, str(envelope.client_id)) as conn:
-                return await booking_context(
-                    conn,
-                    envelope.client_id,
-                    contact_id,
-                    conversation_id,
-                    envelope.trace_id,
-                    datetime.now(UTC),
-                )
-        except Exception as exc:
+            # Its own budget, inside the context node's limit: a node that times out cancels its
+            # work and fails the whole turn, while a read that overruns here is only left out.
+            async with asyncio.timeout(BOOKING_CONTEXT_BUDGET_S):
+                async with tx(self._pool, str(envelope.client_id)) as conn:
+                    return await booking_context(
+                        conn,
+                        envelope.client_id,
+                        contact_id,
+                        conversation_id,
+                        envelope.trace_id,
+                        datetime.now(UTC),
+                    )
+        except Exception as exc:  # including TimeoutError
             logger.warning(
                 "turn_context_degraded",
                 category="booking_context_failed",
@@ -314,6 +360,12 @@ class PostgresTurnDependencies:
             timezone=row["timezone"],
             callback_action_id=envelope.callback.action_id if envelope.callback else None,
         )
+        if task.agent == "booking_agent":
+            # The planner saw only redacted text, so it can name an address but not write one.
+            real = with_real_email(task, envelope.message.body_raw)
+            if real is None:
+                return reply(ctx, [EMAIL_NOT_SEEN]).model_copy(update={"task_id": task.task_id})
+            task = real
         return await self._runner.execute(task, ctx)
 
     async def handle_muted(
@@ -363,10 +415,35 @@ class PostgresTurnDependencies:
                     fact_ids=[fact.id for fact in state.facts],
                 )
         if self._llm is not None:
-            return await self._llm.compose(state, brand=brand)
+            return await self._keep_a_written_booking(
+                state, await self._llm.compose(state, brand=brand)
+            )
         body = state.envelope.message.body_redacted.strip()
         text = f"Echo: {body}"[:4096] if body else "Echo: message received."
         return Draft(text=text, language=language)
+
+    async def _keep_a_written_booking(self, state: TurnState, draft: Draft) -> Draft:
+        """A turn that wrote a booking must tell the customer what was written.
+
+        The booking has committed, so a reply that cannot pass its checks must never become the
+        no-claim fallback or "try again" (a retry would only repeat or contradict it). When the
+        composers are down, or the second draft still fails, the facts are sent as they stand: the
+        agent writes them to be read by a customer. Every other turn is left as it was.
+        """
+        written = booking_write_facts(state)
+        if not written:
+            return draft
+        if draft.composer != "template":
+            if state.regen_count == 0:
+                return draft
+            if (await self.verify(state.model_copy(update={"draft": draft}))).ok:
+                return draft
+        return Draft(
+            text="\n".join(fact.text for _, fact in written)[:8000],
+            language=draft.language,
+            fact_ids=[fact_id for fact_id, _ in written][:100],
+            composer="template",
+        )
 
     async def verify(self, state: TurnState) -> Verification:
         if state.draft is None:

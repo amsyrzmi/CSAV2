@@ -151,6 +151,25 @@ def test_bookings_keep_no_turn_key_of_their_own(migrated_dsn: str) -> None:
     assert rows == []
 
 
+def test_a_customer_given_address_is_bounded_and_unique_to_nobody(migrated_dsn: str) -> None:
+    """The address a customer typed into a chat is a claim: it is kept apart from the contact's
+    own `email`, which identity and the walk-in match trust, and it identifies no one."""
+    a = _company(migrated_dsn)
+    insert = "INSERT INTO contacts (client_id, customer_given_email) VALUES (%s, %s) RETURNING id"
+    with _owner(migrated_dsn) as conn:
+        [column] = conn.execute(
+            "SELECT is_nullable, data_type FROM information_schema.columns"
+            " WHERE table_name = 'contacts' AND column_name = 'customer_given_email'"
+        )
+        assert column == {"is_nullable": "YES", "data_type": "text"}
+        conn.execute(insert, (a.client_id, "same@example.test"))
+        conn.execute(insert, (a.client_id, "same@example.test"))  # no uniqueness
+        conn.execute(insert, (a.client_id, None))
+        conn.execute(insert, (a.client_id, "a" * 241 + "@example.test"))  # 254 is the limit
+        with pytest.raises(errors.CheckViolation):
+            conn.execute(insert, (a.client_id, "a" * 242 + "@example.test"))
+
+
 def test_a_replacement_points_at_a_booking_of_the_same_company(migrated_dsn: str) -> None:
     a, b = _company(migrated_dsn), _company(migrated_dsn)
     insert = (

@@ -390,6 +390,9 @@ class BookingCustomerOut(Contract):
     full_name: str | None
     phone: str | None
     email: str | None
+    # An address the customer typed into a chat, never checked. Booking mail goes there only when
+    # the contact has no email of its own; staff see it as "Customer gave this address".
+    given_email: str | None = None
 
 
 class BookingOut(Contract):

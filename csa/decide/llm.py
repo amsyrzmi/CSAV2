@@ -62,12 +62,35 @@ _BOOKING_PLAN_RULE = (
     "a local starts_at such as 2031-03-04T15:00, and take every type_id and booking_id only "
     "from context.booking; never invent them. The <recent_messages> may show which service, "
     "booking or day the customer means. If it is unclear which service, booking or time they "
-    "mean, return no tasks and reply_strategy ask_clarifying. "
+    "mean, return no tasks and reply_strategy ask_clarifying. Plan at most one of book, "
+    "reschedule or cancel for booking_agent in a reply; if the customer asks for more than one, "
+    "return no tasks and reply_strategy ask_clarifying and ask which to do first. There is no "
+    "confirmation step, so plan cancel or reschedule only when the customer clearly means one of "
+    "their own bookings in booking.upcoming; otherwise return no tasks and reply_strategy "
+    "ask_clarifying. If booking.more_types is true, booking.types is only some of the services: "
+    "use availability with no type_id to see them all. "
 )
+# Said to the classifier only when the turn carries a booking context.
+_BOOKING_CLASSIFY_RULE = (
+    " A short answer that continues a booking in <recent_messages> (a time, a name, an email "
+    'address, or "yes") has intent booking, and booking_agent should be scored.'
+)
+# Said to the composer only when a booking fact is present.
+_BOOKING_COMPOSE_RULE = (
+    "Dates and times: copy each date and time exactly as the facts write them, digits included "
+    "(for example 3:30 pm or 2026-11-10 15:30); translate only the words around them. "
+)
+_BOOKING_SOURCE = "booking_agent"
+_BOOKING_CHANGES = ("book", "reschedule", "cancel")
 
 
 def _data_rule(ctx: Context) -> str:
     return f"{_DATA_RULE} {_RECENT_RULE}" if ctx.booking is not None else _DATA_RULE
+
+
+def _dumps(ctx: Context, value: Any) -> str:
+    """JSON for a prompt. With a booking context, Chinese and Tamil names stay readable."""
+    return json.dumps(value, ensure_ascii=ctx.booking is None)
 
 
 def _recent_block(ctx: Context) -> str:
@@ -75,7 +98,7 @@ def _recent_block(ctx: Context) -> str:
     if ctx.booking is None or not ctx.booking.recent:
         return ""
     lines = [
-        json.dumps({"author": m.author, "text": m.text.replace("<", "&lt;").replace(">", "&gt;")})
+        _dumps(ctx, {"author": m.author, "text": m.text.replace("<", "&lt;").replace(">", "&gt;")})
         for m in ctx.booking.recent
     ]
     return "\n<recent_messages>\n" + "\n".join(lines) + "\n</recent_messages>"
@@ -171,9 +194,10 @@ class LLMProvider:
             "needs (object mapping each capability name to a 0-1 score for how strongly the "
             "message asks for it). Capabilities: "
             f"{json.dumps(self._capabilities)}. Greetings and thanks are chitchat."
+            f"{_BOOKING_CLASSIFY_RULE if ctx.booking is not None else ''}"
         )
         user = (
-            json.dumps({"context": self._context_block(envelope, ctx)})
+            _dumps(ctx, {"context": self._context_block(envelope, ctx)})
             + _recent_block(ctx)
             + f"\n<message>{envelope.message.body_redacted}</message>"
         )
@@ -228,12 +252,13 @@ class LLMProvider:
             f"Agent purposes: {json.dumps(self._capabilities)}."
         )
         user = (
-            json.dumps(
+            _dumps(
+                ctx,
                 {
                     "intent": signals.intent.value if signals.intent else None,
                     "likely_capabilities": signals.capability_scores,
                     "context": self._context_block(envelope, ctx),
-                }
+                },
             )
             + (f"\n{WHATSAPP_PLANNER_NOTE}" if envelope.channel == Channel.WHATSAPP else "")
             + _recent_block(ctx)
@@ -251,6 +276,11 @@ class LLMProvider:
                 )
                 return _clarify_plan(signals)
             tasks.append(task)
+        if sum(_is_booking_change(t) for t in tasks) > 1:
+            # One reply cannot make sense of two changes to a customer's bookings, whatever order
+            # they would run in (tasks run side by side).
+            logger.warning("llm_plan_rejected", agent="booking_agent", reason="several_changes")
+            return _clarify_plan(signals)
         strategy = (
             out.reply_strategy
             if tasks or out.reply_strategy == "ask_clarifying"
@@ -350,9 +380,8 @@ class LLMProvider:
         brand: ClientBrand | None = None,
     ) -> Draft:
         language = str(state.signals.answers.get("language", "en")) if state.signals else "en"
-        facts = [{"id": f.id, "text": f.text} for f in state.facts]
-        if state.ctx is not None:
-            facts += [{"id": f.id, "text": f.text} for f in state.ctx.customer_facts]
+        all_facts = [*state.facts, *(state.ctx.customer_facts if state.ctx is not None else [])]
+        facts = [{"id": f.id, "text": f.text} for f in all_facts]
         failures = [{"code": e.code, "message": e.message} for e in state.failures]
         strategy = state.plan.reply_strategy if state.plan else "auto_reply"
 
@@ -396,6 +425,7 @@ class LLMProvider:
                 if state.regen_count
                 else ""
             )
+            + (_BOOKING_COMPOSE_RULE if any(f.source == _BOOKING_SOURCE for f in all_facts) else "")
             + "Reply language: "
             + (_LANGUAGES.get(language, "the same language as the customer message"))
             + '. Reply with JSON {"reply": str, "used_fact_ids": [str]}.'
@@ -511,7 +541,8 @@ class LLMProvider:
             f"{_DATA_RULE} Compare the draft reply with the facts and failures. Flag ONLY clear "
             "problems: (1) a business claim (price, stock, availability, order or ticket status, "
             "delivery time, policy, opening hours) that no fact supports; (2) saying an action was "
-            "done (placed, confirmed, cancelled, refunded, created) when no fact says so; "
+            "done (placed, confirmed, booked, moved, saved, cancelled, refunded, created) when no "
+            "fact says so; "
             "(3) contradicting a fact; (4) claiming success when a failure says it did not work. "
             "Greetings, offers to help, asking a clarifying question, telling the customer to tap "
             "a button, and saying a team member will follow up are always fine. Reply with JSON "
@@ -585,6 +616,10 @@ def _template_reply(
         language,
         "Sorry, I cannot provide a reliable answer right now. Please try again shortly.",
     )
+
+
+def _is_booking_change(task: Task) -> bool:
+    return task.agent == _BOOKING_SOURCE and task.input.get("action") in _BOOKING_CHANGES
 
 
 def _strip_callback(schema: dict[str, Any]) -> dict[str, Any]:

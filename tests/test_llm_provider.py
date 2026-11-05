@@ -901,3 +901,252 @@ def test_the_booking_context_is_bounded() -> None:
         RecentMessage(author="customer", text="x" * 301)
     with pytest.raises(ValueError):
         RecentMessage(author="staff", text="x")  # type: ignore[arg-type]
+
+
+# --- the booking agent's words: what the composer is told, and what a customer is sent ----------
+
+SLOT_FACT = (
+    "Booking confirmed: Haircut on Tuesday 10 November 2026, 3:30 pm (2026-11-10 15:30), "
+    "with Person 0, by phone."
+)
+
+
+def test_a_time_carries_its_numbers_so_that_other_ways_of_writing_it_are_grounded() -> None:
+    from zoneinfo import ZoneInfo
+
+    from csa.bookings.bot import format_slot
+
+    when = datetime(2026, 11, 10, 7, 30, tzinfo=UTC)
+    assert format_slot(when, ZoneInfo("Asia/Kuala_Lumpur")) == (
+        "Tuesday 10 November 2026, 3:30 pm (2026-11-10 15:30)"
+    )
+    for draft in (
+        "Tempahan disahkan: Selasa 10/11/2026, 3:30 petang",
+        "您的预约已确认：2026年11月10日 下午3:30",
+        "Confirmed for 2026-11-10 at 15:30",
+        "Booked: Tuesday 10 November 2026, 3:30 pm",
+    ):
+        assert ungrounded(draft, [SLOT_FACT]) == [], draft
+    assert ungrounded("Confirmed for 10:30 am", [SLOT_FACT]) == []  # known: a set of numbers
+    assert ungrounded("Confirmed for 5:45 pm", [SLOT_FACT]) == ["5", "45"]
+
+
+def _booking_turn_state(
+    *,
+    action: str = "book",
+    agent: str = "booking_agent",
+    regen: int = 0,
+    draft: str | None = None,
+    composer: str = "primary",
+    fact: str = SLOT_FACT,
+) -> TurnState:
+    from csa.contracts.facts import AgentResult, AgentResultData, ResultMeta
+    from csa.contracts.state import Draft
+
+    task = Task(task_id=f"t0-{agent}", agent=agent, input={"action": action})
+    result = AgentResult(
+        ok=True,
+        status="ok",
+        task_id=task.task_id,
+        agent=agent,
+        data=AgentResultData(facts=[Fact(id="booking-0", text=fact, source=agent)]),
+        meta=ResultMeta(trace_id=UUID(int=1), latency_ms=0),
+    )
+    return TurnState(
+        envelope=make_envelope("book 3.30 pm please"),
+        plan=Plan(
+            tasks=[task],
+            reply_strategy="auto_reply",
+            intent=Intent.BOOKING,
+            confidence=0.9,
+            source="llm",
+        ),
+        results=[result],
+        facts=[Fact(id=f"{task.task_id}:booking-0", text=fact, source=agent)],
+        regen_count=regen,
+        draft=Draft(text=draft, language="en", composer=composer) if draft else None,  # type: ignore[arg-type]
+    )
+
+
+def _deps_with(reply: Callable[[httpx.Request], httpx.Response], *, review: bool = False) -> Any:
+    from csa.graph.policy.gate import Policy
+    from csa.turn.deps import PostgresTurnDependencies
+
+    deps = PostgresTurnDependencies(None, _provider(reply))  # type: ignore[arg-type]
+
+    async def policy(_client_id: UUID) -> Policy:
+        return Policy(semantic_verify=review)
+
+    deps._policy = policy  # type: ignore[method-assign]
+    return deps
+
+
+async def test_the_composer_is_told_to_keep_a_booking_time_as_written_only_when_there_is_one() -> (
+    None
+):
+    prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        prompts.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok({"reply": "Done.", "used_fact_ids": []})(request)
+
+    provider = _provider(handler)
+    await provider.compose(_booking_turn_state())
+    await provider.compose(_booking_turn_state(agent="order_agent", action="status"))
+    assert "copy each date and time exactly as the facts write them" in prompts[0]
+    assert "digits included" in prompts[0] and "translate only the words" in prompts[0]
+    assert "copy each date and time" not in prompts[1]
+
+
+def _down(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(500)
+
+
+async def test_with_every_composer_down_a_booking_is_told_as_the_facts_say_it() -> None:
+    from csa.contracts.state import Verification
+
+    draft = await _deps_with(_down).compose(_booking_turn_state())
+    assert draft.text == SLOT_FACT and draft.composer == "template"
+    assert draft.fact_ids == ["t0-booking_agent:booking-0"]
+    assert "try again" not in draft.text.lower()
+    # It then passes the same checks any template reply does, with no model review.
+    state = _booking_turn_state(draft=draft.text, composer="template")
+    assert await _deps_with(_down).verify(state) == Verification(ok=True)
+
+
+async def test_with_every_composer_down_other_turns_still_get_the_template() -> None:
+    for state in (
+        _booking_turn_state(action="availability"),  # a read: nothing was written
+        _booking_turn_state(agent="order_agent", action="submit"),
+    ):
+        draft = await _deps_with(_down).compose(state)
+        assert "cannot provide a reliable answer" in draft.text and draft.composer == "template"
+
+
+async def test_a_second_draft_that_fails_its_checks_is_replaced_by_the_facts() -> None:
+    def invents(request: httpx.Request) -> httpx.Response:
+        return _ok({"reply": "Your booking is confirmed for 5:45 pm.", "used_fact_ids": []})(
+            request
+        )
+
+    deps = _deps_with(invents)
+    # The first attempt is left to the checker, which sends it back once...
+    first = await deps.compose(_booking_turn_state(regen=0))
+    assert first.text == "Your booking is confirmed for 5:45 pm."
+    # ...and the retry that still fails is not sent: the facts are.
+    second = await deps.compose(_booking_turn_state(regen=1))
+    assert second.text == SLOT_FACT and second.composer == "template"
+    # A retry that passes is the model's own reply.
+    fine = _deps_with(_ok({"reply": "All set for 3:30 pm.", "used_fact_ids": []}))
+    kept = await fine.compose(_booking_turn_state(regen=1))
+    assert kept.text == "All set for 3:30 pm." and kept.composer == "primary"
+
+
+async def test_a_retry_that_the_model_review_rejects_is_replaced_by_the_facts() -> None:
+    def lies_then_rejected(request: httpx.Request) -> httpx.Response:
+        system = json.loads(request.content)["messages"][0]["content"]
+        if "check a customer-support reply" in system:
+            return _ok({"ok": False, "issues": ["says confirmed, the fact says not yet"]})(request)
+        return _ok({"reply": "Your booking is confirmed!", "used_fact_ids": []})(request)
+
+    deps = _deps_with(lies_then_rejected, review=True)
+    pending = (
+        "Booking requested: Haircut on Tuesday 10 November 2026, 3:30 pm (2026-11-10 15:30). "
+        "It is not confirmed yet: the team has to confirm it."
+    )
+    draft = await deps.compose(_booking_turn_state(regen=1, fact=pending))
+    assert draft.text == pending and draft.composer == "template"
+
+
+# --- the planner's booking rules, and the classifier's -------------------------------------------
+
+
+async def test_the_planner_is_told_one_change_at_a_time_and_only_for_a_clear_booking() -> None:
+    system, _ = await _prompts_for(_booking_context(), "plan")
+    assert "at most one of book, reschedule or cancel" in system
+    assert (
+        "plan cancel or reschedule only when the customer clearly means one of their own" in system
+    )
+    assert "booking.more_types" in system
+    plain, _ = await _prompts_for(Context(), "plan")
+    assert "at most one of book" not in plain and "clearly means" not in plain
+
+
+async def test_the_classifier_scores_a_short_answer_that_continues_a_booking() -> None:
+    system, _ = await _prompts_for(_booking_context(), "classify")
+    assert "short answer that continues a booking" in system and "intent booking" in system
+    plain, _ = await _prompts_for(Context(), "classify")
+    assert "continues a booking" not in plain
+
+
+def _planning(tasks: list[dict[str, Any]]) -> Any:
+    return _provider(_ok({"tasks": tasks, "reply_strategy": "auto_reply"}))
+
+
+def _booking_task(**fields: Any) -> dict[str, Any]:
+    return {"agent": "booking_agent", "input": fields}
+
+
+@pytest.mark.parametrize(
+    "tasks",
+    [
+        [{"action": "book"}, {"action": "book"}],
+        [{"action": "book"}, {"action": "cancel"}],
+        [{"action": "cancel"}, {"action": "reschedule"}],
+    ],
+)
+async def test_a_plan_with_two_changes_to_bookings_is_a_question_not_two_writes(
+    tasks: list[dict[str, str]],
+) -> None:
+    ids = {"type_id": "11111111-1111-1111-1111-111111111111", "starts_at": "2031-03-04T15:00"}
+    booking = {"booking_id": "22222222-2222-2222-2222-222222222222"}
+    planned = [_booking_task(**t, **ids, **booking) for t in tasks]
+    plan = await _planning(planned).plan(
+        make_envelope("book and cancel"), _booking_context(), make_signals(Intent.BOOKING)
+    )
+    assert plan.tasks == [] and plan.reply_strategy == "ask_clarifying"
+
+
+async def test_a_change_with_a_lookup_or_a_change_to_another_agent_is_still_planned() -> None:
+    ids = {"type_id": "11111111-1111-1111-1111-111111111111", "starts_at": "2031-03-04T15:00"}
+    plan = await _planning(
+        [
+            _booking_task(action="availability", type_id=ids["type_id"]),
+            _booking_task(action="book", **ids),
+            {"agent": "kb_agent", "input": {"action": "query", "query": "opening hours"}},
+        ]
+    ).plan(make_envelope("hours and book"), _booking_context(), make_signals(Intent.BOOKING))
+    assert [t.agent for t in plan.tasks] == ["booking_agent", "booking_agent", "kb_agent"]
+
+
+async def test_the_review_knows_booked_moved_and_saved_are_actions_too() -> None:
+    systems: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        systems.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok({"ok": True, "issues": []})(request)
+
+    await _provider(handler).review(_booking_turn_state(draft="Booked."))
+    assert "booked, moved, saved" in systems[0]
+
+
+async def test_names_in_chinese_stay_readable_to_the_model_with_a_booking_context() -> None:
+    from csa.contracts.state import BookingContext
+
+    ctx = _booking_context()
+    assert ctx.booking is not None
+    chinese = BookingContext.model_validate(
+        {
+            **ctx.booking.model_dump(mode="json"),
+            "types": [
+                {"id": "11111111-1111-1111-1111-111111111111", "name": "理发", "minutes": 30}
+            ],
+            "recent": [{"author": "customer", "text": "明天下午三点可以吗？"}],
+        }
+    )
+    for call in ("classify", "plan"):
+        _, user = await _prompts_for(Context(booking=chinese), call)
+        assert "理发" in user and "明天下午三点可以吗" in user and "\\u" not in user
+    # Every other prompt is exactly what it was.
+    _, plain = await _prompts_for(Context(summary="顾客"), "plan")
+    assert "\\u987e" in plain

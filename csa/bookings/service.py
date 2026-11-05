@@ -468,6 +468,7 @@ async def read_records(
                     full_name=row["customer_name"],
                     phone=row["customer_phone"],
                     email=row["customer_email"],
+                    given_email=row["customer_given_email"],
                 )
                 if row["contact_id"] is not None
                 else None

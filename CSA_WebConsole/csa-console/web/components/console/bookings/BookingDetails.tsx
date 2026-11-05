@@ -163,6 +163,14 @@ export default function BookingDetails({
                   {booking.customer.full_name ?? "No name"}
                   {booking.customer.phone && <span className="block">{booking.customer.phone}</span>}
                   {booking.customer.email && <span className="block">{booking.customer.email}</span>}
+                  {!booking.customer.email && booking.customer.given_email && (
+                    <span className="block" data-testid="details-given-email">
+                      {booking.customer.given_email}
+                      <span className="block text-sm text-[color:var(--fs-text-secondary)]">
+                        Customer gave this address
+                      </span>
+                    </span>
+                  )}
                 </Row>
               )}
               {booking.guests.length > 0 && (

@@ -59,6 +59,8 @@ LIVE = ("pending", "confirmed")
 # How far from the asked day to look for other times, and how many to show.
 OFFER_WINDOW = timedelta(days=14)
 FRESH_OFFERS = 3
+DAY_SLOTS = 96  # every start of a day on the 15 minute grid
+PartOfDay = Literal["morning", "afternoon", "evening"]
 _TIME = TypeAdapter(BookingTime)
 
 
@@ -134,11 +136,15 @@ async def _customer_type(conn: Conn, client_id: UUID, type_id: UUID) -> BookingT
 
 
 def format_slot(starts_at: datetime, zone: ZoneInfo) -> str:
-    """A time as a plain local time, such as "Tuesday 10 November 2026, 3:00 pm"."""
+    """A time as a plain local time and its numbers, such as "Tuesday 10 November 2026, 3:00 pm
+    (2026-11-10 15:00)". The numeric form is there so that a reply that writes the date another way
+    (10/11/2026, or in Chinese with the month as a number) still uses only numbers the fact holds.
+    """
     local = starts_at.astimezone(zone)
     hour = local.hour % 12 or 12
     meridiem = "am" if local.hour < 12 else "pm"
-    return f"{local:%A} {local.day} {local:%B %Y}, {hour}:{local.minute:02d} {meridiem}"
+    words = f"{local:%A} {local.day} {local:%B %Y}, {hour}:{local.minute:02d} {meridiem}"
+    return f"{words} ({local:%Y-%m-%d %H:%M})"
 
 
 async def offer(
@@ -151,11 +157,17 @@ async def offer(
     limit: int = 5,
     people: Sequence[UUID] = (),
     resources: Sequence[UUID] = (),
+    spread: bool = False,
+    part: PartOfDay | None = None,
 ) -> list[Offer]:
     """The next free times for a type a customer may book, from `day_from` (a day in the company's
     zone) or from now, whichever is later. A person is named only when exactly one person can take
     the slot; with several the name comes once the booking exists. `people` and `resources` limit
     the times to what a booking already holds, for a change.
+
+    By default these are the first `limit` free times. With `spread` (or a `part` of the day) they
+    are `limit` times spread across the first day that has any, so a day is not read as closed
+    after its first hour.
     """
     booking_type = await _customer_type(conn, client_id, type_id)
     if booking_type is None:
@@ -163,18 +175,23 @@ async def offer(
     zone = await service.company_zone(conn, client_id)
     start = max(now, datetime.combine(day_from, time.min, tzinfo=zone))
     try:
-        slots = await service.availability(
-            conn,
-            client_id,
-            start=start,
-            end=start + OFFER_WINDOW,
-            type_id=type_id,
-            people=people,
-            resources=resources,
-            minutes=None,
-            limit=limit,
-            now=now,
-        )
+        if spread or part is not None:
+            slots = await _spread_over_a_day(
+                conn, client_id, zone, type_id, start, now, limit, part, people, resources
+            )
+        else:
+            slots = await service.availability(
+                conn,
+                client_id,
+                start=start,
+                end=start + OFFER_WINDOW,
+                type_id=type_id,
+                people=people,
+                resources=resources,
+                minutes=None,
+                limit=limit,
+                now=now,
+            )
     except HTTPException:
         return []
     names = (
@@ -185,6 +202,58 @@ async def offer(
     return [
         Offer(s.starts_at, s.ends_at, _label(s.starts_at, zone, s.people, names)) for s in slots
     ]
+
+
+def _in_part(starts_at: datetime, zone: ZoneInfo, part: PartOfDay | None) -> bool:
+    if part is None:
+        return True
+    hour = starts_at.astimezone(zone).hour
+    return {"morning": hour < 12, "afternoon": 12 <= hour < 17, "evening": hour >= 17}[part]
+
+
+def _spread(slots: list[service.BookingSlotOut], count: int) -> list[service.BookingSlotOut]:
+    """`count` of the slots, evenly spaced from the first to the last."""
+    if len(slots) <= count:
+        return slots
+    if count == 1:
+        return slots[:1]
+    last = len(slots) - 1
+    return [slots[round(n * last / (count - 1))] for n in range(count)]
+
+
+async def _spread_over_a_day(
+    conn: Conn,
+    client_id: UUID,
+    zone: ZoneInfo,
+    type_id: UUID,
+    start: datetime,
+    now: datetime,
+    limit: int,
+    part: PartOfDay | None,
+    people: Sequence[UUID],
+    resources: Sequence[UUID],
+) -> list[service.BookingSlotOut]:
+    """The free times of the first day (in the window) that has any in `part`, spread out."""
+    for n in range(OFFER_WINDOW.days):
+        day = start.astimezone(zone).date() + timedelta(days=n)
+        begin = max(start, datetime.combine(day, time.min, tzinfo=zone))
+        end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=zone)
+        slots = await service.availability(
+            conn,
+            client_id,
+            start=begin,
+            end=end,
+            type_id=type_id,
+            people=people,
+            resources=resources,
+            minutes=None,
+            limit=DAY_SLOTS,
+            now=now,
+        )
+        found = [s for s in slots if _in_part(s.starts_at, zone, part)]
+        if found:
+            return _spread(found, limit)
+    return []
 
 
 def _label(starts_at: datetime, zone: ZoneInfo, people: list[UUID], names: dict[UUID, str]) -> str:
@@ -396,6 +465,18 @@ async def book(
         return await _unusable(conn, client_id, type_id, now)
     settings = await _settings(conn, client_id)
     await _one_at_a_time(conn, client_id, contact_id)  # and so one limit check
+    same = await db.q.fetch_one(
+        "bookings/customer_booking_at.sql",
+        {
+            "client_id": client_id,
+            "contact_id": contact_id,
+            "type_id": type_id,
+            "starts_at": starts_at,
+        },
+        conn=conn,
+    )
+    if same is not None:  # asked twice (two messages, or two tasks): the booking they already hold
+        return await _replay(conn, client_id, same["id"])
     held = await db.q.fetch_one(
         "bookings/customer_upcoming_count.sql",
         {"client_id": client_id, "contact_id": contact_id, "now": now},

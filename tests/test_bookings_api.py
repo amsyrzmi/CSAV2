@@ -1034,6 +1034,34 @@ async def test_read_only_sees_no_customer_details(sessions: SessionWorld, team: 
     assert chosen.status_code == 200 and len(chosen.json()) == 1
 
 
+async def test_an_address_the_customer_gave_shows_apart_from_their_own_email(
+    sessions: SessionWorld, team: Team
+) -> None:
+    person = await make_person(team)
+    kind = await make_type(team)
+    made = await booked(
+        team,
+        team.admin,
+        {
+            "type_id": kind["id"],
+            "starts_at": TEN,
+            "people": [person["id"]],
+            "walk_in": {"name": "Walk In", "phone": "0123456789"},
+        },
+    )
+    await sessions.q(
+        "UPDATE contacts SET customer_given_email = 'given@example.test' WHERE id = %s",
+        made["customer"]["id"],
+    )
+    window = f"?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
+    for who in (team.admin, team.staff):
+        item = (await who.get(f"{BASE}/calendar{window}")).json()["items"][0]
+        assert item["customer"]["email"] is None  # the contact's own email is still empty
+        assert item["customer"]["given_email"] == "given@example.test"
+    reader = await team.reader.get(f"{BASE}/calendar{window}")
+    assert reader.json()["items"][0]["customer"] is None and "given@" not in reader.text
+
+
 async def test_a_filtered_calendar_gives_a_private_meeting_no_id(
     sessions: SessionWorld, team: Team
 ) -> None:

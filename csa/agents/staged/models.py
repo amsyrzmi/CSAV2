@@ -5,11 +5,19 @@ from __future__ import annotations
 import ipaddress
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from csa.bookings.contracts import Email, Name
 
@@ -29,6 +37,13 @@ class PreparedRequest(DraftModel):
     id: UUID
     action: str
     payload: dict[str, object]
+
+
+# What the planner sees where the customer typed an address: `redact` numbers each one. The server
+# swaps it for the address in the customer's own message before the agent runs.
+EmailPlaceholder = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=r"^\[EMAIL_\d{1,3}\]$")
+]
 
 
 class BookingInput(DraftModel):
@@ -52,8 +67,9 @@ class BookingInput(DraftModel):
     type_id: UUID | None = Field(
         default=None,
         description=(
-            "The id of the service, copied from the facts of an availability lookup. Never "
-            "invent one. Leave it out for availability to learn what can be booked."
+            "The id of the service, taken from context.booking.types (or the facts of an "
+            "availability lookup). Never invent one. Leave it out for availability to learn what "
+            "can be booked."
         ),
     )
     day: date | None = Field(
@@ -61,6 +77,13 @@ class BookingInput(DraftModel):
         description=(
             "availability only: the day the customer asked about, as YYYY-MM-DD. Leave it out "
             "when they named no day."
+        ),
+    )
+    part_of_day: Literal["morning", "afternoon", "evening"] | None = Field(
+        default=None,
+        description=(
+            "availability only: when the customer asked about part of the day. morning is before "
+            "12:00, afternoon 12:00 to 17:00, evening 17:00 or later. Leave it out otherwise."
         ),
     )
     starts_at: datetime | None = Field(
@@ -74,8 +97,8 @@ class BookingInput(DraftModel):
     booking_id: UUID | None = Field(
         default=None,
         description=(
-            "reschedule, cancel and status: the id of the customer's booking, copied from the "
-            "facts of a list lookup. Never invent one."
+            "reschedule, cancel and status: the id of the customer's booking, taken from "
+            "context.booking.upcoming (or the facts of a list lookup). Never invent one."
         ),
     )
     customer_name: Name | None = Field(
@@ -84,11 +107,12 @@ class BookingInput(DraftModel):
             "book and save_details: the customer's name, only if they gave it in their message."
         ),
     )
-    customer_email: Email | None = Field(
+    customer_email: Email | EmailPlaceholder | None = Field(
         default=None,
         description=(
             "book and save_details: the customer's email address, only if they gave one in their "
-            "message."
+            "message. The message shows an address as a placeholder such as [EMAIL_0]: copy that "
+            "placeholder exactly. Never write an address yourself."
         ),
     )
 

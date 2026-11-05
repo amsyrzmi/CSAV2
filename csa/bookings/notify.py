@@ -89,6 +89,15 @@ def _clean(address: object) -> str | None:
         return None
 
 
+def customer_address(booking: BookingRecord) -> str | None:
+    """Where the customer's own message goes: the contact's email, else the address they gave in a
+    chat (never checked, so it is only ever a fallback and never identity)."""
+    customer = booking.customer
+    if customer is None:
+        return None
+    return customer.email or customer.given_email
+
+
 def never_confirmed(booking: BookingRecord) -> bool:
     """Still pending, or cancelled or declined while it was: the customer was never told of it."""
     return booking.status == "pending" or (
@@ -103,8 +112,8 @@ def owes_customer(booking: BookingRecord) -> bool:
 
 def customer_reached(booking: BookingRecord, people: list[Recipient], results: list[bool]) -> bool:
     """Whether the customer's own message went. A private meeting never mails its customer."""
-    customer = booking.customer
-    address = _clean(customer.email) if customer and customer.email else None
+    typed = customer_address(booking)
+    address = _clean(typed) if typed else None
     if address is None or booking.private:
         return False
     wanted = address.casefold()
@@ -126,7 +135,7 @@ def recipients(booking: BookingRecord, facts: MailFacts) -> list[Recipient]:
     # A private meeting is for its attendees. A customer hears nothing until staff confirm, and
     # nothing about a booking that was cancelled without ever being confirmed.
     if customer is not None and not booking.private and not never_confirmed(booking):
-        add(customer.email, customer.full_name)
+        add(customer_address(booking), customer.full_name)
     for person in booking.people:
         own = _clean(person.email) if person.email else None
         account = facts.account_emails.get(person.user_id) if person.user_id else None

@@ -296,6 +296,8 @@ export interface BookingCustomer {
   full_name: string | null;
   phone: string | null;
   email: string | null;
+  /** An address the customer typed into a chat, never checked; booking mail uses it only if `email` is empty. */
+  given_email?: string | null;
 }
 
 export interface BookingGuest {

@@ -1,6 +1,6 @@
 -- One of the customer's own bookings, whatever its status, by the same rules as the list: never a
 -- private meeting, and never a pending booking a member of staff made.
-SELECT id, status
+SELECT id, status, ends_at
 FROM public.bookings
 WHERE client_id = %(client_id)s AND contact_id = %(contact_id)s AND id = %(id)s
   AND NOT private

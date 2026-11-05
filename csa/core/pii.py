@@ -7,6 +7,7 @@ import re
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])")
 _CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 _PHONE = re.compile(r"(?<!\w)(?:\+?60|0)[\d ()-]{7,16}\d(?!\w)")
+_EMAIL_PLACEHOLDER = re.compile(r"\[EMAIL_(\d+)\]")
 
 
 def _luhn_valid(value: str) -> bool:
@@ -50,3 +51,24 @@ def redact(text: str) -> str:
         lambda match: replace(phones, "PHONE", match.group()),
         redacted,
     )
+
+
+def real_email(value: str, raw: str) -> str | None:
+    """The address in ``raw`` that ``value`` names, or None when the message holds no such address.
+
+    ``value`` is a placeholder such as ``[EMAIL_1]``, numbered the way `redact` numbers them (each
+    distinct address once, in the order it first appears), or an address typed out. Either way the
+    answer is an address the customer really wrote, in their own spelling: a model that saw only
+    the redacted text can name one but never invent one.
+    """
+    found = list(dict.fromkeys(match.group() for match in _EMAIL.finditer(raw)))
+    placeholder = _EMAIL_PLACEHOLDER.fullmatch(value.strip())
+    if placeholder is not None:
+        index = int(placeholder.group(1))
+        return found[index] if index < len(found) else None
+    wanted = value.strip().casefold()
+    return next((address for address in found if address.casefold() == wanted), None)
+
+
+def is_email_placeholder(value: str) -> bool:
+    return _EMAIL_PLACEHOLDER.fullmatch(value.strip()) is not None

@@ -293,6 +293,42 @@ async def test_the_same_turn_key_replays_the_booking(shop: Shop) -> None:
     assert other.code == "slot_taken"
 
 
+@pytest.mark.parametrize("people", [1, 2])
+async def test_asking_again_for_a_time_the_customer_already_holds_replays_it(
+    shop: Shop, people: int
+) -> None:
+    """A different message for the same type and start is the same booking, not a second one (or
+    "taken" by the customer's own booking). A type with two people would book a second person."""
+    kind = await a_type(shop, people=people)
+    contact = await shop.customer()
+    first = await shop.book(contact, kind["id"], TEN)
+    again = await shop.book(contact, kind["id"], TEN)  # a new turn key
+    assert first.code == "confirmed" and first.booking is not None
+    assert again.code == "replay" and again.booking is not None
+    assert again.booking.id == first.booking.id
+    assert len(await shop.rows()) == 1 and len(await shop.actions()) == 1
+    # Another customer is still turned away from a one-person slot, or gets the second person.
+    other = await shop.book(await shop.customer(), kind["id"], TEN)
+    assert other.code == ("slot_taken" if people == 1 else "confirmed")
+    # A cancelled booking holds nothing: the same time can be booked again.
+    assert (await shop.cancel(contact, first.booking.id)).code == "cancelled"
+    third = await shop.book(contact, kind["id"], TEN)
+    assert third.code == "confirmed" and third.booking is not None
+    assert third.booking.id != first.booking.id
+
+
+async def test_a_pending_request_to_move_is_not_a_booking_of_that_time(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    first = await shop.book(contact, kind["id"], TEN)
+    assert first.code == "confirmed" and first.booking is not None
+    await shop.mode("suggest")  # now a move is only asked for, as a second, pending booking
+    request = await shop.change(contact, first.booking.id, ELEVEN)
+    assert request.code == "change_pending"
+    again = await shop.book(contact, kind["id"], ELEVEN)
+    assert again.code != "replay"  # the request is not a booking of that time
+
+
 async def test_a_turn_key_of_another_customer_is_not_found(shop: Shop) -> None:
     kind = await a_type(shop)
     await shop.book(await shop.customer(), kind["id"], turn_key="turn-shared")
@@ -1116,7 +1152,7 @@ async def test_a_company_in_another_zone_is_judged_there(shop: Shop) -> None:
     late = await shop.book(contact, kind["id"], TEN)
     assert late.code == "not_allowed" and late.offers
     assert late.offers[0].starts_at == datetime(2031, 3, 4, 1, 0, tzinfo=UTC)
-    assert late.offers[0].label == "Tuesday 4 March 2031, 9:00 am"
+    assert late.offers[0].label == "Tuesday 4 March 2031, 9:00 am (2031-03-04 09:00)"
     morning = await shop.book(contact, kind["id"], datetime(2031, 3, 4, 2, 0, tzinfo=UTC))
     assert morning.code == "confirmed"
 

@@ -23,6 +23,7 @@ from csa.contracts.callbacks import PendingActionStore
 from csa.contracts.facts import AgentResult
 from csa.contracts.plan import Intent, Plan
 from csa.contracts.state import BookingContext, Context
+from csa.core import db
 from csa.core.tenancy import tx
 from csa.graph.policy.handoff import decide_handoff
 
@@ -38,8 +39,8 @@ pytest_plugins = ["tests.test_console_sessions"]
 __all__ = ["shop"]  # the fixture, imported so this module can use it
 
 KEY = "event-1:t0-booking_agent"
-TEN_TEXT = "Tuesday 4 March 2031, 10:00 am"
-ELEVEN_TEXT = "Tuesday 4 March 2031, 11:00 am"
+TEN_TEXT = "Tuesday 4 March 2031, 10:00 am (2031-03-04 10:00)"
+ELEVEN_TEXT = "Tuesday 4 March 2031, 11:00 am (2031-03-04 11:00)"
 HOLD = "is not confirmed yet"
 
 
@@ -166,7 +167,7 @@ async def test_a_taken_time_says_so_and_offers_other_times(shop: Shop) -> None:
     offered = text.removeprefix("That time was just taken. Other free times for Haircut: ")
     assert TEN_TEXT not in offered
     assert 1 <= len(offered.rstrip(".").split("; ")) <= 3
-    assert offered.startswith("Tuesday 4 March 2031, 9:00 am; ")
+    assert offered.startswith("Tuesday 4 March 2031, 9:00 am (2031-03-04 09:00); ")
     assert len(await shop.rows()) == 1
 
 
@@ -246,6 +247,76 @@ async def test_a_service_that_is_not_for_customers_is_not_found_and_not_listed(s
     assert (await make_it(shop, contact, public)).ok
     listed = said(await ask(shop, contact, "availability"))
     assert "Staff sync" not in listed
+
+
+async def test_what_a_booking_write_says_reads_properly_to_a_customer_on_its_own(
+    shop: Shop,
+) -> None:
+    """When a reply cannot be checked, these facts are sent as they stand (see the whole-turn
+    tests): none may be a note to the composer, or carry an id."""
+    kind = await a_type(shop, max_advance_days=60)
+    await shop.w.q(
+        "INSERT INTO booking_settings (client_id, customer_limit) VALUES (%s, 1)", shop.tenant
+    )
+    contact, nameless_one = await shop.customer(), await nameless(shop)
+    texts = [
+        said(await make_it(shop, contact, {**kind, "id": str(uuid.uuid4())})),  # no such service
+        said(await make_it(shop, nameless_one, kind, key="event-2:t0-booking_agent")),
+        said(
+            await make_it(shop, contact, kind, channel="whatsapp", key="event-3:t0-booking_agent")
+        ),
+        said(
+            await make_it(shop, contact, kind, "2031-03-04T14:00", key="event-4:t0-booking_agent")
+        ),
+        said(await make_it(shop, await shop.customer(), kind, key="event-5:t0-booking_agent")),
+        said(
+            await make_it(
+                shop, await shop.customer(), kind, "2031-03-09T10:00", key="e6:t0-booking_agent"
+            )
+        ),
+        said(
+            await ask(
+                shop, contact, "cancel", key="e7:t0-booking_agent", booking_id=str(uuid.uuid4())
+            )
+        ),
+    ]
+    assert any("I need your name" in t for t in texts) and any(
+        "no email address" in t for t in texts
+    )
+    assert any("reached the number" in t for t in texts)
+    for text in texts:
+        lowered = text.lower()
+        for note in (
+            "service id",
+            "booking id",
+            "for lookups",
+            "never show",
+            "the customer",
+            "this customer",
+            "you may ask",
+        ):
+            assert note not in lowered, text
+
+
+async def test_status_marks_a_booking_in_the_past(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    ahead = said(await ask(shop, contact, "status", booking_id=str(made.booking.id)))
+    assert not ahead.startswith("This booking is in the past")
+    later = NOW + timedelta(days=30)
+    past = said(
+        await ask(
+            shop,
+            contact,
+            "status",
+            booking_id=str(made.booking.id),
+            now=later,
+            key="e2:t0-booking_agent",
+        )
+    )
+    assert past.startswith("This booking is in the past. Booking confirmed")
 
 
 async def test_the_limit_is_said_without_a_booking(shop: Shop) -> None:
@@ -363,7 +434,9 @@ async def test_a_pending_request_to_move_keeps_the_real_original_time(shop: Shop
             starts_at="2031-03-04T14:00",
         )
     )
-    assert text.startswith("Request to move the booking to Tuesday 4 March 2031, 2:00 pm received.")
+    assert text.startswith(
+        "Request to move the booking to Tuesday 4 March 2031, 2:00 pm (2031-03-04 14:00) received."
+    )
     assert "The new time is not confirmed yet" in text
     assert (
         f"The original booking (Haircut on {TEN_TEXT}, with Person 0, by phone) is still confirmed."
@@ -471,22 +544,81 @@ async def test_availability_with_nothing_for_customers_says_so(shop: Shop) -> No
     assert text == "Nothing can be booked by message at the moment."
 
 
+def offered_times(text: str) -> list[str]:
+    """The free times in an availability fact, as written."""
+    return text.split(": ", 1)[1].rstrip(".").split("; ")
+
+
 async def test_availability_for_a_service_lists_free_times_in_one_format(shop: Shop) -> None:
     kind = await a_type(shop)
     contact = await shop.customer()
     text = said(await ask(shop, contact, "availability", type_id=kind["id"], day="2031-03-04"))
-    assert text.startswith("Free times for Haircut: Tuesday 4 March 2031, 9:00 am; ")
-    assert text.endswith(f"{TEN_TEXT}.") and text.count(";") == 4
+    assert text.startswith(
+        "Free times for Haircut: Tuesday 4 March 2031, 9:00 am (2031-03-04 09:00); "
+    )
+    # Five times spread over the working day (9:00 to 17:30), not the first hour of it.
+    assert [t.split(", ")[1].split(" (")[0] for t in offered_times(text)] == [
+        "9:00 am",
+        "11:00 am",
+        "1:15 pm",
+        "3:30 pm",
+        "5:30 pm",
+    ]
     # A booked time is no longer offered.
     await make_it(shop, await shop.customer(), kind)
     after = said(await ask(shop, contact, "availability", type_id=kind["id"], day="2031-03-04"))
     # Nothing that would run into the booked half hour is offered.
-    assert TEN_TEXT not in after and "9:45 am" not in after
-    assert "Tuesday 4 March 2031, 10:30 am" in after
+    assert TEN_TEXT not in after and "9:45 am" not in after and "10:15 am" not in after
+    assert len(offered_times(after)) == 5
     # With no day, the search starts now (a Monday noon), never in the past.
     today = said(await ask(shop, contact, "availability", type_id=kind["id"]))
-    assert today.startswith("Free times for Haircut: Monday 3 March 2031, ")
-    assert "Monday 3 March 2031, 12:" not in today and "am" not in today.split(";")[0]
+    assert today.startswith("Free times for Haircut: Monday 3 March 2031, 1:00 pm ")
+    assert "Monday 3 March 2031, 12:" not in today
+    # A day with nothing free (Sunday) goes on to the next day that has times.
+    sunday = said(await ask(shop, contact, "availability", type_id=kind["id"], day="2031-03-09"))
+    assert sunday.startswith("Free times for Haircut: Monday 10 March 2031, 9:00 am ")
+
+
+@pytest.mark.parametrize(
+    ("part", "first", "last", "count"),
+    [
+        ("morning", "9:00 am", "11:45 am", 5),
+        ("afternoon", "12:00 pm", "4:45 pm", 5),
+        ("evening", "5:00 pm", "5:30 pm", 3),
+    ],
+)
+async def test_availability_can_be_asked_for_part_of_the_day(
+    shop: Shop, part: str, first: str, last: str, count: int
+) -> None:
+    kind = await a_type(shop)
+    text = said(
+        await ask(
+            shop,
+            await shop.customer(),
+            "availability",
+            type_id=kind["id"],
+            day="2031-03-04",
+            part_of_day=part,
+        )
+    )
+    assert text.startswith(f"Free {part} times for Haircut: ")
+    times_ = [t.split(", ")[1].split(" (")[0] for t in offered_times(text)]
+    assert (times_[0], times_[-1], len(times_)) == (first, last, count)
+
+
+async def test_a_part_of_the_day_with_nothing_free_says_so(shop: Shop) -> None:
+    kind = await a_type(shop, max_advance_days=0)
+    text = said(
+        await ask(
+            shop,
+            await shop.customer(),
+            "availability",
+            type_id=kind["id"],
+            day="2031-03-04",
+            part_of_day="evening",
+        )
+    )
+    assert text == "No free evening times for Haircut were found soon."
 
 
 async def test_availability_names_a_person_only_when_one_person_can_take_the_slot(
@@ -496,7 +628,7 @@ async def test_availability_names_a_person_only_when_one_person_can_take_the_slo
     named = said(
         await ask(shop, await shop.customer(), "availability", type_id=kind["id"], day="2031-03-04")
     )
-    assert f"{TEN_TEXT} with Person 0" in named
+    assert "Tuesday 4 March 2031, 9:00 am (2031-03-04 09:00) with Person 0" in named
     several = await a_type(shop, people=2, delivery="named")
     open_ = said(
         await ask(
@@ -541,7 +673,9 @@ async def nameless(shop: Shop) -> uuid.UUID:
 
 
 async def details(shop: Shop, contact: uuid.UUID) -> dict[str, Any]:
-    (row,) = await shop.w.q("SELECT full_name, email FROM contacts WHERE id = %s", str(contact))
+    (row,) = await shop.w.q(
+        "SELECT full_name, email, customer_given_email FROM contacts WHERE id = %s", str(contact)
+    )
     return row
 
 
@@ -549,7 +683,7 @@ async def test_the_bot_asks_for_a_name_it_does_not_have(shop: Shop) -> None:
     kind = await a_type(shop)
     contact = await nameless(shop)
     text = said(await make_it(shop, contact, kind))
-    assert "Ask the customer for their name" in text and "Nothing has been booked yet" in text
+    assert "I need your name" in text and "Nothing has been booked yet" in text
     assert await shop.rows() == []
     given = await make_it(shop, contact, kind, customer_name="Aina Binti Test")
     assert said(given).startswith("Booking confirmed")
@@ -568,19 +702,21 @@ async def test_a_name_and_email_fill_only_what_is_empty(shop: Shop) -> None:
     assert await details(shop, contact) == {
         "full_name": "Aina Binti Test",
         "email": "aina@example.test",
+        "customer_given_email": None,  # an address is on file, so nothing is added beside it
     }
 
 
-async def test_an_email_another_customer_has_is_ignored_without_a_word(shop: Shop) -> None:
+async def test_an_address_a_customer_types_is_kept_apart_from_the_contacts_own_email(
+    shop: Shop,
+) -> None:
     kind = await a_type(shop)
-    first, second = await shop.customer(), await shop.customer()
-    await shop.w.q("UPDATE contacts SET email = 'taken@example.test' WHERE id = %s", str(first))
-    result = await make_it(
-        shop, second, kind, channel="whatsapp", customer_email="Taken@Example.test"
-    )
-    text = said(result)
-    assert text.startswith("Booking confirmed") and "taken@example.test" not in text.lower()
-    assert (await details(shop, second))["email"] is None
+    contact = await shop.customer()
+    await make_it(shop, contact, kind, customer_email="aina@example.test")
+    assert await details(shop, contact) == {
+        "full_name": "Synthetic Customer",
+        "email": None,
+        "customer_given_email": "aina@example.test",
+    }
 
 
 async def test_a_whatsapp_booking_asks_for_an_email(shop: Shop) -> None:
@@ -589,8 +725,8 @@ async def test_a_whatsapp_booking_asks_for_an_email(shop: Shop) -> None:
     result = await make_it(shop, contact, kind, channel="whatsapp")
     texts = [f.text for f in result.facts]
     assert texts[0].startswith("Booking confirmed")
-    assert "no email address on file" in texts[1] and "fine if they say no" in texts[1]
-    assert "reminders" in texts[1]
+    assert "no email address on file" in texts[1] and "fine to say no" in texts[1]
+    assert "reminders" not in texts[1]  # nothing here sends reminders yet (no mailer)
     (row,) = await shop.rows()
     assert row["status"] == "confirmed"  # asking for an email never holds the booking back
     # Telegram is not asked, and an email given is saved and not asked for again.
@@ -610,7 +746,7 @@ async def test_a_whatsapp_booking_asks_for_an_email(shop: Shop) -> None:
         customer_email="third@example.test",
     )
     assert len(given.facts) == 1
-    assert (await details(shop, third))["email"] == "third@example.test"
+    assert (await details(shop, third))["customer_given_email"] == "third@example.test"
 
 
 # --- list and status ----------------------------------------------------------------------------
@@ -660,12 +796,14 @@ async def test_list_and_status_show_only_the_customers_own_visible_bookings(shop
 
     listing = await ask(shop, mine, "list")
     text = said(listing)
-    assert str(staff_confirmed["id"]) in text  # staff-made and confirmed: the customer's own
-    assert str(staff_pending["id"]) not in text  # staff-made and pending: not theirs to see
-    assert str(private["id"]) not in text and str(others["id"]) not in text
-    assert (
-        text.count("booking id") == 3
-    )  # the bot's confirmed, staff's confirmed, the bot's pending
+    # No booking id in what the customer is told (the context carries the ids the planner needs).
+    for booking in (staff_confirmed, staff_pending, private, others):
+        assert str(booking["id"]) not in text
+    assert "booking id" not in text and "for lookups" not in text
+    assert len(listing.facts) == 3  # the bot's confirmed, staff's confirmed, the bot's pending
+    assert "Wednesday 5 March 2031, 10:00 am" in text  # staff-made and confirmed: their own
+    assert "Wednesday 5 March 2031, 2:00 pm" not in text  # staff-made and pending: not theirs
+    assert "Thursday 6 March 2031" not in text  # a private meeting, and another customer's
     assert "Aina" in text
     for secret in (
         "aina.staff@example.test",
@@ -783,6 +921,33 @@ async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: S
     assert HOLD in held and len(transport.sent) == 2
 
 
+async def test_an_address_the_customer_gave_gets_the_mail_when_the_contact_has_none(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    transport = FakeTransport()
+    agent = BookingAgent(Mailer(transport, SENDER))
+    contact = await shop.customer()
+    await make_it(shop, contact, kind, customer_email="given@example.test", agent=agent)
+    await agent.drain()
+    assert transport.to() == ["given@example.test"]
+    # The contact's own address wins when there is one.
+    own, transport2 = await shop.customer(), FakeTransport()
+    await shop.w.q("UPDATE contacts SET email = 'own@example.test' WHERE id = %s", str(own))
+    agent2 = BookingAgent(Mailer(transport2, SENDER))
+    await make_it(
+        shop,
+        own,
+        kind,
+        "2031-03-04T14:00",
+        key="event-2:t0-booking_agent",
+        customer_email="claim@example.test",
+        agent=agent2,
+    )
+    await agent2.drain()
+    assert transport2.to() == ["own@example.test"]
+
+
 async def test_a_mail_failure_does_not_change_the_result(shop: Shop) -> None:
     kind = await a_type(shop)
     contact, transport, agent = await with_mail(shop)
@@ -887,8 +1052,7 @@ async def test_a_whatsapp_customer_can_give_an_email_after_booking(shop: Shop) -
     contact = await shop.customer()
     booked_ = await make_it(shop, contact, kind, channel="whatsapp")
     ask_text = booked_.facts[1].text
-    assert "reminders" in ask_text and "including for this booking" in ask_text
-    assert "fine if they say no" in ask_text
+    assert "no email address on file" in ask_text and "fine to say no" in ask_text
     saved = await ask(
         shop,
         contact,
@@ -897,13 +1061,52 @@ async def test_a_whatsapp_customer_can_give_an_email_after_booking(shop: Shop) -
         channel="whatsapp",
         customer_email="aina@example.test",
     )
-    assert said(saved) == (
-        "The email address is saved. It will be used for reminders, including for the booking "
-        "just made."
-    )
-    assert (await details(shop, contact))["email"] == "aina@example.test"
+    # A booking exists, but this agent has no mailer, so nothing claims reminders are live.
+    assert said(saved) == "The email address is saved."
+    found = await details(shop, contact)
+    assert found["customer_given_email"] == "aina@example.test" and found["email"] is None
     (row,) = await shop.rows()
     assert row["status"] == "confirmed"  # saving details books and changes nothing
+
+
+@pytest.mark.parametrize("booking", [True, False])
+@pytest.mark.parametrize("mailer", [True, False])
+async def test_the_reminder_sentence_needs_a_mailer_and_names_a_booking_only_if_one_exists(
+    shop: Shop, booking: bool, mailer: bool
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    if booking:
+        await shop.book(contact, kind["id"])
+    agent = BookingAgent(Mailer(FakeTransport(), SENDER) if mailer else None)
+    text = said(
+        await ask(shop, contact, "save_details", customer_email="aina@example.test", agent=agent)
+    )
+    if not mailer:
+        assert text == "The email address is saved."
+    elif booking:
+        assert text == (
+            "The email address is saved. It will be used for reminders, including for the "
+            "booking just made."
+        )
+    else:
+        assert (
+            text == "The email address is saved. It will be used for reminders of future bookings."
+        )
+    assert ("just made" in text) == (booking and mailer)
+
+
+async def test_a_booking_in_the_past_or_cancelled_is_not_the_booking_just_made(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    await shop.cancel(contact, made.booking.id)
+    agent = BookingAgent(Mailer(FakeTransport(), SENDER))
+    text = said(
+        await ask(shop, contact, "save_details", customer_email="aina@example.test", agent=agent)
+    )
+    assert "just made" not in text
 
 
 async def test_save_details_saves_a_name_and_an_email_and_only_into_empty_fields(
@@ -917,29 +1120,59 @@ async def test_save_details_saves_a_name_and_an_email_and_only_into_empty_fields
         customer_name="Aina Binti Test",
         customer_email="a@example.test",
     )
-    assert said(both) == (
-        "The name is saved. The email address is saved. It will be used for reminders, "
-        "including for the booking just made."
-    )
+    assert said(both) == "The name is saved. The email address is saved."
     again = await ask(
         shop, contact, "save_details", customer_name="Someone Else", customer_email="b@example.test"
     )
     assert said(again) == ("Nothing was changed: a name and an email address are already on file.")
     assert await details(shop, contact) == {
         "full_name": "Aina Binti Test",
-        "email": "a@example.test",
+        "email": None,
+        "customer_given_email": "a@example.test",
     }
 
 
-async def test_an_email_another_customer_has_cannot_be_saved_and_is_not_revealed(
-    shop: Shop,
-) -> None:
-    first, second = await shop.customer(), await shop.customer()
-    await shop.w.q("UPDATE contacts SET email = 'taken@example.test' WHERE id = %s", str(first))
-    text = said(await ask(shop, second, "save_details", customer_email="Taken@Example.test"))
-    assert text == "That email address could not be saved."
-    assert (await details(shop, second))["email"] is None
-    assert (await details(shop, first))["email"] == "taken@example.test"
+async def test_a_stranger_claiming_a_customers_address_gets_nothing_of_theirs(shop: Shop) -> None:
+    """An address typed into a chat is a claim, not an identity (the plan's own rule, ruled)."""
+    kind = await a_type(shop)
+    owner, stranger = await shop.customer("Real Owner"), await shop.customer("Stranger")
+    await shop.w.q("UPDATE contacts SET email = 'taken@example.test' WHERE id = %s", str(owner))
+    own = await shop.book(owner, kind["id"], ELEVEN)
+    assert own.booking is not None
+    chat = await conversation(shop, stranger)
+    # The same answer as for any address: nothing says that another customer has it.
+    text = said(await ask(shop, stranger, "save_details", customer_email="Taken@Example.test"))
+    assert text == "The email address is saved."
+    assert (await details(shop, stranger))["email"] is None
+    assert (await details(shop, owner))["email"] == "taken@example.test"
+    # No walk-in match: the same address still finds the real owner, never the stranger.
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        match = await db.q.fetch_one(
+            "bookings/contact_walk_in_insert.sql",
+            {
+                "client_id": shop.client,
+                "name": "Walk In",
+                "phone": None,
+                "email": "taken@example.test",
+            },
+            conn=conn,
+        )
+        assert match is not None and match["id"] == owner
+        # No Inbox `known`: the stranger is not labelled a customer by a claim.
+        found = await db.q.fetch_one(
+            "inbox/get_conversation_detail.sql",
+            {"client_id": shop.client, "conversation_id": chat},
+            conn=conn,
+        )
+    assert found is not None and found["known"] is False
+    # And the owner's bookings are not the stranger's to list, move or cancel.
+    listed = said(await ask(shop, stranger, "list", key="event-2:t0-booking_agent"))
+    assert listed == "The customer has no bookings."
+    moved = await ask(
+        shop, stranger, "cancel", key="event-3:t0-booking_agent", booking_id=str(own.booking.id)
+    )
+    assert said(moved) == "That could not be found. Nothing was changed."
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
 
 
 @pytest.mark.parametrize("how", ["replies_off", "service_off"])
@@ -955,7 +1188,11 @@ async def test_save_details_writes_nothing_when_the_bot_is_off(shop: Shop, how: 
         )
     )
     assert text == "Booking by message is not available at the moment. Nothing was changed."
-    assert await details(shop, contact) == {"full_name": None, "email": None}
+    assert await details(shop, contact) == {
+        "full_name": None,
+        "email": None,
+        "customer_given_email": None,
+    }
 
 
 # --- the context the classifier and planner are given ---------------------------------------------
@@ -1057,6 +1294,26 @@ async def test_the_booking_context_holds_today_types_upcoming_and_recent(shop: S
     ]
 
 
+async def test_a_company_with_more_than_twenty_services_still_gets_its_context(
+    shop: Shop,
+) -> None:
+    person = await make_person(shop.team, "Aina")
+    for n in range(21):
+        await make_type(shop.team, name=f"Service {n:02d}", person_ids=[person["id"]])
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    ctx = await build_context(shop, contact, chat)
+    assert ctx is not None, "21 services must not switch the context off"
+    assert len(ctx.types) == 20 and ctx.more_types is True
+    # A shorter list is complete, and says so.
+    await shop.w.q(
+        "UPDATE booking_types SET is_active = false WHERE client_id = %s AND name = 'Service 20'",
+        shop.tenant,
+    )
+    shorter = await build_context(shop, contact, chat)
+    assert shorter is not None and len(shorter.types) == 20 and shorter.more_types is False
+
+
 async def test_the_booking_context_is_off_where_the_bot_cannot_book(shop: Shop) -> None:
     contact = await shop.customer()
     chat = await conversation(shop, contact)
@@ -1111,6 +1368,20 @@ async def test_load_context_fills_the_booking_context_and_a_failure_leaves_it_em
     assert failed.booking is None and failed.active_order_ids == []  # the turn goes on
     assert any(entry.get("category") == "booking_context_failed" for entry in logs)
     assert "aina@example.test" not in repr(logs)
+
+
+async def test_a_preview_gets_no_booking_context(shop: Shop) -> None:
+    from csa.contracts.envelope import Channel
+    from csa.turn import deps
+
+    await a_type(shop)
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    envelope = envelope_for(shop, contact, chat)
+    assert (await real.load_context(envelope)).booking is not None  # a customer's chat has one
+    preview = envelope.model_copy(update={"channel": Channel.WEB})
+    assert (await real.load_context(preview)).booking is None  # the Overview preview does not
 
 
 async def test_a_company_without_bookings_gets_the_context_it_always_had(shop: Shop) -> None:

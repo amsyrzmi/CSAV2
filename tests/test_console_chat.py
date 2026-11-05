@@ -410,6 +410,7 @@ async def test_execution_rejects_mutations_and_private_reads(sessions: SessionWo
         ("booking_agent", "book"),
         ("booking_agent", "reschedule"),
         ("booking_agent", "cancel"),
+        ("booking_agent", "save_details"),
         ("subscription_agent", "status"),
         ("escalation_agent", "create"),
         ("ecommerce_agent", "search"),

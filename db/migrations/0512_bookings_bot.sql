@@ -2,6 +2,11 @@
 -- bookings gets three nullable columns: replaces_booking_id (the booking this one moves, in the
 --   same company), conversation_id (the chat the booking came from) and expires_at (when a pending
 --   booking lapses). Old rows and staff bookings leave all three empty.
+-- contacts gets customer_given_email, a nullable address a customer typed into a chat. It is a
+--   claim nobody has checked, so it is kept apart from contacts.email: the walk-in match, the
+--   Inbox's "known customer" and every uniqueness rule use email only. Booking mail and
+--   reminders use coalesce(email, customer_given_email). It has a length check and no
+--   uniqueness, and the bot fills it only while it is empty.
 -- booking_turn_actions: one row per customer message key and company, written by every bot write
 --   (book, change, cancel) in the write's own savepoint. It says which booking the key made, moved
 --   or cancelled, so a retried message answers with that instead of acting again, and a late retry
@@ -31,6 +36,7 @@
 --   ALTER TABLE public.bookings DROP CONSTRAINT bookings_replaces_fk,
 --     DROP COLUMN replaces_booking_id, DROP COLUMN conversation_id, DROP COLUMN expires_at;
 --     (bookings that were made by the bot stay)
+--   ALTER TABLE public.contacts DROP COLUMN customer_given_email;
 --   ALTER TABLE public.staff_notification_targets ALTER COLUMN events SET DEFAULT
 --     '{escalation,approval_needed,order_submitted,dlq,circuit_opened}';
 --   UPDATE public.staff_notification_targets SET events = array_remove(events, 'booking_pending');
@@ -53,6 +59,11 @@ ALTER TABLE public.bookings
     ADD COLUMN expires_at timestamptz;
 ALTER TABLE public.bookings ADD CONSTRAINT bookings_replaces_fk
     FOREIGN KEY (client_id, replaces_booking_id) REFERENCES public.bookings(client_id, id);
+
+ALTER TABLE public.contacts
+    ADD COLUMN customer_given_email text,
+    ADD CONSTRAINT contacts_customer_given_email_length
+        CHECK (customer_given_email IS NULL OR length(customer_given_email) BETWEEN 3 AND 254);
 
 CREATE TABLE public.booking_turn_actions (
     client_id uuid NOT NULL REFERENCES public.clients(id),

@@ -654,6 +654,48 @@ async def test_customer_told_says_whether_the_customer_got_it(
     assert failed["email"] == "failed" and failed["customer_told"] is False
 
 
+async def test_the_address_a_customer_gave_in_a_chat_is_used_only_when_there_is_no_other(
+    sessions: SessionWorld, team: Team, relay: FakeTransport
+) -> None:
+    person = await make_person(team, "Aina", email="aina@example.test")
+    made = await booked(
+        team,
+        team.staff,
+        meeting(person, start=TEN_KL, walk_in={"name": "Chat Customer", "phone": "0123456789"}),
+    )
+    assert made["customer_told"] is False  # nothing on file yet
+    await sessions.q(
+        "UPDATE contacts SET customer_given_email = 'given@example.test'"
+        " WHERE full_name = 'Chat Customer'"
+    )
+    relay.sent.clear()
+    moved = await send(
+        team, team.staff, f"/bookings/{made['id']}", {"version": 1, "starts_at": at(3)}, "PATCH"
+    )
+    assert moved.json()["customer_told"] is True
+    assert "given@example.test" in relay.to()
+    # The contact's own address wins, and the claimed one hears nothing.
+    await sessions.q(
+        "UPDATE contacts SET email = 'own@example.test' WHERE full_name = 'Chat Customer'"
+    )
+    relay.sent.clear()
+    again = await send(
+        team, team.staff, f"/bookings/{made['id']}", {"version": 2, "starts_at": at(4)}, "PATCH"
+    )
+    assert again.json()["customer_told"] is True
+    assert "own@example.test" in relay.to() and "given@example.test" not in relay.to()
+    # A claimed address that is not an address never reaches the relay.
+    await sessions.q(
+        "UPDATE contacts SET email = NULL, customer_given_email = 'call me'"
+        " WHERE full_name = 'Chat Customer'"
+    )
+    relay.sent.clear()
+    last = await send(
+        team, team.staff, f"/bookings/{made['id']}", {"version": 3, "starts_at": at(5)}, "PATCH"
+    )
+    assert last.json()["customer_told"] is False and "call me" not in str(relay.to())
+
+
 async def test_customer_told_is_false_when_mail_is_off(sessions: SessionWorld, team: Team) -> None:
     sessions.app.state.mailer = Mailer(None, SENDER)
     person = await make_person(team, "Aina", email="aina@example.test")

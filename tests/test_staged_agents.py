@@ -85,6 +85,7 @@ def test_the_booking_input_names_only_the_new_actions() -> None:
         "action",
         "type_id",
         "day",
+        "part_of_day",
         "starts_at",
         "booking_id",
         "customer_name",
@@ -142,6 +143,55 @@ def test_a_customer_email_and_name_are_checked_and_trimmed() -> None:
         }
     )
     assert (inp.customer_name, inp.customer_email) == ("Aina Binti Test", "aina@example.test")
+
+
+@pytest.mark.parametrize("given", ["[EMAIL_0]", " [EMAIL_12] "])
+def test_a_planned_email_may_be_the_placeholder_the_planner_saw(given: str) -> None:
+    """The planner only sees redacted text; the server swaps the placeholder for the address."""
+    inp = BookingInput.model_validate({"action": "save_details", "customer_email": given})
+    assert inp.customer_email == given.strip()
+
+
+def booking_task(**fields: object) -> Task:
+    return Task(task_id="t0-booking_agent", agent="booking_agent", input=dict(fields))
+
+
+def test_the_server_swaps_a_placeholder_for_the_address_in_the_raw_message() -> None:
+    from csa.turn.deps import with_real_email
+
+    raw = "it is b@test.example, or a@test.example"
+    swapped = with_real_email(booking_task(action="save_details", customer_email="[EMAIL_1]"), raw)
+    assert swapped is not None and swapped.input["customer_email"] == "a@test.example"
+    typed = with_real_email(
+        booking_task(action="save_details", customer_email="B@test.example"), raw
+    )
+    assert typed is not None and typed.input["customer_email"] == "b@test.example"
+    other = booking_task(action="list")
+    assert with_real_email(other, raw) is other
+
+
+def test_an_address_not_in_the_message_is_dropped_and_an_empty_save_is_no_task() -> None:
+    from csa.turn.deps import with_real_email
+
+    invented = booking_task(action="save_details", customer_email="guess@test.example")
+    assert with_real_email(invented, "no address") is None  # nothing left to save
+    named = booking_task(
+        action="save_details", customer_name="Aina Binti Test", customer_email="[EMAIL_0]"
+    )
+    kept = with_real_email(named, "no address")
+    assert kept is not None and kept.input == {
+        "action": "save_details",
+        "customer_name": "Aina Binti Test",
+    }
+    book = booking_task(action="book", type_id=str(uuid4()), customer_email="[EMAIL_3]")
+    booked = with_real_email(book, "x@test.example")
+    assert booked is not None and "customer_email" not in booked.input
+
+
+@pytest.mark.parametrize("given", ["[EMAIL_]", "[PHONE_0]", "[EMAIL_0] x", "[email_0]"])
+def test_a_placeholder_must_be_exactly_an_email_placeholder(given: str) -> None:
+    with pytest.raises(ValidationError):
+        BookingInput.model_validate({"action": "save_details", "customer_email": given})
 
 
 @pytest.mark.parametrize(

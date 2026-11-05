@@ -25,16 +25,31 @@ UNAVAILABLE = "Not available that day."
 NOT_FOUND = "That could not be found. Nothing was changed."
 # Said when the bot does nothing at all, so that no booking is claimed.
 OFF = "Booking by message is not available at the moment. Nothing was changed."
-NO_EMAIL = (
-    "This customer has no email address on file, so no confirmation email goes out. "
-    "You may ask whether they would like to give one; it will be used for reminders, including "
-    "for this booking. It is fine if they say no."
-)
-REMINDERS = " It will be used for reminders, including for the booking just made."
+# These sentences are written to the customer, because when a reply cannot be checked they are
+# sent as they stand: each must read properly on its own.
+REMINDERS_NOW = " It will be used for reminders, including for the booking just made."
+REMINDERS_LATER = " It will be used for reminders of future bookings."
 NEEDS_NAME = (
-    "A name is needed to make the booking and none is on file. Ask the customer for their name. "
+    "I need your name to make the booking and there is none on file. Please tell me your name. "
     "Nothing has been booked yet."
 )
+EMAIL_NOT_SEEN = (
+    "I could not find an email address in your message, so nothing was saved. Please type it again."
+)
+LIMIT = (
+    "You have reached the number of upcoming bookings allowed, so no new booking was made. "
+    "You can cancel one first."
+)
+
+
+def no_email(reminders: bool) -> str:
+    """The ask for an email address after a booking made with none on file."""
+    use = " It would be used for reminders." if reminders else ""
+    return (
+        "There is no email address on file for you, so no confirmation email will be sent. "
+        f"If you would like to give one, tell me your email address.{use} It is fine to say no."
+    )
+
 
 # What the customer is told when a person has to decide, and the reason staff see.
 HANDOFF: dict[str, tuple[str, str]] = {
@@ -62,6 +77,7 @@ class Scene:
     original: BookingRecord | None = None  # the booking a pending request to move belongs to
     type_id: UUID | None = None  # the service the call was about, for naming fresh times
     ask_email: bool = False
+    reminders: bool = False  # something that sends reminders is connected
 
 
 def state_of(booking: BookingRecord) -> str:
@@ -169,10 +185,7 @@ def facts_for(outcome: BotOutcome, scene: Scene) -> list[str]:
     if code == "not_allowed":
         return [refusal(UNAVAILABLE, outcome.offers, scene)]
     if code == "limit_reached":
-        return [
-            "The customer has reached the number of upcoming bookings allowed, so no new "
-            "booking was made. They can cancel one first."
-        ]
+        return [LIMIT]
     if code in HANDOFF:
         return [HANDOFF[code][0]]
     if booking is None:
@@ -181,7 +194,7 @@ def facts_for(outcome: BotOutcome, scene: Scene) -> list[str]:
         return [withdrawn(booking, scene)]
     lines = [booking_line(code, booking, scene)]
     if scene.ask_email and booking.status in LIVE:
-        lines.append(NO_EMAIL)
+        lines.append(no_email(scene.reminders))
     return lines
 
 
@@ -191,10 +204,12 @@ def saved_line(
     *,
     name: str | None,
     email: str | None,
+    reminders: str = "",
 ) -> str:
     """What `save_details` did with the name and email just given, from the contact before and
-    after. A detail already on file is never replaced; an address another contact has is "could not
-    be saved", with no word about whose it is.
+    after. A detail already on file is never replaced. The address goes to `customer_given_email`
+    and is always accepted when that is empty, so nothing here says whether another customer has
+    it. `reminders` is what the saved address will be used for, which only the caller knows.
     """
     said: list[str] = []
     on_file: list[str] = []
@@ -204,12 +219,12 @@ def saved_line(
         else:
             on_file.append("a name")
     if email is not None:
-        if before.get("email"):
+        if before.get("email") or before.get("customer_given_email"):
             on_file.append("an email address")
-        elif (after.get("email") or "").casefold() == email.casefold():
-            said.append("The email address is saved." + REMINDERS)
+        elif (after.get("customer_given_email") or "").casefold() == email.casefold():
+            said.append("The email address is saved." + reminders)
         else:
-            said.append("That email address could not be saved.")
+            on_file.append("an email address")
     if not said:
         verb = "are" if len(on_file) > 1 else "is"
         return f"Nothing was changed: {' and '.join(on_file)} {verb} already on file."
@@ -222,12 +237,12 @@ def handoff_of(outcome: BotOutcome) -> str | None:
     return found[1] if found else None
 
 
-def type_line(booking_type: BookingTypeOut) -> str:
-    """A service a customer may book, with the id the next lookup needs (not for the customer)."""
-    text = (
-        f"Can be booked: {booking_type.name}, {booking_type.duration_minutes} minutes "
-        f"(service id {booking_type.id}, for lookups only; never show it)."
-    )
+def type_line(booking_type: BookingTypeOut, *, ids: bool = True) -> str:
+    """A service a customer may book. A lookup also gets the id its next call needs (not for the
+    customer to see); a booking's own facts are sent to the customer as they stand, so no id.
+    """
+    key = f" (service id {booking_type.id}, for lookups only; never show it)" if ids else ""
+    text = f"Can be booked: {booking_type.name}, {booking_type.duration_minutes} minutes{key}."
     if booking_type.needs_confirmation:
         text += " The team confirms these bookings first."
     return text
