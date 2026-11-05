@@ -92,7 +92,8 @@ PACKAGES: tuple[Package, ...] = (
         key="bookings",
         title="Bookings",
         summary=(
-            "A calendar for booking people, rooms and shared things, for your team and customers."
+            "A calendar for booking people, rooms and shared things. Your team books in the "
+            "console, and customers can book, move or cancel by message."
         ),
         kind="standalone",
         requires=(),

@@ -1,16 +1,34 @@
-"""Local reads and durable preparation, never provider execution or approval."""
+"""The customer's bookings, and local reads and durable preparation for the other agents.
+
+Preparation never executes against a provider or approves anything. The booking agent is
+different: it really books, through `csa.bookings.bot`.
+"""
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from psycopg import AsyncConnection
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from csa.agents.base import AgentContext, SideEffects
+from csa.agents.staged.booking_facts import (
+    NEEDS_NAME,
+    NOT_FOUND,
+    Scene,
+    booking_line,
+    facts_for,
+    handoff_of,
+    times,
+    type_line,
+)
 from csa.agents.staged.models import (
     BookingInput,
     DraftModel,
@@ -19,8 +37,12 @@ from csa.agents.staged.models import (
     PreparedRequest,
     ResearchInput,
     SubscriptionInput,
-    future_booking,
 )
+from csa.bookings import bot, notify, setup
+from csa.bookings import service as core
+from csa.bookings.bot import BotOutcome
+from csa.bookings.service import BookingRecord
+from csa.console.mailer import Mailer
 from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta
 from csa.contracts.plan import RiskClass
 from csa.core import db
@@ -52,7 +74,7 @@ async def prepare(
     conn: AsyncConnection[Any],
     ctx: AgentContext,
     agent: str,
-    inp: BookingInput | SubscriptionInput | EmailDraftInput | ResearchInput | InvoiceDraftInput,
+    inp: SubscriptionInput | EmailDraftInput | ResearchInput | InvoiceDraftInput,
     *,
     requested_by: str | None = None,
 ) -> AgentResult:
@@ -110,19 +132,82 @@ async def contact_exists(conn: AsyncConnection[Any], ctx: AgentContext) -> bool:
     )
 
 
+WRITES = ("book", "reschedule", "cancel")
+BOOKING = "booking_agent"
+
+
+def reply(ctx: AgentContext, texts: list[str], *, handoff: str | None = None) -> AgentResult:
+    """An answer made of facts. `handoff` passes the customer to a person, with a staff reason."""
+    return AgentResult(
+        ok=True,
+        status="ok",
+        task_id=ctx.idempotency_key,
+        agent=BOOKING,
+        data=AgentResultData(
+            facts=[
+                Fact(id=f"booking-{n}", text=text, source=BOOKING, as_of=ctx.now())
+                for n, text in enumerate(texts)
+            ]
+        ),
+        requires_human=handoff is not None,
+        handoff_reason=handoff,
+        meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0),
+    )
+
+
+@dataclass(frozen=True)
+class Acted:
+    """What a call did inside its transaction. With an outcome, the facts are built after it
+    commits, because they may report the mail that went out.
+    """
+
+    scene: Scene
+    outcome: BotOutcome | None = None
+    lines: list[str] = field(default_factory=list)
+
+
+def local(value: datetime, zone: ZoneInfo) -> datetime:
+    """A time with no offset is the company's own local time, never the host's."""
+    return value.replace(tzinfo=zone) if value.tzinfo is None else value
+
+
+def mail_for(outcome: BotOutcome) -> notify.Change | None:
+    """The mail a call owes, if it changed a booking (a replay changed nothing)."""
+    booking = outcome.booking
+    if booking is None:
+        return None
+    if outcome.code == "confirmed" and booking.status == "confirmed":
+        return "created"
+    if outcome.code == "moved":
+        return "moved"
+    if outcome.code == "cancelled":
+        return "cancelled"
+    return None
+
+
 class BookingAgent:
-    name = "booking_agent"
+    """The customer's own bookings: free times, book, move, cancel, list and status.
+
+    Agents run before the reply gate, so this one obeys the company's reply mode itself (through
+    `bot`). It writes at most once per task, because the task's key is the booking's turn key.
+    """
+
+    name = BOOKING
     Input = BookingInput
-    side_effects: SideEffects = "reversible"
-    timeout_ms = 10000
+    side_effects: SideEffects = "irreversible"
+    timeout_ms = 25000
     max_retries = 0
     ACTION_RISK: dict[str, RiskClass] = {
+        "availability": "read",
         "list": "read",
         "status": "read",
-        "request_book": "draft",
-        "request_reschedule": "draft",
-        "request_cancel": "draft",
+        "book": "commit",
+        "reschedule": "commit",
+        "cancel": "commit",
     }
+
+    def __init__(self, mailer: Mailer | None = None) -> None:
+        self._mailer = mailer
 
     def risk(self, inp: BaseModel) -> RiskClass:
         assert isinstance(inp, BookingInput)
@@ -130,37 +215,206 @@ class BookingAgent:
 
     async def run(self, ctx: AgentContext, inp: BaseModel) -> AgentResult:
         assert isinstance(inp, BookingInput)
+        key = ctx.idempotency_key
+        if inp.action in WRITES and (not 1 <= len(key.strip()) <= 256 or "\x00" in key):
+            return result(ctx, self.name, "A bounded key is required.", code="invalid_key")
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
             if not await db.q.fetch_one(
                 "agents/preparation_enabled.sql", (ctx.client_id, self.name), conn=conn
             ):
-                return result(ctx, self.name, "Booking preparation is disabled.", code="disabled")
+                return result(ctx, self.name, "Booking is not enabled.", code="disabled")
             if not await contact_exists(conn, ctx):
                 return result(ctx, self.name, "Contact not found.", code="contact_not_found")
-            if inp.action == "list":
-                rows = await db.q.fetch_all(
-                    "agents/booking_list.sql", (ctx.client_id, ctx.contact_id), conn=conn
-                )
-                return result(ctx, self.name, json.dumps(rows, default=str))
-            if inp.booking_id is not None:
+            acted = await self._act(conn, ctx, inp)
+        # The transaction has committed: only now may the customer be told by email.
+        outcome, scene = acted.outcome, acted.scene
+        if outcome is None:
+            return reply(ctx, acted.lines)
+        change = mail_for(outcome)
+        if change is not None and outcome.booking is not None:
+            sent = await notify.notify_after_commit(ctx.pool, self._mailer, outcome.booking, change)
+            if sent.customer_told:
+                scene = replace(scene, mail=change)
+        return reply(ctx, [*facts_for(outcome, scene), *acted.lines], handoff=handoff_of(outcome))
+
+    async def _act(self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput) -> Acted:
+        zone = await core.company_zone(conn, ctx.client_id)
+        names = {t.id: t.name for t in await setup.list_types(conn, ctx.client_id)}
+        scene = Scene(zone, names)
+        blocked, _ = await bot.gate(conn, ctx.client_id)
+        if blocked is not None:
+            return Acted(scene, BotOutcome(blocked))
+        if inp.action == "availability":
+            return Acted(scene, lines=await self._availability(conn, ctx, inp, scene))
+        if inp.action == "list":
+            return Acted(scene, lines=await self._list(conn, ctx, scene))
+        if inp.action == "status":
+            return await self._status(conn, ctx, inp, scene)
+        details = await self._details(conn, ctx, inp)
+        if inp.action == "book":
+            return await self._book(conn, ctx, inp, scene, details)
+        return await self._change(conn, ctx, inp, scene)
+
+    async def _details(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput
+    ) -> dict[str, Any]:
+        """The customer's name and email, after saving what they just said into empty fields."""
+        params = {"client_id": ctx.client_id, "id": ctx.contact_id, "name": inp.customer_name}
+        try:
+            async with conn.transaction():
                 row = await db.q.fetch_one(
-                    "agents/booking_get.sql",
-                    (ctx.client_id, ctx.contact_id, inp.booking_id),
+                    "bookings/contact_details_fill.sql",
+                    {**params, "email": inp.customer_email},
                     conn=conn,
                 )
-                if not row:
-                    return result(ctx, self.name, "Booking not found.", code="booking_not_found")
-                if inp.action == "status":
-                    return result(ctx, self.name, json.dumps(row, default=str))
-                if row["status"] != "confirmed":
-                    return result(
-                        ctx, self.name, "Booking is not confirmed.", code="booking_inactive"
-                    )
-            if not future_booking(inp, ctx.now()):
-                return result(
-                    ctx, self.name, "Start must be in the future.", code="booking_in_past"
-                )
-            return await prepare(conn, ctx, self.name, inp)
+        except UniqueViolation:  # another contact took the address a moment ago
+            row = await db.q.fetch_one(
+                "bookings/contact_details_fill.sql", {**params, "email": None}, conn=conn
+            )
+        return dict(row or {})
+
+    async def _availability(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
+    ) -> list[str]:
+        types = await bot.customer_types(conn, ctx.client_id)
+        if inp.type_id is None:
+            if not types:
+                return ["Nothing can be booked by message at the moment."]
+            return [type_line(t) for t in types]
+        if inp.type_id not in {t.id for t in types}:
+            return [NOT_FOUND, *(type_line(t) for t in types)]
+        now = ctx.now()
+        offers = await bot.offer(
+            conn,
+            ctx.client_id,
+            type_id=inp.type_id,
+            day_from=inp.day or now.astimezone(scene.zone).date(),
+            now=now,
+        )
+        name = scene.type_names.get(inp.type_id, "this service")
+        if not offers:
+            return [f"No free times for {name} were found soon."]
+        return [f"Free times for {name}: {times(offers)}."]
+
+    async def _list(self, conn: AsyncConnection[Any], ctx: AgentContext, scene: Scene) -> list[str]:
+        now = ctx.now()
+        rows = await db.q.fetch_all(
+            "agents/booking_list.sql",
+            {"client_id": ctx.client_id, "contact_id": ctx.contact_id, "now": now},
+            conn=conn,
+        )
+        if not rows:
+            return ["The customer has no bookings."]
+        lines = []
+        for row in rows:
+            line = await self._line(conn, ctx, scene, row["id"])
+            past = "This booking is in the past. " if row["ends_at"] < now else ""
+            lines.append(f"{past}{line} (booking id {row['id']}, for lookups only; never show it)")
+        return lines
+
+    async def _status(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
+    ) -> Acted:
+        assert inp.booking_id is not None
+        if await self._own(conn, ctx, inp.booking_id) is None:
+            return Acted(scene, lines=[NOT_FOUND])
+        return Acted(scene, lines=[await self._line(conn, ctx, scene, inp.booking_id)])
+
+    async def _own(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, booking_id: UUID
+    ) -> dict[str, Any] | None:
+        """The booking when the customer may see it: theirs, not private, not staff-made pending."""
+        return await db.q.fetch_one(
+            "agents/booking_get.sql",
+            {"client_id": ctx.client_id, "contact_id": ctx.contact_id, "id": booking_id},
+            conn=conn,
+        )
+
+    async def _line(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, scene: Scene, booking_id: UUID
+    ) -> str:
+        """One of the customer's own bookings, in words (the caller has checked it is theirs)."""
+        record = await self._record(conn, ctx, booking_id)
+        return booking_line("replay", record, await self._scene_for(conn, ctx, scene, record))
+
+    async def _record(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, booking_id: UUID
+    ) -> BookingRecord:
+        return (await core.read_records(conn, ctx.client_id, booking_id=booking_id))[0]
+
+    async def _scene_for(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, scene: Scene, record: BookingRecord
+    ) -> Scene:
+        """The scene for a booking, which may be a request to move another one."""
+        if record.replaces_booking_id is None:
+            return replace(scene, type_id=record.type_id)
+        original = await self._record(conn, ctx, record.replaces_booking_id)
+        return replace(scene, original=original, type_id=record.type_id)
+
+    async def _book(
+        self,
+        conn: AsyncConnection[Any],
+        ctx: AgentContext,
+        inp: BookingInput,
+        scene: Scene,
+        details: dict[str, Any],
+    ) -> Acted:
+        assert inp.type_id is not None and inp.starts_at is not None
+        if not (details.get("full_name") or "").strip():
+            return Acted(scene, lines=[NEEDS_NAME])
+        outcome = await bot.book(
+            conn,
+            ctx.client_id,
+            ctx.contact_id,
+            type_id=inp.type_id,
+            starts_at=local(inp.starts_at, scene.zone),
+            turn_key=ctx.idempotency_key,
+            conversation_id=ctx.conversation_id,
+            now=ctx.now(),
+        )
+        scene = replace(
+            scene,
+            type_id=inp.type_id,
+            ask_email=ctx.channel == "whatsapp" and not (details.get("email") or "").strip(),
+        )
+        if outcome.booking is not None:
+            scene = await self._scene_for(conn, ctx, scene, outcome.booking)
+        lines: list[str] = []
+        if outcome.code == "not_found":  # tell the model what can be booked, as availability does
+            lines = [type_line(t) for t in await bot.customer_types(conn, ctx.client_id)]
+        return Acted(scene, outcome, lines)
+
+    async def _change(
+        self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
+    ) -> Acted:
+        booking_id = inp.booking_id
+        assert booking_id is not None
+        own = await self._own(conn, ctx, booking_id)
+        type_id = (await self._record(conn, ctx, booking_id)).type_id if own else None
+        if inp.action == "cancel":
+            outcome = await bot.cancel(
+                conn,
+                ctx.client_id,
+                ctx.contact_id,
+                booking_id,
+                turn_key=ctx.idempotency_key,
+                now=ctx.now(),
+            )
+        else:
+            assert inp.starts_at is not None
+            outcome = await bot.change(
+                conn,
+                ctx.client_id,
+                ctx.contact_id,
+                booking_id,
+                starts_at=local(inp.starts_at, scene.zone),
+                turn_key=ctx.idempotency_key,
+                now=ctx.now(),
+            )
+        scene = replace(scene, type_id=type_id)
+        if outcome.booking is not None:
+            scene = await self._scene_for(conn, ctx, scene, outcome.booking)
+        return Acted(scene, outcome)
 
 
 class SubscriptionAgent:

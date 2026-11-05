@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import ipaddress
-from datetime import UTC, datetime, timedelta
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal, Self
 from urllib.parse import urlsplit
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from csa.bookings.contracts import Email, Name
 
 
 class DraftModel(BaseModel):
@@ -31,34 +32,74 @@ class PreparedRequest(DraftModel):
 
 
 class BookingInput(DraftModel):
-    action: Literal["list", "status", "request_book", "request_reschedule", "request_cancel"]
-    booking_id: UUID | None = None
-    service: str | None = Field(default=None, min_length=1, max_length=200)
-    starts_at: AwareDatetime | None = None
-    ends_at: AwareDatetime | None = None
-    timezone: str = "Asia/Kuala_Lumpur"
-    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    """What the planner may ask the customer's booking agent to do.
+
+    The planner is shown this schema as it stands, so the descriptions are its instructions. Every
+    time is checked by the server: a wrong or invented one only gets the customer other times.
+    """
+
+    action: Literal["availability", "book", "reschedule", "cancel", "list", "status"] = Field(
+        description=(
+            "availability: what can be booked, or the free times for one service. book: make a "
+            "booking. reschedule: move one of the customer's bookings. cancel: cancel one. "
+            "list: the customer's own bookings. status: one of the customer's bookings."
+        )
+    )
+    type_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The id of the service, copied from the facts of an availability lookup. Never "
+            "invent one. Leave it out for availability to learn what can be booked."
+        ),
+    )
+    day: date | None = Field(
+        default=None,
+        description=(
+            "availability only: the day the customer asked about, as YYYY-MM-DD. Leave it out "
+            "when they named no day."
+        ),
+    )
+    starts_at: datetime | None = Field(
+        default=None,
+        description=(
+            "book and reschedule: the start the customer chose, as the business's local date and "
+            "time such as 2031-03-04T15:00 (no offset needed). Use only a time the customer "
+            "stated or one from the facts."
+        ),
+    )
+    booking_id: UUID | None = Field(
+        default=None,
+        description=(
+            "reschedule, cancel and status: the id of the customer's booking, copied from the "
+            "facts of a list lookup. Never invent one."
+        ),
+    )
+    customer_name: Name | None = Field(
+        default=None,
+        description="book: the customer's name, only if they gave it in their message.",
+    )
+    customer_email: Email | None = Field(
+        default=None,
+        description="The customer's email address, only if they gave one in their message.",
+    )
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def blank_is_missing(cls, value: object) -> object:
+        """A model fills an unused field with an empty string as often as it leaves it out."""
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def validate_action(self) -> Self:
-        try:
-            zone = ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("unknown timezone") from exc
-        if self.action in {"status", "request_reschedule", "request_cancel"}:
-            if self.booking_id is None:
-                raise ValueError("booking_id required")
-        if self.action in {"request_book", "request_reschedule"}:
-            if self.starts_at is None or self.ends_at is None:
-                raise ValueError("explicit offset-aware start and end required")
-            duration = self.ends_at.astimezone(UTC) - self.starts_at.astimezone(UTC)
-            if not timedelta(0) < duration <= timedelta(hours=24):
-                raise ValueError("booking duration must be positive and at most 24 hours")
-            for value in (self.starts_at, self.ends_at):
-                if value.utcoffset() != value.astimezone(UTC).astimezone(zone).utcoffset():
-                    raise ValueError("timestamp offset does not match timezone")
-        if self.action == "request_book" and not self.service:
-            raise ValueError("service required")
+        needs: dict[str, tuple[str, ...]] = {
+            "book": ("type_id", "starts_at"),
+            "reschedule": ("booking_id", "starts_at"),
+            "cancel": ("booking_id",),
+            "status": ("booking_id",),
+        }
+        for name in needs.get(self.action, ()):
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} required")
         return self
 
 
@@ -203,7 +244,3 @@ class InvoiceDraftInput(DraftModel):
         payload["total"] = str(self.total)
         payload["calculation"] = "per_line_round_half_up_2dp"
         return payload
-
-
-def future_booking(inp: BookingInput, now: datetime) -> bool:
-    return inp.starts_at is None or inp.starts_at.astimezone(UTC) > now.astimezone(UTC)

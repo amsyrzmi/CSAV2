@@ -44,7 +44,7 @@ async def test_catalogue_permissions_and_implementation_states(
         rows = {row.name: row for row in await list_agents(AsyncMock(), uuid4(), role=role)}
     assert rows["invoice_agent"].readiness == "available"
     assert "PDF" in rows["invoice_agent"].detail
-    assert rows["booking_agent"].implementation == "prepared_only"
+    assert rows["booking_agent"].implementation == "local"
     assert rows["ecommerce_agent"].readiness == "setup_required"
     assert rows["lhdn_agent"].implementation == "not_implemented"
     assert not rows["lhdn_agent"].can_view_specialized

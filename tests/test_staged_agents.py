@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import shutil
@@ -12,7 +13,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
@@ -46,28 +46,21 @@ from tests.conftest import requires_docker
 @pytest.mark.parametrize(
     "payload",
     [
+        {"action": "book"},
+        {"action": "book", "type_id": str(uuid4())},
+        {"action": "book", "starts_at": "2030-01-01T09:00"},
+        {"action": "reschedule", "booking_id": str(uuid4())},
+        {"action": "reschedule", "starts_at": "2030-01-01T09:00"},
+        {"action": "cancel"},
+        {"action": "status"},
         {"action": "request_book"},
-        {"action": "request_cancel"},
-        {
-            "action": "request_book",
-            "service": "Consultation",
-            "starts_at": "2030-01-01T09:00:00",
-            "ends_at": "2030-01-01T10:00:00",
-        },
-        {
-            "action": "request_book",
-            "service": "Consultation",
-            "starts_at": "2030-01-01T10:00:00+08:00",
-            "ends_at": "2030-01-01T09:00:00+08:00",
-        },
-        {
-            "action": "request_book",
-            "service": "Consultation",
-            "starts_at": "2030-01-01T09:00:00+08:00",
-            "ends_at": "2030-01-03T09:00:00+08:00",
-        },
-        {"action": "list", "timezone": "not/a/timezone"},
+        {"action": "request_cancel", "booking_id": str(uuid4())},
         {"action": "list", "client_id": str(uuid4())},
+        {"action": "list", "contact_id": str(uuid4())},
+        {"action": "book", "type_id": "haircut", "starts_at": "2030-01-01T09:00"},
+        {"action": "availability", "customer_email": "not an address"},
+        {"action": "availability", "customer_name": "Aina\nBcc: other@example.test"},
+        {"action": "availability", "day": "next tuesday"},
     ],
 )
 def test_invalid_booking(payload: dict[str, object]) -> None:
@@ -75,45 +68,68 @@ def test_invalid_booking(payload: dict[str, object]) -> None:
         BookingInput.model_validate(payload)
 
 
-def test_dst_offsets_and_nonexistent_wall_time() -> None:
-    good = BookingInput(
-        action="request_book",
-        service="Test",
-        timezone="America/New_York",
-        starts_at=datetime.fromisoformat("2030-11-03T01:30:00-04:00"),
-        ends_at=datetime.fromisoformat("2030-11-03T01:30:00-05:00"),
-    )
-    assert good.ends_at is not None and good.starts_at is not None
-    assert (good.ends_at - good.starts_at).total_seconds() == 3600
-    with pytest.raises(ValidationError, match="offset"):
-        BookingInput(
-            action="request_book",
-            service="Test",
-            timezone="America/New_York",
-            starts_at=datetime.fromisoformat("2030-03-10T02:30:00-05:00"),
-            ends_at=datetime.fromisoformat("2030-03-10T04:00:00-04:00"),
-        )
+def test_the_booking_input_names_only_the_new_actions() -> None:
+    schema = BookingInput.model_json_schema()
+    assert schema["properties"]["action"]["enum"] == [
+        "availability",
+        "book",
+        "reschedule",
+        "cancel",
+        "list",
+        "status",
+    ]
+    assert set(schema["properties"]) == {
+        "action",
+        "type_id",
+        "day",
+        "starts_at",
+        "booking_id",
+        "customer_name",
+        "customer_email",
+    }
+    text = json.dumps(schema)
+    for old in ("request_book", "request_reschedule", "request_cancel", "ends_at", "timezone"):
+        assert old not in text
+    # The planner is shown the schema as it is, so every field explains itself.
+    assert all(p.get("description") for p in schema["properties"].values())
 
 
-def test_dst_aware_python_datetimes_use_elapsed_time() -> None:
-    zone = ZoneInfo("America/New_York")
-    inp = BookingInput(
-        action="request_book",
-        service="Test",
-        timezone=zone.key,
-        starts_at=datetime(2030, 11, 3, 1, 30, tzinfo=zone, fold=0),
-        ends_at=datetime(2030, 11, 3, 1, 30, tzinfo=zone, fold=1),
+def test_a_booking_time_with_no_offset_is_the_business_local_time() -> None:
+    naive = BookingInput.model_validate(
+        {"action": "book", "type_id": str(uuid4()), "starts_at": "2030-01-01T09:00"}
     )
-    assert inp.starts_at is not None and inp.ends_at is not None
-    assert (inp.ends_at.astimezone(UTC) - inp.starts_at.astimezone(UTC)).total_seconds() == 3600
-    with pytest.raises(ValidationError, match="offset"):
-        BookingInput(
-            action="request_book",
-            service="Test",
-            timezone=zone.key,
-            starts_at=datetime(2030, 3, 10, 2, 30, tzinfo=zone),
-            ends_at=datetime(2030, 3, 10, 4, 0, tzinfo=zone),
-        )
+    assert naive.starts_at == datetime(2030, 1, 1, 9, 0)
+    assert naive.starts_at is not None and naive.starts_at.tzinfo is None
+    aware = BookingInput.model_validate(
+        {"action": "book", "type_id": str(uuid4()), "starts_at": "2030-01-01T09:00+08:00"}
+    )
+    assert aware.starts_at is not None and aware.starts_at.utcoffset() is not None
+
+
+def test_a_model_that_fills_unused_fields_with_blanks_is_understood() -> None:
+    inp = BookingInput.model_validate(
+        {
+            "action": "list",
+            "type_id": "",
+            "day": " ",
+            "starts_at": "",
+            "booking_id": None,
+            "customer_name": "",
+            "customer_email": "",
+        }
+    )
+    assert inp.model_dump(exclude_none=True) == {"action": "list"}
+
+
+def test_a_customer_email_and_name_are_checked_and_trimmed() -> None:
+    inp = BookingInput.model_validate(
+        {
+            "action": "availability",
+            "customer_name": "  Aina Binti Test  ",
+            "customer_email": " aina@example.test ",
+        }
+    )
+    assert (inp.customer_name, inp.customer_email) == ("Aina Binti Test", "aina@example.test")
 
 
 @pytest.mark.parametrize(
@@ -235,7 +251,6 @@ class World:
         self.owner_dsn = owner_dsn
         self.other_contact = uuid4()
         self.other_client = uuid4()
-        self.booking_id = uuid4()
         self.subscription_id = uuid4()
         self.mailbox_id = uuid4()
 
@@ -290,11 +305,6 @@ async def world(migrated_dsn: str, app_dsn: str) -> AsyncIterator[World]:
             (ctx.client_id,),
         )
         await conn.execute(
-            "INSERT INTO bookings (id,client_id,contact_id,service,starts_at,ends_at) "
-            "VALUES (%s,%s,%s,'Synthetic','2030-01-01T01:00Z','2030-01-01T02:00Z')",
-            (w.booking_id, ctx.client_id, ctx.contact_id),
-        )
-        await conn.execute(
             "INSERT INTO subscriptions (id,client_id,contact_id,plan,price,started_at) "
             "VALUES (%s,%s,%s,'basic',10,now())",
             (w.subscription_id, ctx.client_id, ctx.contact_id),
@@ -313,49 +323,31 @@ async def world(migrated_dsn: str, app_dsn: str) -> AsyncIterator[World]:
         await pool.close()
 
 
-def book() -> BookingInput:
-    return BookingInput(
-        action="request_book",
-        service="Consultation",
-        starts_at=datetime.fromisoformat("2030-01-01T09:00:00+08:00"),
-        ends_at=datetime.fromisoformat("2030-01-01T10:00:00+08:00"),
-    )
-
-
-@requires_docker
-async def test_book_prepares_once_and_never_creates_event(world: World) -> None:
-    agent = BookingAgent()
-    results = await asyncio.gather(*(agent.run(world.ctx, book()) for _ in range(4)))
-    assert all(r.ok and "NOT executed" in r.facts[0].text for r in results)
-    assert sum(r.meta.was_duplicate is False for r in results) == 1
-    rows = await world.rows()
-    assert len(rows) == 1 and rows[0]["status"] == "prepared"
-    assert rows[0]["requested_by"] == str(world.ctx.contact_id)
-    changed = book().model_copy(update={"service": "Different"})
-    conflict = await agent.run(world.ctx, changed)
-    assert conflict.error and conflict.error.code == "idempotency_conflict"
-    async with tx(world.ctx.pool, str(world.ctx.client_id)) as conn:
-        row = await (
-            await conn.execute(
-                "SELECT count(*) AS n FROM bookings WHERE client_id=%s", (world.ctx.client_id,)
-            )
-        ).fetchone()
-        assert row and row["n"] == 1
-
-
 @requires_docker
 async def test_runner_dispatch_and_risk_boundaries(world: World) -> None:
     runner = SpokeRunner(
         {"booking_agent": BookingAgent(), "subscription_agent": SubscriptionAgent()}
     )
-    request = Task(task_id="prepare", agent="booking_agent", input=book().model_dump(mode="json"))
-    assert runner.risk(request) == "draft"
-    assert (await runner.execute(request, world.ctx)).ok
+    looked = Task(task_id="look", agent="booking_agent", input={"action": "availability"})
+    assert runner.risk(looked) == "read"
+    booked = Task(
+        task_id="make",
+        agent="booking_agent",
+        input={"action": "book", "type_id": str(uuid4()), "starts_at": "2030-01-01T09:00"},
+    )
+    assert runner.risk(booked) == "commit"
+    moved = Task(
+        task_id="move",
+        agent="booking_agent",
+        input={"action": "reschedule", "booking_id": str(uuid4()), "starts_at": "2030-01-01T09:00"},
+    )
+    assert runner.risk(moved) == "commit"
+    assert runner.risk(Task(task_id="x", agent="booking_agent", input={"action": "cancel"})) is None
     read = Task(task_id="read", agent="subscription_agent", input={"action": "plans"})
     assert runner.risk(read) == "read"
     assert (await runner.execute(read, world.ctx)).ok
-    unsupported = Task(task_id="commit", agent="booking_agent", input={"action": "book"})
-    rejected = await runner.execute(unsupported, world.ctx)
+    old = Task(task_id="old", agent="booking_agent", input={"action": "request_book"})
+    rejected = await runner.execute(old, world.ctx)
     assert rejected.error and rejected.error.code == "invalid_input"
     staff = Task(task_id="mail", agent="email_agent", input={"action": "send"})
     assert runner.risk(staff) is None
@@ -363,14 +355,9 @@ async def test_runner_dispatch_and_risk_boundaries(world: World) -> None:
 
 
 @requires_docker
-@pytest.mark.parametrize("kind", ["booking", "subscription"])
-async def test_contact_and_tenant_isolation(world: World, kind: str) -> None:
-    agent = BookingAgent() if kind == "booking" else SubscriptionAgent()
-    inp = (
-        BookingInput(action="status", booking_id=world.booking_id)
-        if kind == "booking"
-        else SubscriptionInput(action="status", subscription_id=world.subscription_id)
-    )
+async def test_contact_and_tenant_isolation(world: World) -> None:
+    agent = SubscriptionAgent()
+    inp = SubscriptionInput(action="status", subscription_id=world.subscription_id)
     assert (await agent.run(world.ctx, inp)).ok
     stranger = replace(world.ctx, contact_id=world.other_contact)
     denied = await agent.run(stranger, inp)
@@ -404,18 +391,20 @@ async def test_subscription_change_validates_plan_without_mutation(world: World)
 
 
 @requires_docker
-async def test_disabled_and_past_booking(world: World) -> None:
-    agent = BookingAgent()
-    past = replace(world.ctx, now=lambda: datetime(2031, 1, 1, tzinfo=UTC))
-    response = await agent.run(past, book())
-    assert response.error and response.error.code == "booking_in_past"
+async def test_a_switched_off_booking_agent_does_nothing(world: World) -> None:
     async with tx(world.ctx.pool, str(world.ctx.client_id)) as conn:
         await conn.execute(
             "UPDATE capability_registry SET client_enabled=false WHERE client_id=%s",
             (world.ctx.client_id,),
         )
-    disabled = await agent.run(world.ctx, book())
-    assert disabled.error and disabled.error.code == "disabled"
+    for inp in (
+        BookingInput(action="availability"),
+        BookingInput(action="list"),
+        BookingInput(action="book", type_id=uuid4(), starts_at=datetime(2030, 1, 1, 9, 0)),
+    ):
+        disabled = await BookingAgent().run(world.ctx, inp)
+        assert disabled.error and disabled.error.code == "disabled"
+        assert disabled.facts == []
     assert await world.rows() == []
 
 
@@ -478,7 +467,8 @@ async def test_no_cross_tenant_mailbox_or_invoice(world: World) -> None:
 
 @requires_docker
 async def test_rls_blocks_unscoped_reads_and_request_mutation(world: World) -> None:
-    assert (await BookingAgent().run(world.ctx, book())).ok
+    inp = SubscriptionInput(action="request_pause", subscription_id=world.subscription_id)
+    assert (await SubscriptionAgent().run(world.ctx, inp)).ok
     async with world.ctx.pool.connection() as conn:
         cursor = await conn.execute("SELECT id FROM agent_preparation_requests")
         assert await cursor.fetchall() == []
@@ -516,27 +506,10 @@ async def test_request_contact_must_belong_to_tenant(world: World) -> None:
             await conn.execute(
                 "INSERT INTO agent_preparation_requests "
                 "(client_id,contact_id,agent,action,idempotency_key,payload,trace_id,requested_by) "
-                "VALUES (%s,%s,'booking_agent','request_book','cross-contact','{}',%s,'test')",
+                "VALUES (%s,%s,'subscription_agent','request_pause','cross-contact','{}',%s,"
+                "'test')",
                 (world.ctx.client_id, other, world.ctx.trace_id),
             )
-
-
-@requires_docker
-@pytest.mark.parametrize("action", ["request_reschedule", "request_cancel"])
-async def test_booking_changes_are_preparation_only(world: World, action: str) -> None:
-    inp = BookingInput.model_validate(
-        {
-            **book().model_dump(),
-            "action": action,
-            "booking_id": world.booking_id,
-        }
-    )
-    assert (await BookingAgent().run(world.ctx, inp)).ok
-    current = await BookingAgent().run(
-        world.ctx, BookingInput(action="status", booking_id=world.booking_id)
-    )
-    assert '"status": "confirmed"' in current.facts[0].text
-    assert '"starts_at": "2030-01-01 01:00:00+00:00"' in current.facts[0].text
 
 
 @requires_docker
@@ -558,63 +531,21 @@ async def test_subscription_pause_cancel_do_not_mutate(world: World, action: str
 @requires_docker
 async def test_missing_context_contact_cannot_prepare(world: World) -> None:
     missing = replace(world.ctx, contact_id=uuid4())
-    response = await BookingAgent().run(missing, book())
+    response = await BookingAgent().run(missing, BookingInput(action="list"))
     assert response.error and response.error.code == "contact_not_found"
+    request = await SubscriptionAgent().run(
+        missing, SubscriptionInput(action="request_pause", subscription_id=world.subscription_id)
+    )
+    assert request.error and request.error.code == "contact_not_found"
     assert await world.rows() == []
 
 
 @requires_docker
 async def test_all_local_lists_work(world: World) -> None:
-    bookings = await BookingAgent().run(world.ctx, BookingInput(action="list"))
     subscriptions = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="list"))
     plans = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="plans"))
-    assert str(world.booking_id) in bookings.facts[0].text
     assert str(world.subscription_id) in subscriptions.facts[0].text
     assert '"code": "pro"' in plans.facts[0].text
-
-
-@requires_docker
-async def test_bot_does_not_see_staff_made_bookings(world: World) -> None:
-    staff_id = uuid4()
-    ids = {name: uuid4() for name in ("confirmed", "pending", "private")}
-    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
-        await conn.execute(
-            "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,'Synthetic staff')",
-            (staff_id, f"staff-{staff_id}@example.test"),
-        )
-        for name, (status, private) in {
-            "confirmed": ("confirmed", False),
-            "pending": ("pending", False),
-            "private": ("confirmed", True),
-        }.items():
-            await conn.execute(
-                "INSERT INTO bookings (id,client_id,contact_id,service,title,status,private,"
-                "created_by,starts_at,ends_at) VALUES (%s,%s,%s,'Staff-made',%s,%s,%s,%s,"
-                "'2030-02-01T01:00Z','2030-02-01T02:00Z')",
-                (
-                    ids[name],
-                    world.ctx.client_id,
-                    world.ctx.contact_id,
-                    f"Secret {name}",
-                    status,
-                    private,
-                    staff_id,
-                ),
-            )
-    listed = await BookingAgent().run(world.ctx, BookingInput(action="list"))
-    text = listed.facts[0].text
-    assert str(world.booking_id) in text
-    for name, booking_id in ids.items():
-        assert str(booking_id) not in text
-        assert f"Secret {name}" not in text
-        found = await BookingAgent().run(
-            world.ctx, BookingInput(action="status", booking_id=booking_id)
-        )
-        assert found.error and found.error.code == "booking_not_found"
-    old = await BookingAgent().run(
-        world.ctx, BookingInput(action="status", booking_id=world.booking_id)
-    )
-    assert old.ok and "Synthetic" in old.facts[0].text
 
 
 @requires_docker

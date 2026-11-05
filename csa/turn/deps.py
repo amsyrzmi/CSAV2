@@ -83,7 +83,10 @@ CAPABILITIES = {
     "ecommerce_agent": "E-Commerce operations for TikTok Shop, Shopee, and Lazada",
     "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
     "invoice_agent": "Invoice lookup, status check, and signed download links",
-    "booking_agent": "Local booking history and unexecuted requests; never confirms availability",
+    "booking_agent": (
+        "Free times for a service, booking, moving and cancelling the customer's own "
+        "appointments, and looking up their bookings"
+    ),
     "subscription_agent": "Plan/status lookup and unexecuted requests; no billing changes",
 }
 

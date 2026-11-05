@@ -3,26 +3,39 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import statistics
 import time
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
-from csa.contracts.envelope import Callback, Voice
+from csa.bookings.bot import format_slot
+from csa.contracts.envelope import Callback, Contact, Envelope, Voice
 from csa.contracts.facts import AgentResult
-from csa.contracts.plan import Intent, Plan, Task
-from csa.contracts.state import Context, Draft, GuardResult, Signals, TurnState
-from csa.graph.coordinator import build_graph, resume_turn, run_turn
+from csa.contracts.plan import Intent, Plan, RiskClass, Task
+from csa.contracts.state import Context, Draft, GuardResult, Signals, TurnState, Verification
+from csa.decide.grounding import ungrounded
+from csa.decide.llm import ComposeOut, PlannedTask, PlanOut, ReviewOut, StepOut
+from csa.graph.coordinator import build_graph, process_turn, resume_turn, run_turn
 from csa.graph.saver import build_checkpoint_pool, build_saver
+from csa.turn.deps import PostgresTurnDependencies, build_llm_provider
+from langgraph.checkpoint.memory import InMemorySaver
 
 from tests.conftest import CSA_APP_PASSWORD, requires_docker
+from tests.test_bookings_api import soon_tuesday
+from tests.test_bookings_bot import Shop, a_type, shop
 from tests.test_coordinator import (
     FakeDependencies,
     make_envelope,
     make_result,
     make_signals,
 )
+
+pytest_plugins = ["tests.test_console_sessions"]
+__all__ = ["shop"]  # the fixture, imported so the booking turns below can use it
 
 
 class GoldenDeps(FakeDependencies):
@@ -340,3 +353,240 @@ async def test_finalize_failure_does_not_send_a_second_message() -> None:
         await go(deps, "hi")
     assert len(deps.emitted) == 1
     assert deps.fallbacks == []
+
+
+# --- the booking agent in a whole turn --------------------------------------------------------
+
+
+class ScriptedModel:
+    """A fake model: plans booking tasks, then writes its reply from the facts it is given."""
+
+    model = "scripted"
+
+    def __init__(self, booking: dict[str, Any], *, tasks: int = 1) -> None:
+        self.booking = booking
+        self.tasks = tasks
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            planned = PlannedTask(agent="booking_agent", input=self.booking)
+            return PlanOut(tasks=[planned] * self.tasks, reply_strategy="auto_reply")
+        if schema is StepOut:
+            return StepOut(done=True)
+        if schema is ReviewOut:
+            return ReviewOut(ok=True)
+        if schema is ComposeOut:
+            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            return ComposeOut(
+                reply=" ".join(f["text"] for f in facts), used_fact_ids=[f["id"] for f in facts]
+            )
+        raise AssertionError(schema)
+
+
+class BookingTurn(FakeDependencies):
+    """The coordinator's seams for one booking turn, with the real agent, planner and composer."""
+
+    known_agents = frozenset({"booking_agent", "escalation_agent"})
+
+    def __init__(self, real: PostgresTurnDependencies) -> None:
+        super().__init__()
+        self.real = real
+
+    async def signals(self, envelope: Any, context: Context) -> Signals:
+        return make_signals(Intent.BOOKING)
+
+    async def plan_args(self, envelope: Any, context: Context, signals: Signals) -> Plan:
+        return await self.real.plan_args(envelope, context, signals)
+
+    async def next_step(self, state: TurnState) -> list[Task]:
+        return list(await self.real.next_step(state))
+
+    def task_risk(self, task: Task) -> RiskClass | None:
+        return self.real.task_risk(task)
+
+    async def execute_spoke(self, task: Task, envelope: Any, context: Context) -> AgentResult:
+        self.executed_tasks.append(task.agent)
+        return await self.real.execute_spoke(task, envelope, context)
+
+    async def compose(self, state: TurnState) -> Draft:
+        return await self.real.compose(state)
+
+    async def verify(self, state: TurnState) -> Verification:
+        return await self.real.verify(state)
+
+    async def gate(self, state: TurnState) -> Any:
+        return await self.real.gate(state)
+
+
+async def booking_turn(
+    shop: Shop, booking: dict[str, Any]
+) -> tuple[BookingTurn, TurnState, Envelope]:
+    contact = await shop.customer()
+    plain = make_envelope("Book a haircut on Tuesday 4 March at 10")
+    envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": Contact(
+                id=contact,
+                external_id="synthetic-customer",
+                channel=plain.channel,
+                display_name=None,
+            ),
+        }
+    )
+    provider = build_llm_provider(ScriptedModel(booking))  # type: ignore[arg-type]
+    deps = BookingTurn(PostgresTurnDependencies(shop.w.pool, llm=provider))
+    return deps, await run_turn(envelope, deps), envelope  # type: ignore[arg-type]
+
+
+# The turn runs on the real clock, so the booking is a Tuesday two to three weeks from today.
+SLOT = f"{soon_tuesday()}T10:00"
+SLOT_TEXT = format_slot(datetime.fromisoformat(SLOT).replace(tzinfo=UTC), ZoneInfo("UTC"))
+
+
+def haircut(kind: dict[str, Any]) -> dict[str, Any]:
+    return {"action": "book", "type_id": kind["id"], "starts_at": SLOT}
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_whole_turn_books_a_slot_and_the_reply_states_the_exact_time(shop: Shop) -> None:
+    kind = await a_type(shop)
+    deps, state, envelope = await booking_turn(shop, haircut(kind))
+    (row,) = await shop.rows()
+    assert row["status"] == "confirmed" and row["source"] == "bot"
+    # The turn's own key, with the planner's task id, is what makes the booking safe to retry.
+    assert [a["turn_key"] for a in await shop.actions()] == [
+        f"{envelope.idempotency_key}:t0-booking_agent"
+    ]
+    assert deps.executed_tasks == ["booking_agent"] and deps.fallbacks == []
+    assert len(deps.emitted) == 1 and state.verified is True
+    reply = deps.emitted[0].body
+    facts = [f.text for f in state.facts]
+    assert any(f"Booking confirmed: Haircut on {SLOT_TEXT}" in t for t in facts)
+    assert SLOT_TEXT in reply
+    assert ungrounded(reply, [envelope.message.body_redacted, *facts]) == []
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_whole_turn_in_shadow_writes_nothing_and_sends_nothing(shop: Shop) -> None:
+    kind = await a_type(shop)
+    await shop.mode("shadow")
+    deps, state, _ = await booking_turn(shop, haircut(kind))
+    assert await shop.rows() == [] and await shop.actions() == []
+    assert deps.emitted == [] and state.outbound == []
+    assert not any("confirmed" in f.text.lower() for f in state.facts)
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_whole_turn_in_suggest_holds_the_slot_and_says_it_is_not_confirmed(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    await shop.mode("suggest")
+    deps, state, envelope = await booking_turn(shop, haircut(kind))
+    (row,) = await shop.rows()
+    assert row["status"] == "pending"
+    facts = [f.text for f in state.facts]
+    assert any("not confirmed yet" in t for t in facts)
+    assert not any("Booking confirmed" in t for t in facts)
+    reply = " ".join(facts)
+    assert ungrounded(reply, [envelope.message.body_redacted, *facts]) == []
+
+
+# --- a retried or resumed turn keeps the same key ---------------------------------------------
+
+
+class Died(BaseException):
+    """Process death; graph nodes only catch Exception."""
+
+
+class KeyWatch(FakeDependencies):
+    """Plans through the real planner and records the key every spoke run would be given."""
+
+    known_agents = frozenset({"booking_agent", "escalation_agent"})
+
+    def __init__(
+        self, booking: dict[str, Any], *, die_in: str | None = None, tasks: int = 1
+    ) -> None:
+        super().__init__()
+        self.provider = build_llm_provider(ScriptedModel(booking, tasks=tasks))  # type: ignore[arg-type]
+        self.die_in = die_in
+        self.planned = 0
+        self.keys: list[str] = []
+
+    async def signals(self, envelope: Any, context: Context) -> Signals:
+        return make_signals(Intent.BOOKING)
+
+    async def plan_args(self, envelope: Any, context: Context, signals: Signals) -> Plan:
+        self.planned += 1
+        if self.die_in == "plan":
+            raise Died
+        return await self.provider.plan(envelope, context, signals)
+
+    def task_risk(self, task: Task) -> RiskClass | None:
+        return "commit"
+
+    async def execute_spoke(self, task: Task, envelope: Any, context: Context) -> AgentResult:
+        # The key `PostgresTurnDependencies.execute_spoke` gives the agent.
+        self.keys.append(f"{envelope.idempotency_key}:{task.task_id}")
+        if self.die_in == "spoke":
+            raise Died
+        return make_result(task)
+
+
+BOOK = {"action": "book", "type_id": str(uuid4()), "starts_at": "2031-03-04T10:00"}
+
+
+@pytest.mark.asyncio
+async def test_a_turn_resumed_after_a_crash_in_the_agent_runs_it_again_with_the_same_key() -> None:
+    saver = InMemorySaver()
+    envelope = make_envelope("Book a haircut")
+    first = KeyWatch(BOOK, die_in="spoke")
+    with pytest.raises(Died):
+        await process_turn(envelope, first, checkpointer=saver)  # type: ignore[arg-type]
+    assert first.planned == 1 and first.keys == [f"{envelope.idempotency_key}:t0-booking_agent"]
+    # The reaper hands the same event back: the same trace, so the same checkpoint.
+    second = KeyWatch(BOOK)
+    state = await process_turn(envelope, second, checkpointer=saver)  # type: ignore[arg-type]
+    assert second.planned == 0, "a resumed turn must not plan again"
+    assert second.keys == first.keys
+    assert len(state.outbound) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_died_before_any_agent_ran_has_nothing_to_replay() -> None:
+    saver = InMemorySaver()
+    envelope = make_envelope("Book a haircut")
+    first = KeyWatch(BOOK, die_in="plan")
+    with pytest.raises(Died):
+        await process_turn(envelope, first, checkpointer=saver)  # type: ignore[arg-type]
+    assert first.keys == []  # no agent ran, so no booking can exist under any key
+    second = KeyWatch(BOOK)
+    await process_turn(envelope, second, checkpointer=saver)  # type: ignore[arg-type]
+    assert second.keys == [f"{envelope.idempotency_key}:t0-booking_agent"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_is_not_run_again() -> None:
+    saver = InMemorySaver()
+    envelope = make_envelope("Book a haircut")
+    await process_turn(envelope, KeyWatch(BOOK), checkpointer=saver)  # type: ignore[arg-type]
+    second = KeyWatch(BOOK)
+    await process_turn(envelope, second, checkpointer=saver)  # type: ignore[arg-type]
+    assert second.planned == 0 and second.keys == []
+
+
+@pytest.mark.asyncio
+async def test_two_booking_tasks_in_one_plan_have_two_keys() -> None:
+    watch = KeyWatch(BOOK, tasks=2)
+    envelope = make_envelope("Book two haircuts")
+    await run_turn(envelope, watch)  # type: ignore[arg-type]
+    assert sorted(watch.keys) == [
+        f"{envelope.idempotency_key}:t0-booking_agent",
+        f"{envelope.idempotency_key}:t1-booking_agent",
+    ]

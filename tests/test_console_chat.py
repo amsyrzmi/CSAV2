@@ -405,6 +405,11 @@ async def test_execution_rejects_mutations_and_private_reads(sessions: SessionWo
         ("ticket_agent", "list"),
         ("invoice_agent", "list"),
         ("booking_agent", "list"),
+        ("booking_agent", "availability"),
+        ("booking_agent", "status"),
+        ("booking_agent", "book"),
+        ("booking_agent", "reschedule"),
+        ("booking_agent", "cancel"),
         ("subscription_agent", "status"),
         ("escalation_agent", "create"),
         ("ecommerce_agent", "search"),
@@ -416,6 +421,7 @@ async def test_execution_rejects_mutations_and_private_reads(sessions: SessionWo
         )
         assert not result.ok and result.error and result.error.code == "sandbox_action_forbidden"
     assert not await world.q("SELECT id FROM orders WHERE client_id=%s", world.tenants[0])
+    assert not await world.q("SELECT id FROM bookings WHERE client_id=%s", world.tenants[0])
     assert not await world.q("SELECT id FROM pending_actions WHERE client_id=%s", world.tenants[0])
     with pytest.raises(ValueError, match="sandbox_callbacks_forbidden"):
         await deps.resolve_callback(

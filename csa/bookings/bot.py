@@ -108,7 +108,8 @@ async def customer_service_on(conn: Conn, client_id: UUID) -> bool:
     return row is not None
 
 
-async def _gate(conn: Conn, client_id: UUID) -> tuple[Code | None, ReplyMode]:
+async def gate(conn: Conn, client_id: UUID) -> tuple[Code | None, ReplyMode]:
+    """`service_off` or `replies_off` when the bot must do nothing, else None and the reply mode."""
     if not await customer_service_on(conn, client_id):
         return "service_off", "shadow"
     mode = await reply_mode(conn, client_id)
@@ -380,7 +381,7 @@ async def book(
     `suggest` holds the slot as `pending`; `auto` confirms it unless the type needs confirmation. A
     message that already booked answers `replay`.
     """
-    blocked, mode = await _gate(conn, client_id)
+    blocked, mode = await gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
     done = await _done_by(conn, client_id, turn_key)
@@ -448,7 +449,7 @@ async def change(
     by the new one, or withdrawn when the customer asks for the time it already has. Asking to
     change a pending request is asking to change the booking it belongs to.
     """
-    blocked, mode = await _gate(conn, client_id)
+    blocked, mode = await gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
     done = await _done_by(conn, client_id, turn_key)
@@ -585,7 +586,7 @@ async def cancel(
     booking withdraws the request and leaves the booking as it was (`change_withdrawn`). A booking
     already cancelled answers `replay`, so a retried message still hears the truth.
     """
-    blocked, _ = await _gate(conn, client_id)
+    blocked, _ = await gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
     done = await _done_by(conn, client_id, turn_key)

@@ -683,7 +683,7 @@ async def test_m2_catalogue_permissions_tenant_scope_and_switch_policy(
     response = await browser.get("/console/v1/agents")
     assert response.status_code == 200
     catalog = {row["name"]: row for row in response.json()}
-    assert catalog["booking_agent"]["implementation"] == "prepared_only"
+    assert catalog["booking_agent"]["implementation"] == "local"
     assert catalog["invoice_agent"]["can_toggle"] is (role == "tenant_admin")
     assert catalog["invoice_agent"]["can_subscribe"] is False
     assert (
