@@ -298,6 +298,51 @@ async def test_what_a_booking_write_says_reads_properly_to_a_customer_on_its_own
             assert note not in lowered, text
 
 
+async def test_a_staff_made_request_that_was_never_confirmed_reads_as_not_found(
+    shop: Shop,
+) -> None:
+    """The customer was never told of it, so a declined (or cancelled-while-pending) request of
+    staff's is not theirs to read about, though its id is known. A confirmed one that is later
+    cancelled still reads as cancelled: they were told of it."""
+    kind = await a_type(shop, needs_confirmation=True)
+    plain = await a_type(shop)
+    contact = await shop.customer()
+    asked = {"contact_id": str(contact)}
+    declined = await booked(
+        shop.team,
+        shop.team.admin,
+        {"type_id": kind["id"], "starts_at": "2031-03-04T10:00:00Z", **asked},
+    )
+    dropped = await booked(
+        shop.team,
+        shop.team.admin,
+        {"type_id": kind["id"], "starts_at": "2031-03-04T14:00:00Z", **asked},
+    )
+    told = await booked(
+        shop.team,
+        shop.team.admin,
+        {"type_id": plain["id"], "starts_at": "2031-03-05T10:00:00Z", **asked},
+    )
+    assert (declined["status"], dropped["status"], told["status"]) == (
+        "pending",
+        "pending",
+        "confirmed",
+    )
+    for made, how in ((declined, "decline"), (dropped, "cancel"), (told, "cancel")):
+        done = await shop.team.send(
+            shop.team.admin, f"/bookings/{made['id']}/{how}", {"version": made["version"]}
+        )
+        assert done.status_code == 200, done.text
+    for number, made in enumerate((declined, dropped)):
+        key = f"event-{number}:t0-booking_agent"
+        text = said(await ask(shop, contact, "status", key=key, booking_id=made["id"]))
+        assert text == "That could not be found. Nothing was changed."
+    found = said(
+        await ask(shop, contact, "status", key="e3:t0-booking_agent", booking_id=told["id"])
+    )
+    assert found.startswith("Booking cancelled")
+
+
 async def test_status_marks_a_booking_in_the_past(shop: Shop) -> None:
     kind = await a_type(shop)
     contact = await shop.customer()

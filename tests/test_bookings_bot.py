@@ -317,6 +317,26 @@ async def test_asking_again_for_a_time_the_customer_already_holds_replays_it(
     assert third.booking.id != first.booking.id
 
 
+async def test_a_pending_booking_staff_made_is_not_replayed_to_the_customer(shop: Shop) -> None:
+    """Staff's pending booking tells the customer nothing: it answers as list, status, move and
+    cancel do (not theirs), so asking for its type and time is only a taken slot."""
+    kind = await a_type(shop, needs_confirmation=True)
+    contact = await shop.customer()
+    made = await booked(
+        shop.team,
+        shop.team.admin,
+        {"type_id": kind["id"], "starts_at": "2031-03-04T10:00:00Z", "contact_id": str(contact)},
+    )
+    assert made["status"] == "pending"
+    again = await shop.book(contact, kind["id"], TEN)
+    assert again.code == "slot_taken" and again.booking is None
+    # The bot's own pending booking (it told the customer) is still theirs to be reminded of.
+    own = await a_type(shop, needs_confirmation=True)
+    first = await shop.book(contact, own["id"], ELEVEN)
+    assert first.code == "pending"
+    assert (await shop.book(contact, own["id"], ELEVEN)).code == "replay"
+
+
 async def test_a_pending_request_to_move_is_not_a_booking_of_that_time(shop: Shop) -> None:
     kind = await a_type(shop)
     contact = await shop.customer()

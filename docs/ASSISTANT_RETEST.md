@@ -159,6 +159,7 @@ The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) t
 | A booking message that names no service or time | The same company, a new conversation | "3 pm please" as the first message gets one clarifying question, not a booking | manual |
 | Staff approve each reply, then the same two messages | Replies set to "Staff approve each reply" | The booking is held as pending; the reply says it is not confirmed yet, never "confirmed" | manual |
 | Replies Off, then the same two messages | Replies set to Off | Nothing is booked and nothing is sent | manual |
+| A booking when the model is down or its reply cannot be checked | Switch the primary model off (or make it write a wrong time), then book | The booking is made and the customer is sent the booking facts as they stand ("Booking confirmed: ... (2026-11-10 15:30)"), in English, with no "try again" and no escalation. The same goes for a refused booking (a taken time, the customer limit): the facts say plainly that no booking was made | manual |
 
 ## Go live
 

@@ -1102,3 +1102,120 @@ async def test_a_customer_who_is_asked_for_a_name_and_gives_it_gets_the_booking_
     assert named["full_name"] == "Aina Binti Test"
     reply = answered.emitted[0].body
     assert reply.startswith("Booking confirmed: Haircut on ") and state.verified is True
+
+
+# --- a committed booking is told whatever fails afterwards (the review is on by default) ----
+
+
+def review_down(_facts: list[str], _draft: str) -> Any:
+    from csa.decide.completion import CompletionError
+
+    raise CompletionError("review_down")
+
+
+def truthful_reply(facts: list[str]) -> str:
+    return "Your haircut is booked. " + " ".join(facts)
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_booking_is_told_when_the_primary_is_down_and_only_the_backup_composes(
+    shop: Shop,
+) -> None:
+    """The outage the backup composer exists for: the review, which always uses the primary, is
+    down too. The customer must still hear about the booking, and no escalation opens."""
+    kind = await a_type(shop)
+    primary = ComposingModel(haircut(kind), down, review=review_down)
+    backup = ComposingModel(haircut(kind), truthful_reply)
+    deps, state, _ = await booking_turn(shop, haircut(kind), model=primary, fallback=backup)
+    (row,) = await shop.rows()
+    assert row["status"] == "confirmed"
+    assert deps.fallbacks == [], deps.fallbacks
+    assert deps.emitted[0].body == "\n".join(facts_of(state)) and SLOT_TEXT in deps.emitted[0].body
+    assert state.verified is True
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_booking_is_told_when_only_the_review_is_down(shop: Shop) -> None:
+    kind = await a_type(shop)
+    model = ComposingModel(haircut(kind), truthful_reply, review=review_down)
+    deps, state, _ = await booking_turn(shop, haircut(kind), model=model)
+    (row,) = await shop.rows()
+    assert row["status"] == "confirmed"
+    assert deps.fallbacks == [], deps.fallbacks
+    assert deps.emitted[0].body == "\n".join(facts_of(state))
+    assert model.composed == 2  # the first draft could not be reviewed, so it was sent back once
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_booking_is_told_when_a_check_breaks_for_any_reason(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The policy read behind the check fails, once while checking the first draft and once while
+    checking the retry; the gate after it is left alone."""
+    kind = await a_type(shop)
+    real = PostgresTurnDependencies._policy
+    calls = {"n": 0}
+
+    async def flaky(self: Any, client_id: UUID) -> Any:
+        import sys
+
+        asked_by = {sys._getframe(depth).f_code.co_name for depth in range(1, 4)}
+        if asked_by & {"verify", "_passes"} and calls["n"] < 2:
+            calls["n"] += 1
+            raise RuntimeError("the policy read failed")
+        return await real(self, client_id)
+
+    monkeypatch.setattr(PostgresTurnDependencies, "_policy", flaky)
+    model = ComposingModel(haircut(kind), truthful_reply)
+    deps, state, _ = await booking_turn(shop, haircut(kind), model=model)
+    assert calls["n"] == 2  # the check broke on the first draft and on the retry
+    assert deps.fallbacks == [], deps.fallbacks
+    assert deps.emitted[0].body == "\n".join(facts_of(state))
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_booking_is_told_when_composing_overruns_its_budget(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.turn import deps as turn_deps
+
+    monkeypatch.setattr(turn_deps, "BOOKING_COMPOSE_BUDGET_S", 0.3)
+    kind = await a_type(shop)
+
+    class Slow(ComposingModel):
+        async def json_completion(self, schema: Any, **kw: Any) -> Any:
+            if schema is ComposeOut:
+                await asyncio.sleep(30)
+            return await super().json_completion(schema, **kw)
+
+    deps, state, _ = await booking_turn(
+        shop, haircut(kind), model=Slow(haircut(kind), truthful_reply)
+    )
+    assert deps.fallbacks == [], deps.fallbacks
+    assert deps.emitted[0].body == "\n".join(facts_of(state))
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_refused_write_whose_reply_cannot_pass_says_that_no_booking_was_made(
+    shop: Shop,
+) -> None:
+    """The fallback also covers a write that was refused. That is ruled: the text is true, has no
+    booking words, and opens no escalation."""
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await shop.w.q(
+        "INSERT INTO booking_settings (client_id, customer_limit) VALUES (%s, 1)", shop.tenant
+    )
+    held = await shop.book(contact, kind["id"], datetime(2031, 3, 4, 14, 0, tzinfo=UTC))
+    assert held.code == "confirmed"
+    model = ComposingModel(haircut(kind), down)
+    deps, state, _ = await booking_turn(shop, haircut(kind), model=model, contact=contact)
+    assert len(await shop.rows()) == 1  # nothing new was booked
+    reply = deps.emitted[0].body
+    assert "no new booking was made" in reply and "Booking confirmed" not in reply
+    assert reply == "\n".join(facts_of(state)) and deps.fallbacks == []

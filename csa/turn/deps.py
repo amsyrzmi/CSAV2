@@ -65,6 +65,9 @@ logger = structlog.get_logger(__name__)
 # The booking read's own share of the context node's 2 s: longer and the customer is planned for
 # without it, as every other company is.
 BOOKING_CONTEXT_BUDGET_S = 1.0
+# The reply of a turn that wrote a booking is composed and checked inside this, a little under the
+# graph's 10 s node limit (which would cancel it without a word): past it the facts are sent.
+BOOKING_COMPOSE_BUDGET_S = 9.0
 FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
 HANDOFF_TEXT = "I've passed this to a team member who will get back to you shortly."
 SANDBOX_SCOPE_TEXT = (
@@ -114,6 +117,17 @@ def booking_write_facts(state: TurnState) -> list[tuple[str, Fact]]:
         if result.ok and result.task_id in writes
         for fact in result.facts
     ]
+
+
+def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
+    """The facts of a booking write, as they stand, as the reply (the agent writes them to be
+    read by a customer). Marked `template`, so the coordinator's check is grounding alone."""
+    return Draft(
+        text="\n".join(fact.text for _, fact in written)[:8000],
+        language=language if len(language) >= 2 else "en",
+        fact_ids=[fact_id for fact_id, _ in written][:100],
+        composer="template",
+    )
 
 
 def with_real_email(task: Task, raw: str) -> Task | None:
@@ -376,6 +390,24 @@ class PostgresTurnDependencies:
         return []
 
     async def compose(self, state: TurnState) -> Draft:
+        written = booking_write_facts(state)
+        if not written:
+            return await self._compose(state)
+        # A booking has been written (or refused: the facts are true either way, say no booking
+        # words, and open no escalation). Whatever fails while the reply is composed or checked,
+        # the customer is told the facts as they stand, never the fail-safe.
+        try:
+            async with asyncio.timeout(BOOKING_COMPOSE_BUDGET_S):
+                return await self._compose(state)
+        except Exception as exc:  # including TimeoutError
+            logger.warning(
+                "booking_reply_fell_back_to_facts",
+                error_type=type(exc).__name__,
+                trace_id=str(state.envelope.trace_id),
+            )
+            return _facts_draft(written, state.envelope.message.language)
+
+    async def _compose(self, state: TurnState) -> Draft:
         if state.envelope.channel == Channel.WEB and (
             (state.handoff is not None and state.handoff.required)
             or any(error.code == "sandbox_action_forbidden" for error in state.failures)
@@ -436,14 +468,23 @@ class PostgresTurnDependencies:
         if draft.composer != "template":
             if state.regen_count == 0:
                 return draft
-            if (await self.verify(state.model_copy(update={"draft": draft}))).ok:
+            if await self._passes(state.model_copy(update={"draft": draft})):
                 return draft
-        return Draft(
-            text="\n".join(fact.text for _, fact in written)[:8000],
-            language=draft.language,
-            fact_ids=[fact_id for fact_id, _ in written][:100],
-            composer="template",
-        )
+        return _facts_draft(written, draft.language)
+
+    async def _passes(self, state: TurnState) -> bool:
+        """Whether this retry draft passes grounding and, if on, the model review. A review that
+        cannot run does not pass it. The coordinator's own check then lets it through (`verify`).
+        """
+        assert self._llm is not None and state.draft is not None
+        if not self._llm.verify(state).ok:
+            return False
+        if not (await self._policy(state.envelope.client_id)).semantic_verify:
+            return True
+        try:
+            return (await self._llm.review(state)).ok
+        except Exception:
+            return False
 
     async def verify(self, state: TurnState) -> Verification:
         if state.draft is None:
@@ -461,9 +502,25 @@ class PostgresTurnDependencies:
             return grounded
         if state.draft.composer == "template":
             return grounded
-        if not (await self._policy(state.envelope.client_id)).semantic_verify:
+        if not booking_write_facts(state):
+            if not (await self._policy(state.envelope.client_id)).semantic_verify:
+                return grounded
+            return await self._llm.review(state)
+        if state.regen_count >= 1:
+            # A booking turn's retry was already reviewed when it was composed (`_passes`), or it
+            # is the facts. A second, different answer from the model must not overturn it.
             return grounded
-        return await self._llm.review(state)
+        try:
+            if not (await self._policy(state.envelope.client_id)).semantic_verify:
+                return grounded
+            return await self._llm.review(state)
+        except Exception as exc:  # a check that cannot run: send the draft back for its retry
+            logger.warning(
+                "booking_check_unavailable",
+                error_type=type(exc).__name__,
+                trace_id=str(state.envelope.trace_id),
+            )
+            return Verification(ok=False, issues=["review_unavailable"])
 
     async def _log_decision(self, envelope: Envelope, record: DecisionRecord) -> None:
         async with tx(self._pool, str(envelope.client_id)) as conn:

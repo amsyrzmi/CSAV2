@@ -1150,3 +1150,68 @@ async def test_names_in_chinese_stay_readable_to_the_model_with_a_booking_contex
     # Every other prompt is exactly what it was.
     _, plain = await _prompts_for(Context(summary="顾客"), "plan")
     assert "\\u987e" in plain
+
+
+# --- a committed booking is told even when a check cannot run -------------------------------
+
+
+def _review_down_else(reply: str) -> Callable[[httpx.Request], httpx.Response]:
+    """Composes `reply`; the model review (a different system prompt) is unavailable."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        system = json.loads(request.content)["messages"][0]["content"]
+        if "check a customer-support reply" in system:
+            return httpx.Response(500)
+        return _ok({"reply": reply, "used_fact_ids": []})(request)
+
+    return handler
+
+
+async def test_a_review_that_cannot_run_sends_a_booking_turns_first_draft_back() -> None:
+    from csa.contracts.state import Verification
+
+    deps = _deps_with(_review_down_else("All set for 3:30 pm."), review=True)
+    state = _booking_turn_state(draft="All set for 3:30 pm.", regen=0)
+    checked = await deps.verify(state)
+    assert checked == Verification(ok=False, issues=["review_unavailable"])
+
+
+async def test_a_retry_the_compose_step_already_passed_is_not_overturned_by_a_second_review() -> (
+    None
+):
+    from csa.contracts.state import Verification
+
+    deps = _deps_with(_review_down_else("All set for 3:30 pm."), review=True)
+    state = _booking_turn_state(draft="All set for 3:30 pm.", regen=1)
+    assert await deps.verify(state) == Verification(ok=True)  # grounded; the review was in compose
+    wrong = _booking_turn_state(draft="All set for 5:45 pm.", regen=1)
+    assert (await deps.verify(wrong)).ok is False  # grounding still holds
+
+
+async def test_a_review_that_cannot_run_still_fails_every_other_turn_as_it_did() -> None:
+    deps = _deps_with(_review_down_else("Yes, A1 is MYR 10.50."), review=True)
+    state = _booking_turn_state(
+        agent="order_agent", action="status", draft="All set for 3:30 pm.", regen=0
+    )
+    with pytest.raises(CompletionError):
+        await deps.verify(state)
+
+
+async def test_a_retry_whose_review_cannot_run_is_replaced_by_the_facts() -> None:
+    deps = _deps_with(_review_down_else("All set for 3:30 pm."), review=True)
+    draft = await deps.compose(_booking_turn_state(regen=1))
+    assert draft.text == SLOT_FACT and draft.composer == "template"
+
+
+async def test_a_booking_turn_whose_compose_step_breaks_is_told_as_the_facts_say_it() -> None:
+    deps = _deps_with(_ok({"reply": "All set for 3:30 pm.", "used_fact_ids": []}), review=True)
+
+    async def broken(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("the brand read failed")
+
+    deps._client_brand = broken  # type: ignore[method-assign]
+    draft = await deps.compose(_booking_turn_state())
+    assert draft.text == SLOT_FACT and draft.composer == "template"
+    other = _booking_turn_state(agent="order_agent", action="status")
+    with pytest.raises(RuntimeError):
+        await deps.compose(other)  # every other turn fails as it did
