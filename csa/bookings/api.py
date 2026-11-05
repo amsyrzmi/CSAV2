@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
-from csa.bookings import notify, service, setup
+from csa.bookings import customer_messages, notify, service, setup
 from csa.bookings.contracts import (
     BookingActionIn,
     BookingBlockIn,
@@ -103,17 +103,30 @@ MAIL_FOR: dict[Change, notify.Change] = {
 
 
 async def after_commit(
-    request: Request, record: service.BookingRecord, change: Change
+    request: Request, record: service.BookingRecord, change: Change, *, by_chat: bool = False
 ) -> notify.Outcome | None:
     """Runs once the booking's transaction has committed, with the unredacted record.
 
     Sends the invitation, change or cancellation email from this one place, so a failed email can
-    never undo a booking. It never raises, and the mail text never reaches the response.
+    never undo a booking. It never raises, and the mail text never reaches the response. `by_chat`
+    says the customer already has a chat message about this change (written in its transaction).
     """
     mail = MAIL_FOR.get(change)
     if mail is None:
         return None
-    return await notify.notify_after_commit(request.app.state.pool, _mailer(request), record, mail)
+    if record.replaces_booking_id is not None:
+        # A pending request to move a booking: nothing was ever sent for it, and nothing about a
+        # cancelled request is true (the booking it would have moved stands), so there is no mail.
+        return notify.Outcome(
+            "none", True if by_chat else (False if change == "declined" else None)
+        )
+    if change == "confirmed" and record.moved_by_request:
+        mail = "moved"  # the booking keeps its id: the same calendar event, at its new time
+    # A customer's own bot asked for a booking, so declining it tells them; staff's own does not.
+    owed = True if change == "declined" and record.source == "bot" else None
+    return await notify.notify_after_commit(
+        request.app.state.pool, _mailer(request), record, mail, owed=owed, by_chat=by_chat
+    )
 
 
 def build_bookings_router() -> APIRouter:
@@ -141,9 +154,14 @@ def build_bookings_router() -> APIRouter:
         return actor
 
     async def respond(
-        request: Request, actor: ConsoleActor, record: service.BookingRecord, change: Change
+        request: Request,
+        actor: ConsoleActor,
+        record: service.BookingRecord,
+        change: Change,
+        *,
+        by_chat: bool = False,
     ) -> BookingOut:
-        outcome = await after_commit(request, record, change)
+        outcome = await after_commit(request, record, change, by_chat=by_chat)
         out = service.to_out(record, service.viewer_of(actor))
         # A redacted answer says nothing about the meeting, not even whether it had addresses.
         if out.redacted or outcome is None:
@@ -435,7 +453,11 @@ def build_bookings_router() -> APIRouter:
             actor = changer(request, client_id)
             async with tx(request.app.state.pool, str(client_id)) as conn:
                 record = await run(conn, client_id, actor, booking_id, payload or BookingActionIn())
-            return await respond(request, actor, record, change)
+                # A chat message is only rows, so it goes in the same transaction as the change.
+                by_chat = await customer_messages.after_staff_action(
+                    conn, client_id, record, change
+                )
+            return await respond(request, actor, record, change, by_chat=by_chat)
 
         return handle
 

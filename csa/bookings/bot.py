@@ -29,6 +29,7 @@ from csa.bookings import service, setup
 from csa.bookings.availability import on_slot_grid
 from csa.bookings.contracts import BookingIn, BookingTime, BookingTypeOut
 from csa.core import db
+from csa.notify import notifier
 
 Conn = service.Conn
 ReplyMode = Literal["shadow", "suggest", "auto"]
@@ -412,6 +413,19 @@ async def _remember(
     )
 
 
+async def _tell_staff(conn: Conn, client_id: UUID, booking_id: UUID) -> None:
+    """A pending booking waits for a person: queue the staff alert in the booking's own savepoint.
+    The payload is the booking's id only, never a name, a time or a way to reach the customer."""
+    await notifier.notify(
+        conn,
+        client_id=client_id,
+        event="booking_pending",
+        priority="normal",
+        payload={"booking_id": str(booking_id)},
+        dedupe_key=str(booking_id),
+    )
+
+
 async def _replay(conn: Conn, client_id: UUID, booking_id: UUID) -> BotOutcome:
     return BotOutcome("replay", await _record(conn, client_id, booking_id))
 
@@ -498,6 +512,8 @@ async def book(
                 expires_at=_expiry(now, settings, starts_at) if pending else None,
             )
             await _remember(conn, client_id, turn_key, record.id, "book")
+            if record.status == "pending":
+                await _tell_staff(conn, client_id, record.id)
     except HTTPException as exc:
         return await _refusal(conn, client_id, exc, type_id, starts_at, now)
     return BotOutcome("pending" if record.status == "pending" else "confirmed", record)
@@ -639,6 +655,7 @@ async def _ask_to_move(
             replaces_booking_id=record.id,
         )
         await _remember(conn, client_id, turn_key, asked.id, "change")
+        await _tell_staff(conn, client_id, asked.id)
     return BotOutcome("change_pending", asked)
 
 
@@ -648,16 +665,7 @@ async def _drop_pending_changes(
     """Cancel the pending changes that ask to move this booking, so the latest request is the only
     one and cancelling the booking leaves none behind. Returns what was dropped.
     """
-    rows = await db.q.fetch_all(
-        "bookings/booking_pending_changes.sql",
-        {"client_id": client_id, "id": booking_id},
-        conn=conn,
-    )
-    for row in rows:
-        await service.cancel_for(
-            conn, client_id, service.BOT, await _record(conn, client_id, row["id"])
-        )
-    return list(rows)
+    return await service.withdraw_changes(conn, client_id, service.BOT, booking_id)
 
 
 async def cancel(

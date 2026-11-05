@@ -14,6 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.jobs.bookings import run_pending_expiry
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
@@ -72,6 +73,14 @@ def build_default_registry() -> JobRegistry:
             name="subscriptions_due",
             every=timedelta(minutes=5),
             fn=run_subscriptions_due,
+            per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="booking_pending_expiry",
+            every=timedelta(minutes=5),
+            fn=run_pending_expiry,
             per_client=True,
         )
     )

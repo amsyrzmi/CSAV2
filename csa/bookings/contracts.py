@@ -428,11 +428,19 @@ class BookingOut(Contract):
     # Only on the answer to a staff change that sends mail (book, move, cancel, confirm, decline);
     # null on every read, on a no-show, and on a private meeting the viewer is not part of.
     email: EmailSummary | None = None
-    # Whether the customer got a message about this change: true if mailed, false if the booking has
-    # a customer who was not (no address, mail off or failed), null if there is no customer, on a
-    # read, a no-show or a private meeting the viewer is not part of, and while a booking still
-    # waits for confirmation (the customer is told nothing then, by design).
+    # Whether the customer got a message about this change: true if they were sent a chat message
+    # or mailed, false if the booking has a customer who was not (no address and no chat, mail off
+    # or failed), null if there is no customer, on a read, a no-show or a private meeting the viewer
+    # is not part of, and while a booking still waits for confirmation (the customer is told
+    # nothing then, by design). A booking the customer's own bot made is the exception: declining
+    # one tells them, so that answer is true or false.
     customer_told: bool | None = None
+    # Who made it: a person at the console, the console assistant, or the customer's own bot. A
+    # bot booking may be pending with an expiry, and a bot request to move a booking is a pending
+    # booking with `replaces_booking_id` set (confirming it moves that booking, which keeps its id).
+    # Null on a private meeting the viewer is not part of.
+    source: Literal["staff", "assistant", "bot"] | None = None
+    replaces_booking_id: UUID | None = None
 
 
 class BookingSlotOut(Contract):

@@ -11,10 +11,12 @@ from typing import Any
 import pytest
 from csa.bookings import notify
 from csa.bookings.api import build_bookings_router
+from csa.bookings.service import BookingRecord
 from csa.console.mailer import Mailer, OutgoingMail
 from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
+from tests.test_booking_ics import record
 from tests.test_bookings_api import TUESDAY, at, book, booked, meeting
 from tests.test_bookings_setup import BASE, Team, make_person, make_type
 from tests.test_console_sessions import SessionWorld
@@ -738,3 +740,55 @@ async def test_customer_told_waits_for_a_pending_booking_and_ignores_a_no_show(
     past = await booked(team, team.staff, meeting(person, start="2020-01-07T02:00:00Z"))
     marked = await send(team, team.staff, f"/bookings/{past['id']}/no-show", {"version": 1})
     assert marked.json()["customer_told"] is None
+
+
+# --- a booking the customer's own bot made ----------------------------------------------------
+
+FACTS = notify.MailFacts("Brand", "Asia/Kuala_Lumpur", {})
+CUSTOMER = "c@example.test"
+PEOPLE = ["aina@example.test", "guest@example.test"]
+EVERYONE = sorted([CUSTOMER, *PEOPLE])
+
+
+async def notified(booking: BookingRecord, change: notify.Change, **how: Any) -> tuple[Any, Any]:
+    relay = FakeTransport()
+    outcome = await notify.notify(Mailer(relay, SENDER), booking, change, FACTS, **how)
+    return relay.to(), outcome.customer_told
+
+
+async def test_a_declined_request_the_bot_made_owes_the_customer_a_staff_one_does_not() -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    staff_made = record(status="cancelled", previous_status="pending", source="staff")
+    # The default is the PR 1 rule: a booking never confirmed tells the customer nothing.
+    assert await notified(staff_made, "cancelled") == (PEOPLE, None)
+    # A customer's bot asked, so the API says they are owed one.
+    assert await notified(bots, "cancelled", owed=True) == (EVERYONE, True)
+
+
+async def test_a_chat_message_replaces_the_mail_for_a_cancellation_only() -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    assert await notified(bots, "cancelled", owed=True, by_chat=True) == (PEOPLE, True)
+    # A confirmation or a move carries the calendar file, so it still goes to the customer.
+    confirmed = record(source="bot", previous_status="pending")
+    assert await notified(confirmed, "created", by_chat=True) == (EVERYONE, True)
+    assert await notified(confirmed, "moved", by_chat=True) == (EVERYONE, True)
+    # With no address the chat message is all they get, and it is enough to say they were told.
+    customer = record().customer
+    assert customer is not None
+    silent = record(source="bot", customer=customer.model_copy(update={"email": None}))
+    assert await notified(silent, "created", by_chat=True) == (PEOPLE, True)
+    assert await notified(silent, "created") == (PEOPLE, False)
+
+
+async def test_the_customers_own_cancel_mails_only_the_others() -> None:
+    mine = record(status="cancelled", previous_status="confirmed", source="bot")
+    assert await notified(mine, "cancelled", owed=False) == (PEOPLE, None)
+    assert await notified(mine, "cancelled") == (EVERYONE, True)
+
+
+@pytest.mark.parametrize("chat", [False, True])
+async def test_with_mail_off_only_a_chat_message_tells_the_customer(chat: bool) -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    off = Mailer(None, SENDER)
+    outcome = await notify.notify(off, bots, "cancelled", FACTS, owed=True, by_chat=chat)
+    assert outcome.email == "off" and outcome.customer_told is chat

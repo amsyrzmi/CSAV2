@@ -9,9 +9,13 @@ guest address.
 
 The result is one word for the whole booking, the worst outcome across recipients. It reports on
 whoever was to be mailed: "none" if that is nobody. It also says whether the customer was told:
-true if they were mailed, false if the booking has a customer who was not (no address, mail off or
-failed, a private meeting), and null when there is no customer or none is owed a message yet. Logs
-carry the category only, never an address or a title.
+true if they were mailed or already have a chat message about it (`by_chat`, written in the
+booking's own transaction by `customer_messages.py`), false if the booking has a customer who was
+not told (no address and no chat, mail off or failed, a private meeting), and null when there is no
+customer or none is owed a message yet. The customer's own bot bookings differ in two ways: staff
+declining one tells the customer (they asked), and a cancel the customer made in chat mails only the
+others, because their own message to the bot covers them. Logs carry the category only, never an
+address or a title.
 """
 
 from __future__ import annotations
@@ -110,6 +114,26 @@ def owes_customer(booking: BookingRecord) -> bool:
     return booking.customer is not None and not never_confirmed(booking)
 
 
+def customer_owed(booking: BookingRecord, owed: bool | None) -> bool:
+    """Whether the customer is owed a message, when the caller knows better than `owes_customer`.
+
+    `owed` is the caller's word: true for a declined request the customer's own bot made (they
+    asked, so they are told), false for a change the customer made themselves in chat (their own
+    message to the bot covers them). None leaves it to the booking's status.
+    """
+    if owed is None:
+        return owes_customer(booking)
+    return booking.customer is not None and owed
+
+
+def _told(owed: bool, by_chat: bool, reached: bool = False) -> bool | None:
+    """The answer for `customer_told`: true if a chat message was written or the mail arrived,
+    false if the customer was owed one and got none, null if none was owed."""
+    if by_chat:
+        return True
+    return reached if owed else None
+
+
 def customer_reached(booking: BookingRecord, people: list[Recipient], results: list[bool]) -> bool:
     """Whether the customer's own message went. A private meeting never mails its customer."""
     typed = customer_address(booking)
@@ -122,8 +146,11 @@ def customer_reached(booking: BookingRecord, people: list[Recipient], results: l
     )
 
 
-def recipients(booking: BookingRecord, facts: MailFacts) -> list[Recipient]:
-    """Everyone with an address who should hear about this booking, once each."""
+def recipients(
+    booking: BookingRecord, facts: MailFacts, *, customer: bool | None = None
+) -> list[Recipient]:
+    """Everyone with an address who should hear about this booking, once each. `customer` says
+    whether the customer is one of them; by default they are unless it was never confirmed."""
     found: dict[str, Recipient] = {}
 
     def add(address: object, name: str | None) -> None:
@@ -131,11 +158,13 @@ def recipients(booking: BookingRecord, facts: MailFacts) -> list[Recipient]:
         if clean is not None:
             found.setdefault(clean.casefold(), Recipient(clean, name))
 
-    customer = booking.customer
+    asker = booking.customer
+    mail_customer = not never_confirmed(booking) if customer is None else customer
     # A private meeting is for its attendees. A customer hears nothing until staff confirm, and
-    # nothing about a booking that was cancelled without ever being confirmed.
-    if customer is not None and not booking.private and not never_confirmed(booking):
-        add(customer_address(booking), customer.full_name)
+    # nothing about a booking that was cancelled without ever being confirmed, unless they asked
+    # for it (the caller says so).
+    if asker is not None and not booking.private and mail_customer:
+        add(customer_address(booking), asker.full_name)
     for person in booking.people:
         own = _clean(person.email) if person.email else None
         account = facts.account_emails.get(person.user_id) if person.user_id else None
@@ -178,15 +207,28 @@ async def _deliver(
 
 
 async def notify(
-    mailer: Mailer | None, booking: BookingRecord, change: Change, facts: MailFacts
+    mailer: Mailer | None,
+    booking: BookingRecord,
+    change: Change,
+    facts: MailFacts,
+    *,
+    owed: bool | None = None,
+    by_chat: bool = False,
 ) -> Outcome:
-    """Send the invitation, the new time or the cancellation; say how it went."""
-    owed = owes_customer(booking)
-    people = recipients(booking, facts)
+    """Send the invitation, the new time or the cancellation; say how it went.
+
+    `owed` and `by_chat` come from a booking the customer's own bot made. `owed` overrides who is
+    owed a message (see `customer_owed`). `by_chat` says the customer already has a chat message
+    about this change: they are then mailed only for a confirmation or a move, which carries the
+    calendar file, and never about a cancellation.
+    """
+    is_owed = customer_owed(booking, owed)
+    mail_customer = is_owed and not (by_chat and change == "cancelled")
+    people = recipients(booking, facts, customer=mail_customer)
     if not people:
-        return Outcome("none", False if owed else None)
+        return Outcome("none", _told(is_owed, by_chat))
     if mailer is None or not mailer.enabled:
-        return Outcome("off", False if owed else None)
+        return Outcome("off", _told(is_owed, by_chat))
     try:
         ZoneInfo(facts.timezone)
         gate = asyncio.Semaphore(SIMULTANEOUS)
@@ -196,9 +238,9 @@ async def notify(
         )
     except Exception:
         logger.warning("bookings_mail_failed", category="send_error")
-        return Outcome("failed", False if owed else None)
-    told = customer_reached(booking, people, list(results)) if owed else None
-    return Outcome("sent" if all(results) else "failed", told)
+        return Outcome("failed", _told(is_owed, by_chat))
+    reached = mail_customer and customer_reached(booking, people, list(results))
+    return Outcome("sent" if all(results) else "failed", _told(is_owed, by_chat, reached))
 
 
 async def notify_after_commit(
@@ -206,6 +248,9 @@ async def notify_after_commit(
     mailer: Mailer | None,
     booking: BookingRecord,
     change: Change,
+    *,
+    owed: bool | None = None,
+    by_chat: bool = False,
 ) -> Outcome:
     """Read the company's facts in a new transaction, then notify.
 
@@ -213,14 +258,15 @@ async def notify_after_commit(
     would turn into "That time was just taken." Anything that goes wrong is "failed", logged by
     category only.
     """
+    unknown = _told(customer_owed(booking, owed), by_chat)
     try:
         try:
             async with tx(pool, str(booking.client_id)) as conn:
                 facts = await load_facts(conn, booking.client_id)
         except Exception:
             logger.warning("bookings_mail_failed", category="facts_unavailable")
-            return Outcome("failed", False if owes_customer(booking) else None)
-        return await notify(mailer, booking, change, facts)
+            return Outcome("failed", unknown)
+        return await notify(mailer, booking, change, facts, owed=owed, by_chat=by_chat)
     except Exception:
         logger.warning("bookings_mail_failed", category="unexpected")
-        return Outcome("failed", False if owes_customer(booking) else None)
+        return Outcome("failed", unknown)

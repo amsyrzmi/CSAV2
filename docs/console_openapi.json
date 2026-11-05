@@ -2328,12 +2328,40 @@
             "title": "Redacted",
             "type": "boolean"
           },
+          "replaces_booking_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replaces Booking Id"
+          },
           "resources": {
             "items": {
               "$ref": "#/components/schemas/BookingResourceRef"
             },
             "title": "Resources",
             "type": "array"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "assistant",
+                  "bot"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "starts_at": {
             "format": "date-time",

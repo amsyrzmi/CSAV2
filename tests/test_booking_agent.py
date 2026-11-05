@@ -929,7 +929,9 @@ async def test_a_confirmed_booking_sends_the_invitation(shop: Shop) -> None:
     assert len(transport.sent) == 1
 
 
-async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: Shop) -> None:
+async def test_a_move_sends_its_mail_a_cancel_only_tells_the_others_and_a_hold_sends_none(
+    shop: Shop,
+) -> None:
     kind = await a_type(shop)
     contact, transport, agent = await with_mail(shop)
     made = await shop.book(contact, kind["id"])
@@ -955,7 +957,9 @@ async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: S
     )
     assert said(gone).startswith("Booking cancelled")
     await agent.drain()
-    assert len(transport.sent) == 2
+    # The cancel is the customer's own message, which the reply answers: only the people on the
+    # booking are mailed (nobody here has an address), so nothing more goes.
+    assert len(transport.sent) == 1
     await shop.mode("suggest")
     held = said(
         await make_it(
@@ -963,7 +967,7 @@ async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: S
         )
     )
     await agent.drain()
-    assert HOLD in held and len(transport.sent) == 2
+    assert HOLD in held and len(transport.sent) == 1
 
 
 async def test_an_address_the_customer_gave_gets_the_mail_when_the_contact_has_none(
@@ -1058,10 +1062,10 @@ async def test_a_mail_is_sent_after_the_booking_has_committed(
     seen: list[int] = []
     real = notify.notify_after_commit
 
-    async def look(pool: Any, mail: Any, booking: Any, change: Any) -> Any:
+    async def look(pool: Any, mail: Any, booking: Any, change: Any, **how: Any) -> Any:
         rows = await shop.rows()  # a different connection: it sees only what has committed
         seen.append(len(rows))
-        return await real(pool, mail, booking, change)
+        return await real(pool, mail, booking, change, **how)
 
     monkeypatch.setattr(notify, "notify_after_commit", look)
     await make_it(shop, contact, kind, agent=agent)

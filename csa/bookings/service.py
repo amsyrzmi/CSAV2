@@ -198,6 +198,12 @@ class BookingRecord:
     previous_status: str | None = None
     # The booking this one is a pending request to move, when it is one.
     replaces_booking_id: UUID | None = None
+    # Who made it, and the chat it came from (a bot booking's, when it has one).
+    source: str = "staff"
+    conversation_id: UUID | None = None
+    # Set on the record a staff confirmation of a pending request to move a booking answers with:
+    # the original, now at the new time, with its own id.
+    moved_by_request: bool = False
 
 
 def involved(record: BookingRecord, user_id: UUID) -> bool:
@@ -271,6 +277,8 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
         meeting_link=record.meeting_link,
         conflict="unavailable" if record.conflict else None,
         can_change=may_change(record, viewer),
+        source=record.source,  # type: ignore[arg-type]
+        replaces_booking_id=record.replaces_booking_id,
     )
 
 
@@ -478,6 +486,8 @@ async def read_records(
             guests=tuple(guests.get(row["id"], ())),
             conflict=row["id"] in conflicts,
             replaces_booking_id=row["replaces_booking_id"],
+            source=row["source"],
+            conversation_id=row["conversation_id"],
         )
         for row in rows
     ]
@@ -956,6 +966,7 @@ async def move_booking(
     author = author_of(actor)
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
+    await withdraw_changes(conn, client_id, author, record.id)
     return await move_to(
         conn,
         client_id,
@@ -1069,13 +1080,42 @@ async def cancel_for(
     return await _finish(conn, client_id, author, record, "cancelled", "cancelled", free=True)
 
 
+async def expire_for(conn: Conn, client_id: UUID, record: BookingRecord) -> BookingRecord:
+    """A pending booking the bot made ran out of time: cancelled like a decline, and its holds go.
+    The audit row says `expired`, so it can be told from a person's decision."""
+    return await _finish(conn, client_id, BOT, record, "cancelled", "expired", free=True)
+
+
+async def withdraw_changes(
+    conn: Conn, client_id: UUID, author: Author, booking_id: UUID
+) -> list[dict[str, Any]]:
+    """Cancel the pending requests to move this booking, locked after it, and free their holds.
+
+    Anything that cancels, declines or moves a booking, or replaces one request with another, does
+    this in its own transaction: a request left behind would hold a slot for a booking that no
+    longer stands, and "the old booking stands" would be false. Returns what was withdrawn.
+    """
+    rows = await db.q.fetch_all(
+        "bookings/booking_pending_changes.sql",
+        {"client_id": client_id, "id": booking_id},
+        conn=conn,
+    )
+    for row in rows:
+        request = (await read_records(conn, client_id, booking_id=row["id"]))[0]
+        await cancel_for(conn, client_id, author, request)
+    return list(rows)
+
+
 async def cancel_booking(
     conn: Conn, client_id: UUID, actor: ConsoleActor, booking_id: UUID, data: BookingActionIn
 ) -> BookingRecord:
-    """Cancel a pending or confirmed booking; its holds are deleted, so the time is free again."""
+    """Cancel a pending or confirmed booking; its holds are deleted, so the time is free again.
+    A pending request to move it is withdrawn with it."""
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
-    return await cancel_for(conn, client_id, author_of(actor), record)
+    author = author_of(actor)
+    await withdraw_changes(conn, client_id, author, record.id)
+    return await cancel_for(conn, client_id, author, record)
 
 
 async def decline_booking(
@@ -1085,21 +1125,86 @@ async def decline_booking(
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     if record.status != "pending":
         raise HTTPException(409, "wrong_status")
-    return await _finish(
-        conn, client_id, author_of(actor), record, "cancelled", "declined", free=True
-    )
+    author = author_of(actor)
+    await withdraw_changes(conn, client_id, author, record.id)
+    return await _finish(conn, client_id, author, record, "cancelled", "declined", free=True)
 
 
 async def confirm_booking(
     conn: Conn, client_id: UUID, actor: ConsoleActor, booking_id: UUID, data: BookingActionIn
 ) -> BookingRecord:
-    """Confirm a pending booking. It already holds its time."""
+    """Confirm a pending booking. It already holds its time.
+
+    A pending request to move a booking is confirmed by moving that booking, which keeps its id (so
+    its calendar event is updated, not duplicated). The booking is locked first and the request
+    second, the order the bot takes them in, so the two can never wait on each other.
+    """
+    asked = await db.q.fetch_one(
+        "bookings/booking_replaces.sql", {"client_id": client_id, "id": booking_id}, conn=conn
+    )
+    if asked is not None and asked["replaces_booking_id"] is not None:
+        await db.q.fetch_one(
+            "bookings/booking_lock.sql",
+            {"client_id": client_id, "id": asked["replaces_booking_id"]},
+            conn=conn,
+        )
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     if record.status != "pending":
         raise HTTPException(409, "wrong_status")
-    return await _finish(
-        conn, client_id, author_of(actor), record, "confirmed", "confirmed", free=False
+    author = author_of(actor)
+    if record.replaces_booking_id is not None:
+        return await _apply_change(conn, client_id, author, record)
+    return await _finish(conn, client_id, author, record, "confirmed", "confirmed", free=False)
+
+
+async def _apply_change(
+    conn: Conn, client_id: UUID, author: Author, request: BookingRecord
+) -> BookingRecord:
+    """Move the booking a request asks to move, to the request's time, and close the request.
+
+    The request already passed the rules and holds its time, so nothing is checked again. Its holds
+    go before the booking's new ones are written (the database refuses overlapping holds, so the
+    other order would refuse the swap), all in the caller's transaction.
+    """
+    assert request.replaces_booking_id is not None
+    found = await read_records(conn, client_id, booking_id=request.replaces_booking_id)
+    if not found or found[0].status not in ("pending", "confirmed"):
+        raise HTTPException(409, "wrong_status")
+    original = found[0]
+    held = await db.q.fetch_all(
+        "bookings/holds_for_booking.sql",
+        {"client_id": client_id, "booking_id": request.id},
+        conn=conn,
     )
+    subjects = [(h["subject_kind"], h["subject_id"]) for h in held]
+    booking_type = None
+    if request.type_id is not None:
+        booking_type = next(iter(await setup.list_types(conn, client_id, request.type_id)), None)
+    hold_end = request.ends_at + timedelta(
+        minutes=booking_type.buffer_minutes if booking_type else 0
+    )
+    for gone in (request.id, original.id):
+        await db.q.execute(
+            "bookings/holds_delete.sql", {"client_id": client_id, "booking_id": gone}, conn=conn
+        )
+    await _insert_holds(conn, client_id, original.id, subjects, request.starts_at, hold_end)
+    await db.q.execute(
+        "bookings/booking_times_set.sql",
+        {
+            "client_id": client_id,
+            "id": original.id,
+            "starts_at": request.starts_at,
+            "ends_at": request.ends_at,
+        },
+        conn=conn,
+    )
+    await db.q.execute(
+        "bookings/booking_change_applied.sql", {"client_id": client_id, "id": request.id}, conn=conn
+    )
+    await _audit(conn, author, client_id, "bookings.booking.confirmed", str(request.id))
+    await _audit(conn, author, client_id, "bookings.booking.moved", str(original.id))
+    fresh = (await read_records(conn, client_id, booking_id=original.id))[0]
+    return replace(fresh, previous_status=original.status, moved_by_request=True)
 
 
 async def mark_no_show(
