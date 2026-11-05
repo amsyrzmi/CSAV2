@@ -30,6 +30,7 @@ const TABS: readonly TabKey[] = [
   "hr",
   "email",
   "subscriptions",
+  "bookings",
   "activity",
   "chat",
 ];
@@ -96,6 +97,7 @@ const TAB_NAMES: Record<TabKey, string> = {
   hr: "People & HR",
   email: "Email assistant",
   subscriptions: "Subscriptions",
+  bookings: "Bookings",
   activity: "Assistant activity",
   chat: "Overview",
 };

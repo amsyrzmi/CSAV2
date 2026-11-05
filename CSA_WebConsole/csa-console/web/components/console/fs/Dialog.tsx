@@ -72,6 +72,9 @@ export default function Dialog({
         onClose();
       }}
       onClose={() => {
+        // A late `close` from an earlier close (effects run twice in development) arrives while
+        // the dialog is open again: it is not the user closing it.
+        if (dialogRef.current?.open) return;
         // The browser closed it by itself (for example a second Escape) while still "open".
         if (!openRef.current) return;
         onClose();

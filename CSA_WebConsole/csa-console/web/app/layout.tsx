@@ -27,6 +27,15 @@ export const metadata: Metadata = {
   title: "Mito by fourstacks",
   description: "Customer service assistant operations console",
   robots: { index: false, follow: false },
+  // Under public/brand, because proxy.ts lets that path through before sign-in. An app/icon file
+  // would be redirected to the login page, and the sign-in pages would have a blank tab.
+  icons: {
+    icon: [
+      { url: "/brand/mito-icon.svg", type: "image/svg+xml" },
+      { url: "/brand/mito-icon-32.png", type: "image/png", sizes: "32x32" },
+    ],
+    apple: "/brand/mito-apple-touch-icon.png",
+  },
 };
 
 // Runs before first paint: marks the document Calm when the stored pause preference is on, so CSS

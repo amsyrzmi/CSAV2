@@ -978,7 +978,9 @@ output names people. They need the owner's passwords, so an agent can only run `
 
 2. Wipe and rebuild. It asks you to type `wipe csa-staging`. No flag skips that. Later it
    asks you for the first platform admin's initial password, at least 12 characters, typed
-   twice. You get three tries before it stops.
+   twice. You get three tries before it stops. Wait for the prompt before you type: it can
+   take a few seconds, and anything typed before it shows on screen. If a password does
+   show, change it and clear the terminal's scrollback.
 
    ```bash
    cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset wipe
@@ -996,8 +998,8 @@ output names people. They need the owner's passwords, so an agent can only run `
 
 4. Create the other admins, the companies and the invitations. It asks for the first
    admin's password, and for each further admin it asks again, then for that admin's
-   initial password. Give each admin their initial password privately. They change it
-   at first sign-in.
+   initial password. Wait for each prompt before you type, as in step 2. Give each admin
+   their initial password privately. They change it at first sign-in.
 
    ```bash
    cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset accounts

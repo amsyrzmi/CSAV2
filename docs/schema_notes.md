@@ -107,11 +107,9 @@ WHERE table_schema = 'public' AND column_name = 'client_id'
 ORDER BY table_name;
 ```
 
-RLS is enabled but not forced in LG01 so the existing owner-based n8n runtime
-continues to work. The new runtime connects as `csa_app` and is subject to the
-tenant policies; production `FORCE ROW LEVEL SECURITY` is deferred until the
-LG11/LG09 cutover plan allows it. The two exclusions must remain excluded from
-the RLS target set.
+RLS is enabled but not forced. The runtime connects as `csa_app` and is subject
+to the tenant policies. The two exclusions must remain excluded from the RLS
+target set.
 
 ## Views
 

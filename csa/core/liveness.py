@@ -9,7 +9,7 @@ and the idle sleep granularity, so the file is refreshed at least every
 not "work happened", which is what stops the healthcheck from flapping.
 
 The compose healthcheck asserts the file's mtime is within ``2 × LOOP_INTERVAL``
-(10s with the default). See ``deploy/compose.yml``.
+(10s with the default). See ``deploy/compose.staging-proposal.yml``.
 """  # LG01
 
 from __future__ import annotations

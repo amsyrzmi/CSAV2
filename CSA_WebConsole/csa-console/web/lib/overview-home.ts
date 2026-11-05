@@ -16,7 +16,7 @@ export function overviewBody(packages: PackageState[] | null): "chat" | "home" {
 export interface HomeLink { key: string; label: string; href: string }
 
 /** The pages the small home links to, in this order, when the company has them. */
-const HOME_KEYS = ["hr", "email", "services"];
+const HOME_KEYS = ["hr", "email", "bookings", "services"];
 
 /**
  * Links to the rail's own pages for what the company has: `rail` is what `navigationFor` gives a

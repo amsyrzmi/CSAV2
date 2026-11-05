@@ -51,7 +51,6 @@ class CapabilityRow(ContractModel):
     client_enabled: bool
     client_enabled_changed_at: datetime | None = None
     client_enabled_changed_by: str | None = None
-    impl_kind: Literal["n8n", "python", "mcp", "http", "n8n_webhook"] = "n8n"
     impl_ref: str | None = None
     routing_hint: str | None = None
 

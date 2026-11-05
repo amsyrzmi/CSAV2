@@ -26,6 +26,12 @@ def test_addons_require_customer_support_and_standalones_require_nothing():
             assert p.requires == ()
 
 
+def test_bookings_needs_nothing_and_is_not_an_addon():
+    bookings = package("bookings")
+    assert bookings.requires == () and bookings.kind == "standalone"
+    assert bookings.summary.startswith("A calendar for booking people")
+
+
 def test_sellable_is_false_when_any_member_is_not_implemented():
     for p in PACKAGES:
         if any(CATALOG[c][1] == "not_implemented" for c in p.capabilities):

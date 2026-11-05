@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import smtplib
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from csa.console.mail_templates import invitation_mail, owner_moved_mail, reset_mail
-from csa.console.mailer import Mailer, OutgoingMail, SmtpTransport
+from csa.console.mailer import CalendarFile, Mailer, OutgoingMail, SmtpTransport
 from csa.core.settings import Settings
 from structlog.testing import capture_logs
 
@@ -418,3 +419,90 @@ def test_smtp_transport_requires_starttls_before_login(monkeypatch: pytest.Monke
         ("parts", ["text/plain", "text/html"]),
         ("quit",),
     ]
+
+
+class _FakeSmtp:
+    """Records the message that `SmtpTransport.send` builds, with no connection."""
+
+    sent: list[Any] = []
+
+    def __init__(self, *_: Any, **__: Any) -> None:
+        pass
+
+    def __enter__(self) -> _FakeSmtp:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        pass
+
+    def starttls(self, *, context: Any) -> None:
+        pass
+
+    def login(self, username: str, password: str) -> None:
+        pass
+
+    def send_message(self, message: Any) -> None:
+        type(self).sent.append(message)
+
+
+def _send_through_smtp(monkeypatch: pytest.MonkeyPatch, mail: OutgoingMail) -> Any:
+    _FakeSmtp.sent = []
+    monkeypatch.setattr("csa.console.mailer.smtplib.SMTP", _FakeSmtp)
+    SmtpTransport("relay.example.test", 587, "relay@example.test", "synthetic-pw").send(
+        mail, SENDER
+    )
+    return _FakeSmtp.sent[0]
+
+
+CALENDAR = CalendarFile("REQUEST", "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n")
+
+
+def test_a_calendar_file_is_sent_as_a_calendar_part_and_an_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = _send_through_smtp(monkeypatch, replace(MAIL, calendar=CALENDAR))
+    calendar = [p for p in message.walk() if p.get_content_type() == "text/calendar"]
+    assert len(calendar) == 1
+    assert calendar[0].get_param("method") == "REQUEST"
+    assert calendar[0].get_filename() == "invite.ics"
+    assert calendar[0].get_content_disposition() == "attachment"
+    assert calendar[0].get_content().replace("\n", "\r\n") == CALENDAR.content
+    assert [p.get_content_type() for p in message.iter_parts()][:2] == ["text/plain", "text/html"]
+    assert message.get_body(("plain",)).get_content().strip() == MAIL.text
+
+
+def test_a_cancel_file_says_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
+    gone = CalendarFile("CANCEL", "BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nEND:VCALENDAR\r\n")
+    message = _send_through_smtp(monkeypatch, replace(MAIL, calendar=gone))
+    (part,) = [p for p in message.walk() if p.get_content_type() == "text/calendar"]
+    assert part.get_param("method") == "CANCEL"
+
+
+def test_a_message_without_a_calendar_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    message = _send_through_smtp(monkeypatch, MAIL)
+    assert [p.get_content_type() for p in message.walk()] == [
+        "multipart/alternative",
+        "text/plain",
+        "text/html",
+    ]
+    assert MAIL.calendar is None
+
+
+@pytest.mark.parametrize(
+    "bad", ["a@example.test\nBcc: x@example.test", "a@example.test\r", "a\u2028b"]
+)
+async def test_a_new_line_in_an_address_is_refused(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    transport = FakeTransport()
+    with capture_logs() as logs:
+        outcome = await Mailer(transport, SENDER).send(replace(MAIL, to=bad))
+    assert outcome == "smtp_refused"
+    assert transport.sent == []
+    assert bad not in repr(logs)
+    # The transport refuses it too, before it connects.
+    _FakeSmtp.sent = []
+    monkeypatch.setattr("csa.console.mailer.smtplib.SMTP", _FakeSmtp)
+    with pytest.raises(ValueError):
+        SmtpTransport("relay.example.test", 587, "u", "p").send(replace(MAIL, to=bad), SENDER)
+    assert _FakeSmtp.sent == []

@@ -136,26 +136,7 @@ async def test_ingress_resolves_credentials_and_runtime_in_one_tenant_lookup(
         route = await original(
             "ingress/get_channel_credentials.sql", (endpoint["endpoint_id"], client_id), conn=conn
         )
-        assert route["runtime"] is None and route["n8n_webhook_url"] is None
-        await conn.execute(
-            "UPDATE clients SET config=%s WHERE id=%s",
-            (
-                Jsonb(
-                    {
-                        "runtime": "langgraph",
-                        "n8n_webhook_url": "https://synthetic.invalid/hook",
-                        "policy": {"deployment_mode": "suggest"},
-                    }
-                ),
-                client_id,
-            ),
-        )
-        route = await original(
-            "ingress/get_channel_credentials.sql", (endpoint["endpoint_id"], client_id), conn=conn
-        )
-        assert route["runtime"] == "langgraph"
-        assert route["deployment_mode"] == "suggest"
-        assert route["n8n_webhook_url"] == "https://synthetic.invalid/hook"
+        assert "runtime" not in route and "n8n_webhook_url" not in route
     async with tx(pool, str(uuid.uuid4())) as conn:
         assert (
             await original(

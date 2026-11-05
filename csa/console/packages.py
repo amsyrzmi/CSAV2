@@ -91,9 +91,11 @@ PACKAGES: tuple[Package, ...] = (
     Package(
         key="bookings",
         title="Bookings",
-        summary="Keeps booking history and records booking requests for staff to action.",
-        kind="addon",
-        requires=("customer_support",),
+        summary=(
+            "A calendar for booking people, rooms and shared things, for your team and customers."
+        ),
+        kind="standalone",
+        requires=(),
         capabilities=("booking_agent",),
         hr_modules=(),
         email=False,

@@ -22,6 +22,7 @@ export type TabKey =
   | "hr"
   | "email"
   | "subscriptions"
+  | "bookings"
   | "activity"
   | "chat";
 
