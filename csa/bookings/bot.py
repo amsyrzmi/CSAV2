@@ -321,6 +321,16 @@ async def _done_by(conn: Conn, client_id: UUID, turn_key: str) -> dict[str, Any]
     )
 
 
+async def _one_at_a_time(conn: Conn, client_id: UUID, contact_id: UUID) -> None:
+    """Queue behind this customer's other messages, before any booking row is locked.
+
+    Every bot write takes this lock right after the turn key's, so two messages from one customer
+    never lock the same bookings in opposite orders (a change to a request and a cancel of its
+    booking would).
+    """
+    await setup.lock(conn, "customer", client_id, contact_id)
+
+
 async def _remember(
     conn: Conn, client_id: UUID, turn_key: str, booking_id: UUID, action: str
 ) -> None:
@@ -384,7 +394,7 @@ async def book(
     if not _usable(starts_at, await service.company_zone(conn, client_id)):
         return await _unusable(conn, client_id, type_id, now)
     settings = await _settings(conn, client_id)
-    await setup.lock(conn, "customer", client_id, contact_id)  # one customer, one limit check
+    await _one_at_a_time(conn, client_id, contact_id)  # and so one limit check
     held = await db.q.fetch_one(
         "bookings/customer_upcoming_count.sql",
         {"client_id": client_id, "contact_id": contact_id, "now": now},
@@ -442,6 +452,7 @@ async def change(
     if blocked is not None:
         return BotOutcome(blocked)
     done = await _done_by(conn, client_id, turn_key)
+    await _one_at_a_time(conn, client_id, contact_id)
     own = await _own(conn, client_id, contact_id, booking_id)
     if own is None:
         return BotOutcome("not_found")
@@ -578,6 +589,7 @@ async def cancel(
     if blocked is not None:
         return BotOutcome(blocked)
     done = await _done_by(conn, client_id, turn_key)
+    await _one_at_a_time(conn, client_id, contact_id)
     own = await _own(conn, client_id, contact_id, booking_id)
     if own is None:
         return BotOutcome("not_found")

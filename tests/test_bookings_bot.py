@@ -1131,3 +1131,45 @@ async def test_the_cutoff_is_exact(shop: Shop, minutes: int, code: str) -> None:
     assert made.booking is not None
     at_cutoff = TEN - timedelta(minutes=minutes)
     assert (await shop.change(contact, made.booking.id, ELEVEN, now=at_cutoff)).code == code
+
+
+# One customer, one message at a time: a change to a request and a cancel of its booking lock the
+# same two rows, in opposite orders, unless the customer's lock comes first.
+
+
+async def test_two_messages_from_one_customer_do_not_deadlock(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from psycopg.errors import DeadlockDetected
+
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    # Make the two meet: each waits, after its first row lock, for the other to have taken its own.
+    real = bot._own
+    first_seen: set[asyncio.Task[Any] | None] = set()
+    both = asyncio.Event()
+
+    async def meeting_point(*args: Any, **kwargs: Any) -> Any:
+        row = await real(*args, **kwargs)
+        me = asyncio.current_task()
+        if me not in first_seen:
+            first_seen.add(me)
+            if len(first_seen) == 2:
+                both.set()
+            else:
+                try:
+                    await asyncio.wait_for(both.wait(), 1.5)
+                except TimeoutError:
+                    pass  # the other message is queued behind this one's lock: as intended
+        return row
+
+    monkeypatch.setattr(bot, "_own", meeting_point)
+    results = await asyncio.gather(
+        shop.change(contact, asked.booking.id, TWO),
+        shop.cancel(contact, old.booking.id),
+        return_exceptions=True,
+    )
+    assert not [r for r in results if isinstance(r, DeadlockDetected)], results
+    assert all(isinstance(r, bot.BotOutcome) for r in results), results
