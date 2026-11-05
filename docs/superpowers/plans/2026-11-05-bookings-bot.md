@@ -168,6 +168,7 @@
   - `test_a_bookings_only_company_reminds_its_customers_by_email`, since it has no replies setting.
   - A WhatsApp customer with no email gets no reminder and no WhatsApp message. A private meeting's reminder goes to its attendees only. A company in `onboarding` is skipped by the runner.
   - Reminder text states the local time with `format_slot`, and the place or link. A mail failure records `failed` and isn't retried.
+  - `test_a_lapsed_booking_emails_a_customer_with_no_telegram`: the worker has a mailer now, so a lapsed bot booking or request reaches an email-only customer, once, unless replies are Off or Customer support isn't active. Queue it through `booking_reminders` or an equally safe path, so a worker dying mid-send doesn't repeat it.
   - `tests/test_staging_pipeline.py`: the worker has `INVITE_MAIL_ENABLED`, `SMTP_USERNAME` and `SMTP_PASSWORD`, as the gateway does, and a network that reaches the relay.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.** Build the worker's `Mailer` with `Mailer.from_settings`. Add the compose lines and a note in `deploy/STAGING_PIPELINE.md`.
