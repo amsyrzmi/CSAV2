@@ -267,12 +267,11 @@ class BookingAgent:
     async def _mail(self, pool: Any, booking: BookingRecord, change: notify.Change) -> None:
         """Never raises: the booking has committed, and a lost mail is only a lost mail.
 
-        A cancel is the customer's own message, which the bot's reply already answers, so only the
-        people on the booking and its guests are mailed about it."""
+        A cancel is mailed to the customer too when they were sent an invitation: a chat reply
+        cannot take an event out of their calendar. One they were never sent (still pending) tells
+        them nothing more."""
         try:
-            await notify.notify_after_commit(
-                pool, self._mailer, booking, change, owed=False if change == "cancelled" else None
-            )
+            await notify.notify_after_commit(pool, self._mailer, booking, change)
         except Exception:
             logger.warning("bookings_mail_failed", category="unexpected")
 

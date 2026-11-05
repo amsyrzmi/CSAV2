@@ -929,9 +929,7 @@ async def test_a_confirmed_booking_sends_the_invitation(shop: Shop) -> None:
     assert len(transport.sent) == 1
 
 
-async def test_a_move_sends_its_mail_a_cancel_only_tells_the_others_and_a_hold_sends_none(
-    shop: Shop,
-) -> None:
+async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: Shop) -> None:
     kind = await a_type(shop)
     contact, transport, agent = await with_mail(shop)
     made = await shop.book(contact, kind["id"])
@@ -957,9 +955,8 @@ async def test_a_move_sends_its_mail_a_cancel_only_tells_the_others_and_a_hold_s
     )
     assert said(gone).startswith("Booking cancelled")
     await agent.drain()
-    # The cancel is the customer's own message, which the reply answers: only the people on the
-    # booking are mailed (nobody here has an address), so nothing more goes.
-    assert len(transport.sent) == 1
+    # A chat reply cannot remove an event from a calendar, so the cancellation is mailed.
+    assert len(transport.sent) == 2
     await shop.mode("suggest")
     held = said(
         await make_it(
@@ -967,7 +964,7 @@ async def test_a_move_sends_its_mail_a_cancel_only_tells_the_others_and_a_hold_s
         )
     )
     await agent.drain()
-    assert HOLD in held and len(transport.sent) == 1
+    assert HOLD in held and len(transport.sent) == 2
 
 
 async def test_an_address_the_customer_gave_gets_the_mail_when_the_contact_has_none(

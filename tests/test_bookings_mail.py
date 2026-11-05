@@ -6,6 +6,7 @@ import asyncio
 import re
 import threading
 import time
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -765,13 +766,19 @@ async def test_a_declined_request_the_bot_made_owes_the_customer_a_staff_one_doe
     assert await notified(bots, "cancelled", owed=True) == (EVERYONE, True)
 
 
-async def test_a_chat_message_replaces_the_mail_for_a_cancellation_only() -> None:
+async def test_a_chat_message_replaces_the_mail_for_a_decline_but_not_for_a_confirmed_booking() -> (
+    None
+):
     bots = record(status="cancelled", previous_status="pending", source="bot")
-    assert await notified(bots, "cancelled", owed=True, by_chat=True) == (PEOPLE, True)
-    # A confirmation or a move carries the calendar file, so it still goes to the customer.
+    # They never had the event, so the chat message is the only word and no mail adds to it.
+    assert await notified(bots, "declined", owed=True, by_chat=True) == (PEOPLE, True)
+    # A confirmation, a move or the cancellation of a booking they were invited to carries the
+    # calendar file, so it still goes to the customer.
     confirmed = record(source="bot", previous_status="pending")
     assert await notified(confirmed, "created", by_chat=True) == (EVERYONE, True)
     assert await notified(confirmed, "moved", by_chat=True) == (EVERYONE, True)
+    gone = record(status="cancelled", previous_status="confirmed")
+    assert await notified(gone, "cancelled", by_chat=True) == (EVERYONE, True)
     # With no address the chat message is all they get, and it is enough to say they were told.
     customer = record().customer
     assert customer is not None
@@ -780,10 +787,39 @@ async def test_a_chat_message_replaces_the_mail_for_a_cancellation_only() -> Non
     assert await notified(silent, "created") == (PEOPLE, False)
 
 
-async def test_the_customers_own_cancel_mails_only_the_others() -> None:
-    mine = record(status="cancelled", previous_status="confirmed", source="bot")
-    assert await notified(mine, "cancelled", owed=False) == (PEOPLE, None)
-    assert await notified(mine, "cancelled") == (EVERYONE, True)
+async def test_a_declined_booking_mails_the_customer_plain_text_and_the_people_a_cancellation() -> (
+    None
+):
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    relay = FakeTransport()
+    outcome = await notify.notify(Mailer(relay, SENDER), bots, "declined", FACTS, owed=True)
+    assert outcome.customer_told is True
+    customer = relay.for_(CUSTOMER)
+    assert customer.calendar is None and "wasn't confirmed" in customer.text
+    assert "calendar" not in customer.text.lower() and "cancelled" not in customer.subject.lower()
+    for address in PEOPLE:
+        mail = relay.for_(address)
+        assert mail.calendar is not None and mail.calendar.method == "CANCEL"
+
+
+async def test_a_declined_request_mails_only_the_customer_and_says_the_booking_stands() -> None:
+    original = record()
+    request = record(
+        status="cancelled",
+        previous_status="pending",
+        source="bot",
+        replaces_booking_id=original.id,
+        starts_at=original.starts_at + timedelta(hours=1),
+        ends_at=original.ends_at + timedelta(hours=1),
+    )
+    relay = FakeTransport()
+    outcome = await notify.notify(
+        Mailer(relay, SENDER), request, "declined", FACTS, owed=True, original=original
+    )
+    assert outcome.customer_told is True and relay.to() == [CUSTOMER]
+    (mail,) = relay.sent
+    assert mail.calendar is None and "wasn't accepted" in mail.text
+    assert "4 Mar 2031, 18:00" in mail.text and "4 Mar 2031, 19:00" in mail.text  # old and new
 
 
 @pytest.mark.parametrize("chat", [False, True])

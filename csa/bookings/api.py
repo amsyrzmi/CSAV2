@@ -103,29 +103,38 @@ MAIL_FOR: dict[Change, notify.Change] = {
 
 
 async def after_commit(
-    request: Request, record: service.BookingRecord, change: Change, *, by_chat: bool = False
+    request: Request,
+    record: service.BookingRecord,
+    change: Change,
+    *,
+    by_chat: bool = False,
+    original: service.BookingRecord | None = None,
 ) -> notify.Outcome | None:
     """Runs once the booking's transaction has committed, with the unredacted record.
 
     Sends the invitation, change or cancellation email from this one place, so a failed email can
     never undo a booking. It never raises, and the mail text never reaches the response. `by_chat`
     says the customer already has a chat message about this change (written in its transaction).
+    `original` is the booking a declined request to move would have moved.
     """
     mail = MAIL_FOR.get(change)
     if mail is None:
         return None
-    if record.replaces_booking_id is not None:
-        # A pending request to move a booking: nothing was ever sent for it, and nothing about a
-        # cancelled request is true (the booking it would have moved stands), so there is no mail.
-        return notify.Outcome(
-            "none", True if by_chat else (False if change == "declined" else None)
-        )
-    if change == "confirmed" and record.moved_by_request:
+    declined = customer_messages.is_declined(record, change)
+    if declined:
+        # The customer's own bot asked, so they are told; they were never sent an invitation, so it
+        # is plain text and not a cancellation. A request to move goes to them alone.
+        mail = "declined"
+    elif change == "confirmed" and record.moved_by_request:
         mail = "moved"  # the booking keeps its id: the same calendar event, at its new time
-    # A customer's own bot asked for a booking, so declining it tells them; staff's own does not.
-    owed = True if change == "declined" and record.source == "bot" else None
     return await notify.notify_after_commit(
-        request.app.state.pool, _mailer(request), record, mail, owed=owed, by_chat=by_chat
+        request.app.state.pool,
+        _mailer(request),
+        record,
+        mail,
+        owed=True if declined else None,
+        by_chat=by_chat,
+        original=original,
     )
 
 
@@ -160,8 +169,9 @@ def build_bookings_router() -> APIRouter:
         change: Change,
         *,
         by_chat: bool = False,
+        original: service.BookingRecord | None = None,
     ) -> BookingOut:
-        outcome = await after_commit(request, record, change, by_chat=by_chat)
+        outcome = await after_commit(request, record, change, by_chat=by_chat, original=original)
         out = service.to_out(record, service.viewer_of(actor))
         # A redacted answer says nothing about the meeting, not even whether it had addresses.
         if out.redacted or outcome is None:
@@ -438,7 +448,8 @@ def build_bookings_router() -> APIRouter:
         actor = changer(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             record = await service.move_booking(conn, client_id, actor, booking_id, payload)
-        return await respond(request, actor, record, "moved")
+            by_chat = await customer_messages.after_staff_action(conn, client_id, record, "moved")
+        return await respond(request, actor, record, "moved", by_chat=by_chat)
 
     def action(
         change: Change,
@@ -457,7 +468,12 @@ def build_bookings_router() -> APIRouter:
                 by_chat = await customer_messages.after_staff_action(
                     conn, client_id, record, change
                 )
-            return await respond(request, actor, record, change, by_chat=by_chat)
+                original = (
+                    await customer_messages.the_original(conn, client_id, record)
+                    if customer_messages.is_declined(record, change)
+                    else None
+                )
+            return await respond(request, actor, record, change, by_chat=by_chat, original=original)
 
         return handle
 

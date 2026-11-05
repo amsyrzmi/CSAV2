@@ -1605,6 +1605,15 @@ would move.
 - A bot booking that is `pending` lapses on its own (a job runs every five minutes): when its expiry
   has passed, or when it has already started (a booking moved earlier keeps its old expiry). Staff's
   own pending bookings never lapse.
+- Cancel on a pending booking the bot made, or on a request to move one, is a decline for the
+  customer: the same message and `customer_told`. A decline mails a customer who is not on Telegram a
+  plain "wasn't confirmed" message with no calendar file (they were never sent an invitation); for a
+  request to move a booking it says the request wasn't accepted and the booking stays on its time.
+  Only the customer is mailed about a request.
+- Moving or cancelling a confirmed booking, whoever made it, writes a chat message too when its
+  customer has a Telegram chat (mentioning a withdrawn request), and the email with the calendar update
+  still goes if they have an address. A private meeting never tells a customer anything.
+- A chat message invites a reply only while replies are on and Customer support is active.
 - Confirming and declining tell the customer, even with replies Off, because a person acted: a plain
   Telegram message written in the same transaction, or else an email (a customer with both gets the
   message, and the confirmation email too because it carries the calendar file). A booking staff made

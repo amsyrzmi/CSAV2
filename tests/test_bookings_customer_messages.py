@@ -16,11 +16,12 @@ from typing import Any
 import httpx
 import psycopg
 import pytest
+from apps.delivery.main import DeliveryWorker
 from csa.agents.staged.service import BookingAgent
 from csa.bookings import customer_messages, service
 from csa.bookings.contracts import BookingIn
 from csa.console.mailer import Mailer
-from csa.core import db
+from csa.core import crypto, db
 from csa.core.tenancy import tx
 from csa.jobs.bookings import run_pending_expiry
 from csa.jobs.clock import FakeClock
@@ -30,7 +31,7 @@ from csa.notify.sender import format_notification
 from tests.conftest import requires_docker
 from tests.test_booking_agent import ask, said
 from tests.test_bookings_api import TUESDAY, at, booked, meeting
-from tests.test_bookings_bot import ELEVEN, NOW, TEN, TWO, Shop, a_type, pending_change, shop
+from tests.test_bookings_bot import ELEVEN, NOW, TEN, THREE, TWO, Shop, a_type, pending_change, shop
 from tests.test_bookings_mail import SENDER, FakeTransport, calendar_of, ics_value, unfolded
 from tests.test_bookings_setup import BASE, make_person, make_type
 
@@ -40,6 +41,7 @@ __all__ = ["shop"]  # the fixture, imported so this module can use it
 
 TEN_TEXT = "Tuesday 4 March 2031, 10:00 am (2031-03-04 10:00)"
 ELEVEN_TEXT = "Tuesday 4 March 2031, 11:00 am (2031-03-04 11:00)"
+TEN_TEXT_MAIL = "4 Mar 2031, 10:00"  # as a mail writes it, in the company's zone
 LAPSED = TEN + timedelta(hours=1)  # after a booking at ten has started
 EARLIER = datetime(2026, 1, 1, tzinfo=UTC)  # before the real "now" the database writes with
 
@@ -287,23 +289,94 @@ async def test_the_booking_own_chat_comes_first_then_the_latest(shop: Shop) -> N
     }
 
 
-async def test_a_reviewed_message_still_sends_while_a_person_has_taken_over(shop: Shop) -> None:
+async def deliver_all(shop: Shop) -> list[dict[str, Any]]:
+    """Run the real delivery worker over the outbox, with Telegram faked at the HTTP layer."""
+    sent: list[dict[str, Any]] = []
+
+    def send(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 88}})
+
+    owner = db.build_pool(shop.w.owner_dsn, max_size=2)
+    await owner.open(wait=True)
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as client:
+            worker = DeliveryWorker(owner, shop.w.pool, client)
+            while await worker.process_once():
+                pass
+    finally:
+        await owner.close()
+    return sent
+
+
+async def with_token(shop: Shop, endpoint: uuid.UUID) -> None:
+    (row,) = await shop.w.q(
+        "SELECT credential_id::text AS id FROM webhook_endpoints WHERE id = %s", str(endpoint)
+    )
+    token = crypto.encrypt(
+        "1:TOKEN", crypto.credential_aad("channel_credentials", "access_token", row["id"])
+    )
+    await shop.w.q(
+        "UPDATE channel_credentials SET access_token = %s WHERE id = %s", token, row["id"]
+    )
+
+
+async def test_a_staff_message_and_an_expiry_notice_are_really_sent_while_a_person_has_taken_over(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_worker import _configure_test_settings
+
+    _configure_test_settings(monkeypatch, app_dsn="postgresql://x", owner_dsn=shop.w.owner_dsn)
     kind = await a_type(shop)
     contact = await shop.customer()
     route = await chat(shop, contact)
+    await with_token(shop, route.endpoint)
+    confirm_me = await pending_booking(shop, contact, kind, conversation_id=route.conversation)
+    await pending_booking(shop, contact, kind, conversation_id=route.conversation, starts_at=TWO)
+    # The trace already carried the bot's own delivered reply, as it does in real life.
+    (reply,) = await shop.w.q(
+        "INSERT INTO messages (client_id, conversation_id, direction, author, body, redacted_body,"
+        " idempotency_key, trace_id)"
+        " VALUES (%s, %s, 'outbound', 'assistant', 'held', 'held', %s, %s) RETURNING id",
+        shop.tenant,
+        str(route.conversation),
+        f"reply:{route.trace}",
+        str(route.trace),
+    )
     await shop.w.q(
-        "UPDATE conversations SET owned_by = 'human_support' WHERE id = %s",
+        "INSERT INTO outbound_deliveries (client_id, endpoint_id, trace_id, conversation_id,"
+        " message_id, status) VALUES (%s, %s, %s, %s, %s, 'delivered')",
+        shop.tenant,
+        str(route.endpoint),
+        str(route.trace),
+        str(route.conversation),
+        str(reply["id"]),
+    )
+    # A person has taken over, and automation on old traces is suppressed.
+    await shop.w.q(
+        "UPDATE conversations SET owned_by = 'human_support', ai_suppressed_before = now(),"
+        " ai_muted_until = NULL WHERE id = %s",
         str(route.conversation),
     )
-    booking = await pending_booking(shop, contact, kind)
-    async with tx(shop.w.pool, shop.tenant) as conn:
-        await customer_messages.telegram_message(
-            conn, shop.client, booking, key="booking:r", body="x", authority="reviewed"
-        )
-    (message,) = await outbound(shop)
-    # Delivery holds back only `automation` and `handoff` while a person owns the conversation.
-    assert message["authority"] == "reviewed"
-    assert message["authority"] not in ("automation", "handoff")
+    await shop.mode("shadow")
+    done = await staff(shop, confirm_me.id, "confirm", confirm_me.version)
+    assert done.status_code == 200 and done.json()["customer_told"] is True
+    sent = await deliver_all(shop)
+    assert len(sent) == 1 and "confirmed" in sent[0]["text"] and TEN_TEXT in sent[0]["text"]
+    await shop.mode("suggest")
+    assert (await run_expiry(shop, TWO + timedelta(minutes=1)))["told"] == 1
+    sent = await deliver_all(shop)
+    assert len(sent) == 1 and "in time" in sent[0]["text"]
+    rows = await shop.w.q(
+        "SELECT d.status, m.send_authority AS authority FROM outbound_deliveries d"
+        " JOIN messages m ON m.id = d.message_id WHERE d.client_id = %s"
+        " AND m.idempotency_key LIKE 'booking:%%' ORDER BY d.created_at",
+        shop.tenant,
+    )
+    assert rows == [
+        {"status": "delivered", "authority": "human"},
+        {"status": "delivered", "authority": "reviewed"},
+    ]
 
 
 # --- staff confirm ------------------------------------------------------------------------------
@@ -325,7 +398,8 @@ async def test_confirming_a_bot_booking_tells_the_customer_even_with_replies_off
     assert message["key"] == f"booking:{booking.id}:confirmed:{booking.version + 1}"
     assert message["authority"] == "human" and message["status"] == "pending"
     body = message["body"]
-    assert "confirmed" in body and TEN_TEXT in body and "reply" in body.lower()
+    # Replies are Off, so the bot would not act on a reply: nothing invites one.
+    assert "confirmed" in body and TEN_TEXT in body and "reply" not in body.lower()
 
 
 async def test_confirming_for_a_whatsapp_customer_mails_them_and_writes_no_message(
@@ -420,7 +494,7 @@ async def test_declining_a_bot_booking_tells_the_customer_it_was_not_confirmed(
     (message,) = await outbound(shop)
     assert message["key"] == f"booking:{booking.id}:declined" and message["authority"] == "human"
     assert "wasn't confirmed" in message["body"] and TEN_TEXT in message["body"]
-    assert "reply" in message["body"].lower()
+    assert "reply" not in message["body"].lower()  # replies are Off
     assert relay.sent == []  # the chat message is the only word about it
     assert await holds_of(shop, booking.id) == []
 
@@ -435,7 +509,12 @@ async def test_declining_for_a_whatsapp_customer_mails_them(
     booking = await pending_booking(shop, contact, kind)
     gone = await staff(shop, booking.id, "decline")
     assert gone.json()["customer_told"] is True and relay.to() == ["c@example.test"]
-    assert relay.sent[0].calendar is not None and relay.sent[0].calendar.method == "CANCEL"
+    # They never had the event, so the mail says it was not confirmed, with no calendar file.
+    (mail,) = relay.sent
+    assert mail.calendar is None
+    assert "wasn't confirmed" in mail.text and TEN_TEXT_MAIL in mail.text
+    assert "calendar" not in mail.text.lower() and "cancelled" not in mail.text.lower()
+    assert "cancelled" not in mail.subject.lower()
     no_mail = await pending_booking(shop, await shop.customer("Phone Only"), kind, starts_at=TWO)
     quiet = await staff(shop, no_mail.id, "decline")
     assert quiet.json()["customer_told"] is False
@@ -806,7 +885,9 @@ async def test_a_pending_change_also_tells_staff(shop: Shop) -> None:
     assert [r["payload"]["booking_id"] for r in rows] == [str(asked.booking.id)]
 
 
-async def test_a_cancel_by_the_bot_tells_the_attendees_and_not_the_customer(shop: Shop) -> None:
+async def test_a_cancel_by_the_bot_removes_the_event_from_everyones_calendar(
+    shop: Shop,
+) -> None:
     aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
     kind = await make_type(shop.team, person_ids=[aina["id"]])
     contact = await shop.customer()
@@ -825,9 +906,28 @@ async def test_a_cancel_by_the_bot_tells_the_attendees_and_not_the_customer(shop
     )
     assert said(gone).startswith("Booking cancelled")
     await agent.drain()
-    # Their own message to the bot covers the customer; the person delivering it is mailed.
-    assert transport.to() == ["aina.staff@example.test"]
-    assert transport.sent[0].calendar is not None and transport.sent[0].calendar.method == "CANCEL"
+    # A chat reply cannot take an event out of a calendar, so the customer who was sent an
+    # invitation gets the cancellation too.
+    assert transport.to() == ["aina.staff@example.test", "c@example.test"]
+    assert all(m.calendar is not None and m.calendar.method == "CANCEL" for m in transport.sent)
+
+
+async def test_a_cancel_by_the_bot_of_a_never_confirmed_booking_mails_the_customer_nothing(
+    shop: Shop,
+) -> None:
+    aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
+    kind = await make_type(shop.team, person_ids=[aina["id"]])
+    contact = await shop.customer()
+    await shop.w.q("UPDATE contacts SET email = 'c@example.test' WHERE id = %s", str(contact))
+    transport = FakeTransport()
+    agent = BookingAgent(Mailer(transport, SENDER))
+    held = await pending_booking(shop, contact, kind)
+    gone = await ask(
+        shop, contact, "cancel", agent=agent, key="e9:t0-booking_agent", booking_id=str(held.id)
+    )
+    assert said(gone).startswith("Booking cancelled")
+    await agent.drain()
+    assert "c@example.test" not in transport.to()  # they never had an invitation to remove
 
 
 async def test_the_api_says_who_made_a_booking_and_what_it_replaces(shop: Shop) -> None:
@@ -842,3 +942,324 @@ async def test_the_api_says_who_made_a_booking_and_what_it_replaces(shop: Shop) 
     assert by_id[str(old.booking.id)]["source"] == "bot"
     assert by_id[str(old.booking.id)]["replaces_booking_id"] is None
     assert by_id[str(asked.booking.id)]["replaces_booking_id"] == str(old.booking.id)
+
+
+# --- fix round 1 ----------------------------------------------------------------------------------
+
+
+async def patch_time(shop: Shop, booking: Any, when: datetime) -> Any:
+    return await shop.team.send(
+        shop.team.admin,
+        f"/bookings/{booking.id}",
+        {"version": booking.version, "starts_at": when.isoformat()},
+        "PATCH",
+    )
+
+
+async def chat_with_address(shop: Shop, contact: uuid.UUID, channel: str = "telegram") -> None:
+    await chat(shop, contact, channel=channel)
+    await shop.w.q("UPDATE contacts SET email = 'c@example.test' WHERE id = %s", str(contact))
+
+
+# I1: a staff cancel of a pending bot row is a decline for the customer.
+
+
+async def test_a_staff_cancel_of_a_pending_bot_booking_tells_the_customer_like_a_decline(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    booking = await pending_booking(shop, contact, kind)
+    gone = await staff(shop, booking.id, "cancel", booking.version)
+    assert gone.status_code == 200 and gone.json()["customer_told"] is True
+    (message,) = await outbound(shop)
+    assert message["key"] == f"booking:{booking.id}:declined" and message["authority"] == "human"
+    assert "wasn't confirmed" in message["body"] and TEN_TEXT in message["body"]
+
+
+async def test_a_staff_cancel_of_a_pending_request_tells_the_customer_it_stands(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    gone = await staff(shop, asked.booking.id, "cancel", asked.booking.version)
+    assert gone.status_code == 200 and gone.json()["customer_told"] is True
+    (message,) = await outbound(shop)
+    assert message["key"] == f"booking:{asked.booking.id}:declined"
+    assert "stays on" in message["body"] and TEN_TEXT in message["body"]
+
+
+async def test_a_staff_cancel_of_a_pending_booking_staff_made_tells_nobody(
+    shop: Shop, relay: FakeTransport
+) -> None:
+    person = await make_person(shop.team, "Aina")
+    kind = await make_type(
+        shop.team, needs_confirmation=True, delivery="named", person_ids=[person["id"]]
+    )
+    made = await booked(
+        shop.team,
+        shop.team.admin,
+        {
+            "type_id": kind["id"],
+            "people": [person["id"]],
+            "starts_at": at(10),
+            "walk_in": {"name": "Walk In", "email": "walk@example.test"},
+        },
+    )
+    gone = await staff(shop, made["id"], "cancel")
+    assert gone.json()["customer_told"] is None and relay.sent == []
+    assert await outbound(shop) == []
+
+
+# I2: a stale retry after staff confirmed a move says what is true.
+
+
+async def test_a_retried_change_and_a_late_cancel_after_staff_confirmed_say_it_stands(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old = await shop.book(contact, kind["id"])
+    assert old.booking is not None
+    await shop.mode("suggest")
+    asked = await shop.change(contact, old.booking.id, ELEVEN, turn_key="retry-me")
+    assert asked.code == "change_pending" and asked.booking is not None
+    done = await staff(shop, asked.booking.id, "confirm", asked.booking.version)
+    assert done.status_code == 200
+    before = (await shop.rows(), await shop.audits("bookings.booking.cancelled"))
+    again = await shop.change(contact, old.booking.id, ELEVEN, turn_key="retry-me")
+    late = await shop.cancel(contact, asked.booking.id)
+    for outcome in (again, late):
+        assert outcome.code == "replay" and outcome.booking is not None
+        assert outcome.booking.id == old.booking.id
+        assert outcome.booking.status == "confirmed" and outcome.booking.starts_at == ELEVEN
+        assert outcome.booking.replaces_booking_id is None
+    assert (await shop.rows(), await shop.audits("bookings.booking.cancelled")) == before
+
+
+async def test_the_reply_facts_never_say_a_confirmed_move_was_withdrawn(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    await shop.mode("suggest")
+    first = await ask(
+        shop,
+        contact,
+        "reschedule",
+        key="e7:t0-booking_agent",
+        booking_id=str(made.booking.id),
+        starts_at="2031-03-04T11:00",
+    )
+    assert "Request to move" in said(first)
+    (request,) = await shop.w.q(
+        "SELECT id::text AS id, version FROM bookings WHERE replaces_booking_id = %s",
+        str(made.booking.id),
+    )
+    assert (await staff(shop, request["id"], "confirm", request["version"])).status_code == 200
+    retry = said(
+        await ask(
+            shop,
+            contact,
+            "reschedule",
+            key="e7:t0-booking_agent",
+            booking_id=str(made.booking.id),
+            starts_at="2031-03-04T11:00",
+        )
+    )
+    late = said(
+        await ask(shop, contact, "cancel", key="e8:t0-booking_agent", booking_id=request["id"])
+    )
+    for text in (retry, late):
+        assert "withdrawn" not in text and "will not go ahead" not in text
+        assert text.startswith("Booking confirmed") and ELEVEN_TEXT in text
+
+
+# I3 and I4: the mail a customer on WhatsApp gets.
+
+
+async def test_a_declined_request_mails_a_customer_without_telegram_that_it_was_not_accepted(
+    shop: Shop, relay: FakeTransport
+) -> None:
+    aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
+    kind = await make_type(shop.team, person_ids=[aina["id"]])
+    contact = await shop.customer()
+    await chat_with_address(shop, contact, "whatsapp")
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    for how in ("decline", "cancel"):
+        relay.sent.clear()
+        if how == "cancel":  # a second request, ended with Cancel instead
+            await shop.mode("suggest")
+            asked = await shop.change(contact, old.booking.id, ELEVEN)
+            assert asked.booking is not None
+        gone = await staff(shop, asked.booking.id, how, asked.booking.version)
+        assert gone.status_code == 200 and gone.json()["customer_told"] is True, gone.text
+        assert gone.json()["email"] == "sent"
+        (mail,) = relay.sent  # only the customer: the people on the booking had nothing sent
+        assert mail.to == "c@example.test" and mail.calendar is None
+        assert "wasn't accepted" in mail.text and "4 Mar 2031, 10:00" in mail.text
+        assert "calendar" not in mail.text.lower()
+    assert (await row_of(shop, old.booking.id))["status"] == "confirmed"
+
+
+async def test_a_decline_mails_the_customer_plain_text_and_the_people_the_cancellation(
+    shop: Shop, relay: FakeTransport
+) -> None:
+    aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
+    kind = await make_type(shop.team, person_ids=[aina["id"]])
+    contact = await shop.customer()
+    await chat_with_address(shop, contact, "whatsapp")
+    booking = await pending_booking(shop, contact, kind)
+    gone = await staff(shop, booking.id, "decline")
+    assert gone.json()["customer_told"] is True
+    customer = relay.for_("c@example.test")
+    person = relay.for_("aina.staff@example.test")
+    assert customer.calendar is None and "wasn't confirmed" in customer.text
+    assert person.calendar is not None and person.calendar.method == "CANCEL"
+
+
+# M4: no invitation to reply that the bot would not act on.
+
+
+@pytest.mark.parametrize("closed", ["replies_off", "service_off"])
+async def test_a_message_does_not_invite_a_reply_the_bot_would_not_act_on(
+    shop: Shop, closed: str
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    first = await pending_booking(shop, contact, kind)
+    second = await pending_booking(shop, contact, kind, starts_at=TWO)
+    done = await staff(shop, first.id, "confirm", first.version)
+    assert done.json()["customer_told"] is True
+    assert "reply" in (await outbound(shop))[0]["body"].lower()  # the same text, replies on
+    if closed == "replies_off":
+        await shop.mode("shadow")
+    else:
+        await shop.suspend()
+    gone = await staff(shop, second.id, "decline", second.version)
+    assert gone.json()["customer_told"] is True
+    message = (await outbound(shop))[1]
+    assert "wasn't confirmed" in message["body"] and "reply" not in message["body"].lower()
+
+
+# M1: the bot locks the original before the request, as staff do.
+
+
+async def test_the_bot_locks_the_original_before_the_request_it_was_given(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    async with await psycopg.AsyncConnection.connect(shop.w.owner_dsn) as holder:
+        await holder.execute(
+            "SELECT 1 FROM bookings WHERE id = %s FOR UPDATE", (str(old.booking.id),)
+        )
+        waiting = asyncio.create_task(shop.change(contact, asked.booking.id, THREE))
+        await asyncio.sleep(1.5)
+        assert not waiting.done()  # queued behind the original's lock
+        async with await psycopg.AsyncConnection.connect(shop.w.owner_dsn) as probe:
+            # The request is not locked yet, so a staff confirm (original, then request) is safe.
+            await probe.execute(
+                "SELECT 1 FROM bookings WHERE id = %s FOR UPDATE NOWAIT", (str(asked.booking.id),)
+            )
+        await holder.rollback()
+    assert (await waiting).code == "moved"
+
+
+# M8: staff move or cancel a confirmed booking, and a customer with a Telegram route is told.
+
+
+async def test_a_staff_move_of_a_confirmed_booking_tells_a_customer_with_telegram(
+    shop: Shop, relay: FakeTransport
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat_with_address(shop, contact)
+    made = (await shop.book(contact, kind["id"])).booking
+    assert made is not None
+    await shop.mode("shadow")  # a person's action goes even with replies Off
+    moved = await patch_time(shop, made, TWO)
+    assert moved.status_code == 200 and moved.json()["customer_told"] is True
+    (message,) = await outbound(shop)
+    assert message["key"] == f"booking:{made.id}:moved:{moved.json()['version']}"
+    assert message["authority"] == "human"
+    assert "moved" in message["body"] and "2:00 pm" in message["body"]
+    assert "reply" not in message["body"].lower()
+    (mail,) = relay.sent  # the email carries the calendar update, so both go
+    assert mail.calendar is not None and mail.calendar.method == "REQUEST"
+
+
+async def test_a_staff_cancel_of_a_confirmed_booking_tells_a_customer_with_telegram(
+    shop: Shop, relay: FakeTransport
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat_with_address(shop, contact)
+    made = (await shop.book(contact, kind["id"])).booking
+    assert made is not None
+    gone = await staff(shop, made.id, "cancel", made.version)
+    assert gone.status_code == 200 and gone.json()["customer_told"] is True
+    (message,) = await outbound(shop)
+    assert message["key"] == f"booking:{made.id}:cancelled" and message["authority"] == "human"
+    assert "cancelled" in message["body"] and TEN_TEXT in message["body"]
+    (mail,) = relay.sent
+    assert mail.calendar is not None and mail.calendar.method == "CANCEL"
+
+
+async def test_a_staff_made_confirmed_booking_tells_its_customer_too(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    made = await booked(
+        shop.team,
+        shop.team.admin,
+        {"type_id": kind["id"], "starts_at": TEN.isoformat(), "contact_id": str(contact)},
+    )
+    gone = await staff(shop, made["id"], "cancel")
+    assert gone.json()["customer_told"] is True
+    (message,) = await outbound(shop)
+    assert message["key"] == f"booking:{made['id']}:cancelled"
+
+
+async def test_a_withdrawn_request_is_mentioned_in_the_message(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None
+    gone = await staff(shop, old.booking.id, "cancel", old.booking.version)
+    assert gone.json()["customer_told"] is True
+    (message,) = await outbound(shop)
+    assert "cancelled" in message["body"] and "request" in message["body"]
+    assert "withdrawn" in message["body"]
+
+
+async def test_no_message_without_a_route_for_a_pending_booking_or_a_private_meeting(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = (await shop.book(contact, kind["id"])).booking  # no chat at all
+    assert made is not None
+    gone = await staff(shop, made.id, "cancel", made.version)
+    assert gone.json()["customer_told"] is False and await outbound(shop) == []
+    # A pending booking was never confirmed, so moving it tells the customer nothing.
+    await chat(shop, contact)
+    held = await pending_booking(shop, contact, kind, starts_at=TWO)
+    moved = await patch_time(shop, held, THREE)
+    assert moved.status_code == 200 and await outbound(shop) == []
+    # A private meeting is for its attendees only.
+    person = await make_person(shop.team, "Aina")
+    secret = await booked(
+        shop.team,
+        shop.team.admin,
+        {**meeting(person, start=at(9)), "private": True, "contact_id": str(contact)},
+    )
+    cancelled = await staff(shop, secret["id"], "cancel")
+    assert cancelled.status_code == 200 and await outbound(shop) == []

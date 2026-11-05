@@ -1,4 +1,4 @@
-"""Messages to a booking's customer outside a turn: staff confirm or decline, or the hold lapses.
+"""Messages to a booking's customer outside a turn: a staff action on it, or the hold lapses.
 
 The first proactive Telegram messages. Nothing here sends: it writes the rows the delivery worker
 sends from (a message and its delivery), in the transaction that changes the booking, so a message
@@ -6,12 +6,12 @@ and the change it reports stand or fall together. Only Telegram: nothing proacti
 WhatsApp, and a customer there is mailed after the commit instead (`notify.py`).
 
 Who stands behind a message decides if delivery holds it while a person has taken over the chat.
-A person's own action (confirm, decline) is `human`, and a notice the system sends because time ran
-out is `reviewed`, so neither is held back. The caller decides if a message is owed at all: staff
-actions always are, even with replies Off, and the expiry job asks `bot.gate` first.
+A person's own action (confirm, decline, move, cancel) is `human`, and a notice the system sends
+because time ran out is `reviewed`, so neither is held back. The caller decides if a message is owed
+at all: staff actions always are, even with replies Off, and the expiry job asks `bot.gate` first.
 
 Every text is plain English, built from the booking and nothing the customer typed, and says what
-happened and that the customer can reply to book again.
+happened. It adds that the customer can reply only while the bot would act on a reply.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
-from csa.bookings import service
+from csa.bookings import bot, service
 from csa.bookings.bot import format_slot
 from csa.core import db
 
@@ -100,6 +100,8 @@ async def telegram_message(
 
 # --- what each message says ---------------------------------------------------------------------
 
+Event = Literal["confirmed", "moved", "cancelled", "declined", "expired"]
+
 
 def _what(booking: service.BookingRecord) -> str:
     title = " ".join((booking.title or "").split())
@@ -107,38 +109,58 @@ def _what(booking: service.BookingRecord) -> str:
 
 
 def _text(
-    event: Literal["confirmed", "moved", "declined", "expired"],
+    event: Event,
     booking: service.BookingRecord,
     original: service.BookingRecord | None,
     zone: ZoneInfo,
+    *,
+    reply: bool,
 ) -> str:
     """The message. `booking` is the booking the event is about (for a move, the original at its
     new time); `original` is the booking a lapsed or declined request would have moved, if so.
+    `reply` says the bot would act on a reply (replies on, Customer support active): only then does
+    the text invite one.
     """
     what = _what(booking)
     when = format_slot(booking.starts_at, zone)
+
+    def ending(invitation: str) -> str:
+        return f" {invitation}" if reply else ""
+
     if event == "confirmed":
-        return (
-            f"Your {what} is confirmed for {when}. "
+        return f"Your {what} is confirmed for {when}." + ending(
             "You can reply here to change it, or to book another time."
         )
     if event == "moved":
-        return f"Your {what} has moved to {when}. You can reply here to change it again."
+        extra = (
+            " Your earlier request to move it has been withdrawn."
+            if booking.withdrew_change
+            else ""
+        )
+        return f"Your {what} has moved to {when}.{extra}" + ending(
+            "You can reply here to change it again."
+        )
+    if event == "cancelled":
+        extra = (
+            " Your request to move it has been withdrawn too." if booking.withdrew_change else ""
+        )
+        return f"Your {what} for {when} has been cancelled.{extra}" + ending(
+            "You can reply here to book another time."
+        )
     late = " in time" if event == "expired" else ""
     if original is not None:
         stays = format_slot(original.starts_at, zone)
         return (
             f"Your request to move your {what} to {when} wasn't confirmed{late}. "
-            f"Your booking stays on {stays}. Reply here to ask for another time."
-        )
-    ending = "so that time has been released" if event == "expired" else "so that time isn't booked"
-    return (
-        f"Your {what} request for {when} wasn't confirmed{late}, {ending}. "
+            f"Your booking stays on {stays}."
+        ) + ending("Reply here to ask for another time.")
+    why = "so that time has been released" if event == "expired" else "so that time isn't booked"
+    return f"Your {what} request for {when} wasn't confirmed{late}, {why}." + ending(
         "Reply here to book again."
     )
 
 
-async def _the_original(
+async def the_original(
     conn: Conn, client_id: UUID, booking: service.BookingRecord
 ) -> service.BookingRecord | None:
     """The booking a request would have moved, when it is still standing."""
@@ -148,69 +170,83 @@ async def _the_original(
     return found[0] if found and found[0].status in ("pending", "confirmed") else None
 
 
-# --- the three moments --------------------------------------------------------------------------
+async def _can_reply(conn: Conn, client_id: UUID) -> bool:
+    """The bot would act on a reply: replies are not Off and Customer support is active."""
+    blocked, _ = await bot.gate(conn, client_id)
+    return blocked is None
 
 
-async def confirmed(conn: Conn, client_id: UUID, booking: service.BookingRecord) -> bool:
-    """Staff confirmed a booking the bot made, or a request to move one (`booking` is then the
-    original, now at the new time). A person's action: it goes even with replies Off."""
+# --- the moments --------------------------------------------------------------------------------
+
+
+async def _send(
+    conn: Conn,
+    client_id: UUID,
+    booking: service.BookingRecord,
+    event: Event,
+    key: str,
+    *,
+    authority: Authority,
+    reply: bool,
+) -> bool:
     zone = await service.company_zone(conn, client_id)
-    event: Literal["confirmed", "moved"] = "moved" if booking.moved_by_request else "confirmed"
-    return await telegram_message(
-        conn,
-        client_id,
-        booking,
-        key=f"booking:{booking.id}:confirmed:{booking.version}",
-        body=_text(event, booking, None, zone),
-        authority="human",
+    original = (
+        await the_original(conn, client_id, booking) if event in ("declined", "expired") else None
     )
-
-
-async def declined(conn: Conn, client_id: UUID, booking: service.BookingRecord) -> bool:
-    """Staff declined a booking the bot made, or a request to move one: the original stands."""
-    zone = await service.company_zone(conn, client_id)
-    original = await _the_original(conn, client_id, booking)
     return await telegram_message(
         conn,
         client_id,
         booking,
-        key=f"booking:{booking.id}:declined",
-        body=_text("declined", booking, original, zone),
-        authority="human",
+        key=key,
+        body=_text(event, booking, original, zone, reply=reply),
+        authority=authority,
     )
 
 
 async def lapsed(conn: Conn, client_id: UUID, booking: service.BookingRecord) -> bool:
     """A pending booking the bot made ran out of time. The caller has checked the company's gates
     (replies not Off, Customer support active): nothing automatic goes without them."""
-    zone = await service.company_zone(conn, client_id)
-    original = await _the_original(conn, client_id, booking)
-    return await telegram_message(
-        conn,
-        client_id,
-        booking,
-        key=f"booking:{booking.id}:expired",
-        body=_text("expired", booking, original, zone),
-        authority="reviewed",
-    )
+    return await _send(
+        conn, client_id, booking, "expired", f"booking:{booking.id}:expired",
+        authority="reviewed", reply=True,
+    )  # fmt: skip
+
+
+def is_declined(booking: service.BookingRecord, change: str) -> bool:
+    """Staff said no to a booking the customer's own bot asked for (or a request to move one): a
+    Decline, or a Cancel of a booking that was still pending. From the customer's side they are
+    the same thing."""
+    if booking.source != "bot":
+        return False
+    return change == "declined" or (change == "cancelled" and booking.previous_status == "pending")
 
 
 async def after_staff_action(
-    conn: Conn, client_id: UUID, booking: service.BookingRecord, action: str
+    conn: Conn, client_id: UUID, booking: service.BookingRecord, change: str
 ) -> bool:
     """Write the chat message a staff action owes, in its transaction. True if one is queued.
 
-    Only the customer's own bot bookings owe one, and only on confirm and decline: a booking staff
-    made tells the customer nothing until it is confirmed, and every other action is mailed. A
-    request to move a booking the customer asked for is the bot's, even when the booking it moves
-    was made by staff (a confirmation answers with that booking, `moved_by_request`).
+    A person's action goes even with replies Off, and only the text changes (no invitation to
+    reply the bot would not answer):
+    - confirming a booking the bot made, or a request to move one (`moved_by_request`, even when
+      the booking it moves was made by staff);
+    - declining or cancelling a pending booking the bot made, or a request to move one;
+    - moving or cancelling a confirmed booking, whoever made it.
+    A booking staff made tells the customer nothing until it is confirmed, a private meeting never,
+    and the bot's own cancel needs no message (the customer asked it in chat).
     """
-    if not (booking.source == "bot" or booking.moved_by_request):
-        return False
     if booking.customer is None or booking.private:
         return False
-    if action == "confirmed":
-        return await confirmed(conn, client_id, booking)
-    if action == "declined":
-        return await declined(conn, client_id, booking)
-    return False
+    reply = await _can_reply(conn, client_id)
+    if change == "confirmed" and (booking.source == "bot" or booking.moved_by_request):
+        event: Event = "moved" if booking.moved_by_request else "confirmed"
+        key = f"booking:{booking.id}:confirmed:{booking.version}"
+    elif is_declined(booking, change):
+        event, key = "declined", f"booking:{booking.id}:declined"
+    elif change == "moved" and booking.status == "confirmed":
+        event, key = "moved", f"booking:{booking.id}:moved:{booking.version}"
+    elif change == "cancelled" and booking.previous_status == "confirmed":
+        event, key = "cancelled", f"booking:{booking.id}:cancelled"
+    else:
+        return False
+    return await _send(conn, client_id, booking, event, key, authority="human", reply=reply)

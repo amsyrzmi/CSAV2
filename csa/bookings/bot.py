@@ -426,8 +426,24 @@ async def _tell_staff(conn: Conn, client_id: UUID, booking_id: UUID) -> None:
     )
 
 
+async def _standing(
+    conn: Conn, client_id: UUID, record: service.BookingRecord
+) -> service.BookingRecord:
+    """What is true now of a booking the customer names. A request staff already confirmed is
+    closed (`change_applied`) and it was not withdrawn: the booking it asked to move is now at
+    that time, so that is the booking to speak of."""
+    if (
+        record.status == "cancelled"
+        and record.cancel_reason == "change_applied"
+        and record.replaces_booking_id is not None
+    ):
+        return await _record(conn, client_id, record.replaces_booking_id)
+    return record
+
+
 async def _replay(conn: Conn, client_id: UUID, booking_id: UUID) -> BotOutcome:
-    return BotOutcome("replay", await _record(conn, client_id, booking_id))
+    record = await _record(conn, client_id, booking_id)
+    return BotOutcome("replay", await _standing(conn, client_id, record))
 
 
 async def _record(conn: Conn, client_id: UUID, booking_id: UUID) -> service.BookingRecord:
@@ -551,6 +567,13 @@ async def change(
         return BotOutcome(blocked)
     done = await _done_by(conn, client_id, turn_key)
     await _one_at_a_time(conn, client_id, contact_id)
+    # Given a request, lock the booking it belongs to first, as staff do (a staff confirm takes the
+    # booking, then the request), so the two can never wait on each other.
+    peek = await db.q.fetch_one(
+        "bookings/booking_replaces.sql", {"client_id": client_id, "id": booking_id}, conn=conn
+    )
+    if peek is not None and peek["replaces_booking_id"] is not None:
+        await _own(conn, client_id, contact_id, peek["replaces_booking_id"])
     own = await _own(conn, client_id, contact_id, booking_id)
     if own is None:
         return BotOutcome("not_found")
@@ -690,7 +713,7 @@ async def cancel(
         return await _replay(conn, client_id, booking_id)
     record = await _record(conn, client_id, booking_id)
     if record.status == "cancelled":
-        return BotOutcome("replay", record)
+        return BotOutcome("replay", await _standing(conn, client_id, record))
     if record.status not in LIVE:
         return BotOutcome("not_found")
     if record.replaces_booking_id is not None:

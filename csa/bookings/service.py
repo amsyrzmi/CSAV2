@@ -204,6 +204,11 @@ class BookingRecord:
     # Set on the record a staff confirmation of a pending request to move a booking answers with:
     # the original, now at the new time, with its own id.
     moved_by_request: bool = False
+    # Why it was cancelled, as stored (`change_applied` on a request staff confirmed).
+    cancel_reason: str | None = None
+    # Set on the record a staff cancel or move answers with, when a pending request to move the
+    # booking was withdrawn in the same transaction.
+    withdrew_change: bool = False
 
 
 def involved(record: BookingRecord, user_id: UUID) -> bool:
@@ -488,6 +493,7 @@ async def read_records(
             replaces_booking_id=row["replaces_booking_id"],
             source=row["source"],
             conversation_id=row["conversation_id"],
+            cancel_reason=row["cancel_reason"],
         )
         for row in rows
     ]
@@ -966,8 +972,8 @@ async def move_booking(
     author = author_of(actor)
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
-    await withdraw_changes(conn, client_id, author, record.id)
-    return await move_to(
+    withdrawn = await withdraw_changes(conn, client_id, author, record.id)
+    moved = await move_to(
         conn,
         client_id,
         author,
@@ -976,6 +982,7 @@ async def move_booking(
         acknowledged=data.acknowledged,
         now=now,
     )
+    return replace(moved, withdrew_change=bool(withdrawn))
 
 
 async def move_to(
@@ -1114,8 +1121,9 @@ async def cancel_booking(
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
     author = author_of(actor)
-    await withdraw_changes(conn, client_id, author, record.id)
-    return await cancel_for(conn, client_id, author, record)
+    withdrawn = await withdraw_changes(conn, client_id, author, record.id)
+    cancelled = await cancel_for(conn, client_id, author, record)
+    return replace(cancelled, withdrew_change=bool(withdrawn))
 
 
 async def decline_booking(

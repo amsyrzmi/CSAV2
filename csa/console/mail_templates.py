@@ -211,3 +211,40 @@ def booking_mail(
     subject_title = _BOOKING_SUBJECT[change] if not pending else "Waiting for confirmation"
     subject = f"{subject_title}: {title} on {when(booking.starts_at, tz)} ({_one_line(brand)})"
     return OutgoingMail(to=to, subject=subject, text=text, html=html, calendar=calendar)
+
+
+def customer_declined_mail(
+    *,
+    to: str,
+    name: str | None,
+    brand: str,
+    booking: BookingRecord,
+    original: BookingRecord | None,
+    tz: str,
+) -> OutgoingMail:
+    """Plain text, with no calendar file, for a customer whose own bot asked for a booking, or for
+    a move of one, that staff did not accept.
+
+    They were never sent an invitation, so there is nothing to remove from a calendar and the
+    word "cancelled" would be wrong. With the booking a request would have moved, it says that one
+    stands, at its real time.
+    """
+    title = " ".join((booking.title or "Booking").split())
+    new = when(booking.starts_at, tz)
+    if original is not None:
+        headline = (
+            f"Your request to move {title} with {brand} to {new} wasn't accepted. "
+            f"Your booking stays on {when(original.starts_at, tz)}."
+        )
+        subject = f"Request not accepted: {title} ({_one_line(brand)})"
+    else:
+        headline = (
+            f"Your request for {title} with {brand} on {new} wasn't confirmed, "
+            "so that time isn't booked."
+        )
+        subject = f"Not confirmed: {title} on {new} ({_one_line(brand)})"
+    hello = f"Hello {name}," if name else "Hello,"
+    footer = "You can ask for another time whenever you like."
+    text = f"{hello}\n\n{headline}\n\n{footer}\n\n{brand}\n"
+    html = _html([escape(hello), escape(headline), escape(footer), escape(brand)])
+    return OutgoingMail(to=to, subject=subject, text=text, html=html)
