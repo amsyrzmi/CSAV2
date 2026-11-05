@@ -1,20 +1,19 @@
-/** Filters address local records only; a store ID is not a verified connection. */
 export type ConnectionStatus =
   | "unsupported" | "missing_shop_id" | "unverified" | "revoked" | "disconnected"
   | "expired" | "app_unavailable" | "binding_missing" | "permissions_missing"
   | "authorization_recorded";
 
 export const connectionLabels: Record<ConnectionStatus, string> = {
-  unsupported: "Live integration not implemented for this platform",
-  missing_shop_id: "Store ID missing",
-  unverified: "No usable local authorization evidence",
-  revoked: "Authorization revoked locally",
-  disconnected: "Disconnected or credential version changed",
-  expired: "Expired by recorded timestamp",
-  app_unavailable: "App disabled, missing or revision changed",
-  binding_missing: "Shop-binding evidence missing",
-  permissions_missing: "Required stored permissions missing",
-  authorization_recorded: "Authorization recorded locally, not verified live",
+  unsupported: "Syncing is not available for this marketplace yet",
+  missing_shop_id: "Waiting for the seller to approve on TikTok",
+  unverified: "No usable authorization on record",
+  revoked: "Access was removed",
+  disconnected: "Disconnected, or the saved credential changed",
+  expired: "Access expired",
+  app_unavailable: "The TikTok app is disabled, missing or changed",
+  binding_missing: "The link to the shop is missing",
+  permissions_missing: "Some required permissions are missing",
+  authorization_recorded: "Connected and checked with TikTok",
 };
 
 export type DemoListing = Readonly<{
@@ -99,4 +98,39 @@ export function withCursor(path: string, cursor: string | null): string {
   const query = new URLSearchParams(at < 0 ? "" : path.slice(at + 1));
   query.set("before", cursor);
   return `${at < 0 ? path : path.slice(0, at)}?${query}`;
+}
+
+/** The order read's row. The last three are filled only for a synced TikTok order. */
+export type Order = {
+  id: string; status: string; payment_status: string; total: string; currency: string;
+  channel: string; external_order_id: string | null; external_shop_id: string | null;
+  tracking_no: string | null; carrier: string | null; placed_at: string | null;
+  shipped_at: string | null; created_at: string; updated_at: string;
+  provider_status?: string | null; synced_at?: string | null; buyer_cleared?: boolean;
+};
+
+export type OrderLine = { sku: string; name: string; qty: number; unit_price: string };
+export type ShipTo = {
+  recipient_name?: string | null; phone?: string | null; address_text?: string | null; region?: string | null;
+};
+
+/** `GET /orders/{id}`: lines, totals and ship-to are present only for a synced TikTok order. */
+export type OrderDetail = Order & {
+  lines: OrderLine[] | null; subtotal: string | null; shipping_fee: string | null;
+  discount: string | null; ship_to: ShipTo | null;
+};
+
+/** One TikTok Shop listing copied by sync (`GET /listings`). `same_sku_product` is our product's name. */
+export type Listing = {
+  id: string; product_name: string; variant_name: string | null; seller_sku: string | null;
+  price: string | null; currency: string; stock_qty: number | null; product_status: string | null;
+  image_url: string | null; synced_at: string; same_sku_product: string | null;
+};
+
+export function orderDetailPath(tenantQuery: string, id: string): string {
+  return `/console/v1/business/orders/${encodeURIComponent(id)}${tenantQuery ? `?${tenantQuery}` : ""}`;
+}
+
+export function listingsPath(tenantQuery: string): string {
+  return `/console/v1/business/listings${tenantQuery ? `?${tenantQuery}` : ""}`;
 }
