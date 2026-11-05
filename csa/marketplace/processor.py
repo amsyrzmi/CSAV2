@@ -243,16 +243,22 @@ async def fenced_read(
     *,
     load_app: AppLoader,
     decrypt: Callable[[str, bytes], str],
+    wrap_transport: Callable[[httpx.AsyncBaseTransport], httpx.AsyncBaseTransport] | None = None,
 ) -> TikTokReadResult:
     """One single-use, fenced read on a grant: ``begin_read`` then ``read_verified``.
 
     A fresh authorized-shops check, then the read, on a transport with no retries. The caller
     checks the store first. The sync and the customer's live stock read (``reads.live_stock``)
-    both read through here.
+    both read through here. ``wrap_transport`` is for ``scripts.tiktok_probe`` only: it wraps
+    (never replaces) ``_new_read_transport()`` to see a response's shape; everyone else leaves
+    it unset.
     """
     operation = await begin_read(app_pool, client_id, grant_id, request)
+    transport = _new_read_transport()
+    if wrap_transport is not None:
+        transport = wrap_transport(transport)
     async with httpx.AsyncClient(
-        transport=_new_read_transport(), timeout=READ_TIMEOUT_SECONDS, trust_env=False
+        transport=transport, timeout=READ_TIMEOUT_SECONDS, trust_env=False
     ) as http:
         resolver = TikTokStoredCredentialResolver(
             load_app=load_app, decrypt=decrypt, http_client=http

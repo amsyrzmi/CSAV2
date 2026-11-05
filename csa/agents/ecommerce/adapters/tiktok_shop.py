@@ -112,14 +112,41 @@ class _Order(_ReadContract):
         )
 
 
+def _explicit_empty(data: Any, key: str) -> Any:
+    """A search with no hits may omit the list; accept that only when the provider says it is empty.
+
+    Provider field name `total_count` is unverified (ledger Task 21). The rule is narrow on
+    purpose: the list key must be absent and `total_count` must be the integer 0. Anything else
+    that lacks the list stays an invalid response, never an assumed empty page.
+    """
+    if (
+        isinstance(data, dict)
+        and key not in data
+        and type(data.get("total_count")) is int
+        and data["total_count"] == 0
+    ):
+        return {**data, key: []}
+    return data
+
+
 class _OrderPage[OrderT: (_Order, TikTokOrderSnapshot)](_ReadContract):
     orders: list[OrderT]
     next_page_token: str | None = Field(default=None, max_length=2048)
+
+    @model_validator(mode="before")
+    @classmethod
+    def empty_when_provider_says_so(cls, data: Any) -> Any:
+        return _explicit_empty(data, "orders")
 
 
 class _ProductPage(_ReadContract):
     products: list[TikTokProductSnapshot]
     next_page_token: str | None = Field(default=None, max_length=2048)
+
+    @model_validator(mode="before")
+    @classmethod
+    def empty_when_provider_says_so(cls, data: Any) -> Any:
+        return _explicit_empty(data, "products")
 
 
 class _SearchQuery(_ReadContract):

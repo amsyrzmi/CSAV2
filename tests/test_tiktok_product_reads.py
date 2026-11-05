@@ -569,3 +569,31 @@ async def test_order_reads_do_not_need_the_product_scope(
 
         result = await read_verified_order(pool, tenant, operation.id, resolve)
     assert isinstance(result, TikTokOrderSnapshotPage) and result.items == ()
+
+
+@pytest.mark.asyncio
+async def test_provider_says_empty_without_a_list_is_an_empty_product_page() -> None:
+    payload = {"code": 0, "data": {"total_count": 0}}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    ) as client:
+        adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
+        page = await adapter.search_product_snapshot_page(uuid4(), limit=5)
+        assert page.items == () and page.next_page_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data", [{"total_count": 2}, {"total_count": "0"}, {"total_count": 0, "products": None}, {}]
+)
+async def test_missing_product_list_is_empty_only_for_integer_zero_total(
+    data: dict[str, Any],
+) -> None:
+    payload = {"code": 0, "data": data}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    ) as client:
+        adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
+        with pytest.raises(TikTokReadError) as caught:
+            await adapter.search_product_snapshot_page(uuid4(), limit=5)
+        assert caught.value.code == "invalid_response"
