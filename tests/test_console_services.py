@@ -254,7 +254,7 @@ async def test_unknown_and_unsellable_keys_and_required_switch_protection(
 ) -> None:
     admin, tenant_admin = await actors(sessions)
     tenant, pool = UUID(sessions.tenants[0]), sessions.pool
-    for key in ("nope", "marketplaces"):
+    for key in ("nope", "e_invoicing"):
         with pytest.raises(PackageError) as e:
             await request_package(pool, tenant, key, actor=tenant_admin)
         assert e.value.status_code == 422
@@ -272,16 +272,24 @@ async def test_unknown_and_unsellable_keys_and_required_switch_protection(
     with pytest.raises(PackageError) as e:
         await suspend_package(pool, tenant, "customer_support", SuspendIn(), actor=admin)
     assert e.value.status_code == 409
-    # A backfilled unsellable package can still be suspended, but never activated.
+    # A backfilled unsellable package can still be suspended, but never activated. Suspending
+    # switches its member off, so the tenant needs that capability row.
     await sessions.q(
-        "INSERT INTO console_service_packages(client_id,package,status,activated_at,reference)"
-        " VALUES (%s,'marketplaces','active',now(),'backfill-0450')",
+        "INSERT INTO capability_registry(client_id,name,display_name,description,pattern,"
+        "risk_class,workflow_id,input_schema,timeout_ms,max_retries,capability_kind)"
+        " VALUES (%s,'lhdn_agent','E-invoicing','Synthetic','python','low',"
+        "'python:lhdn_agent','{}'::jsonb,10000,1,'dispatched')",
         tenant,
     )
-    out = await suspend_package(pool, tenant, "marketplaces", SuspendIn(), actor=admin)
+    await sessions.q(
+        "INSERT INTO console_service_packages(client_id,package,status,activated_at,reference)"
+        " VALUES (%s,'e_invoicing','active',now(),'backfill-0450')",
+        tenant,
+    )
+    out = await suspend_package(pool, tenant, "e_invoicing", SuspendIn(), actor=admin)
     assert out.status == "suspended" and not out.can_activate and not out.can_request
     with pytest.raises(PackageError) as e:
-        await activate_package(pool, tenant, "marketplaces", ActivateIn(reference="Q"), actor=admin)
+        await activate_package(pool, tenant, "e_invoicing", ActivateIn(reference="Q"), actor=admin)
     assert e.value.status_code == 422
 
 
@@ -306,7 +314,11 @@ async def test_staff_email_and_hr_have_no_capability_members_and_email_inner_swi
     ]
     assert [a.name for a in svc["knowledge_base"].agents] == ["kb_agent"]
     assert svc["customer_support"].can_request and not svc["customer_support"].can_activate
-    assert not svc["marketplaces"].can_request
+    assert not svc["e_invoicing"].can_request
+    # Marketplaces is sold: an Admin can ask for it, but cannot activate it (platform admins do).
+    assert svc["marketplaces"].sellable and svc["marketplaces"].can_request
+    assert svc["marketplaces"].requires == ["customer_support"]
+    assert not svc["marketplaces"].can_activate
     assert [
         s.key
         for s in await list_services(
@@ -370,6 +382,45 @@ async def test_machine_token_cannot_read_or_change_services(sessions: SessionWor
             assert response.json()["detail"] == "human session required"
         post = await machine.post("/console/v1/services/customer_support/request", headers=headers)
         assert post.status_code == 403
+
+
+async def test_marketplaces_is_sold_end_to_end_and_opens_the_business_tab(
+    sessions: SessionWorld,
+) -> None:
+    from csa.console.services import active_packages
+    from csa.workspace.rules import tab_available
+
+    admin, tenant_admin = await actors(sessions)
+    tenant, pool = UUID(sessions.tenants[0]), sessions.pool
+
+    def offered(svc: list[Any]) -> dict[str, Any]:
+        return {s.key: s for s in svc}
+
+    # Without customer_support the platform admin cannot activate it, whatever the flag says.
+    before = offered(
+        await list_services(pool, tenant, actor=admin, kb_model=None, kb_tei_configured=False)
+    )
+    assert before["marketplaces"].sellable and not before["marketplaces"].can_activate
+    with pytest.raises(PackageError) as blocked:
+        await activate_package(pool, tenant, "marketplaces", ActivateIn(reference="Q"), actor=admin)
+    assert blocked.value.status_code == 409 and "customer_support" in str(blocked.value)
+    assert not tab_available("business", Role.TENANT_ADMIN, await active_packages(pool, tenant))
+
+    # An Admin asks, then a platform admin activates (after customer_support, as for any add-on).
+    asked = await request_package(pool, tenant, "marketplaces", actor=tenant_admin)
+    assert asked.status == "requested"
+    await activate(sessions, str(tenant), "marketplaces")
+
+    found = await caps(sessions, tenant)
+    assert found["ecommerce_agent"]["is_enabled"] and found["ecommerce_agent"]["client_enabled"]
+    packages = await active_packages(pool, tenant)
+    assert {p.key for p in packages} == {"customer_support", "marketplaces"}
+    assert tab_available("business", Role.TENANT_ADMIN, packages)
+    after = offered(
+        await list_services(pool, tenant, actor=admin, kb_model=None, kb_tei_configured=False)
+    )
+    assert after["marketplaces"].status == "active" and after["marketplaces"].consistent
+    assert after["orders_products"].status == "available"
 
 
 async def activate(sessions: SessionWorld, tenant: str, *keys: str) -> None:

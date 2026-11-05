@@ -99,3 +99,42 @@ async def test_query_failure_is_not_a_healthy_or_zero_fallback() -> None:
         transaction.return_value.__aenter__.return_value = AsyncMock()
         with pytest.raises(RuntimeError, match="query failed"):
             await list_agents(AsyncMock(), uuid4(), role=Role.READ_ONLY, kb_model="synthetic")
+
+
+@pytest.mark.parametrize(
+    ("connected", "readiness", "detail"),
+    [
+        (True, "available", "Looks up TikTok orders and stock for customers. Read-only."),
+        (False, "setup_required", "Connect a TikTok Shop in Business management to use this."),
+    ],
+)
+async def test_agents_page_text_by_connection_state(
+    connected: bool, readiness: str, detail: str
+) -> None:
+    with patch("csa.console.agents.list_capabilities", return_value=[_cap("ecommerce_agent")]):
+        rows = await list_agents(
+            AsyncMock(), uuid4(), role=Role.TENANT_ADMIN, tiktok_connected=connected
+        )
+    ecommerce = next(row for row in rows if row.name == "ecommerce_agent")
+    assert ecommerce.implementation == "local"
+    assert ecommerce.readiness == readiness
+    assert ecommerce.detail == detail
+    assert "No marketplace adapters" not in ecommerce.model_dump_json()
+    assert ecommerce.can_view_specialized is True
+
+
+async def test_tiktok_store_connected_uses_the_sync_test() -> None:
+    from csa.console import agents
+
+    with (
+        patch("csa.console.agents.tx") as transaction,
+        patch("csa.console.agents.list_connected_stores", AsyncMock(return_value=[object()])),
+    ):
+        transaction.return_value.__aenter__.return_value = AsyncMock()
+        assert await agents.tiktok_store_connected(AsyncMock(), uuid4()) is True
+    with (
+        patch("csa.console.agents.tx") as transaction,
+        patch("csa.console.agents.list_connected_stores", AsyncMock(return_value=[])),
+    ):
+        transaction.return_value.__aenter__.return_value = AsyncMock()
+        assert await agents.tiktok_store_connected(AsyncMock(), uuid4()) is False

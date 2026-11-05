@@ -20,6 +20,7 @@ from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
 from csa.jobs.subscriptions import run_subscriptions_due
+from csa.marketplace.retention import run_marketplace_catch_up, run_marketplace_purge
 
 logger = structlog.get_logger(__name__)
 
@@ -72,6 +73,22 @@ def build_default_registry() -> JobRegistry:
             name="subscriptions_due",
             every=timedelta(minutes=5),
             fn=run_subscriptions_due,
+            per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="marketplace_purge",
+            every=timedelta(hours=6),
+            fn=run_marketplace_purge,
+            per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="marketplace_catch_up",
+            every=timedelta(hours=3),
+            fn=run_marketplace_catch_up,
             per_client=True,
         )
     )

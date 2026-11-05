@@ -1,5 +1,6 @@
 """Synthetic A0 evidence only: no authenticated adapter, persistence or dispatch."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import get_args
@@ -25,9 +26,13 @@ from csa.workspace.contracts import (
     OrderReadProposal,
     OrderReadResult,
     PageContext,
+    ProductStockReadProposal,
+    ProductStockResult,
     ProposalCard,
+    ProposalKind,
     RecordRef,
     ResolvedWorkspaceAuthority,
+    StockVariant,
     TabKey,
     TrainingSubmitProposal,
     VerifiedWorkspacePrincipal,
@@ -398,7 +403,7 @@ def test_result_discriminators_source_freshness_and_decimal_serialization() -> N
     adapter = TypeAdapter(WorkspaceActionResult)
     results = [
         GuidanceResult(page="business_order", instruction_key="business_order_help", as_of=NOW),
-        OrderReadResult(order=summary(), as_of=NOW),
+        OrderReadResult(order=summary(), marketplace_sync="not_connected", as_of=NOW),
         WorkspaceDeniedResult(code="resource_unavailable"),
         adapter.validate_python(
             {"status": "unavailable", "code": "business_unavailable", "retryable": True}
@@ -408,11 +413,20 @@ def test_result_discriminators_source_freshness_and_decimal_serialization() -> N
         assert adapter.validate_json(result.model_dump_json()) == result
     order = results[1].model_dump(mode="json")
     assert order["source"] == "local_records"
-    assert order["marketplace_sync"] == "unavailable"
+    assert order["marketplace_sync"] == "not_connected"
     assert order["order"]["total"] == "12.34"
     assert results[2].model_dump() == {"status": "denied", "code": "resource_unavailable"}
     schema = adapter.json_schema()
-    assert len(schema["anyOf"]) == 9
+    assert len(schema["anyOf"]) == 10
+    # A turn stored before the read became truthful still replays as it was stored.
+    legacy = adapter.validate_json(
+        results[1].model_copy(update={"marketplace_sync": "unavailable"}).model_dump_json()
+    )
+    assert isinstance(legacy, OrderReadResult) and legacy.marketplace_sync == "unavailable"
+    connected = OrderReadResult(order=summary(), marketplace_sync="connected", as_of=NOW)
+    assert adapter.validate_json(connected.model_dump_json()) == connected
+    with pytest.raises(ValidationError):
+        OrderReadResult.model_validate({"order": summary(), "as_of": NOW})
 
 
 @pytest.mark.parametrize(
@@ -436,7 +450,7 @@ def test_safe_order_projection_rejects_unbounded_or_invalid_data(updates: dict) 
 def test_completed_result_cannot_claim_live_source_or_unrelated_guidance() -> None:
     with pytest.raises(ValidationError):
         GuidanceResult(page="workspace_home", instruction_key="business_order_help", as_of=NOW)
-    result = OrderReadResult(order=summary(), as_of=NOW)
+    result = OrderReadResult(order=summary(), marketplace_sync="connected", as_of=NOW)
     for updates in (
         {"source": "live_provider"},
         {"marketplace_sync": "available"},
@@ -483,6 +497,10 @@ def test_page_context_and_record_ref() -> None:
         RecordRef.model_validate({"kind": "customer", "id": "x"})
     with pytest.raises(ValidationError):
         RecordRef.model_validate({"kind": "order", "id": ""})
+    product = PageContext.model_validate(
+        {"tab": "business", "section": "products", "record": {"kind": "product", "id": "x"}}
+    )
+    assert product.record is not None and product.record.kind == "product"
     with pytest.raises(ValidationError):
         PageContext.model_validate({"tab": "nope"})
     turn = WorkspaceTurnInput(request_key=uuid4(), body="hi", page_context=ctx)
@@ -525,6 +543,7 @@ def test_workspace_proposal_discriminator_parses_every_kind() -> None:
         "clarification": {"question": "which?", "options": [{"label": "a", "value": "b"}]},
         "page_guidance": {"page": "workspace_home"},
         "local_order_read": {"resource": {"kind": "local_order", "order_id": "o"}},
+        "product_stock_read": {"query": "mug"},
     }
     for action, rest in cases.items():
         assert adapter.validate_python({"action": action, **rest}).action == action
@@ -594,3 +613,117 @@ def test_text_tables_have_the_same_keys() -> None:
 
     assert _TEXT["en"].keys() == _TEXT["ms"].keys()
     assert {"not_included", "no_work_email"} <= _TEXT["ms"].keys()
+
+
+# --- Task 20: TikTok products and stock in the workspace assistant (read-only) ---
+
+
+def test_product_stock_read_takes_words_or_a_listing_and_nothing_else() -> None:
+    listing = uuid4()
+    assert ProductStockReadProposal.model_validate(
+        {"action": "product_stock_read"}
+    ) == ProductStockReadProposal(action="product_stock_read")
+    by_words = ProductStockReadProposal.model_validate_json(
+        '{"action": "product_stock_read", "query": "blue mug"}'
+    )
+    assert by_words.query == "blue mug" and by_words.listing_id is None
+    picked = ProductStockReadProposal.model_validate_json(
+        f'{{"action": "product_stock_read", "listing_id": "{listing}"}}'
+    )
+    assert picked.listing_id == listing
+    for bad in (
+        {"query": ""},
+        {"query": "x" * 101},
+        {"listing_id": "not-a-uuid"},
+        {"stock_qty": 5},
+        {"quantity": 5},
+        {"price": "9.90"},
+    ):
+        with pytest.raises(ValidationError):
+            ProductStockReadProposal.model_validate_json(
+                json.dumps({"action": "product_stock_read", **bad})
+            )
+    assert set(ProductStockReadProposal.model_fields) == {"action", "query", "listing_id"}
+
+
+def test_product_stock_result_holds_counts_and_no_ids() -> None:
+    result = ProductStockResult(
+        action="product_stock_read",
+        product="Synthetic mug",
+        variants=[
+            StockVariant(variant="Black / M", seller_sku="MUG-BM", stock=8),
+            StockVariant(variant="White / L", seller_sku=None, stock=None),
+        ],
+        total=8,
+        checked_live=True,
+        on_sale=True,
+        as_of=NOW,
+        note="Checked live just now.",
+    )
+    dumped = result.model_dump(mode="json")
+    assert dumped["source"] == "tiktok_shop"
+    assert set(dumped) == {
+        "action",
+        "source",
+        "product",
+        "variants",
+        "total",
+        "checked_live",
+        "on_sale",
+        "as_of",
+        "note",
+    }
+    assert set(dumped["variants"][0]) == {"variant", "seller_sku", "stock"}
+    adapter = TypeAdapter(WorkspaceActionResult)
+    assert adapter.validate_json(result.model_dump_json()) == result
+    for updates in ({"total": -1}, {"source": "local_records"}, {"listing_id": str(uuid4())}):
+        with pytest.raises(ValidationError):
+            changed(result, **updates)
+
+
+def _union_actions(union: object) -> set[str]:
+    members = get_args(get_args(union)[0])
+    return {get_args(member.model_fields["action"].annotation)[0] for member in members}
+
+
+def test_no_workspace_proposal_can_write_to_tiktok() -> None:
+    """Spec 6.8: the workspace assistant is read-only for TikTok, in every list of kinds."""
+    import re
+    from pathlib import Path
+
+    from csa.workspace.executors import build_proposal_registry
+    from csa.workspace.planner import PlannerProposal
+
+    planned = _union_actions(PlannerProposal)
+    actions = _union_actions(WorkspaceProposal)
+    kinds = set(get_args(ProposalKind))
+    executors = set(build_proposal_registry()._executors)
+    assert planned <= actions and kinds == executors
+    shop_words = re.compile(r"tiktok|marketplace|shop|product|stock|listing|inventory|order")
+    every = actions | kinds | executors
+    # The only actions about a shop are the two reads; no confirm card touches a shop at all.
+    assert {name for name in every if shop_words.search(name)} == {
+        "product_stock_read",
+        "local_order_read",
+    }
+    assert not {kind for kind in kinds if shop_words.search(kind)}
+    assert "local_order_read" not in planned  # legacy page-hint read only
+    assert "product_stock_read" in planned
+    assert set(ProductStockReadProposal.model_fields) == {"action", "query", "listing_id"}
+    # No workspace module reaches a TikTok write path: the legacy adapters, the old agent's
+    # write actions, or the sync's own writer.
+    write_paths = re.compile(
+        r"ecommerce\.adapters|TikTokShopAdapter|fulfill_order|cancel_order|approve_refund"
+        r"|sync_inventory|update_inventory|update_stock|lock_store_for_write|upsert_listings"
+        r"|store_products|marketplace\.store\b|marketplace\.processor"
+    )
+    root = Path(__file__).parents[1] / "csa" / "workspace"
+    for path in sorted(root.glob("*.py")):
+        assert not write_paths.search(path.read_text(encoding="utf-8")), path.name
+    imports = {
+        line.strip()
+        for path in root.glob("*.py")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if re.match(r"\s*(from|import) csa\.(marketplace|agents\.ecommerce)", line)
+    }
+    assert imports == {"from csa.marketplace import reads"}

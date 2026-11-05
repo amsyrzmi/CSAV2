@@ -443,7 +443,7 @@ async def test_packaged_identity_readiness_and_boundaries(
             orders = member.get("/console/v1/business/orders")
             assert orders.status_code == (403 if role == "read_only" else 200)
             if role != "read_only":
-                assert orders.json()["marketplace_sync"] == "unavailable"
+                assert orders.json()["marketplace_sync"] == "not_connected"
                 assert [item["id"] for item in orders.json()["items"]] == [order_ids[0]]
                 assert member.get(f"/console/v1/business/orders/{order_ids[1]}").status_code == 404
                 assert (
@@ -454,10 +454,13 @@ async def test_packaged_identity_readiness_and_boundaries(
                 )
                 page = member.get("/portal/business")
                 assert page.status_code == 200
-                assert "These are orders and products saved in fourstacks." in page.text
-                assert "They are not a live TikTok Shop feed" in page.text
-                assert "stock is not matched or checked across stores" in page.text
-                assert "Not available yet" in page.text
+                assert (
+                    "Orders from a connected TikTok Shop are copied into fourstacks and kept up "
+                    "to date."
+                ) in page.text
+                assert "fourstacks only reads from TikTok Shop." in page.text
+                assert "fourstacks does not send anything to TikTok Shop." in page.text
+                assert "They are not a live TikTok Shop feed" not in page.text
             for client in (anonymous, member):
                 for path in (
                     "/api/v1/channels/tiktok_shop/oauth/authorize",

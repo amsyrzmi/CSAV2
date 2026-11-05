@@ -169,6 +169,7 @@ def build_router(
             role=actor.role if isinstance(actor, ConsoleActor) else None,
             kb_model=kb_model,
             kb_tei_configured=kb_tei_configured,
+            tiktok_connected=await agents.tiktok_store_connected(db_pool, client_id),
         )
 
     @router.get("/overview", response_model=runtime.OverviewOut)

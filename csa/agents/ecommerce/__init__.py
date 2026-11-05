@@ -16,7 +16,12 @@ from csa.agents.ecommerce.tiktok_models import (
     TikTokLineItemSnapshot,
     TikTokOrderSnapshot,
     TikTokOrderSnapshotPage,
+    TikTokPackageSnapshot,
     TikTokPaymentSnapshot,
+    TikTokProductSnapshot,
+    TikTokProductSnapshotPage,
+    TikTokShippingSnapshot,
+    TikTokSkuSnapshot,
 )
 
 __all__ = [
@@ -35,5 +40,10 @@ __all__ = [
     "TikTokLineItemSnapshot",
     "TikTokOrderSnapshot",
     "TikTokOrderSnapshotPage",
+    "TikTokPackageSnapshot",
     "TikTokPaymentSnapshot",
+    "TikTokProductSnapshot",
+    "TikTokProductSnapshotPage",
+    "TikTokShippingSnapshot",
+    "TikTokSkuSnapshot",
 ]

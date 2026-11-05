@@ -11,16 +11,17 @@ from uuid import UUID
 import httpx
 import psycopg
 import structlog
+from csa.agents.ecommerce.app_loader import build_app_loader
 from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, kb_ingest_loop
 from csa.channels.ingress import TelegramIngress
 from csa.channels.voice import transcribe_telegram_audio
 from csa.contracts.envelope import Channel, Envelope, Voice
-from csa.core import db
+from csa.core import crypto, db
 from csa.core.langfuse import LangfuseSink
 from csa.core.liveness import WORKER_ALIVE_PATH, liveness_loop
 from csa.core.pii import redact
-from csa.core.settings import get_settings
+from csa.core.settings import Settings, get_settings
 from csa.core.tenancy import tx
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient
@@ -30,6 +31,13 @@ from csa.graph.events import PostgresEventSink
 from csa.graph.retention import CheckpointPool, retention_loop
 from csa.graph.saver import build_checkpoint_pool, build_saver
 from csa.jobs.runner import JobRunner, jobs_loop
+from csa.marketplace.processor import (
+    SYNC_POLL_SECONDS,
+    MarketplaceSyncProcessor,
+    SyncConfig,
+    marketplace_sync_loop,
+)
+from csa.marketplace.reads import LiveReadAccess, live_read_access
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
 from csa.turn.deps import CAPABILITIES, PostgresTurnDependencies, build_llm_provider
@@ -565,6 +573,30 @@ def register_hr_leavers_task(
     return asyncio.create_task(_hr_leavers_loop(app_pool, interval_seconds))
 
 
+def marketplace_live_access(
+    settings: Settings, app_pool: AsyncConnectionPool
+) -> LiveReadAccess | None:
+    """Live TikTok stock reads for the customer assistant, only while TikTok is on."""
+    return live_read_access(settings, app_pool)
+
+
+def register_marketplace_sync_task(
+    settings: Settings, owner_pool: AsyncConnectionPool, app_pool: AsyncConnectionPool
+) -> asyncio.Task[None] | None:
+    """Start the TikTok Shop sync loop (queue and token refresh), only while TikTok is on."""
+    if not settings.tiktok_enabled:
+        return None
+    processor = MarketplaceSyncProcessor(
+        owner_pool,
+        app_pool,
+        load_app=build_app_loader(settings, app_pool),
+        encrypt=crypto.encrypt,
+        decrypt=crypto.decrypt,
+        config=SyncConfig(),
+    )
+    return asyncio.create_task(marketplace_sync_loop(processor, poll_seconds=SYNC_POLL_SECONDS))
+
+
 async def main() -> None:  # pragma: no cover - process entrypoint
     """Start queue/reaper, checkpoint retention, and the liveness heartbeat."""
     settings = get_settings()
@@ -614,7 +646,9 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             else None
         )
         coordinator = build_runtime(
-            PostgresTurnDependencies(app_pool, llm, jev),
+            PostgresTurnDependencies(
+                app_pool, llm, jev, marketplace_live=marketplace_live_access(settings, app_pool)
+            ),
             build_saver(checkpoint_pool),
             PostgresEventSink(app_pool, langfuse_sink=langfuse_sink),
         )
@@ -665,6 +699,9 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 kb_ingest_loop(kb_processor, poll_seconds=settings.KB_INGEST_POLL_SECONDS)
             )
         )
+    marketplace_sync = register_marketplace_sync_task(settings, owner_pool, app_pool)
+    if marketplace_sync is not None:
+        background.append(marketplace_sync)
     try:
         await liveness_loop(WORKER_ALIVE_PATH, do_work=worker.do_work)
     finally:

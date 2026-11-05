@@ -248,12 +248,12 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         "orders_products": make_service(
             "orders_products", "Orders and Products", "addon", "available"
         ),
-        # Backfilled staging state: an unsellable package can still be active.
         "marketplaces": make_service(
-            "marketplaces", "Marketplaces", "addon", "active", sellable=False, can_suspend=True
+            "marketplaces", "Marketplaces", "addon", "active", can_suspend=True
         ),
+        # Backfilled staging state: an unsellable package can still be active.
         "e_invoicing": make_service(
-            "e_invoicing", "E-invoicing", "addon", "available", sellable=False
+            "e_invoicing", "E-invoicing", "addon", "active", sellable=False, can_suspend=True
         ),
     }
     calls: list[dict[str, Any]] = []
@@ -419,11 +419,12 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (e) Activation sends exactly the reference and a null note for the chosen tenant.
         await expect(page.get_by_test_id("services-tenant")).to_have_value(TENANT, timeout=WAIT)
-        # A real status wins over "Coming soon"; only an available unsellable package shows it.
+        # A real status wins over "Coming soon", even for an unsellable package (the redesign
+        # test covers the available one); a sold package shows its status as usual.
         await expect(page.get_by_test_id("services-status-marketplaces")).to_have_text(
             "Active", timeout=WAIT
         )
-        await expect(page.get_by_test_id("services-status-e_invoicing")).to_have_text("Coming soon")
+        await expect(page.get_by_test_id("services-status-e_invoicing")).to_have_text("Active")
         await expect(page.get_by_test_id("services-activate-orders_products")).to_have_count(0)
         card = page.locator('[data-testid="services-card-customer_support"]')
         await card.get_by_test_id("services-activate-customer_support").click(timeout=WAIT)

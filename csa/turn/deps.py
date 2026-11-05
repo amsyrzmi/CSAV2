@@ -8,6 +8,7 @@ spokes are the LG05 order and escalation agents.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
@@ -21,6 +22,10 @@ from psycopg_pool import AsyncConnectionPool
 from csa.agents.base import AgentContext
 from csa.agents.breaker import CircuitBreaker
 from csa.agents.ecommerce.agent import EcommerceAgent
+from csa.agents.ecommerce.models import (
+    ORDER_NUMBER_PLACEHOLDER_PATTERN,
+    PLAIN_ORDER_NUMBER_PATTERN,
+)
 from csa.agents.escalation.agent import EscalationAgent
 from csa.agents.invoices.agent import InvoiceAgent
 from csa.agents.kb.agent import KbAgent
@@ -47,13 +52,15 @@ from csa.contracts.state import (
     Verification,
 )
 from csa.core import db
-from csa.core.pii import redact
+from csa.core.pii import redact, redact_with_values
 from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
 from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider
 from csa.decide.providers import DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
+from csa.graph.policy.plan_rules import tiktok_stock_fallback
+from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
 
 logger = structlog.get_logger(__name__)
@@ -80,7 +87,11 @@ _SANDBOX_ACCOUNT_INTENTS = frozenset(
 CAPABILITIES = {
     "order_agent": "Order status, product search and details, creating order drafts",
     "ticket_agent": "Support tickets: create, look up, list, add a note, cancel, reopen",
-    "ecommerce_agent": "E-Commerce operations for TikTok Shop, Shopee, and Lazada",
+    "ecommerce_agent": (
+        "Read-only TikTok Shop answers: the status and tracking of an order by its TikTok "
+        "order number, and the stock of items found only on our TikTok Shop (checked after "
+        "order_agent finds no match in our own catalogue)"
+    ),
     "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
     "invoice_agent": "Invoice lookup, status check, and signed download links",
     "booking_agent": "Local booking history and unexecuted requests; never confirms availability",
@@ -88,28 +99,38 @@ CAPABILITIES = {
 }
 
 
+_PLANNABLE: dict[str, Any] = {
+    "order_agent": OrderAgent,
+    "ticket_agent": TicketAgent,
+    "ecommerce_agent": EcommerceAgent,
+    "kb_agent": KbAgent,
+    "invoice_agent": InvoiceAgent,
+    "booking_agent": BookingAgent,
+    "subscription_agent": SubscriptionAgent,
+}
+# Spec 6.7: the client's own catalogue answers stock first. The TikTok stock check runs only
+# as the deterministic fallback in ``next_step`` (plan_rules.tiktok_stock_fallback), so the
+# model's look-ahead may not propose it.
+_NOT_FOR_THE_MODEL_LOOP = frozenset({("ecommerce_agent", "stock_check")})
+
+
 def build_llm_provider(
     client: JsonCompletionClient,
     *,
     compose_fallback: JsonCompletionClient | None = None,
 ) -> LLMProvider:
-    """Wire the planner to the plannable agents' own input models."""
-    agents = {
-        "order_agent": OrderAgent(),
-        "ticket_agent": TicketAgent(),
-        "ecommerce_agent": EcommerceAgent(),
-        "kb_agent": KbAgent(),
-        "invoice_agent": InvoiceAgent(),
-        "booking_agent": BookingAgent(),
-        "subscription_agent": SubscriptionAgent(),
-    }
+    """Wire the planner to the plannable agents' own input models (classes, not instances)."""
     return LLMProvider(
         client,
         capabilities=CAPABILITIES,
-        inputs={name: agent.Input for name, agent in agents.items()},
+        inputs={name: agent.Input for name, agent in _PLANNABLE.items()},
         read_actions={
-            name: [action for action, risk in agent.ACTION_RISK.items() if risk == "read"]
-            for name, agent in agents.items()
+            name: [
+                action
+                for action, risk in agent.ACTION_RISK.items()
+                if risk == "read" and (name, action) not in _NOT_FOR_THE_MODEL_LOOP
+            ]
+            for name, agent in _PLANNABLE.items()
         },
         compose_fallback=compose_fallback,
     )
@@ -136,18 +157,23 @@ class PostgresTurnDependencies:
         app_pool: AsyncConnectionPool,
         llm: LLMProvider | None = None,
         jev: JevProvider | None = None,
+        *,
+        marketplace_live: LiveReadAccess | None = None,
     ) -> None:
         self._pool = app_pool
         self._llm = llm
         self._jev = jev
         self._pending = PendingActionStore(app_pool)
+        self._capabilities = CapabilityRegistry(app_pool)
+        # Without live access (TikTok off) stock answers come from our copy only.
+        marketplace = PostgresMarketplaceReader(app_pool, live=marketplace_live)
         self._runner = SpokeRunner(
             {
                 "escalation_agent": EscalationAgent(),
                 "order_agent": OrderAgent(),
                 "ticket_agent": TicketAgent(),
                 "order_approval": OrderApprovalAgent(),
-                "ecommerce_agent": EcommerceAgent(),
+                "ecommerce_agent": EcommerceAgent(marketplace),
                 "kb_agent": KbAgent(),
                 "invoice_agent": InvoiceAgent(),
                 "booking_agent": BookingAgent(),
@@ -155,7 +181,7 @@ class PostgresTurnDependencies:
             },
             breaker=CircuitBreaker(store=PostgresBreakerStore(app_pool)),
             recorder=PostgresRunRecorder(app_pool),
-            capabilities=CapabilityRegistry(app_pool),
+            capabilities=self._capabilities,
         )
 
     async def load_context(self, envelope: Envelope) -> Context:
@@ -247,6 +273,14 @@ class PostgresTurnDependencies:
         policy = await self._policy(state.envelope.client_id)
         if state.step >= policy.agent_loop_max_steps:
             return []
+        # Local catalogue first (spec 6.7): only a stock question our own products could not
+        # answer goes to the TikTok copy, and only for a company with the E-commerce service.
+        # The web sandbox answers product questions from the catalogue only.
+        fallback = [] if state.envelope.channel == Channel.WEB else tiktok_stock_fallback(state)
+        if fallback and await self._capabilities.allows_execution(
+            state.envelope.client_id, "ecommerce_agent"
+        ):
+            return fallback
         return await self._llm.next_step(state)
 
     def task_risk(self, task: Task) -> RiskClass | None:
@@ -279,7 +313,7 @@ class PostgresTurnDependencies:
             timezone=row["timezone"],
             callback_action_id=envelope.callback.action_id if envelope.callback else None,
         )
-        return await self._runner.execute(task, ctx)
+        return await self._runner.execute(_resolve_order_number(task, envelope), ctx)
 
     async def handle_muted(
         self,
@@ -529,6 +563,34 @@ class PostgresTurnDependencies:
                     raise RuntimeError("sandbox_turn_not_found")
             await _insert_outbound(conn, envelope, message)
         return message
+
+
+_ORDER_NUMBER_PLACEHOLDER = re.compile(ORDER_NUMBER_PLACEHOLDER_PATTERN)
+_PLAIN_ORDER_NUMBER = re.compile(PLAIN_ORDER_NUMBER_PATTERN)
+
+
+def _resolve_order_number(task: Task, envelope: Envelope) -> Task:
+    """A TikTok order number the model saw as "[CARD_0]" becomes its digits again (spec 6.7).
+
+    Only for ecommerce_agent order_status, and only when the placeholder comes from this very
+    message: the raw body is redacted again with the same single pass and must give the stored
+    redacted body. The digits go to this task's input only (the lookup's SQL parameter); the
+    plan, the model's view, the logs and the recorded run (which redacts its input) keep the
+    placeholder. Anything unresolvable stays a placeholder, which the agent answers by asking
+    for the number again.
+    """
+    if task.agent != "ecommerce_agent" or task.input.get("action") != "order_status":
+        return task
+    number = task.input.get("order_number")
+    if not isinstance(number, str) or not _ORDER_NUMBER_PLACEHOLDER.match(number):
+        return task
+    redacted, values = redact_with_values(envelope.message.body_raw)
+    if redacted != envelope.message.body_redacted:
+        return task
+    digits = "".join(char for char in values.get(number, "") if char.isdigit())
+    if not _PLAIN_ORDER_NUMBER.match(digits):
+        return task
+    return task.model_copy(update={"input": {**task.input, "order_number": digits}})
 
 
 def _require_conversation(envelope: Envelope) -> UUID:

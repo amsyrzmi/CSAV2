@@ -30,7 +30,7 @@ def test_sellable_is_false_when_any_member_is_not_implemented():
     for p in PACKAGES:
         if any(CATALOG[c][1] == "not_implemented" for c in p.capabilities):
             assert p.sellable is False
-    assert package("marketplaces").sellable is False
+    assert package("marketplaces").sellable is True
     assert package("e_invoicing").sellable is False
     assert package("customer_support").sellable and package("hr").sellable
     assert package("staff_email").sellable

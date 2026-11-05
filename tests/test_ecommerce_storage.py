@@ -107,7 +107,9 @@ async def test_stored_resolver_reads_once_using_single_connection_pool(
             calls.append(request.url.path)
             assert request.headers["x-tts-access-token"] == "synthetic-token"
             if len(calls) == 1:
-                data = {"shops": [{"id": "SYNTH-SHOP", "cipher": "synthetic-cipher"}]}
+                data = {
+                    "shops": [{"id": grant.context.binding.shop_id, "cipher": "synthetic-cipher"}]
+                }
             else:
                 assert request.url.params["shop_cipher"] == "synthetic-cipher"
                 data = {"orders": [order_snapshot()]}

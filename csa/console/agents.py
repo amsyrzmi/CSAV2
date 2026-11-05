@@ -12,6 +12,7 @@ from csa.console.capabilities import CapabilityOut, list_capabilities
 from csa.console.contracts import Role
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.marketplace.jobs import list_connected_stores
 
 Stage = Literal["local", "prepared_only", "not_implemented"]
 Readiness = Literal["available", "setup_required", "configured_unverified", "reindex_required"]
@@ -45,7 +46,7 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
     "ecommerce_agent": (
         "E-commerce",
         "local",
-        "No marketplace adapters are wired in the default runtime. Setup is required.",
+        "Looks up TikTok orders and stock for customers. Read-only.",
     ),
     "lhdn_agent": (
         "LHDN MyInvois",
@@ -70,6 +71,7 @@ SPECIALIZED = frozenset(
     }
 )
 REQUIRED = frozenset({"escalation_agent", "order_approval"})
+ECOMMERCE_SETUP_DETAIL = "Connect a TikTok Shop in Business management to use this."
 
 
 class KbInventory(BaseModel):
@@ -103,7 +105,9 @@ async def list_agents(
     role: Role | None,
     kb_model: str | None = None,
     kb_tei_configured: bool = False,
+    tiktok_connected: bool = False,
 ) -> list[AgentOut]:
+    """The catalogue; ``tiktok_connected`` is whether the tenant has a connected TikTok store."""
     caps = {cap.name: cap for cap in await list_capabilities(pool, client_id)}
     inventory: KbInventory | None = None
     if "kb_agent" in caps and kb_model is not None:
@@ -131,7 +135,11 @@ async def list_agents(
                     readiness = "configured_unverified"
                 else:
                     detail += " Dev lexical hash embeddings only; not semantic retrieval."
-        elif name == "ecommerce_agent" or stage == "not_implemented":
+        elif name == "ecommerce_agent":
+            if not tiktok_connected:
+                readiness = "setup_required"
+                detail = ECOMMERCE_SETUP_DETAIL
+        elif stage == "not_implemented":
             readiness = "setup_required"
         required = name in REQUIRED
         result.append(
@@ -163,3 +171,9 @@ async def list_agents(
             )
         )
     return result
+
+
+async def tiktok_store_connected(pool: AsyncConnectionPool, client_id: UUID) -> bool:
+    """Whether the tenant has a TikTok store that can read now (the sync's own test)."""
+    async with tx(pool, str(client_id)) as conn:
+        return bool(await list_connected_stores(conn, client_id))

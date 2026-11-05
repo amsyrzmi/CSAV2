@@ -24,11 +24,25 @@ def _luhn_valid(value: str) -> bool:
     return checksum % 10 == 0
 
 
+# What redact() puts in place of a card or phone number, e.g. "[CARD_0]" (the one shared pattern
+# for code that must recognise it: the order-number contract and the fast-path guard).
+NUMBER_PLACEHOLDER = r"\[(?:CARD|PHONE)_[0-9]{1,3}\]"
+
+
 def redact(text: str) -> str:
     """Replace common PII with stable placeholders; raw text must remain separate.
 
     This intentionally does not promise broad named-entity redaction. It covers
     email addresses, Malaysian phone-number forms, and Luhn-valid card numbers.
+    """
+    return redact_with_values(text)[0]
+
+
+def redact_with_values(text: str) -> tuple[str, dict[str, str]]:
+    """``redact`` plus each placeholder's original text, from the same single pass.
+
+    For server code that must act on a value the model only saw as a placeholder (a TikTok
+    order number that looks like a card). The values never go to a model, a log or a reply.
     """
     emails: dict[str, str] = {}
     phones: dict[str, str] = {}
@@ -46,7 +60,13 @@ def redact(text: str) -> str:
         ),
         redacted,
     )
-    return _PHONE.sub(
+    redacted = _PHONE.sub(
         lambda match: replace(phones, "PHONE", match.group()),
         redacted,
     )
+    values = {
+        placeholder: original
+        for found in (emails, cards, phones)
+        for original, placeholder in found.items()
+    }
+    return redacted, values

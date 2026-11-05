@@ -394,8 +394,85 @@ async def test_real_callback_deadline_keeps_attempt_consumed_and_releases_fences
         {"kind": "search", "limit": True},
         {"kind": "search", "limit": 51},
         {"kind": "search", "access_token": "SYNTH"},
+        {"kind": "detail", "order_id": "ONE", "updated_from": "2026-11-01T00:00:00Z"},
+        {"kind": "detail", "order_id": "ONE", "updated_to": "2026-11-02T00:00:00Z"},
+        {"kind": "search", "updated_from": "2026-11-01T00:00:00"},
+        {
+            "kind": "search",
+            "updated_from": "2026-11-02T00:00:00Z",
+            "updated_to": "2026-11-01T00:00:00Z",
+        },
+        {
+            "kind": "search",
+            "updated_from": "2026-11-01T00:00:00Z",
+            "updated_to": "2026-11-01T00:00:00Z",
+        },
     ],
 )
 async def test_dispatch_request_is_narrow_and_typed(query: dict) -> None:
     with pytest.raises(ValidationError):
         TikTokReadRequest.model_validate(query)
+
+
+async def test_detail_request_rejects_window() -> None:
+    """Covered by the parametrized cases above; this pins the exact ID-only detail shape."""
+    detail = TikTokReadRequest(kind="detail", order_id="ONE")
+    assert detail.updated_from is None and detail.updated_to is None
+    start = datetime(2026, 11, 1, tzinfo=UTC)
+    with pytest.raises(ValidationError):
+        TikTokReadRequest(kind="detail", order_id="ONE", updated_from=start)
+
+
+async def test_search_request_accepts_a_window_and_round_trips() -> None:
+    start = datetime(2026, 11, 1, tzinfo=UTC)
+    end = datetime(2026, 11, 2, tzinfo=UTC)
+    request = TikTokReadRequest(kind="search", updated_from=start, updated_to=end)
+    assert TikTokReadRequest.model_validate(request.model_dump(mode="json")) == request
+    TikTokReadRequest(kind="search", updated_from=start)
+    TikTokReadRequest(kind="search", updated_to=end)
+    # A request stored before windows existed still validates.
+    assert TikTokReadRequest.model_validate({"kind": "search", "limit": 5}).updated_from is None
+
+
+@pytest.mark.parametrize("kind", ["product_detail", "product_search"])
+async def test_product_requests_need_the_product_scope_before_any_evidence_step(
+    pool: AsyncConnectionPool, migrated_dsn: str, kind: str
+) -> None:
+    request = (
+        TikTokReadRequest(kind="product_detail", product_id="SYNTH-PROD-1")
+        if kind == "product_detail"
+        else TikTokReadRequest(kind="product_search", limit=3, page_token="opaque")
+    )
+    steps = 0
+
+    async def factory(operation, grant, conn):
+        nonlocal steps
+        steps += 1
+        return evidence_for(operation, grant)
+
+    async def send(actual: TikTokReadRequest) -> str:
+        assert actual == request
+        return "sent"
+
+    unscoped = await seed(migrated_dsn)
+    tenant = unscoped.context.binding.client_id
+    await create_verified_grant(pool, unscoped)
+    refused = await begin_read(pool, tenant, unscoped.id, request)
+    with pytest.raises(TikTokAuthorizationError, match="insufficient_scope"):
+        await dispatch_read(pool, tenant, refused.id, factory, send)
+    with pytest.raises(TikTokAuthorizationError, match="insufficient_scope"):
+        await dispatch_read(pool, tenant, refused.id, evidence_for(refused, unscoped), send)
+    assert steps == 0
+
+    # With the scope the same request goes through, whether evidence is given or built.
+    base = await seed(migrated_dsn)
+    scoped = base.model_copy(update={"scopes": base.scopes | {"seller.product.basic"}})
+    tenant = scoped.context.binding.client_id
+    await create_verified_grant(pool, scoped)
+    first = await begin_read(pool, tenant, scoped.id, request)
+    assert await dispatch_read(pool, tenant, first.id, factory, send) == "sent"
+    second = await begin_read(pool, tenant, scoped.id, request)
+    assert (
+        await dispatch_read(pool, tenant, second.id, evidence_for(second, scoped), send) == "sent"
+    )
+    assert steps == 1
