@@ -46,7 +46,7 @@
 - Modify: `csa/bookings/api.py`, `csa/bookings/contracts.py`, `csa/bookings/setup.py`, `tests/test_bookings_setup.py`, `db/migrations/README.md`, `docs/CONSOLE_API.md`, `docs/console_openapi.json`
 
 **Interfaces:**
-- Produces on `bookings`: `turn_key text NULL` with a partial unique index on `(client_id, turn_key)`; `replaces_booking_id uuid NULL`, a foreign key to `(client_id, id)`; `conversation_id uuid NULL`; `expires_at timestamptz NULL`.
+- Produces `booking_turn_actions(client_id, turn_key, booking_id)`, one row per bot write. On `bookings`: `replaces_booking_id uuid NULL`, a foreign key to `(client_id, id)`; `conversation_id uuid NULL`; `expires_at timestamptz NULL`.
 - Produces `booking_settings(client_id PRIMARY KEY, reminder_minutes integer DEFAULT 1440, pending_hours integer DEFAULT 24, customer_limit integer DEFAULT 5, version)`.
 - Produces `booking_reminders(client_id, id, booking_id, starts_at, audience, channel, address NULL, status, created_at, sent_at NULL)`, unique on `(client_id, booking_id, starts_at, audience, address)`, with `audience IN ('customer','staff')`, `channel IN ('telegram','email')`, `status IN ('queued','sending','sent','failed','dropped')`.
 - Rebuilds `console_proposals_kind_check` and `console_workspace_turns_action_check` to add `booking_action`, in `db/migrations/0531_booking_assistant_action.sql`, with a guard test on a fresh database.
@@ -67,7 +67,7 @@
 
 **Interfaces:**
 - Consumes `free_slots`, `pick_person`, `findings_for`, `decide("bot", ...)`, and the holds and lock path in `service.py`.
-- Produces in `service.py`: a dataclass `Author(acting: Actor, user_id: UUID | None, source: Literal["staff","assistant","bot"])`. `create_booking` and `move_booking` keep their signatures for the routes and call internal functions taking `Author`. The internal create takes `force_pending: bool`, `turn_key: str | None`, `conversation_id: UUID | None`, `expires_at: datetime | None`. Add `max_advance_days` to the bot's checks only, as a refusal.
+- Produces in `service.py`: a dataclass `Author(acting: Actor, user_id: UUID | None, source: Literal["staff","assistant","bot"])`. `create_booking` and `move_booking` keep their signatures for the routes and call internal functions taking `Author`. The internal create takes `force_pending: bool`, `conversation_id: UUID | None`, `expires_at: datetime | None`. Add `max_advance_days` to the bot's checks only, as a refusal.
 - Produces in `csa/bookings/bot.py`, each on the caller's connection:
   - `reply_mode(conn, client_id) -> Literal["shadow","suggest","auto"]`, from `turn/get_client_policy.sql`, with the same default as `Policy`.
   - `customer_service_on(conn, client_id) -> bool`: Customer support is active, using `console/service_package_any_in_status.sql`.
@@ -76,7 +76,7 @@
   - `book(conn, client_id, contact_id, *, type_id, starts_at, turn_key, conversation_id, now) -> BotOutcome`.
   - `change(conn, client_id, contact_id, booking_id, *, starts_at, turn_key, now) -> BotOutcome`.
   - `cancel(conn, client_id, contact_id, booking_id, *, turn_key, now) -> BotOutcome`.
-  - `BotOutcome(code, booking: BookingRecord | None, offers: list[Offer])`, with `code` in `confirmed, pending, moved, change_pending, cancelled, replay, replies_off, service_off, slot_taken, not_allowed, limit_reached, past_cutoff, not_found, overlaps_itself`.
+  - `BotOutcome(code, booking: BookingRecord | None, offers: list[Offer])`, with `code` in `confirmed, pending, moved, change_pending, change_withdrawn, cancelled, replay, replies_off, service_off, slot_taken, not_allowed, limit_reached, past_cutoff, not_found, overlaps_itself`.
 
 - [ ] **Step 1: Write the failing tests,** at this level, with no turn:
   - The mode table: `shadow` writes nothing and returns `replies_off`; `suggest` gives `pending` with `expires_at`; `auto` gives `confirmed`, or `pending` for a type needing confirmation.
@@ -91,7 +91,7 @@
   - Bookings from the bot have `source='bot'`, `created_by` null, and an audit row with the id and action only.
   - Existing `tests/test_bookings_api.py` still passes, with staff bookings `source='staff'`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Look up `turn_key` before taking locks, so a replay returns before the time checks. Keep `service.py`'s staff behaviour unchanged.
+- [ ] **Step 3: Implement.** Look up the turn key in `booking_turn_actions` before the time checks, so a replay returns before the time checks. Keep `service.py`'s staff behaviour unchanged.
 - [ ] **Step 4: Run** `tests/test_bookings_bot.py`, `tests/test_bookings_api.py` once, `tests/test_booking_rules.py`, and `make lint`. Expected: PASS.
 - [ ] **Step 5: Commit** with `feat(bookings): the customer's rules, obeying the reply mode`.
 
