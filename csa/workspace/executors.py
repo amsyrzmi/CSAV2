@@ -154,6 +154,7 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "where_phone": "Phone",
         "warn_outside_hours": "Outside working hours.",
         "warn_closed_day": "This is a closed day.",
+        "warn_unavailable": "Not available that day.",
     },
     "ms": {
         "training_new_title": "Hantar permohonan latihan baharu",
@@ -239,6 +240,7 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "where_phone": "Telefon",
         "warn_outside_hours": "Di luar waktu bekerja.",
         "warn_closed_day": "Ini hari tutup.",
+        "warn_unavailable": "Tidak tersedia pada hari itu.",
     },
 }
 

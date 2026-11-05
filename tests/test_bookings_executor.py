@@ -297,16 +297,33 @@ async def test_hours_and_a_closed_day_show_as_a_warning_and_confirming_acknowled
     assert len(await bookings(w)) == 1 and aina["id"]
 
 
-@pytest.mark.parametrize("who", ["staff", "admin"])
-async def test_leave_is_a_plain_refusal_and_never_a_card(planned, team: Team, who: str) -> None:  # noqa: F811
+async def test_leave_is_a_plain_refusal_for_staff_and_never_a_card(planned, team: Team) -> None:  # noqa: F811
     w, model = planned
     away = await person_on_leave(team, DAY, DAY)
-    browser = team.staff if who == "staff" else team.admin
-    response = await say(w, model, browser, sync(people=[away["display_name"]], time="10:00"))
+    response = await say(w, model, team.staff, sync(people=[away["display_name"]], time="10:00"))
     text = answer_of(response)
     assert text == NOT_AVAILABLE
     assert "leave" not in response.text.lower() and "annual" not in response.text.lower()
     assert await _proposal_count(w) == 0 and await bookings(w) == []
+
+
+async def test_an_admin_gets_leave_as_a_warning_and_confirming_acknowledges(
+    planned, team: Team
+) -> None:  # noqa: F811
+    """The owner's table is the tab's, the assistant's and the bot's alike: Admin, a warning then
+    allowed. The warning is the plain sentence; nothing says why."""
+    w, model = planned
+    away = await person_on_leave(team, DAY, DAY)
+    response = await say(w, model, team.admin, sync(people=[away["display_name"]], time="10:00"))
+    card = card_of(response)
+    assert fields_of(card)["Heads up"] == NOT_AVAILABLE
+    assert card["card"]["expected_version"].startswith("book;ack=unavailable;")
+    assert "leave" not in response.text.lower() and "annual" not in response.text.lower()
+    done = await confirm(w, team.admin, card)
+    assert done.status_code == 200, done.text
+    assert "leave" not in done.text.lower()
+    (made,) = await bookings(w)
+    assert made["source"] == "assistant"
 
 
 async def test_a_time_taken_before_confirm_says_so_and_books_nothing_more(
@@ -330,12 +347,11 @@ async def test_a_time_taken_before_confirm_says_so_and_books_nothing_more(
     )
 
 
-async def test_the_database_has_the_last_word_when_the_slot_goes_at_execute(
+async def test_a_slot_taken_before_the_write_is_slot_taken_in_the_assistants_words(
     planned,  # noqa: F811
     team: Team,
 ) -> None:
-    """A booking that lands between the card and the write is still `slot_taken`, in the
-    assistant's own words."""
+    """A booking that lands before the write is `slot_taken`, in the assistant's own words."""
     w, _ = planned
     aina = await make_person(team, "Aina Salleh")
     await booked(team, team.admin, meeting(aina, start=at(10)))
@@ -478,7 +494,7 @@ async def test_a_platform_admin_acts_only_for_the_chosen_company(planned, team: 
     assert [str(r["client_id"]) for r in rows] == [theirs] and mine != theirs
 
 
-async def test_the_assistant_offers_bookings_only_while_the_tab_is_open(
+async def test_the_assistant_offers_bookings_exactly_while_the_tab_is_open(
     planned, team: Team
 ) -> None:  # noqa: F811
     w, model = planned
@@ -491,9 +507,11 @@ async def test_the_assistant_offers_bookings_only_while_the_tab_is_open(
     facts = model.facts()
     assert facts["bookings"]["timezone"] == "UTC" and facts["bookings"]["can_change"] is True
     assert len(facts["bookings"]["now_local"]) == 16
+    # Whatever the words and the tab: the gate alone decides, so "alihkan temujanji" and
+    # "is Aina busy" reach the model with the company's clock.
     model.reply({"action": "answer", "markdown": "Hello."})
     other = await _turn(w, team.staff, await _thread(w, team.staff), "Say hello", "overview")
-    assert other.status_code == 201 and model.facts()["bookings"] is None
+    assert other.status_code == 201 and model.facts()["bookings"]["can_change"] is True
     await w.q("UPDATE console_service_packages SET status = 'suspended' WHERE package = 'bookings'")
     model.reply(sync(people=["Aina"]))
     closed = await _turn(w, team.staff, await _thread(w, team.staff), "Book Aina", "overview")
@@ -698,3 +716,92 @@ async def test_the_card_route_makes_an_english_card_for_a_tab_origin(planned, te
         team.staff, PROPOSALS, {"kind": "booking_action", "payload": {"change": "cancel"}}
     )
     assert bad.status_code == 422
+
+
+# --- who is picked, the picked people at Confirm, and mail ------------------------------------
+
+
+async def test_a_pooled_type_shows_who_was_picked_and_a_changed_pick_is_stale(
+    planned,  # noqa: F811
+    team: Team,
+) -> None:
+    w, model = planned
+    first = await make_person(team, "Aina Salleh")
+    second = await make_person(team, "Siti Aminah")
+    await make_type(team, name="Haircut", delivery="any", person_ids=[first["id"], second["id"]])
+    ask = plan(change="book", booking_type="Haircut", day=DAY, time="11:00")
+    card = card_of(await say(w, model, team.staff, ask))
+    picked = fields_of(card)["With"]
+    assert picked in ("Aina Salleh", "Siti Aminah")
+    chosen = first if picked == "Aina Salleh" else second
+    assert f"people={chosen['id']}" in card["card"]["expected_version"]
+    # Someone else takes that person at that time: Confirm would pick the other, which the card
+    # never showed, so it is refused as changed and nothing is booked by the assistant.
+    rival = await team.send(
+        team.admin, "/bookings", meeting(chosen, start=at(11), title="Rival", minutes=30)
+    )
+    assert rival.status_code == 201, rival.text
+    stale = await confirm(w, team.staff, card)
+    assert stale.status_code == 409 and stale.json()["detail"] == "proposal_stale"
+    assert [b["source"] for b in await bookings(w)] == ["staff"]
+    # Asked again, the other person is the one on the card, and Confirm books them.
+    again = card_of(await say(w, model, team.staff, ask))
+    assert fields_of(again)["With"] != picked
+    done = await confirm(w, team.staff, again)
+    assert done.status_code == 200, done.text
+    assert sorted(b["source"] for b in await bookings(w)) == ["assistant", "staff"]
+
+
+async def test_execute_refuses_people_other_than_the_card_bound(planned, team: Team) -> None:  # noqa: F811
+    """The write itself checks the bound crew, whatever the card step saw."""
+    w, _ = planned
+    aina = await make_person(team, "Aina Salleh")
+    request: Any = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=w.pool)))
+    payload = {"change": "book", "title": "Crew", "minutes": 30, "starts_at": at(13),
+               "people": [aina["id"]]}  # fmt: skip
+    with pytest.raises(HTTPException) as caught:
+        await BookingActionExecutor().execute(
+            request,
+            _actor(team.staff_info),
+            UUID(w.tenants[0]),
+            payload,
+            proposal_id=uuid.uuid4(),
+            expected_version=f"book;ack=;people={uuid.uuid4()};rooms=",
+            origin="assistant",
+        )
+    assert caught.value.detail == "proposal_stale" and await bookings(w) == []
+
+
+async def test_include_me_books_the_callers_own_person(planned, team: Team) -> None:  # noqa: F811
+    w, model = planned
+    unlinked = await say(w, model, team.staff, sync(include_me=True))
+    assert "aren't on the list of people who can be booked" in answer_of(unlinked)
+    await make_person(team, "Staff Account", user_id=team.staff_info["user"]["id"])
+    card = card_of(await say(w, model, team.staff, sync(include_me=True)))
+    assert fields_of(card)["With"] == "Staff Account"
+    assert (await confirm(w, team.staff, card)).status_code == 200
+
+
+async def test_an_assistant_move_and_cancel_mail_the_customer_like_the_tab(
+    planned,  # noqa: F811
+    team: Team,
+) -> None:
+    w, model = planned
+    transport = FakeTransport()
+    w.app.state.mailer = Mailer(transport, SENDER)
+    aina = await make_person(team, "Aina Salleh")
+    who = await contact(w, "Mei Ling", "mei.ling@example.test")
+    one = await booked(team, team.staff, meeting(aina, start=at(10), contact_id=who))
+    transport.sent.clear()
+    shift = plan(change="move", booking_id=one["id"], time="14:00")
+    move = card_of(await say(w, model, team.staff, shift))
+    moved = await confirm(w, team.staff, move)
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["result"]["email"] == "sent" and moved.json()["result"]["customer_told"]
+    assert transport.to() == ["mei.ling@example.test"]
+    transport.sent.clear()
+    gone = card_of(await say(w, model, team.staff, plan(change="cancel", booking_id=one["id"])))
+    cancelled = await confirm(w, team.staff, gone)
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["result"]["email"] == "sent"
+    assert transport.to() == ["mei.ling@example.test"]

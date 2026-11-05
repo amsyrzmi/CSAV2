@@ -450,7 +450,7 @@ def test_0531_keeps_a_kind_it_does_not_know() -> None:
     assert "hr_person" not in code and "email_send" not in code
 
 
-# Migrations that already redefine one of the two constraints (found by searching db/migrations).
+# Migrations that already redefine one of the three constraints (found by searching db/migrations).
 # Any other migration that names either must be numbered above 0531 or read the current list.
 KNOWN_REBUILDS = {"0460", "0480", "0484", "0521", "0531"}
 
@@ -463,7 +463,7 @@ def migrations_that_rebuild_the_constraints(
     for version, path in migrations or migrate.discover_migrations():
         text = path.read_text(encoding="utf-8")
         code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("--"))
-        names_one = PROPOSALS_CHECK in code or TURNS_CHECK in code
+        names_one = any(name in code for name in (PROPOSALS_CHECK, TURNS_CHECK, PAGE_CHECK))
         if not names_one or version in KNOWN_REBUILDS or version > "0531":
             continue
         if "pg_get_constraintdef" not in code:
@@ -480,10 +480,24 @@ def test_no_migration_below_0531_rebuilds_the_assistant_constraints_from_a_fixed
     named = {
         v
         for v, p in migrate.discover_migrations()
-        if PROPOSALS_CHECK in p.read_text(encoding="utf-8")
-        or TURNS_CHECK in p.read_text(encoding="utf-8")
+        if any(
+            name in p.read_text(encoding="utf-8")
+            for name in (PROPOSALS_CHECK, TURNS_CHECK, PAGE_CHECK)
+        )
     }
     assert named == KNOWN_REBUILDS
+
+
+def test_the_scan_also_watches_the_page_key_constraint(tmp_path: Path) -> None:
+    fixed = tmp_path / "0523_synthetic_pages.sql"
+    fixed.write_text(
+        "ALTER TABLE public.console_workspace_turns DROP CONSTRAINT"
+        " console_workspace_turns_page_key_check;\n"
+        "ALTER TABLE public.console_workspace_turns ADD CONSTRAINT"
+        " console_workspace_turns_page_key_check CHECK (page_key IN ('overview'));\n",
+        encoding="utf-8",
+    )
+    assert migrations_that_rebuild_the_constraints([("0523", fixed)]) == [fixed.name]
 
 
 def test_the_scan_catches_a_fixed_list_below_0531(tmp_path: Path) -> None:

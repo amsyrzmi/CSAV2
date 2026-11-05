@@ -911,14 +911,6 @@ _PEOPLE_WORDS = re.compile(
     r"|pengurus|jabatan|berhenti|letak jawatan|hari terakhir|melapor kepada|siapa dalam)\b",
     re.IGNORECASE,
 )
-# The message is about bookings (free times, booking, moving, cancelling) in English or Malay;
-# loads the company's clock for the planner (booking_facts).
-_BOOKING_WORDS = re.compile(
-    r"\b(book(?:s|ed|ing|ings)?|appointments?|meetings?|schedul\w*|reschedul\w*|free|available"
-    r"|availability|slots?|rooms?|move|cancel\w*|tempah\w*|janji temu|mesyuarat|jadual|batal\w*"
-    r"|kosong|lapang|tersedia|bilik|alih)\b",
-    re.IGNORECASE,
-)
 _EMPLOYEE_ID = re.compile(
     r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
 )
@@ -1048,9 +1040,9 @@ async def planner_facts(
     people = None
     if _PEOPLE_WORDS.search(turn.body):
         people = await hr_people.people_access(request, actor, client_id, packages)
-    booked = None
-    if _BOOKING_WORDS.search(turn.body) or (context is not None and context.tab == "bookings"):
-        booked = await booking_facts(request, actor, client_id, packages)
+    # Whatever the words and the tab: a company with Bookings open always gives the model its
+    # clock (one time-zone read), so no phrasing is wrongly told that bookings are unavailable.
+    booked = await booking_facts(request, actor, client_id, packages)
     return PlannerFacts(
         role=actor.role,
         packages=packages,
@@ -1070,7 +1062,7 @@ async def planner_facts(
 async def booking_facts(
     request: Request, actor: ConsoleActor, client_id: UUID, packages: list[PackageState]
 ) -> BookingFacts | None:
-    """The company's clock, only while the Bookings tab is open to this company."""
+    """The company's clock, only while the Bookings tab is open to this company (else None)."""
     if not _unlocked(packages, _TAB_GATES["bookings"]):
         return None
     async with tx(request.app.state.pool, str(client_id)) as conn:

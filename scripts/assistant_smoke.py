@@ -79,7 +79,6 @@ from csa.workspace.rules import (
     tab_available,
 )
 from csa.workspace.service import (
-    _BOOKING_WORDS,
     _MAIL_WORDS,
     _MANAGER_WORDS,
     _PEOPLE_WORDS,
@@ -280,7 +279,7 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
         my_team=preset.team if _TEAM_WORDS.search(message) else None,
         my_employee=preset.employee if _TRAINING_WORDS.search(message) else None,
         people_access=preset.people_access if _PEOPLE_WORDS.search(message) else None,
-        bookings=_booking_facts(preset) if _BOOKING_WORDS.search(message) else None,
+        bookings=_booking_facts(preset),
     )
 
 

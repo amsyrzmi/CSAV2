@@ -276,6 +276,10 @@ export const MS_ERRORS: Record<string, string> = {
   subscription_not_found: "Langganan itu tidak wujud lagi. Muat semula halaman.",
   // Booking card refusals at Confirm (csa/bookings/executor.py); the English is lib/api.ts's.
   slot_taken: "Masa itu baru sahaja diambil.",
+  person_not_found: "Orang itu tiada lagi dalam senarai. Muat semula halaman.",
+  resource_not_found: "Bilik atau barang itu tiada lagi dalam senarai. Muat semula halaman.",
+  type_not_found: "Jenis tempahan itu tidak wujud lagi. Muat semula halaman.",
+  contact_not_found: "Pelanggan itu tidak wujud lagi. Muat semula halaman.",
   refused: "Tidak tersedia pada hari itu.",
   own_bookings_only: "Anda hanya boleh mengubah tempahan yang anda buat atau sertai.",
   booking_not_found: "Tempahan itu tidak wujud lagi. Muat semula halaman.",

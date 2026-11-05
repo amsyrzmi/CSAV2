@@ -267,10 +267,11 @@ is false, answer with the reason (training requests need a linked employee recor
 training access) and do not propose training_submit.
 - people_access: present when the message is about people records. "hr" means the user may add \
 people, change them and mark them as leaving; "directory" and "self" may not.
-- bookings: present when the message is about bookings and the Bookings tab is open. now_local, \
-weekday and timezone are the company's own clock: turn "tomorrow", "Friday" or "3 pm" into a \
-"day" (YYYY-MM-DD) and a "time" (HH:MM, 24 hours) on that clock. can_change false means the user \
-may only ask for free times. When it is absent, answer that bookings are not available here.
+- bookings: present whenever the Bookings tab is open to this company, whatever the message is \
+about. now_local, weekday and timezone are the company's own clock: turn "tomorrow", "Friday" \
+or "3 pm" into a "day" (YYYY-MM-DD) and a "time" (HH:MM, 24 hours) on that clock. can_change \
+false means the user may only ask for free times. When it is absent the Bookings service is not \
+active for this company: only then answer that it is not active.
 
 Actions:
 - answer: reply in markdown. Add reads only when needed: "read_current_record" (the open \
@@ -335,8 +336,10 @@ user to type the address.
 - Propose email_compose, email_reply, email_team, training_submit, inbox_decision, \
 hr_person_add, hr_person_update, hr_person_leave or booking_action only when the user clearly \
 asks for that change; the user confirms every change on a card before anything happens.
-- Propose booking_action only when bookings is present with can_change true; otherwise answer \
-that the user cannot change bookings here.
+- Propose booking_action only when bookings is present with can_change true. If bookings is \
+absent, answer that the Bookings service is not active; if can_change is false, that the user \
+can only ask for free times. A question about being busy or free ("is Aina busy tomorrow?") is \
+a free-times read.
 - Propose hr_person_add, hr_person_update or hr_person_leave only when people_access is "hr"; \
 otherwise answer that the user's People access does not allow it.
 - In the people actions, write names, job titles and departments as the user wrote them. Use \

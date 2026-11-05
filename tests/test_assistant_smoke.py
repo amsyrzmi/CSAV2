@@ -533,9 +533,13 @@ def test_booking_cases_use_the_booking_presets() -> None:
             assert facts.bookings.can_change is (case.facts.preset == "staff_bookings"), case_id
     viewer = cases["booking_book-en-2"]
     assert viewer.expect.actions == ["answer"] and viewer.expect.not_actions == ["booking_action"]
-    # A message that is not about bookings carries no booking facts, whatever the preset.
+    # Whatever the words, a company with Bookings open gives the model its clock; one with the
+    # tab closed (the other presets) gives none.
     other = cases["navigate-en-1"].model_copy(update={"facts": cases["booking_book-en-1"].facts})
-    assert smoke.build_facts(other).bookings is None
+    assert smoke.build_facts(other).bookings is not None
+    for case_id in ("booking_move-ms-2", "booking_free-en-2"):
+        assert smoke.build_facts(cases[case_id]).bookings is not None, case_id
+    assert smoke.build_facts(cases["navigate-en-1"]).bookings is None
 
 
 def test_smoke_checks_the_expected_reads(capsys: pytest.CaptureFixture[str]) -> None:

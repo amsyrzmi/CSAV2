@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 68 model calls (one planner call per case plus one drafting call per draft case),
-  up to about 125 when cases are re-planned.
+- A run is about 70 model calls (one planner call per case plus one drafting call per draft case),
+  up to about 129 when cases are re-planned.
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -183,17 +183,20 @@ and the sentences are for a person to read. Use synthetic people and your own ma
 | Please book Room B for a meeting tomorrow at 2 pm | Read-only member (the model only sees "may ask free times") | An answer and no booking_action | `booking_book-en-2` |
 | Move my 3 pm with Aina tomorrow to 4 pm | Staff who made that booking | A booking_action with change move | `booking_move-en-1` |
 | Tolong alih mesyuarat saya dengan Aina esok ke pukul 4 petang | Same, in Malay | A booking_action with change move | `booking_move-ms-1` |
+| Tolong alihkan temujanji saya dengan Aina esok ke pukul 4 petang | Staff who made that booking, on any tab (the clock reaches the model whatever the words) | A booking_action with change move | `booking_move-ms-2` |
 | Cancel my 3 pm meeting with Aina tomorrow | Staff who made that booking | A booking_action with change cancel | `booking_cancel-en-1` |
 | Tolong batalkan mesyuarat saya dengan Aina esok | Same, in Malay | A booking_action with change cancel | `booking_cancel-ms-1` |
 | When is Aina free tomorrow? | Any member, Bookings active | An answer that carries the booking_availability read | `booking_free-en-1` |
 | Bila Aina ada masa kosong esok? | Same, in Malay | An answer that carries the booking_availability read | `booking_free-ms-1` |
+| Is Aina busy tomorrow? | Any member, on any tab, Bookings active | An answer that carries the booking_availability read | `booking_free-en-2` |
 | Book Room A tomorrow at 3 pm with Aina, then read the card | Staff; Aina free, inside working hours | Card "Book ..." with What, When (the company's local time), Length, With, Room and, when the type has them, Where and Customer; Confirm books it once and the Bookings tab shows it; the customer, if there is one, is mailed | manual |
 | Tolong tempah bilik A esok pukul 3 petang dengan Aina | Same, in Malay | The same card with Malay labels (Apa, Bila, Tempoh, Bersama, Bilik), and the same booking on Confirm | manual |
 | Book a haircut for Aina tomorrow | A type that names its person, no time given | A question asking when, with no card | manual |
 | Book a meeting with Aina | Two people called Aina | "Which Aina do you mean?" with two options, and no address in them; picking one gives a card | manual |
 | Book Aina tomorrow at 7 pm | Hours end at 6 pm | The card shows "Heads up: Outside working hours." and Confirm books it | manual |
 | Book Aina on a closed day | A closed day set on that date | The card shows "Heads up: This is a closed day." and Confirm books it | manual |
-| Book someone who has approved leave that day | Staff, then an Admin | "Not available that day." with no card, and no word about why | manual |
+| Book someone who has approved leave that day | Staff | "Not available that day." with no card, and no word about why | manual |
+| Book someone who has approved leave that day | An Admin | The card shows "Heads up: Not available that day." with no word about why, and Confirm books it (the owner's table: an Admin gets a warning, then allowed) | manual |
 | Confirm a card after the time was booked in the Bookings tab | Make the card, book the same time in the tab, then Confirm | "That time was just taken." and no second booking | manual |
 | Move my 10 am with Aina to 2 pm, then Confirm after moving it in the tab | Make the card, move the booking in the tab, then Confirm | The card is refused as changed; nothing moves | manual |
 | Cancel that booking and Confirm twice | Staff who made it | Cancelled once, the time is free again, and the second Confirm shows the same result | manual |

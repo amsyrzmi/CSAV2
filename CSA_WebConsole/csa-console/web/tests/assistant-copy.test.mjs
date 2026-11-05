@@ -72,6 +72,7 @@ const LISTED = [
   "slot_taken", "refused", "own_bookings_only", "booking_not_found", "wrong_status",
   "person_inactive", "resource_inactive", "type_inactive", "nobody_to_book", "no_room_available",
   "people_required", "times_invalid", "bookings changes require staff or an administrator",
+  "person_not_found", "resource_not_found", "type_not_found", "contact_not_found",
 ];
 // One home per sentence: these three live in the email table, so MS_ERRORS must not copy them.
 const EMAIL_OWNED = ["mailbox_not_connected", "email_model_unavailable", "recipients_invalid"];

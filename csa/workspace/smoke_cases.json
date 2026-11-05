@@ -923,5 +923,42 @@
         "booking_action"
       ]
     }
+  },
+  {
+    "id": "booking_move-ms-2",
+    "language": "ms",
+    "message": "Tolong alihkan temujanji saya dengan Aina esok ke pukul 4 petang",
+    "facts": {
+      "preset": "staff_bookings",
+      "page_tab": "overview"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "move"
+      }
+    }
+  },
+  {
+    "id": "booking_free-en-2",
+    "language": "en",
+    "message": "Is Aina busy tomorrow?",
+    "facts": {
+      "preset": "staff_bookings",
+      "page_tab": "overview"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "reads": [
+        "booking_availability"
+      ],
+      "not_actions": [
+        "booking_action"
+      ]
+    }
   }
 ]

@@ -65,8 +65,11 @@ from csa.workspace.rules import TAB_GATES, unlocked
 Resolved = AnswerProposal | ClarificationProposal | PreparedProposal
 Conn = service.Conn
 
-# The findings a confirm may acknowledge, because the card showed them. Leave never is.
+# The findings a confirm may acknowledge, because the card showed them. An Admin may also
+# acknowledge "unavailable" (the owner's table: Admin gets a warning, then allowed); staff are
+# refused it before it can be a warning. It is only ever the plain sentence, never why.
 WARNINGS = ("closed_day", "outside_hours")
+ADMIN_WARNINGS = (*WARNINGS, "unavailable")
 MAX_OPTIONS = 5
 OPTION_LABEL = 100
 MAX_FREE_LINES = 6
@@ -551,7 +554,7 @@ def _not_available() -> ProposalActionRefused:
 
 
 async def _rehearse(
-    request: Request, client_id: UUID, run: Rehearsal
+    request: Request, client_id: UUID, run: Rehearsal, *, admin: bool = False
 ) -> tuple[_Seen, tuple[str, ...]]:
     """Run ``run`` in a transaction that is rolled back; the warnings it needed, with the sight.
 
@@ -574,7 +577,7 @@ async def _rehearse(
             raise _refusal(exc) from None
         listed = exc.body.get("findings")
         findings = [str(f) for f in listed] if isinstance(listed, list) else []
-        if not set(findings) <= set(WARNINGS):
+        if not set(findings) <= set(ADMIN_WARNINGS if admin else WARNINGS):
             raise _not_available() from None
         try:
             return await attempt(findings), tuple(sorted(findings))
@@ -705,7 +708,8 @@ class BookingActionExecutor:
         await self.gate(request, actor, client_id, origin=origin)
         text = _CARD_TEXT[language]
         run = self._rehearsal(client_id, actor, data)
-        seen, warnings = await _rehearse(request, client_id, run)
+        admin = service.acting_as(actor) == "admin"
+        seen, warnings = await _rehearse(request, client_id, run, admin=admin)
         record = seen.old or seen.record
         when = format_slot(seen.record.starts_at, seen.zone)
         what = _what(seen.record, seen.types, text)
