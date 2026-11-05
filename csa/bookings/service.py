@@ -209,6 +209,11 @@ class BookingRecord:
     # Set on the record a staff cancel or move answers with, when a pending request to move the
     # booking was withdrawn in the same transaction.
     withdrew_change: bool = False
+    # On a request to move a booking: when that booking is. On a booking: the live request to move
+    # it. Both are read in the same pass, so a console showing one week still knows about the other.
+    replaces_starts_at: datetime | None = None
+    replaces_ends_at: datetime | None = None
+    pending_change_id: UUID | None = None
 
 
 def involved(record: BookingRecord, user_id: UUID) -> bool:
@@ -284,6 +289,9 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
         can_change=may_change(record, viewer),
         source=record.source,  # type: ignore[arg-type]
         replaces_booking_id=record.replaces_booking_id,
+        replaces_starts_at=record.replaces_starts_at,
+        replaces_ends_at=record.replaces_ends_at,
+        pending_change_id=record.pending_change_id,
     )
 
 
@@ -491,6 +499,9 @@ async def read_records(
             guests=tuple(guests.get(row["id"], ())),
             conflict=row["id"] in conflicts,
             replaces_booking_id=row["replaces_booking_id"],
+            replaces_starts_at=row["replaces_starts_at"],
+            replaces_ends_at=row["replaces_ends_at"],
+            pending_change_id=row["pending_change_id"],
             source=row["source"],
             conversation_id=row["conversation_id"],
             cancel_reason=row["cancel_reason"],

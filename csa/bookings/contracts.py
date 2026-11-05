@@ -441,6 +441,14 @@ class BookingOut(Contract):
     # Null on a private meeting the viewer is not part of.
     source: Literal["staff", "assistant", "bot"] | None = None
     replaces_booking_id: UUID | None = None
+    # On a request to move a booking: the time of that booking, so a console showing the request's
+    # week can say what it replaces whichever week the booking is in. Null on anything else.
+    replaces_starts_at: datetime | None = None
+    replaces_ends_at: datetime | None = None
+    # On a booking: the pending request to move it, when one waits (null once it is answered or
+    # withdrawn). Moving or cancelling the booking withdraws that request. Null on a private
+    # meeting the viewer is not part of.
+    pending_change_id: UUID | None = None
 
 
 class BookingSlotOut(Contract):

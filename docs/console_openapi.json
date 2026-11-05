@@ -2313,6 +2313,18 @@
             ],
             "title": "Meeting Link"
           },
+          "pending_change_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Change Id"
+          },
           "people": {
             "items": {
               "$ref": "#/components/schemas/BookingPersonRef"
@@ -2339,6 +2351,30 @@
               }
             ],
             "title": "Replaces Booking Id"
+          },
+          "replaces_ends_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replaces Ends At"
+          },
+          "replaces_starts_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replaces Starts At"
           },
           "resources": {
             "items": {

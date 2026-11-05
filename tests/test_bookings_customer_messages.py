@@ -944,6 +944,66 @@ async def test_the_api_says_who_made_a_booking_and_what_it_replaces(shop: Shop) 
     assert by_id[str(asked.booking.id)]["replaces_booking_id"] == str(old.booking.id)
 
 
+async def week_of(shop: Shop, start: str, end: str) -> dict[str, Any]:
+    shown = await shop.team.admin.get(f"{BASE}/calendar?from={start}T00:00:00Z&to={end}T00:00:00Z")
+    assert isinstance(shown, httpx.Response) and shown.status_code == 200
+    return {b["id"]: b for b in shown.json()["items"]}
+
+
+def utc(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+async def test_the_api_names_what_a_request_replaces_and_which_request_waits(shop: Shop) -> None:
+    """The request and its booking can be on different weeks: each says so on its own."""
+    kind = await a_type(shop)
+    next_week = ELEVEN + timedelta(days=7)
+    old, asked = await pending_change(shop, kind, await shop.customer(), next_week)
+    assert old.booking is not None and asked.booking is not None
+    first = await week_of(shop, TUESDAY, "2031-03-05")
+    assert list(first) == [str(old.booking.id)]
+    original = first[str(old.booking.id)]
+    assert original["pending_change_id"] == str(asked.booking.id)
+    assert original["replaces_starts_at"] is None and original["replaces_ends_at"] is None
+    second = await week_of(shop, "2031-03-11", "2031-03-12")
+    assert list(second) == [str(asked.booking.id)]
+    request = second[str(asked.booking.id)]
+    assert utc(request["starts_at"]) == next_week
+    assert utc(request["replaces_starts_at"]) == TEN
+    assert utc(request["replaces_ends_at"]) == utc(original["ends_at"])
+    assert request["pending_change_id"] is None
+
+
+async def test_a_confirmed_request_leaves_no_waiting_change_and_no_replaced_time(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    old, asked = await pending_change(shop, kind, await shop.customer(), ELEVEN)
+    assert old.booking is not None and asked.booking is not None
+    done = await shop.team.send(
+        shop.team.admin, f"/bookings/{asked.booking.id}/confirm", {"version": asked.booking.version}
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["pending_change_id"] is None
+    assert done.json()["replaces_starts_at"] is None
+    seen = await week_of(shop, TUESDAY, "2031-03-05")
+    assert list(seen) == [str(old.booking.id)]
+    assert seen[str(old.booking.id)]["pending_change_id"] is None
+
+
+async def test_a_redacted_private_meeting_says_nothing_about_requests(shop: Shop) -> None:
+    aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
+    await booked(shop.team, shop.team.admin, meeting(aina, start=at(12), private=True))
+    seen = await shop.team.staff.get(
+        f"{BASE}/calendar?from={TUESDAY}T00:00:00Z&to=2031-03-05T00:00:00Z"
+    )
+    assert isinstance(seen, httpx.Response) and seen.status_code == 200
+    (item,) = seen.json()["items"]
+    assert item["redacted"] is True
+    assert item["pending_change_id"] is None and item["replaces_starts_at"] is None
+    assert item["replaces_ends_at"] is None
+
+
 # --- fix round 1 ----------------------------------------------------------------------------------
 
 

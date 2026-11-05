@@ -22,7 +22,7 @@ const {
   bookingTitle, mapsLink, wazeLink, safeMeetingLink, canChangeBooking,
   emptyBookingForm, bookingProblem, formToBookingIn, isPhone, entriesOnDay,
   inactiveNotes, customerNote, switchedOffPeople, severalSwitchedOff,
-  settingsToForm, settingsProblem, formToSettingsIn, momentText, changeMarks, sourceNote, isChangeRequest,
+  settingsToForm, settingsProblem, formToSettingsIn, momentText, askedText, sourceNote, isChangeRequest,
 } = view;
 
 const week = (opens, closes, days = [0, 1, 2, 3, 4]) => days.map((weekday) => ({ weekday, opens, closes }));
@@ -596,19 +596,27 @@ const live = (id, extra = {}) => ({
   ends_at: "2026-11-05T02:00:00Z", ...extra,
 });
 
-test("a pending change reads as 'Asked to move from … to …', and its original is marked as waiting", () => {
+test("a pending change reads as 'Asked to move from … to …', from the times the server sent", () => {
   const zone = "Asia/Kuala_Lumpur";
-  const marks = changeMarks([live("a"), asked("r", "a"), live("b")], zone);
-  assert.equal(marks.asked.get("r"), "Asked to move from 5 Nov 2026, 09:00 to 9 Nov 2026, 10:00");
-  assert.deepEqual([...marks.asked.keys()], ["r"]);
-  assert.deepEqual([...marks.waiting], ["a"]);
-  assert.equal(changeMarks([live("a")], zone).asked.size, 0);
+  // The original need not be on the same week: its time comes with the request.
+  const request = asked("r", "a", {
+    replaces_starts_at: "2026-11-02T01:00:00Z", replaces_ends_at: "2026-11-02T02:00:00Z",
+  });
+  assert.equal(askedText(request, zone), "Asked to move from 2 Nov 2026, 09:00 to 9 Nov 2026, 10:00");
+  assert.equal(
+    askedText(request, "America/New_York"),
+    "Asked to move from 1 Nov 2026, 20:00 to 8 Nov 2026, 21:00",
+  );
 });
 
-test("a change whose original is not on this week's calendar still names the new time", () => {
-  const marks = changeMarks([asked("r", "gone")], "Asia/Kuala_Lumpur");
-  assert.equal(marks.asked.get("r"), "Asked to move to 9 Nov 2026, 10:00");
-  assert.deepEqual([...marks.waiting], ["gone"]);
+test("only a live request that carries its original's time reads as a change", () => {
+  const zone = "Asia/Kuala_Lumpur";
+  assert.equal(askedText(live("a"), zone), null);
+  assert.equal(askedText(asked("r", "a"), zone), null);
+  assert.equal(askedText(asked("r", "a", {
+    status: "cancelled", replaces_starts_at: "2026-11-02T01:00:00Z",
+  }), zone), null);
+  assert.equal(askedText({ ...live("a"), replaces_starts_at: "2026-11-02T01:00:00Z" }, zone), null);
 });
 
 test("only a pending booking with an original is a change request", () => {

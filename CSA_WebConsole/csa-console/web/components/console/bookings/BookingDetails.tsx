@@ -9,6 +9,7 @@ import {
   type BookingOut,
 } from "@/lib/bookings-api";
 import {
+  askedText,
   bookingTitle,
   blockWhen,
   dayInZone,
@@ -39,6 +40,8 @@ const STATUS: Record<string, { text: string; tone: StatusTone }> = {
   cancelled: { text: "Cancelled", tone: "neutral" },
 };
 
+const WITHDRAWS = "This also withdraws the customer's request to move it.";
+
 const POSTS: Record<Exclude<Change, "moved">, BookingAction> = {
   cancelled: "cancel",
   confirmed: "confirm",
@@ -65,8 +68,6 @@ export default function BookingDetails({
   zone,
   booking,
   canChange,
-  asked,
-  waiting,
   onClose,
   onChanged,
   onReload,
@@ -75,10 +76,6 @@ export default function BookingDetails({
   zone: string;
   booking: BookingOut;
   canChange: boolean;
-  /** For a customer's request to move a booking: what it asks, as a sentence. */
-  asked: string | null;
-  /** A request to move this booking is waiting for staff. */
-  waiting: boolean;
   onClose: () => void;
   onChanged: (booking: BookingOut, change: Change) => void;
   /** The booking changed under us: close this and read the calendar again. */
@@ -95,6 +92,9 @@ export default function BookingDetails({
   const status = STATUS[booking.status];
   const title = bookingTitle(booking);
   const request = isChangeRequest(booking);
+  const asked = askedText(booking, zone);
+  // A request to move this booking waits: moving or cancelling the booking withdraws it.
+  const waiting = Boolean(booking.pending_change_id) && !request;
   const source = sourceNote(booking);
   const [now] = useState(() => Date.now());
   const started = new Date(booking.starts_at).getTime() <= now;
@@ -253,6 +253,7 @@ export default function BookingDetails({
                   onChange={(event) => { setTime(event.target.value); setRefusal(null); }} />
               </Field>
             </div>
+            {waiting && <p className={mutedText} data-testid="details-withdraws">{WITHDRAWS}</p>}
             {!booking.redacted && day && (
               <FreeTimes scope={scope} zone={zone} day={day} time={time} onPick={setTime} round={round}
                 query={{
@@ -279,6 +280,7 @@ export default function BookingDetails({
                 ? "Decline this request? The booking stays on its time."
                 : `${ask === "cancelled" ? "Cancel this booking?" : "Decline this booking?"} Everyone on it who has an email address is told.`}
             </p>
+            {waiting && <p className="text-sm" data-testid="details-withdraws">{WITHDRAWS}</p>}
             <div className="flex flex-wrap gap-2">
               <button type="button" className={action} disabled={busy} data-testid="details-ask-yes"
                 onClick={() => post(ask)}>

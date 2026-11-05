@@ -123,7 +123,7 @@ function Editor({ scope, settings, data }: { scope: BookingsScope; settings: Loa
 /** The reminder time, how long a request waits, and the customer limit: read by all, changed by an Admin. */
 export default function BookingSettingsPanel({ scope, settings }: { scope: BookingsScope; settings: Loaded<BookingSettings> }) {
   let body: ReactNode;
-  if (settings.error && !settings.data) body = <Notice error>{settings.error}</Notice>;
+  if (settings.error && !settings.data) body = <Notice error testId="settings-load-error">{settings.error}</Notice>;
   else if (!settings.data) body = <p role="status" className={mutedText}>Loading settings…</p>;
   else if (scope.canEdit) body = <Editor scope={scope} settings={settings} data={settings.data} />;
   else body = <Values settings={settings.data} />;

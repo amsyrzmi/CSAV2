@@ -578,39 +578,16 @@ export function sourceNote(booking: { redacted: boolean; source?: string | null 
   return !booking.redacted && booking.source === "bot" ? "Booked by the customer" : null;
 }
 
-export interface ChangeMarks {
-  /** For each request to move a booking (by the request's id): what it asks, as a sentence. */
-  asked: Map<string, string>;
-  /** The ids of bookings a request is waiting to move. */
-  waiting: Set<string>;
-}
-
 /**
- * Reads the requests among the bookings on screen. The original may be on another week than its
- * request, and then only the new time can be named.
+ * What a customer's request to move a booking asks, from the times the server sent with it: the
+ * booking it replaces may be on another week than the one on screen. Null for anything else.
  */
-export function changeMarks(
-  items: {
-    id: string;
-    status: string;
-    replaces_booking_id?: string | null;
-    starts_at: string;
-    ends_at: string;
-  }[],
+export function askedText(
+  booking: { status: string; replaces_booking_id?: string | null; replaces_starts_at?: string | null; starts_at: string },
   zone: string,
-): ChangeMarks {
-  const marks: ChangeMarks = { asked: new Map(), waiting: new Set() };
-  for (const item of items) {
-    if (!isChangeRequest(item) || !item.replaces_booking_id) continue;
-    const original = items.find((other) => other.id === item.replaces_booking_id);
-    const to = momentText(item.starts_at, zone);
-    marks.asked.set(
-      item.id,
-      original ? `Asked to move from ${momentText(original.starts_at, zone)} to ${to}` : `Asked to move to ${to}`,
-    );
-    marks.waiting.add(item.replaces_booking_id);
-  }
-  return marks;
+): string | null {
+  if (!isChangeRequest(booking) || !booking.replaces_starts_at) return null;
+  return `Asked to move from ${momentText(booking.replaces_starts_at, zone)} to ${momentText(booking.starts_at, zone)}`;
 }
 
 /** What a booking is called on the calendar. A private meeting the viewer is not part of is "Busy". */

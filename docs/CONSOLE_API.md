@@ -1594,7 +1594,12 @@ the booking id as target and no customer details.
 (null on a private meeting the viewer is not part of), and `replaces_booking_id` is set on a pending
 request to move another booking (the customer asked to move a confirmed booking and staff have not
 answered). A request holds its new time and is `pending`, so a client shows it beside the booking it
-would move.
+would move. The booking and its request can be on different weeks, so each says so on its own: a
+request carries `replaces_starts_at` and `replaces_ends_at` (when the booking it would move is, null
+on anything else), and a booking carries `pending_change_id` (the id of the live request to move it,
+null when none waits or once it is answered or withdrawn). All three are null on a private meeting
+the viewer is not part of. Moving or cancelling a booking withdraws its pending request in the same
+transaction, so a client says so before it does.
 
 - Confirming a request moves the booking it replaces, which keeps its `id`: the answer is that
   booking, `confirmed`, at the new time with a higher `version` (so the same calendar event is

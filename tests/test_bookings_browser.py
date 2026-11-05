@@ -134,6 +134,9 @@ def booking(booking_id: int, start: str, end: str, **extra: Any) -> dict[str, An
         "customer_told": None,
         "source": "staff",
         "replaces_booking_id": None,
+        "replaces_starts_at": None,
+        "replaces_ends_at": None,
+        "pending_change_id": None,
     } | extra
 
 
@@ -219,6 +222,8 @@ class World:
             "version": 0,
         }
         self.replies_off = False
+        # Customer support is suspended: replies are Off, and Services cannot turn them on.
+        self.replies_suspended = False
         self.settings_status = 200
         if rich:
             self.people = [
@@ -280,6 +285,15 @@ class World:
             return 404, {"detail": "not stubbed"}
         if path == "services/active" and method == "GET":
             return 200, {"packages": self.upstream.packages}
+        if path == "services/customer-replies" and method == "GET":
+            # The same read the Inbox banner makes: `replies_off` is only said while Customer
+            # support is active, because a suspended company can't turn replies on.
+            return 200, {
+                "mode": "off",
+                "brand_name": None,
+                "can_manage": role in {"tenant_admin", "platform_admin"},
+                "warnings": [] if self.replies_suspended else ["replies_off"],
+            }
         if not path.startswith("bookings/"):
             self.unexpected.append(f"{method} {path}?{params}")
             return 500, {"detail": "unexpected synthetic call"}
@@ -509,6 +523,9 @@ class World:
             replaced = next(
                 (b for b in self.bookings if b["id"] == row["replaces_booking_id"]), None
             )
+            if replaced is not None:
+                # Either answer closes the request, so its booking waits for nothing.
+                replaced["pending_change_id"] = None
             if action == "confirm" and replaced is not None:
                 # Confirming a request moves the booking it replaces, which keeps its id.
                 replaced.update(
@@ -1842,6 +1859,8 @@ def with_request(world: World, monday: date) -> tuple[dict[str, Any], dict[str, 
         status="pending",
         source="bot",
         replaces_booking_id=original["id"],
+        replaces_starts_at=original["starts_at"],
+        replaces_ends_at=original["ends_at"],
         customer={
             "id": "33333333-3333-4333-8333-000000000001",
             "full_name": CUSTOMER_NAME,
@@ -1850,6 +1869,7 @@ def with_request(world: World, monday: date) -> tuple[dict[str, Any], dict[str, 
             "given_email": "given@example.test",
         },
     )
+    original["pending_change_id"] = asked["id"]
     world.bookings = [original, asked]
     return original, asked
 
@@ -1895,20 +1915,51 @@ async def test_no_banner_when_replies_are_on_or_the_company_has_no_replies_setti
 ) -> None:
     async def body(browser: Any) -> None:
         # A Bookings-only company, or one whose replies are on, is told `replies_off: false`.
+        # The People & rooms page shows the settings once they are read, so the absence is checked
+        # after the answer has been drawn, never before it arrived.
         world = rich_world(site.upstream)
-        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
-            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
-            await until(lambda: any(c["path"] == "bookings/settings" for c in world.calls))
+        path = "/portal/bookings/people-and-rooms"
+        async with bookings_page(browser, site, world, path=path) as page:
+            await expect(page.get_by_test_id("settings-form")).to_be_visible(timeout=WAIT)
             await expect(page.get_by_test_id("bookings-replies-off")).to_have_count(0)
             assert "Customer replies are off" not in await page.content()
 
-        # If the settings cannot be read, the calendar still works and nothing is claimed.
+        # If the settings cannot be read, the page still works and nothing is claimed.
         world = rich_world(site.upstream)
         world.replies_off, world.settings_status = True, 500
-        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
-            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
-            await until(lambda: any(c["path"] == "bookings/settings" for c in world.calls))
+        async with bookings_page(browser, site, world, path=path) as page:
+            await expect(page.get_by_test_id("settings-load-error")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("person-card")).to_have_count(2)
             await expect(page.get_by_test_id("bookings-replies-off")).to_have_count(0)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("role", ["tenant_admin", "platform_admin"])
+async def test_a_suspended_company_gets_the_banner_without_a_dead_end_link(
+    site: Site, role: str
+) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        world.replies_off, world.replies_suspended = True, True
+        platform = role == "platform_admin"
+        async with bookings_page(
+            browser,
+            site,
+            world,
+            role=role,
+            path=f"/bookings?client_id={TENANT}" if platform else "/portal/bookings",
+            packages=[] if platform else ACTIVE,
+        ) as page:
+            banner = page.get_by_test_id("bookings-replies-off")
+            await expect(banner).to_have_text(REPLIES_OFF, timeout=WAIT)
+            # Move to a page that reads again, and wait for the answer that could add the link.
+            async with page.expect_response("**/console/v1/services/customer-replies*"):
+                await page.get_by_test_id("bookings-subnav-people").click()
+            await expect(page.get_by_test_id("settings-form")).to_be_visible(timeout=WAIT)
+            await page.wait_for_timeout(300)  # the page has drawn what that answer says
+            await expect(banner).to_have_text(REPLIES_OFF)
+            await expect(page.get_by_test_id("bookings-replies-link")).to_have_count(0)
 
     await with_browser(body)
 
@@ -1937,9 +1988,16 @@ async def test_a_change_the_customer_asked_for_is_shown_and_answered(site: Site)
             )
             await expect(details.get_by_test_id("details-change")).to_have_count(0)
             await expect(details.get_by_test_id("details-source")).to_have_count(0)
+            # Moving or cancelling it would withdraw the customer's request, and says so first.
+            withdraws = "This also withdraws the customer's request to move it."
             await details.get_by_test_id("details-move").click()
+            await expect(details.get_by_test_id("details-move-form")).to_contain_text(withdraws)
             await details.get_by_role("button", name="Keep the time").click()
+            await details.get_by_test_id("details-cancel").click()
+            await expect(details.get_by_test_id("details-ask")).to_contain_text(withdraws)
+            await details.get_by_role("button", name="No, keep it").click()
             await page.keyboard.press("Escape")
+            assert not world.writes
 
             # The request: what it asks, who made it, and only Confirm and Decline.
             await request_block.click()
@@ -2007,25 +2065,60 @@ async def test_a_change_the_customer_asked_for_is_shown_and_answered(site: Site)
     await with_browser(body)
 
 
-async def test_a_change_whose_booking_is_on_another_week_names_the_new_time(site: Site) -> None:
+async def test_a_change_to_another_week_shows_on_both_weeks(site: Site) -> None:
+    """A move from this week to next: this week's booking says a change waits, next week's request
+    says what it replaces, though the other week is not on screen.
+    """
+
     async def body(browser: Any) -> None:
         monday = monday_of(COMPANY_ZONE)
+        next_monday = monday + timedelta(days=7)
         world = rich_world(site.upstream)
-        world.bookings = [
-            booking(
-                2,
-                utc_at(monday + timedelta(days=1), "11:00"),
-                utc_at(monday + timedelta(days=1), "12:00"),
-                status="pending",
-                source="bot",
-                replaces_booking_id="99999999-9999-4999-8999-000000000001",
-            )
-        ]
+        original = booking(1, utc_at(monday, "09:00"), utc_at(monday, "10:00"), title="Review")
+        asked = booking(
+            2,
+            utc_at(next_monday + timedelta(days=1), "14:00"),
+            utc_at(next_monday + timedelta(days=1), "15:00"),
+            title="Review",
+            status="pending",
+            source="bot",
+            replaces_booking_id=original["id"],
+            replaces_starts_at=original["starts_at"],
+            replaces_ends_at=original["ends_at"],
+        )
+        original["pending_change_id"] = asked["id"]
+        world.bookings = [original, asked]
+        sentence = (
+            f"Asked to move from {moment(monday, '09:00')} "
+            f"to {moment(next_monday + timedelta(days=1), '14:00')}"
+        )
         async with bookings_page(browser, site, world, path="/portal/bookings") as page:
-            await page.get_by_test_id("booking").click(timeout=WAIT)
-            await expect(page.get_by_test_id("details-change")).to_have_text(
-                f"Asked to move to {moment(monday + timedelta(days=1), '11:00')}"
+            blocks = page.get_by_test_id("booking")
+            details = page.get_by_test_id("booking-details")
+            await expect(blocks).to_have_count(1, timeout=WAIT)
+            # This week holds only the original, and it says a change is waiting.
+            await expect(page.get_by_test_id("booking-change-waiting")).to_have_count(1)
+            await blocks.click()
+            await expect(details.get_by_test_id("details-change-waiting")).to_have_text(
+                "A change is waiting."
             )
+            await details.get_by_test_id("details-cancel").click()
+            await expect(details.get_by_test_id("details-ask")).to_contain_text(
+                "This also withdraws the customer's request to move it."
+            )
+            await page.keyboard.press("Escape")
+
+            # Next week holds only the request, and it names the time it replaces.
+            await page.get_by_test_id("calendar-next").click()
+            await expect(page.get_by_test_id("calendar-range")).to_have_text(
+                week_title(next_monday)
+            )
+            await expect(blocks).to_have_count(1)
+            await expect(blocks).to_have_attribute("aria-label", re.compile(sentence))
+            await expect(blocks).to_contain_text("Asked to move")
+            await blocks.click()
+            await expect(details.get_by_test_id("details-change")).to_have_text(sentence)
+            assert "Asked to move to" not in await page.content()
 
     await with_browser(body)
 

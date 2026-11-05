@@ -4,9 +4,16 @@ SELECT b.id, b.status, b.kind, b.type_id, coalesce(b.title, b.service) AS title,
        b.starts_at, b.ends_at, b.version, b.created_by, b.location_kind, b.address,
        b.meeting_link, b.contact_id, b.replaces_booking_id, b.source, b.conversation_id, b.cancel_reason,
        c.full_name AS customer_name, c.phone AS customer_phone, c.email AS customer_email,
-       c.customer_given_email AS customer_given_email
+       c.customer_given_email AS customer_given_email,
+       -- On a request to move a booking: when that booking is, wherever its week.
+       o.starts_at AS replaces_starts_at, o.ends_at AS replaces_ends_at,
+       -- On a booking: the live request to move it, if one waits.
+       (SELECT r.id FROM public.bookings r
+        WHERE r.client_id = b.client_id AND r.replaces_booking_id = b.id AND r.status = 'pending'
+        ORDER BY r.id LIMIT 1) AS pending_change_id
 FROM public.bookings b
 LEFT JOIN public.contacts c ON c.client_id = b.client_id AND c.id = b.contact_id
+LEFT JOIN public.bookings o ON o.client_id = b.client_id AND o.id = b.replaces_booking_id
 WHERE b.client_id = %(client_id)s
   AND (%(id)s::uuid IS NULL OR b.id = %(id)s::uuid)
   AND (%(id)s::uuid IS NOT NULL OR b.status <> 'cancelled')

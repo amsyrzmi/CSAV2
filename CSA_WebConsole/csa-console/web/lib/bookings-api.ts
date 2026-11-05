@@ -342,6 +342,11 @@ export interface BookingOut {
    * answered). Confirming it moves that booking and keeps its id; declining leaves it as it was.
    */
   replaces_booking_id?: string | null;
+  /** On a request: when the booking it would move is, whichever week that is. */
+  replaces_starts_at?: string | null;
+  replaces_ends_at?: string | null;
+  /** On a booking: the live request to move it. Moving or cancelling it withdraws that request. */
+  pending_change_id?: string | null;
 }
 
 /** A private meeting the viewer is not part of, on a filtered read: times only, and no id. */
