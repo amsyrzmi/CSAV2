@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Migrations stay in 0510-0519: this plan uses 0512. `EXPECTED_SCHEMA_VERSION` stays "0530". It must work on a fresh database, where 0512 runs before 0520.
+- Migrations: 0512 for the bot and reminders, and 0531 for the two assistant constraint rebuilds, because 0521 redefines those constraints after 0512 on a fresh database. `EXPECTED_SCHEMA_VERSION` becomes "0531". It must work on a fresh database, and on staging, which is past 0530.
 - Every new table has `client_id`, row security with the usual `tenant_isolation` policy, and grants to `csa_app` only as needed. Never `FORCE`. No new roles. SQL lives in `db/sql/bookings/`, parameterised.
 - Reply modes, exactly: `shadow` (Off) writes nothing and sends nothing automatic. `suggest` (Staff approve each reply) holds the slot as `pending`. `auto` is `confirmed`, or `pending` if the type needs confirmation.
 - The bot overrides nothing: every finding refuses, and a time beyond `max_advance_days` is refused. Double bookings are refused for everyone.
@@ -42,14 +42,14 @@
 ### Task 1: Schema and settings
 
 **Files:**
-- Create: `db/migrations/0512_bookings_bot.sql`, `db/sql/bookings/settings_*.sql`, `tests/test_bookings_bot_schema.py`
+- Create: `db/migrations/0512_bookings_bot.sql`, `db/migrations/0531_booking_assistant_action.sql`, `db/sql/bookings/settings_*.sql`, `tests/test_bookings_bot_schema.py`
 - Modify: `csa/bookings/api.py`, `csa/bookings/contracts.py`, `csa/bookings/setup.py`, `tests/test_bookings_setup.py`, `db/migrations/README.md`, `docs/CONSOLE_API.md`, `docs/console_openapi.json`
 
 **Interfaces:**
 - Produces on `bookings`: `turn_key text NULL` with a partial unique index on `(client_id, turn_key)`; `replaces_booking_id uuid NULL`, a foreign key to `(client_id, id)`; `conversation_id uuid NULL`; `expires_at timestamptz NULL`.
 - Produces `booking_settings(client_id PRIMARY KEY, reminder_minutes integer DEFAULT 1440, pending_hours integer DEFAULT 24, customer_limit integer DEFAULT 5, version)`.
 - Produces `booking_reminders(client_id, id, booking_id, starts_at, audience, channel, address NULL, status, created_at, sent_at NULL)`, unique on `(client_id, booking_id, starts_at, audience, address)`, with `audience IN ('customer','staff')`, `channel IN ('telegram','email')`, `status IN ('queued','sending','sent','failed','dropped')`.
-- Rebuilds `console_proposals_kind_check` and `console_workspace_turns_action_check` to add `booking_action`, copying the lists from their latest definition in 0521.
+- Rebuilds `console_proposals_kind_check` and `console_workspace_turns_action_check` to add `booking_action`, in `db/migrations/0531_booking_assistant_action.sql`, with a guard test on a fresh database.
 - Adds `booking_pending` to `staff_notification_targets.events`: to the column default, and to existing targets that already have `approval_needed`.
 - Produces `GET, PUT /console/v1/bookings/settings`, returning `BookingSettingsOut {reminder_minutes, pending_hours, customer_limit, version, replies_off: bool}`. `replies_off` is true only when the company has Customer support active or suspended, and its mode is `shadow`. Writes are Admin or platform admin. All members can read.
 
@@ -220,4 +220,4 @@
 
 - [ ] **Step 1: Merge `origin/main`, push and read `gate`'s failures.** Merge only, no rebase. The owner approves the push.
 - [ ] **Step 2: Fix each failure at its cause,** running that one test file locally. A failure showing a real product bug gets its fix and a line in the PR. Repeat until `gate` passes.
-- [ ] **Step 3: Write the PR description:** what changed, the rulings, deferred minors, what wasn't tested, and the rollout: migration 0512 stops all four services, and the worker gains mail settings through a compose change.
+- [ ] **Step 3: Write the PR description:** what changed, the rulings, deferred minors, what wasn't tested, and the rollout: migrations 0512 and 0531 stop all four services, and the worker gains mail settings through a compose change.
