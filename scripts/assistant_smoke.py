@@ -46,6 +46,7 @@ from csa.decide.groq import GroqClient
 from csa.email.models import validated_draft
 from csa.email.service import EmailService
 from csa.workspace.contracts import (
+    AnswerProposal,
     ClarificationProposal,
     DirectoryLookupProposal,
     EmailComposeProposal,
@@ -57,6 +58,7 @@ from csa.workspace.contracts import (
     WorkspaceProposal,
 )
 from csa.workspace.planner import (
+    BookingFacts,
     EmployeeFact,
     MailboxThreadFact,
     ManagerFact,
@@ -77,6 +79,7 @@ from csa.workspace.rules import (
     tab_available,
 )
 from csa.workspace.service import (
+    _BOOKING_WORDS,
     _MAIL_WORDS,
     _MANAGER_WORDS,
     _PEOPLE_WORDS,
@@ -110,6 +113,7 @@ ActionName = Literal[
     "hr_person_leave",
     "people_query",
     "hr_person_open",
+    "booking_action",
 ]
 Preset = Literal[
     "staff_basic",
@@ -118,6 +122,8 @@ Preset = Literal[
     "staff_unlinked",
     "staff_with_mailbox",
     "staff_hr_inactive",
+    "staff_bookings",
+    "staff_bookings_view",
 ]
 
 
@@ -150,6 +156,8 @@ class Expect(_Strict):
     query_words: list[str] = Field(default_factory=list)
     # Each named attribute of the proposal must equal this text (case-insensitive); never printed.
     fields: dict[str, str] = Field(default_factory=dict)
+    # An answer must carry each of these typed reads (for example booking_availability).
+    reads: list[str] = Field(default_factory=list)
 
 
 class SmokeCase(_Strict):
@@ -201,7 +209,9 @@ THREADS = [
         priority="low",
     ),
 ]
-_PACKAGES = ("customer_support", "staff_email", "hr")
+_PACKAGES = ("customer_support", "staff_email", "hr", "bookings")
+# The company's clock as the turn would read it: synthetic, and the same in every run.
+BOOKINGS_NOW = ("2026-11-05 14:03", "Thursday", "Asia/Kuala_Lumpur")
 
 
 @dataclass(frozen=True)
@@ -212,6 +222,7 @@ class _Preset:
     team: TeamFact
     employee: EmployeeFact
     people_access: Literal["hr", "directory", "self"] | None = None
+    can_change_bookings: bool | None = None  # None: no booking facts (the tab is not offered)
 
 
 _MANAGER = ManagerFact(employee_id=MANAGER_ID, reason=None)
@@ -231,6 +242,12 @@ PRESETS: dict[str, _Preset] = {
         EmployeeFact(linked=False, can_request_training=False, reason="no_employee_link"),
     ),
     "staff_with_mailbox": _Preset("active", _MANAGER, THREADS, _NOT_APPROVER, _LINKED),
+    "staff_bookings": _Preset(
+        "active", _MANAGER, None, _NOT_APPROVER, _LINKED, "directory", can_change_bookings=True
+    ),
+    "staff_bookings_view": _Preset(
+        "active", _MANAGER, None, _NOT_APPROVER, _LINKED, "directory", can_change_bookings=False
+    ),
     "staff_hr_inactive": _Preset(
         "suspended",
         ManagerFact(employee_id=None, reason="package_inactive"),
@@ -263,6 +280,16 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
         my_team=preset.team if _TEAM_WORDS.search(message) else None,
         my_employee=preset.employee if _TRAINING_WORDS.search(message) else None,
         people_access=preset.people_access if _PEOPLE_WORDS.search(message) else None,
+        bookings=_booking_facts(preset) if _BOOKING_WORDS.search(message) else None,
+    )
+
+
+def _booking_facts(preset: _Preset) -> BookingFacts | None:
+    if preset.can_change_bookings is None:
+        return None
+    now, weekday, zone = BOOKINGS_NOW
+    return BookingFacts(
+        now_local=now, weekday=weekday, timezone=zone, can_change=preset.can_change_bookings
     )
 
 
@@ -422,6 +449,10 @@ async def run_case(
         for name, value in expect.fields.items()
     ):
         failed.append("fields")
+    if expect.reads and (
+        not isinstance(proposal, AnswerProposal) or not set(expect.reads) <= set(proposal.reads)
+    ):
+        failed.append("reads")
     if isinstance(proposal, NavigateProposal) and last.locked != expect.locked:
         failed.append("locked")
     if isinstance(proposal, ClarificationProposal) and expect.no_placeholder_options:

@@ -2410,6 +2410,14 @@ async def test_attention_on_a_pending_mailbox_asks_to_connect(planned) -> None:
     }
 
 
+def test_planner_prompt_states_the_booking_rules() -> None:
+    assert "booking_action" in SYSTEM_PROMPT and "booking_availability" in SYSTEM_PROMPT
+    assert "can_change true" in SYSTEM_PROMPT
+    assert "bookings" in json.dumps(PlannerOutput.model_json_schema())
+    schema = json.dumps(PlannerOutput.model_json_schema())
+    assert '"booking_action"' in schema and "booking_availability" in schema
+
+
 def test_planner_prompt_states_the_english_job_title_rule() -> None:
     assert (
         "The query holds only name words or a job title; write a job title in English as the "

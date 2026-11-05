@@ -25,6 +25,7 @@ from csa.console.services import PackageState
 from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.workspace.contracts import (
     AnswerProposal,
+    BookingActionProposal,
     ClarificationProposal,
     DirectoryLookupProposal,
     EmailComposeProposal,
@@ -64,6 +65,7 @@ PlannerProposal = Annotated[
         HrPersonLeaveProposal,
         PeopleQueryProposal,
         HrPersonOpenProposal,
+        BookingActionProposal,
     ],
     Field(discriminator="action"),
 ]
@@ -129,6 +131,17 @@ class EmployeeFact(_Contract):
     reason: Literal["hr_inactive", "no_hr_access", "no_employee_link", "assistant_off"] | None
 
 
+class BookingFacts(_Contract):
+    """What the model needs to turn "tomorrow at 3" into a date and a time: the company's own
+    clock. Present only when the Bookings tab is open to this company and the message is about
+    bookings; ``can_change`` is false for a read-only member, who may ask for free times only."""
+
+    now_local: str = Field(max_length=16)  # "2026-11-05 14:03" in the company's time zone
+    weekday: str = Field(max_length=12)
+    timezone: str = Field(max_length=64)
+    can_change: bool
+
+
 class PlannerFacts(_Contract):
     role: Role
     packages: list[PackageState]
@@ -142,6 +155,8 @@ class PlannerFacts(_Contract):
     my_employee: EmployeeFact | None = None
     # The caller's People view (hr_people_viewer) when the message is about people records.
     people_access: Literal["hr", "directory", "self"] | None = None
+    # The company's clock, when the message is about bookings and the Bookings tab is open.
+    bookings: BookingFacts | None = None
 
 
 class PlannerOutput(_Contract):
@@ -252,12 +267,16 @@ is false, answer with the reason (training requests need a linked employee recor
 training access) and do not propose training_submit.
 - people_access: present when the message is about people records. "hr" means the user may add \
 people, change them and mark them as leaving; "directory" and "self" may not.
+- bookings: present when the message is about bookings and the Bookings tab is open. now_local, \
+weekday and timezone are the company's own clock: turn "tomorrow", "Friday" or "3 pm" into a \
+"day" (YYYY-MM-DD) and a "time" (HH:MM, 24 hours) on that clock. can_change false means the user \
+may only ask for free times. When it is absent, answer that bookings are not available here.
 
 Actions:
 - answer: reply in markdown. Add reads only when needed: "read_current_record" (the open \
 record's summary), "my_profile" (the user's own manager), "my_packages" (active services).
 - navigate: open a console tab (overview, services, inbox, knowledge_base, business, hr, \
-email, subscriptions, activity, chat), optionally a section or record.
+email, subscriptions, bookings, activity, chat), optionally a section or record.
 - directory_lookup: search the company directory by a person's name or job title. When the \
 user names a person without an address (for example "email danial"), prefer directory_lookup \
 before asking for an address. The query holds only name words or a job title; write a job title \
@@ -290,6 +309,16 @@ short note. The server asks for a missing last day or reason.
 - people_query: list people: reports_to (a person's name, for "who reports to Razak") and/or \
 department (for "who is in Finance").
 - hr_person_open: open a person's profile; person is the name the user wrote.
+- booking_action: change is "book", "move" or "cancel". To book give booking_type (a booking \
+type's name), or title and minutes for a meeting; day and time; and people (names), rooms (names) \
+or include_me for "me"; customer is a customer's name. To move or cancel a booking say which: \
+on_day, at_time (its current time) and about (a person, room, customer or title word), or \
+booking_id only when the user picked one from offered options. A move also gives the new time \
+(and day, when it changes). Leave out what the user did not say; the server asks for it. Use a \
+name as the user wrote it, or an id only from offered options.
+- To answer "when is Aina free tomorrow?" use answer with reads ["booking_availability"] and \
+availability: person or room (one of them, a name), day, and minutes when the user says how long. \
+Write the markdown as one short lead-in; the server lists the free times.
 
 Rules:
 - Never invent identifiers. Use only ids that appear in the facts or the message.
@@ -304,8 +333,10 @@ continue the original request from history instead of starting over.
 - Never put email addresses in clarification options; offer directory candidates or ask the \
 user to type the address.
 - Propose email_compose, email_reply, email_team, training_submit, inbox_decision, \
-hr_person_add, hr_person_update or hr_person_leave only when the user clearly asks for that \
-change; the user confirms every change on a card before anything happens.
+hr_person_add, hr_person_update, hr_person_leave or booking_action only when the user clearly \
+asks for that change; the user confirms every change on a card before anything happens.
+- Propose booking_action only when bookings is present with can_change true; otherwise answer \
+that the user cannot change bookings here.
 - Propose hr_person_add, hr_person_update or hr_person_leave only when people_access is "hr"; \
 otherwise answer that the user's People access does not allow it.
 - In the people actions, write names, job titles and departments as the user wrote them. Use \

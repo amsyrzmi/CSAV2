@@ -55,7 +55,8 @@ export type ProposalKind =
   | "training_submit"
   | "inbox_decision"
   | "subscription_action"
-  | "hr_person";
+  | "hr_person"
+  | "booking_action";
 
 export interface ProposalCard {
   proposal_id: string;

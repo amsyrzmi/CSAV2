@@ -164,6 +164,19 @@ test("settled proposals summarise their receipts", () => {
   const card = (title) => ({ card: { ...proposal("p").card, kind: "hr_person", title } });
   assert.equal(view.resultSummary(person(card("Add Danial Hakim to People"))), "Done: Add Danial Hakim to People.");
   assert.equal(view.resultSummary(person(card("Kemas kini Siti Aminah")), "ms"), "Selesai: Kemas kini Siti Aminah.");
+  // csa/bookings/executor.py: the receipt is ids, status and time, never a name.
+  const booking = (result, extra) => proposal("p", { kind: "booking_action", status: "executed", result, ...extra });
+  const receipt = (change, status = "confirmed", more = {}) => ({ change, booking_id: "b1", status, starts_at: "2031-03-04T15:00:00+00:00", version: 1, ...more });
+  assert.equal(view.resultSummary(booking(receipt("book"))), "Booked.");
+  assert.equal(view.resultSummary(booking(receipt("book", "pending"))), "Booked. It waits for confirmation.");
+  assert.equal(view.resultSummary(booking(receipt("move"))), "Moved.");
+  assert.equal(view.resultSummary(booking(receipt("cancel", "cancelled"))), "Booking cancelled.");
+  assert.equal(view.resultSummary(booking(receipt("move", "confirmed", { email: "none", customer_told: false }))), "Moved. Customer wasn't told.");
+  assert.equal(view.resultSummary(booking(receipt("book", "confirmed", { customer_told: true }))), "Booked.");
+  assert.equal(view.resultSummary(booking(receipt("book")), "ms"), "Ditempah.");
+  assert.equal(view.resultSummary(booking(receipt("cancel", "cancelled")), "ms"), "Tempahan dibatalkan.");
+  assert.equal(view.resultSummary(booking(receipt("move", "confirmed", { customer_told: false })), "ms"), "Dialihkan. Pelanggan tidak diberitahu.");
+  assert.equal(view.resultSummary(booking(null)), "Booked.");
   assert.match(view.resultSummary(proposal("p", { status: "cancelled" })), /Nothing was changed/);
   assert.match(view.resultSummary(proposal("p", { status: "expired" })), /expired/);
 });

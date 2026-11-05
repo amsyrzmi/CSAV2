@@ -418,5 +418,18 @@ export function resultSummary(proposal: ProposalOut, language: Language = "en"):
     case "hr_person":
       // csa/workspace/hr_people.py: the receipt is the HR operation's, so the card says what.
       return say("summary_hr_person", { title: proposal.card.title });
+    case "booking_action": {
+      // csa/bookings/executor.py receipt: change, booking_id, status, starts_at, version, and
+      // (after a real run) email and customer_told. No title, name or address is stored.
+      const change = field(result, "change");
+      const status = field(result, "status");
+      const done =
+        change === "move"
+          ? say("summary_booking_moved")
+          : change === "cancel"
+            ? say("summary_booking_cancelled")
+            : say(status === "pending" ? "summary_booking_pending" : "summary_booking_booked");
+      return field(result, "customer_told") === false ? `${done} ${say("summary_booking_not_told")}` : done;
+    }
   }
 }

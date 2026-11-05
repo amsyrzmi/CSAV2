@@ -1724,6 +1724,20 @@ async def test_card_from_before_language_existed_reads_as_english(sessions: Sess
     assert again.card.language == "en"
 
 
+def test_the_registry_holds_the_booking_executor_and_its_card_text() -> None:
+    from csa.bookings.executor import BookingActionExecutor
+
+    executor = build_proposal_registry()._executor("booking_action")
+    assert isinstance(executor, BookingActionExecutor)
+    for language in ("en", "ms"):
+        text = _CARD_TEXT[language]  # type: ignore[index]
+        for key in ("book_title", "move_title", "cancel_title", "label_what", "warn_closed_day"):
+            assert text[key]
+    # The warnings the card shows are the service's own sentences, in English.
+    assert _CARD_TEXT["en"]["warn_outside_hours"] == "Outside working hours."
+    assert _CARD_TEXT["en"]["warn_closed_day"] == "This is a closed day."
+
+
 def test_card_text_has_the_same_keys_in_both_languages() -> None:
     assert set(_CARD_TEXT) == {"en", "ms"}
     assert set(_CARD_TEXT["en"]) == set(_CARD_TEXT["ms"])

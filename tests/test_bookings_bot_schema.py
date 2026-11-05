@@ -12,7 +12,7 @@ from typing import Any
 
 import psycopg
 import pytest
-from csa.workspace.contracts import ProposalKind
+from csa.workspace.contracts import ProposalKind, TabKey
 from psycopg import errors, sql
 from psycopg.rows import dict_row
 from scripts import migrate
@@ -32,6 +32,7 @@ MIGRATIONS = REPO_ROOT / "db" / "migrations"
 BOT_TABLES = ("booking_settings", "booking_reminders", "booking_turn_actions")
 PROPOSALS_CHECK = "console_proposals_kind_check"
 TURNS_CHECK = "console_workspace_turns_action_check"
+PAGE_CHECK = "console_workspace_turns_page_key_check"
 EVENT_DEFAULT = "{escalation,approval_needed,order_submitted,dlq,circuit_opened,booking_pending}"
 
 
@@ -353,14 +354,23 @@ def test_the_booking_action_is_allowed_in_both_constraints(migrated_dsn: str) ->
     assert not _accepts(migrated_dsn, _turn("not_an_action"))
 
 
+def test_every_tab_the_assistant_can_be_asked_on_is_a_stored_page(migrated_dsn: str) -> None:
+    """A turn stores the tab it was asked on, and 0460's list never named subscriptions or
+    bookings, so a turn asked there could not be stored. Every TabKey must be accepted."""
+    with _owner(migrated_dsn) as conn:
+        allowed = _allowed(conn, PAGE_CHECK)
+    assert set(typing.get_args(TabKey)) <= allowed
+    assert {"workspace_home", "business_orders", "business_order"} <= allowed
+
+
 def _definitions(dsn: str) -> dict[str, str]:
     with _owner(dsn) as conn:
         return {
             r["conname"]: r["definition"]
             for r in conn.execute(
                 "SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint"
-                " WHERE conname IN (%s, %s)",
-                (PROPOSALS_CHECK, TURNS_CHECK),
+                " WHERE conname IN (%s, %s, %s)",
+                (PROPOSALS_CHECK, TURNS_CHECK, PAGE_CHECK),
             )
         }
 
@@ -371,7 +381,7 @@ def test_running_0531_again_changes_nothing(migrated_dsn: str) -> None:
     with _owner(migrated_dsn) as conn:
         conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
     assert _definitions(migrated_dsn) == before
-    assert len(before) == 2
+    assert len(before) == 3
 
 
 def test_a_database_already_past_0530_gets_the_columns_and_the_constraints(
@@ -426,6 +436,7 @@ def test_a_database_already_past_0530_gets_the_columns_and_the_constraints(
         assert events["b@example.test"] == ["dlq"]
         assert {"booking_action", "hr_person"} <= _allowed(conn, PROPOSALS_CHECK)
         assert {"booking_action", "hr_person_open"} <= _allowed(conn, TURNS_CHECK)
+        assert {"bookings", "subscriptions", "hr"} <= _allowed(conn, PAGE_CHECK)
         [ledger] = conn.execute(
             "SELECT count(*) AS n FROM schema_migrations WHERE version IN ('0512', '0531')"
         )

@@ -19,6 +19,8 @@ from psycopg.types.json import Jsonb
 from pydantic import TypeAdapter, ValidationError
 
 from csa.agents.base import utc_now
+from csa.bookings import executor as booking_executor
+from csa.bookings import service as bookings_service
 from csa.console.business import BusinessOrder, get_local_order, require_business_read
 from csa.console.contracts import ConsoleActor
 from csa.console.inbox import conversation
@@ -50,6 +52,7 @@ from csa.workspace.contracts import (
     MAX_WORK_TTL,
     AnswerProposal,
     AnswerResult,
+    BookingActionProposal,
     CardField,
     ClarificationOption,
     ClarificationProposal,
@@ -88,6 +91,7 @@ from csa.workspace.contracts import (
 from csa.workspace.directory import MyTeam, my_people, my_team, search_people, throttle_lookup
 from csa.workspace.executors import NEW_TRAINING_GRANTS
 from csa.workspace.planner import (
+    BookingFacts,
     EmployeeFact,
     MailboxThreadFact,
     ManagerFact,
@@ -570,6 +574,31 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_change": "{name} already has those details, so there is nothing to change.",
         "nobody_reports": "Nobody reports to {name}.",
         "nobody_matches": "Nobody in People matches that.",
+        "bookings_unavailable": "Bookings is not part of this workspace's active services, so I "
+        "can't look at times or book. Ask your administrator to activate it on the Services page.",
+        "bookings_read_only": "Your role can look at bookings but not change them.",
+        "booking_ask_what": "What should I book? Pick a booking type, or give a title and how "
+        "long it lasts.",
+        "booking_ask_minutes": "How long should it last? For example 30 minutes.",
+        "booking_ask_when": "When should it be? Give the day and the time, for example "
+        "tomorrow at 3 pm.",
+        "booking_ask_who": "Who is it with? Give a person's name or a room.",
+        "booking_ask_day": "Which day is the booking on?",
+        "booking_ask_new_time": "What time should it move to?",
+        "booking_person_not_found": "I couldn't find {name} among the people who can be booked.",
+        "booking_room_not_found": "I couldn't find a room called {name}.",
+        "booking_type_not_found": "I couldn't find a booking type called {name}.",
+        "booking_customer_not_found": "I couldn't find a customer called {name}.",
+        "booking_me_not_bookable": "You aren't on the list of people who can be booked. Ask an "
+        "Admin to add you.",
+        "booking_not_found": "I couldn't find that booking.",
+        "booking_which_booking": "Which booking do you mean?",
+        "booking_slot_taken": "That time was just taken.",
+        "booking_not_available": "Not available that day.",
+        "booking_own_only": "You can only change bookings you made or are part of.",
+        "booking_cannot": "I can't do that booking. Check the details and try again.",
+        "booking_free_none": "{name} has no free time that day.",
+        "booking_free_line": "{name} is free from {start} to {end}.",
     },
     "ms": {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
@@ -654,6 +683,33 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_change": "{name} sudah mempunyai butiran itu, jadi tiada apa-apa untuk ditukar.",
         "nobody_reports": "Tiada sesiapa melapor kepada {name}.",
         "nobody_matches": "Tiada sesiapa dalam People yang sepadan.",
+        "bookings_unavailable": "Bookings bukan sebahagian daripada perkhidmatan aktif ruang "
+        "kerja ini, jadi saya tidak dapat melihat masa atau membuat tempahan. Minta pentadbir "
+        "anda mengaktifkannya di halaman Services.",
+        "bookings_read_only": "Peranan anda boleh melihat tempahan tetapi tidak boleh mengubahnya.",
+        "booking_ask_what": "Apa yang perlu saya tempah? Pilih jenis tempahan, atau beri tajuk "
+        "dan berapa lama ia berlangsung.",
+        "booking_ask_minutes": "Berapa lama ia berlangsung? Contohnya 30 minit.",
+        "booking_ask_when": "Bila ia berlangsung? Beri hari dan masa, contohnya esok pukul 3 "
+        "petang.",
+        "booking_ask_who": "Dengan siapa? Beri nama seseorang atau sebuah bilik.",
+        "booking_ask_day": "Tempahan itu pada hari apa?",
+        "booking_ask_new_time": "Pukul berapa ia perlu dialihkan?",
+        "booking_person_not_found": "Saya tidak menjumpai {name} dalam kalangan orang yang boleh "
+        "ditempah.",
+        "booking_room_not_found": "Saya tidak menjumpai bilik bernama {name}.",
+        "booking_type_not_found": "Saya tidak menjumpai jenis tempahan bernama {name}.",
+        "booking_customer_not_found": "Saya tidak menjumpai pelanggan bernama {name}.",
+        "booking_me_not_bookable": "Anda tiada dalam senarai orang yang boleh ditempah. Minta "
+        "Admin menambah anda.",
+        "booking_not_found": "Saya tidak menjumpai tempahan itu.",
+        "booking_which_booking": "Tempahan yang mana satu?",
+        "booking_slot_taken": "Masa itu baru sahaja diambil.",
+        "booking_not_available": "Tidak tersedia pada hari itu.",
+        "booking_own_only": "Anda hanya boleh mengubah tempahan yang anda buat atau sertai.",
+        "booking_cannot": "Saya tidak dapat membuat tempahan itu. Semak butirannya dan cuba lagi.",
+        "booking_free_none": "{name} tiada masa lapang pada hari itu.",
+        "booking_free_line": "{name} lapang dari {start} hingga {end}.",
     },
 }
 
@@ -855,6 +911,14 @@ _PEOPLE_WORDS = re.compile(
     r"|pengurus|jabatan|berhenti|letak jawatan|hari terakhir|melapor kepada|siapa dalam)\b",
     re.IGNORECASE,
 )
+# The message is about bookings (free times, booking, moving, cancelling) in English or Malay;
+# loads the company's clock for the planner (booking_facts).
+_BOOKING_WORDS = re.compile(
+    r"\b(book(?:s|ed|ing|ings)?|appointments?|meetings?|schedul\w*|reschedul\w*|free|available"
+    r"|availability|slots?|rooms?|move|cancel\w*|tempah\w*|janji temu|mesyuarat|jadual|batal\w*"
+    r"|kosong|lapang|tersedia|bilik|alih)\b",
+    re.IGNORECASE,
+)
 _EMPLOYEE_ID = re.compile(
     r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
 )
@@ -984,6 +1048,9 @@ async def planner_facts(
     people = None
     if _PEOPLE_WORDS.search(turn.body):
         people = await hr_people.people_access(request, actor, client_id, packages)
+    booked = None
+    if _BOOKING_WORDS.search(turn.body) or (context is not None and context.tab == "bookings"):
+        booked = await booking_facts(request, actor, client_id, packages)
     return PlannerFacts(
         role=actor.role,
         packages=packages,
@@ -996,6 +1063,25 @@ async def planner_facts(
         my_team=team,
         my_employee=employee,
         people_access=people,
+        bookings=booked,
+    )
+
+
+async def booking_facts(
+    request: Request, actor: ConsoleActor, client_id: UUID, packages: list[PackageState]
+) -> BookingFacts | None:
+    """The company's clock, only while the Bookings tab is open to this company."""
+    if not _unlocked(packages, _TAB_GATES["bookings"]):
+        return None
+    async with tx(request.app.state.pool, str(client_id)) as conn:
+        zone = await bookings_service.company_zone(conn, client_id)
+    now = datetime.now(UTC).astimezone(zone)
+    viewer = bookings_service.viewer_of(actor)
+    return BookingFacts(
+        now_local=f"{now:%Y-%m-%d %H:%M}",
+        weekday=f"{now:%A}",
+        timezone=str(zone),
+        can_change=not viewer.read_only,
     )
 
 
@@ -1720,10 +1806,16 @@ async def _resolve(
                 _TEXT[facts.language],
             )
         )
+    if isinstance(proposal, BookingActionProposal):
+        return _people_planned(
+            await booking_executor.resolve(
+                request, actor, client_id, turn, proposal, facts, registry, _TEXT[facts.language]
+            )
+        )
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
 
 
-def _people_planned(resolved: hr_people.Resolved) -> _Planned:
+def _people_planned(resolved: hr_people.Resolved | booking_executor.Resolved) -> _Planned:
     """A resolved people action as a planned turn; server-built questions are cleaned too."""
     if isinstance(resolved, PreparedProposal):
         return _Planned(prepared=resolved)
@@ -1748,6 +1840,15 @@ async def _answer(
     for read in dict.fromkeys(proposal.reads):
         if read == "read_current_record":
             lines.append(facts.record_summary or text["no_record"])
+        elif read == "booking_availability":
+            if proposal.availability is None:
+                raise RuntimeError("booking_availability read has no availability")
+            if not _unlocked(facts.packages, _TAB_GATES["bookings"]):
+                lines.append(text["bookings_unavailable"])
+            else:
+                lines.extend(
+                    await booking_executor.free_lines(conn, client_id, proposal.availability, text)
+                )
         elif read == "my_packages":
             states = ", ".join(f"{p.key} ({p.status})" for p in facts.packages)
             found = text["packages"].format(packages=states) if states else text["no_packages"]

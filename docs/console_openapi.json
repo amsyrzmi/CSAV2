@@ -11022,7 +11022,8 @@
               "training_submit",
               "inbox_decision",
               "subscription_action",
-              "hr_person"
+              "hr_person",
+              "booking_action"
             ],
             "title": "Kind",
             "type": "string"
@@ -11090,7 +11091,8 @@
               "training_submit",
               "inbox_decision",
               "subscription_action",
-              "hr_person"
+              "hr_person",
+              "booking_action"
             ],
             "title": "Kind",
             "type": "string"
@@ -29801,7 +29803,8 @@
                       "training_submit",
                       "inbox_decision",
                       "subscription_action",
-                      "hr_person"
+                      "hr_person",
+                      "booking_action"
                     ],
                     "title": "Kind",
                     "type": "string"
