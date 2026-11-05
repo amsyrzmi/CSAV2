@@ -23,6 +23,7 @@ from uuid import UUID
 
 import httpx
 import structlog
+from csa.bookings.api import build_bookings_router
 from csa.channels.ingress import IngressError, TelegramIngress
 from csa.channels.marketplace.router import build_marketplace_router
 from csa.channels.whatsapp_ingress import WhatsAppIngress
@@ -425,6 +426,7 @@ def create_app() -> FastAPI:
     app.include_router(build_channels_router())
     # lane B (console): subscriptions router registers here
     app.include_router(build_subscriptions_router())
+    app.include_router(build_bookings_router())
     # --- end lane registrations ---
 
     instrument_fastapi(app)

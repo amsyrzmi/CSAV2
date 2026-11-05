@@ -1553,6 +1553,1853 @@
         "title": "BalanceRecord",
         "type": "object"
       },
+      "BookingActionIn": {
+        "additionalProperties": false,
+        "description": "Cancel, confirm, decline or mark a no-show. A version, when sent, must still be current.",
+        "properties": {
+          "version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "title": "BookingActionIn",
+        "type": "object"
+      },
+      "BookingBlockIn": {
+        "additionalProperties": false,
+        "properties": {
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "subject_id": {
+            "format": "uuid",
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_kind": {
+            "enum": [
+              "person",
+              "resource"
+            ],
+            "title": "Subject Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_kind",
+          "subject_id",
+          "starts_at",
+          "ends_at"
+        ],
+        "title": "BookingBlockIn",
+        "type": "object"
+      },
+      "BookingBlockOut": {
+        "additionalProperties": false,
+        "properties": {
+          "created_by": {
+            "format": "uuid",
+            "title": "Created By",
+            "type": "string"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "subject_id": {
+            "format": "uuid",
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_kind": {
+            "enum": [
+              "person",
+              "resource"
+            ],
+            "title": "Subject Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "subject_kind",
+          "subject_id",
+          "starts_at",
+          "ends_at",
+          "note",
+          "created_by"
+        ],
+        "title": "BookingBlockOut",
+        "type": "object"
+      },
+      "BookingBusy": {
+        "additionalProperties": false,
+        "description": "A time when someone or somewhere is taken by a private meeting the viewer is not part of.\n\nNothing here names the meeting or links two rows: no id, no version, no people.",
+        "properties": {
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "label": {
+            "const": "Busy",
+            "title": "Label",
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "starts_at",
+          "ends_at",
+          "label"
+        ],
+        "title": "BookingBusy",
+        "type": "object"
+      },
+      "BookingCalendarOut": {
+        "additionalProperties": false,
+        "description": "The calendar read. `items` are bookings as the viewer may see them.\n\nWithout a person or room filter a private meeting is an item, redacted, so an Admin can still\nmove or cancel it. With a filter it is a `busy` time instead, because an id would let anyone\nlist who is in the meeting by filtering one person at a time. Overlapping times can still hint\nthat two busy times are one meeting.",
+        "properties": {
+          "busy": {
+            "items": {
+              "$ref": "#/components/schemas/BookingBusy"
+            },
+            "title": "Busy",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BookingOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "busy"
+        ],
+        "title": "BookingCalendarOut",
+        "type": "object"
+      },
+      "BookingClosedDayIn": {
+        "additionalProperties": false,
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "BookingClosedDayIn",
+        "type": "object"
+      },
+      "BookingClosedDayOut": {
+        "additionalProperties": false,
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "day",
+          "note"
+        ],
+        "title": "BookingClosedDayOut",
+        "type": "object"
+      },
+      "BookingCustomerOut": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "id",
+          "full_name",
+          "phone",
+          "email"
+        ],
+        "title": "BookingCustomerOut",
+        "type": "object"
+      },
+      "BookingGuestIn": {
+        "additionalProperties": false,
+        "description": "Someone outside the company on a meeting, kept by email address.",
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "pattern": "^[^\\s@<>,;\\\"]+@[^\\s@<>,;\\\"]+\\.[^\\s@<>,;\\\"]+$",
+            "title": "Email",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "BookingGuestIn",
+        "type": "object"
+      },
+      "BookingGuestOut": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "name",
+          "email"
+        ],
+        "title": "BookingGuestOut",
+        "type": "object"
+      },
+      "BookingHoursIn": {
+        "additionalProperties": false,
+        "properties": {
+          "periods": {
+            "items": {
+              "$ref": "#/components/schemas/BookingPeriod"
+            },
+            "maxItems": 70,
+            "title": "Periods",
+            "type": "array"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
+          },
+          "subject_kind": {
+            "default": "company",
+            "enum": [
+              "company",
+              "person",
+              "resource"
+            ],
+            "title": "Subject Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "periods"
+        ],
+        "title": "BookingHoursIn",
+        "type": "object"
+      },
+      "BookingHoursOut": {
+        "additionalProperties": false,
+        "properties": {
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "periods": {
+            "items": {
+              "$ref": "#/components/schemas/BookingPeriod"
+            },
+            "title": "Periods",
+            "type": "array"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
+          },
+          "subject_kind": {
+            "enum": [
+              "company",
+              "person",
+              "resource"
+            ],
+            "title": "Subject Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_kind",
+          "subject_id",
+          "is_default",
+          "periods"
+        ],
+        "title": "BookingHoursOut",
+        "type": "object"
+      },
+      "BookingIn": {
+        "additionalProperties": false,
+        "description": "A booking of a type (`type_id`), or a meeting (`title` and `minutes`).",
+        "properties": {
+          "acknowledged": {
+            "items": {
+              "enum": [
+                "outside_hours",
+                "closed_day",
+                "short_notice",
+                "unavailable"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Acknowledged",
+            "type": "array"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Id"
+          },
+          "guests": {
+            "items": {
+              "$ref": "#/components/schemas/BookingGuestIn"
+            },
+            "maxItems": 50,
+            "title": "Guests",
+            "type": "array"
+          },
+          "location_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "in_person",
+                  "phone",
+                  "online"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Kind"
+          },
+          "meeting_link": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "pattern": "^https://[^\\s/]\\S*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Link"
+          },
+          "minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minutes"
+          },
+          "people": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "People",
+            "type": "array"
+          },
+          "private": {
+            "default": false,
+            "title": "Private",
+            "type": "boolean"
+          },
+          "resources": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Resources",
+            "type": "array"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type Id"
+          },
+          "walk_in": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BookingWalkInIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "starts_at"
+        ],
+        "title": "BookingIn",
+        "type": "object"
+      },
+      "BookingMoveIn": {
+        "additionalProperties": false,
+        "description": "Move a booking to a new start, keeping its length, people and rooms.",
+        "properties": {
+          "acknowledged": {
+            "items": {
+              "enum": [
+                "outside_hours",
+                "closed_day",
+                "short_notice",
+                "unavailable"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Acknowledged",
+            "type": "array"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "starts_at"
+        ],
+        "title": "BookingMoveIn",
+        "type": "object"
+      },
+      "BookingOut": {
+        "additionalProperties": false,
+        "description": "A booking as one viewer may see it. Every read goes through `service.to_out`.\n\nA private meeting the viewer is not part of is `redacted`: the title is \"Busy\" and nothing but\nthe times, status and version is shown. A read-only member sees no customer and no guests.",
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "can_change": {
+            "title": "Can Change",
+            "type": "boolean"
+          },
+          "conflict": {
+            "anyOf": [
+              {
+                "const": "unavailable",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflict"
+          },
+          "customer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BookingCustomerOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "customer_told": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Told"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sent",
+                  "off",
+                  "failed",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "guests": {
+            "items": {
+              "$ref": "#/components/schemas/BookingGuestOut"
+            },
+            "title": "Guests",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "appointment",
+              "meeting"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "in_person",
+                  "phone",
+                  "online"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Kind"
+          },
+          "meeting_link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Link"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/BookingPersonRef"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "private": {
+            "title": "Private",
+            "type": "boolean"
+          },
+          "redacted": {
+            "title": "Redacted",
+            "type": "boolean"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/BookingResourceRef"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled",
+              "no_show"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type Id"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "kind",
+          "title",
+          "private",
+          "redacted",
+          "starts_at",
+          "ends_at",
+          "version",
+          "type_id",
+          "customer",
+          "people",
+          "resources",
+          "guests",
+          "location_kind",
+          "address",
+          "meeting_link",
+          "conflict",
+          "can_change"
+        ],
+        "title": "BookingOut",
+        "type": "object"
+      },
+      "BookingPeriod": {
+        "additionalProperties": false,
+        "properties": {
+          "closes": {
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Closes",
+            "type": "string"
+          },
+          "opens": {
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Opens",
+            "type": "string"
+          },
+          "weekday": {
+            "maximum": 6.0,
+            "minimum": 0.0,
+            "title": "Weekday",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weekday",
+          "opens",
+          "closes"
+        ],
+        "title": "BookingPeriod",
+        "type": "object"
+      },
+      "BookingPersonIn": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "pattern": "^[^\\s@<>,;\\\"]+@[^\\s@<>,;\\\"]+\\.[^\\s@<>,;\\\"]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "BookingPersonIn",
+        "type": "object"
+      },
+      "BookingPersonOut": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "linked_to_hr": {
+            "default": false,
+            "title": "Linked To Hr",
+            "type": "boolean"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "user_id",
+          "employee_id",
+          "email",
+          "is_active",
+          "version"
+        ],
+        "title": "BookingPersonOut",
+        "type": "object"
+      },
+      "BookingPersonPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "pattern": "^[^\\s@<>,;\\\"]+@[^\\s@<>,;\\\"]+\\.[^\\s@<>,;\\\"]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "BookingPersonPatch",
+        "type": "object"
+      },
+      "BookingPersonRef": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "is_active"
+        ],
+        "title": "BookingPersonRef",
+        "type": "object"
+      },
+      "BookingResourceIn": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "BookingResourceIn",
+        "type": "object"
+      },
+      "BookingResourceOut": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "capacity",
+          "is_active",
+          "version"
+        ],
+        "title": "BookingResourceOut",
+        "type": "object"
+      },
+      "BookingResourcePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "BookingResourcePatch",
+        "type": "object"
+      },
+      "BookingResourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_active"
+        ],
+        "title": "BookingResourceRef",
+        "type": "object"
+      },
+      "BookingSlotOut": {
+        "additionalProperties": false,
+        "description": "A free time in UTC, with everyone and everything that could take it.",
+        "properties": {
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "people": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "resources": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "starts_at",
+          "ends_at",
+          "people",
+          "resources"
+        ],
+        "title": "BookingSlotOut",
+        "type": "object"
+      },
+      "BookingTypeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "audience": {
+            "default": "customers",
+            "enum": [
+              "customers",
+              "staff",
+              "both"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "buffer_minutes": {
+            "default": 0,
+            "maximum": 1440.0,
+            "minimum": 0.0,
+            "title": "Buffer Minutes",
+            "type": "integer"
+          },
+          "change_cutoff_minutes": {
+            "default": 120,
+            "maximum": 525600.0,
+            "minimum": 0.0,
+            "title": "Change Cutoff Minutes",
+            "type": "integer"
+          },
+          "delivery": {
+            "default": "any",
+            "enum": [
+              "named",
+              "any",
+              "several"
+            ],
+            "title": "Delivery",
+            "type": "string"
+          },
+          "duration_minutes": {
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Duration Minutes",
+            "type": "integer"
+          },
+          "location_kind": {
+            "enum": [
+              "in_person",
+              "phone",
+              "online"
+            ],
+            "title": "Location Kind",
+            "type": "string"
+          },
+          "max_advance_days": {
+            "default": 60,
+            "maximum": 730.0,
+            "minimum": 0.0,
+            "title": "Max Advance Days",
+            "type": "integer"
+          },
+          "meeting_link": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "pattern": "^https://[^\\s/]\\S*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Link"
+          },
+          "min_notice_minutes": {
+            "default": 60,
+            "maximum": 525600.0,
+            "minimum": 0.0,
+            "title": "Min Notice Minutes",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "needs_confirmation": {
+            "default": false,
+            "title": "Needs Confirmation",
+            "type": "boolean"
+          },
+          "person_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Person Ids",
+            "type": "array"
+          },
+          "resource_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Resource Ids",
+            "type": "array"
+          },
+          "resource_rule": {
+            "default": "none",
+            "enum": [
+              "none",
+              "specific",
+              "any"
+            ],
+            "title": "Resource Rule",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "duration_minutes",
+          "location_kind"
+        ],
+        "title": "BookingTypeIn",
+        "type": "object"
+      },
+      "BookingTypeOut": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "audience": {
+            "enum": [
+              "customers",
+              "staff",
+              "both"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "buffer_minutes": {
+            "title": "Buffer Minutes",
+            "type": "integer"
+          },
+          "change_cutoff_minutes": {
+            "title": "Change Cutoff Minutes",
+            "type": "integer"
+          },
+          "delivery": {
+            "enum": [
+              "named",
+              "any",
+              "several"
+            ],
+            "title": "Delivery",
+            "type": "string"
+          },
+          "duration_minutes": {
+            "title": "Duration Minutes",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "location_kind": {
+            "enum": [
+              "in_person",
+              "phone",
+              "online"
+            ],
+            "title": "Location Kind",
+            "type": "string"
+          },
+          "max_advance_days": {
+            "title": "Max Advance Days",
+            "type": "integer"
+          },
+          "meeting_link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Link"
+          },
+          "min_notice_minutes": {
+            "title": "Min Notice Minutes",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "needs_confirmation": {
+            "title": "Needs Confirmation",
+            "type": "boolean"
+          },
+          "person_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Person Ids",
+            "type": "array"
+          },
+          "resource_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Resource Ids",
+            "type": "array"
+          },
+          "resource_rule": {
+            "enum": [
+              "none",
+              "specific",
+              "any"
+            ],
+            "title": "Resource Rule",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "duration_minutes",
+          "buffer_minutes",
+          "audience",
+          "delivery",
+          "resource_rule",
+          "location_kind",
+          "address",
+          "meeting_link",
+          "needs_confirmation",
+          "min_notice_minutes",
+          "max_advance_days",
+          "change_cutoff_minutes",
+          "is_active",
+          "version",
+          "person_ids",
+          "resource_ids"
+        ],
+        "title": "BookingTypeOut",
+        "type": "object"
+      },
+      "BookingTypePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "audience": {
+            "anyOf": [
+              {
+                "enum": [
+                  "customers",
+                  "staff",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
+          },
+          "buffer_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Minutes"
+          },
+          "change_cutoff_minutes": {
+            "anyOf": [
+              {
+                "maximum": 525600.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Cutoff Minutes"
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "enum": [
+                  "named",
+                  "any",
+                  "several"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery"
+          },
+          "duration_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Minutes"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "location_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "in_person",
+                  "phone",
+                  "online"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Kind"
+          },
+          "max_advance_days": {
+            "anyOf": [
+              {
+                "maximum": 730.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Advance Days"
+          },
+          "meeting_link": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "pattern": "^https://[^\\s/]\\S*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Link"
+          },
+          "min_notice_minutes": {
+            "anyOf": [
+              {
+                "maximum": 525600.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Notice Minutes"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "needs_confirmation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Confirmation"
+          },
+          "person_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Ids"
+          },
+          "resource_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Ids"
+          },
+          "resource_rule": {
+            "anyOf": [
+              {
+                "enum": [
+                  "none",
+                  "specific",
+                  "any"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Rule"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "BookingTypePatch",
+        "type": "object"
+      },
+      "BookingWalkInIn": {
+        "additionalProperties": false,
+        "description": "A customer who is not in the contact list yet: a name and a phone number or an email.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "minLength": 3,
+                "pattern": "^[^\\s@<>,;\\\"]+@[^\\s@<>,;\\\"]+\\.[^\\s@<>,;\\\"]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "minLength": 3,
+                "pattern": "^\\+?[0-9][0-9 ()\\-.]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "BookingWalkInIn",
+        "type": "object"
+      },
       "BusinessOrder": {
         "additionalProperties": false,
         "properties": {
@@ -6715,6 +8562,7 @@
               "hr",
               "email",
               "subscriptions",
+              "bookings",
               "activity",
               "chat"
             ],
@@ -13480,6 +15328,2469 @@
         "summary": "Password Reset",
         "tags": [
           "console identity"
+        ]
+      }
+    },
+    "/console/v1/bookings/availability": {
+      "get": {
+        "description": "Free times for a type, or for `people`, `resources` and `minutes`; at most 31 days.",
+        "operationId": "availability_console_v1_bookings_availability_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "people",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "People"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resources",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resources"
+            }
+          },
+          {
+            "in": "query",
+            "name": "minutes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1440,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Minutes"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingSlotOut"
+                  },
+                  "title": "Response Availability Console V1 Bookings Availability Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Availability",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/blocks": {
+      "get": {
+        "description": "Blocks ending after `from` (default: now) and starting before `to`.",
+        "operationId": "blocks_console_v1_bookings_blocks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingBlockOut"
+                  },
+                  "title": "Response Blocks Console V1 Bookings Blocks Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Blocks",
+        "tags": [
+          "Bookings"
+        ]
+      },
+      "post": {
+        "operationId": "add_block_console_v1_bookings_blocks_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingBlockIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingBlockOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Block",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/blocks/{block_id}": {
+      "delete": {
+        "operationId": "remove_block_console_v1_bookings_blocks__block_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "block_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Block Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Block",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/bookings": {
+      "post": {
+        "operationId": "book_console_v1_bookings_bookings_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Book",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/bookings/{booking_id}": {
+      "patch": {
+        "description": "Move a booking; its people and rooms stay, and its holds are replaced with it.",
+        "operationId": "move_console_v1_bookings_bookings__booking_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Booking Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingMoveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/bookings/{booking_id}/cancel": {
+      "post": {
+        "operationId": "handle_console_v1_bookings_bookings__booking_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Booking Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BookingActionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handle",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/bookings/{booking_id}/confirm": {
+      "post": {
+        "operationId": "handle_console_v1_bookings_bookings__booking_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Booking Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BookingActionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handle",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/bookings/{booking_id}/decline": {
+      "post": {
+        "operationId": "handle_console_v1_bookings_bookings__booking_id__decline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Booking Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BookingActionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handle",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/bookings/{booking_id}/no-show": {
+      "post": {
+        "operationId": "handle_console_v1_bookings_bookings__booking_id__no_show_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Booking Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BookingActionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handle",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/calendar": {
+      "get": {
+        "description": "Bookings that are not cancelled in the window, as this viewer may see them. With a\n`person` or `resource` filter, private meetings the viewer is not part of come back as bare\nbusy times with no id.",
+        "operationId": "calendar_console_v1_bookings_calendar_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "person",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Person"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resource",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resource"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingCalendarOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Calendar",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/closed-days": {
+      "get": {
+        "operationId": "closed_days_console_v1_bookings_closed_days_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingClosedDayOut"
+                  },
+                  "title": "Response Closed Days Console V1 Bookings Closed Days Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Closed Days",
+        "tags": [
+          "Bookings"
+        ]
+      },
+      "post": {
+        "operationId": "add_closed_day_console_v1_bookings_closed_days_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingClosedDayIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingClosedDayOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Closed Day",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/closed-days/{day}": {
+      "delete": {
+        "operationId": "remove_closed_day_console_v1_bookings_closed_days__day__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "Day",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Closed Day",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/customers": {
+      "get": {
+        "description": "The Subscriptions customer search, closed to read-only members as the Inbox is.",
+        "operationId": "customers_console_v1_bookings_customers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerRef"
+                  },
+                  "title": "Response Customers Console V1 Bookings Customers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Customers",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/hours": {
+      "get": {
+        "description": "The company's hours (the default week until set), or one person's or room's own.",
+        "operationId": "hours_console_v1_bookings_hours_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "subject_kind",
+            "required": false,
+            "schema": {
+              "default": "company",
+              "enum": [
+                "company",
+                "person",
+                "resource"
+              ],
+              "title": "Subject Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subject Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingHoursOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hours",
+        "tags": [
+          "Bookings"
+        ]
+      },
+      "put": {
+        "description": "Replace the hours as a whole; an empty list clears them.",
+        "operationId": "replace_hours_console_v1_bookings_hours_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingHoursIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingHoursOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace Hours",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/people": {
+      "get": {
+        "operationId": "people_console_v1_bookings_people_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingPersonOut"
+                  },
+                  "title": "Response People Console V1 Bookings People Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "People",
+        "tags": [
+          "Bookings"
+        ]
+      },
+      "post": {
+        "operationId": "add_person_console_v1_bookings_people_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingPersonIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingPersonOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Person",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/people/from-team": {
+      "post": {
+        "description": "List each console member not yet listed; returns the people added.",
+        "operationId": "people_from_team_console_v1_bookings_people_from_team_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingPersonOut"
+                  },
+                  "title": "Response People From Team Console V1 Bookings People From Team Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "People From Team",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/people/{person_id}": {
+      "patch": {
+        "operationId": "change_person_console_v1_bookings_people__person_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "person_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Person Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingPersonPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingPersonOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Person",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/resources": {
+      "get": {
+        "operationId": "resources_console_v1_bookings_resources_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingResourceOut"
+                  },
+                  "title": "Response Resources Console V1 Bookings Resources Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resources",
+        "tags": [
+          "Bookings"
+        ]
+      },
+      "post": {
+        "operationId": "add_resource_console_v1_bookings_resources_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingResourceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResourceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Resource",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/resources/{resource_id}": {
+      "patch": {
+        "operationId": "change_resource_console_v1_bookings_resources__resource_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Resource Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingResourcePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResourceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Resource",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/types": {
+      "get": {
+        "operationId": "types_console_v1_bookings_types_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingTypeOut"
+                  },
+                  "title": "Response Types Console V1 Bookings Types Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Types",
+        "tags": [
+          "Bookings"
+        ]
+      },
+      "post": {
+        "operationId": "add_type_console_v1_bookings_types_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingTypeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingTypeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Type",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/types/starters": {
+      "post": {
+        "description": "Create \"Appointment\" and \"Consultation\" if the company has no type; else do nothing.",
+        "operationId": "starter_types_console_v1_bookings_types_starters_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BookingTypeOut"
+                  },
+                  "title": "Response Starter Types Console V1 Bookings Types Starters Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Starter Types",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/types/{type_id}": {
+      "patch": {
+        "operationId": "change_type_console_v1_bookings_types__type_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "type_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Type Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingTypePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingTypeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Type",
+        "tags": [
+          "Bookings"
         ]
       }
     },
@@ -24864,6 +29175,7 @@
                           "hr",
                           "email",
                           "subscriptions",
+                          "bookings",
                           "activity",
                           "chat"
                         ],

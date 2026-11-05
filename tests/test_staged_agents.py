@@ -574,6 +574,50 @@ async def test_all_local_lists_work(world: World) -> None:
 
 
 @requires_docker
+async def test_bot_does_not_see_staff_made_bookings(world: World) -> None:
+    staff_id = uuid4()
+    ids = {name: uuid4() for name in ("confirmed", "pending", "private")}
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,'Synthetic staff')",
+            (staff_id, f"staff-{staff_id}@example.test"),
+        )
+        for name, (status, private) in {
+            "confirmed": ("confirmed", False),
+            "pending": ("pending", False),
+            "private": ("confirmed", True),
+        }.items():
+            await conn.execute(
+                "INSERT INTO bookings (id,client_id,contact_id,service,title,status,private,"
+                "created_by,starts_at,ends_at) VALUES (%s,%s,%s,'Staff-made',%s,%s,%s,%s,"
+                "'2030-02-01T01:00Z','2030-02-01T02:00Z')",
+                (
+                    ids[name],
+                    world.ctx.client_id,
+                    world.ctx.contact_id,
+                    f"Secret {name}",
+                    status,
+                    private,
+                    staff_id,
+                ),
+            )
+    listed = await BookingAgent().run(world.ctx, BookingInput(action="list"))
+    text = listed.facts[0].text
+    assert str(world.booking_id) in text
+    for name, booking_id in ids.items():
+        assert str(booking_id) not in text
+        assert f"Secret {name}" not in text
+        found = await BookingAgent().run(
+            world.ctx, BookingInput(action="status", booking_id=booking_id)
+        )
+        assert found.error and found.error.code == "booking_not_found"
+    old = await BookingAgent().run(
+        world.ctx, BookingInput(action="status", booking_id=world.booking_id)
+    )
+    assert old.ok and "Synthetic" in old.facts[0].text
+
+
+@requires_docker
 async def test_make_db_reset_on_disposable_database(combined_pg_image: str) -> None:
     from testcontainers.postgres import PostgresContainer
 

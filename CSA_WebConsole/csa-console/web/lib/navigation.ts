@@ -4,12 +4,13 @@ import type { PackageState } from "./services-api";
 export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
-  | "team" | "password" | "subscriptions";
+  | "team" | "password" | "subscriptions" | "bookings";
 /** A sub-page of a rail group; the testId names it for tests and the section bar. */
 export interface NavChild { key: string; label: string; href: string; testId?: string }
 export interface NavLink { href: string; label: string; key: NavKey; children?: NavChild[] }
 
 export type BusinessSection = "orders" | "products" | "stores";
+export type BookingsSection = "calendar" | "types" | "people";
 export type KnowledgeSection = "library" | "add" | "questions" | "maintenance";
 
 /**
@@ -41,6 +42,19 @@ export function knowledgePages(admin: boolean): NavChild[] {
     { href: `${base}/questions`, key: "questions", label: "Unanswered questions", testId: "kb-subnav-questions" },
     // href-first: the contract regex must not read a child as a tab.
     { href: `${base}/maintenance`, key: "maintenance", label: "Maintenance and settings", testId: "kb-subnav-maintenance" },
+  ];
+}
+
+/** The Bookings sub-pages in order; Calendar keeps the group's own URL. */
+export function bookingsPages(admin: boolean): NavChild[] {
+  const base = admin ? "/bookings" : "/portal/bookings";
+  return [
+    // href-first: the contract regex must not read a child as a tab.
+    { href: base, key: "calendar", label: "Calendar", testId: "bookings-subnav-calendar" },
+    // href-first: the contract regex must not read a child as a tab.
+    { href: `${base}/types`, key: "types", label: "Booking types", testId: "bookings-subnav-types" },
+    // href-first: the contract regex must not read a child as a tab.
+    { href: `${base}/people-and-rooms`, key: "people", label: "People & rooms", testId: "bookings-subnav-people" },
   ];
 }
 
@@ -103,6 +117,7 @@ const gate: Partial<Record<NavKey, string[]>> = {
   hr: ["hr"],
   email: ["staff_email"],
   subscriptions: ["subscriptions"],
+  bookings: ["bookings"],
 };
 // Statuses that unlock a tab; mirrors the server gates. The Inbox stays reachable while
 // Customer Support is suspended so staff can resolve held replies and escalations; Assistant
@@ -134,6 +149,8 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "business", label: "Business management", href: to("business"), show: writer, children: businessPages(admin) },
     // Read-only members see the tab too; the page hides its action controls for them.
     { key: "subscriptions", label: "Subscriptions", href: to("subscriptions") },
+    // Every member sees Bookings, read-only included; the setup pages hide their edit controls.
+    { key: "bookings", label: "Bookings", href: to("bookings"), children: bookingsPages(admin) },
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
     { key: "members", label: "Members", href: "/settings/team", show: admin },
     { key: "team", label: "Team", href: "/portal/team", show: me.role === "tenant_admin" },

@@ -1504,8 +1504,141 @@ Semantic rejection details stay in turn state for regeneration; only their count
 Classifier comparisons are persisted separately in `decision_log`; a console endpoint for those rows
 is not implemented yet.
 
+## Bookings
+
+Stage 1, PR 1 (migrations `0510`, `0511`). The Bookings package sells on its own: a company
+does not need Customer support, and activating it moves an `onboarding` company to `pilot`
+(one `tenant.status_changed` audit row), as Customer support does. This section covers the
+setup routes, then the booking and calendar routes.
+
+Routes, under `/console/v1/bookings` with the usual tenant selection. Human sessions only
+(the machine token is refused) and behind the `bookings` package gate (active status only).
+Reads need membership of the company (a platform admin chooses it with `?client_id=`).
+Writes need an Admin of the company or a platform admin who chose it; staff and read-only
+members get 403. A `PATCH` carries the `version` read, and a stale one gets 409
+`version_conflict`. Every change writes a `bookings.*` audit row. Names, addresses, notes,
+links and email addresses must be one short line of plain text (they end up in mail headers and
+calendar files); an address is one plain `name@host` with no spaces, commas or angle brackets.
+The schemas are published in `docs/console_openapi.json` as `Booking*` (`BookingPersonOut` and so on,
+so they never clash with HR's `PersonOut`).
+
+| Method/path | Result |
+|---|---|
+| `GET /people` | `BookingPersonOut[]`: `{id, display_name, user_id, employee_id, email, linked_to_hr, is_active, version}`. Only an Admin or platform admin is sent `email` and `employee_id`; everyone else gets `null` for both. `linked_to_hr` is sent to everyone and is true when the person has a stored `employee_id` or their account is linked to an HR person (the link is read live, so one made after the person was added counts). The write routes answer an Admin only, so they carry the address and the HR id |
+| `POST /people` | Body `{display_name, user_id?, employee_id?, email?}`; 201. `user_id` must be an enabled member of this company and `employee_id` an HR person of this company, else 422 `member_not_found` / `employee_not_found`; a member already listed is 409 `person_exists` |
+| `PATCH /people/{id}` | `{version, ...}` and any of the same fields plus `is_active`; a field sent as `null` is cleared. 404 `person_not_found` |
+| `POST /people/from-team` | Adds each enabled console member not yet listed, linking the account and the HR person (if any); returns the people added, `[]` the second time. Works for a company without HR |
+| `GET, POST /resources`, `PATCH /resources/{id}` | Rooms and shared things: `{id, name, capacity, is_active, version}`. 404 `resource_not_found` |
+| `GET, POST /types`, `PATCH /types/{id}` | Booking types: name, `duration_minutes`, `buffer_minutes`, `audience` (`customers`, `staff`, `both`), `delivery` (`named`, `any`, `several`), `resource_rule` (`none`, `specific`, `any`), `location_kind` (`in_person`, `phone`, `online`), `address`, `meeting_link`, `needs_confirmation`, `min_notice_minutes`, `max_advance_days`, `change_cutoff_minutes`, `person_ids`, `resource_ids`. 422 `type_needs_people` (`named`/`several` with nobody), `type_needs_resources` (`specific`/`any` with no room), `type_needs_address`, `type_needs_link` (an `https://` link); `person_not_found`, `resource_not_found` for ids outside the company. The address or link not used by `location_kind` is dropped |
+| `POST /types/starters` | Creates "Appointment" (30 minutes) and "Consultation" (60 minutes), for customers, by any free person, by phone, only when the company has no type: 201 with the new types, then 200 with the existing ones and nothing created |
+| `GET /hours?subject_kind=&subject_id=` | `{subject_kind, subject_id, is_default, periods: [{weekday, opens, closes}]}`; `weekday` 0 is Monday, times are `HH:MM` in the company's time zone. With no subject: the company's hours, the default week (Monday to Friday, 09:00 to 18:00, `is_default: true`) until set. For a `person` or `resource`: its own hours, `[]` when it follows the company's |
+| `PUT /hours` | Body `{subject_kind?, subject_id?, periods}` replaces those hours as a whole. Each period must open before it closes (latest closing 23:59; nothing may run past midnight) and none may overlap on a day: 422 `hours_invalid` / `hours_overlap`. An empty list clears them (a company goes back to the default week). A `subject_id` outside the company: 422 `subject_not_found` |
+| `GET, POST /closed-days`, `DELETE /closed-days/{date}` | `{day, note}`; `GET` takes `from` and `to` dates. Closing a closed day again changes its note. `DELETE` is 204, 404 `closed_day_not_found` |
+| `GET /blocks?from=&to=` | Blocks ending after `from` (default now) and starting before `to` |
+| `POST /blocks` | Body `{subject_kind: person\|resource, subject_id, starts_at, ends_at, note?}`; 201. Writes the block's hold in the same transaction. 409 `slot_taken` when the person or room is already held for any of that time (a booking or another block); 422 `block_times_invalid`, `subject_not_found`, and 422 for a time outside the years 2000 to 2100 (the same range every booking time has) |
+| `DELETE /blocks/{id}` | 204, and the hold goes with it. 404 `block_not_found` |
+
+### Booking, moving and the calendar
+
+Same prefix, gate and tenant selection. Reads need membership; `POST /bookings` and the changes
+below need an Admin (or a platform admin who chose the company) or staff. Read-only members get 403
+on every change. Staff change only bookings they created or attend (403 `own_bookings_only`
+otherwise); an Admin changes any booking. A booking of another company is 404 `booking_not_found`.
+Times are UTC on the wire; hours, closed days and leave are read in `clients.timezone`. Every
+time a client sends (`starts_at`, `from`, `to`) must carry an offset and fall in the years 2000 to
+2100, in its own offset and in UTC: a time without an offset or outside that range is 422.
+
+| Method/path | Result |
+|---|---|
+| `GET /availability?type_id=&from=&to=` | `BookingSlotOut[]`: `{starts_at, ends_at, people, resources}`, at most 31 days (422 `window_too_large`, `window_invalid`). Respects the type's length, buffer, notice and `max_advance_days`. `limit` (default 200, at most 500) stops the scan after that many slots, earliest first, and the scan runs off the event loop. Or `people=&resources=&minutes=` (repeat `people` / `resources`), which are then all required (422 `minutes_required` with no type, 422 `people_or_resources_required` with neither). With a type and no `people`: "several" needs all its people, "any" and "named" list who is free. A type with nobody active left to deliver it has no slots, and neither has a type that picks "any" room when every room it names is switched off. Nothing in the past is ever offered: the window starts no earlier than now, with or without a type (writing a booking in the past is still allowed) |
+| `GET /calendar?from=&to=&person=&resource=` | `BookingCalendarOut` `{items: BookingOut[], busy: BookingBusy[]}`: bookings that are not cancelled, at most 62 days (422 `window_too_large`). `person` / `resource` keep the bookings that hold that person or room. `busy` is `{starts_at, ends_at, label: "Busy"}` and is described below |
+| `GET /customers?q=&limit=` | The Subscriptions customer search (`CustomerRef[]`). 403 for read-only members, as the Inbox |
+| `POST /bookings` | 201 `BookingOut`. Body: `type_id`, or a meeting's `title` and `minutes` (not both); `starts_at`; `people`, `resources`; `contact_id` or `walk_in {name, phone?, email?}` (one of phone or email); `guests [{name?, email}]`; `private` (meetings only); `location_kind`, `address`, `meeting_link` (a meeting with no type only: 422 with a `type_id`, because the type decides; `address` and `meeting_link` are single-line and the link must begin with `https://`, as on types); `acknowledged` (findings). A type's `named` delivery needs `people` (422 `people_required`); "any" picks the free person with the fewest bookings that day; "several" takes all its people; a specific room is held and an "any" room is picked. Status is `confirmed`, or `pending` when the type needs confirmation (a pending booking holds the time). The type's location, address and link are copied onto the booking. 422: `type_not_found`, `type_inactive`, `person_not_found`, `person_inactive`, `resource_not_found`, `resource_inactive`, `contact_not_found`, `nobody_to_book` (a type with nobody active to deliver it, or nothing and no one named for a meeting), `no_room_available` (a type that picks "any" room whose rooms are all switched off; nothing is booked), `private_meetings_only`. A read-only member gets 403 `bookings changes require staff or an administrator` |
+| `PATCH /bookings/{id}` | Move it: `{version, starts_at, acknowledged}`. Keeps the id, length, people and rooms, bumps `version`, replaces the holds in one transaction. A refusal changes nothing. 409 `stale` for an old `version`; 409 `wrong_status` unless pending or confirmed; 422 `nobody_to_book` for a booking of a type that holds no person |
+| `POST /bookings/{id}/cancel`, `/decline`, `/confirm`, `/no-show` | Optional body `{version}`. Cancel (pending or confirmed) and decline (pending) delete the holds; confirm turns pending into confirmed; no-show (confirmed and already started, else 409 `not_started`) keeps the record and its holds. 409 `wrong_status` otherwise. Each bumps `version` |
+
+Refusals carry `detail` (the short code) and, for these, more at the top level of the body:
+
+| Status | `detail` | Body |
+|---|---|---|
+| 409 | `slot_taken` | `message`: "That time was just taken." (a person or room is already held, or two requests raced and one lost) |
+| 409 | `needs_acknowledging` | `findings` (`outside_hours`, `closed_day`, `unavailable`) and a `message` of their sentences ("Outside working hours.", "This is a closed day.", "Not available that day."). Send them back in `acknowledged` |
+| 409 | `refused` | `findings` and `message`: "Not available that day." (staff and a person who is `unavailable`) |
+| 409 | `stale` | `message` |
+
+`unavailable` is the one code for a person who is away. It never says why, and it is the same name in
+`findings` and in `acknowledged`; the server keeps a different name for it inside.
+
+The owner's table: outside hours or a closed day, staff and Admin acknowledge then are allowed; shorter
+notice than the type allows, staff and Admin are allowed; a person on approved leave, staff are refused
+and an Admin acknowledges. The message never says why a person is away, and leave is never stored,
+returned or shown beyond the dates the server reads. A double booking is refused for everyone.
+
+`BookingOut` is the only shape a booking is shown in, and one function redacts it. A private meeting
+the viewer did not create and does not attend is `redacted: true` with `title: "Busy"` and only the
+times, `status` and `version`, for everyone including Admins and platform admins, who can still move
+or cancel it (the answer stays redacted).
+Read-only members get `customer: null` and no `guests`. `can_change` is true when this viewer may
+move, cancel or otherwise change the booking, by the same rule the change routes enforce (one
+function, `service.may_change`, next to `_for_change`): an Admin or platform admin, always, a redacted
+private meeting included; staff when they created it or a person linked to their account is on it
+(the creator is never put on the wire); read-only members never. It says nothing about the status, so
+a client also checks `pending` or `confirmed` before offering a move. `conflict` is `"unavailable"` when a person on
+a pending or confirmed booking now has approved leave over it, computed on every read. A person's leave is looked up live, through the HR person their account is linked to (and any stored `employee_id`), so a link made after the person was added counts, and a company without the HR package has none. `people[].is_active` and `resources[].is_active` say whether someone or somewhere was switched off after the booking was made; the booking stays, and a client shows it flagged (not on a redacted meeting, which carries no people or rooms).
+Every change writes `bookings.booking.created|moved|cancelled|confirmed|declined|no_show` with the
+booking id as target and no customer details.
+
+**Email with a calendar file.** After a staff action commits, the server emails the people on the
+booking, each with an `invite.ics` that adds, updates or removes it in their calendar. It uses the
+mailer the console builds at startup (the one invitation mail uses), never sends inside the
+transaction, and a failed email never changes the booking or the status code. `BookingOut.email` says
+how it went and is set only on the answer to a staff action:
+
+| Action | Mail |
+|---|---|
+| `POST /bookings`, `/confirm` | An invitation (`METHOD:REQUEST`). A booking still `pending` goes to its people as `TENTATIVE` and not to the customer, so the confirm is the customer's first mail |
+| `PATCH /bookings/{id}` | The same `UID` with a higher `SEQUENCE` (the booking's `version`) and the new time |
+| `/cancel`, `/decline` | `METHOD:CANCEL`, `STATUS:CANCELLED`, same `UID`, higher `SEQUENCE`. A booking that was never confirmed (cancelled or declined while `pending`) is cancelled for its people and guests only: the customer was never told about it, so they are not told it is gone. A booking that was confirmed first still tells the customer |
+| `/no-show` | Nothing; `email` is null |
+
+`customer_told` (true, false or null) says whether the customer got a message about this change: true if they were mailed, false if the booking has a customer who was not (no address, mail off, the send failed, or a private meeting), and null if there is no customer, on every read, on a no-show, on a redacted meeting, and while a booking is still waiting for confirmation (the customer is told nothing then, by design; a customer who was never told a booking is gone is null too). A client says "Customer wasn't told." when it is false, whatever `email` says.
+
+`email` reports on whoever was to be mailed. It is `"none"` when nobody was (no address, or only a
+customer who is not to be told), else `"off"` when mail is switched off, else `"failed"` when any send
+failed (the others still went), else `"sent"`. It is null on every read, on a no-show, and on a
+redacted private meeting, so an Admin who is not part of one learns nothing about it.
+
+The server waits at most 15 seconds for the mail, so the answer is never held up by a slow relay.
+Past that, sends not yet started are dropped and `email` is `"failed"`; a send already in flight
+cannot be taken back and may still arrive. So `"failed"` means some mail may not have gone, not that
+none did. Any error after the commit (reading the company's details, building a message) is also
+`"failed"`, logged by category only, and never changes the status code or the booking.
+
+Who gets mail, once each by address: the customer (if their contact has an email), each person on the
+booking with an address (their own, or their account's), and each outside guest. The person who made
+the change gets one only if they are on the booking. A private meeting goes to its attendees and
+guests only, never to the customer or to an Admin who merely moved or cancelled it. Replies being Off
+makes no difference: this is a staff action. Each recipient gets their own file with only themselves
+as `ATTENDEE`, and `ORGANIZER` is the mailer's sender address, so nobody learns another address.
+Times in the file are UTC with a `Z`; the message gives the local time in the company's zone, the
+company's brand name (or its name), the address or link, and Maps and Waze links for in-person
+bookings. The calendar read carries no `email`.
+
+A read filtered by `person=` or `resource=` works differently for a private meeting the viewer is
+not part of. Its real id would let anyone ask about each person in turn and rebuild who is in it,
+so it is not an item at all: it is a `BookingBusy` in `busy`, with only the times and the label
+"Busy", and no id, version, status, people or rooms. The unfiltered read keeps the redacted item
+with its id (people and rooms empty, address and link null), so an Admin can still move or cancel
+it, and `busy` is empty there. The creator and attendees get the full item either way. What this
+does not hide: overlapping `busy` times from two filters can still hint that they are one meeting.
+That is accepted, because a person's calendar has to show them as busy.
+
+`booking_team_members(client)` (migration `0511`) is a `SECURITY DEFINER` read, granted only to
+`csa_app`, that lists the company's enabled members with the HR person linked to each account;
+`csa_app` can read neither `console_memberships` nor, without an HR grant, `hr_employee_accounts`.
+
 ## Services and packages
-Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`). Packages are the management surface; the capability switches below remain the runtime enforcement.
+Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`; `bookings` is a separate service and requires nothing). Packages are the management surface; the capability switches below remain the runtime enforcement.
 
 | Package | Kind | Capabilities | Tabs | Sellable |
 |---|---|---|---|---|
@@ -1513,7 +1646,7 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 | `knowledge_base` | addon | `kb_agent` | knowledge_base | yes |
 | `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
 | `subscriptions` | addon | `subscription_agent` | subscriptions | yes |
-| `bookings` | addon | `booking_agent` | bookings | yes |
+| `bookings` | standalone | `booking_agent` | bookings | yes |
 | `marketplaces` | addon | `ecommerce_agent` | ecommerce | no |
 | `e_invoicing` | addon | `lhdn_agent` | lhdn_myinvois | no |
 | `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | hr | yes |

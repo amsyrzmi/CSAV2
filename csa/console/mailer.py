@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import smtplib
 import ssl
+import unicodedata
 from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
@@ -29,11 +30,28 @@ MailOutcome = Literal["sent"] | MailFailure
 
 
 @dataclass(frozen=True)
+class CalendarFile:
+    """An iCalendar file that goes with the message, as a `text/calendar` part and `invite.ics`."""
+
+    method: Literal["REQUEST", "CANCEL"]
+    content: str
+
+
+@dataclass(frozen=True)
 class OutgoingMail:
     to: str
     subject: str
     text: str
     html: str
+    calendar: CalendarFile | None = None
+
+
+def one_line(value: str) -> bool:
+    """True when the value has no line break and no other control or format character."""
+    return not any(
+        unicodedata.category(ch)[0] == "C" or unicodedata.category(ch) in ("Zl", "Zp")
+        for ch in value
+    )
 
 
 class Transport(Protocol):
@@ -65,6 +83,8 @@ class SmtpTransport:
         return f"SmtpTransport(host={self.host!r}, port={self.port!r})"
 
     def send(self, mail: OutgoingMail, sender: str) -> None:
+        if not one_line(mail.to):
+            raise ValueError("an address must be a single line")  # never put it in a header
         message = EmailMessage()
         message["From"] = sender
         message["To"] = mail.to
@@ -73,6 +93,16 @@ class SmtpTransport:
         message["Message-ID"] = make_msgid(domain="fourstacks.my")
         message.set_content(mail.text)
         message.add_alternative(mail.html, subtype="html")
+        if mail.calendar is not None:
+            # In the alternative group, so mail apps offer "add to calendar", and named, so a
+            # client that shows only attachments still has the file.
+            message.add_alternative(
+                mail.calendar.content,
+                subtype="calendar",
+                params={"method": mail.calendar.method},
+                disposition="attachment",
+                filename="invite.ics",
+            )
         with smtplib.SMTP(
             self.host, self.port, local_hostname=self.local_hostname, timeout=self.timeout
         ) as smtp:
@@ -132,6 +162,8 @@ class Mailer:
     async def _attempt(self, mail: OutgoingMail) -> MailOutcome:
         if self.transport is None:
             return "smtp_disabled"
+        if not one_line(mail.to):
+            return "smtp_refused"  # never reaches a header or the relay
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(self.transport.send, mail, self.sender), self.limit
