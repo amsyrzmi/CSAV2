@@ -902,6 +902,69 @@ owner's real app. Change the code in the one place named and record the answer i
 Until a row is confirmed, treat what it covers as unverified: the safe failure in every case is
 "nothing is shown or written", never a wrong write, because the code never writes to TikTok.
 
+### 12.12 Probing TikTok's real response shape
+
+When a backfill or refresh fails with `invalid_response`, TikTok answered but our models (rows 7
+and 8 above) did not accept the shape. The sync never logs provider responses, so use the probe to
+see the shape. It makes **one** read per run, through the same fenced path as the sync (fresh
+authorized-shops check, the same signing, single attempt, no retry), and prints the **structure
+only**:
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.tiktok_probe orders
+docker exec csa-staging-gateway-1 python -m scripts.tiktok_probe products
+docker exec csa-staging-gateway-1 python -m scripts.tiktok_probe order <order_id>
+docker exec csa-staging-gateway-1 python -m scripts.tiktok_probe product <product_id>
+```
+
+`orders` reads one page of 5 over the same 90-day update window as the backfill; `products` reads
+one page of 5 of the catalogue; `order` and `product` read that one id. It picks the single
+connected store among the active and pilot companies (listed the way the worker lists them). If
+there is none, or more than one, it refuses (exit 2); with more than one it lists the choices: add
+`--client-id <uuid>`, and `--store-id <uuid>` when the company has more than one store.
+
+What the output means:
+
+- The header gives the request path (a template: the id is never printed), the HTTP status,
+  TikTok's `code` (`0` is success; the message is never shown), whether a next page token is
+  present (never its value), and what our own parser made of the body (`ok` or its safe code, for
+  example `invalid_response`).
+- `STRUCTURE` lists every JSON path with its type: `object(N keys)`, `array of N` (with
+  `mixed: ...` when the elements differ), `str(len=N)` (`, decimal` when the text reads as a
+  number), `int`, `int(unix-seconds-like)`, `int(unix-millis-like)`, `float`, `bool`, `null`.
+  `[]` is the first element of an array; arrays are judged on that element only. A key that does
+  not look like a schema word (lower-case words joined by `_`, at most one trailing digit), and
+  every key of an object with more than 100 keys, shows as `<key#N>`.
+- Values appear only at these exact paths, and only when they fit a strict pattern (otherwise
+  `<redacted>`): `str = "..."` for the order and product `status` (`AWAITING_SHIPMENT`-style
+  words: capital letters and underscores only), and the order and SKU `currency` (three capital
+  letters); `int = N` for a numeric status (0 to 999) and for
+  `data.total_count`.
+- `OUR MODEL SAYS` lists every provider field our models read, `required` or `optional`, as
+  `present`, `MISSING`, `wrong type (got X, want Y)`, `not seen` (its array was empty, or its
+  parent is not an object), or `absent (total_count 0, accepted)` (a search page with no list
+  and `total_count` 0, which the adapter accepts as an empty page). A `required` line that is
+  `MISSING` or `wrong type` is why the read failed: fix the name in the mapping block in
+  `csa/agents/ecommerce/tiktok_models.py` and record it in the ledger (rows 7 and 8). If every
+  required line is fine and the parser still says `invalid_response`, look at the lengths and
+  number hints (a currency must be 3 letters, ids at most 100 characters, money must read as a
+  number; an empty string is not one).
+
+Exit codes: 0 printed (TikTok answered with code 0, whatever our parser thought); 2 refused
+(TikTok off, no or several stores, bad arguments); 1 failed (a safe code or an error class name
+only).
+
+**Safety.** The shape report prints structure only, never TikTok's values: no names, phones,
+addresses, emails, ids, tokens, ciphers, URLs or timestamps, and nothing about the signed request
+beyond its path template. As a last guard any output line that still looks like an email, a run
+of 9 or more digits or a URL is replaced with `<redacted>`. One risk is left: a key that is a plain
+lower-case word cannot be told from a schema word, so a map keyed by such words would show its
+keys. Only a refusal ever lists ids, and those are our own company and store ids, not TikTok's:
+keep refusals on the host and do not paste them. It writes nothing to TikTok and never copies
+orders or listings; the only rows it adds are the single-use read-operation rows
+(`ecommerce_read_operations`) that every sync read adds. It is still the owner's call to paste
+the shape report anywhere outside the host.
+
 ## Resetting staging
 
 `scripts/staging_reset.py` wipes the staging database and the two upload folders, rebuilds
