@@ -1613,7 +1613,10 @@ would move.
 - Moving or cancelling a confirmed booking, whoever made it, writes a chat message too when its
   customer has a Telegram chat (mentioning a withdrawn request), and the email with the calendar update
   still goes if they have an address. A private meeting never tells a customer anything.
-- A chat message invites a reply only while replies are on and Customer support is active.
+- A chat message, and the declined-booking mail, invite a reply or another request only while replies are
+  on and Customer support is active.
+- Cancelling or declining a booking whose end has already passed tells nobody: no chat message and no
+  mail, to the customer or the people on it (`email` and `customer_told` are null).
 - Confirming and declining tell the customer, even with replies Off, because a person acted: a plain
   Telegram message written in the same transaction, or else an email (a customer with both gets the
   message, and the confirmation email too because it carries the calendar file). A booking staff made

@@ -1263,3 +1263,93 @@ async def test_no_message_without_a_route_for_a_pending_booking_or_a_private_mee
     )
     cancelled = await staff(shop, secret["id"], "cancel")
     assert cancelled.status_code == 200 and await outbound(shop) == []
+
+
+# --- fix round 2 ----------------------------------------------------------------------------------
+
+LONG_AGO = "2020-01-07T10:00:00Z"  # a Tuesday, inside working hours
+
+
+@pytest.mark.parametrize("how", ["cancel", "decline"])
+async def test_ending_a_booking_whose_time_has_passed_tells_nobody(
+    shop: Shop, relay: FakeTransport, how: str
+) -> None:
+    aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
+    kind = await make_type(shop.team, needs_confirmation=how == "decline", person_ids=[aina["id"]])
+    contact = await shop.customer()
+    await chat_with_address(shop, contact)
+    made = await booked(
+        shop.team,
+        shop.team.admin,
+        {"type_id": kind["id"], "starts_at": LONG_AGO, "contact_id": str(contact)},
+    )
+    assert made["status"] == ("pending" if how == "decline" else "confirmed")
+    relay.sent.clear()  # the mail made when it was booked
+    gone = await staff(shop, made["id"], how)
+    assert gone.status_code == 200 and gone.json()["status"] == "cancelled"
+    # Nothing is owed about a time that has gone: no chat message and no mail, to anyone.
+    assert gone.json()["customer_told"] is None and gone.json()["email"] is None
+    assert await outbound(shop) == [] and relay.sent == []
+
+
+async def test_a_booking_that_has_not_yet_ended_is_still_told(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    made = (await shop.book(contact, kind["id"])).booking  # 2031, far ahead
+    assert made is not None
+    gone = await staff(shop, made.id, "cancel", made.version)
+    assert gone.json()["customer_told"] is True and len(await outbound(shop)) == 1
+
+
+async def test_a_move_then_a_second_move_both_tell_and_a_retried_request_tells_once(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    made = (await shop.book(contact, kind["id"])).booking
+    assert made is not None
+    first = await patch_time(shop, made, TWO)
+    assert first.status_code == 200
+    second = await shop.team.send(
+        shop.team.admin,
+        f"/bookings/{made.id}",
+        {"version": first.json()["version"], "starts_at": THREE.isoformat()},
+        "PATCH",
+    )
+    assert second.status_code == 200
+    assert [m["key"] for m in await outbound(shop)] == [
+        f"booking:{made.id}:moved:{first.json()['version']}",
+        f"booking:{made.id}:moved:{second.json()['version']}",
+    ]
+    retry = await patch_time(shop, made, TWO)  # the first request again, with its old version
+    assert retry.status_code == 409
+    assert len(await outbound(shop)) == 2
+    # The same key written twice is one message.
+    again = (await row_of(shop, made.id))["version"]
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        record = (await service.read_records(conn, shop.client, booking_id=made.id))[0]
+        for _ in range(2):
+            await customer_messages.after_staff_action(conn, shop.client, record, "moved")
+    assert again == record.version and len(await outbound(shop)) == 2
+
+
+@pytest.mark.parametrize("closed", ["open", "replies_off", "service_off"])
+async def test_the_decline_mail_invites_another_request_only_while_the_bot_would_act(
+    shop: Shop, relay: FakeTransport, closed: str
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat_with_address(shop, contact, "whatsapp")
+    booking = await pending_booking(shop, contact, kind)
+    if closed == "replies_off":
+        await shop.mode("shadow")
+    elif closed == "service_off":
+        await shop.suspend()
+    gone = await staff(shop, booking.id, "decline")
+    assert gone.json()["customer_told"] is True
+    (mail,) = relay.sent
+    assert "wasn't confirmed" in mail.text
+    assert ("ask for another time" in mail.text) is (closed == "open")
+    assert ("ask for another time" in mail.html) is (closed == "open")

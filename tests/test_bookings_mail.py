@@ -828,3 +828,14 @@ async def test_with_mail_off_only_a_chat_message_tells_the_customer(chat: bool) 
     off = Mailer(None, SENDER)
     outcome = await notify.notify(off, bots, "cancelled", FACTS, owed=True, by_chat=chat)
     assert outcome.email == "off" and outcome.customer_told is chat
+
+
+async def test_a_declined_booking_mail_invites_nothing_when_told_not_to() -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    for invite in (True, False):
+        relay = FakeTransport()
+        await notify.notify(
+            Mailer(relay, SENDER), bots, "declined", FACTS, owed=True, invite=invite
+        )
+        text = relay.for_(CUSTOMER).text
+        assert ("ask for another time" in text) is invite

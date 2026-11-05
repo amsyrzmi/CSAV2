@@ -109,16 +109,19 @@ async def after_commit(
     *,
     by_chat: bool = False,
     original: service.BookingRecord | None = None,
+    invite: bool = True,
 ) -> notify.Outcome | None:
     """Runs once the booking's transaction has committed, with the unredacted record.
 
     Sends the invitation, change or cancellation email from this one place, so a failed email can
     never undo a booking. It never raises, and the mail text never reaches the response. `by_chat`
     says the customer already has a chat message about this change (written in its transaction).
-    `original` is the booking a declined request to move would have moved.
+    `original` is the booking a declined request to move would have moved; `invite` is whether the
+    bot would act on a reply (a declined customer's mail only then invites another request). Ending
+    a booking whose time has passed mails nobody.
     """
     mail = MAIL_FOR.get(change)
-    if mail is None:
+    if mail is None or customer_messages.is_over(record, change):
         return None
     declined = customer_messages.is_declined(record, change)
     if declined:
@@ -135,6 +138,7 @@ async def after_commit(
         owed=True if declined else None,
         by_chat=by_chat,
         original=original,
+        invite=invite,
     )
 
 
@@ -170,8 +174,11 @@ def build_bookings_router() -> APIRouter:
         *,
         by_chat: bool = False,
         original: service.BookingRecord | None = None,
+        invite: bool = True,
     ) -> BookingOut:
-        outcome = await after_commit(request, record, change, by_chat=by_chat, original=original)
+        outcome = await after_commit(
+            request, record, change, by_chat=by_chat, original=original, invite=invite
+        )
         out = service.to_out(record, service.viewer_of(actor))
         # A redacted answer says nothing about the meeting, not even whether it had addresses.
         if out.redacted or outcome is None:
@@ -468,12 +475,16 @@ def build_bookings_router() -> APIRouter:
                 by_chat = await customer_messages.after_staff_action(
                     conn, client_id, record, change
                 )
+                declined = customer_messages.is_declined(record, change)
                 original = (
                     await customer_messages.the_original(conn, client_id, record)
-                    if customer_messages.is_declined(record, change)
+                    if declined
                     else None
                 )
-            return await respond(request, actor, record, change, by_chat=by_chat, original=original)
+                invite = await customer_messages.can_reply(conn, client_id) if declined else True
+            return await respond(
+                request, actor, record, change, by_chat=by_chat, original=original, invite=invite
+            )
 
         return handle
 

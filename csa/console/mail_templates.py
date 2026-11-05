@@ -221,13 +221,15 @@ def customer_declined_mail(
     booking: BookingRecord,
     original: BookingRecord | None,
     tz: str,
+    invite: bool = True,
 ) -> OutgoingMail:
     """Plain text, with no calendar file, for a customer whose own bot asked for a booking, or for
     a move of one, that staff did not accept.
 
     They were never sent an invitation, so there is nothing to remove from a calendar and the
     word "cancelled" would be wrong. With the booking a request would have moved, it says that one
-    stands, at its real time.
+    stands, at its real time. It invites another request only when `invite` says the bot would act
+    on one (replies on, Customer support active).
     """
     title = " ".join((booking.title or "Booking").split())
     new = when(booking.starts_at, tz)
@@ -244,7 +246,7 @@ def customer_declined_mail(
         )
         subject = f"Not confirmed: {title} on {new} ({_one_line(brand)})"
     hello = f"Hello {name}," if name else "Hello,"
-    footer = "You can ask for another time whenever you like."
-    text = f"{hello}\n\n{headline}\n\n{footer}\n\n{brand}\n"
-    html = _html([escape(hello), escape(headline), escape(footer), escape(brand)])
+    footer = ["You can ask for another time whenever you like."] if invite else []
+    text = "\n\n".join([hello, headline, *footer, brand]) + "\n"
+    html = _html([escape(hello), escape(headline), *map(escape, footer), escape(brand)])
     return OutgoingMail(to=to, subject=subject, text=text, html=html)

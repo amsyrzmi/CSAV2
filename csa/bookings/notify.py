@@ -189,6 +189,7 @@ async def _deliver(
     one: Recipient,
     gate: asyncio.Semaphore,
     original: BookingRecord | None,
+    invite: bool,
 ) -> bool:
     try:
         if change == "declined" and one.customer:
@@ -200,6 +201,7 @@ async def _deliver(
                 booking=booking,
                 original=original,
                 tz=facts.timezone,
+                invite=invite,
             )
         else:
             shown: Literal["created", "moved", "cancelled"] = (
@@ -237,6 +239,7 @@ async def notify(
     owed: bool | None = None,
     by_chat: bool = False,
     original: BookingRecord | None = None,
+    invite: bool = True,
 ) -> Outcome:
     """Send the invitation, the new time or the cancellation; say how it went.
 
@@ -244,7 +247,8 @@ async def notify(
     `owed` overrides who is owed a message (see `customer_owed`). `by_chat` says the customer
     already has a chat message about this change: they are then mailed only when the mail carries
     something the chat cannot, a calendar file, so never for a decline (they were never sent an
-    invitation). `original` is the booking a declined request would have moved.
+    invitation). `original` is the booking a declined request would have moved. `invite` is
+    whether a declined customer's mail may invite another request (the bot would act on it).
     """
     is_owed = customer_owed(booking, owed)
     mail_customer = is_owed and not (by_chat and change == "declined")
@@ -258,7 +262,10 @@ async def notify(
         gate = asyncio.Semaphore(SIMULTANEOUS)
         results = await asyncio.wait_for(
             asyncio.gather(
-                *(_deliver(mailer, booking, change, facts, p, gate, original) for p in people)
+                *(
+                    _deliver(mailer, booking, change, facts, p, gate, original, invite)
+                    for p in people
+                )
             ),
             SEND_LIMIT,
         )
@@ -278,6 +285,7 @@ async def notify_after_commit(
     owed: bool | None = None,
     by_chat: bool = False,
     original: BookingRecord | None = None,
+    invite: bool = True,
 ) -> Outcome:
     """Read the company's facts in a new transaction, then notify.
 
@@ -294,7 +302,14 @@ async def notify_after_commit(
             logger.warning("bookings_mail_failed", category="facts_unavailable")
             return Outcome("failed", unknown)
         return await notify(
-            mailer, booking, change, facts, owed=owed, by_chat=by_chat, original=original
+            mailer,
+            booking,
+            change,
+            facts,
+            owed=owed,
+            by_chat=by_chat,
+            original=original,
+            invite=invite,
         )
     except Exception:
         logger.warning("bookings_mail_failed", category="unexpected")

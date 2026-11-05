@@ -16,6 +16,7 @@ happened. It adds that the customer can reply only while the bot would act on a 
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -170,7 +171,7 @@ async def the_original(
     return found[0] if found and found[0].status in ("pending", "confirmed") else None
 
 
-async def _can_reply(conn: Conn, client_id: UUID) -> bool:
+async def can_reply(conn: Conn, client_id: UUID) -> bool:
     """The bot would act on a reply: replies are not Off and Customer support is active."""
     blocked, _ = await bot.gate(conn, client_id)
     return blocked is None
@@ -212,6 +213,13 @@ async def lapsed(conn: Conn, client_id: UUID, booking: service.BookingRecord) ->
     )  # fmt: skip
 
 
+def is_over(booking: service.BookingRecord, change: str) -> bool:
+    """A staff cancel or decline of a booking whose time has already gone. Clearing an old booking
+    from the calendar is housekeeping: nobody is owed a message or a mail about a time that has
+    passed, the people on it included."""
+    return change in ("cancelled", "declined") and booking.ends_at <= datetime.now(UTC)
+
+
 def is_declined(booking: service.BookingRecord, change: str) -> bool:
     """Staff said no to a booking the customer's own bot asked for (or a request to move one): a
     Decline, or a Cancel of a booking that was still pending. From the customer's side they are
@@ -235,9 +243,9 @@ async def after_staff_action(
     A booking staff made tells the customer nothing until it is confirmed, a private meeting never,
     and the bot's own cancel needs no message (the customer asked it in chat).
     """
-    if booking.customer is None or booking.private:
+    if booking.customer is None or booking.private or is_over(booking, change):
         return False
-    reply = await _can_reply(conn, client_id)
+    reply = await can_reply(conn, client_id)
     if change == "confirmed" and (booking.source == "bot" or booking.moved_by_request):
         event: Event = "moved" if booking.moved_by_request else "confirmed"
         key = f"booking:{booking.id}:confirmed:{booking.version}"
