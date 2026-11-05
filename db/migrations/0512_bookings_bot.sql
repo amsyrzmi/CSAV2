@@ -7,7 +7,7 @@
 --   pending_hours (1 to 168) and customer_limit (1 to 50) have checks as well as the API's own
 --   range. No row means the defaults, 1440, 24 and 5.
 -- booking_reminders: one row per booking, start time, audience and address, so a reminder is made
---   once and a moved booking gets a fresh one. address is NULL for a Telegram row, and the unique
+--   once and a moved booking gets a fresh one. address is NULL for a Telegram row and set for an email row (a check), and the unique
 --   constraint is NULLS NOT DISTINCT (Postgres 15 and later; the image is 16) so two Telegram rows
 --   for one booking still collide.
 -- staff_notification_targets.events gains 'booking_pending': the column default (set in 0160) has it
@@ -74,6 +74,8 @@ CREATE TABLE public.booking_reminders (
     sent_at timestamptz,
     PRIMARY KEY (client_id, id),
     FOREIGN KEY (client_id, booking_id) REFERENCES public.bookings(client_id, id),
+    CONSTRAINT booking_reminders_address_by_channel
+        CHECK ((channel = 'email') = (address IS NOT NULL)),
     CONSTRAINT booking_reminders_once
         UNIQUE NULLS NOT DISTINCT (client_id, booking_id, starts_at, audience, address)
 );

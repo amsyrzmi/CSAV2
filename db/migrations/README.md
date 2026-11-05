@@ -22,5 +22,12 @@ Reserved ranges (client growth program, 2026-10-27):
   allow `booking_action`). It reads each constraint's current list and adds to it, so it keeps
   whatever other tracks allow.
 
+A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
+(the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
+current list with `pg_get_constraintdef` and add to it, as 0531 does. A fixed list in a migration
+numbered below 0531 is repaired by 0531 on a fresh database, but on a database already past 0531
+that migration runs after 0531 is stamped and removes `booking_action`, with nothing failing until
+the first booking card. `tests/test_bookings_bot_schema.py` scans the migrations for this.
+
 Whoever merges a migration raises `EXPECTED_SCHEMA_VERSION` to the highest
 merged version. Lanes never reference each other's tables.

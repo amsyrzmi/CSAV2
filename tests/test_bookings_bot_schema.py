@@ -7,12 +7,14 @@ import hashlib
 import re
 import typing
 import uuid
+from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
 from csa.workspace.contracts import ProposalKind
 from psycopg import errors, sql
+from psycopg.rows import dict_row
 from scripts import migrate
 
 from tests.conftest import (
@@ -387,3 +389,127 @@ def test_0531_keeps_a_kind_it_does_not_know() -> None:
     text = (MIGRATIONS / "0531_booking_assistant_action.sql").read_text(encoding="utf-8")
     code = "\n".join(line for line in text.splitlines() if not line.startswith("--"))
     assert "hr_person" not in code and "email_send" not in code
+
+
+# Migrations that already redefine one of the two constraints (found by searching db/migrations).
+# Any other migration that names either must be numbered above 0531 or read the current list.
+KNOWN_REBUILDS = {"0460", "0480", "0484", "0521", "0531"}
+
+
+def migrations_that_rebuild_the_constraints(
+    migrations: list[tuple[str, Path]] | None = None,
+) -> list[str]:
+    """Each migration below or at 0531 that names a constraint in code and reads no live list."""
+    offenders = []
+    for version, path in migrations or migrate.discover_migrations():
+        text = path.read_text(encoding="utf-8")
+        code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("--"))
+        names_one = PROPOSALS_CHECK in code or TURNS_CHECK in code
+        if not names_one or version in KNOWN_REBUILDS or version > "0531":
+            continue
+        if "pg_get_constraintdef" not in code:
+            offenders.append(path.name)
+    return offenders
+
+
+def test_no_migration_below_0531_rebuilds_the_assistant_constraints_from_a_fixed_list() -> None:
+    """On a fresh database 0531 runs last and repairs a fixed list, so a database test cannot see
+    this. On one already past 0531 the unrecorded migration would run after it and drop
+    booking_action, with /readyz still green. So the migrations themselves are searched."""
+    assert migrations_that_rebuild_the_constraints() == []
+    # The allow-list is the real set: each of these does name a constraint in code.
+    named = {
+        v
+        for v, p in migrate.discover_migrations()
+        if PROPOSALS_CHECK in p.read_text(encoding="utf-8")
+        or TURNS_CHECK in p.read_text(encoding="utf-8")
+    }
+    assert named == KNOWN_REBUILDS
+
+
+def test_the_scan_catches_a_fixed_list_below_0531(tmp_path: Path) -> None:
+    fixed = tmp_path / "0523_synthetic_fixed_list.sql"
+    fixed.write_text(
+        "ALTER TABLE public.console_proposals DROP CONSTRAINT console_proposals_kind_check;\n"
+        "ALTER TABLE public.console_proposals ADD CONSTRAINT console_proposals_kind_check\n"
+        "    CHECK (kind IN ('email_export'));\n",
+        encoding="utf-8",
+    )
+    reads = tmp_path / "0524_synthetic_reads_list.sql"
+    reads.write_text(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
+        " WHERE conname = 'console_proposals_kind_check';\n",
+        encoding="utf-8",
+    )
+    later = tmp_path / "0532_synthetic_later.sql"
+    later.write_text(fixed.read_text(encoding="utf-8"), encoding="utf-8")
+    found = migrations_that_rebuild_the_constraints(
+        [("0523", fixed), ("0524", reads), ("0532", later)]
+    )
+    assert found == [fixed.name]
+
+
+def _rolled_back(dsn: str, setup: str, *, expect: str | None = None) -> set[str]:
+    """Change the constraints inside a transaction, run 0531, report PROPOSALS_CHECK's values
+    (or, with `expect`, check the refusal's message), and roll everything back."""
+    [path] = [p for v, p in migrate.discover_migrations() if v == "0531"]
+    with DictConnection.connect(dsn, row_factory=dict_row) as conn:
+        try:
+            conn.execute(setup)  # type: ignore[arg-type]
+            if expect is not None:
+                with pytest.raises(errors.RaiseException, match=expect):
+                    conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
+                return set()
+            conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
+            return _allowed(conn, PROPOSALS_CHECK)
+        finally:
+            conn.rollback()
+
+
+def test_0531_keeps_a_kind_it_has_never_heard_of(migrated_dsn: str) -> None:
+    with _owner(migrated_dsn) as conn:
+        before = _allowed(conn, PROPOSALS_CHECK)
+    setup = (
+        "ALTER TABLE public.console_proposals DROP CONSTRAINT console_proposals_kind_check;"
+        "ALTER TABLE public.console_proposals ADD CONSTRAINT console_proposals_kind_check"
+        " CHECK (kind IN ('email_export', 'hr_person', 'synthetic_other_track'))"
+    )
+    after = _rolled_back(migrated_dsn, setup)
+    assert after == {"email_export", "hr_person", "synthetic_other_track", "booking_action"}
+    with _owner(migrated_dsn) as conn:
+        assert _allowed(conn, PROPOSALS_CHECK) == before, "the test left its change behind"
+
+
+def test_0531_stops_when_a_constraint_is_missing(migrated_dsn: str) -> None:
+    _rolled_back(
+        migrated_dsn,
+        "ALTER TABLE public.console_workspace_turns"
+        " DROP CONSTRAINT console_workspace_turns_action_check",
+        expect="console_workspace_turns_action_check is missing",
+    )
+
+
+def test_0531_stops_when_a_constraint_is_not_a_plain_list(migrated_dsn: str) -> None:
+    _rolled_back(
+        migrated_dsn,
+        "ALTER TABLE public.console_proposals DROP CONSTRAINT console_proposals_kind_check;"
+        "ALTER TABLE public.console_proposals ADD CONSTRAINT console_proposals_kind_check"
+        " CHECK (kind <> 'nothing')",
+        expect="does not read as a plain list",
+    )
+    with _owner(migrated_dsn) as conn:
+        assert "booking_action" in _allowed(conn, PROPOSALS_CHECK)
+
+
+def test_an_email_reminder_has_an_address_and_a_telegram_one_has_none(
+    migrated_dsn: str,
+) -> None:
+    c = _company(migrated_dsn)
+    with _owner(migrated_dsn) as conn:
+        with pytest.raises(errors.CheckViolation):
+            conn.execute(*_reminder(c.client_id, c.booking_id, channel="email", address=None))
+        with pytest.raises(errors.CheckViolation):
+            conn.execute(
+                *_reminder(c.client_id, c.booking_id, channel="telegram", address="x@example.test")
+            )
+        conn.execute(*_reminder(c.client_id, c.booking_id, channel="telegram", address=None))
