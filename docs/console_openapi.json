@@ -2796,6 +2796,77 @@
         "title": "BookingResourceRef",
         "type": "object"
       },
+      "BookingSettingsIn": {
+        "additionalProperties": false,
+        "description": "The company's booking settings, replaced as a whole. `version` is the one read: 0 while\nnothing has been saved, then the number the last save returned.",
+        "properties": {
+          "customer_limit": {
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Customer Limit",
+            "type": "integer"
+          },
+          "pending_hours": {
+            "maximum": 168.0,
+            "minimum": 1.0,
+            "title": "Pending Hours",
+            "type": "integer"
+          },
+          "reminder_minutes": {
+            "maximum": 10080.0,
+            "minimum": 15.0,
+            "title": "Reminder Minutes",
+            "type": "integer"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reminder_minutes",
+          "pending_hours",
+          "customer_limit",
+          "version"
+        ],
+        "title": "BookingSettingsIn",
+        "type": "object"
+      },
+      "BookingSettingsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "customer_limit": {
+            "title": "Customer Limit",
+            "type": "integer"
+          },
+          "pending_hours": {
+            "title": "Pending Hours",
+            "type": "integer"
+          },
+          "reminder_minutes": {
+            "title": "Reminder Minutes",
+            "type": "integer"
+          },
+          "replies_off": {
+            "title": "Replies Off",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reminder_minutes",
+          "pending_hours",
+          "customer_limit",
+          "version",
+          "replies_off"
+        ],
+        "title": "BookingSettingsOut",
+        "type": "object"
+      },
       "BookingSlotOut": {
         "additionalProperties": false,
         "description": "A free time in UTC, with everyone and everything that could take it.",
@@ -17484,6 +17555,149 @@
           }
         },
         "summary": "Change Resource",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/settings": {
+      "get": {
+        "description": "The reminder time, the pending window and the customer limit, with `replies_off`.",
+        "operationId": "settings_console_v1_bookings_settings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Settings",
+        "tags": [
+          "Bookings"
+        ]
+      },
+      "put": {
+        "operationId": "replace_settings_console_v1_bookings_settings_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace Settings",
         "tags": [
           "Bookings"
         ]

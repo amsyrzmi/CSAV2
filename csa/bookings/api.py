@@ -30,6 +30,8 @@ from csa.bookings.contracts import (
     BookingResourceIn,
     BookingResourceOut,
     BookingResourcePatch,
+    BookingSettingsIn,
+    BookingSettingsOut,
     BookingSlotOut,
     BookingTime,
     BookingTypeIn,
@@ -318,6 +320,23 @@ def build_bookings_router() -> APIRouter:
         async with tx(request.app.state.pool, str(client_id)) as conn:
             await setup.remove_block(conn, client_id, actor, block_id)
         return Response(status_code=204)
+
+    # --- settings ----------------------------------------------------------------------------
+
+    @router.get("/settings", response_model=BookingSettingsOut)
+    async def settings(request: Request, client_id: Tenant) -> BookingSettingsOut:
+        """The reminder time, the pending window and the customer limit, with `replies_off`."""
+        reader(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await setup.get_settings(conn, client_id)
+
+    @router.put("/settings", response_model=BookingSettingsOut)
+    async def replace_settings(
+        request: Request, payload: BookingSettingsIn, client_id: Tenant
+    ) -> BookingSettingsOut:
+        actor = writer(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await setup.put_settings(conn, client_id, actor, payload)
 
     # --- the calendar ------------------------------------------------------------------------
 

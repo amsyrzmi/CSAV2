@@ -219,6 +219,26 @@ class BookingHoursOut(Contract):
     periods: list[BookingPeriod]
 
 
+class BookingSettingsIn(Contract):
+    """The company's booking settings, replaced as a whole. `version` is the one read: 0 while
+    nothing has been saved, then the number the last save returned."""
+
+    reminder_minutes: int = Field(ge=15, le=10080)
+    pending_hours: int = Field(ge=1, le=168)
+    customer_limit: int = Field(ge=1, le=50)
+    version: int = Field(ge=0)
+
+
+class BookingSettingsOut(Contract):
+    reminder_minutes: int
+    pending_hours: int
+    customer_limit: int
+    version: int
+    # True when the company has Customer support (active or suspended) and its replies are Off, so
+    # the bot books nothing and no reminder to a customer goes by Telegram.
+    replies_off: bool
+
+
 class BookingClosedDayIn(Contract):
     day: date
     note: Note | None = None
