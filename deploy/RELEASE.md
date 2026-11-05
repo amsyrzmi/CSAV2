@@ -793,15 +793,21 @@ rejects missing, invalid or different origins before starting the server.
 Changing that origin requires a new build/digest, not a runtime-only override.
 Never use `NEXT_PUBLIC_*`, credentials or a public landing-page URL for this.
 
-Only `/console/v1/*` is forwarded to the private gateway. The mounted legacy
-`/api/v1/channels/tiktok_shop/oauth/authorize`, `/oauth/callback`, and webhook
-routes remain in the backend for existing compatibility; they are **not** the
-M6B verifier callback. The adopted frontend returns 404 for them, even with a
-session. Do not expose the gateway as a public catch-all or add a legacy callback
-rewrite. Direct private-network access to the gateway still reaches its mounted
-routes; the boundary is network isolation plus frontend path restrictions,
-not removal of those routes or a claim that their authorization is repaired.
+Only `/console/v1/*` is forwarded to the private gateway. The legacy
+`/api/v1/channels/tiktok_shop/oauth/authorize`, `/oauth/callback` and
+`/webhook/{public_id}` routes have been removed from the backend; the TikTok
+connect and callback now live in the console router. The global
+`/api/v1/channels/tiktok_shop/webhook` route is reached only through the hooks
+host; it verifies the signature, queues a sync job and stores no raw payload
+(404 while TikTok is off).
+The adopted frontend returns 404 for these paths, even with a session. Do not
+expose the gateway as a public catch-all or add a legacy callback rewrite.
+Direct private-network access to the gateway still reaches its mounted routes;
+the boundary is network isolation plus frontend path restrictions.
 No new callback registration or live provider flow is implemented here.
+*(Superseded 2026-11-04: the TikTok Shop connect project adds the console-origin connect callback and
+the hooks-host webhook. See `deploy/STAGING_PIPELINE.md` section 12 and `docs/PROGRESS.md`,
+"TikTok Shop connect, Project 1". The sentence above described the state before that project.)*
 
 ## Isolated staging proposal (not run)
 

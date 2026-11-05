@@ -42,6 +42,15 @@ services:
         target: WHATSAPP_APP_SECRET
       - source: staging_whatsapp_verify_token
         target: WHATSAPP_VERIFY_TOKEN
+      # TikTok Shop app credentials; TikTok stays off while any one of the three holds "disabled". The
+      # connect callback uses PUBLIC_BASE_URL (the console origin); only the webhook is on
+      # the hooks host, so no callback-base variable exists.
+      - source: staging_tiktok_app_key
+        target: TIKTOK_APP_KEY
+      - source: staging_tiktok_app_secret
+        target: TIKTOK_APP_SECRET
+      - source: staging_tiktok_service_id
+        target: TIKTOK_SERVICE_ID
       # Relay credentials; mail stays inactive unless the flag is on and both are present.
       - source: staging_smtp_username
         target: SMTP_USERNAME
@@ -76,6 +85,13 @@ services:
         target: CREDENTIALS_KEY
       - source: staging_model_key
         target: GROQ_API_KEY
+      # TikTok sync, token refresh and order/product jobs run in the worker.
+      - source: staging_tiktok_app_key
+        target: TIKTOK_APP_KEY
+      - source: staging_tiktok_app_secret
+        target: TIKTOK_APP_SECRET
+      - source: staging_tiktok_service_id
+        target: TIKTOK_SERVICE_ID
     volumes: ["staging-uploads:/var/lib/csa/uploads"]
     networks: ["data", "embeddings", "provider-egress"]
     depends_on:
@@ -182,6 +198,36 @@ services:
     healthcheck:
       disable: true
 
+  # One-shot: register, enable or disable the TikTok Shop app row (scripts.tiktok_app) on the
+  # owner connection. Same approval variable and isolated-database check as `migrate`; the
+  # command (register, enable or disable) follows the service name. Section 12 of
+  # STAGING_PIPELINE.md.
+  tiktok-app:
+    <<: *runtime
+    profiles: ["tiktok-app-approved"]
+    environment:
+      <<: *environment
+      CSA_MIGRATION_APPROVAL: ${CSA_STAGING_MIGRATION_APPROVAL:-disabled}
+      CSA_OWNER_DSN_FILE: /run/secrets/MIGRATE_DATABASE_URL
+    secrets:
+      - source: staging_owner_dsn
+        target: MIGRATE_DATABASE_URL
+    networks: ["data"]
+    entrypoint:
+      - python
+      - -c
+      - |
+        import os, runpy, sys
+        from pathlib import Path
+        from scripts.staging_migrate import approved_target
+        dsn = Path(os.environ["CSA_OWNER_DSN_FILE"]).read_text().strip()
+        if not approved_target(os.environ.get("CSA_MIGRATION_APPROVAL"), dsn):
+            sys.exit("Explicit isolated-staging approval and the isolated staging database required")
+        os.environ["MIGRATE_DATABASE_URL"] = dsn
+        runpy.run_module("scripts.tiktok_app", run_name="__main__", alter_sys=True)
+    healthcheck:
+      disable: true
+
 networks:
   embeddings:
     internal: true
@@ -209,6 +255,14 @@ secrets:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_whatsapp_app_secret
   staging_whatsapp_verify_token:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_whatsapp_verify_token
+  # Hold the literal "disabled" until the owner writes the real TikTok values
+  # (`staging_secrets tiktok-defaults`, then section 12 of STAGING_PIPELINE.md).
+  staging_tiktok_app_key:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_tiktok_app_key
+  staging_tiktok_app_secret:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_tiktok_app_secret
+  staging_tiktok_service_id:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/pipeline/staging_tiktok_service_id
   # Installed by `staging_secrets smtp-install` before a gateway with invitation mail is
   # recreated: compose refuses to start a service whose secret file is missing.
   staging_smtp_username:
