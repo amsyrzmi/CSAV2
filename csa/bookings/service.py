@@ -196,6 +196,8 @@ class BookingRecord:
     # The status before the change this record came back from, so mail can tell a booking that was
     # never confirmed from one that was. Null on a plain read.
     previous_status: str | None = None
+    # The booking this one is a pending request to move, when it is one.
+    replaces_booking_id: UUID | None = None
 
 
 def involved(record: BookingRecord, user_id: UUID) -> bool:
@@ -474,6 +476,7 @@ async def read_records(
             resources=tuple(resources.get(row["id"], ())),
             guests=tuple(guests.get(row["id"], ())),
             conflict=row["id"] in conflicts,
+            replaces_booking_id=row["replaces_booking_id"],
         )
         for row in rows
     ]
@@ -769,7 +772,6 @@ async def create_for(
     *,
     now: datetime | None = None,
     force_pending: bool = False,
-    turn_key: str | None = None,
     conversation_id: UUID | None = None,
     expires_at: datetime | None = None,
     replaces_booking_id: UUID | None = None,
@@ -868,7 +870,6 @@ async def create_for(
             "kind": "appointment" if booking_type else "meeting",
             "created_by": author.user_id,
             "source": author.source,
-            "turn_key": turn_key,
             "conversation_id": conversation_id,
             "expires_at": expires_at,
             "replaces_booking_id": replaces_booking_id,

@@ -9,10 +9,12 @@ from zoneinfo import ZoneInfo
 import pytest
 from csa.bookings.availability import (
     DEFAULT_COMPANY_HOURS,
+    SLOT_STEP,
     Busy,
     Calendar,
     Slot,
     free_slots,
+    on_slot_grid,
     pick_person,
 )
 
@@ -437,3 +439,39 @@ def test_a_limit_stops_the_scan_early(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] < full_work / 10, (calls["n"], full_work)
     assert scan(0) == []
     assert scan(len(everything) + 5) == everything
+
+
+IST = ZoneInfo("Asia/Kolkata")  # UTC+05:30, so the local grid is not the UTC grid
+
+
+@pytest.mark.parametrize(
+    ("zone", "start", "on"),
+    [
+        (KL, datetime(2031, 3, 4, 2, 0, tzinfo=UTC), True),
+        (KL, datetime(2031, 3, 4, 2, 15, tzinfo=UTC), True),
+        (KL, datetime(2031, 3, 4, 2, 7, tzinfo=UTC), False),
+        (KL, datetime(2031, 3, 4, 2, 0, 30, tzinfo=UTC), False),
+        (KL, datetime(2031, 3, 4, 2, 0, 0, 5, tzinfo=UTC), False),
+        (IST, datetime(2031, 3, 4, 4, 30, tzinfo=UTC), True),  # 10:00 in Kolkata
+        (IST, datetime(2031, 3, 4, 4, 45, tzinfo=UTC), True),
+        (IST, datetime(2031, 3, 4, 4, 40, tzinfo=UTC), False),
+    ],
+)
+def test_the_slot_grid_is_local_clock_time(zone: ZoneInfo, start: datetime, on: bool) -> None:
+    assert on_slot_grid(zone, start) is on
+
+
+def test_every_slot_offered_is_on_the_grid() -> None:
+    cal = _calendar(timezone=IST)
+    slots = free_slots(
+        cal,
+        required_people=[],
+        any_of_people=[],
+        required_resources=[],
+        any_of_resources=[],
+        duration=HOUR,
+        buffer=timedelta(0),
+        start_from=datetime(2031, 3, 4, 0, 0, tzinfo=UTC),
+        until=datetime(2031, 3, 5, 0, 0, tzinfo=UTC),
+    )
+    assert slots and all(on_slot_grid(IST, s.start, SLOT_STEP) for s in slots)

@@ -1,8 +1,13 @@
 -- Bookings, PR 2: what the customer bot, the reminders and the staff alert need.
--- bookings gets four nullable columns: turn_key (a customer message's key, unique per company where
---   set, so one message books once), replaces_booking_id (the booking this one moves, in the same
---   company), conversation_id (the chat the booking came from) and expires_at (when a pending
---   booking lapses). Old rows and staff bookings leave all four empty.
+-- bookings gets three nullable columns: replaces_booking_id (the booking this one moves, in the
+--   same company), conversation_id (the chat the booking came from) and expires_at (when a pending
+--   booking lapses). Old rows and staff bookings leave all three empty.
+-- booking_turn_actions: one row per customer message key and company, written by every bot write
+--   (book, change, cancel) in the write's own savepoint. It says which booking the key made, moved
+--   or cancelled, so a retried message answers with that instead of acting again, and a late retry
+--   of an old message never undoes a later one. The primary key (client_id, turn_key) is the
+--   backstop: one message does one thing. action is book, change or cancel. Rows are written once
+--   and never changed or removed.
 -- booking_settings: one row per company, made on its first save. reminder_minutes (15 to 10080),
 --   pending_hours (1 to 168) and customer_limit (1 to 50) have checks as well as the API's own
 --   range. No row means the defaults, 1440, 24 and 5.
@@ -16,15 +21,16 @@
 -- Not here: the booking_action kind and action on console_proposals and console_workspace_turns.
 --   0521 rebuilds those constraints with fixed lists after this file on a fresh database, so they
 --   are added by 0531 (db/migrations/0531_booking_assistant_action.sql).
--- Row security: the usual tenant_isolation policy on both new tables, no FORCE, grants to csa_app
---   only (csa_ro reads). Reminders are never deleted, only marked.
+-- Row security: the usual tenant_isolation policy on the three new tables, no FORCE, grants to
+--   csa_app only (csa_ro reads). Reminders are never deleted, only marked; turn actions are only
+--   inserted.
 -- Pre-check: 0510 (bookings, its (client_id, id) key) and 0160 (staff_notification_targets) applied.
 --   0520 and later are not used. Not safe to run twice: the columns and tables are created plain.
 -- Rollback, in this order:
---   DROP TABLE public.booking_reminders, public.booking_settings;
---   ALTER TABLE public.bookings DROP CONSTRAINT bookings_replaces_fk, DROP COLUMN turn_key,
+--   DROP TABLE public.booking_turn_actions, public.booking_reminders, public.booking_settings;
+--   ALTER TABLE public.bookings DROP CONSTRAINT bookings_replaces_fk,
 --     DROP COLUMN replaces_booking_id, DROP COLUMN conversation_id, DROP COLUMN expires_at;
---     (dropping turn_key drops its unique index; bookings that were made by the bot stay)
+--     (bookings that were made by the bot stay)
 --   ALTER TABLE public.staff_notification_targets ALTER COLUMN events SET DEFAULT
 --     '{escalation,approval_needed,order_submitted,dlq,circuit_opened}';
 --   UPDATE public.staff_notification_targets SET events = array_remove(events, 'booking_pending');
@@ -42,14 +48,21 @@ BEGIN
 END $$;
 
 ALTER TABLE public.bookings
-    ADD COLUMN turn_key text,
     ADD COLUMN replaces_booking_id uuid,
     ADD COLUMN conversation_id uuid,
     ADD COLUMN expires_at timestamptz;
 ALTER TABLE public.bookings ADD CONSTRAINT bookings_replaces_fk
     FOREIGN KEY (client_id, replaces_booking_id) REFERENCES public.bookings(client_id, id);
-CREATE UNIQUE INDEX bookings_turn_key ON public.bookings (client_id, turn_key)
-    WHERE turn_key IS NOT NULL;
+
+CREATE TABLE public.booking_turn_actions (
+    client_id uuid NOT NULL REFERENCES public.clients(id),
+    turn_key text NOT NULL,
+    booking_id uuid NOT NULL,
+    action text NOT NULL CHECK (action IN ('book', 'change', 'cancel')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (client_id, turn_key),
+    FOREIGN KEY (client_id, booking_id) REFERENCES public.bookings(client_id, id)
+);
 
 CREATE TABLE public.booking_settings (
     client_id uuid PRIMARY KEY REFERENCES public.clients(id),
@@ -85,7 +98,7 @@ DO $$
 DECLARE
   t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['booking_settings', 'booking_reminders'] LOOP
+  FOREACH t IN ARRAY ARRAY['booking_settings', 'booking_reminders', 'booking_turn_actions'] LOOP
     EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format(
       'CREATE POLICY tenant_isolation ON public.%I '
@@ -96,6 +109,7 @@ BEGIN
   END LOOP;
 END $$;
 GRANT SELECT, INSERT, UPDATE ON public.booking_settings, public.booking_reminders TO csa_app;
+GRANT SELECT, INSERT ON public.booking_turn_actions TO csa_app;
 
 -- A new booking waiting for staff is an event a target can ask for.
 ALTER TABLE public.staff_notification_targets ALTER COLUMN events SET DEFAULT

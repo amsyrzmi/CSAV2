@@ -2,7 +2,7 @@
 -- or the one booking named by %(id)s whatever its status. Callers redact in service.to_out.
 SELECT b.id, b.status, b.kind, b.type_id, coalesce(b.title, b.service) AS title, b.private,
        b.starts_at, b.ends_at, b.version, b.created_by, b.location_kind, b.address,
-       b.meeting_link, b.contact_id,
+       b.meeting_link, b.contact_id, b.replaces_booking_id,
        c.full_name AS customer_name, c.phone AS customer_phone, c.email AS customer_email
 FROM public.bookings b
 LEFT JOIN public.contacts c ON c.client_id = b.client_id AND c.id = b.contact_id

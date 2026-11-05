@@ -1,5 +1,5 @@
 -- The pending changes that ask to move a booking, locked.
-SELECT id FROM public.bookings
+SELECT id, starts_at, expires_at FROM public.bookings
 WHERE client_id = %(client_id)s AND replaces_booking_id = %(id)s AND status = 'pending'
 ORDER BY id
 FOR UPDATE;

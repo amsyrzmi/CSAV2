@@ -6,14 +6,16 @@ the one asked for could not be had. Nothing here raises an HTTP error at the age
 why a time was refused.
 
 The order matters. The company's gates come first (Customer support on, replies not Off), so a
-company with replies Off writes nothing. Then the message's own key: a retried message finds the
-booking it already made and answers `replay`, before any lock or time check, because that booking's
-own hold now blocks its slot. Only then the rules, and every write sits in a savepoint, so a refusal
-leaves nothing half written on the connection the caller goes on to commit.
+company with replies Off writes nothing. Then the message's own key: every write the bot makes
+records what its key did (`booking_turn_actions`), so a retried message finds that and answers
+`replay`, before any time check, because the booking's own hold now blocks its slot and a late
+retry must never undo a later request. Only then the rules, and every write sits in a savepoint, so
+a refusal leaves nothing half written on the connection the caller goes on to commit.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
@@ -21,9 +23,11 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
+from pydantic import TypeAdapter, ValidationError
 
 from csa.bookings import service, setup
-from csa.bookings.contracts import BookingIn, BookingTypeOut
+from csa.bookings.availability import on_slot_grid
+from csa.bookings.contracts import BookingIn, BookingTime, BookingTypeOut
 from csa.core import db
 
 Conn = service.Conn
@@ -33,6 +37,7 @@ Code = Literal[
     "pending",
     "moved",
     "change_pending",
+    "change_withdrawn",
     "cancelled",
     "replay",
     "replies_off",
@@ -54,6 +59,7 @@ LIVE = ("pending", "confirmed")
 # How far from the asked day to look for other times, and how many to show.
 OFFER_WINDOW = timedelta(days=14)
 FRESH_OFFERS = 3
+_TIME = TypeAdapter(BookingTime)
 
 
 @dataclass(frozen=True)
@@ -74,16 +80,21 @@ class BotOutcome:
 
 
 async def reply_mode(conn: Conn, client_id: UUID) -> ReplyMode:
-    """The company's reply mode. A company that never chose has `auto`; a value this code does not
-    know is treated as Off, so a surprise never writes anything.
+    """The company's reply mode. A company that never chose has `auto`, and so does one whose policy
+    is empty or has no mode. Anything else this code does not know is Off, so a surprise (a hand
+    edit, a null) never writes anything.
     """
     row = await db.q.fetch_one("turn/get_client_policy.sql", (client_id,), conn=conn)
     if row is None:
         return "shadow"
     policy = row["policy"]
-    mode = policy.get("deployment_mode", DEFAULT_REPLY_MODE) if isinstance(policy, dict) else None
-    if mode is None:
+    if policy is None or policy == {}:
         return DEFAULT_REPLY_MODE
+    if not isinstance(policy, dict):
+        return "shadow"
+    if "deployment_mode" not in policy:
+        return DEFAULT_REPLY_MODE
+    mode = policy["deployment_mode"]
     return mode if mode in REPLY_MODES else "shadow"
 
 
@@ -130,11 +141,20 @@ def format_slot(starts_at: datetime, zone: ZoneInfo) -> str:
 
 
 async def offer(
-    conn: Conn, client_id: UUID, *, type_id: UUID, day_from: date, now: datetime, limit: int = 5
+    conn: Conn,
+    client_id: UUID,
+    *,
+    type_id: UUID,
+    day_from: date,
+    now: datetime,
+    limit: int = 5,
+    people: Sequence[UUID] = (),
+    resources: Sequence[UUID] = (),
 ) -> list[Offer]:
     """The next free times for a type a customer may book, from `day_from` (a day in the company's
-    zone) or from now, whichever is later. A person is named only for a type that names its people;
-    for "any free person" the name comes once the booking exists.
+    zone) or from now, whichever is later. A person is named only when exactly one person can take
+    the slot; with several the name comes once the booking exists. `people` and `resources` limit
+    the times to what a booking already holds, for a change.
     """
     booking_type = await _customer_type(conn, client_id, type_id)
     if booking_type is None:
@@ -148,8 +168,8 @@ async def offer(
             start=start,
             end=start + OFFER_WINDOW,
             type_id=type_id,
-            people=[],
-            resources=[],
+            people=people,
+            resources=resources,
             minutes=None,
             limit=limit,
             now=now,
@@ -168,22 +188,44 @@ async def offer(
 
 def _label(starts_at: datetime, zone: ZoneInfo, people: list[UUID], names: dict[UUID, str]) -> str:
     label = format_slot(starts_at, zone)
-    named = [names[p] for p in people[:1] if p in names]
-    return f"{label} with {named[0]}" if named else label
+    if len(people) == 1 and people[0] in names:
+        return f"{label} with {names[people[0]]}"
+    return label
 
 
 async def _fresh(
-    conn: Conn, client_id: UUID, type_id: UUID, refused: datetime, now: datetime
+    conn: Conn,
+    client_id: UUID,
+    type_id: UUID,
+    refused: datetime | None,
+    now: datetime,
+    people: Sequence[UUID] = (),
+    resources: Sequence[UUID] = (),
 ) -> list[Offer]:
-    """Up to three other times for the same type, near the one that was refused."""
+    """Up to three other times for the same type, near the one that was refused (if it was a time
+    at all) and, for a change, takeable by the people and rooms the booking already holds.
+    """
     zone = await service.company_zone(conn, client_id)
-    day = max(refused.astimezone(zone).date(), now.astimezone(zone).date())
-    found = await offer(conn, client_id, type_id=type_id, day_from=day, now=now, limit=4)
-    if not [o for o in found if o.starts_at != refused]:
+    today = now.astimezone(zone).date()
+    day = today if refused is None else max(refused.astimezone(zone).date(), today)
+
+    async def look(from_day: date) -> list[Offer]:
         found = await offer(
-            conn, client_id, type_id=type_id, day_from=now.astimezone(zone).date(), now=now, limit=4
+            conn,
+            client_id,
+            type_id=type_id,
+            day_from=from_day,
+            now=now,
+            limit=4,
+            people=people,
+            resources=resources,
         )
-    return [o for o in found if o.starts_at != refused][:FRESH_OFFERS]
+        return [o for o in found if o.starts_at != refused]
+
+    found = await look(day)
+    if not found and day != today:
+        found = await look(today)
+    return found[:FRESH_OFFERS]
 
 
 # --- turning the core's refusals into outcomes ---------------------------------------------------
@@ -200,6 +242,23 @@ def _code_for(exc: HTTPException) -> Code:
     return "not_allowed"
 
 
+@dataclass(frozen=True)
+class Crew:
+    """The people and rooms a booking already holds, so offers for a change stay takeable."""
+
+    people: tuple[UUID, ...] = ()
+    resources: tuple[UUID, ...] = ()
+
+    @staticmethod
+    def of(record: service.BookingRecord) -> Crew:
+        return Crew(
+            tuple(p.person_id for p in record.people), tuple(r.id for r in record.resources)
+        )
+
+
+NO_CREW = Crew()
+
+
 async def _refusal(
     conn: Conn,
     client_id: UUID,
@@ -207,15 +266,39 @@ async def _refusal(
     type_id: UUID | None,
     asked: datetime,
     now: datetime,
+    crew: Crew = NO_CREW,
 ) -> BotOutcome:
     code = _code_for(exc)
     offers: list[Offer] = []
     if code in ("slot_taken", "not_allowed") and type_id is not None:
-        offers = await _fresh(conn, client_id, type_id, asked, now)
+        offers = await _fresh(conn, client_id, type_id, asked, now, crew.people, crew.resources)
     return BotOutcome(code, None, offers)
 
 
-# --- settings and what a customer already holds --------------------------------------------------
+def _usable(starts_at: datetime, zone: ZoneInfo) -> bool:
+    """A time the calendar could have offered: with an offset, in the range every booking time
+    keeps to, and on the local 15 minute grid. Never read a naive time in the host's zone.
+    """
+    try:
+        _TIME.validate_python(starts_at)
+    except ValidationError:
+        return False
+    return on_slot_grid(zone, starts_at)
+
+
+async def _unusable(
+    conn: Conn,
+    client_id: UUID,
+    type_id: UUID,
+    now: datetime,
+    crew: Crew = NO_CREW,
+) -> BotOutcome:
+    """A time that is not one the calendar offers: refused like any other, with times that are."""
+    offers = await _fresh(conn, client_id, type_id, None, now, crew.people, crew.resources)
+    return BotOutcome("not_allowed", None, offers)
+
+
+# --- settings, keys and what a customer already holds ---------------------------------------------
 
 
 async def _settings(conn: Conn, client_id: UUID) -> dict[str, Any]:
@@ -223,21 +306,34 @@ async def _settings(conn: Conn, client_id: UUID) -> dict[str, Any]:
     return dict(row or setup.DEFAULT_SETTINGS)
 
 
-async def _replayed(
-    conn: Conn, client_id: UUID, contact_id: UUID, turn_key: str
-) -> BotOutcome | None:
-    """Serialise this message, then answer with the booking it already made, if any."""
+def _expiry(now: datetime, settings: dict[str, Any], starts_at: datetime) -> datetime:
+    """When a pending booking lapses: `pending_hours` on, and never after the booking starts."""
+    return min(now + timedelta(hours=settings["pending_hours"]), starts_at.astimezone(UTC))
+
+
+async def _done_by(conn: Conn, client_id: UUID, turn_key: str) -> dict[str, Any] | None:
+    """Queue behind any other delivery of this message, then say what its key already did."""
     await setup.lock(conn, "turn", client_id, turn_key)
-    row = await db.q.fetch_one(
-        "bookings/booking_by_turn_key.sql",
+    return await db.q.fetch_one(
+        "bookings/booking_turn_action_get.sql",
         {"client_id": client_id, "turn_key": turn_key},
         conn=conn,
     )
-    if row is None:
-        return None
-    if row["contact_id"] != contact_id:
-        return BotOutcome("not_found")
-    return BotOutcome("replay", await _record(conn, client_id, row["id"]))
+
+
+async def _remember(
+    conn: Conn, client_id: UUID, turn_key: str, booking_id: UUID, action: str
+) -> None:
+    """Record what this key did, in the same savepoint as the write itself."""
+    await db.q.execute(
+        "bookings/booking_turn_action_insert.sql",
+        {"client_id": client_id, "turn_key": turn_key, "booking_id": booking_id, "action": action},
+        conn=conn,
+    )
+
+
+async def _replay(conn: Conn, client_id: UUID, booking_id: UUID) -> BotOutcome:
+    return BotOutcome("replay", await _record(conn, client_id, booking_id))
 
 
 async def _record(conn: Conn, client_id: UUID, booking_id: UUID) -> service.BookingRecord:
@@ -277,12 +373,16 @@ async def book(
     blocked, mode = await _gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
-    replayed = await _replayed(conn, client_id, contact_id, turn_key)
-    if replayed is not None:
-        return replayed
+    done = await _done_by(conn, client_id, turn_key)
+    if done is not None:
+        if done["action"] != "book" or done["contact_id"] != contact_id:
+            return BotOutcome("not_found")
+        return await _replay(conn, client_id, done["booking_id"])
     booking_type = await _customer_type(conn, client_id, type_id)
     if booking_type is None:
         return BotOutcome("not_found")
+    if not _usable(starts_at, await service.company_zone(conn, client_id)):
+        return await _unusable(conn, client_id, type_id, now)
     settings = await _settings(conn, client_id)
     await setup.lock(conn, "customer", client_id, contact_id)  # one customer, one limit check
     held = await db.q.fetch_one(
@@ -302,10 +402,10 @@ async def book(
                 BookingIn(type_id=type_id, starts_at=starts_at, contact_id=contact_id),
                 now=now,
                 force_pending=pending,
-                turn_key=turn_key,
                 conversation_id=conversation_id,
-                expires_at=now + timedelta(hours=settings["pending_hours"]) if pending else None,
+                expires_at=_expiry(now, settings, starts_at) if pending else None,
             )
+            await _remember(conn, client_id, turn_key, record.id, "book")
     except HTTPException as exc:
         return await _refusal(conn, client_id, exc, type_id, starts_at, now)
     return BotOutcome("pending" if record.status == "pending" else "confirmed", record)
@@ -334,40 +434,62 @@ async def change(
 
     In `auto`, for a type that needs no confirmation, the booking moves in place. Otherwise the new
     time is held as a second, pending booking that replaces the first, and the first stays as it
-    is until staff confirm.
+    is until staff confirm. Either way an earlier pending request to move it is settled: replaced
+    by the new one, or withdrawn when the customer asks for the time it already has. Asking to
+    change a pending request is asking to change the booking it belongs to.
     """
     blocked, mode = await _gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
-    replayed = await _replayed(conn, client_id, contact_id, turn_key)
-    if replayed is not None:
-        return replayed
+    done = await _done_by(conn, client_id, turn_key)
     own = await _own(conn, client_id, contact_id, booking_id)
-    if own is None or own["replaces_booking_id"] is not None or own["status"] not in LIVE:
+    if own is None:
         return BotOutcome("not_found")
-    record = await _record(conn, client_id, booking_id)
+    target = own["replaces_booking_id"] or booking_id  # the booking a request belongs to
+    if done is not None:
+        mine = done["action"] == "change" and done["contact_id"] == contact_id
+        if not mine or target not in (done["booking_id"], done["replaces_booking_id"]):
+            return BotOutcome("not_found")
+        return await _replay(conn, client_id, done["booking_id"])
+    if own["status"] not in LIVE:
+        return BotOutcome("not_found")
+    if target != booking_id and await _own(conn, client_id, contact_id, target) is None:
+        return BotOutcome("not_found")
+    record = await _record(conn, client_id, target)
     booking_type = await _customer_type(conn, client_id, record.type_id) if record.type_id else None
-    if booking_type is None:
+    if record.status not in LIVE or booking_type is None:
         return BotOutcome("not_found")
+    crew = Crew.of(record)
+    if not _usable(starts_at, await service.company_zone(conn, client_id)):
+        return await _unusable(conn, client_id, booking_type.id, now, crew)
     in_place = record.status == "pending" or (
         mode == "auto" and not booking_type.needs_confirmation
     )
-    if in_place and record.starts_at == starts_at:
-        return BotOutcome("replay", record)  # it is already at that time (a retried change)
+    if starts_at == record.starts_at:
+        async with conn.transaction():
+            dropped = await _drop_pending_changes(conn, client_id, record.id)
+            if dropped:
+                await _remember(conn, client_id, turn_key, record.id, "change")
+        if dropped:
+            return BotOutcome("change_withdrawn", await _record(conn, client_id, record.id))
+        if in_place:
+            return BotOutcome("replay", record)  # it is already at that time
     if _past_cutoff(record, booking_type, now):
         return BotOutcome("past_cutoff")
     try:
         if in_place:
             async with conn.transaction():
+                await _drop_pending_changes(conn, client_id, record.id)
                 moved = await service.move_to(
                     conn, client_id, service.BOT, record, starts_at, now=now
                 )
+                await _remember(conn, client_id, turn_key, record.id, "change")
             return BotOutcome("moved", moved)
         return await _ask_to_move(
             conn, client_id, contact_id, record, booking_type, starts_at, turn_key, now
         )
     except HTTPException as exc:
-        return await _refusal(conn, client_id, exc, record.type_id, starts_at, now)
+        return await _refusal(conn, client_id, exc, record.type_id, starts_at, now, crew)
 
 
 async def _ask_to_move(
@@ -395,7 +517,18 @@ async def _ask_to_move(
         return BotOutcome("overlaps_itself")
     settings = await _settings(conn, client_id)
     async with conn.transaction():
-        await _drop_pending_changes(conn, client_id, record.id)
+        dropped = await _drop_pending_changes(conn, client_id, record.id)
+        # Asking again for the time already asked for must not buy more time on the hold.
+        expires = min(
+            [
+                _expiry(now, settings, starts_at),
+                *(
+                    d["expires_at"]
+                    for d in dropped
+                    if d["expires_at"] is not None and d["starts_at"] == starts_at
+                ),
+            ]
+        )
         asked = await service.create_for(
             conn,
             client_id,
@@ -409,16 +542,18 @@ async def _ask_to_move(
             ),
             now=now,
             force_pending=True,
-            turn_key=turn_key,
-            expires_at=now + timedelta(hours=settings["pending_hours"]),
+            expires_at=expires,
             replaces_booking_id=record.id,
         )
+        await _remember(conn, client_id, turn_key, asked.id, "change")
     return BotOutcome("change_pending", asked)
 
 
-async def _drop_pending_changes(conn: Conn, client_id: UUID, booking_id: UUID) -> None:
+async def _drop_pending_changes(
+    conn: Conn, client_id: UUID, booking_id: UUID
+) -> list[dict[str, Any]]:
     """Cancel the pending changes that ask to move this booking, so the latest request is the only
-    one and cancelling the booking leaves none behind.
+    one and cancelling the booking leaves none behind. Returns what was dropped.
     """
     rows = await db.q.fetch_all(
         "bookings/booking_pending_changes.sql",
@@ -429,27 +564,39 @@ async def _drop_pending_changes(conn: Conn, client_id: UUID, booking_id: UUID) -
         await service.cancel_for(
             conn, client_id, service.BOT, await _record(conn, client_id, row["id"])
         )
+    return list(rows)
 
 
 async def cancel(
     conn: Conn, client_id: UUID, contact_id: UUID, booking_id: UUID, *, turn_key: str, now: datetime
 ) -> BotOutcome:
-    """Cancel this customer's booking and free its time. A booking already cancelled answers
-    `replay`, so a retried message still hears the truth.
+    """Cancel this customer's booking and free its time. Cancelling a pending request to move a
+    booking withdraws the request and leaves the booking as it was (`change_withdrawn`). A booking
+    already cancelled answers `replay`, so a retried message still hears the truth.
     """
     blocked, _ = await _gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
-    # Nothing is stored against a cancel, so the key only queues two deliveries of one message.
-    await setup.lock(conn, "turn", client_id, turn_key)
+    done = await _done_by(conn, client_id, turn_key)
     own = await _own(conn, client_id, contact_id, booking_id)
     if own is None:
         return BotOutcome("not_found")
+    if done is not None:
+        mine = done["action"] == "cancel" and done["contact_id"] == contact_id
+        if not mine or done["booking_id"] != booking_id:
+            return BotOutcome("not_found")
+        return await _replay(conn, client_id, booking_id)
     record = await _record(conn, client_id, booking_id)
     if record.status == "cancelled":
         return BotOutcome("replay", record)
     if record.status not in LIVE:
         return BotOutcome("not_found")
+    if record.replaces_booking_id is not None:
+        async with conn.transaction():
+            await service.cancel_for(conn, client_id, service.BOT, record)
+            await _remember(conn, client_id, turn_key, booking_id, "cancel")
+        original = await _record(conn, client_id, record.replaces_booking_id)
+        return BotOutcome("change_withdrawn", original)
     found = await setup.list_types(conn, client_id, record.type_id) if record.type_id else []
     if not found:
         return BotOutcome("not_found")
@@ -459,6 +606,7 @@ async def cancel(
         async with conn.transaction():
             await _drop_pending_changes(conn, client_id, booking_id)
             cancelled = await service.cancel_for(conn, client_id, service.BOT, record)
+            await _remember(conn, client_id, turn_key, booking_id, "cancel")
     except HTTPException as exc:
         return BotOutcome(_code_for(exc))
     return BotOutcome("cancelled", cancelled)

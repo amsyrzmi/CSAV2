@@ -38,12 +38,22 @@ class Shop:
         self.tenant = w.tenants[0]
         self.client = uuid.UUID(self.tenant)
 
-    async def mode(self, mode: str | None) -> None:
-        policy = {} if mode is None else {"deployment_mode": mode}
+    async def policy(self, value: object) -> None:
+        """The company's whole `config.policy`, as stored (a hand edit may be anything)."""
         await self.w.q(
             "UPDATE clients SET config = jsonb_set(coalesce(config, '{}'::jsonb), '{policy}',"
             " %s::jsonb) WHERE id = %s",
-            json.dumps(policy),
+            json.dumps(value),
+            self.tenant,
+        )
+
+    async def mode(self, mode: str | None) -> None:
+        await self.policy({} if mode is None else {"deployment_mode": mode})
+
+    async def suspend(self) -> None:
+        await self.w.q(
+            "UPDATE console_service_packages SET status = 'suspended'"
+            " WHERE client_id = %s AND package = 'customer_support'",
             self.tenant,
         )
 
@@ -96,19 +106,43 @@ class Shop:
         )
 
     async def cancel(
-        self, contact: uuid.UUID, booking_id: uuid.UUID, *, now: datetime = NOW
+        self,
+        contact: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        now: datetime = NOW,
+        turn_key: str | None = None,
     ) -> bot.BotOutcome:
         return await self.run(
-            bot.cancel, contact, booking_id, turn_key=f"turn-{uuid.uuid4()}", now=now
+            bot.cancel,
+            contact,
+            booking_id,
+            turn_key=turn_key or f"turn-{uuid.uuid4()}",
+            now=now,
         )
 
     async def rows(self) -> list[dict[str, Any]]:
         return await self.w.q(
             "SELECT id::text AS id, status, source, created_by, replaces_booking_id::text AS rep,"
-            " expires_at, turn_key, starts_at FROM bookings WHERE client_id = %s"
-            " ORDER BY created_at",
+            " expires_at, starts_at FROM bookings WHERE client_id = %s ORDER BY created_at",
             self.tenant,
         )
+
+    async def actions(self) -> list[dict[str, Any]]:
+        """What each turn key did, as the replay lookup reads it."""
+        return await self.w.q(
+            "SELECT turn_key, booking_id::text AS booking, action FROM booking_turn_actions"
+            " WHERE client_id = %s ORDER BY turn_key",
+            self.tenant,
+        )
+
+    async def audits(self, action: str) -> int:
+        rows = await self.w.q(
+            "SELECT count(*) AS n FROM console_audit WHERE client_id = %s AND action = %s",
+            self.tenant,
+            action,
+        )
+        return int(rows[0]["n"])
 
     async def holds(self, booking_id: object) -> int:
         rows = await self.w.q(
@@ -155,7 +189,8 @@ async def test_suggest_holds_the_slot_as_pending_with_an_expiry(shop: Shop) -> N
     assert outcome.booking is not None and outcome.booking.status == "pending"
     (row,) = await shop.rows()
     assert row["status"] == "pending"
-    assert row["expires_at"] == NOW + timedelta(hours=24)
+    # A day on is after the booking starts, so the hold lapses at the start.
+    assert row["expires_at"] == TEN
     assert await shop.holds(row["id"]) == 1
 
 
@@ -181,7 +216,7 @@ async def test_auto_confirms_unless_the_type_needs_confirmation(shop: Shop) -> N
     assert first.booking is not None and second.booking is not None
     assert rows[str(first.booking.id)]["status"] == "confirmed"
     assert rows[str(first.booking.id)]["expires_at"] is None
-    assert rows[str(second.booking.id)]["expires_at"] == NOW + timedelta(hours=24)
+    assert rows[str(second.booking.id)]["expires_at"] == ELEVEN
 
 
 async def test_no_policy_means_auto(shop: Shop) -> None:
@@ -249,7 +284,9 @@ async def test_the_same_turn_key_replays_the_booking(shop: Shop) -> None:
     assert first.booking is not None and again.booking is not None
     assert again.booking.id == first.booking.id
     (row,) = await shop.rows()
-    assert row["turn_key"] == "turn-one"
+    assert await shop.actions() == [
+        {"turn_key": "turn-one", "booking": row["id"], "action": "book"}
+    ]
     assert await shop.holds(row["id"]) == 1
     # The slot is held now, yet a different message for it is refused as taken.
     other = await shop.book(await shop.customer(), kind["id"])
@@ -395,15 +432,6 @@ async def test_the_customer_limit_refuses_more(shop: Shop) -> None:
     assert again.code == "confirmed"
 
 
-async def test_a_refusal_leaves_no_half_written_booking(shop: Shop) -> None:
-    kind = await a_type(shop)
-    first = await shop.book(await shop.customer(), kind["id"])
-    assert first.code == "confirmed"
-    second = await shop.book(await shop.customer(), kind["id"])
-    assert second.code == "slot_taken"
-    assert len(await shop.rows()) == 1
-
-
 async def confirm(shop: Shop, booking: Any) -> None:
     """Staff confirm a pending booking, so a change has something confirmed to protect."""
     done = await shop.team.send(
@@ -422,7 +450,7 @@ async def test_a_pending_booking_moves_in_place_even_in_suggest(shop: Shop) -> N
     assert moved.code == "moved" and moved.booking is not None
     assert moved.booking.id == made.booking.id and moved.booking.status == "pending"
     (row,) = await shop.rows()
-    assert row["starts_at"] == ELEVEN and row["expires_at"] == NOW + timedelta(hours=24)
+    assert row["starts_at"] == ELEVEN and row["expires_at"] == TEN  # the expiry is kept
 
 
 # --- change -------------------------------------------------------------------------------------
@@ -470,10 +498,12 @@ async def test_change_that_needs_confirmation_holds_a_second_pending_booking(sho
     asked = await shop.change(contact, old.booking.id, ELEVEN, turn_key="turn-move")
     assert asked.code == "change_pending" and asked.booking is not None
     assert asked.booking.id != old.booking.id and asked.booking.status == "pending"
+    assert asked.booking.replaces_booking_id == old.booking.id
+    assert old.booking.replaces_booking_id is None
     old_row, new_row = await shop.rows()
     assert old_row["status"] == "confirmed" and old_row["starts_at"] == TEN
     assert new_row["rep"] == str(old.booking.id) and new_row["starts_at"] == ELEVEN
-    assert new_row["source"] == "bot" and new_row["expires_at"] == NOW + timedelta(hours=24)
+    assert new_row["source"] == "bot" and new_row["expires_at"] == ELEVEN
     assert await shop.holds(old_row["id"]) == 1 and await shop.holds(new_row["id"]) == 1
     # The same message again is a replay, not a second request.
     again = await shop.change(contact, old.booking.id, ELEVEN, turn_key="turn-move")
@@ -681,13 +711,13 @@ async def test_staff_bookings_still_record_staff(shop: Shop) -> None:
     person = await make_person(shop.team)
     made = await booked(shop.team, shop.team.staff, meeting(person))
     stored = await shop.w.q(
-        "SELECT source, created_by::text AS by, turn_key, expires_at, replaces_booking_id"
+        "SELECT source, created_by::text AS by, expires_at, replaces_booking_id"
         " FROM bookings WHERE id = %s",
         made["id"],
     )
     assert stored[0]["source"] == "staff" and stored[0]["by"] is not None
-    assert stored[0]["turn_key"] is None and stored[0]["expires_at"] is None
-    assert stored[0]["replaces_booking_id"] is None
+    assert stored[0]["expires_at"] is None and stored[0]["replaces_booking_id"] is None
+    assert await shop.actions() == []
 
 
 async def test_an_unknown_type_is_not_found_and_a_setup_gap_is_not_allowed(shop: Shop) -> None:
@@ -705,3 +735,399 @@ async def test_an_unknown_type_is_not_found_and_a_setup_gap_is_not_allowed(shop:
     outcome = await shop.book(contact, kind["id"])
     assert outcome.code == "not_allowed" and outcome.booking is None
     assert await shop.rows() == []
+
+
+# --- fix round 1: what a customer is told, and what the server checks ----------------------------
+
+TWO = datetime(2031, 3, 4, 14, 0, tzinfo=UTC)
+THREE = datetime(2031, 3, 4, 15, 0, tzinfo=UTC)
+
+
+async def pending_change(
+    shop: Shop, kind: dict[str, Any], contact: uuid.UUID, starts_at: datetime = ELEVEN
+) -> tuple[bot.BotOutcome, bot.BotOutcome]:
+    """A confirmed booking at ten, and a pending request to move it (made in `suggest`), with the
+    company back in `auto` so the next change would move it in place.
+    """
+    old = await shop.book(contact, kind["id"])
+    assert old.booking is not None and old.code == "confirmed"
+    await shop.mode("suggest")
+    asked = await shop.change(contact, old.booking.id, starts_at)
+    assert asked.code == "change_pending", asked
+    await shop.mode("auto")
+    return old, asked
+
+
+# I1: an in-place change deals with the pending change it finds.
+
+
+@pytest.mark.parametrize(
+    ("asked_time", "code"), [(THREE, "moved"), (ELEVEN, "moved"), (TEN, "change_withdrawn")]
+)
+async def test_an_in_place_change_settles_an_earlier_pending_change(
+    shop: Shop, asked_time: datetime, code: str
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    outcome = await shop.change(contact, old.booking.id, asked_time)
+    assert outcome.code == code, outcome
+    assert outcome.booking is not None and outcome.booking.id == old.booking.id
+    original, request = await shop.rows()
+    assert original["starts_at"] == asked_time and original["status"] == "confirmed"
+    assert request["status"] == "cancelled" and await shop.holds(request["id"]) == 0
+    assert await shop.holds(original["id"]) == 1
+
+
+async def test_a_refused_in_place_change_keeps_the_earlier_request(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old, _ = await pending_change(shop, kind, contact)
+    assert old.booking is not None
+    await shop.book(await shop.customer(), kind["id"], TWO)
+    refused = await shop.change(contact, old.booking.id, TWO)
+    assert refused.code == "slot_taken"
+    original, request, _ = await shop.rows()
+    assert (original["status"], original["starts_at"]) == ("confirmed", TEN)
+    assert request["status"] == "pending" and await shop.holds(request["id"]) == 1
+
+
+# I8: a refusal after the earlier request was dropped puts it back.
+
+
+async def test_a_refused_change_request_keeps_the_earlier_one(shop: Shop) -> None:
+    kind = await a_type(shop, needs_confirmation=True)
+    contact = await shop.customer()
+    old = await shop.book(contact, kind["id"])
+    assert old.booking is not None
+    await confirm(shop, old.booking)
+    first = await shop.change(contact, old.booking.id, ELEVEN)
+    assert first.code == "change_pending"
+    await shop.book(await shop.customer(), kind["id"], TWO)
+    refused = await shop.change(contact, old.booking.id, TWO)
+    assert refused.code == "slot_taken" and refused.offers
+    original, request, _ = await shop.rows()
+    assert original["status"] == "confirmed"
+    assert request["status"] == "pending" and request["starts_at"] == ELEVEN
+    assert await shop.holds(request["id"]) == 1
+    assert await shop.audits("bookings.booking.cancelled") == 0
+    assert len(await shop.actions()) == 3  # the two bookings and the one request
+
+
+# I2: a name only when one person can take the slot.
+
+
+async def test_a_named_offer_names_a_person_only_when_one_can_take_it(shop: Shop) -> None:
+    kind = await a_type(shop, people=2, delivery="named")
+    busy = kind["person_ids"][0]
+    await booked(
+        shop.team,
+        shop.team.admin,
+        {"title": "Away", "minutes": 60, "starts_at": at(9), "people": [busy]},
+    )
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        offers = await bot.offer(
+            conn,
+            shop.client,
+            type_id=uuid.UUID(kind["id"]),
+            day_from=date(2031, 3, 4),
+            now=NOW,
+            limit=6,
+        )
+        people = {str(p.id): p.display_name for p in await bot.setup.list_people(conn, shop.client)}
+    first, last = offers[0], offers[-1]
+    assert first.starts_at == datetime(2031, 3, 4, 9, 0, tzinfo=UTC)
+    free = [name for person, name in people.items() if person != busy]
+    assert first.label.endswith(f"with {free[0]}")
+    assert last.starts_at >= datetime(2031, 3, 4, 10, 0, tzinfo=UTC)
+    assert "with" not in last.label
+
+
+# I3: offers after a refused change come from the booking's own people.
+
+
+async def test_offers_after_a_refused_change_can_be_taken(shop: Shop) -> None:
+    kind = await a_type(shop, people=2)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"], TWO)
+    assert made.booking is not None
+    mine = made.booking.people[0].person_id
+    await booked(
+        shop.team,
+        shop.team.admin,
+        {"title": "Away", "minutes": 180, "starts_at": at(9), "people": [str(mine)]},
+    )
+    refused = await shop.change(contact, made.booking.id, datetime(2031, 3, 4, 9, 0, tzinfo=UTC))
+    assert refused.code == "slot_taken" and refused.offers
+    assert all(o.starts_at >= datetime(2031, 3, 4, 12, 0, tzinfo=UTC) for o in refused.offers)
+    taken = await shop.change(contact, made.booking.id, refused.offers[0].starts_at)
+    assert taken.code == "moved", taken
+
+
+# I4 and I5: the server checks every time.
+
+
+@pytest.mark.parametrize(
+    "starts_at",
+    [
+        datetime(2031, 3, 4, 10, 7, tzinfo=UTC),
+        datetime(2031, 3, 4, 10, 0, 30, tzinfo=UTC),
+        datetime(2031, 3, 4, 10, 0),
+        datetime(2200, 3, 4, 10, 0, tzinfo=UTC),
+    ],
+    ids=["off the grid", "seconds", "no offset", "absurd year"],
+)
+async def test_a_time_the_calendar_never_offers_is_not_allowed(
+    shop: Shop, starts_at: datetime
+) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"], TWO)
+    assert made.booking is not None
+    booking = await shop.book(await shop.customer(), kind["id"], starts_at)
+    assert booking.code == "not_allowed" and booking.booking is None and booking.offers
+    changed = await shop.change(contact, made.booking.id, starts_at)
+    assert changed.code == "not_allowed" and changed.booking is None and changed.offers
+    (row,) = await shop.rows()
+    assert (row["status"], row["starts_at"]) == ("confirmed", TWO)
+
+
+async def test_a_naive_time_is_never_read_in_the_hosts_zone(shop: Shop) -> None:
+    await shop.w.q("UPDATE clients SET timezone = 'Asia/Kuala_Lumpur' WHERE id = %s", shop.tenant)
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"], datetime(2031, 3, 4, 2, 0, tzinfo=UTC))
+    assert made.booking is not None
+    naive = await shop.change(contact, made.booking.id, datetime(2031, 3, 4, 3, 0))
+    assert naive.code == "not_allowed"
+    (row,) = await shop.rows()
+    assert row["starts_at"] == datetime(2031, 3, 4, 2, 0, tzinfo=UTC)
+
+
+# I6: every bot write remembers its key.
+
+
+async def test_a_late_retry_of_a_change_does_not_undo_a_later_one(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    assert (await shop.change(contact, made.booking.id, ELEVEN, turn_key="k1")).code == "moved"
+    assert (await shop.change(contact, made.booking.id, TWO, turn_key="k2")).code == "moved"
+    again = await shop.change(contact, made.booking.id, ELEVEN, turn_key="k1")
+    assert again.code == "replay" and again.booking is not None
+    assert again.booking.starts_at == TWO
+    (row,) = await shop.rows()
+    assert row["starts_at"] == TWO
+
+
+async def test_a_key_answers_only_for_what_it_did(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    first = await shop.book(contact, kind["id"], TEN)
+    second = await shop.book(contact, kind["id"], ELEVEN)
+    assert first.booking is not None and second.booking is not None
+    assert (await shop.cancel(contact, first.booking.id, turn_key="k")).code == "cancelled"
+    # The same message again, even re-planned onto another booking, cancels nothing more.
+    replay = await shop.cancel(contact, first.booking.id, turn_key="k")
+    assert replay.code == "replay" and replay.booking is not None
+    assert replay.booking.status == "cancelled"
+    other = await shop.cancel(contact, second.booking.id, turn_key="k")
+    assert other == bot.BotOutcome("not_found")
+    changed = await shop.change(contact, second.booking.id, TWO, turn_key="k")
+    assert changed == bot.BotOutcome("not_found")
+    rebooked = await shop.book(contact, kind["id"], TWO, turn_key="k")
+    assert rebooked == bot.BotOutcome("not_found")
+    assert [r["status"] for r in await shop.rows()] == ["cancelled", "confirmed"]
+
+
+async def test_a_replay_of_a_since_cancelled_booking_says_so(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    first = await shop.book(contact, kind["id"], turn_key="k")
+    assert first.booking is not None
+    await shop.cancel(contact, first.booking.id)
+    again = await shop.book(contact, kind["id"], turn_key="k")
+    assert again.code == "replay" and again.booking is not None
+    assert again.booking.id == first.booking.id and again.booking.status == "cancelled"
+    assert len(await shop.rows()) == 1
+
+
+# I7: a pending change is not the booking.
+
+
+async def test_cancelling_a_pending_change_withdraws_it_and_the_booking_stands(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    outcome = await shop.cancel(contact, asked.booking.id)
+    assert outcome.code == "change_withdrawn"
+    assert outcome.booking is not None and outcome.booking.id == old.booking.id
+    assert outcome.booking.status == "confirmed" and outcome.booking.starts_at == TEN
+    original, request = await shop.rows()
+    assert original["status"] == "confirmed" and await shop.holds(original["id"]) == 1
+    assert request["status"] == "cancelled" and await shop.holds(request["id"]) == 0
+
+
+async def test_changing_a_pending_change_replaces_that_request(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    await shop.mode("suggest")
+    newer = await shop.change(contact, asked.booking.id, TWO)
+    assert newer.code == "change_pending" and newer.booking is not None
+    assert newer.booking.replaces_booking_id == old.booking.id
+    assert [(r["status"], r["starts_at"]) for r in await shop.rows()] == [
+        ("confirmed", TEN),
+        ("cancelled", ELEVEN),
+        ("pending", TWO),
+    ]
+
+
+# M4: a pending hold never outlives its start, and a repeat does not extend it.
+
+
+async def test_a_pending_expiry_never_outlasts_the_start(shop: Shop) -> None:
+    kind = await a_type(shop)
+    await shop.mode("suggest")
+    soon = TEN - timedelta(hours=3)
+    await shop.book(await shop.customer(), kind["id"], now=soon)
+    (row,) = await shop.rows()
+    assert row["expires_at"] == TEN
+
+
+async def test_repeating_a_change_request_keeps_the_earliest_expiry(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old = await shop.book(contact, kind["id"])
+    assert old.booking is not None
+    await shop.mode("suggest")
+    wednesday = datetime(2031, 3, 5, 15, 0, tzinfo=UTC)
+    first = await shop.change(contact, old.booking.id, wednesday)
+    again = await shop.change(contact, old.booking.id, wednesday, now=NOW + timedelta(hours=5))
+    assert (first.code, again.code) == ("change_pending", "change_pending")
+    _, dropped, kept = await shop.rows()
+    assert dropped["status"] == "cancelled"
+    assert kept["expires_at"] == NOW + timedelta(hours=24)
+    other = await shop.change(contact, old.booking.id, TWO, now=NOW + timedelta(hours=6))
+    assert other.code == "change_pending"
+    assert (await shop.rows())[-1]["expires_at"] == TWO  # a day on is after it starts
+
+
+# M5 and the limit.
+
+
+async def test_the_limit_ignores_pending_changes_past_bookings_and_private_meetings(
+    shop: Shop,
+) -> None:
+    kind = await a_type(shop)
+    await shop.w.q(
+        "INSERT INTO booking_settings (client_id, customer_limit) VALUES (%s, 2)", shop.tenant
+    )
+    contact = await shop.customer()
+    for private, day in ((False, "2031-02-03"), (True, "2031-03-20")):
+        await shop.w.q(
+            "INSERT INTO bookings (client_id, contact_id, service, status, starts_at, ends_at,"
+            " private) VALUES (%s, %s, 'Old', 'confirmed', %s, %s, %s)",
+            shop.tenant,
+            str(contact),
+            f"{day}T10:00Z",
+            f"{day}T10:30Z",
+            private,
+        )
+    old, _ = await pending_change(shop, kind, contact)
+    assert old.booking is not None
+    second = await shop.book(contact, kind["id"], TWO)
+    assert second.code == "confirmed", second
+    third = await shop.book(contact, kind["id"], THREE)
+    assert third.code == "limit_reached"
+
+
+# M2: the reply mode.
+
+
+@pytest.mark.parametrize(
+    ("policy", "mode"),
+    [
+        ({}, "auto"),
+        ({"auto_send": {"default": True}}, "auto"),
+        ({"deployment_mode": "suggest"}, "suggest"),
+        ({"deployment_mode": "paused"}, "shadow"),
+        ({"deployment_mode": None}, "shadow"),
+        ({"deployment_mode": 3}, "shadow"),
+        ([1], "shadow"),
+        ("auto", "shadow"),
+    ],
+)
+async def test_only_a_missing_key_or_an_empty_policy_is_auto(
+    shop: Shop, policy: object, mode: str
+) -> None:
+    await shop.policy(policy)
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        assert await bot.reply_mode(conn, shop.client) == mode
+
+
+async def test_an_unknown_mode_writes_nothing(shop: Shop) -> None:
+    kind = await a_type(shop)
+    await shop.policy({"deployment_mode": "paused"})
+    outcome = await shop.book(await shop.customer(), kind["id"])
+    assert outcome.code == "replies_off" and await shop.rows() == []
+
+
+# M1: gaps the review found.
+
+
+async def test_customer_support_suspended_stops_change_and_cancel(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    await shop.suspend()
+    assert (await shop.change(contact, made.booking.id, ELEVEN)).code == "service_off"
+    assert (await shop.cancel(contact, made.booking.id)).code == "service_off"
+    (row,) = await shop.rows()
+    assert (row["status"], row["starts_at"]) == ("confirmed", TEN)
+
+
+async def test_change_obeys_max_advance_and_hours(shop: Shop) -> None:
+    kind = await a_type(shop, max_advance_days=10)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    for starts_at in (
+        datetime(2031, 4, 1, 10, 0, tzinfo=UTC),
+        datetime(2031, 3, 4, 7, 0, tzinfo=UTC),
+    ):
+        outcome = await shop.change(contact, made.booking.id, starts_at)
+        assert outcome.code == "not_allowed" and outcome.booking is None and outcome.offers
+        assert all(o.starts_at != starts_at for o in outcome.offers)
+    (row,) = await shop.rows()
+    assert row["starts_at"] == TEN
+
+
+async def test_a_company_in_another_zone_is_judged_there(shop: Shop) -> None:
+    await shop.w.q("UPDATE clients SET timezone = 'Asia/Kuala_Lumpur' WHERE id = %s", shop.tenant)
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    # 02:00 UTC is 10:00 in Kuala Lumpur; 10:00 UTC is 18:00 there, after closing.
+    late = await shop.book(contact, kind["id"], TEN)
+    assert late.code == "not_allowed" and late.offers
+    assert late.offers[0].starts_at == datetime(2031, 3, 4, 1, 0, tzinfo=UTC)
+    assert late.offers[0].label == "Tuesday 4 March 2031, 9:00 am"
+    morning = await shop.book(contact, kind["id"], datetime(2031, 3, 4, 2, 0, tzinfo=UTC))
+    assert morning.code == "confirmed"
+
+
+@pytest.mark.parametrize(
+    ("minutes", "code"), [(121, "moved"), (120, "moved"), (119, "past_cutoff")]
+)
+async def test_the_cutoff_is_exact(shop: Shop, minutes: int, code: str) -> None:
+    kind = await a_type(shop, change_cutoff_minutes=120)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    at_cutoff = TEN - timedelta(minutes=minutes)
+    assert (await shop.change(contact, made.booking.id, ELEVEN, now=at_cutoff)).code == code

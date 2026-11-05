@@ -29,7 +29,7 @@ from tests.test_bookings_schema import DictConnection, _app, _company, _owner
 pytestmark = requires_docker
 
 MIGRATIONS = REPO_ROOT / "db" / "migrations"
-BOT_TABLES = ("booking_settings", "booking_reminders")
+BOT_TABLES = ("booking_settings", "booking_reminders", "booking_turn_actions")
 PROPOSALS_CHECK = "console_proposals_kind_check"
 TURNS_CHECK = "console_workspace_turns_action_check"
 EVENT_DEFAULT = "{escalation,approval_needed,order_submitted,dlq,circuit_opened,booking_pending}"
@@ -59,11 +59,11 @@ def _reminder(client_id: str, booking_id: str, **extra: Any) -> tuple[Any, ...]:
     )
 
 
-def _turn_key_booking(client_id: str, turn_key: str | None) -> tuple[Any, ...]:
+def _turn_action(client_id: str, booking_id: str, turn_key: str, action: str = "book") -> Any:
     return (
-        "INSERT INTO bookings (client_id, service, starts_at, ends_at, turn_key)"
-        " VALUES (%s, 'Consultation', '2031-04-01T01:00Z', '2031-04-01T01:30Z', %s)",
-        (client_id, turn_key),
+        "INSERT INTO booking_turn_actions (client_id, turn_key, booking_id, action)"
+        " VALUES (%s, %s, %s, %s)",
+        (client_id, turn_key, booking_id, action),
     )
 
 
@@ -73,6 +73,7 @@ def test_each_bot_table_is_tenant_isolated(migrated_dsn: str, app_dsn: str) -> N
         for c in (a, b):
             conn.execute("INSERT INTO booking_settings (client_id) VALUES (%s)", (c.client_id,))
             conn.execute(*_reminder(c.client_id, c.booking_id))
+            conn.execute(*_turn_action(c.client_id, c.booking_id, "turn-1"))
         for table in BOT_TABLES:
             [flags] = conn.execute(
                 "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = %s::regclass",
@@ -96,28 +97,58 @@ def test_each_bot_table_is_tenant_isolated(migrated_dsn: str, app_dsn: str) -> N
             conn.execute(*_reminder(a.client_id, a.booking_id))
         conn.rollback()
         # The app role can write its own company's rows and never delete a reminder.
+        with pytest.raises(errors.InsufficientPrivilege):
+            conn.execute(*_turn_action(a.client_id, a.booking_id, "turn-3"))
+        conn.rollback()
+        conn.execute(*_turn_action(b.client_id, b.booking_id, "turn-2", "cancel"))
         conn.execute("UPDATE booking_reminders SET status = 'sending'")
         conn.execute("UPDATE booking_settings SET reminder_minutes = 60")
         with pytest.raises(errors.InsufficientPrivilege):
             conn.execute("DELETE FROM booking_reminders")
         conn.rollback()
+        # What a turn key did is written once and never changed or removed.
+        for statement in (
+            "UPDATE booking_turn_actions SET action = 'cancel'",
+            "DELETE FROM booking_turn_actions",
+        ):
+            with pytest.raises(errors.InsufficientPrivilege):
+                conn.execute(statement)
+            conn.rollback()
     with _app(app_dsn, None) as conn:
         for table in BOT_TABLES:
             assert conn.execute(f"SELECT 1 FROM {table}").fetchall() == [], table
 
 
-def test_a_turn_key_is_unique_per_company_and_repeats_across_companies(
+def test_a_turn_key_does_one_thing_per_company_and_repeats_across_companies(
     migrated_dsn: str,
 ) -> None:
     a, b = _company(migrated_dsn), _company(migrated_dsn)
     with _owner(migrated_dsn) as conn:
-        conn.execute(*_turn_key_booking(a.client_id, "turn-1"))
+        conn.execute(*_turn_action(a.client_id, a.booking_id, "turn-1"))
         with pytest.raises(errors.UniqueViolation):
-            conn.execute(*_turn_key_booking(a.client_id, "turn-1"))
-        conn.execute(*_turn_key_booking(b.client_id, "turn-1"))
-        # Bookings without a key (staff bookings, old rows) never collide.
-        conn.execute(*_turn_key_booking(a.client_id, None))
-        conn.execute(*_turn_key_booking(a.client_id, None))
+            conn.execute(*_turn_action(a.client_id, a.booking_id, "turn-1", "cancel"))
+        conn.execute(*_turn_action(b.client_id, b.booking_id, "turn-1"))
+        conn.execute(*_turn_action(a.client_id, a.booking_id, "turn-2", "change"))
+
+
+def test_a_turn_action_names_a_booking_of_the_same_company_and_a_known_action(
+    migrated_dsn: str,
+) -> None:
+    a, b = _company(migrated_dsn), _company(migrated_dsn)
+    with _owner(migrated_dsn) as conn:
+        with pytest.raises(errors.ForeignKeyViolation):
+            conn.execute(*_turn_action(a.client_id, b.booking_id, "turn-1"))
+        with pytest.raises(errors.CheckViolation):
+            conn.execute(*_turn_action(a.client_id, a.booking_id, "turn-1", "reschedule"))
+
+
+def test_bookings_keep_no_turn_key_of_their_own(migrated_dsn: str) -> None:
+    with _owner(migrated_dsn) as conn:
+        rows = conn.execute(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_name = 'bookings' AND column_name = 'turn_key'"
+        ).fetchall()
+    assert rows == []
 
 
 def test_a_replacement_points_at_a_booking_of_the_same_company(migrated_dsn: str) -> None:
@@ -132,12 +163,10 @@ def test_a_replacement_points_at_a_booking_of_the_same_company(migrated_dsn: str
         with pytest.raises(errors.ForeignKeyViolation):
             conn.execute(insert, (a.client_id, b.booking_id, uuid.uuid4()))
         [old] = conn.execute(
-            "SELECT turn_key, replaces_booking_id, conversation_id, expires_at FROM bookings"
-            " WHERE id = %s",
+            "SELECT replaces_booking_id, conversation_id, expires_at FROM bookings WHERE id = %s",
             (a.booking_id,),
         )
         assert old == {
-            "turn_key": None,
             "replaces_booking_id": None,
             "conversation_id": None,
             "expires_at": None,
