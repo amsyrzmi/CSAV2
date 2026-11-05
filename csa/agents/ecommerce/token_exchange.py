@@ -22,11 +22,11 @@ def _new_transport() -> httpx.AsyncHTTPTransport:
     return httpx.AsyncHTTPTransport(retries=0, trust_env=False, verify=True)
 
 
-async def _read_response(response: httpx.Response) -> bytes:
+async def _read_response(response: httpx.Response, prefix: str) -> bytes:
     if response.status_code != 200:
-        raise TikTokAuthorizationError("token_exchange_http_rejected")
+        raise TikTokAuthorizationError(f"{prefix}_http_rejected")
     if response.headers.get("content-encoding", "identity").lower() != "identity":
-        raise TikTokAuthorizationError("token_exchange_invalid_response")
+        raise TikTokAuthorizationError(f"{prefix}_invalid_response")
     content_length = response.headers.get("content-length")
     if content_length is not None:
         try:
@@ -34,16 +34,49 @@ async def _read_response(response: httpx.Response) -> bytes:
             if length < 0:
                 raise ValueError
             if length > MAX_RESPONSE_BYTES:
-                raise TikTokAuthorizationError("token_exchange_response_too_large")
+                raise TikTokAuthorizationError(f"{prefix}_response_too_large")
         except ValueError:
-            raise TikTokAuthorizationError("token_exchange_invalid_response") from None
+            raise TikTokAuthorizationError(f"{prefix}_invalid_response") from None
 
     body = bytearray()
     async for chunk in response.aiter_raw(chunk_size=8192):
         body.extend(chunk)
         if len(body) > MAX_RESPONSE_BYTES:
-            raise TikTokAuthorizationError("token_exchange_response_too_large")
+            raise TikTokAuthorizationError(f"{prefix}_response_too_large")
     return bytes(body)
+
+
+async def send_token_request_once(
+    request: httpx.Request, transport: httpx.AsyncBaseTransport, *, prefix: str
+) -> object:
+    """Send one token request with no retry, bounded body and fixed ``<prefix>_*`` codes.
+
+    The URL carries secrets, so it never reaches client hooks, logs or exception text.
+    """
+    try:
+        async with asyncio.timeout(EXCHANGE_TIMEOUT_SECONDS):
+            try:
+                response = await transport.handle_async_request(request)
+                try:
+                    body = await _read_response(response, prefix)
+                finally:
+                    await response.aclose()
+            except httpx.HTTPError:
+                raise TikTokAuthorizationError(f"{prefix}_transport_failed") from None
+    except TimeoutError:
+        raise TikTokAuthorizationError(f"{prefix}_timeout") from None
+    except httpx.HTTPError:
+        raise TikTokAuthorizationError(f"{prefix}_transport_failed") from None
+    finally:
+        try:
+            await transport.aclose()
+        except httpx.HTTPError:
+            raise TikTokAuthorizationError(f"{prefix}_transport_failed") from None
+
+    try:
+        return json.loads(body)
+    except (ValueError, RecursionError):
+        raise TikTokAuthorizationError(f"{prefix}_invalid_response") from None
 
 
 async def exchange_tiktok_authorization_code(
@@ -70,29 +103,5 @@ async def exchange_tiktok_authorization_code(
         ],
         headers={"accept": "application/json", "accept-encoding": "identity"},
     )
-    transport = _new_transport()
-    try:
-        async with asyncio.timeout(EXCHANGE_TIMEOUT_SECONDS):
-            try:
-                response = await transport.handle_async_request(request)
-                try:
-                    body = await _read_response(response)
-                finally:
-                    await response.aclose()
-            except httpx.HTTPError:
-                raise TikTokAuthorizationError("token_exchange_transport_failed") from None
-    except TimeoutError:
-        raise TikTokAuthorizationError("token_exchange_timeout") from None
-    except httpx.HTTPError:
-        raise TikTokAuthorizationError("token_exchange_transport_failed") from None
-    finally:
-        try:
-            await transport.aclose()
-        except httpx.HTTPError:
-            raise TikTokAuthorizationError("token_exchange_transport_failed") from None
-
-    try:
-        payload = json.loads(body)
-    except (ValueError, RecursionError):
-        raise TikTokAuthorizationError("token_exchange_invalid_response") from None
+    payload = await send_token_request_once(request, _new_transport(), prefix="token_exchange")
     return parse_tiktok_token_response(payload, now=now)

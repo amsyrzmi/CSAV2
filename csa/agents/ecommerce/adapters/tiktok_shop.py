@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import time
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -19,8 +21,22 @@ from csa.agents.ecommerce.models import (
     OrderItemSnapshot,
     TikTokShopCredentials,
 )
-from csa.agents.ecommerce.tiktok_models import TikTokOrderSnapshot, TikTokOrderSnapshotPage
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
+from csa.agents.ecommerce.tiktok_models import (
+    TikTokOrderSnapshot,
+    TikTokOrderSnapshotPage,
+    TikTokProductSnapshot,
+    TikTokProductSnapshotPage,
+    is_safe_product_id,
+)
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    model_validator,
+)
 
 TIKTOK_SHOP_BASE_URL = "https://open-api.tiktokglobalshop.com"
 
@@ -101,19 +117,55 @@ class _OrderPage[OrderT: (_Order, TikTokOrderSnapshot)](_ReadContract):
     next_page_token: str | None = Field(default=None, max_length=2048)
 
 
+class _ProductPage(_ReadContract):
+    products: list[TikTokProductSnapshot]
+    next_page_token: str | None = Field(default=None, max_length=2048)
+
+
 class _SearchQuery(_ReadContract):
     page_size: int = Field(ge=1, le=50, strict=True)
     order_status: str | None = Field(default=None, min_length=1, max_length=100)
     page_token: str | None = Field(default=None, min_length=1, max_length=2048)
+    updated_from: AwareDatetime | None = None
+    updated_to: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def require_ordered_window(self) -> _SearchQuery:
+        if (
+            self.updated_from is not None
+            and self.updated_to is not None
+            and self.updated_from >= self.updated_to
+        ):
+            raise ValueError("update window must start before it ends")
+        return self
 
 
-class _AuthorizedShop(_ReadContract):
+# Request-body names of the update-time filter on POST /order/202309/orders/search.
+# VERIFY IN PARTNER CENTER (ledger Task 21): unix seconds, inclusive start, exclusive end.
+_UPDATE_TIME_FROM_FIELD = "update_time_ge"
+_UPDATE_TIME_TO_FIELD = "update_time_lt"
+
+# Paths and request-body names for the v202309 product reads.
+# VERIFY IN PARTNER CENTER (ledger Task 21): detail is GET /product/202309/products/{id} with the
+# product as `data`; search is POST /product/202309/products/search with `products` and
+# `next_page_token` in `data`; the update-time filter is unix seconds, both ends INCLUSIVE.
+_PRODUCT_SEARCH_PATH = "/product/202309/products/search"
+_PRODUCT_DETAIL_PATH = "/product/202309/products/{product_id}"
+_PRODUCT_UPDATE_FROM_FIELD = "update_time_ge"
+_PRODUCT_UPDATE_TO_FIELD = "update_time_le"
+
+
+class TikTokAuthorizedShop(_ReadContract):
+    """One shop the seller authorized, as fresh from the provider; the cipher stays secret."""
+
+    model_config = ConfigDict(frozen=True)
+
     id: str = Field(min_length=1, max_length=100)
     cipher: SecretStr = Field(min_length=1)
 
 
 class _AuthorizedShops(_ReadContract):
-    shops: list[_AuthorizedShop]
+    shops: list[TikTokAuthorizedShop]
 
     @model_validator(mode="after")
     def require_distinct_shops(self) -> _AuthorizedShops:
@@ -279,16 +331,23 @@ class TikTokShopAdapter(EcommercePlatformAdapter):
                 raise TikTokReadError("invalid_response")
         return bytes(content)
 
-    async def authorized_shop_cipher(self, shop_id: str) -> SecretStr:
-        """Return a fresh cipher only for the exact server-selected shop ID."""
-        if not shop_id or len(shop_id) > 100 or self._creds.shop_id != shop_id:
-            raise TikTokReadError("shop_binding_mismatch")
+    async def authorized_shops(self) -> tuple[TikTokAuthorizedShop, ...]:
+        """Every shop the access token is authorized for, fetched fresh, never cached.
+
+        Needs no local shop binding: a first connect uses it to find the single shop.
+        """
         data = await self._read("/authorization/202309/shops", include_shop_cipher=False)
         try:
             shops = _AuthorizedShops.model_validate(data)
         except ValidationError:
             raise TikTokReadError("invalid_response") from None
-        matches = [shop for shop in shops.shops if shop.id == shop_id]
+        return tuple(shops.shops)
+
+    async def authorized_shop_cipher(self, shop_id: str) -> SecretStr:
+        """Return a fresh cipher only for the exact server-selected shop ID."""
+        if not shop_id or len(shop_id) > 100 or self._creds.shop_id != shop_id:
+            raise TikTokReadError("shop_binding_mismatch")
+        matches = [shop for shop in await self.authorized_shops() if shop.id == shop_id]
         if len(matches) != 1:
             raise TikTokReadError("shop_not_authorized")
         return matches[0].cipher
@@ -366,10 +425,21 @@ class TikTokShopAdapter(EcommercePlatformAdapter):
         status: str | None = None,
         limit: int = 10,
         page_token: str | None = None,
+        *,
+        updated_from: datetime | None = None,
+        updated_to: datetime | None = None,
     ) -> TikTokOrderSnapshotPage:
-        """Read provider fields; no normalized order, sync or authorization claim."""
+        """Read provider fields; no normalized order, sync or authorization claim.
+
+        An optional update-time window (from inclusive, to exclusive) filters the search.
+        """
         page = await self._search_order_page(
-            _OrderPage[TikTokOrderSnapshot], status, limit, page_token
+            _OrderPage[TikTokOrderSnapshot],
+            status,
+            limit,
+            page_token,
+            updated_from=updated_from,
+            updated_to=updated_to,
         )
         return TikTokOrderSnapshotPage(
             items=tuple(page.orders), next_page_token=page.next_page_token or None
@@ -381,17 +451,31 @@ class TikTokShopAdapter(EcommercePlatformAdapter):
         status: str | None,
         limit: int,
         page_token: str | None,
+        *,
+        updated_from: datetime | None = None,
+        updated_to: datetime | None = None,
     ) -> _OrderPage[OrderT]:
         try:
-            query = _SearchQuery(page_size=limit, order_status=status, page_token=page_token)
+            query = _SearchQuery(
+                page_size=limit,
+                order_status=status,
+                page_token=page_token,
+                updated_from=updated_from,
+                updated_to=updated_to,
+            )
         except ValidationError:
             raise TikTokReadError("invalid_query") from None
         params = {"page_size": str(query.page_size)}
         if query.page_token is not None:
             params["page_token"] = query.page_token
-        body = json.dumps(
-            {"order_status": query.order_status} if query.order_status is not None else {}
-        )
+        filters: dict[str, str | int] = {}
+        if query.order_status is not None:
+            filters["order_status"] = query.order_status
+        if query.updated_from is not None:
+            filters[_UPDATE_TIME_FROM_FIELD] = int(query.updated_from.timestamp())
+        if query.updated_to is not None:
+            filters[_UPDATE_TIME_TO_FIELD] = int(query.updated_to.timestamp())
+        body = json.dumps(filters)
         data = await self._read("/order/202309/orders/search", body, query=params)
         try:
             page = page_type.model_validate(data)
@@ -406,6 +490,68 @@ class TikTokShopAdapter(EcommercePlatformAdapter):
         ):
             raise TikTokReadError("invalid_page")
         return page
+
+    async def get_product_snapshot(self, client_id: UUID, product_id: str) -> TikTokProductSnapshot:
+        """Read one product with its variants and live stock; no sync or authorization claim.
+
+        Tenant/store credential binding and the product permission remain caller gates.
+        """
+        if not is_safe_product_id(product_id):
+            raise TikTokReadError("invalid_query")
+        data = await self._read(_PRODUCT_DETAIL_PATH.format(product_id=product_id))
+        try:
+            product = TikTokProductSnapshot.model_validate(data)
+        except ValidationError:
+            raise TikTokReadError("invalid_response") from None
+        if product.id != product_id:
+            raise TikTokReadError("product_mismatch")
+        return product
+
+    async def search_product_snapshot_page(
+        self,
+        client_id: UUID,
+        limit: int = 10,
+        page_token: str | None = None,
+        *,
+        updated_from: datetime | None = None,
+        updated_to: datetime | None = None,
+    ) -> TikTokProductSnapshotPage:
+        """Read one explicit page of products; paging is the caller's, never implied sync.
+
+        An optional update-time window (from inclusive, to exclusive) filters the search.
+        """
+        try:
+            query = _SearchQuery(
+                page_size=limit,
+                page_token=page_token,
+                updated_from=updated_from,
+                updated_to=updated_to,
+            )
+        except ValidationError:
+            raise TikTokReadError("invalid_query") from None
+        params = {"page_size": str(query.page_size)}
+        if query.page_token is not None:
+            params["page_token"] = query.page_token
+        filters: dict[str, int] = {}
+        if query.updated_from is not None:
+            filters[_PRODUCT_UPDATE_FROM_FIELD] = int(query.updated_from.timestamp())
+        if query.updated_to is not None:
+            # Our end is exclusive, the provider's is inclusive whole seconds: step back one.
+            filters[_PRODUCT_UPDATE_TO_FIELD] = math.ceil(query.updated_to.timestamp()) - 1
+        data = await self._read(_PRODUCT_SEARCH_PATH, json.dumps(filters), query=params)
+        try:
+            page = _ProductPage.model_validate(data)
+        except ValidationError:
+            raise TikTokReadError("invalid_response") from None
+        ids = [product.id for product in page.products]
+        token = page.next_page_token or None
+        if (
+            len(ids) > limit
+            or len(set(ids)) != len(ids)
+            or (token is not None and token == page_token)
+        ):
+            raise TikTokReadError("invalid_page")
+        return TikTokProductSnapshotPage(items=tuple(page.products), next_page_token=token)
 
     async def get_product(self, client_id: UUID, sku: str) -> dict[str, Any]:
         """Queries product details by seller SKU."""

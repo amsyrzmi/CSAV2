@@ -19,7 +19,12 @@ from psycopg.types.json import Jsonb
 from pydantic import TypeAdapter, ValidationError
 
 from csa.agents.base import utc_now
-from csa.console.business import BusinessOrder, get_local_order, require_business_read
+from csa.console.business import (
+    BusinessOrder,
+    get_local_order,
+    marketplace_sync_state,
+    require_business_read,
+)
 from csa.console.contracts import ConsoleActor
 from csa.console.inbox import conversation
 from csa.console.packages import BY_KEY
@@ -45,7 +50,7 @@ from csa.email.service import EmailService
 from csa.hr.api import hr_session_from
 from csa.hr.policy import HrPolicyError
 from csa.hr.service import HrService
-from csa.workspace import hr_people
+from csa.workspace import hr_people, stock
 from csa.workspace.contracts import (
     MAX_WORK_TTL,
     AnswerProposal,
@@ -70,6 +75,7 @@ from csa.workspace.contracts import (
     OrderPageHint,
     OrderReadProposal,
     OrderReadResult,
+    ProductStockReadProposal,
     ProposalResult,
     RecordRef,
     ResolvedWorkspaceAuthority,
@@ -98,6 +104,7 @@ from csa.workspace.planner import (
     TeamMemberFact,
     WorkspacePlanner,
     detect_language,
+    page_hint,
 )
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
 from csa.workspace.rules import ADDRESS as _ADDRESS
@@ -121,6 +128,10 @@ from csa.workspace.rules import TAB_GATES as _TAB_GATES
 from csa.workspace.rules import unlocked as _unlocked
 
 _RESULT = TypeAdapter(WorkspaceActionResult)
+# The turn row's action column has a CHECK list (last set by migration 0521). A migration in the
+# TikTok range (0490-0499) runs before 0521 on a fresh database and cannot extend it, so a stock
+# read is stored as an answer; its stored result keeps the kind "product_stock_read".
+_STORED_ACTIONS = {"product_stock_read": "answer"}
 _GUIDANCE_KEYS: dict[
     str,
     Literal[
@@ -301,6 +312,7 @@ async def _fresh_result(
         )
     if order is None:
         return page, proposal, WorkspaceDeniedResult(code="resource_unavailable")
+    sync = await marketplace_sync_state(conn, client_id)
     return (
         page,
         proposal,
@@ -321,6 +333,7 @@ async def _fresh_result(
                 created_at=order.created_at,
                 updated_at=order.updated_at,
             ),
+            marketplace_sync=sync,
             as_of=now,
         ),
     )
@@ -488,6 +501,7 @@ _RECORD_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "conversation": _TAB_GATES["inbox"],
     "approval": _TAB_GATES["inbox"],
     "order": _TAB_GATES["business"],
+    "product": _TAB_GATES["business"],
     "training_request": _TAB_GATES["hr"],
     "draft": _TAB_GATES["email"],
 }
@@ -570,6 +584,26 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_change": "{name} already has those details, so there is nothing to change.",
         "nobody_reports": "Nobody reports to {name}.",
         "nobody_matches": "Nobody in People matches that.",
+        # TikTok Shop stock for staff (csa/workspace/stock.py).
+        "stock_no_store": "No TikTok Shop is connected. An Admin can connect one on the Store "
+        "connections page in Business management.",
+        "stock_not_found": "I couldn't find that product on your TikTok Shop.",
+        "stock_ask_product": "Which TikTok Shop product do you mean? Type its name or SKU.",
+        "stock_which": "Several TikTok Shop products match. Which one do you mean?",
+        "stock_live": "Checked live just now.",
+        "stock_copy": "As of {age} (live check failed).",
+        "stock_copy_fresh": "Synced from TikTok {age}.",
+        "stock_none_listed": "No variants of this product are listed on TikTok Shop.",
+        "ago_now": "just now",
+        "ago_minutes": "{n} min ago",
+        "ago_hour": "1 hour ago",
+        "ago_hours": "{n} hours ago",
+        "ago_day": "1 day ago",
+        "ago_days": "{n} days ago",
+        "synced_ago": "synced {age}",
+        "not_synced": "not synced yet",
+        "variant": "variant",
+        "variants": "variants",
     },
     "ms": {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
@@ -654,6 +688,25 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_change": "{name} sudah mempunyai butiran itu, jadi tiada apa-apa untuk ditukar.",
         "nobody_reports": "Tiada sesiapa melapor kepada {name}.",
         "nobody_matches": "Tiada sesiapa dalam People yang sepadan.",
+        "stock_no_store": "Tiada TikTok Shop disambungkan. Admin boleh menyambungkannya di "
+        "halaman Store connections dalam Business management.",
+        "stock_not_found": "Saya tidak menjumpai produk itu di TikTok Shop anda.",
+        "stock_ask_product": "Produk TikTok Shop yang mana satu? Taip nama atau SKUnya.",
+        "stock_which": "Beberapa produk TikTok Shop sepadan. Yang mana satu anda maksudkan?",
+        "stock_live": "Disemak secara langsung sebentar tadi.",
+        "stock_copy": "Setakat {age} (semakan langsung gagal).",
+        "stock_copy_fresh": "Disegerakkan daripada TikTok {age}.",
+        "stock_none_listed": "Tiada varian produk ini disenaraikan di TikTok Shop.",
+        "ago_now": "baru sahaja",
+        "ago_minutes": "{n} minit lalu",
+        "ago_hour": "1 jam lalu",
+        "ago_hours": "{n} jam lalu",
+        "ago_day": "1 hari lalu",
+        "ago_days": "{n} hari lalu",
+        "synced_ago": "disegerakkan {age}",
+        "not_synced": "belum disegerakkan",
+        "variant": "varian",
+        "variants": "varian",
     },
 }
 
@@ -671,14 +724,24 @@ async def _summarize(
         if record.kind == "employee":
             return f"Employee record {UUID(record.id)} is open; its details are not shared."
         if record.kind == "order":
+            require_business_read(actor, client_id)
             async with tx(pool, str(client_id)) as conn:
                 order = await get_local_order(conn, client_id, record.id)
             if order is None:
                 return _unavailable(record.kind)
-            return (
+            line = (
                 f"Order {redact(record.id)}: status {order.status}, payment "
                 f"{order.payment_status}, total {order.total} {order.currency}."
             )
+            if stock.is_synced(order):
+                line += " " + stock.order_tiktok_line(order, utc_now(), _TEXT["en"])
+            return line
+        if record.kind == "product":
+            require_business_read(actor, client_id)
+            summary = await stock.product_summary(
+                pool, client_id, UUID(record.id), text=_TEXT["en"], now=utc_now()
+            )
+            return summary or _unavailable(record.kind)
         if record.kind == "conversation":
             async with tx(pool, str(client_id)) as conn:
                 current = await conversation(conn, client_id, UUID(record.id))
@@ -996,6 +1059,7 @@ async def planner_facts(
         my_team=team,
         my_employee=employee,
         people_access=people,
+        page_hint=page_hint(context),
     )
 
 
@@ -1707,6 +1771,8 @@ async def _resolve(
         )
     if isinstance(proposal, InboxSummaryProposal):
         return await _summary(request, actor, client_id, facts)
+    if isinstance(proposal, ProductStockReadProposal):
+        return await _stock_read(request, client_id, proposal, facts)
     if isinstance(proposal, hr_people.PEOPLE_PROPOSALS):
         return _people_planned(
             await hr_people.resolve(
@@ -1721,6 +1787,39 @@ async def _resolve(
             )
         )
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
+
+
+async def _stock_read(
+    request: Request, client_id: UUID, proposal: ProductStockReadProposal, facts: PlannerFacts
+) -> _Planned:
+    """A TikTok Shop stock read (spec 6.8): the Business tab's role and package rule first.
+
+    Read-only: ``stock.stock_read`` reads our copy and TikTok, and writes neither TikTok nor
+    the tenant's products. Without the package it is answered as a locked Business tab.
+    """
+    text = _TEXT[facts.language]
+    if not role_allows_tab("business", facts.role):
+        label = TAB_LABELS["business"]
+        return _Planned(
+            result=AnswerResult(action="answer", markdown=text["locked_role"].format(tab=label))
+        )
+    if not _unlocked(facts.packages, _TAB_GATES["business"]):
+        names = f" {text['or']} ".join(sorted(BY_KEY[k].title for k in _TAB_GATES["business"][0]))
+        markdown = text["locked"].format(tab=TAB_LABELS["business"], packages=names)
+        return _Planned(result=AnswerResult(action="answer", markdown=markdown))
+    record = facts.page_context.record if facts.page_context is not None else None
+    outcome = await stock.stock_read(
+        request.app.state.pool,
+        client_id,
+        proposal,
+        record,
+        live=getattr(request.app.state, "marketplace_live", None),
+        text=text,
+    )
+    if isinstance(outcome, ClarificationProposal):
+        live, stored = _clarification(outcome)
+        return _Planned(result=live, stored=stored)
+    return _Planned(result=outcome)
 
 
 def _people_planned(resolved: hr_people.Resolved) -> _Planned:
@@ -1886,7 +1985,7 @@ async def create_planned_turn(
             thread_id,
             turn,
             fingerprint=fingerprint,
-            action=proposal.action,
+            action=_STORED_ACTIONS.get(proposal.action, proposal.action),
             page=context.tab,
             resource_id=None,
             result=result,

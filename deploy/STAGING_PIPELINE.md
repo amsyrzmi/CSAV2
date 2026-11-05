@@ -217,9 +217,10 @@ Append `deploy/staging-hooks.Caddyfile` to `/etc/caddy/Caddyfile` as its own
 site block, following the same backup, diff, validate and reload sequence as
 [the shared Caddy runbook](STAGING_SHARED_CADDY.md#3-prepare-the-live-caddy-edit-separate-approval).
 The block answers 403 to anything that is not loopback or the connector
-container, forwards only `POST /hooks/*` (Telegram) and `GET`/`POST
-/channels/whatsapp` (section 9) to `127.0.0.1:18031`, and returns 404 for every
-other path. It uses an ordered `route` so the deny is evaluated first.
+container, forwards only `POST /hooks/*` (Telegram), `GET`/`POST
+/channels/whatsapp` (section 9) and `POST /api/v1/channels/tiktok_shop/webhook`
+(section 12) to `127.0.0.1:18031`, and returns 404 for every other path. The live block predates the
+WhatsApp and TikTok matchers; section 12.6 brings it level in one edit. It uses an ordered `route` so the deny is evaluated first.
 
 Local check after reload:
 
@@ -573,6 +574,333 @@ In the section-2 shell:
 
    Anything other than `0` means a row was written in a shape the scrub does not cover:
    stop and investigate before the console is used again.
+
+## 12. Connect TikTok Shop (owner runs; nothing secret is printed)
+
+TikTok Shop connect lets a company's admin connect a seller shop from Business → Store
+connections, then browse its orders and products and ask the assistants about them. It is read
+only: nothing is ever written to TikTok. One TikTok app (the owner's Partner Center app) serves
+every company. The App Key, App Secret and Service ID stay in three secret files; the assistant
+that maintains this repository never reads them, and none of them belongs in chat, git or a
+pull request.
+
+Two origins are involved, and mixing them up is the usual mistake:
+
+- **Connect callback (where TikTok sends the seller back): the console origin**,
+  `https://staging-console.fourstacks.my/console/v1/business/stores/tiktok/callback`. It runs behind
+  the admin's signed-in session. It needs no Caddy change.
+- **Webhook (TikTok calls us): the hooks host**,
+  `https://hooks.fourstacks.my/api/v1/channels/tiktok_shop/webhook`. This is the only TikTok path
+  on the hooks host and it needs the live hooks Caddy edit (step 6).
+
+TikTok is off while any of the three files holds the literal `disabled`: connect answers 503
+`tiktok_unavailable`, the webhook answers 404, sync jobs skip, and the Store connections page shows
+Connect disabled. Run the steps in this order, in the shell of section 2 (where
+`csa_pipeline_compose` and its exports are active), from a checkout of the merge commit (an older
+checkout lacks the `tiktok-defaults` action). `scripts/staging_rollout.py` (Routine rollouts) can do the stop, `migrate` and recreate parts of
+steps 2 and 3 for you, but it does **not** run the count queries of 12.2: run those first, before
+`staging_rollout plan` and `apply`, then use either route. Step 1 must come first either way, because the rollout's preflight and compose both refuse a service whose
+secret file is missing.
+
+### 12.1 Create the three placeholder files
+
+```bash
+cd /home/amsyrzmi/CSAV2 && python3 -m scripts.staging_secrets tiktok-defaults --secret-dir /srv/csa-staging/secrets
+```
+
+Expected: `created pipeline/staging_tiktok_app_key (0400)`, the same for `staging_tiktok_app_secret`
+and `staging_tiktok_service_id`, then `OK 10 staging secret files; values not displayed`. Existing
+files are never overwritten, so a second run prints only the `OK` line.
+
+### 12.2 Check the data, then apply migrations 0490 to 0493
+
+Two things in these migrations cannot be undone or can abort, so count first. Run each query in
+the section-2 shell; they only read.
+
+**`0490` deletes legacy TikTok stores** (a `channel = 'tiktok_shop'` credential with no
+authorization grant) together with their webhook endpoints, ingress events and outbound deliveries.
+None are expected on staging. If the first number is not `0`, look at what they are before going on:
+
+```bash
+csa_pipeline_compose exec -T staging-db psql -U csa -d csa_staging -tA -v ON_ERROR_STOP=1 -c "
+WITH legacy AS (
+  SELECT c.id FROM channel_credentials c
+  WHERE c.channel = 'tiktok_shop'
+    AND NOT EXISTS (SELECT 1 FROM ecommerce_grants g WHERE g.record_id = c.id)),
+ep AS (
+  SELECT e.id FROM webhook_endpoints e JOIN legacy l ON l.id = e.credential_id)
+SELECT (SELECT count(*) FROM legacy) AS stores,
+       (SELECT count(*) FROM ep) AS endpoints,
+       (SELECT count(*) FROM ingress_events WHERE endpoint_id IN (SELECT id FROM ep)) AS events,
+       (SELECT count(*) FROM outbound_deliveries WHERE endpoint_id IN (SELECT id FROM ep)) AS deliveries"
+```
+
+`0490` also marks every TikTok ingress event still `received` as `dead` (`last_error =
+'legacy_tiktok_store_removed'`), so it never reaches the turn worker. Count them; a non-zero number
+is expected only if the old webhook ever received traffic:
+
+```bash
+csa_pipeline_compose exec -T staging-db psql -U csa -d csa_staging -tA -v ON_ERROR_STOP=1 -c "
+SELECT count(*) FROM ingress_events WHERE raw ->> 'channel' = 'tiktok_shop' AND status = 'received'"
+```
+
+**`0491` builds a unique index on the shop id**, so two stored TikTok credentials for one shop
+that both have a grant would abort it. Expect `0`:
+
+```bash
+csa_pipeline_compose exec -T staging-db psql -U csa -d csa_staging -tA -v ON_ERROR_STOP=1 -c "
+SELECT count(*) FROM (
+  SELECT c.shop_id FROM channel_credentials c
+  WHERE c.channel = 'tiktok_shop' AND c.shop_id IS NOT NULL
+    AND EXISTS (SELECT 1 FROM ecommerce_grants g WHERE g.record_id = c.id)
+  GROUP BY c.shop_id HAVING count(*) > 1) duplicated"
+```
+
+If it is not `0`, stop and decide which duplicate to remove before migrating.
+
+**Use the new image for `migrate`.** The `migrate` one-shot applies the migrations that are inside
+the image exported as `CSA_STAGING_PYTHON_IMAGE`. The section-2 shell exports a fixed older digest;
+with that one `migrate` applies nothing, still prints `migrate exit=0`, and the new gateway then
+fails `/readyz` with "missing migrations: 0490…". So export the two image digests of the merged
+commit first (the publish run prints them, or `scripts/staging_rollout.py plan` does):
+
+```bash
+export CSA_STAGING_PYTHON_IMAGE=ghcr.io/amsyrzmi/csa-python@sha256:<digest of the merged commit>
+export CSA_STAGING_FRONTEND_IMAGE=ghcr.io/amsyrzmi/csa-frontend@sha256:<digest of the merged commit>
+```
+
+Then stop the four services (a migration never runs beside old code) and run the one-shot, as for
+any release (`deploy/RELEASE.md`):
+
+```bash
+csa_pipeline_compose stop gateway frontend worker delivery
+CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging \
+  csa_pipeline_compose --profile migration-approved run --rm --no-deps migrate
+echo "migrate exit=$?"
+```
+
+`migrate exit=0` alone proves nothing (see above), so check that the four versions are recorded;
+expect `4`:
+
+```bash
+csa_pipeline_compose exec -T staging-db psql -U csa -d csa_staging -tA -v ON_ERROR_STOP=1 -c "
+SELECT count(*) FROM schema_migrations WHERE version IN ('0490','0491','0492','0493')"
+```
+
+If it prints `0`, the image did not contain them: fix the exported digest and run `migrate` again.
+`0491` adds `disconnected_at`, the shop index and the marketplace sync state; `0492` adds the order
+and product sync tables; `0493` stops the 24-hour approval expiry from cancelling synced
+marketplace orders. These four sort below the highest applied version (`0530`), so older images
+still pass `/readyz` after them: nothing warns you if you recreate on an old image, so do step 12.3
+with the new digests.
+
+### 12.3 Recreate the services with TikTok still off
+
+With the new digests from 12.2 still exported in this shell:
+
+```bash
+csa_pipeline_compose config --quiet || exit 1
+csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway worker delivery frontend
+```
+
+Check `/readyz`. TikTok is still off, so the Store connections page says "TikTok Shop isn't set up
+on this server yet." and Connect is disabled.
+
+### 12.4 Write the three real values (owner; nothing is printed)
+
+Get the App Key, App Secret and Service ID from Partner Center → the app. The files are mode 0400,
+so they are replaced, not edited. Paste each value at its prompt (nothing echoes):
+
+```bash
+(
+  umask 077
+  d=/srv/csa-staging/secrets/pipeline
+  for file in staging_tiktok_app_key staging_tiktok_app_secret staging_tiktok_service_id; do
+    read -r -s -p "$file: " value; echo
+    [ -n "$value" ] || { echo "empty, unchanged: $file"; continue; }
+    rm -f "$d/$file"
+    printf '%s' "$value" > "$d/$file"
+    chmod 400 "$d/$file"
+    echo "$file: $(stat -c %s "$d/$file") bytes, mode $(stat -c %a "$d/$file")"
+  done
+  unset value
+)
+python3 -m scripts.staging_secrets check --secret-dir /srv/csa-staging/secrets
+```
+
+All three must hold real values for TikTok to turn on; while any one is still `disabled` it stays
+off (there is no half-on state and no start-up error).
+
+### 12.5 Recreate, register and enable the app
+
+The gateway and worker read the files at start, so recreate them, then register and enable the
+app row with the `tiktok-app` one-shot. It uses the owner connection, the same approval variable
+and the same isolated-database check as `migrate`, and prints only the app id, state and revision:
+
+```bash
+csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway worker
+CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging \
+  csa_pipeline_compose --profile tiktok-app-approved run --rm --no-deps tiktok-app register
+CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging \
+  csa_pipeline_compose --profile tiktok-app-approved run --rm --no-deps tiktok-app enable
+```
+
+Expected: `tiktok_shop: disabled at revision 1`, then `tiktok_shop: active at revision 2`. If the
+app was registered before, `register` answers `refused: app_registration_conflict` and exits 1: that
+is harmless, go on to `enable`. The
+Store connections page now offers Connect. `disable` is the same command with `disable`.
+
+**Rotating the App Secret later:** `disable`, replace the secret file as in step 12.4, recreate
+gateway and worker, `enable`. Each of those bumps the app revision, which stops every in-flight
+read. Existing connections keep working without a reconnect: grants are immutable, so the worker's
+refresh job notices that a grant is older than the app's revision and, on its next run, refreshes
+the shop's token and records a new grant at the new revision. Until that run (it looks every
+15 minutes and also refreshes any token that expires within 24 hours) a store can read "Needs
+reconnecting". If it still does after a run, the admin presses Reconnect.
+
+### 12.6 The live hooks Caddy edit (owner, sudo; one edit)
+
+The live hooks site in `/etc/caddy/Caddyfile` forwards only Telegram. It still lacks the WhatsApp
+matcher (section 9) as well as the TikTok one, so make **one** edit that brings it level with
+`deploy/staging-hooks.Caddyfile`: that file forwards `POST /hooks/*`, `GET`/`POST
+/channels/whatsapp` and `POST /api/v1/channels/tiktok_shop/webhook` to `127.0.0.1:18031`, answers
+403 to any peer that is not loopback or the connector, and 404 to everything else. Follow
+[the shared Caddy runbook section 3](STAGING_SHARED_CADDY.md#3-prepare-the-live-caddy-edit-separate-approval)
+and section 3 above: obtain approval, back up, edit, diff, validate, reload. The backup name below
+is new, so it refuses to collide with the earlier ones:
+
+```bash
+sudo test ! -e /etc/caddy/Caddyfile.before-csa-hooks-tiktok &&
+sudo cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-csa-hooks-tiktok
+```
+
+If the backup already exists, stop and reconcile its origin; do not overwrite it. Only once the
+backup was made:
+
+```bash
+sudoedit /etc/caddy/Caddyfile
+```
+
+In the editor, replace the existing `http://hooks.fourstacks.my { ... }` block with the whole of
+`deploy/staging-hooks.Caddyfile`, touching nothing else. Then:
+
+```bash
+sudo diff -u /etc/caddy/Caddyfile.before-csa-hooks-tiktok /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+Read the diff: only the hooks site may change, by two added matchers, two added `reverse_proxy`
+lines and the comment lines that describe them. Only after validation succeeds:
+
+```bash
+sudo systemctl reload caddy && systemctl is-active caddy
+```
+
+Local checks after the reload (TikTok is on, so an unsigned call is refused with 401; with TikTok
+off the second would answer 404 instead):
+
+```bash
+curl --noproxy '*' --silent --output /dev/null --write-out 'GET tiktok path HTTP %{http_code}\n' \
+  --header 'Host: hooks.fourstacks.my' http://127.0.0.1/api/v1/channels/tiktok_shop/webhook
+curl --noproxy '*' --silent --output /dev/null --write-out 'POST tiktok webhook HTTP %{http_code}\n' \
+  --header 'Host: hooks.fourstacks.my' --header 'Content-Type: application/json' \
+  --request POST --data '{}' http://127.0.0.1/api/v1/channels/tiktok_shop/webhook
+curl --noproxy '*' --silent --output /dev/null --write-out 'POST callback path HTTP %{http_code}\n' \
+  --header 'Host: hooks.fourstacks.my' --request POST http://127.0.0.1/console/v1/business/stores/tiktok/callback
+```
+
+Expected `404` (a GET is not forwarded), `401` (reached the gateway, no signature) and `404` (the
+callback is not on the hooks host). Repeat the section 3 checks for Telegram, and check that the
+newly added WhatsApp matcher reaches the gateway (while WhatsApp holds `disabled` the gateway
+answers 404; the point is that it is the gateway's answer, which the second command shows by
+returning JSON rather than Caddy's plain "Not Found"):
+
+```bash
+curl --noproxy '*' --silent --write-out '\nGET whatsapp HTTP %{http_code}\n' \
+  --header 'Host: hooks.fourstacks.my' http://127.0.0.1/channels/whatsapp
+curl --noproxy '*' --silent --write-out '\nGET other HTTP %{http_code}\n' \
+  --header 'Host: hooks.fourstacks.my' http://127.0.0.1/channels/other
+```
+
+The first curl (`/channels/whatsapp`) shows the gateway's JSON body (or a 403 once WhatsApp is live
+and no handshake is sent); the second (`/channels/other`) shows Caddy's plain `Not Found`.
+
+### 12.7 Partner Center settings (owner)
+
+In Partner Center, on the app:
+
+1. **Redirect URL:** `https://staging-console.fourstacks.my/console/v1/business/stores/tiktok/callback`.
+   This is the **console** origin, not the hooks host.
+2. **Webhook URL:** `https://hooks.fourstacks.my/api/v1/channels/tiktok_shop/webhook`.
+3. **Events:** order status change, product status or audit change, and seller deauthorization.
+   Read the exact event names and type numbers there and record them in the ledger table
+   (12.11): the code accepts a small list that has not been checked against TikTok.
+4. **Permissions:** orders, the shop's authorization info, and the product permission. Read the
+   scope keys in Partner Center and record them in the ledger table (12.11).
+
+### 12.8 Confirm the session survives the return from TikTok
+
+The callback is a browser navigation from TikTok back to the console. It works only if the admin's
+session cookie is sent with it. The console cookies are `SameSite=Lax`, which is sent on a
+top-level GET like this (Gmail's callback relies on the same thing). Prove it on the first connect:
+sign in, press Connect, approve on TikTok; you must land on Store connections still signed in, with
+`?tiktok=connected`. If you land on the login page, the cookie did not come back: stop and do not
+loosen the cookie without a decision.
+
+### 12.9 Confirm who may authorize an unpublished app
+
+While the app is unpublished, TikTok may let only the app owner's own shop, or allow-listed shops,
+authorize it. Before connecting a client's shop, find out in Partner Center whether a shop that is
+not the owner's can authorize it, or whether the app must be published or the shop added first.
+Record the answer in the ledger table (12.11).
+
+### 12.10 Enable, connect and test
+
+1. As a platform admin: Services → the test company → enable the **Marketplaces** package. Marketplaces is sellable as of this project, so the staging roster accepts it and an Admin can also request it from Services.
+2. As that company's Admin: Business → Store connections → Connect TikTok Shop, and approve with the
+   owner's own shop. Expect `?tiktok=connected` and a store showing Connected.
+3. Run the **done means** list: (a) a client admin connected a real shop; (b) within minutes staff
+   browse its orders and products; (c) a new TikTok order appears in our copy with no manual step
+   (place or change one, wait for the webhook, or for the catch-up job); (d) the customer assistant
+   answers one order-number question and one stock question on Telegram or WhatsApp; (e) the
+   workspace assistant answers a staff stock question.
+4. Customer assistant smoke, by hand on the test Telegram bot (nothing in this list writes to
+   TikTok): an order-status question with a TikTok order number, including one that is a Luhn-valid
+   18-digit number (the personal-data filter masks about one in ten 18-digit numbers, and the
+   assistant must still find the order); a stock question for an item that exists only on TikTok; a
+   stock question for an item in the local catalogue; and "cancel my TikTok order", which must not
+   write anything and must not cancel the order.
+5. Workspace assistant: ask "how much stock do we have of <a TikTok product>?" in the dock, then
+   work through `docs/ASSISTANT_RETEST.md`. Optionally run the model smoke run (section "Routine
+   rollouts"); the five stock cases proposed in the Task 20 report are not in
+   `csa/workspace/smoke_cases.json` yet.
+6. Record the trace ids, counts and the answers to 12.8, 12.9 and the ledger table in
+   `docs/PROGRESS.md`. Only then connect the client's shop.
+
+### 12.11 Verify in Partner Center (ledger)
+
+Everything the code knows about TikTok comes from documentation read from memory and made-up
+fixtures; no provider call was ever made while building this. Work through the list, once, with the
+owner's real app. Change the code in the one place named and record the answer in `docs/PROGRESS.md`.
+
+| # | What to confirm in Partner Center | Where it is in the code |
+|---|---|---|
+| 1 | The authorize host for the Malaysia market (now `services.tiktokshop.com/open/authorize`). A wrong host makes Connect fail before it starts. | `AUTHORIZE_URL` in `csa/console/tiktok_connect.py`, and the allow-list `TIKTOK_AUTHORIZE_HOSTS` in `CSA_WebConsole/csa-console/web/lib/tiktok-connect.ts` (change both) |
+| 2 | The product permission's scope key (placeholder `seller.product.basic`), and that the order and shop keys are the ones listed. **A real grant without the product key reads "Needs reconnecting".** | `PRODUCT_SCOPES` (and `_ORDER_SCOPES`, `_SHOP_SCOPES`) in `csa/agents/ecommerce/authorization.py` |
+| 3 | The token endpoint and the refresh endpoint and its parameters (placeholders: `https://auth.tiktok-shops.com/api/v2/token/get` and `/token/refresh`), and whether TikTok issues a new refresh token on each refresh (if so, a lost response may strand a store until one Reconnect). | `TOKEN_ENDPOINT` in `csa/agents/ecommerce/token_exchange.py`; `REFRESH_ENDPOINT` and the `REFRESH_*` constants in `csa/agents/ecommerce/token_refresh.py` |
+| 4 | Which provider error codes mean the refresh token is dead (revoked, expired, wrong app). **`REFRESH_REFUSAL_CODES` is empty until filled: until then a dead refresh token is retried on every run and the store is not marked "Needs reconnecting" until its access token lapses.** | `REFRESH_REFUSAL_CODES` in `csa/agents/ecommerce/refresh.py` |
+| 5 | Webhook event type numbers and names for order status change, product status/audit change and seller deauthorization (placeholders `1`, `5`, `6`; deauthorization may be `12`, which could instead be a return-status event). A wrong number silently drops the event, and a wrong deauthorization number means a revoked shop is not disconnected. | `EVENT_KINDS` in `csa/marketplace/webhook.py` |
+| 6 | The webhook signature recipe. Two are accepted until verified: A, HMAC-SHA256 of the body with the app secret; B, the same over the app key plus the body. Keep the real one and delete the other. Also whether TikTok sends a timestamp (there is no replay check today) and which header carries the signature. | `SIGNATURE_RECIPES`, `signature_body_only`, `signature_app_key_and_body` in `csa/marketplace/webhook.py`; the header lookup in `csa/channels/marketplace/router.py` |
+| 7 | Order field names (create, update and paid times; payment sub-total, shipping fee, seller discount; recipient name, phone and address; packages and tracking) and the order status vocabulary and its mapping to our statuses. | the mapping comment in `csa/agents/ecommerce/tiktok_models.py`; the status table in `csa/marketplace/mapping.py` |
+| 8 | Product field names, the product status vocabulary, and the allowlist of statuses that count as on sale (only `ACTIVATE` today; it fails closed, so a different word for "live" makes every product read as not for sale). | `SELLABLE_PRODUCT_STATUSES` in `csa/marketplace/reads.py`; the mapping comment in `csa/agents/ecommerce/tiktok_models.py` |
+| 9 | The order search: whether results can be sorted by update time (the sync pages by window plus page token and does not request a sort), and whether the `update_time` window is inclusive at the start and exclusive at the end. | `_UPDATE_TIME_FROM_FIELD` / `_UPDATE_TIME_TO_FIELD` in `csa/agents/ecommerce/adapters/tiktok_shop.py` |
+| 10 | The product search: the update-time window's inclusivity (assumed inclusive both ends), and whether it returns every SKU of each product or only some (if only some, stock for a variant can be missing). | `_PRODUCT_SEARCH_PATH`, `_PRODUCT_UPDATE_*_FIELD` in `csa/agents/ecommerce/adapters/tiktok_shop.py` |
+| 11 | The provider code for "product not found". Until it is known a product refresh for a deleted product retries until it fails. | `_product_refresh` in `csa/marketplace/processor.py` |
+| 12 | Rate limits, and the page size limits (the code asks for at most 50 per page). | `page_size` bounds in `csa/agents/ecommerce/adapters/tiktok_shop.py`; the sync pacing (`page_delay_seconds`, `retry_backoff_seconds`) in `csa/marketplace/processor.py` |
+| 13 | Whether a shop that is not the owner's can authorize an unpublished app (12.9). | no code: procedure only |
+
+Until a row is confirmed, treat what it covers as unverified: the safe failure in every case is
+"nothing is shown or written", never a wrong write, because the code never writes to TikTok.
 
 ## Resetting staging
 

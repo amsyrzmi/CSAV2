@@ -19,7 +19,19 @@ from csa.agents.ecommerce.authorization import (
 )
 from csa.agents.ecommerce.dispatch import TikTokReadRequest, dispatch_read
 from csa.agents.ecommerce.models import TikTokShopCredentials
-from csa.agents.ecommerce.tiktok_models import TikTokOrderSnapshot, TikTokOrderSnapshotPage
+from csa.agents.ecommerce.tiktok_models import (
+    TikTokOrderSnapshot,
+    TikTokOrderSnapshotPage,
+    TikTokProductSnapshot,
+    TikTokProductSnapshotPage,
+)
+
+type TikTokReadResult = (
+    TikTokOrderSnapshot
+    | TikTokOrderSnapshotPage
+    | TikTokProductSnapshot
+    | TikTokProductSnapshotPage
+)
 
 
 class BoundTikTokReader:
@@ -57,26 +69,40 @@ class BoundTikTokReader:
     async def verify_shop(self) -> None:
         await self._adapter.require_authorized_shop(self._context.binding.shop_id)
 
-    async def read(
-        self, request: TikTokReadRequest
-    ) -> TikTokOrderSnapshot | TikTokOrderSnapshotPage:
+    async def read(self, request: TikTokReadRequest) -> TikTokReadResult:
         tenant = self._context.binding.client_id
+        if request.kind == "product_detail":
+            assert request.product_id is not None
+            return await self._adapter.get_product_snapshot(tenant, request.product_id)
+        if request.kind == "product_search":
+            return await self._adapter.search_product_snapshot_page(
+                tenant,
+                limit=request.limit,
+                page_token=request.page_token,
+                updated_from=request.updated_from,
+                updated_to=request.updated_to,
+            )
         if request.kind == "detail":
             assert request.order_id is not None
             return await self._adapter.get_order_snapshot(tenant, request.order_id)
         return await self._adapter.search_order_snapshot_page(
-            tenant, status=request.status, limit=request.limit, page_token=request.page_token
+            tenant,
+            status=request.status,
+            limit=request.limit,
+            page_token=request.page_token,
+            updated_from=request.updated_from,
+            updated_to=request.updated_to,
         )
 
 
-async def read_verified_order(
+async def read_verified(
     pool: AsyncConnectionPool,
     client_id: UUID,
     operation_id: UUID,
     resolve: Callable[
         [TikTokAuthorizationContext, AsyncConnection[Any]], Awaitable[BoundTikTokReader]
     ],
-) -> TikTokOrderSnapshot | TikTokOrderSnapshotPage:
+) -> TikTokReadResult:
     """Resolve on the fenced connection, then consume and dispatch the target once.
 
     The resolver must not commit, roll back, close or release the caller's connection.
@@ -99,8 +125,11 @@ async def read_verified_order(
             verified_at=datetime.now(UTC),
         )
 
-    async def send(request: TikTokReadRequest) -> TikTokOrderSnapshot | TikTokOrderSnapshotPage:
+    async def send(request: TikTokReadRequest) -> TikTokReadResult:
         assert reader is not None
         return await reader.read(request)
 
     return await dispatch_read(pool, client_id, operation_id, verify, send)
+
+
+read_verified_order = read_verified  # the name existing order callers and tests use

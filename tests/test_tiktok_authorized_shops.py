@@ -136,3 +136,63 @@ async def test_shop_errors_are_safe_and_do_not_follow_redirects(failure: str) ->
         assert creds.access_token not in str(caught.value)
         assert caught.value.__context__ is None or caught.value.__suppress_context__
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_authorized_shops_lists_every_shop_fresh_without_a_local_binding() -> None:
+    # A first connect has no stored shop yet: the lookup needs no shop_id or shop_cipher.
+    creds = _sample_creds().model_copy(update={"shop_id": None, "shop_cipher": None})
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/authorization/202309/shops"
+        assert set(request.url.params) == {"app_key", "timestamp", "sign"}
+        shops = (
+            [
+                {"id": "SYNTH-ONE", "cipher": "synthetic-one", "name": "excluded"},
+                {"id": "SYNTH-TWO", "cipher": "synthetic-two"},
+            ]
+            if calls == 1
+            else []
+        )
+        return httpx.Response(200, json={"code": 0, "data": {"shops": shops}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = TikTokShopAdapter(creds, http_client=client)
+        shops = await adapter.authorized_shops()
+        assert [(shop.id, shop.cipher.get_secret_value()) for shop in shops] == [
+            ("SYNTH-ONE", "synthetic-one"),
+            ("SYNTH-TWO", "synthetic-two"),
+        ]
+        assert "synthetic-one" not in repr(shops)
+        assert await adapter.authorized_shops() == ()
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data",
+    [
+        {},
+        {"shops": [{"id": "SYNTH-SHOP"}]},
+        {
+            "shops": [
+                {"id": "SYNTH-SHOP", "cipher": "private"},
+                {"id": "SYNTH-SHOP", "cipher": "private"},
+            ]
+        },
+    ],
+)
+async def test_authorized_shops_rejects_malformed_lists_safely(data: dict[str, Any]) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"code": 0, "data": data}),
+        )
+    ) as client:
+        adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
+        with pytest.raises(TikTokReadError) as caught:
+            await adapter.authorized_shops()
+        assert caught.value.code == "invalid_response"
+        assert "private" not in str(caught.value)

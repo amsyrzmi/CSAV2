@@ -19,6 +19,7 @@ from csa.agents.ecommerce.authorization import (
 )
 from csa.agents.ecommerce.grants import (
     create_verified_grant,
+    insert_verified_grant,
     invalidate_grant,
     load_grant,
 )
@@ -45,6 +46,8 @@ async def pool(app_dsn: str) -> AsyncIterator[AsyncConnectionPool]:
 async def seed(owner: str) -> TikTokGrantState:
     client_id, record_id = uuid4(), uuid4()
     app_id = f"SYNTH-{uuid4()}"
+    # Migration 0491: one active store per shop across the deployment, so each seed needs its own.
+    shop_id = f"SYNTH-SHOP-{record_id}"
     async with await psycopg.AsyncConnection.connect(owner) as conn:
         await register_app(conn, app_id)
         await transition_app(conn, app_id=app_id, expected_revision=1, state="active")
@@ -54,8 +57,8 @@ async def seed(owner: str) -> TikTokGrantState:
         )
         await conn.execute(
             "INSERT INTO channel_credentials(id,client_id,channel,shop_id) "
-            "VALUES (%s,%s,'tiktok_shop','SYNTH-SHOP')",
-            (record_id, client_id),
+            "VALUES (%s,%s,'tiktok_shop',%s)",
+            (record_id, client_id, shop_id),
         )
     now = datetime.now(UTC)
     return TikTokGrantState(
@@ -65,7 +68,7 @@ async def seed(owner: str) -> TikTokGrantState:
                 client_id=client_id,
                 record_id=record_id,
                 platform="tiktok_shop",
-                shop_id="SYNTH-SHOP",
+                shop_id=shop_id,
             ),
             app_id=app_id,
             app_revision=2,
@@ -306,3 +309,18 @@ async def test_read_only_role_is_scoped_and_cannot_write(
     finally:
         await readonly.close()
     assert await load_grant(pool, tenant, grant.id) == grant
+
+
+async def test_refresh_source_is_a_valid_grant(
+    pool: AsyncConnectionPool, migrated_dsn: str
+) -> None:
+    seeded = await seed(migrated_dsn)
+    grant = TikTokGrantState.model_validate(
+        {**seeded.model_dump(), "source": "verified_token_refresh"}
+    )
+    tenant = grant.context.binding.client_id
+    async with tx(pool, str(tenant)) as conn:
+        await insert_verified_grant(conn, grant)
+    loaded = await load_grant(pool, tenant, grant.id)
+    assert loaded == grant
+    assert loaded.source == "verified_token_refresh"

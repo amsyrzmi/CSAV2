@@ -331,11 +331,11 @@ test("M6 business routes require a session and local reads never add mutation au
   const calls = [];
   globalThis.fetch = async (path, init) => {
     calls.push([path, init]);
-    return Response.json({ source: "local_records", marketplace_sync: "unavailable", items: [], next_cursor: null });
+    return Response.json({ source: "local_records", marketplace_sync: "not_connected", items: [], next_cursor: null });
   };
   try {
     const result = await api("/console/v1/business/orders?limit=20");
-    assert.equal(result.marketplace_sync, "unavailable");
+    assert.equal(result.marketplace_sync, "not_connected");
     assert.equal(calls.length, 1);
     assert.equal(calls[0][1].credentials, "same-origin");
     assert.equal(calls[0][1].headers.has("Authorization"), false);
@@ -362,7 +362,7 @@ test("M6 local order filters encode platform-scoped store IDs without changing t
   const calls = [];
   globalThis.fetch = async (requestPath, init) => {
     calls.push([requestPath, init]);
-    return Response.json({ source: "local_records", marketplace_sync: "unavailable", items: [], next_cursor: null });
+    return Response.json({ source: "local_records", marketplace_sync: "not_connected", items: [], next_cursor: null });
   };
   try {
     await api(path);
@@ -373,19 +373,20 @@ test("M6 local order filters encode platform-scoped store IDs without changing t
   } finally { globalThis.fetch = original; }
 });
 
-test("M6 store metadata reads keep connection authority unavailable and errors explicit", async () => {
+test("M6 store metadata reads carry the recorded connection values and errors stay explicit", async () => {
   const original = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (path, init) => {
     calls.push([path, init]);
     if (path.includes("before=")) return Response.json({ detail: "local store cursor not found" }, { status: 404 });
     return Response.json({
-      source: "local_credential_records", marketplace_sync: "unavailable",
+      source: "local_credential_records", marketplace_sync: "not_connected",
       items: [{
         id: "synthetic-record", platform: "tiktok_shop", shop_id: "synthetic-store",
         expires_at: null, updated_at: "2026-01-01T00:00:00Z", expiry: "unknown",
-        authorization: "unverified", permissions: "unknown", provider_reads: "unavailable",
-        connection: { status: "authorization_recorded", live_integration: "unavailable" },
+        authorization: "verified", permissions: "granted", provider_reads: "available",
+        connection: { status: "authorization_recorded", live_integration: "available" },
+        sync: { orders_synced_at: null, products_synced_at: null, problem: null }, can_manage: false,
       }], next_cursor: null,
     });
 
@@ -394,11 +395,11 @@ test("M6 store metadata reads keep connection authority unavailable and errors e
     const path = "/console/v1/business/stores?client_id=synthetic-tenant&platform=tiktok_shop";
     const result = await api(path);
     assert.equal(result.source, "local_credential_records");
-    assert.equal(result.items[0].authorization, "unverified");
-    assert.equal(result.items[0].permissions, "unknown");
-    assert.equal(result.items[0].provider_reads, "unavailable");
-    assert.equal(result.items[0].connection.live_integration, "unavailable");
-    assert.equal(connectionLabels[result.items[0].connection.status], "Authorization recorded locally, not verified live");
+    assert.equal(result.items[0].authorization, "verified");
+    assert.equal(result.items[0].permissions, "granted");
+    assert.equal(result.items[0].provider_reads, "available");
+    assert.equal(result.items[0].connection.live_integration, "available");
+    assert.equal(connectionLabels[result.items[0].connection.status], "Connected and checked with TikTok");
     assert.equal(result.items[0].expires_at, null);
     await assert.rejects(api(`${path}&before=foreign-record`), { status: 404, message: "local store cursor not found" });
     assert.equal(calls.length, 2);
@@ -427,30 +428,28 @@ test("M6 synthetic demo listings are temporary local state with explicit no-API 
   assert.doesNotMatch(demoSection, /\bpost\s*\(/);
 });
 
-test("connection lifecycle labels and disabled controls never offer live authority", async () => {
+test("connection lifecycle labels are plain, and Connect and Reconnect are real, Admin-only buttons", async () => {
   assert.deepEqual(Object.keys(connectionLabels).sort(), [
     "unsupported", "missing_shop_id", "unverified", "revoked", "disconnected",
     "expired", "app_unavailable", "binding_missing", "permissions_missing", "authorization_recorded",
   ].sort());
+  for (const label of Object.values(connectionLabels)) assert.doesNotMatch(label, /locally|not verified live|evidence/i);
   const source = await readFile(
+    new URL("../components/console/business/StoreConnections.tsx", import.meta.url), "utf8",
+  );
+  const workspace = await readFile(
     new URL("../components/console/BusinessWorkspace.tsx", import.meta.url), "utf8",
   );
-  const file = ts.createSourceFile("BusinessWorkspace.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const controls = [];
-  function visit(node) {
-    if (ts.isJsxElement(node) && node.openingElement.tagName.getText(file) === "button"
-      && /^(Connect|Reconnect) unavailable$/.test(node.children.map((child) => child.getText(file)).join("").trim())) {
-      const attributes = node.openingElement.attributes.properties;
-      assert.ok(attributes.some((attribute) => attribute.name?.getText(file) === "disabled" && !attribute.initializer));
-      assert.equal(attributes.some((attribute) => attribute.name?.getText(file) === "onClick"), false);
-      controls.push(node.getText(file));
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(file);
-  assert.equal(controls.length, 2);
-  assert.match(source, /Account registration alone does not establish eligibility/);
+  assert.doesNotMatch(source + workspace, /Connect unavailable|Reconnect unavailable/);
+  assert.doesNotMatch(source, /Account registration alone|saved records only|coming soon|Partner Center eligibility/i);
+  assert.match(workspace, /<StoreConnections /);
   assert.match(source, /connectionLabels\[store.connection.status\]/);
+  // Connect is shown only to an Admin or platform admin; per-card buttons follow can_manage.
+  assert.match(source, /me\.role === "platform_admin" \|\| me\.role === "tenant_admin"/);
+  assert.match(source, /storeActions\(store\)/);
+  // The only way the browser leaves for TikTok is the checked navigate helper.
+  assert.doesNotMatch(source, /window\.location/);
+  assert.match(source, /navigate\(started\.authorization_url\)/);
 });
 
 test("lost upstream response becomes a proxy error; explicit upload retry keeps the durable job", async () => {

@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from csa.agents.ecommerce.apps import require_app
 from csa.agents.ecommerce.authorization import (
@@ -21,8 +21,10 @@ from csa.agents.ecommerce.authorization import (
     TikTokReadOperation,
     require_tiktok_grant,
     require_tiktok_order_read,
+    require_tiktok_product_scope,
 )
 from csa.agents.ecommerce.grants import load_grant
+from csa.agents.ecommerce.tiktok_models import PRODUCT_ID_PATTERN
 from csa.core import db
 from csa.core.tenancy import tx
 
@@ -32,26 +34,54 @@ DISPATCH_TIMEOUT_SECONDS = 15
 class TikTokReadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    kind: Literal["detail", "search"]
+    kind: Literal["detail", "search", "product_search", "product_detail"]
     order_id: str | None = Field(default=None, min_length=1, max_length=100)
+    product_id: str | None = Field(default=None, pattern=f"^{PRODUCT_ID_PATTERN}$")
     status: str | None = Field(default=None, min_length=1, max_length=100)
     limit: int = Field(default=10, strict=True, ge=1, le=50)
     page_token: str | None = Field(default=None, min_length=1, max_length=2048)
+    updated_from: AwareDatetime | None = None
+    updated_to: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def require_exact_request(self) -> TikTokReadRequest:
+        has_window = self.updated_from is not None or self.updated_to is not None
         if self.kind == "detail":
             if (
                 self.order_id is None
                 or "," in self.order_id
+                or self.product_id is not None
                 or self.status is not None
                 or self.page_token is not None
                 or self.limit != 10
+                or has_window
             ):
                 raise ValueError("detail requires only one order ID")
-        elif self.order_id is not None:
-            raise ValueError("search cannot include a detail order ID")
+        elif self.kind == "product_detail":
+            if (
+                self.product_id is None
+                or self.order_id is not None
+                or self.status is not None
+                or self.page_token is not None
+                or self.limit != 10
+                or has_window
+            ):
+                raise ValueError("product detail requires only one product ID")
+        elif self.order_id is not None or self.product_id is not None:
+            raise ValueError("search cannot include a detail ID")
+        elif self.kind == "product_search" and self.status is not None:
+            raise ValueError("product search has no status filter")
+        elif (
+            self.updated_from is not None
+            and self.updated_to is not None
+            and self.updated_from >= self.updated_to
+        ):
+            raise ValueError("update window must start before it ends")
         return self
+
+    @property
+    def is_product_read(self) -> bool:
+        return self.kind in ("product_search", "product_detail")
 
 
 async def begin_read(
@@ -115,6 +145,37 @@ async def _check_fence(
     return evidence
 
 
+def _with_product_scope_gate(
+    request: TikTokReadRequest,
+    evidence: TikTokOperationEvidence
+    | Callable[
+        [TikTokReadOperation, TikTokGrantState, AsyncConnection[Any]],
+        Awaitable[TikTokOperationEvidence],
+    ],
+) -> (
+    TikTokOperationEvidence
+    | Callable[
+        [TikTokReadOperation, TikTokGrantState, AsyncConnection[Any]],
+        Awaitable[TikTokOperationEvidence],
+    ]
+):
+    """Product reads also need the product scope, checked before any verifier request.
+
+    Wrapping the evidence step keeps the fence's own signature and runs the check after the
+    ordinary grant checks and before the evidence factory (which may call the provider).
+    """
+    if not request.is_product_read:
+        return evidence
+
+    async def gated(
+        operation: TikTokReadOperation, grant: TikTokGrantState, conn: AsyncConnection[Any]
+    ) -> TikTokOperationEvidence:
+        require_tiktok_product_scope(grant.scopes)
+        return await evidence(operation, grant, conn) if callable(evidence) else evidence
+
+    return gated
+
+
 async def dispatch_read[ResultT](
     pool: AsyncConnectionPool,
     client_id: UUID,
@@ -149,7 +210,9 @@ async def dispatch_read[ResultT](
             if operation.id != operation_id or operation.context.binding.client_id != client_id:
                 raise TikTokAuthorizationError("operation_mismatch")
             grant_id = UUID(str(row["grant_id"]))
-            evidence = await _check_fence(conn, operation, evidence, grant_id)
+            evidence = await _check_fence(
+                conn, operation, _with_product_scope_gate(request, evidence), grant_id
+            )
             consumed = await db.q.fetch_one(
                 "ecommerce/consume_operation.sql",
                 (client_id, operation_id),
@@ -159,5 +222,7 @@ async def dispatch_read[ResultT](
                 raise TikTokAuthorizationError("operation_consumed")
         # Consumption commits before any network side effect, independently of its outcome.
         async with tx(pool, str(client_id)) as conn:
-            await _check_fence(conn, operation, evidence, grant_id)
+            await _check_fence(
+                conn, operation, _with_product_scope_gate(request, evidence), grant_id
+            )
             return await send(request)

@@ -34,6 +34,7 @@ from csa.console.mailer import Mailer
 from csa.console.middleware import ConsoleResponseHeaders
 from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
+from csa.console.tiktok_connect import build_tiktok_connect
 from csa.console.voice_sessions import build_voice_media_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
@@ -46,6 +47,7 @@ from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
+from csa.marketplace.reads import live_read_access
 from csa.subscriptions.api import build_subscriptions_router
 from csa.workspace.executors import build_proposal_registry
 from csa.workspace.planner import WorkspacePlanner
@@ -145,6 +147,11 @@ def create_app() -> FastAPI:
         try:
             await pool.open(wait=True)
             app.state.pool = pool
+            # TikTok Shop connect routes; they answer tiktok_unavailable while TikTok is off.
+            # The first-sync queue and Disconnect are the real csa.marketplace functions.
+            app.state.tiktok_connect = build_tiktok_connect(settings, pool)
+            # Live TikTok stock reads for the workspace assistant (None while TikTok is off).
+            app.state.marketplace_live = live_read_access(settings, pool)
             app.state.voice_endpoint = (
                 str(settings.VOICE_STT_ENDPOINT) if settings.VOICE_STT_ENDPOINT else None
             )

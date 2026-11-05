@@ -14,7 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
 from csa.console.access import tenant
-from csa.console.agents import REQUIRED, AgentOut, list_agents
+from csa.console.agents import REQUIRED, AgentOut, list_agents, tiktok_store_connected
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.customer_replies import (
     CustomerRepliesIn,
@@ -223,6 +223,7 @@ async def list_services(
             role=actor.role if actor else None,
             kb_model=kb_model,
             kb_tei_configured=kb_tei_configured,
+            tiktok_connected=await tiktok_store_connected(pool, client_id),
         )
     }
     for name, change in member_changes.items():

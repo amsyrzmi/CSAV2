@@ -18,10 +18,11 @@ const {
   ORDER_STATUSES, PAYMENT_STATUSES, orderStatusChips, orderStatusLabel, orderStatusTone,
   paymentLabel, paymentTone, paymentOptions, formatRm, orderSummary, channelLabel, whenText,
   parseOrderCounts, orderChipOptions, effectiveCountsRange, productSummary, storeSummary,
-  storeStatusTone, mergeRows, chipGroupLabel, TILE_STATUSES, orderTiles, outOfStock,
+  storeStatusTone, storeActions, offersConnect, mergeRows, chipGroupLabel, TILE_STATUSES, orderTiles, outOfStock,
   orderDetailGroups, productDetailGroups, storeDetailGroups, activeFilters,
 } = await import(await load("business-view.ts", {
   '"@/lib/date-range"': JSON.stringify(await load("date-range.ts")),
+  '"@/lib/tiktok-connect"': JSON.stringify(await load("tiktok-connect.ts")),
 }));
 const { localOrderPath, orderListPath, orderCountsPath, withCursor } = await import(
   await load("business.ts"),
@@ -188,15 +189,58 @@ test("product and store summaries are plain and keep codes out of the line", () 
   const store = { platform: "tiktok_shop", shop_id: "S-77", connection: { status: "unverified" } };
   assert.deepEqual(storeSummary(store), {
     title: "TikTok Shop · S-77",
-    subtitle: "Saved record only, not checked with the marketplace",
+    subtitle: "Reconnect to check this shop with TikTok.",
     status: "Not verified",
   });
   assert.equal(storeSummary({ ...store, shop_id: null }).title, "TikTok Shop · Store ID not recorded");
   for (const status of ["unsupported", "missing_shop_id", "unverified", "revoked", "disconnected",
     "expired", "app_unavailable", "binding_missing", "permissions_missing", "authorization_recorded"]) {
-    const { status: label } = storeSummary({ ...store, connection: { status } });
+    const { status: label, subtitle } = storeSummary({ ...store, connection: { status } });
     assert.ok(label && !/_/.test(label), status);
+    assert.ok(subtitle && !/_|saved record|coming soon/i.test(subtitle), status);
   }
+});
+
+test("store status words: Connected, Waiting for TikTok approval, Needs reconnecting, Disconnected", () => {
+  const word = (status) => storeSummary({ platform: "tiktok_shop", shop_id: "S", connection: { status } }).status;
+  assert.equal(word("authorization_recorded"), "Connected");
+  assert.equal(word("missing_shop_id"), "Waiting for TikTok approval");
+  for (const status of ["expired", "revoked", "app_unavailable", "permissions_missing", "binding_missing"]) {
+    assert.equal(word(status), "Needs reconnecting", status);
+  }
+  assert.equal(word("disconnected"), "Disconnected");
+  assert.equal(word("something_new"), "something_new", "an unknown code keeps its code");
+  assert.equal(storeStatusTone("authorization_recorded"), "success");
+  assert.equal(storeStatusTone("missing_shop_id"), "attention");
+  assert.equal(storeStatusTone("expired"), "attention");
+  assert.equal(storeStatusTone("disconnected"), "neutral");
+});
+
+test("storeActions: only Admins get buttons; Disconnect while connected, Reconnect otherwise", () => {
+  const store = (status, extra = {}) => ({
+    platform: "tiktok_shop", connection: { status }, can_manage: true, ...extra,
+  });
+  assert.deepEqual(storeActions(store("authorization_recorded")), { reconnect: false, disconnect: true });
+  for (const status of ["missing_shop_id", "expired", "revoked", "disconnected", "app_unavailable",
+    "binding_missing", "permissions_missing", "unverified"]) {
+    assert.deepEqual(storeActions(store(status)), { reconnect: true, disconnect: false }, status);
+  }
+  const none = { reconnect: false, disconnect: false };
+  assert.deepEqual(storeActions(store("authorization_recorded", { can_manage: false })), none);
+  assert.deepEqual(storeActions(store("expired", { can_manage: false })), none);
+  assert.deepEqual(storeActions({ platform: "tiktok_shop", connection: { status: "expired" } }), none);
+  assert.deepEqual(storeActions(store("unsupported", { platform: "shopee" })), none);
+});
+
+test("offersConnect: never a second Connect beside a shop that needs reconnecting", () => {
+  const tiktok = (status) => ({ platform: "tiktok_shop", connection: { status } });
+  assert.equal(offersConnect([]), true);
+  assert.equal(offersConnect([tiktok("authorization_recorded")]), true);
+  assert.equal(offersConnect([tiktok("disconnected")]), false);
+  assert.equal(offersConnect([tiktok("expired")]), false);
+  assert.equal(offersConnect([tiktok("missing_shop_id")]), false);
+  assert.equal(offersConnect([tiktok("authorization_recorded"), tiktok("revoked")]), false);
+  assert.equal(offersConnect([{ platform: "shopee", connection: { status: "unsupported" } }]), true);
 });
 
 test("older rows join the rows on screen and a row never shows twice", () => {
@@ -206,7 +250,6 @@ test("older rows join the rows on screen and a row never shows twice", () => {
   assert.equal(merged[1].n, 2, "the row already shown is kept");
   assert.deepEqual(first.map((row) => row.id), ["a", "b"], "the old list is not changed");
   assert.deepEqual(mergeRows([], []), []);
-  assert.equal(storeStatusTone("authorization_recorded"), "info");
   assert.equal(storeStatusTone("whatever"), "neutral");
 });
 
@@ -252,7 +295,8 @@ const ORDER = {
 };
 
 test("orderDetailGroups uses Courier not added yet, Source with the channel name and Last changed here", () => {
-  const groups = orderDetailGroups(ORDER);
+  // A local record: no TikTok order number, so it is not a synced order and keeps "Last changed here".
+  const groups = orderDetailGroups({ ...ORDER, channel: "web", external_order_id: "WEB-1" });
   assert.deepEqual(groups.map((g) => g.title), ["Payment", "Delivery", "Record"]);
   assert.deepEqual(groups[0].rows, [
     { label: "Payment", value: "Paid" }, { label: "Total", value: "RM 1,001.50" },
@@ -262,8 +306,15 @@ test("orderDetailGroups uses Courier not added yet, Source with the channel name
   assert.deepEqual(groups[2].rows.map((r) => r.label), [
     "Marketplace order no.", "Source", "Placed", "Created", "Last changed here",
   ]);
-  assert.equal(groups[2].rows[1].value, "TikTok Shop");
+  assert.equal(groups[2].rows[1].value, "Web");
   assert.equal(groups[2].rows[4].value, "2 Nov 2026, 11:00");
+  // The same order from the TikTok Shop channel is a synced record: sync time instead.
+  const synced = orderDetailGroups({ ...ORDER, synced_at: "2026-11-02T04:00:00Z" })[2].rows;
+  assert.deepEqual(synced.map((r) => r.label), [
+    "Marketplace order no.", "Source", "Placed", "Created", "Synced from TikTok",
+  ]);
+  assert.equal(synced[1].value, "TikTok Shop");
+  assert.equal(synced[4].value, "2 Nov 2026, 12:00");
   const bare = orderDetailGroups({
     ...ORDER, tracking_no: null, carrier: null, shipped_at: null, external_order_id: null, placed_at: null,
   });

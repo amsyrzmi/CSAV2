@@ -1,4 +1,4 @@
-"""Read-only local seller records; no marketplace transport or credential access."""
+"""Read-only seller records and synced TikTok data; no marketplace transport or credentials."""
 
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -7,15 +7,24 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from psycopg import AsyncConnection
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, field_validator
 
+from csa.agents.ecommerce.authorization import PRODUCT_SCOPES
 from csa.agents.ecommerce.models import MarketplacePlatform
-from csa.agents.ecommerce.stores import StoreBinding, StoreConnection, StoreRecord, expiry_state
+from csa.agents.ecommerce.stores import (
+    StoreBinding,
+    StoreConnection,
+    StoreRecord,
+    StoreSync,
+    expiry_state,
+)
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
 from csa.console.services import package_gate
+from csa.console.tiktok_connect import build_tiktok_callback_router, build_tiktok_connect_router
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.marketplace.jobs import list_connected_stores
 
 OrderChannel = Literal["telegram", "web", "tiktok_shop", "shopee", "manual"]
 # Mirrors the orders_status_chk and orders_payment_chk constraints in db/schema_baseline.sql.
@@ -90,6 +99,58 @@ class BusinessOrder(Contract):
     shipped_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Synced TikTok orders only; local orders read None, None, False.
+    provider_status: str | None = None
+    synced_at: datetime | None = None
+    buyer_cleared: bool = False
+
+
+class OrderLineOut(Contract):
+    sku: str
+    name: str
+    qty: int
+    unit_price: Decimal
+
+
+class ShipTo(Contract):
+    """The four fields sync stores, as TikTok gave them (possibly masked)."""
+
+    recipient_name: str | None = None
+    phone: str | None = None
+    address_text: str | None = None
+    region: str | None = None
+
+
+class BusinessOrderDetail(BusinessOrder):
+    """One order. The extra fields are filled only for a synced TikTok order; for a local order
+    they are None, and ship_to is None as well once the buyer details were cleared."""
+
+    lines: list[OrderLineOut] | None = None
+    subtotal: Decimal | None = None
+    shipping_fee: Decimal | None = None
+    discount: Decimal | None = None
+    ship_to: ShipTo | None = None
+
+
+class BusinessListing(Contract):
+    id: UUID
+    product_name: str
+    variant_name: str | None
+    seller_sku: str | None
+    price: Decimal | None
+    currency: str
+    stock_qty: int | None
+    product_status: str | None
+    image_url: str | None
+    synced_at: datetime
+    # The local product with an equal SKU, looked up at read time; never stored.
+    same_sku_product: str | None
+
+    @field_validator("image_url")
+    @classmethod
+    def _https_only(cls, value: str | None) -> str | None:
+        """Provider data is untrusted: only an https URL is ever handed to a browser."""
+        return value if value is not None and value.startswith("https://") else None
 
 
 class BusinessProduct(Contract):
@@ -106,37 +167,75 @@ class BusinessProduct(Contract):
     updated_at: datetime
 
 
+# "connected" when the tenant has a TikTok store that can sync now, else "not_connected".
+MarketplaceSync = Literal["connected", "not_connected"]
+
+
 class OrderPage(Contract):
     source: str = "local_records"
-    marketplace_sync: str = "unavailable"
+    marketplace_sync: MarketplaceSync
     items: list[BusinessOrder]
     next_cursor: str | None
 
 
 class ProductPage(Contract):
     source: str = "local_catalogue"
-    marketplace_sync: str = "unavailable"
+    marketplace_sync: MarketplaceSync
     items: list[BusinessProduct]
+    next_cursor: UUID | None
+
+
+class ListingPage(Contract):
+    items: list[BusinessListing]
     next_cursor: UUID | None
 
 
 class StorePage(Contract):
     source: Literal["local_credential_records"] = "local_credential_records"
-    marketplace_sync: Literal["unavailable"] = "unavailable"
+    marketplace_sync: MarketplaceSync
     items: list[StoreRecord]
     next_cursor: UUID | None
 
 
+async def marketplace_sync_state(conn: AsyncConnection[Any], client_id: UUID) -> MarketplaceSync:
+    """Connected iff an active grant, bound shop and live tokens exist (the sync's own test)."""
+    return "connected" if await list_connected_stores(conn, client_id) else "not_connected"
+
+
+def can_manage_stores(actor: ConsoleActor) -> bool:
+    """Platform admins and the tenant's Admin; staff only look."""
+    return actor.platform_admin or actor.role == Role.TENANT_ADMIN
+
+
+def escape_like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 async def store_records(
-    conn: AsyncConnection[Any], client_id: UUID, rows: list[dict]
+    conn: AsyncConnection[Any], client_id: UUID, rows: list[dict], *, can_manage: bool
 ) -> list[StoreRecord]:
     if not rows:
         return []
     metadata = await db.q.fetch_all(
-        "business/store_connections.sql", (client_id, [row["id"] for row in rows]), conn=conn
+        "business/store_connections.sql",
+        {
+            "client_id": client_id,
+            "ids": [row["id"] for row in rows],
+            "product_scopes": sorted(PRODUCT_SCOPES),
+        },
+        conn=conn,
     )
     connections = {
         row["id"]: StoreConnection.model_validate({"status": row["status"]}) for row in metadata
+    }
+    syncs = {
+        row["id"]: StoreSync(
+            orders_synced_at=row["orders_synced_at"],
+            products_synced_at=row["products_synced_at"],
+            problem="sync_failing" if row["sync_failing"] else None,
+        )
+        for row in metadata
+        if row["is_tiktok"]
     }
     now = datetime.now(UTC)
     return [
@@ -145,6 +244,8 @@ async def store_records(
                 **row,
                 "expiry": expiry_state(row["expires_at"], now=now),
                 "connection": connections[row["id"]],
+                "sync": syncs.get(row["id"]),
+                "can_manage": can_manage,
             }
         )
         for row in rows
@@ -197,7 +298,8 @@ async def resolve_store_binding(request: Request, binding: StoreBinding) -> Stor
         )
         if row is None:
             raise HTTPException(404, "local store record not found")
-        return (await store_records(conn, binding.client_id, [row]))[0]
+        can_manage = can_manage_stores(request.state.console_actor)
+        return (await store_records(conn, binding.client_id, [row], can_manage=can_manage))[0]
 
 
 def business_actor(request: Request) -> ConsoleActor:
@@ -226,6 +328,7 @@ def build_business_router() -> APIRouter:
         before: UUID | None = None,
         limit: Annotated[int, Query(ge=1, le=50)] = 20,
     ) -> StorePage:
+        actor = request.state.console_actor
         async with tx(request.app.state.pool, str(client_id)) as conn:
             if before is not None and not await db.q.fetch_one(
                 "business/get_store.sql",
@@ -238,8 +341,15 @@ def build_business_router() -> APIRouter:
                 (client_id, platform, platform, before, before, limit + 1),
                 conn=conn,
             )
-            items = await store_records(conn, client_id, rows[:limit])
-        return StorePage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
+            items = await store_records(
+                conn, client_id, rows[:limit], can_manage=can_manage_stores(actor)
+            )
+            sync = await marketplace_sync_state(conn, client_id)
+        return StorePage(
+            marketplace_sync=sync,
+            items=items,
+            next_cursor=items[-1].id if len(rows) > limit else None,
+        )
 
     @router.get("/stores/{record_id}", response_model=StoreRecord)
     async def store(
@@ -266,7 +376,8 @@ def build_business_router() -> APIRouter:
             )
             if row is None:
                 raise HTTPException(404, "local store record not found")
-            return (await store_records(conn, client_id, [row]))[0]
+            can_manage = can_manage_stores(request.state.console_actor)
+            return (await store_records(conn, client_id, [row], can_manage=can_manage))[0]
 
     @router.get("/orders", response_model=OrderPage)
     async def orders(
@@ -317,8 +428,13 @@ def build_business_router() -> APIRouter:
                 ),
                 conn=conn,
             )
+            sync = await marketplace_sync_state(conn, client_id)
         items = [BusinessOrder.model_validate(row) for row in rows[:limit]]
-        return OrderPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
+        return OrderPage(
+            marketplace_sync=sync,
+            items=items,
+            next_cursor=items[-1].id if len(rows) > limit else None,
+        )
 
     @router.get("/orders/counts", response_model=OrderCounts)
     async def order_counts(
@@ -352,20 +468,46 @@ def build_business_router() -> APIRouter:
             raise RuntimeError(f"orders hold statuses outside the schema enum: {sorted(found)}")
         return OrderCounts(total=sum(by_status.values()), by_status=by_status)
 
-    @router.get("/orders/{order_id}", response_model=BusinessOrder)
+    @router.get("/orders/{order_id}", response_model=BusinessOrderDetail)
     async def order(
         request: Request,
         client_id: Annotated[UUID, Depends(tenant)],
         order_id: Annotated[str, Path(min_length=1, max_length=100)],
         filters: Annotated[OrderFilters, Depends(order_filters)],
-    ) -> BusinessOrder:
+    ) -> BusinessOrderDetail:
         actor: ConsoleActor = request.state.console_actor
         require_business_read(actor, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            result = await get_local_order(conn, client_id, order_id, filters)
-        if result is None:
-            raise HTTPException(404, "order not found")
-        return result
+            row = await db.q.fetch_one(
+                "business/get_order_detail.sql",
+                (
+                    client_id,
+                    order_id,
+                    filters.channel,
+                    filters.channel,
+                    filters.shop_id,
+                    filters.shop_id,
+                ),
+                conn=conn,
+            )
+            if row is None:
+                raise HTTPException(404, "order not found")
+            synced = row.pop("synced")
+            lines = None
+            if synced:
+                lines = await db.q.fetch_all(
+                    "business/get_order_lines.sql", (client_id, order_id), conn=conn
+                )
+        ship_to = row["ship_to"]
+        if row["buyer_cleared"] or not isinstance(ship_to, dict):
+            ship_to = None
+        else:
+            ship_to = {
+                key: value
+                for key, value in ship_to.items()
+                if key in ShipTo.model_fields and isinstance(value, str)
+            }
+        return BusinessOrderDetail.model_validate({**row, "ship_to": ship_to, "lines": lines})
 
     @router.get("/products", response_model=ProductPage)
     async def products(
@@ -384,8 +526,45 @@ def build_business_router() -> APIRouter:
                 (client_id, before, client_id, before, limit + 1),
                 conn=conn,
             )
+            sync = await marketplace_sync_state(conn, client_id)
         items = [BusinessProduct.model_validate(row) for row in rows[:limit]]
-        return ProductPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
+        return ProductPage(
+            marketplace_sync=sync,
+            items=items,
+            next_cursor=items[-1].id if len(rows) > limit else None,
+        )
+
+    @router.get("/listings", response_model=ListingPage)
+    async def listings(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        store_id: UUID | None = None,
+        q: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+        before: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    ) -> ListingPage:
+        needle = q.strip() if q is not None else ""
+        pattern = f"%{escape_like(needle)}%" if needle else None
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            if before is not None and not await db.q.fetch_one(
+                "business/get_listing.sql",
+                (client_id, before, store_id, store_id),
+                conn=conn,
+            ):
+                raise HTTPException(404, "listing cursor not found")
+            rows = await db.q.fetch_all(
+                "business/list_listings.sql",
+                {
+                    "client_id": client_id,
+                    "store_id": store_id,
+                    "pattern": pattern,
+                    "before": before,
+                    "limit": limit + 1,
+                },
+                conn=conn,
+            )
+        items = [BusinessListing.model_validate(row) for row in rows[:limit]]
+        return ListingPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
 
     @router.get("/products/{product_id}", response_model=BusinessProduct)
     async def product(
@@ -401,4 +580,13 @@ def build_business_router() -> APIRouter:
             raise HTTPException(404, "product not found")
         return BusinessProduct.model_validate(row)
 
-    return router
+    # Connect and disconnect sit behind the package gate and business_actor, plus their own
+    # Admin check. The callback's tenant comes from the state, not client_id, so it cannot use
+    # the tenant-resolving gate: it keeps business_actor and checks the rest itself.
+    router.include_router(build_tiktok_connect_router())
+    business = APIRouter()
+    business.include_router(router)
+    business.include_router(
+        build_tiktok_callback_router(), prefix="/business", dependencies=[Depends(business_actor)]
+    )
+    return business

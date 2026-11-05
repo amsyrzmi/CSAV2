@@ -3400,9 +3400,129 @@
         "title": "BookingWalkInIn",
         "type": "object"
       },
+      "BusinessListing": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "product_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Status"
+          },
+          "same_sku_product": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Same Sku Product"
+          },
+          "seller_sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Sku"
+          },
+          "stock_qty": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Qty"
+          },
+          "synced_at": {
+            "format": "date-time",
+            "title": "Synced At",
+            "type": "string"
+          },
+          "variant_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant Name"
+          }
+        },
+        "required": [
+          "id",
+          "product_name",
+          "variant_name",
+          "seller_sku",
+          "price",
+          "currency",
+          "stock_qty",
+          "product_status",
+          "image_url",
+          "synced_at",
+          "same_sku_product"
+        ],
+        "title": "BusinessListing",
+        "type": "object"
+      },
       "BusinessOrder": {
         "additionalProperties": false,
         "properties": {
+          "buyer_cleared": {
+            "default": false,
+            "title": "Buyer Cleared",
+            "type": "boolean"
+          },
           "carrier": {
             "anyOf": [
               {
@@ -3469,6 +3589,17 @@
             ],
             "title": "Placed At"
           },
+          "provider_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Status"
+          },
           "shipped_at": {
             "anyOf": [
               {
@@ -3484,6 +3615,18 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
           },
           "total": {
             "title": "Total",
@@ -3523,6 +3666,217 @@
           "updated_at"
         ],
         "title": "BusinessOrder",
+        "type": "object"
+      },
+      "BusinessOrderDetail": {
+        "additionalProperties": false,
+        "description": "One order. The extra fields are filled only for a synced TikTok order; for a local order\nthey are None, and ship_to is None as well once the buyer details were cleared.",
+        "properties": {
+          "buyer_cleared": {
+            "default": false,
+            "title": "Buyer Cleared",
+            "type": "boolean"
+          },
+          "carrier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carrier"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "discount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discount"
+          },
+          "external_order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Order Id"
+          },
+          "external_shop_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Shop Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OrderLineOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines"
+          },
+          "payment_status": {
+            "title": "Payment Status",
+            "type": "string"
+          },
+          "placed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placed At"
+          },
+          "provider_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Status"
+          },
+          "ship_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShipTo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shipped_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipped At"
+          },
+          "shipping_fee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipping Fee"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subtotal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtotal"
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
+          },
+          "total": {
+            "title": "Total",
+            "type": "string"
+          },
+          "tracking_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking No"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "payment_status",
+          "total",
+          "currency",
+          "channel",
+          "external_order_id",
+          "external_shop_id",
+          "tracking_no",
+          "carrier",
+          "placed_at",
+          "shipped_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BusinessOrderDetail",
         "type": "object"
       },
       "BusinessProduct": {
@@ -8038,6 +8392,36 @@
         "title": "LinkedAccount",
         "type": "object"
       },
+      "ListingPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BusinessListing"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ListingPage",
+        "type": "object"
+      },
       "LocalOrderSummary": {
         "additionalProperties": false,
         "description": "Bounded manual-business projection; no contact, address or provider blob.",
@@ -8730,6 +9114,35 @@
         "title": "OrderHint",
         "type": "object"
       },
+      "OrderLineOut": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "qty": {
+            "title": "Qty",
+            "type": "integer"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "unit_price": {
+            "title": "Unit Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku",
+          "name",
+          "qty",
+          "unit_price"
+        ],
+        "title": "OrderLineOut",
+        "type": "object"
+      },
       "OrderPage": {
         "additionalProperties": false,
         "properties": {
@@ -8741,7 +9154,10 @@
             "type": "array"
           },
           "marketplace_sync": {
-            "default": "unavailable",
+            "enum": [
+              "connected",
+              "not_connected"
+            ],
             "title": "Marketplace Sync",
             "type": "string"
           },
@@ -8763,6 +9179,7 @@
           }
         },
         "required": [
+          "marketplace_sync",
           "items",
           "next_cursor"
         ],
@@ -8784,8 +9201,11 @@
             "type": "string"
           },
           "marketplace_sync": {
-            "const": "unavailable",
-            "default": "unavailable",
+            "enum": [
+              "connected",
+              "not_connected",
+              "unavailable"
+            ],
             "title": "Marketplace Sync",
             "type": "string"
           },
@@ -8807,6 +9227,7 @@
         },
         "required": [
           "order",
+          "marketplace_sync",
           "as_of"
         ],
         "title": "OrderReadResult",
@@ -10814,7 +11235,10 @@
             "type": "array"
           },
           "marketplace_sync": {
-            "default": "unavailable",
+            "enum": [
+              "connected",
+              "not_connected"
+            ],
             "title": "Marketplace Sync",
             "type": "string"
           },
@@ -10837,10 +11261,78 @@
           }
         },
         "required": [
+          "marketplace_sync",
           "items",
           "next_cursor"
         ],
         "title": "ProductPage",
+        "type": "object"
+      },
+      "ProductStockResult": {
+        "additionalProperties": false,
+        "description": "A TikTok Shop product's stock per variant, live or from our copy; no ids.\n\n``note`` is the server's line in the turn's language: \"checked live just now\", or how old\nour copy is when the live read failed. Every SKU of the product is listed with its count,\non sale or not; ``on_sale`` is false when TikTok does not list the product as selling.",
+        "properties": {
+          "action": {
+            "const": "product_stock_read",
+            "title": "Action",
+            "type": "string"
+          },
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "checked_live": {
+            "title": "Checked Live",
+            "type": "boolean"
+          },
+          "note": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "on_sale": {
+            "title": "On Sale",
+            "type": "boolean"
+          },
+          "product": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Product",
+            "type": "string"
+          },
+          "source": {
+            "const": "tiktok_shop",
+            "default": "tiktok_shop",
+            "title": "Source",
+            "type": "string"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/StockVariant"
+            },
+            "maxItems": 300,
+            "title": "Variants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "product",
+          "variants",
+          "total",
+          "checked_live",
+          "on_sale",
+          "as_of",
+          "note"
+        ],
+        "title": "ProductStockResult",
         "type": "object"
       },
       "ProposalCard": {
@@ -11097,6 +11589,7 @@
       },
       "RecordRef": {
         "additionalProperties": false,
+        "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID).",
         "properties": {
           "id": {
             "maxLength": 100,
@@ -11111,7 +11604,8 @@
               "training_request",
               "draft",
               "order",
-              "employee"
+              "employee",
+              "product"
             ],
             "title": "Kind",
             "type": "string"
@@ -12154,6 +12648,58 @@
         "title": "ShiftSchedule",
         "type": "object"
       },
+      "ShipTo": {
+        "additionalProperties": false,
+        "description": "The four fields sync stores, as TikTok gave them (possibly masked).",
+        "properties": {
+          "address_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Text"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "recipient_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Name"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          }
+        },
+        "title": "ShipTo",
+        "type": "object"
+      },
       "SignedDownloadLinkOut": {
         "additionalProperties": false,
         "properties": {
@@ -12242,13 +12788,56 @@
         "title": "SpecializedTabInfo",
         "type": "object"
       },
+      "StockVariant": {
+        "additionalProperties": false,
+        "description": "One variant's count; ``stock`` is None when TikTok gave no count.",
+        "properties": {
+          "seller_sku": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Sku"
+          },
+          "stock": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock"
+          },
+          "variant": {
+            "maxLength": 255,
+            "title": "Variant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "variant",
+          "stock"
+        ],
+        "title": "StockVariant",
+        "type": "object"
+      },
       "StoreConnection": {
         "additionalProperties": false,
         "description": "Local lifecycle observation, never a current provider authorization decision.",
         "properties": {
           "live_integration": {
-            "const": "unavailable",
             "default": "unavailable",
+            "enum": [
+              "available",
+              "unavailable"
+            ],
             "title": "Live Integration",
             "type": "string"
           },
@@ -12286,8 +12875,10 @@
             "type": "array"
           },
           "marketplace_sync": {
-            "const": "unavailable",
-            "default": "unavailable",
+            "enum": [
+              "connected",
+              "not_connected"
+            ],
             "title": "Marketplace Sync",
             "type": "string"
           },
@@ -12311,6 +12902,7 @@
           }
         },
         "required": [
+          "marketplace_sync",
           "items",
           "next_cursor"
         ],
@@ -12321,10 +12913,18 @@
         "additionalProperties": false,
         "properties": {
           "authorization": {
-            "const": "unverified",
             "default": "unverified",
+            "enum": [
+              "verified",
+              "unverified"
+            ],
             "title": "Authorization",
             "type": "string"
+          },
+          "can_manage": {
+            "default": false,
+            "title": "Can Manage",
+            "type": "boolean"
           },
           "connection": {
             "$ref": "#/components/schemas/StoreConnection"
@@ -12356,8 +12956,12 @@
             "type": "string"
           },
           "permissions": {
-            "const": "unknown",
             "default": "unknown",
+            "enum": [
+              "granted",
+              "missing",
+              "unknown"
+            ],
             "title": "Permissions",
             "type": "string"
           },
@@ -12371,8 +12975,11 @@
             "type": "string"
           },
           "provider_reads": {
-            "const": "unavailable",
             "default": "unavailable",
+            "enum": [
+              "available",
+              "unavailable"
+            ],
             "title": "Provider Reads",
             "type": "string"
           },
@@ -12386,6 +12993,16 @@
               }
             ],
             "title": "Shop Id"
+          },
+          "sync": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoreSync"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "updated_at": {
             "format": "date-time",
@@ -12402,6 +13019,50 @@
           "expiry"
         ],
         "title": "StoreRecord",
+        "type": "object"
+      },
+      "StoreSync": {
+        "additionalProperties": false,
+        "description": "Sync progress of one TikTok store; ``problem`` is set while a failure notice is open.",
+        "properties": {
+          "orders_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orders Synced At"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "const": "sync_failing",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problem"
+          },
+          "products_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Products Synced At"
+          }
+        },
+        "title": "StoreSync",
         "type": "object"
       },
       "SubscriptionCreateIn": {
@@ -12870,6 +13531,40 @@
           "body"
         ],
         "title": "ThreadDetail",
+        "type": "object"
+      },
+      "TikTokConnectIn": {
+        "additionalProperties": false,
+        "properties": {
+          "store_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Store Id"
+          }
+        },
+        "title": "TikTokConnectIn",
+        "type": "object"
+      },
+      "TikTokConnectOut": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_url": {
+            "minLength": 1,
+            "title": "Authorization Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_url"
+        ],
+        "title": "TikTokConnectOut",
         "type": "object"
       },
       "TokenAcceptIn": {
@@ -14289,6 +14984,9 @@
               },
               {
                 "$ref": "#/components/schemas/ClarificationResult"
+              },
+              {
+                "$ref": "#/components/schemas/ProductStockResult"
               }
             ],
             "title": "Result"
@@ -17794,6 +18492,134 @@
         ]
       }
     },
+    "/console/v1/business/listings": {
+      "get": {
+        "operationId": "listings_console_v1_business_listings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "store_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Store Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Listings"
+      }
+    },
     "/console/v1/business/orders": {
       "get": {
         "operationId": "orders_console_v1_business_orders_get",
@@ -18247,7 +19073,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BusinessOrder"
+                  "$ref": "#/components/schemas/BusinessOrderDetail"
                 }
               }
             },
@@ -18548,6 +19374,151 @@
         "summary": "Stores"
       }
     },
+    "/console/v1/business/stores/tiktok/callback": {
+      "get": {
+        "operationId": "callback_console_v1_business_stores_tiktok_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Back to Store connections with a safe outcome."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Callback"
+      }
+    },
+    "/console/v1/business/stores/tiktok/connect": {
+      "post": {
+        "operationId": "connect_console_v1_business_stores_tiktok_connect_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TikTokConnectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TikTokConnectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect"
+      }
+    },
     "/console/v1/business/stores/{record_id}": {
       "get": {
         "operationId": "store_console_v1_business_stores__record_id__get",
@@ -18659,6 +19630,73 @@
           }
         },
         "summary": "Store"
+      }
+    },
+    "/console/v1/business/stores/{store_id}/disconnect": {
+      "post": {
+        "operationId": "disconnect_console_v1_business_stores__store_id__disconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "store_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Store Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect"
       }
     },
     "/console/v1/capabilities": {
@@ -29191,6 +30229,7 @@
                   },
                   "RecordRef": {
                     "additionalProperties": false,
+                    "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID).",
                     "properties": {
                       "id": {
                         "maxLength": 100,
@@ -29205,7 +30244,8 @@
                           "training_request",
                           "draft",
                           "order",
-                          "employee"
+                          "employee",
+                          "product"
                         ],
                         "title": "Kind",
                         "type": "string"

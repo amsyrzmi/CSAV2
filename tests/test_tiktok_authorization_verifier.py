@@ -9,12 +9,15 @@ import httpx
 import pytest
 from csa.agents.ecommerce import authorization_verifier
 from csa.agents.ecommerce.authorization import (
+    PRODUCT_SCOPES,
     TikTokAuthorizationContext,
     TikTokAuthorizationError,
+    TikTokFirstConnectContext,
 )
+from csa.agents.ecommerce.connections import VerifiedFirstConnectResult
 from csa.agents.ecommerce.models import TikTokShopCredentials
 from csa.agents.ecommerce.resolver import TikTokAppMaterial
-from csa.agents.ecommerce.stores import StoreBinding
+from csa.agents.ecommerce.stores import PendingStoreBinding, StoreBinding
 from csa.agents.ecommerce.token_response import TikTokTokenResponse
 from pydantic import SecretStr
 
@@ -327,3 +330,178 @@ async def test_shop_transport_url_exception_is_suppressed(monkeypatch, caplog):
     assert APP_SECRET not in str(caught.value) + caplog.text
     assert ACCESS_TOKEN not in str(caught.value) + caplog.text
     assert caught.value.__suppress_context__
+
+
+FIRST_SCOPES = frozenset({"seller.order.info", "seller.authorization.info", *PRODUCT_SCOPES})
+
+
+def _first_fixtures():
+    _, app, token = _fixtures()
+    context = TikTokFirstConnectContext(
+        binding=PendingStoreBinding(client_id=uuid4(), record_id=uuid4(), platform="tiktok_shop"),
+        app_id=app.app_id,
+        app_revision=app.revision,
+        credential_generation=1,
+    )
+    return context, app, token.model_copy(update={"scopes": FIRST_SCOPES})
+
+
+def _shops(*shops):
+    return _response(
+        200,
+        {"code": 0, "data": {"shops": [{"id": i, "cipher": c} for i, c in shops]}},
+    )
+
+
+def _first_verifier(app):
+    async def load_app(_):
+        return app
+
+    return authorization_verifier.TikTokFirstConnectVerifier(load_app=load_app, clock=lambda: NOW)
+
+
+@pytest.mark.asyncio
+async def test_first_connect_verifier_selects_the_single_shop(monkeypatch, caplog):
+    context, app, token = _first_fixtures()
+    exchange_calls = []
+    requests = []
+    _install_exchange(monkeypatch, token=token, calls=exchange_calls)
+
+    def handler(request):
+        requests.append(request)
+        assert request.url.path == "/authorization/202309/shops"
+        assert set(request.url.params) == {"app_key", "timestamp", "sign"}
+        assert request.headers["x-tts-access-token"] == ACCESS_TOKEN
+        return _shops(("SYNTH-ONLY-SHOP", SHOP_CIPHER))
+
+    _install_shop_transport(monkeypatch, handler)
+    caplog.set_level(logging.DEBUG)
+    result = await _first_verifier(app)(context, SecretStr(AUTHORIZATION_CODE))
+
+    assert isinstance(result, VerifiedFirstConnectResult)
+    assert len(exchange_calls) == len(requests) == 1
+    assert result.context == context
+    assert result.shop_id == "SYNTH-ONLY-SHOP"
+    assert result.shop_cipher == SecretStr(SHOP_CIPHER)
+    assert result.access_token == token.access_token
+    assert result.refresh_token == token.refresh_token
+    assert result.access_expires_at == result.grant_expires_at == token.access_expires_at
+    assert result.verified_at == NOW
+    assert result.scopes == FIRST_SCOPES
+    rendered = repr(result) + result.model_dump_json()
+    for secret in (APP_SECRET, AUTHORIZATION_CODE, ACCESS_TOKEN, REFRESH_TOKEN, SHOP_CIPHER):
+        assert secret not in caplog.text
+        assert secret not in rendered
+
+
+@pytest.mark.parametrize(
+    ("shops", "expected"),
+    [
+        ((), "no_authorized_shop"),
+        ((("SYNTH-ONE", "synthetic-one"), ("SYNTH-TWO", "synthetic-two")), "multiple_shops"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_first_connect_verifier_requires_exactly_one_shop(monkeypatch, shops, expected):
+    context, app, token = _first_fixtures()
+    calls = []
+    _install_exchange(monkeypatch, token=token, calls=calls)
+    _install_shop_transport(monkeypatch, lambda _: _shops(*shops))
+    with pytest.raises(TikTokAuthorizationError, match=expected) as caught:
+        await _first_verifier(app)(context, SecretStr(AUTHORIZATION_CODE))
+    assert len(calls) == 1
+    assert "synthetic-" not in str(caught.value) and "SYNTH-ONE" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        frozenset({"seller.order.info", "seller.authorization.info"}),
+        frozenset(PRODUCT_SCOPES),
+    ],
+)
+@pytest.mark.asyncio
+async def test_first_connect_verifier_missing_scope_fails_before_shop_lookup(monkeypatch, scopes):
+    context, app, token = _first_fixtures()
+    _install_exchange(monkeypatch, token=token.model_copy(update={"scopes": scopes}))
+
+    def forbidden_transport():
+        pytest.fail("a grant without the needed scopes must not reach the shop lookup")
+
+    monkeypatch.setattr(authorization_verifier, "_new_shop_transport", forbidden_transport)
+    with pytest.raises(TikTokAuthorizationError, match="insufficient_scope"):
+        await _first_verifier(app)(context, SecretStr(AUTHORIZATION_CODE))
+
+
+@pytest.mark.parametrize("failure", ["missing", "disabled", "wrong_id", "wrong_revision"])
+@pytest.mark.asyncio
+async def test_first_connect_verifier_app_mismatch_fails_before_exchange(monkeypatch, failure):
+    context, app, _ = _first_fixtures()
+
+    async def forbidden_exchange(**_):
+        pytest.fail("app mismatch must fail before code exchange")
+
+    monkeypatch.setattr(
+        authorization_verifier, "exchange_tiktok_authorization_code", forbidden_exchange
+    )
+
+    async def load_app(_):
+        if failure == "missing":
+            return None
+        if failure == "disabled":
+            return app.model_copy(update={"enabled": False})
+        if failure == "wrong_id":
+            return app.model_copy(update={"app_id": "SYNTH-OTHER-APP"})
+        return app.model_copy(update={"revision": app.revision + 1})
+
+    verifier = authorization_verifier.TikTokFirstConnectVerifier(
+        load_app=load_app, clock=lambda: NOW
+    )
+    with pytest.raises(TikTokAuthorizationError, match="app_binding_unavailable"):
+        await verifier(context, SecretStr(AUTHORIZATION_CODE))
+
+
+@pytest.mark.parametrize("failure", ["provider", "http", "network", "malformed"])
+@pytest.mark.asyncio
+async def test_first_connect_verifier_shop_lookup_failures_are_safe(monkeypatch, caplog, failure):
+    context, app, token = _first_fixtures()
+    _install_exchange(monkeypatch, token=token)
+
+    def handler(request):
+        if failure == "network":
+            raise httpx.ConnectError(f"synthetic-private-network {request.url}", request=request)
+        if failure == "provider":
+            return _response(200, {"code": 41, "message": "synthetic-private-provider"})
+        if failure == "http":
+            return _response(403, {"private": "synthetic-private-http"})
+        return _response(200, {"code": 0, "data": {"shops": [{"id": "synthetic-private"}]}})
+
+    _install_shop_transport(monkeypatch, handler)
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(
+        TikTokAuthorizationError, match="authorized_shop_verification_failed"
+    ) as caught:
+        await _first_verifier(app)(context, SecretStr(AUTHORIZATION_CODE))
+    leaked = str(caught.value) + caplog.text
+    for secret in ("synthetic-private", AUTHORIZATION_CODE, ACCESS_TOKEN, APP_SECRET):
+        assert secret not in leaked
+    assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize("expiry_kind", ["access", "refresh"])
+@pytest.mark.asyncio
+async def test_first_connect_verifier_rejects_token_expired_during_lookup(monkeypatch, expiry_kind):
+    context, app, token = _first_fixtures()
+    _install_exchange(monkeypatch, token=token)
+    _install_shop_transport(monkeypatch, lambda _: _shops(("SYNTH-ONLY-SHOP", SHOP_CIPHER)))
+    expiry = token.access_expires_at if expiry_kind == "access" else token.refresh_expires_at
+    clock_values = iter([NOW, expiry])
+
+    async def load_app(_):
+        return app
+
+    verifier = authorization_verifier.TikTokFirstConnectVerifier(
+        load_app=load_app, clock=lambda: next(clock_values)
+    )
+    with pytest.raises(TikTokAuthorizationError, match="expired_exchange_token"):
+        await verifier(context, SecretStr(AUTHORIZATION_CODE))

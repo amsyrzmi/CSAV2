@@ -404,3 +404,79 @@ test("latestLanguage is the newest turn's language, English when there is none",
   assert.equal(view.latestLanguage([{ language: "ms" }, {}]), "en");
   assert.equal(view.latestLanguage([{}]), "en");
 });
+
+// Task 20: TikTok products and stock for staff (read-only).
+const stockResult = {
+  action: "product_stock_read", source: "tiktok_shop", product: "Synthetic mug",
+  variants: [
+    { variant: "Black / M", seller_sku: "MUG-BM", stock: 8 },
+    { variant: "White / L", seller_sku: null, stock: 0 },
+    { variant: "", seller_sku: null, stock: null },
+  ],
+  total: 8, checked_live: true, on_sale: true, as_of: "2026-11-04T08:00:00Z", note: "Checked live just now.",
+};
+
+test("a TikTok stock read shows every variant's exact count and the live or as-of line", () => {
+  const shown = view.resultView(stockResult);
+  assert.equal(shown.kind, "stock");
+  assert.equal(shown.title, "Synthetic mug on TikTok Shop");
+  assert.deepEqual(shown.rows, [
+    { label: "Black / M · SKU MUG-BM", count: "8" },
+    { label: "White / L", count: "0" },
+    { label: "One variant", count: "Not given" },
+  ]);
+  assert.equal(shown.total, "Total in stock: 8");
+  assert.equal(shown.note, "Checked live just now.");
+  assert.equal(shown.offSale, null);
+  assert.equal(shown.asOf, "2026-11-04T08:00:00Z");
+  const malay = view.resultView(
+    { ...stockResult, on_sale: false, checked_live: false, note: "Setakat 2 jam lalu (semakan langsung gagal)." }, "ms");
+  assert.equal(malay.title, "Synthetic mug di TikTok Shop");
+  assert.equal(malay.rows[2].label, "Satu varian");
+  assert.equal(malay.rows[2].count, "Tidak diberi");
+  assert.equal(malay.total, "Jumlah dalam stok: 8");
+  assert.equal(malay.note, "Setakat 2 jam lalu (semakan langsung gagal).");
+  assert.equal(malay.offSale, "Tidak dijual di TikTok Shop sekarang.");
+  // Every SKU removed by TikTok: no rows and no "Total in stock: 0"; the server's note says why.
+  const none = view.resultView({ ...stockResult, variants: [], total: 0,
+    note: "No variants of this product are listed on TikTok Shop. Checked live just now." });
+  assert.deepEqual(none.rows, []);
+  assert.equal(none.total, null);
+  assert.match(none.note, /No variants of this product are listed/);
+});
+
+const orderRead = (order, sync = "connected") => ({
+  status: "completed", action: "local_order_read", source: "local_records", marketplace_sync: sync,
+  as_of: "2026-11-04T08:00:00Z",
+  order: {
+    resource: { kind: "local_order", order_id: "o1" }, status: "shipped", payment_status: "paid", total: "20.00",
+    currency: "MYR", channel: "manual", external_order_id: null, external_shop_id: null, tracking_no: null,
+    carrier: null, placed_at: null, shipped_at: null, created_at: "x", updated_at: "x", ...order,
+  },
+});
+
+test("the order card names a TikTok order and says truthfully whether a TikTok Shop is connected", () => {
+  assert.deepEqual(view.orderCardText(orderRead({})), {
+    title: "Local order o1", sync: "TikTok Shop connected",
+  });
+  assert.deepEqual(view.orderCardText(orderRead({ channel: "tiktok_shop", external_order_id: "5764" }, "not_connected")), {
+    title: "TikTok order o1", sync: "No TikTok Shop connected",
+  });
+  // A TikTok-channel chat order with no TikTok order number is local, as on the Orders page.
+  assert.equal(view.orderCardText(orderRead({ channel: "tiktok_shop" })).title, "Local order o1");
+  assert.deepEqual(view.orderCardText(orderRead({ channel: "tiktok_shop", external_order_id: "5764" }), "ms"), {
+    title: "Pesanan TikTok o1", sync: "TikTok Shop disambungkan",
+  });
+  assert.equal(view.orderCardText(orderRead({}, "not_connected"), "ms").sync, "Tiada TikTok Shop disambungkan");
+  // Turns stored before the read became truthful.
+  assert.equal(view.orderCardText(orderRead({}, "unavailable")).sync, "Not checked");
+  assert.equal(view.orderCardText(orderRead({}, "unavailable"), "ms").sync, "Tidak disemak");
+  assert.equal(view.resultView(orderRead({})).kind, "order");
+});
+
+test("a navigate result may carry an open product record", () => {
+  assert.deepEqual(
+    view.resultView({ action: "navigate", tab: "business", section: "products", record: { kind: "product", id: "l1" }, resume: false }),
+    { kind: "navigate", tab: "business", resume: false },
+  );
+});

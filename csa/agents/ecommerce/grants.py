@@ -52,6 +52,7 @@ async def insert_verified_grant(conn: AsyncConnection[Any], grant: TikTokGrantSt
             "app_id": grant.context.app_id,
             "app_revision": grant.context.app_revision,
             "credential_generation": grant.context.credential_generation,
+            "source": grant.source,
             "scopes": sorted(grant.scopes),
             "verified_at": grant.verified_at,
             "expires_at": grant.expires_at,

@@ -8,10 +8,14 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from csa.agents.ecommerce.stores import StoreBinding
+from csa.agents.ecommerce.stores import PendingStoreBinding, StoreBinding
 
 _ORDER_SCOPES = frozenset({"seller.order.info", "seller.fs.order&fufillment.management"})
 _SHOP_SCOPES = frozenset({"seller.authorization.info", "seller.fs.order&fufillment.management"})
+# PLACEHOLDER scope key for the TikTok Shop "Product Basic" permission. The real key is read from
+# Partner Center and recorded in the docs/PROGRESS.md ledger; change it here only, nothing else
+# spells the key (the status query takes it as a parameter).
+PRODUCT_SCOPES = frozenset({"seller.product.basic"})
 
 
 class TikTokAuthorizationError(RuntimeError):
@@ -24,6 +28,12 @@ class TikTokAuthorizationError(RuntimeError):
 
 def require_tiktok_scopes(scopes: frozenset[str]) -> None:
     if not (scopes & _ORDER_SCOPES and scopes & _SHOP_SCOPES):
+        raise TikTokAuthorizationError("insufficient_scope")
+
+
+def require_tiktok_product_scope(scopes: frozenset[str]) -> None:
+    """Product reads need the product permission on top of the order and shop ones."""
+    if not scopes & PRODUCT_SCOPES:
         raise TikTokAuthorizationError("insufficient_scope")
 
 
@@ -44,6 +54,18 @@ class TikTokAuthorizationContext(_EvidenceContract):
         return self
 
 
+class TikTokFirstConnectContext(_EvidenceContract):
+    """Binds a first-connect attempt to a pending store at one generation and app revision.
+
+    It authorizes nothing: grants and read operations accept only TikTokAuthorizationContext.
+    """
+
+    binding: PendingStoreBinding
+    app_id: str = Field(min_length=1, max_length=100)
+    app_revision: int = Field(strict=True, ge=1)
+    credential_generation: int = Field(strict=True, ge=1)
+
+
 class TikTokGrantState(_EvidenceContract):
     """Trusted durable state must be loaded afresh, never accepted from a browser."""
 
@@ -51,7 +73,7 @@ class TikTokGrantState(_EvidenceContract):
     context: TikTokAuthorizationContext
     revision: int = Field(strict=True, ge=1)
     state: Literal["active", "revoked", "disconnected"]
-    source: Literal["verified_authorization_exchange"]
+    source: Literal["verified_authorization_exchange", "verified_token_refresh"]
     scopes: frozenset[str]
     verified_at: AwareDatetime
     expires_at: AwareDatetime

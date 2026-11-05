@@ -347,7 +347,7 @@ def seeded_packages() -> list[str]:
     :func:`_seed_hr` for the tenant given an HR owner; ``email_settings`` is never
     configured, so Staff Email is not activated.
     """
-    onboarded = {agent_class().name for agent_class in ONBOARDED_AGENTS}
+    onboarded = {agent_class.name for agent_class in ONBOARDED_AGENTS}
     return [p.key for p in PACKAGES if p.capabilities and set(p.capabilities) <= onboarded]
 
 
@@ -364,7 +364,7 @@ async def _ensure_tenant(
             conn=conn,
         )
         for agent_class in ONBOARDED_AGENTS:
-            agent = agent_class()
+            agent = agent_class
             await db.q.execute(
                 "console/provision_capabilities.sql",
                 (

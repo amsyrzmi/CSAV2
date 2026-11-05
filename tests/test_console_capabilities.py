@@ -61,6 +61,8 @@ def test_capabilities_and_specialized_tabs(
     with (
         patch("csa.console.capabilities.tx") as mock_tx,
         patch("csa.core.db.q.fetch_all") as mock_fetch,
+        # No connected TikTok store (the catalogue's only other read; spec 6.7).
+        patch("csa.console.agents.tiktok_store_connected", AsyncMock(return_value=False)),
     ):
         mock_conn = AsyncMock()
         mock_tx.return_value.__aenter__.return_value = mock_conn

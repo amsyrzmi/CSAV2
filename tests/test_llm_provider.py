@@ -770,3 +770,191 @@ async def test_callback_verbatim_for_callbacks_configurable() -> None:
     assert draft_llm.text == "LLM rephrased order confirmation."
     assert draft_llm.fact_ids == ["f1"]
     assert called_llm["count"] == 1
+
+
+# -- TikTok routing (spec 6.7) ------------------------------------------------------------------
+
+
+async def test_planner_routes_tiktok_numbers_and_offers_no_marketplace_write() -> None:
+    from csa.decide.llm import MARKETPLACE_PLANNER_RULE
+
+    systems: list[str] = []
+    planned = {
+        "tasks": [
+            {
+                "agent": "ecommerce_agent",
+                "input": {"action": "order_status", "order_number": "576461413038785752"},
+            }
+        ],
+        "reply_strategy": "auto_reply",
+    }
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        systems.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok(planned)(request)
+
+    plan = await _provider(reply).plan(
+        make_envelope("where is my TikTok order 576461413038785752?"),
+        Context(),
+        make_signals(Intent.ORDER),
+    )
+    assert [(t.agent, t.input) for t in plan.tasks] == [
+        ("ecommerce_agent", {"action": "order_status", "order_number": "576461413038785752"})
+    ]
+    (system,) = systems
+    assert MARKETPLACE_PLANNER_RULE in system
+    assert "order_agent 'search_products'" in system
+    assert "never plan ecommerce_agent 'stock_check' yourself" in system
+    schemas = json.loads(system.split("Agent input schemas: ", 1)[1].split(". Agent purposes")[0])
+    ecommerce = schemas["ecommerce_agent"]
+    assert sorted(ecommerce["properties"]["action"]["enum"]) == ["order_status", "stock_check"]
+    for write in ("fulfill_order", "sync_inventory", "cancel_order", "approve_refund", "shopee"):
+        assert write not in json.dumps(ecommerce)
+    assert "Read-only TikTok Shop" in CAPABILITIES["ecommerce_agent"]
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        {"agent": "ecommerce_agent", "input": {"action": "fulfill_order", "order_id": "1"}},
+        {"agent": "ecommerce_agent", "input": {"action": "sync_inventory", "sku": "A"}},
+        {"agent": "ecommerce_agent", "input": {"action": "order_status", "order_number": "a b"}},
+    ],
+)
+async def test_a_planned_marketplace_write_becomes_clarify(task: dict[str, Any]) -> None:
+    provider = _provider(_ok({"tasks": [task], "reply_strategy": "auto_reply"}))
+    plan = await provider.plan(make_envelope("x"), Context(), make_signals(Intent.ORDER))
+    assert plan.tasks == []
+    assert plan.reply_strategy == "ask_clarifying"
+
+
+async def test_next_step_never_offers_the_tiktok_stock_check_to_the_model() -> None:
+    step = {
+        "done": False,
+        "tasks": [
+            {"agent": "ecommerce_agent", "input": {"action": "stock_check", "query": "mug"}},
+            {
+                "agent": "ecommerce_agent",
+                "input": {"action": "order_status", "order_number": "576461413038785752"},
+            },
+        ],
+    }
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok(step)(request)
+
+    tasks = await _provider(handler).next_step(TurnState(envelope=make_envelope("mug?")))
+    assert [(t.agent, t.input["action"]) for t in tasks] == [("ecommerce_agent", "order_status")]
+    allowed = json.loads(
+        seen[0]
+        .split("Allowed actions per agent (no others): ", 1)[1]
+        .split(". Agent input schemas")[0]
+    )
+    assert allowed["ecommerce_agent"] == ["order_status"]
+
+
+async def test_tiktok_stock_fallback_runs_only_with_the_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from csa.contracts.facts import AgentResult, AgentResultData, ResultMeta
+    from csa.graph.policy.gate import Policy
+    from csa.turn.deps import PostgresTurnDependencies
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append("llm")
+        return _ok({"done": True, "tasks": []})(request)
+
+    deps = PostgresTurnDependencies(None, _provider(handler))  # type: ignore[arg-type]
+    monkeypatch.setattr(deps, "_policy", AsyncMock(return_value=Policy()))
+    allows = AsyncMock(return_value=True)
+    monkeypatch.setattr(deps._capabilities, "allows_execution", allows)  # noqa: SLF001
+    search = Task(
+        task_id="t0-order_agent",
+        agent="order_agent",
+        input={"action": "search_products", "query": "mug"},
+    )
+    envelope = make_envelope("is the mug in stock?")
+    state = TurnState(
+        envelope=envelope,
+        plan=Plan(
+            tasks=[search],
+            reply_strategy="auto_reply",
+            intent=Intent.ORDER,
+            confidence=1,
+            source="llm",
+        ),
+        results=[
+            AgentResult(
+                ok=True,
+                status="ok",
+                task_id=search.task_id,
+                agent="order_agent",
+                data=AgentResultData(
+                    facts=[
+                        Fact(
+                            id="no_products",
+                            text="No matching products were found.",
+                            source="order_agent",
+                        )
+                    ]
+                ),
+                meta=ResultMeta(trace_id=envelope.trace_id, latency_ms=1),
+            )
+        ],
+    )
+    tasks = await deps.next_step(state)
+    assert [(t.agent, t.input) for t in tasks] == [
+        ("ecommerce_agent", {"action": "stock_check", "query": "mug"})
+    ]
+    assert calls == []
+    allows.assert_awaited_once_with(envelope.client_id, "ecommerce_agent")
+    # A company without the E-commerce service never gets a TikTok answer.
+    allows.return_value = False
+    assert await deps.next_step(state) == []
+    assert calls == ["llm"]
+    # Nor does the web sandbox, which answers from the catalogue only.
+    allows.return_value = True
+    web = envelope.model_copy(
+        update={
+            "channel": Channel.WEB,
+            "contact": envelope.contact.model_copy(update={"channel": Channel.WEB}),
+        }
+    )
+    assert await deps.next_step(state.model_copy(update={"envelope": web})) == []
+    assert calls == ["llm", "llm"]
+
+
+async def test_the_model_sees_only_the_placeholder_of_a_card_like_order_number() -> None:
+    from csa.core.pii import redact
+
+    raw = "Where is my TikTok order 576461413038785750?"
+    envelope = make_envelope(raw)
+    envelope = envelope.model_copy(
+        update={"message": envelope.message.model_copy(update={"body_redacted": redact(raw)})}
+    )
+    prompts: list[str] = []
+    planned = {
+        "tasks": [
+            {
+                "agent": "ecommerce_agent",
+                "input": {"action": "order_status", "order_number": "[CARD_0]"},
+            }
+        ],
+        "reply_strategy": "auto_reply",
+    }
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        prompts.append(request.content.decode())
+        return _ok(planned)(request)
+
+    plan = await _provider(reply).plan(envelope, Context(), make_signals(Intent.ORDER))
+    assert [t.input for t in plan.tasks] == [{"action": "order_status", "order_number": "[CARD_0]"}]
+    (prompt,) = prompts
+    assert "[CARD_0]" in prompt and "576461413038785750" not in prompt
+    assert "[CARD_0] or [PHONE_0], use that placeholder exactly" in prompt
