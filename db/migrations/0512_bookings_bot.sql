@@ -4,8 +4,9 @@
 --   booking lapses). Old rows and staff bookings leave all three empty. It also gets
 --   late_for_reminder: true when the booking's current start was set (made, moved, or moved by a
 --   confirmed request) after its reminder was due, judged with the company's reminder time at that
---   moment. Such a booking gets no reminder: its confirmation is enough. Every write of a start
---   sets it again; old rows are false, so they are reminded as before. Two partial indexes:
+--   moment, and also when staff confirm a booking the bot asked for after then. Such a booking gets
+--   no reminder: its confirmation is enough. Every write of a start sets it again; old rows are
+--   false, so they are reminded as before. Two partial indexes:
 --   bookings_pending_changes (the live requests to move a booking, read for every calendar row
 --   and locked by every cancel, decline and move) and bookings_contact (a customer's own bookings,
 --   read on every customer turn at a company whose customers can book).

@@ -1200,8 +1200,18 @@ async def confirm_booking(
     if record.status != "pending":
         raise HTTPException(409, "wrong_status")
     author = author_of(actor)
+    now = now or datetime.now(UTC)
     if record.replaces_booking_id is not None:
-        return await _apply_change(conn, client_id, author, record, now or datetime.now(UTC))
+        return await _apply_change(conn, client_id, author, record, now)
+    # Nobody on a booking the bot asked for hears of it before this confirmation, so one confirmed
+    # after its reminder was due gets none: the confirmation is enough. A staff-made booking's
+    # people were invited when it was made, so its reminder stands.
+    if record.source == "bot" and await late_for_reminder(conn, client_id, record.starts_at, now):
+        await db.q.execute(
+            "bookings/booking_late_for_reminder_set.sql",
+            {"client_id": client_id, "id": record.id},
+            conn=conn,
+        )
     return await _finish(conn, client_id, author, record, "confirmed", "confirmed", free=False)
 
 

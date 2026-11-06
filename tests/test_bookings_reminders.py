@@ -304,6 +304,58 @@ async def test_a_change_staff_confirm_is_judged_at_the_moment_it_moves_the_booki
     assert (CUSTOMER in relay.to()) is reminded
 
 
+@pytest.mark.parametrize(
+    ("ahead", "reminded"), [(timedelta(hours=2), False), (timedelta(days=2), True)]
+)
+async def test_a_bot_booking_staff_confirm_after_its_reminder_was_due_gets_none(
+    shop: Shop, ahead: timedelta, reminded: bool
+) -> None:
+    """Held three days ahead, so on time when it was made; nobody on it hears of it until staff
+    confirm. Confirmed after its reminder was due, the confirmation is the reminder."""
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer("Email Only")
+    await with_email(shop, contact)
+    held = await pending_booking(shop, contact, kind, now=MADE)
+    assert (await late(shop))[str(held.id)] is False
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        confirmed = await service.confirm_booking(
+            conn,
+            shop.client,
+            _actor(shop.team.admin_info),
+            held.id,
+            BookingActionIn(version=held.version),
+            now=TEN - ahead,
+        )
+    assert confirmed.status == "confirmed"
+    assert (await late(shop))[str(held.id)] is not reminded
+    relay = FakeTransport()
+    await remind(shop, relay, TEN - timedelta(hours=1))
+    assert relay.to() == (sorted([CUSTOMER, STAFF]) if reminded else [])
+
+
+async def test_a_staff_made_booking_confirmed_late_keeps_its_reminder(shop: Shop) -> None:
+    """Its people were invited when it was made, so a late confirmation is not their reminder."""
+    person, kind = await a_person_and_type(shop, needs_confirmation=True)
+    made = await booked(
+        shop.team,
+        shop.team.admin,
+        {"type_id": kind["id"], "people": [person["id"]], "starts_at": at(10)},
+    )
+    assert made["status"] == "pending"
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        await service.confirm_booking(
+            conn,
+            shop.client,
+            _actor(shop.team.admin_info),
+            uuid.UUID(made["id"]),
+            BookingActionIn(version=made["version"]),
+            now=TEN - timedelta(hours=2),
+        )
+    relay = FakeTransport()
+    await remind(shop, relay, TEN - timedelta(hours=1))
+    assert relay.to() == [STAFF]
+
+
 async def test_the_company_chooses_how_early(shop: Shop) -> None:
     await staff_meeting(shop)
     await shop.w.q(
