@@ -620,3 +620,18 @@ def test_the_queued_email_sweep_has_a_partial_index(migrated_dsn: str) -> None:
     definition = row["indexdef"]
     assert "created_at, id" in definition
     assert "channel = 'email'" in definition and "status = 'queued'" in definition
+
+
+def test_the_pending_change_and_customer_reads_have_partial_indexes(migrated_dsn: str) -> None:
+    """The calendar's per-row look for a waiting change, the change lock on every cancel, decline
+    and move, and the customer's own reads would otherwise scan the company's bookings."""
+    with _owner(migrated_dsn) as conn:
+        rows = conn.execute(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'bookings'"
+            " AND indexname IN ('bookings_pending_changes', 'bookings_contact')"
+        ).fetchall()
+    found = {r["indexname"]: r["indexdef"] for r in rows}
+    assert set(found) == {"bookings_pending_changes", "bookings_contact"}
+    changes, contact = found["bookings_pending_changes"], found["bookings_contact"]
+    assert "(client_id, replaces_booking_id)" in changes and "status = 'pending'" in changes
+    assert "(client_id, contact_id, starts_at)" in contact and "contact_id IS NOT NULL" in contact

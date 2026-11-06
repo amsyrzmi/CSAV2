@@ -1,7 +1,10 @@
 -- Bookings, PR 2: what the customer bot, the reminders and the staff alert need.
 -- bookings gets three nullable columns: replaces_booking_id (the booking this one moves, in the
 --   same company), conversation_id (the chat the booking came from) and expires_at (when a pending
---   booking lapses). Old rows and staff bookings leave all three empty.
+--   booking lapses). Old rows and staff bookings leave all three empty. Two partial indexes:
+--   bookings_pending_changes (the live requests to move a booking, read for every calendar row
+--   and locked by every cancel, decline and move) and bookings_contact (a customer's own bookings,
+--   read on every customer turn at a company whose customers can book).
 -- contacts gets customer_given_email, a nullable address a customer typed into a chat. It is a
 --   claim nobody has checked, so it is kept apart from contacts.email: the walk-in match, the
 --   Inbox's "known customer" and every uniqueness rule use email only. Booking mail and
@@ -37,6 +40,7 @@
 --   0520 and later are not used. Not safe to run twice: the columns and tables are created plain.
 -- Rollback, in this order:
 --   DROP TABLE public.booking_turn_actions, public.booking_reminders, public.booking_settings;
+--   DROP INDEX public.bookings_pending_changes, public.bookings_contact;
 --   ALTER TABLE public.bookings DROP CONSTRAINT bookings_replaces_fk,
 --     DROP COLUMN replaces_booking_id, DROP COLUMN conversation_id, DROP COLUMN expires_at;
 --     (bookings that were made by the bot stay)
@@ -63,6 +67,14 @@ ALTER TABLE public.bookings
     ADD COLUMN expires_at timestamptz;
 ALTER TABLE public.bookings ADD CONSTRAINT bookings_replaces_fk
     FOREIGN KEY (client_id, replaces_booking_id) REFERENCES public.bookings(client_id, id);
+-- The live request to move a booking: the calendar looks for one on every row it shows, and every
+-- cancel, decline and move locks them. Only pending rows are ever asked for.
+CREATE INDEX bookings_pending_changes ON public.bookings (client_id, replaces_booking_id)
+    WHERE status = 'pending';
+-- A customer's own bookings: the bot's context on every customer turn, their list, the limit and
+-- the "already holds this time" check. Staff meetings with no customer are left out.
+CREATE INDEX bookings_contact ON public.bookings (client_id, contact_id, starts_at)
+    WHERE contact_id IS NOT NULL;
 
 ALTER TABLE public.contacts
     ADD COLUMN customer_given_email text,
