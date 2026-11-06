@@ -48,8 +48,8 @@ after Google approves the stricter scope). He chose approach B below.
   grant. `csa/email/gmail.py` and its `SCOPES` do not change.
 - Scope: `https://www.googleapis.com/auth/calendar.app.created` only, with `include_granted_scopes`
   off. The owner checks in the Cloud Console's scope picker whether Google marks it sensitive; if it
-  does not, production needs no verification for this stage. Staging uses the Internal client, so only
-  accounts in the owner's Workspace organization can connect there.
+  does not, production needs no verification for this stage. Staging uses the External client in testing (runbook section 11), so only its test
+  users can connect there, and their grant expires every 7 days.
 - Tokens are encrypted at rest with `csa.core.crypto` and an AAD that binds the row and column, the
   same way `email_mailboxes` does.
 - Row security with no FORCE, no new database roles, synthetic data and disposable containers in tests,
@@ -180,7 +180,7 @@ row, and every status or time change bumping `version`), mail without a
 file for synced people and with it otherwise, the Meet link flowing into the booking and its mail,
 tenant isolation of both new tables, token encryption, no token in any response or log. A browser test
 for the panel and the Admin's status column. A manual retest row for the real thing: connect a
-real Internal-org account on staging, book, move, cancel, and book an online meeting.
+real test-user account on staging, book, move, cancel, and book an online meeting.
 
 ## Rollout
 
@@ -193,7 +193,7 @@ then turns on `BOOKINGS_GOOGLE_CALENDAR_ENABLED` for staging. Existing mailboxes
 - Naming and placement of modules (suggested: `csa/bookings/google/` with the client, the connection
   service and the push), and the exact table and index names.
 - The Google client's HTTP details, using the existing transport conventions of `csa/email/gmail.py`.
-- A spike, the first task, that confirms against the real API (staging, Internal client) that
+- A spike, the first task, that confirms against the real API (staging, the External client in testing) that
   `conferenceData` creation works on an event in a secondary calendar made under
   `calendar.app.created`. The work is built in two parts: events first (connection, push, reconcile,
   mail), Meet second. If the spike fails, part one still ships, and the builder stops and tells the owner

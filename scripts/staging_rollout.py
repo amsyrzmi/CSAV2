@@ -51,6 +51,8 @@ FLAG_KEYS = frozenset(
         "CSA_STAGING_GATEWAY_MODEL_SECRET",
         "CSA_STAGING_INVITE_MAIL",
         "CSA_STAGING_EMAIL_ASSISTANT",
+        "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR",
+        "CSA_STAGING_BOOKINGS_GOOGLE_MEET",
     }
 )
 CHECKS_DIR = REPO_ROOT / "deploy" / "rollout_checks"
@@ -146,7 +148,7 @@ class SubprocessRunner:
 
 
 def load_flags(path: Path) -> dict[str, str]:
-    """Read the non-secret switches: exactly the six allowed keys, each once."""
+    """Read the non-secret switches: exactly the allowed keys, each once."""
     flags: dict[str, str] = {}
     try:
         text = path.read_text(encoding="utf-8")
