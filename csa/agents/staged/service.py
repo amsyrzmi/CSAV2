@@ -474,7 +474,7 @@ class BookingAgent:
                 ctx.client_id,
                 ctx.contact_id,
                 booking_id,
-                confirmed=inp.confirmed,
+                confirmed=inp.confirmed is True,
                 turn_key=ctx.idempotency_key,
                 conversation_id=ctx.conversation_id,
                 trace_id=ctx.trace_id,

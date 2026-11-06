@@ -88,6 +88,7 @@ def test_the_booking_input_names_only_the_new_actions() -> None:
         "part_of_day",
         "starts_at",
         "booking_id",
+        "confirmed",
         "customer_name",
         "customer_email",
     }
