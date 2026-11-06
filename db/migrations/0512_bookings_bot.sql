@@ -23,7 +23,9 @@
 --   written once and never changed or removed. ask_cancel is the bot asking a customer to confirm
 --   a cancel ("Cancel your Haircut on ...? Reply yes to cancel."): it also holds the booking's
 --   version, the chat and turn it was asked on, and when it runs out (a check: only ask_cancel
---   has them). The customer's next message in that chat may answer it; any other drops it.
+--   has them). It counts once the customer was sent it as drafted; their next message in that
+--   chat may answer it, any other drops it. Partial index booking_turn_actions_questions serves
+--   the lookup, which runs on every customer turn at a booking company.
 -- booking_settings: one row per company, made on its first save. reminder_minutes (15 to 10080),
 --   pending_hours (1 to 168) and customer_limit (1 to 50) have checks as well as the API's own
 --   range. No row means the defaults, 1440, 24 and 5.
@@ -49,6 +51,7 @@
 -- Rollback, in this order:
 --   DROP TABLE public.booking_turn_actions, public.booking_reminders, public.booking_settings;
 --   DROP INDEX public.bookings_pending_changes, public.bookings_contact;
+--   (booking_turn_actions_questions goes with its table)
 --   ALTER TABLE public.bookings DROP CONSTRAINT bookings_replaces_fk,
 --     DROP COLUMN replaces_booking_id, DROP COLUMN conversation_id, DROP COLUMN expires_at,
 --     DROP COLUMN late_for_reminder;
@@ -109,6 +112,10 @@ CREATE TABLE public.booking_turn_actions (
         CHECK ((action = 'ask_cancel') = (booking_version IS NOT NULL AND trace_id IS NOT NULL
                                           AND expires_at IS NOT NULL))
 );
+-- The question lookup on every customer turn at a booking company: the latest question in a chat.
+CREATE INDEX booking_turn_actions_questions
+    ON public.booking_turn_actions (client_id, conversation_id, created_at DESC, turn_key DESC)
+    WHERE action = 'ask_cancel';
 
 CREATE TABLE public.booking_settings (
     client_id uuid PRIMARY KEY REFERENCES public.clients(id),

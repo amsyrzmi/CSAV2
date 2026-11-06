@@ -740,8 +740,9 @@ async def ask_to_cancel(
     `cancel` would. Otherwise the bot asks (`cancel_asked`) and records the one question, with the
     booking's version and `CANCEL_QUESTION_LIFE`. The cancel is done only when the planner read
     this message as a yes (`confirmed`) and it answers that question: about this booking, in this
-    chat, the customer's first message since it was asked, before it ran out, and the booking still
-    at the version it was asked about. A yes that fails any of those is asked again. A retried
+    chat, sent to the customer as drafted (never a held, rejected or edited draft), the customer's
+    first message since it was asked, within `CANCEL_QUESTION_LIFE` of being sent, and the booking
+    still at the version it was asked about. A yes that fails any of those is asked again. A retried
     message answers what its key already did: the same question, or the cancel it made.
     """
     blocked, _ = await gate(conn, client_id)
@@ -767,7 +768,7 @@ async def ask_to_cancel(
             asked is not None
             and asked["booking_id"] == booking_id
             and asked["booking_version"] == checked.version
-            and asked["expires_at"] > now
+            and _still_open(asked, now)
         ):
             return await _cancel_now(conn, client_id, checked, turn_key)
     async with conn.transaction():
@@ -787,6 +788,15 @@ async def ask_to_cancel(
     return BotOutcome("cancel_asked", checked)
 
 
+def _still_open(asked: dict[str, Any], now: datetime) -> bool:
+    """A question can be answered for `CANCEL_QUESTION_LIFE` from when the customer was sent it
+    (a draft staff approved later starts then). One asked with no chat runs from when it was
+    asked."""
+    if asked["conversation_id"] is None:
+        return bool(asked["expires_at"] > now)
+    return bool(asked["sent_at"] + CANCEL_QUESTION_LIFE > now)
+
+
 async def cancel_question(
     conn: Conn,
     client_id: UUID,
@@ -794,9 +804,11 @@ async def cancel_question(
     conversation_id: UUID | None,
     trace_id: UUID,
 ) -> dict[str, Any] | None:
-    """The cancel the bot last asked this customer to confirm, when the message on `trace_id` is
-    the customer's first since it was asked, in the same chat: anything they said in between
-    dropped it. The caller checks its age and version against the booking."""
+    """The cancel the bot last asked in this chat, once the customer was sent it as drafted (the
+    asking reply went out unheld, or staff approved it unchanged; a held, rejected or edited draft
+    is no question), and while the message on `trace_id` is the customer's first since it was
+    asked: anything they said in between dropped it. Returns `sent_at`; the caller checks its age
+    (`_still_open`) and the booking's version."""
     return await db.q.fetch_one(
         "bookings/booking_cancel_question.sql",
         {

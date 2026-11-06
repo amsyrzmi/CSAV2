@@ -579,7 +579,8 @@ async def asked_in_chat(
         trace=trace,
         booking_id=str(made.booking.id),
     )
-    await say(shop, chat, 2, "outbound", said(result), trace=trace)
+    # Sent as the turn's own reply, with no approval (auto mode).
+    await say(shop, chat, 2, "outbound", said(result), trace=trace, key=f"{trace}:0")
     return contact, chat, made.booking.id, result
 
 
@@ -593,10 +594,11 @@ async def reply_to_it(
     *,
     now: datetime = NOW,
     key: str | None = None,
+    trace: uuid.UUID | None = None,
 ) -> AgentResult:
     """The customer's next message (`number`), which the planner read as a yes to the question."""
-    trace = uuid.uuid4()
-    await say(shop, chat, number, "inbound", text, trace=trace)
+    trace = trace or uuid.uuid4()
+    await say(shop, chat, number, "inbound", text, trace=trace, at=now + timedelta(seconds=number))
     return await ask(
         shop,
         contact,
@@ -719,11 +721,13 @@ async def test_an_expired_or_stale_question_asks_again(shop: Shop, why: str) -> 
         )
         assert moved.status_code == 200, moved.text
         when = ELEVEN_TEXT
-    again = await reply_to_it(shop, contact, chat, booking_id, 3, "yes", now=now)
+    third = uuid.uuid4()
+    again = await reply_to_it(shop, contact, chat, booking_id, 3, "yes", now=now, trace=third)
     assert said(again) == question(when)
     assert [r["status"] for r in await shop.rows()] == ["confirmed"]
-    # The question asked again is answered by the next message.
-    await say(shop, chat, 4, "outbound", said(again))
+    # The question asked again is sent, and answered by the next message.
+    sent = now + timedelta(seconds=4)
+    await say(shop, chat, 4, "outbound", said(again), trace=third, key=f"{third}:0", at=sent)
     done = await reply_to_it(shop, contact, chat, booking_id, 5, "yes", now=now)
     assert said(done).startswith(f"Booking cancelled: Haircut on {when}")
 
@@ -736,6 +740,124 @@ async def test_a_yes_to_another_booking_asks_about_that_one(shop: Shop) -> None:
     wrong = await reply_to_it(shop, contact, chat, other.booking.id, 3, "yes")
     assert said(wrong) == question(ELEVEN_TEXT)
     assert {r["status"] for r in await shop.rows()} == {"confirmed"}
+
+
+# --- a question counts only once the customer was sent it as drafted ----------------------------
+
+FALLBACK = "A team member will follow up with you shortly."
+
+
+async def held_question(shop: Shop, kind: dict[str, Any]) -> tuple[uuid.UUID, uuid.UUID, Any, Any]:
+    """The bot's question, held for staff as a draft (Staff approve each reply, or a held auto
+    reply): nothing is sent yet. Returns the customer, the chat, the booking and the asking turn."""
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    chat, trace = await conversation(shop, contact), uuid.uuid4()
+    await say(shop, chat, 1, "inbound", "please cancel my haircut", trace=trace)
+    result = await ask(
+        shop,
+        contact,
+        "cancel",
+        key="m1:t0",
+        chat=chat,
+        trace=trace,
+        booking_id=str(made.booking.id),
+    )
+    assert said(result) == question()
+    await shop.w.q(
+        "INSERT INTO approvals (client_id, conversation_id, trace_id, draft, reason)"
+        " VALUES (%s, %s, %s, %s, 'suggest_mode')",
+        shop.tenant,
+        str(chat),
+        str(trace),
+        said(result),
+    )
+    return contact, chat, made.booking.id, trace
+
+
+async def settle(
+    shop: Shop, chat: uuid.UUID, trace: uuid.UUID, outcome: str, *, at: datetime, text: str
+) -> None:
+    """Staff decide the held draft, as `approval/service._settle` does: the approval's status, and
+    the message that goes out (the draft, the edited text or the fallback) under its own key."""
+    (row,) = await shop.w.q(
+        "UPDATE approvals SET status = %s, decided_by = 'staff', decided_at = %s, final_text = %s"
+        " WHERE trace_id = %s RETURNING id",
+        outcome,
+        at,
+        text,
+        str(trace),
+    )
+    await say(
+        shop, chat, 0, "outbound", text, trace=trace, key=f"appr:{row['id']}:{outcome}", at=at
+    )
+
+
+@pytest.mark.parametrize("outcome", ["rejected", "edited", "held"])
+async def test_a_question_rejected_edited_or_still_held_is_no_question(
+    shop: Shop, outcome: str
+) -> None:
+    """Staff refused it, replaced it, or have not looked yet: the customer never read it, so their
+    "yes" (to whatever they did read) cancels nothing and is asked again."""
+    kind = await a_type(shop)
+    contact, chat, booking_id, trace = await held_question(shop, kind)
+    decided = NOW + timedelta(minutes=5)
+    if outcome == "rejected":
+        await settle(shop, chat, trace, "rejected", at=decided, text=FALLBACK)
+    elif outcome == "edited":
+        moved = "Would you rather move it to Thursday? Reply yes."
+        await settle(shop, chat, trace, "edited", at=decided, text=moved)
+    seen = await build_context(shop, contact, chat)
+    assert seen is not None and seen.cancel_asked is None
+    yes = await reply_to_it(shop, contact, chat, booking_id, 3, "yes", now=decided)
+    assert said(yes) == question()
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
+
+
+async def test_a_question_approved_as_drafted_is_answered_by_the_next_yes(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact, chat, booking_id, trace = await held_question(shop, kind)
+    sent = NOW + timedelta(minutes=5)
+    await settle(shop, chat, trace, "approved", at=sent, text=question())
+    yes = await reply_to_it(shop, contact, chat, booking_id, 3, "yes", now=sent)
+    assert said(yes).startswith(f"Booking cancelled: Haircut on {TEN_TEXT}")
+
+
+async def test_the_half_hour_runs_from_when_the_question_was_sent(shop: Shop) -> None:
+    """Approved 40 minutes after it was drafted, the question can be answered for 30 minutes
+    from then, not from the draft."""
+    kind = await a_type(shop)
+    contact, chat, booking_id, trace = await held_question(shop, kind)
+    sent = NOW + timedelta(minutes=40)
+    await settle(shop, chat, trace, "approved", at=sent, text=question())
+    yes = await reply_to_it(
+        shop, contact, chat, booking_id, 3, "yes", now=sent + timedelta(minutes=20)
+    )
+    assert said(yes).startswith("Booking cancelled")
+
+
+async def test_a_yes_in_staff_approve_mode_cancels_and_only_the_reply_waits(shop: Shop) -> None:
+    """Staff approve each reply: the question went out as drafted, so the customer's yes cancels
+    then and there, as a cancel in that mode always has. Only the reply about it is held for staff
+    (by the turn's reply gate): the cancel itself sends the customer nothing."""
+    kind = await a_type(shop)
+    await shop.mode("suggest")
+    contact, chat, booking_id, trace = await held_question(shop, kind)
+    sent = NOW + timedelta(minutes=5)
+    await settle(shop, chat, trace, "approved", at=sent, text=question())
+    before = await shop.w.q(
+        "SELECT count(*) AS n FROM messages WHERE conversation_id = %s AND direction = 'outbound'",
+        str(chat),
+    )
+    yes = await reply_to_it(shop, contact, chat, booking_id, 3, "yes", now=sent)
+    assert said(yes).startswith("Booking cancelled")
+    assert [r["status"] for r in await shop.rows()] == ["cancelled"]
+    after = await shop.w.q(
+        "SELECT count(*) AS n FROM messages WHERE conversation_id = %s AND direction = 'outbound'",
+        str(chat),
+    )
+    assert after == before
 
 
 async def test_in_staff_approve_mode_the_question_is_asked_and_nothing_is_cancelled(
@@ -1521,8 +1643,11 @@ async def say(
     *,
     redacted: str | None | bool = True,
     trace: uuid.UUID | None = None,
+    key: str | None = None,
+    at: datetime | None = None,
 ) -> None:
-    """A stored message; `number` orders them; `redacted=True` redacts nothing."""
+    """A stored message; `number` orders them (or `at`); `redacted=True` redacts nothing. `key`
+    is the message's idempotency key: `{trace}:0` is a turn's own reply sent without approval."""
     shown = body if redacted is True else redacted
     await shop.w.q(
         "INSERT INTO messages (client_id, conversation_id, direction, author, body, redacted_body,"
@@ -1533,9 +1658,9 @@ async def say(
         "contact" if direction == "inbound" else "assistant",
         body,
         shown,
-        f"msg-{uuid.uuid4()}",
+        key or f"msg-{uuid.uuid4()}",
         str(trace) if trace else None,
-        NOW + timedelta(seconds=number),
+        at or NOW + timedelta(seconds=number),
     )
 
 

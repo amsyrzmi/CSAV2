@@ -656,3 +656,16 @@ def test_the_pending_change_and_customer_reads_have_partial_indexes(migrated_dsn
     changes, contact = found["bookings_pending_changes"], found["bookings_contact"]
     assert "(client_id, replaces_booking_id)" in changes and "status = 'pending'" in changes
     assert "(client_id, contact_id, starts_at)" in contact and "contact_id IS NOT NULL" in contact
+
+
+def test_the_cancel_question_lookup_has_a_partial_index_in_its_own_order(migrated_dsn: str) -> None:
+    """It runs on every customer turn at a booking company: the latest question in one chat."""
+    with _owner(migrated_dsn) as conn:
+        row = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'booking_turn_actions'"
+            " AND indexname = 'booking_turn_actions_questions'"
+        ).fetchone()
+    assert row is not None
+    definition = row["indexdef"]
+    assert "(client_id, conversation_id, created_at DESC, turn_key DESC)" in definition
+    assert "action = 'ask_cancel'" in definition
