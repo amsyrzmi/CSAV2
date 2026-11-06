@@ -24,6 +24,9 @@ from uuid import UUID
 import httpx
 import structlog
 from csa.bookings.api import build_bookings_router
+from csa.bookings.google.api import build_calendar_router
+from csa.bookings.google.client import CalendarClient
+from csa.bookings.google.connections import CalendarConnections
 from csa.channels.ingress import IngressError, TelegramIngress
 from csa.channels.marketplace.router import build_marketplace_router
 from csa.channels.whatsapp_ingress import WhatsAppIngress
@@ -147,6 +150,7 @@ def create_app() -> FastAPI:
         hr_http: httpx.AsyncClient | None = None
         email_http: httpx.AsyncClient | None = None
         workspace_http: httpx.AsyncClient | None = None
+        calendar_http: httpx.AsyncClient | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
             await verify_stores(stores)
@@ -192,6 +196,21 @@ def create_app() -> FastAPI:
                 app.state.identity_service = identity
                 # Disabled unless the flag and both relay secrets are set; then links are manual.
                 app.state.mailer = Mailer.from_settings(settings)
+                if settings.BOOKINGS_GOOGLE_CALENDAR_ENABLED:
+                    assert settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET
+                    calendar_redirect = settings.bookings_calendar_redirect_uri()
+                    assert calendar_redirect
+                    calendar_http = httpx.AsyncClient(trust_env=False)
+                    app.state.calendar_connections = CalendarConnections(
+                        pool,
+                        CalendarClient(
+                            settings.GOOGLE_CLIENT_ID,
+                            settings.GOOGLE_CLIENT_SECRET,
+                            calendar_redirect,
+                            calendar_http,
+                        ),
+                        enabled=True,
+                    )
                 hr = HrService(pool, session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS)
                 await hr.check_ready()
                 app.state.hr_service = hr
@@ -248,6 +267,8 @@ def create_app() -> FastAPI:
                     await email_http.aclose()
                 if workspace_http is not None:
                     await workspace_http.aclose()
+                if calendar_http is not None:
+                    await calendar_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:
@@ -439,6 +460,7 @@ def create_app() -> FastAPI:
     # lane B (console): subscriptions router registers here
     app.include_router(build_subscriptions_router())
     app.include_router(build_bookings_router())
+    app.include_router(build_calendar_router())
     # --- end lane registrations ---
 
     instrument_fastapi(app)

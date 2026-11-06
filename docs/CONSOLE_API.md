@@ -1719,6 +1719,25 @@ That is accepted, because a person's calendar has to show them as busy.
 `csa_app`, that lists the company's enabled members with the HR person linked to each account;
 `csa_app` can read neither `console_memberships` nor, without an HR grant, `hr_employee_accounts`.
 
+### Google Calendar
+
+Stage 2 (migration `0513`, off unless `BOOKINGS_GOOGLE_CALENDAR_ENABLED`). A member linked to an
+active bookable person connects their own Google account once, and their confirmed bookings appear
+on a "Bookings" calendar the app creates in it. The one scope is `calendar.app.created`: the app can
+touch that calendar and nothing else in the account. Same prefix, gate and human-session rule as the
+rest of Bookings, under `/console/v1/bookings/calendar`. No answer ever holds a token; tokens are
+stored encrypted and only the sync code reads them.
+
+| Route | What it does |
+| --- | --- |
+| `GET /status` | `CalendarStatusOut` `{available, can_connect, status, people}`. `available` is false when the feature is off or the Google client is not set up (everything else is then `false` or `null`). `can_connect` is true for an Admin or staff member linked to an active bookable person, and `status` is theirs: `not_connected`, `connected` or `needs_reconnect` (`null` when they cannot connect). `people` is for an Admin or platform admin: `[{person_id, name, status}]` for each active person with an account, as a status only |
+| `POST /connect` | `{url}`: the Google address to send this member to (PKCE, a one-use state that expires after 10 minutes). Only for themselves. 409 `person_required` when their account is not linked to an active bookable person, 503 `calendar_unavailable`. A read-only member gets 403 |
+| `GET /callback` | Where Google sends the browser back. Always a 303 to `/portal/bookings` with `?calendar=connected` or `?calendar_error=<code>`: `oauth_state_invalid` (unknown, used, expired or another member's state), `provider_denied`, `oauth_issuer_invalid`, `scopes_not_granted`, `calendar_unavailable`. The calendar is made on the first connection and reused on a reconnect while it still exists |
+| `POST /disconnect` | 204. Clears the stored grant at once, drops the person's open sync rows, then revokes at Google as far as it will; the calendar and its events stay in their account. 409 `not_connected` |
+
+A refused refresh token (`invalid_grant`) makes the connection `needs_reconnect`; nothing more is
+tried for that person until they connect again, and everyone else is unaffected.
+
 ## Services and packages
 Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`; `bookings` is a separate service and requires nothing). Packages are the management surface; the capability switches below remain the runtime enforcement.
 
