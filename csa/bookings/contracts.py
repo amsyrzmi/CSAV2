@@ -234,8 +234,8 @@ class BookingSettingsOut(Contract):
     pending_hours: int
     customer_limit: int
     version: int
-    # True when the company has Customer support (active or suspended) and its replies are Off, so
-    # the bot books nothing and no reminder to a customer goes by Telegram.
+    # True while customers get nothing automatic: Customer support is active with its replies Off,
+    # or it is suspended (whatever its mode). The bot books nothing and no customer is reminded.
     replies_off: bool
 
 

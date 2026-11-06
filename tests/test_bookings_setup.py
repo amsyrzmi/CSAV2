@@ -1053,7 +1053,9 @@ async def set_replies(w: SessionWorld, tenant: str, mode: str, package: str | No
         ("active", "suggest", False),  # Staff approve each reply
         ("active", "auto", False),
         ("suspended", "shadow", True),  # suspended keeps its mode
-        ("suspended", "auto", False),
+        # Suspended: customers get nothing automatic whatever the mode, so the banner says so.
+        ("suspended", "auto", True),
+        ("suspended", "suggest", True),
         ("requested", "shadow", False),  # a package still being asked for is not active
         (None, "shadow", False),  # Bookings only: no replies setting at all
     ],

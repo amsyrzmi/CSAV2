@@ -543,17 +543,24 @@ REPLIES_STATUSES = ("active", "suspended")
 
 
 async def customer_replies_off(conn: Conn, client_id: UUID) -> bool:
-    """Customer support is active or suspended and its mode is Off (`shadow`).
+    """Customers get nothing automatic: Customer support is active with its mode Off (`shadow`),
+    or it is suspended, whatever its mode (the bot, reminders and notices all stop then).
 
     A company without the package has no replies setting, so it is never "off": its email
     reminders to customers still go.
     """
-    has_package = await db.q.fetch_one(
-        "console/service_package_any_in_status.sql",
-        (client_id, [REPLIES_PACKAGE], sorted(REPLIES_STATUSES)),
-        conn=conn,
-    )
-    return has_package is not None and await replies_off(conn, client_id)
+
+    async def package_is(*statuses: str) -> bool:
+        row = await db.q.fetch_one(
+            "console/service_package_any_in_status.sql",
+            (client_id, [REPLIES_PACKAGE], list(statuses)),
+            conn=conn,
+        )
+        return row is not None
+
+    if await package_is("suspended"):
+        return True
+    return await package_is("active") and await replies_off(conn, client_id)
 
 
 async def get_settings(conn: Conn, client_id: UUID) -> BookingSettingsOut:

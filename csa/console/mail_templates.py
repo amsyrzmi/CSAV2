@@ -254,6 +254,32 @@ def customer_declined_mail(
     return OutgoingMail(to=to, subject=subject, text=text, html=html)
 
 
+def customer_request_moved_mail(
+    *, to: str, name: str | None, brand: str, booking: BookingRecord, tz: str
+) -> OutgoingMail:
+    """Plain text, with no calendar file, for a customer whose own bot asked for a booking (or a
+    move of one) that staff then moved before confirming it.
+
+    They were never sent an invitation, so there is no event to update, and it is still a request:
+    the mail says so. A later "wasn't confirmed" then names the time they were told of.
+    """
+    title = " ".join((booking.title or "Booking").split())
+    new = when(booking.starts_at, tz)
+    if booking.replaces_booking_id is not None:
+        headline = (
+            f"Your request to move {title} with {brand} now asks for {new}. It isn't confirmed yet."
+        )
+    else:
+        headline = (
+            f"Your request for {title} with {brand} has moved to {new}. It isn't confirmed yet."
+        )
+    subject = f"Request moved: {title} to {new} ({_one_line(brand)})"
+    hello = f"Hello {name}," if name else "Hello,"
+    text = "\n\n".join([hello, headline, brand]) + "\n"
+    html = _html([escape(hello), escape(headline), escape(brand)])
+    return OutgoingMail(to=to, subject=subject, text=text, html=html)
+
+
 def reminder_mail(
     *, to: str, name: str | None, brand: str, booking: BookingRecord, tz: str
 ) -> OutgoingMail:

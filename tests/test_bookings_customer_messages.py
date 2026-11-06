@@ -11,6 +11,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -20,6 +21,7 @@ from apps.delivery.main import DeliveryWorker
 from csa.agents.staged.service import BookingAgent
 from csa.bookings import customer_messages, service
 from csa.bookings.contracts import BookingIn
+from csa.bookings.executor import BookingActionExecutor
 from csa.console.mailer import Mailer
 from csa.core import crypto, db
 from csa.core.tenancy import tx
@@ -32,6 +34,7 @@ from tests.conftest import requires_docker
 from tests.test_booking_agent import ask, cancel_it, said
 from tests.test_bookings_api import TUESDAY, at, booked, meeting
 from tests.test_bookings_bot import ELEVEN, NOW, TEN, THREE, TWO, Shop, a_type, pending_change, shop
+from tests.test_bookings_executor import _actor
 from tests.test_bookings_mail import SENDER, FakeTransport, calendar_of, ics_value, unfolded
 from tests.test_bookings_setup import BASE, make_person, make_type
 
@@ -1158,9 +1161,11 @@ async def test_a_declined_request_mails_a_customer_without_telegram_that_it_was_
     assert (await row_of(shop, old.booking.id))["status"] == "confirmed"
 
 
-async def test_a_decline_mails_the_customer_plain_text_and_the_people_the_cancellation(
+async def test_a_decline_mails_the_customer_plain_text_and_the_people_nothing(
     shop: Shop, relay: FakeTransport
 ) -> None:
+    """The people on a booking the bot asked for were never sent its invitation, so a decline
+    sends them no cancellation (final review Minor 5)."""
     aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
     kind = await make_type(shop.team, person_ids=[aina["id"]])
     contact = await shop.customer()
@@ -1168,10 +1173,9 @@ async def test_a_decline_mails_the_customer_plain_text_and_the_people_the_cancel
     booking = await pending_booking(shop, contact, kind)
     gone = await staff(shop, booking.id, "decline")
     assert gone.json()["customer_told"] is True
-    customer = relay.for_("c@example.test")
-    person = relay.for_("aina.staff@example.test")
+    (customer,) = relay.sent
+    assert customer.to == "c@example.test"
     assert customer.calendar is None and "wasn't confirmed" in customer.text
-    assert person.calendar is not None and person.calendar.method == "CANCEL"
 
 
 # M4: no invitation to reply that the bot would not act on.
@@ -1300,11 +1304,14 @@ async def test_no_message_without_a_route_for_a_pending_booking_or_a_private_mee
     assert made is not None
     gone = await staff(shop, made.id, "cancel", made.version)
     assert gone.json()["customer_told"] is False and await outbound(shop) == []
-    # A pending booking was never confirmed, so moving it tells the customer nothing.
+    # A pending booking the bot asked for: moving it tells the customer it is still a request,
+    # at its new time (so a later "wasn't confirmed" names a time they were told of).
     await chat(shop, contact)
     held = await pending_booking(shop, contact, kind, starts_at=TWO)
     moved = await patch_time(shop, held, THREE)
-    assert moved.status_code == 200 and await outbound(shop) == []
+    assert moved.status_code == 200
+    (told,) = await outbound(shop)
+    assert "request has moved to" in told["body"] and "not confirmed yet" in told["body"]
     # A private meeting is for its attendees only.
     person = await make_person(shop.team, "Aina")
     secret = await booked(
@@ -1313,7 +1320,7 @@ async def test_no_message_without_a_route_for_a_pending_booking_or_a_private_mee
         {**meeting(person, start=at(9)), "private": True, "contact_id": str(contact)},
     )
     cancelled = await staff(shop, secret["id"], "cancel")
-    assert cancelled.status_code == 200 and await outbound(shop) == []
+    assert cancelled.status_code == 200 and await outbound(shop) == [told]
 
 
 # --- fix round 2 ----------------------------------------------------------------------------------
@@ -1405,3 +1412,94 @@ async def test_the_decline_mail_invites_another_request_only_while_the_bot_would
     assert ("ask for another time" in mail.text) is (closed == "open")
     assert ("ask for another time" in mail.html) is (closed == "open")
 
+
+@pytest.mark.parametrize("closed", ["open", "replies_off"])
+async def test_the_assistants_cancel_of_a_bot_request_mails_the_customer_as_the_tab_does(
+    shop: Shop, relay: FakeTransport, closed: str
+) -> None:
+    """The assistant's Confirm runs the tab's mail step with the same details: a plain "wasn't
+    confirmed", inviting another request only while the bot would answer one."""
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat_with_address(shop, contact, "whatsapp")
+    booking = await pending_booking(shop, contact, kind)
+    if closed == "replies_off":
+        await shop.mode("shadow")
+    state = SimpleNamespace(pool=shop.w.pool, mailer=shop.w.app.state.mailer)
+    request: Any = SimpleNamespace(app=SimpleNamespace(state=state))
+    receipt = await BookingActionExecutor().execute(
+        request,
+        _actor(shop.team.admin_info),
+        shop.client,
+        {"change": "cancel", "booking_id": str(booking.id)},
+        proposal_id=uuid.uuid4(),
+        expected_version=str(booking.version),
+        origin="assistant",
+    )
+    assert receipt["status"] == "cancelled" and receipt["customer_told"] is True
+    (mail,) = relay.sent
+    assert mail.to == "c@example.test" and mail.calendar is None
+    assert "wasn't confirmed" in mail.text
+    assert ("ask for another time" in mail.text) is (closed == "open")
+
+
+async def test_staff_moving_a_pending_bot_booking_tell_the_customer_and_the_lapse_names_it(
+    shop: Shop,
+) -> None:
+    """Moved before it was confirmed: the customer is told the new time, so the later "wasn't
+    confirmed in time" names a time they were told of."""
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    booking = await pending_booking(shop, contact, kind)
+    moved = await shop.team.send(
+        shop.team.admin,
+        f"/bookings/{booking.id}",
+        {"version": booking.version, "starts_at": "2031-03-04T11:00:00Z"},
+        "PATCH",
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["customer_told"] is True
+    (told,) = await outbound(shop)
+    assert told["body"].startswith(
+        f"Your Haircut booking request has moved to {ELEVEN_TEXT}. It is not confirmed yet."
+    )
+    assert (await run_expiry(shop, LAPSED))["told"] == 1
+    lapse = (await outbound(shop))[-1]["body"]
+    assert "wasn't confirmed in time" in lapse and ELEVEN_TEXT in lapse and TEN_TEXT not in lapse
+
+
+async def test_staff_moving_a_pending_bot_booking_mails_a_customer_without_telegram(
+    shop: Shop, relay: FakeTransport
+) -> None:
+    person = await make_person(shop.team, "Aina", email="aina.staff@example.test")
+    kind = await make_type(shop.team, person_ids=[person["id"]])
+    contact = await shop.customer()
+    await chat_with_address(shop, contact, "whatsapp")
+    booking = await pending_booking(shop, contact, kind)
+    moved = await shop.team.send(
+        shop.team.admin,
+        f"/bookings/{booking.id}",
+        {"version": booking.version, "starts_at": "2031-03-04T11:00:00Z"},
+        "PATCH",
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["customer_told"] is True
+    # The customer is told it moved and is still a request; the person on it was never invited.
+    (mail,) = relay.sent
+    assert mail.to == "c@example.test" and mail.calendar is None
+    assert "has moved to 4 Mar 2031, 11:00" in mail.text and "isn't confirmed yet" in mail.text
+
+
+async def test_a_staff_decline_of_a_bot_booking_mails_nobody_on_it(
+    shop: Shop, relay: FakeTransport
+) -> None:
+    """They were never sent the invitation, so there is no cancellation to send them."""
+    person = await make_person(shop.team, "Aina", email="aina.staff@example.test")
+    kind = await make_type(shop.team, person_ids=[person["id"]])
+    contact = await shop.customer()
+    await chat(shop, contact)
+    booking = await pending_booking(shop, contact, kind)
+    gone = await staff(shop, booking.id, "decline", booking.version)
+    assert gone.status_code == 200, gone.text
+    assert relay.sent == []

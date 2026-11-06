@@ -454,7 +454,10 @@ export function changeBooking(
 
 // ---- Settings ---------------------------------------------------------------------------------
 
-/** `replies_off` is true only for a company with Customer support whose replies are Off. */
+/**
+ * `replies_off` is true while customers get nothing automatic: Customer support active with its
+ * replies Off, or Customer support suspended (whose banner has no link: replies can't be turned on).
+ */
 export interface BookingSettings {
   reminder_minutes: number;
   pending_hours: number;

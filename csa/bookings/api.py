@@ -124,6 +124,9 @@ async def after_commit(
     if mail is None or customer_messages.is_over(record, change):
         return None
     declined = customer_messages.is_declined(record, change)
+    # Staff moved what the customer's own bot asked for, before confirming it: they asked, so they
+    # are told, by plain text (nobody on it was invited yet).
+    moved_request = change == "moved" and notify.bot_request(record)
     if declined:
         # The customer's own bot asked, so they are told; they were never sent an invitation, so it
         # is plain text and not a cancellation. A request to move goes to them alone.
@@ -135,7 +138,7 @@ async def after_commit(
         _mailer(request),
         record,
         mail,
-        owed=True if declined else None,
+        owed=True if declined or moved_request else None,
         by_chat=by_chat,
         original=original,
         invite=invite,
@@ -475,13 +478,9 @@ def build_bookings_router() -> APIRouter:
                 by_chat = await customer_messages.after_staff_action(
                     conn, client_id, record, change
                 )
-                declined = customer_messages.is_declined(record, change)
-                original = (
-                    await customer_messages.the_original(conn, client_id, record)
-                    if declined
-                    else None
+                original, invite = await customer_messages.mail_details(
+                    conn, client_id, record, change
                 )
-                invite = await customer_messages.can_reply(conn, client_id) if declined else True
             return await respond(
                 request, actor, record, change, by_chat=by_chat, original=original, invite=invite
             )

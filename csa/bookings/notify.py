@@ -14,8 +14,10 @@ booking's own transaction by `customer_messages.py`), false if the booking has a
 not told (no address and no chat, mail off or failed, a private meeting), and null when there is no
 customer or none is owed a message yet. A booking the customer's own bot made differs: staff
 declining it tells the customer (they asked), by a plain "not confirmed" mail with no calendar
-file, because they were never sent an invitation. A pending request to move a booking goes to its
-customer only. Logs carry the category only, never an address or a title.
+file, because they were never sent an invitation; so does staff moving it before confirming. A
+pending request to move a booking, and a booking the bot asked for until staff confirm it, go to
+the customer only: nobody on it was ever invited. Logs carry the category only, never an address or
+a title.
 """
 
 from __future__ import annotations
@@ -34,7 +36,11 @@ from pydantic import TypeAdapter, ValidationError
 from csa.bookings import ics, setup
 from csa.bookings.contracts import Email, EmailSummary
 from csa.bookings.service import BookingRecord, Conn
-from csa.console.mail_templates import booking_mail, customer_declined_mail
+from csa.console.mail_templates import (
+    booking_mail,
+    customer_declined_mail,
+    customer_request_moved_mail,
+)
 from csa.console.mailer import CalendarFile, Mailer
 from csa.core import db
 from csa.core.tenancy import tx
@@ -117,6 +123,18 @@ def never_confirmed(booking: BookingRecord) -> bool:
     )
 
 
+def bot_request(booking: BookingRecord) -> bool:
+    """A booking the customer's own bot asked for that was never confirmed: still pending, or
+    cancelled, declined or lapsed while it was. Nobody but the customer was ever told of it."""
+    return booking.source == "bot" and never_confirmed(booking)
+
+
+def plain_for_customer(booking: BookingRecord, change: Change) -> bool:
+    """The customer's mail is plain text with no calendar file: they were never sent an
+    invitation. A decline of what their bot asked for, or staff moving it before confirming."""
+    return change == "declined" or (change == "moved" and bot_request(booking))
+
+
 def owes_customer(booking: BookingRecord) -> bool:
     """The booking has a customer, and they are owed a message about this change."""
     return booking.customer is not None and not never_confirmed(booking)
@@ -175,7 +193,9 @@ def recipients(
     # for it (the caller says so).
     if asker is not None and not booking.private and mail_customer:
         add(customer_address(booking), asker.full_name, who=True)
-    if booking.replaces_booking_id is not None:
+    # The people on a booking the customer's own bot asked for are invited only once staff confirm
+    # it, so while it was never confirmed they get nothing: no "moved", no cancellation of nothing.
+    if booking.replaces_booking_id is not None or bot_request(booking):
         return list(found.values())
     for person in booking.people:
         own = _clean(person.email) if person.email else None
@@ -197,7 +217,12 @@ async def _deliver(
     invite: bool,
 ) -> bool:
     try:
-        if change == "declined" and one.customer:
+        if change == "moved" and one.customer and bot_request(booking):
+            # Staff moved what the customer's bot asked for, before confirming it: still a request.
+            mail = customer_request_moved_mail(
+                to=one.address, name=one.name, brand=facts.brand, booking=booking, tz=facts.timezone
+            )
+        elif change == "declined" and one.customer:
             # Never sent an invitation, so no calendar file and no talk of cancelling.
             mail = customer_declined_mail(
                 to=one.address,
@@ -256,7 +281,7 @@ async def notify(
     whether a declined customer's mail may invite another request (the bot would act on it).
     """
     is_owed = customer_owed(booking, owed)
-    mail_customer = is_owed and not (by_chat and change == "declined")
+    mail_customer = is_owed and not (by_chat and plain_for_customer(booking, change))
     people = recipients(booking, facts, customer=mail_customer)
     if not people:
         return Outcome("none", _told(is_owed, by_chat))

@@ -1197,6 +1197,31 @@ async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: S
     assert HOLD in held and len(transport.sent) == 2
 
 
+async def test_a_pending_booking_moved_or_cancelled_in_chat_mails_nobody_on_it(shop: Shop) -> None:
+    """The people on a booking the bot asked for are invited when staff confirm it, so while it
+    waits they hear nothing of it: no "moved", and no cancellation of something never sent."""
+    person = await make_person(shop.team, "Aina Own", email="aina.staff@example.test")
+    kind = await make_type(shop.team, person_ids=[person["id"]], needs_confirmation=True)
+    contact, transport, agent = await with_mail(shop)
+    held = said(await make_it(shop, contact, kind, agent=agent))
+    assert HOLD in held
+    (row,) = await shop.rows()
+    moved = await ask(
+        shop,
+        contact,
+        "reschedule",
+        key="e2:t0-booking_agent",
+        agent=agent,
+        booking_id=row["id"],
+        starts_at="2031-03-04T11:00",
+    )
+    assert said(moved).startswith("Booking time changed")
+    gone = await cancel_it(shop, contact, row["id"], agent=agent, key="e3:t0-booking_agent")
+    assert said(gone).startswith("Booking cancelled")
+    await agent.drain()
+    assert transport.sent == []
+
+
 async def test_an_address_the_customer_gave_gets_the_mail_when_the_contact_has_none(
     shop: Shop,
 ) -> None:

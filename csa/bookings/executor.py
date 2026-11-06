@@ -771,6 +771,8 @@ class BookingActionExecutor:
         acknowledged = [w for w in bound.get("ack", "").split(",") if w]
         turn_key = f"assistant:{_key(proposal_id, 'booking')}"
         by_chat = False
+        original: service.BookingRecord | None = None
+        invite = True
         try:
             async with tx(request.app.state.pool, str(client_id)) as conn:
                 await setup.lock(conn, "turn", client_id, turn_key)
@@ -800,11 +802,14 @@ class BookingActionExecutor:
                     by_chat = await customer_messages.after_staff_action(
                         conn, client_id, record, MAIL[data.change]
                     )
+                    original, invite = await customer_messages.mail_details(
+                        conn, client_id, record, MAIL[data.change]
+                    )
         except service.Refusal as exc:
             raise _refusal(exc) from None
         # The same mail step the tab runs, after the commit: it never raises.
         outcome = await bookings_api.after_commit(
-            request, record, MAIL[data.change], by_chat=by_chat
+            request, record, MAIL[data.change], by_chat=by_chat, original=original, invite=invite
         )
         receipt = _receipt(data.change, record)
         if outcome is not None and not record.private:

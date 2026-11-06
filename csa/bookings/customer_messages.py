@@ -133,6 +133,13 @@ def _text(
         return f"Your {what} is confirmed for {when}." + ending(
             "You can reply here to change it, or to book another time."
         )
+    if event == "moved" and booking.status == "pending":
+        # Staff moved what the customer's own bot asked for, before confirming it.
+        if booking.replaces_booking_id is not None:
+            lead = f"Your request to move your {what} now asks for {when}."
+        else:
+            lead = f"Your {what} request has moved to {when}."
+        return f"{lead} It is not confirmed yet." + ending("You can reply here to change it.")
     if event == "moved":
         extra = (
             " Your earlier request to move it has been withdrawn."
@@ -176,6 +183,19 @@ async def can_reply(conn: Conn, client_id: UUID) -> bool:
     """The bot would act on a reply: replies are not Off and Customer support is active."""
     blocked, _ = await bot.gate(conn, client_id)
     return blocked is None
+
+
+async def mail_details(
+    conn: Conn, client_id: UUID, booking: service.BookingRecord, change: str
+) -> tuple[service.BookingRecord | None, bool]:
+    """What the mail after a staff action needs from the booking's transaction: for a booking the
+    customer's own bot asked for that staff said no to, the booking a request would have moved and
+    whether the mail may invite another request (the bot would act on one). Anything else needs
+    neither: `(None, True)`. The tab and the assistant both ask this, so a customer reads the same
+    mail whichever a person used."""
+    if not is_declined(booking, change):
+        return None, True
+    return await the_original(conn, client_id, booking), await can_reply(conn, client_id)
 
 
 # --- the moments --------------------------------------------------------------------------------
@@ -240,6 +260,8 @@ async def after_staff_action(
     - confirming a booking the bot made, or a request to move one (`moved_by_request`, even when
       the booking it moves was made by staff);
     - declining or cancelling a pending booking the bot made, or a request to move one;
+    - moving a pending booking the bot made, or a request to move one, so a later "wasn't
+      confirmed" names a time the customer was told of;
     - moving or cancelling a confirmed booking, whoever made it.
     A booking staff made tells the customer nothing until it is confirmed, a private meeting never,
     and the bot's own cancel needs no message (the customer asked it in chat).
@@ -252,7 +274,9 @@ async def after_staff_action(
         key = f"booking:{booking.id}:confirmed:{booking.version}"
     elif is_declined(booking, change):
         event, key = "declined", f"booking:{booking.id}:declined"
-    elif change == "moved" and booking.status == "confirmed":
+    elif change == "moved" and (
+        booking.status == "confirmed" or (booking.status == "pending" and booking.source == "bot")
+    ):
         event, key = "moved", f"booking:{booking.id}:moved:{booking.version}"
     elif change == "cancelled" and booking.previous_status == "confirmed":
         event, key = "cancelled", f"booking:{booking.id}:cancelled"
