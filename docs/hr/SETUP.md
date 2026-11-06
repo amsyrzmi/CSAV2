@@ -168,7 +168,8 @@ history entry are kept.
   mounted at `/var/lib/csa/hr-uploads`). Leave `HR_UPLOAD_ROOT` unset and the document routes answer
   503 `hr_documents_unavailable`. It must not be, contain or sit inside `KB_UPLOAD_ROOT`; settings
   refuse that at startup, since each side's cleanup would delete the other's files. Include the
-  volume in backups: the database holds only the record.
+  volume in backups: the database holds only the record. With `STORAGE_BACKEND=s3` the files
+  live in a bucket instead; see [OBJECT_STORAGE.md](../OBJECT_STORAGE.md).
 - **Not covered.** Files are **not scanned for viruses** and are **not encrypted on disk**; the
   volume and its backups need the access control and disk encryption of the host. The document
   list, download and History show the file name, so names should not carry identity numbers.
