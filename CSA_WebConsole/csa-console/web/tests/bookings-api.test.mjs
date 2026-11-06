@@ -233,3 +233,30 @@ test("a setup refusal reads as a plain sentence, never the code", async () => {
     );
   }
 });
+
+test("the Google Calendar calls go to the calendar routes, and its refusals are sentences", async () => {
+  const [, requests] = await capture(async () => {
+    await bookings.getCalendarStatus(null);
+    await bookings.startCalendarConnect(null);
+    await bookings.disconnectCalendar(null);
+    await bookings.getCalendarStatus(ID);
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", "/console/v1/bookings/calendar/status"],
+    ["POST", "/console/v1/bookings/calendar/connect"],
+    ["POST", "/console/v1/bookings/calendar/disconnect"],
+    ["GET", `/console/v1/bookings/calendar/status?client_id=${ID}`],
+  ]);
+  const cases = [
+    ["person_required", /Ask an Admin to add you/],
+    ["not_connected", /isn't connected/],
+    ["calendar_unavailable", /switched on/],
+  ];
+  for (const [code, expected] of cases) {
+    await assert.rejects(
+      capture(() => bookings.startCalendarConnect(null), () => Response.json({ detail: code }, { status: 409 })),
+      (error) => error instanceof ApiError && error.code === code && expected.test(error.message),
+      code,
+    );
+  }
+});

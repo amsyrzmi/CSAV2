@@ -225,6 +225,16 @@ class World:
         # Customer support is suspended: replies are Off, and Services cannot turn them on.
         self.replies_suspended = False
         self.settings_status = 200
+        # Google Calendar: switched off unless a test turns it on. Connecting answers with the
+        # address Google would send the member to; disconnecting puts them back to not connected.
+        self.calendar: dict[str, Any] = {
+            "available": False,
+            "can_connect": False,
+            "status": None,
+            "people": None,
+        }
+        self.calendar_status = 200
+        self.connect_url = "https://accounts.example.test/auth?state=synthetic"
         if rich:
             self.people = [
                 person(AIMAN, "Aiman Hakim", "aiman@example.test", employee_id=HR_RECORD),
@@ -306,7 +316,9 @@ class World:
             return 400, {"detail": "tenant mismatch"}
         route = path.removeprefix("bookings/")
         # Booking changes are open to staff; setup changes are for an Admin.
-        is_booking = route == "bookings" or route.startswith("bookings/")
+        is_booking = (
+            route == "bookings" or route.startswith("bookings/") or route.startswith("calendar/")
+        )
         if method != "GET" and role == "read_only":
             return 403, {"detail": "bookings changes require staff or an administrator"}
         if method != "GET" and not is_booking and role not in {"tenant_admin", "platform_admin"}:
@@ -340,6 +352,21 @@ class World:
             return 409, {"detail": "version_conflict"}
         row.update({k: v for k, v in body.items() if k != "version"}, version=row["version"] + 1)
         return 200, row
+
+    def answer_google(
+        self, method: str, route: str, params: dict[str, str], body: Any
+    ) -> tuple[int, Any]:
+        if self.calendar_status != 200:
+            return self.calendar_status, {"detail": "unavailable"}
+        if route == "calendar/status":
+            return 200, self.calendar
+        if route == "calendar/connect":
+            return 200, {"url": self.connect_url}
+        if route == "calendar/disconnect":
+            self.calendar = self.calendar | {"status": "not_connected"}
+            return 204, None
+        self.unexpected.append(f"{method} {route}")
+        return 500, {"detail": "unexpected synthetic call"}
 
     def do_settings(
         self, method: str, route: str, params: dict[str, str], body: Any
@@ -440,6 +467,8 @@ class World:
     def do_calendar(
         self, method: str, route: str, params: dict[str, str], body: Any
     ) -> tuple[int, Any]:
+        if route.startswith("calendar/"):  # the Google Calendar routes share the prefix
+            return self.answer_google(method, route, params, body)
         rows = [
             row
             for row in self.bookings
@@ -2278,5 +2307,211 @@ async def test_replies_off_requests_and_settings_fit_320_390_and_768_in_every_th
                 panel = page.get_by_test_id("booking-settings")
                 inside = await panel.evaluate("el => ({s: el.scrollWidth, c: el.clientWidth})")
                 assert inside["s"] <= inside["c"], ("settings panel", theme, width, inside)
+
+    await with_browser(body)
+
+
+# --- Google Calendar --------------------------------------------------------------------------
+
+CONNECTABLE = {"available": True, "can_connect": True, "status": "not_connected", "people": None}
+
+
+@pytest.mark.parametrize("role", ["tenant_staff", "tenant_admin"])
+async def test_a_member_connects_their_google_calendar(site: Site, role: str) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar = CONNECTABLE
+        async with bookings_page(browser, site, world, role=role, path="/portal/bookings") as page:
+            panel = page.get_by_test_id("google-calendar")
+            await expect(panel).to_be_visible(timeout=WAIT)
+            await expect(panel.get_by_test_id("google-calendar-status")).to_have_text(
+                "Not connected"
+            )
+            await expect(panel.get_by_test_id("google-calendar-disconnect")).to_have_count(0)
+            await expect(panel.get_by_test_id("google-calendar-reconnect")).to_have_count(0)
+            await page.route(
+                "https://accounts.example.test/**",
+                lambda route: route.fulfill(status=200, body="x"),
+            )
+            await panel.get_by_test_id("google-calendar-connect").click()
+            await page.wait_for_url("https://accounts.example.test/**", timeout=WAIT)
+            assert writes(world, "POST", "bookings/calendar/connect") == [None]
+
+    await with_browser(body)
+
+
+async def test_a_connected_member_disconnects_after_a_confirmation(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar = CONNECTABLE | {"status": "connected"}
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            panel = page.get_by_test_id("google-calendar")
+            status = panel.get_by_test_id("google-calendar-status")
+            await expect(status).to_have_text("Connected", timeout=WAIT)
+            await expect(panel.get_by_test_id("google-calendar-connect")).to_have_count(0)
+            answers = iter([False, True])
+            asked: list[str] = []
+
+            def answer(dialog: Any) -> None:
+                asked.append(dialog.message)
+                asyncio.ensure_future(dialog.accept() if next(answers) else dialog.dismiss())
+
+            page.on("dialog", answer)
+            await panel.get_by_test_id("google-calendar-disconnect").click()
+            await expect(status).to_have_text("Connected")  # dismissed: nothing was sent
+            assert not writes(world, "POST", "bookings/calendar/disconnect")
+            await panel.get_by_test_id("google-calendar-disconnect").click()
+            await expect(status).to_have_text("Not connected")
+            assert writes(world, "POST", "bookings/calendar/disconnect") == [None]
+            assert len(asked) == 2 and "stay in your Google account" in asked[0]
+
+    await with_browser(body)
+
+
+async def test_a_refused_connection_says_so_and_offers_reconnect(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar = CONNECTABLE | {"status": "needs_reconnect"}
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            panel = page.get_by_test_id("google-calendar")
+            await expect(panel.get_by_test_id("google-calendar-status")).to_have_text(
+                "Needs reconnecting", timeout=WAIT
+            )
+            await expect(panel.get_by_test_id("google-calendar-banner")).to_contain_text(
+                "Reconnect to start them again"
+            )
+            await expect(panel.get_by_test_id("google-calendar-reconnect")).to_be_visible()
+            await expect(panel.get_by_test_id("google-calendar-disconnect")).to_be_visible()
+            await expect(panel.get_by_test_id("google-calendar-connect")).to_have_count(0)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize(
+    ("query", "text", "error"),
+    [
+        ("calendar=connected", "Google Calendar is connected", False),
+        ("calendar_error=oauth_state_invalid", "expired or was already used", True),
+        ("calendar_error=provider_denied", "didn't give access", True),
+        ("calendar_error=something_new", "could not be connected. Try again.", True),
+    ],
+)
+async def test_what_google_sent_back_is_said_once_and_taken_out_of_the_address(
+    site: Site, query: str, text: str, error: bool
+) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar = CONNECTABLE | ({"status": "connected"} if not error else {})
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path=f"/portal/bookings?{query}"
+        ) as page:
+            result = page.get_by_test_id("google-calendar-result")
+            await expect(result).to_contain_text(text, timeout=WAIT)
+            await page.wait_for_url(re.compile(r"/portal/bookings$"), timeout=WAIT)
+            assert "calendar" not in page.url
+            await expect(result).to_contain_text(text)  # still there; a reload would drop it
+            if "something_new" in query:
+                await expect(result).not_to_contain_text("something_new")
+        assert not world.writes
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize(
+    ("role", "calendar"),
+    [
+        (
+            "tenant_staff",
+            {"available": False, "can_connect": False, "status": None, "people": None},
+        ),
+        ("read_only", {"available": True, "can_connect": False, "status": None, "people": None}),
+        ("tenant_admin", {"available": True, "can_connect": False, "status": None, "people": []}),
+    ],
+)
+async def test_the_panel_is_absent_unless_the_feature_is_on_and_the_member_can_connect(
+    site: Site, role: str, calendar: dict[str, Any]
+) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar = calendar
+        async with bookings_page(browser, site, world, role=role, path="/portal/bookings") as page:
+            await expect(page.get_by_test_id("bookings-page-heading")).to_be_visible(timeout=WAIT)
+            await page.wait_for_load_state("networkidle")
+            await expect(page.get_by_test_id("google-calendar")).to_have_count(0)
+            await expect(page.get_by_test_id("google-calendar-load-error")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_an_admin_sees_each_persons_status_and_never_a_token(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar = {
+            "available": True,
+            "can_connect": False,
+            "status": None,
+            "people": [
+                {"person_id": AIMAN, "name": "Aiman Hakim", "status": "connected"},
+                {"person_id": SITI, "name": "Siti Nur", "status": "needs_reconnect"},
+            ],
+        }
+        path = "/portal/bookings/people-and-rooms"
+        async with bookings_page(browser, site, world, role="tenant_admin", path=path) as page:
+            people = page.get_by_test_id("google-calendar-people")
+            await expect(people).to_be_visible(timeout=WAIT)
+            await expect(people.get_by_test_id(f"google-calendar-person-{AIMAN}")).to_have_text(
+                "Connected"
+            )
+            await expect(people.get_by_test_id(f"google-calendar-person-{SITI}")).to_have_text(
+                "Needs reconnecting"
+            )
+            await expect(people).to_contain_text("Aiman Hakim")
+            await expect(people.get_by_role("button")).to_have_count(0)  # a status, no controls
+        # Staff see no such list.
+        world.calendar = world.calendar | {
+            "people": None,
+            "can_connect": True,
+            "status": "connected",
+        }
+        async with bookings_page(browser, site, world, role="tenant_staff", path=path) as page:
+            await expect(page.get_by_test_id("booking-settings")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("google-calendar-people")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_a_failed_status_read_says_so_and_the_page_still_works(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar_status = 500
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("google-calendar-load-error")).to_be_visible(
+                timeout=WAIT
+            )
+            await expect(page.get_by_test_id("bookings-page-heading")).to_be_visible()
+            await expect(page.get_by_test_id("google-calendar-connect")).to_have_count(0)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+async def test_the_google_calendar_panel_fits_320_390_and_768(site: Site, width: int) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.calendar = CONNECTABLE | {"status": "needs_reconnect"}
+        async with bookings_page(
+            browser, site, world, role="tenant_staff", path="/portal/bookings", width=width
+        ) as page:
+            await expect(page.get_by_test_id("google-calendar-reconnect")).to_be_visible(
+                timeout=WAIT
+            )
+            sizes = await overflow(page)
+            assert sizes["scroll"] <= sizes["inner"], sizes
 
     await with_browser(body)

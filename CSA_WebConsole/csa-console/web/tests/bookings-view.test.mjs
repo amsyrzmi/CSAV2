@@ -23,6 +23,7 @@ const {
   emptyBookingForm, bookingProblem, formToBookingIn, isPhone, entriesOnDay,
   inactiveNotes, customerNote, switchedOffPeople, severalSwitchedOff,
   settingsToForm, settingsProblem, formToSettingsIn, momentText, askedText, sourceNote, isChangeRequest,
+  calendarControls, calendarResult, calendarStateWord,
 } = view;
 
 const week = (opens, closes, days = [0, 1, 2, 3, 4]) => days.map((weekday) => ({ weekday, opens, closes }));
@@ -633,4 +634,46 @@ test("a booking the customer's bot made says so", () => {
   assert.equal(sourceNote({ source: null, redacted: true }), null);
   assert.equal(sourceNote({ redacted: false }), null);
   assert.equal(sourceNote({ source: "bot", redacted: true }), null);
+});
+
+const calendar = (over) => ({ available: true, can_connect: true, status: "not_connected", people: null, ...over });
+
+test("the Google Calendar panel shows only to a member who can connect, while it is switched on", () => {
+  assert.deepEqual(calendarControls(calendar({})), { panel: true, connect: true, reconnect: false, disconnect: false });
+  assert.deepEqual(
+    calendarControls(calendar({ status: "connected" })),
+    { panel: true, connect: false, reconnect: false, disconnect: true },
+  );
+  assert.deepEqual(
+    calendarControls(calendar({ status: "needs_reconnect" })),
+    { panel: true, connect: false, reconnect: true, disconnect: true },
+  );
+  for (const hidden of [null, calendar({ available: false }), calendar({ can_connect: false }), calendar({ status: null })]) {
+    assert.equal(calendarControls(hidden).panel, false);
+  }
+});
+
+test("a connection's states have plain words", () => {
+  assert.equal(calendarStateWord("connected"), "Connected");
+  assert.equal(calendarStateWord("not_connected"), "Not connected");
+  assert.equal(calendarStateWord("needs_reconnect"), "Needs reconnecting");
+  assert.equal(calendarStateWord("anything else"), "Not connected");
+  assert.equal(calendarStateWord(null), "Not connected");
+});
+
+test("what Google sends the browser back with becomes one sentence", () => {
+  const params = (text) => new URLSearchParams(text);
+  assert.equal(calendarResult(params("")), null);
+  const done = calendarResult(params("calendar=connected"));
+  assert.equal(done.tone, "success");
+  assert.match(done.text, /Google Calendar is connected/);
+  const codes = ["oauth_state_invalid", "provider_denied", "oauth_issuer_invalid", "scopes_not_granted", "calendar_unavailable"];
+  const sentences = codes.map((code) => calendarResult(params(`calendar_error=${code}`)));
+  for (const sentence of sentences) assert.equal(sentence.tone, "error");
+  assert.equal(new Set(sentences.map((s) => s.text)).size, codes.length);
+  const unknown = calendarResult(params("calendar_error=whatever_new"));
+  assert.equal(unknown.tone, "error");
+  assert.match(unknown.text, /Try again/);
+  assert.doesNotMatch(unknown.text, /whatever_new/);
+  assert.equal(calendarResult(params("calendar=nonsense")), null);
 });
