@@ -25,8 +25,7 @@ import httpx
 import structlog
 from csa.bookings.api import build_bookings_router
 from csa.bookings.google.api import build_calendar_router
-from csa.bookings.google.client import CalendarClient
-from csa.bookings.google.connections import CalendarConnections
+from csa.bookings.google.factory import build_calendar_push
 from csa.channels.ingress import IngressError, TelegramIngress
 from csa.channels.marketplace.router import build_marketplace_router
 from csa.channels.whatsapp_ingress import WhatsAppIngress
@@ -197,20 +196,11 @@ def create_app() -> FastAPI:
                 # Disabled unless the flag and both relay secrets are set; then links are manual.
                 app.state.mailer = Mailer.from_settings(settings)
                 if settings.BOOKINGS_GOOGLE_CALENDAR_ENABLED:
-                    assert settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET
-                    calendar_redirect = settings.bookings_calendar_redirect_uri()
-                    assert calendar_redirect
                     calendar_http = httpx.AsyncClient(trust_env=False)
-                    app.state.calendar_connections = CalendarConnections(
-                        pool,
-                        CalendarClient(
-                            settings.GOOGLE_CLIENT_ID,
-                            settings.GOOGLE_CLIENT_SECRET,
-                            calendar_redirect,
-                            calendar_http,
-                        ),
-                        enabled=True,
-                    )
+                    calendar_push = build_calendar_push(settings, pool, calendar_http)
+                    assert calendar_push is not None
+                    app.state.calendar_connections = calendar_push.connections
+                    app.state.calendar_push = calendar_push
                 hr = HrService(pool, session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS)
                 await hr.check_ready()
                 app.state.hr_service = hr

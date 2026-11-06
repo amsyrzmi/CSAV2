@@ -158,7 +158,8 @@ def test_a_ledger_row_defaults_to_pending_with_no_attempts(migrated_dsn: str) ->
             (c.client_id, c.booking_id, c.person_id),
         )
         [row] = conn.execute(
-            "SELECT status, attempts, synced_version, google_event_id, last_error, failed_version"
+            "SELECT status, attempts, synced_version, google_event_id, last_error,"
+            " failed_version, file_free"
             " FROM booking_calendar_events WHERE client_id = %s",
             (c.client_id,),
         )
@@ -168,6 +169,7 @@ def test_a_ledger_row_defaults_to_pending_with_no_attempts(migrated_dsn: str) ->
             "synced_version": None,
             "google_event_id": None,
             "last_error": None,
+            "file_free": False,
             "failed_version": None,
         }
         with pytest.raises(errors.CheckViolation):
@@ -298,4 +300,5 @@ def test_0513_arrives_on_a_database_already_at_0531(
         )
         assert ledger["n"] == 1
         for table in TABLES:
-            assert conn.execute("SELECT to_regclass(%s) AS t", (f"public.{table}",)).fetchone()["t"]
+            [found] = conn.execute("SELECT to_regclass(%s) AS t", (f"public.{table}",)).fetchall()
+            assert found["t"]

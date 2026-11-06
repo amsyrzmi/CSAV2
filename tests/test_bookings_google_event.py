@@ -13,9 +13,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-from csa.bookings import service
+from csa.bookings import notify, service
 from csa.bookings.contracts import BookingCustomerOut, BookingGuestOut
 from csa.bookings.google.push import event_body, plan_for
+from csa.console.mail_templates import booking_mail
+from csa.console.mailer import CalendarFile, OutgoingMail
 
 from tests.conftest import REPO_ROOT
 
@@ -132,3 +134,36 @@ def test_every_statement_that_changes_a_booking_raises_its_version() -> None:
         assert not re.search(r"UPDATE\s+(?:public\.)?bookings\b", text, re.I), (
             f"{path.name}: write bookings from a .sql file, so this scan sees it"
         )
+
+
+def test_a_person_whose_google_calendar_holds_the_booking_is_marked_so() -> None:
+    facts = notify.MailFacts(
+        brand="B", timezone="UTC", account_emails={}, calendar_people=frozenset({AINA})
+    )
+    mails = {r.name: r for r in notify.recipients(record(), facts)}
+    assert mails["Aina Salleh"].on_google is True
+    assert mails["Guest Name"].on_google is False and mails["Siti Customer"].on_google is False
+    plain = notify.MailFacts(brand="B", timezone="UTC", account_emails={})
+    assert not any(r.on_google for r in notify.recipients(record(), plain))
+
+
+def test_mail_with_no_file_says_the_booking_is_on_their_google_calendar() -> None:
+    def mail(change: str, file: CalendarFile | None) -> OutgoingMail:
+        return booking_mail(
+            to="aina@example.test",
+            name="Aina",
+            brand="B",
+            booking=record(),
+            change=change,  # type: ignore[arg-type]
+            tz="Asia/Kuala_Lumpur",
+            calendar=file,
+        )
+
+    for change in ("created", "moved"):
+        plain = mail(change, None)
+        assert plain.calendar is None and "It is on your Google Calendar." in plain.text
+        assert "attached" not in plain.text and "attached" not in plain.html
+    gone = mail("cancelled", None)
+    assert gone.calendar is None and "removed from your Google Calendar" in gone.text
+    filed = mail("created", CalendarFile("REQUEST", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))
+    assert filed.calendar is not None and "attached calendar file" in filed.text

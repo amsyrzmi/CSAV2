@@ -142,6 +142,7 @@ async def after_commit(
         by_chat=by_chat,
         original=original,
         invite=invite,
+        calendar=getattr(request.app.state, "calendar_push", None),
     )
 
 

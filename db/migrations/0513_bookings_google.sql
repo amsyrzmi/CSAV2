@@ -65,6 +65,9 @@ CREATE TABLE public.booking_calendar_events (
     failed_version integer,
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     last_error text CHECK (last_error IS NULL OR length(last_error) <= 64),
+    -- The mail about this booking to this person left out the calendar file, because their Google
+    -- event holds it. A cancellation sends the cancel file to everyone else who has a row.
+    file_free boolean NOT NULL DEFAULT false,
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (client_id, booking_id, person_id),
     FOREIGN KEY (client_id, booking_id) REFERENCES public.bookings(client_id, id),
