@@ -38,6 +38,10 @@ FEATURES = (
     "hr_leave",
     "people_query",
     "hr_open",
+    "booking_book",
+    "booking_move",
+    "booking_cancel",
+    "booking_free",
 )
 PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
@@ -113,8 +117,18 @@ class ScriptedModel:
         action = "answer" if case.id in self.wrong else case.expect.actions[0]
         send = bool(case.expect.send)
         facts = smoke.build_facts(case)
+        if action == "answer" and case.expect.reads and case.id not in self.wrong:
+            ask = {"person": "Aina", "day": "2026-11-06"}
+            return {
+                "action": "answer",
+                "markdown": SCRIPTED_TEXT,
+                "reads": case.expect.reads,
+                "availability": ask,
+            }
         if action == "answer":
             return {"action": "answer", "markdown": SCRIPTED_TEXT}
+        if action == "booking_action":
+            return {"action": "booking_action", **case.expect.fields}
         if action == "navigate":
             # Subscriptions is active in no preset, so it is locked; HR is open in staff_basic.
             return {"action": "navigate", "tab": "subscriptions" if case.expect.locked else "hr"}
@@ -507,3 +521,32 @@ def test_people_cases_use_the_people_presets() -> None:
     refused = cases["hr_add-en-2"]
     assert refused.facts.preset == "staff_basic" and refused.expect.actions == ["answer"]
     assert smoke.build_facts(refused).people_access == "directory"
+
+
+def test_booking_cases_use_the_booking_presets() -> None:
+    """Booking facts exist only for a booking message, and a viewer may only ask free times."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id, case in cases.items():
+        if case_id.startswith("booking_"):
+            facts = smoke.build_facts(case)
+            assert facts.bookings is not None, case_id
+            assert facts.bookings.can_change is (case.facts.preset == "staff_bookings"), case_id
+    viewer = cases["booking_book-en-2"]
+    assert viewer.expect.actions == ["answer"] and viewer.expect.not_actions == ["booking_action"]
+    # Whatever the words, a company with Bookings open gives the model its clock; one with the
+    # tab closed (the other presets) gives none.
+    other = cases["navigate-en-1"].model_copy(update={"facts": cases["booking_book-en-1"].facts})
+    assert smoke.build_facts(other).bookings is not None
+    for case_id in ("booking_move-ms-2", "booking_free-en-2"):
+        assert smoke.build_facts(cases[case_id]).bookings is not None, case_id
+    assert smoke.build_facts(cases["navigate-en-1"]).bookings is None
+
+
+def test_smoke_checks_the_expected_reads(capsys: pytest.CaptureFixture[str]) -> None:
+    """A free-times question must come back as an answer that carries the availability read."""
+    case = next(case for case in smoke.load_cases() if case.id == "booking_free-en-1")
+    assert case.expect.reads == ["booking_availability"]
+    assert smoke.main(["--case", case.id], client=ScriptedModel()) == 0
+    assert f"PASS {case.id} action=answer" in capsys.readouterr().out
+    assert smoke.main(["--case", case.id], client=ScriptedModel(frozenset({case.id}))) == 1
+    assert f"FAIL {case.id} action=answer reads" in capsys.readouterr().out

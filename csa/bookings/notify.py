@@ -9,9 +9,15 @@ guest address.
 
 The result is one word for the whole booking, the worst outcome across recipients. It reports on
 whoever was to be mailed: "none" if that is nobody. It also says whether the customer was told:
-true if they were mailed, false if the booking has a customer who was not (no address, mail off or
-failed, a private meeting), and null when there is no customer or none is owed a message yet. Logs
-carry the category only, never an address or a title.
+true if they were mailed or already have a chat message about it (`by_chat`, written in the
+booking's own transaction by `customer_messages.py`), false if the booking has a customer who was
+not told (no address and no chat, mail off or failed, a private meeting), and null when there is no
+customer or none is owed a message yet. A booking the customer's own bot made differs: staff
+declining it tells the customer (they asked), by a plain "not confirmed" mail with no calendar
+file, because they were never sent an invitation; so does staff moving it before confirming. A
+pending request to move a booking, and a booking the bot asked for until staff confirm it, go to
+the customer only: nobody on it was ever invited. Logs carry the category only, never an address or
+a title.
 """
 
 from __future__ import annotations
@@ -30,14 +36,20 @@ from pydantic import TypeAdapter, ValidationError
 from csa.bookings import ics, setup
 from csa.bookings.contracts import Email, EmailSummary
 from csa.bookings.service import BookingRecord, Conn
-from csa.console.mail_templates import booking_mail
+from csa.console.mail_templates import (
+    booking_mail,
+    customer_declined_mail,
+    customer_request_moved_mail,
+)
 from csa.console.mailer import CalendarFile, Mailer
 from csa.core import db
 from csa.core.tenancy import tx
 
 logger = structlog.get_logger(__name__)
 
-Change = Literal["created", "moved", "cancelled"]
+# "declined" is a cancellation for the people on the booking and a plain "not confirmed" for a
+# customer who was never sent an invitation.
+Change = Literal["created", "moved", "cancelled", "declined"]
 
 SIMULTANEOUS = 8  # sends at once, so a slow relay holds up a booking with many guests the least
 # Seconds the staff member waits for all of one booking's mail, under any proxy's read timeout.
@@ -67,6 +79,7 @@ class MailFacts:
 class Recipient:
     address: str
     name: str | None
+    customer: bool = False
 
 
 async def load_facts(conn: Conn, client_id: UUID) -> MailFacts:
@@ -89,6 +102,20 @@ def _clean(address: object) -> str | None:
         return None
 
 
+def clean_address(address: object) -> str | None:
+    """The address if it passes the check an address typed into bookings passes; else none."""
+    return _clean(address) if address else None
+
+
+def customer_address(booking: BookingRecord) -> str | None:
+    """Where the customer's own message goes: the contact's email, else the address they gave in a
+    chat (never checked, so it is only ever a fallback and never identity)."""
+    customer = booking.customer
+    if customer is None:
+        return None
+    return customer.email or customer.given_email
+
+
 def never_confirmed(booking: BookingRecord) -> bool:
     """Still pending, or cancelled or declined while it was: the customer was never told of it."""
     return booking.status == "pending" or (
@@ -96,15 +123,47 @@ def never_confirmed(booking: BookingRecord) -> bool:
     )
 
 
+def bot_request(booking: BookingRecord) -> bool:
+    """A booking the customer's own bot asked for that was never confirmed: still pending, or
+    cancelled, declined or lapsed while it was. Nobody but the customer was ever told of it."""
+    return booking.source == "bot" and never_confirmed(booking)
+
+
+def plain_for_customer(booking: BookingRecord, change: Change) -> bool:
+    """The customer's mail is plain text with no calendar file: they were never sent an
+    invitation. A decline of what their bot asked for, or staff moving it before confirming."""
+    return change == "declined" or (change == "moved" and bot_request(booking))
+
+
 def owes_customer(booking: BookingRecord) -> bool:
     """The booking has a customer, and they are owed a message about this change."""
     return booking.customer is not None and not never_confirmed(booking)
 
 
+def customer_owed(booking: BookingRecord, owed: bool | None) -> bool:
+    """Whether the customer is owed a message, when the caller knows better than `owes_customer`.
+
+    `owed` is the caller's word: true for a declined request the customer's own bot made (they
+    asked, so they are told), false for a change the customer made themselves in chat (their own
+    message to the bot covers them). None leaves it to the booking's status.
+    """
+    if owed is None:
+        return owes_customer(booking)
+    return booking.customer is not None and owed
+
+
+def _told(owed: bool, by_chat: bool, reached: bool = False) -> bool | None:
+    """The answer for `customer_told`: true if a chat message was written or the mail arrived,
+    false if the customer was owed one and got none, null if none was owed."""
+    if by_chat:
+        return True
+    return reached if owed else None
+
+
 def customer_reached(booking: BookingRecord, people: list[Recipient], results: list[bool]) -> bool:
     """Whether the customer's own message went. A private meeting never mails its customer."""
-    customer = booking.customer
-    address = _clean(customer.email) if customer and customer.email else None
+    typed = customer_address(booking)
+    address = _clean(typed) if typed else None
     if address is None or booking.private:
         return False
     wanted = address.casefold()
@@ -113,20 +172,31 @@ def customer_reached(booking: BookingRecord, people: list[Recipient], results: l
     )
 
 
-def recipients(booking: BookingRecord, facts: MailFacts) -> list[Recipient]:
-    """Everyone with an address who should hear about this booking, once each."""
+def recipients(
+    booking: BookingRecord, facts: MailFacts, *, customer: bool | None = None
+) -> list[Recipient]:
+    """Everyone with an address who should hear about this booking, once each. `customer` says
+    whether the customer is one of them; by default they are unless it was never confirmed. A
+    pending request to move a booking goes to its customer only: nothing was ever sent about it to
+    anyone else."""
     found: dict[str, Recipient] = {}
 
-    def add(address: object, name: str | None) -> None:
+    def add(address: object, name: str | None, *, who: bool = False) -> None:
         clean = _clean(address) if address else None
         if clean is not None:
-            found.setdefault(clean.casefold(), Recipient(clean, name))
+            found.setdefault(clean.casefold(), Recipient(clean, name, who))
 
-    customer = booking.customer
+    asker = booking.customer
+    mail_customer = not never_confirmed(booking) if customer is None else customer
     # A private meeting is for its attendees. A customer hears nothing until staff confirm, and
-    # nothing about a booking that was cancelled without ever being confirmed.
-    if customer is not None and not booking.private and not never_confirmed(booking):
-        add(customer.email, customer.full_name)
+    # nothing about a booking that was cancelled without ever being confirmed, unless they asked
+    # for it (the caller says so).
+    if asker is not None and not booking.private and mail_customer:
+        add(customer_address(booking), asker.full_name, who=True)
+    # The people on a booking the customer's own bot asked for are invited only once staff confirm
+    # it, so while it was never confirmed they get nothing: no "moved", no cancellation of nothing.
+    if booking.replaces_booking_id is not None or bot_request(booking):
+        return list(found.values())
     for person in booking.people:
         own = _clean(person.email) if person.email else None
         account = facts.account_emails.get(person.user_id) if person.user_id else None
@@ -143,24 +213,46 @@ async def _deliver(
     facts: MailFacts,
     one: Recipient,
     gate: asyncio.Semaphore,
+    original: BookingRecord | None,
+    invite: bool,
 ) -> bool:
     try:
-        method: Literal["REQUEST", "CANCEL"] = "CANCEL" if change == "cancelled" else "REQUEST"
-        file = CalendarFile(
-            method,
-            ics.invitation(
-                booking, mailer.sender, method, attendee=one.address, attendee_name=one.name
-            ),
-        )
-        mail = booking_mail(
-            to=one.address,
-            name=one.name,
-            brand=facts.brand,
-            booking=booking,
-            change=change,
-            tz=facts.timezone,
-            calendar=file,
-        )
+        if change == "moved" and one.customer and bot_request(booking):
+            # Staff moved what the customer's bot asked for, before confirming it: still a request.
+            mail = customer_request_moved_mail(
+                to=one.address, name=one.name, brand=facts.brand, booking=booking, tz=facts.timezone
+            )
+        elif change == "declined" and one.customer:
+            # Never sent an invitation, so no calendar file and no talk of cancelling.
+            mail = customer_declined_mail(
+                to=one.address,
+                name=one.name,
+                brand=facts.brand,
+                booking=booking,
+                original=original,
+                tz=facts.timezone,
+                invite=invite,
+            )
+        else:
+            shown: Literal["created", "moved", "cancelled"] = (
+                "cancelled" if change == "declined" else change
+            )
+            method: Literal["REQUEST", "CANCEL"] = "CANCEL" if shown == "cancelled" else "REQUEST"
+            file = CalendarFile(
+                method,
+                ics.invitation(
+                    booking, mailer.sender, method, attendee=one.address, attendee_name=one.name
+                ),
+            )
+            mail = booking_mail(
+                to=one.address,
+                name=one.name,
+                brand=facts.brand,
+                booking=booking,
+                change=shown,
+                tz=facts.timezone,
+                calendar=file,
+            )
         async with gate:
             return await mailer.send(mail) == "sent"
     except Exception:
@@ -169,27 +261,49 @@ async def _deliver(
 
 
 async def notify(
-    mailer: Mailer | None, booking: BookingRecord, change: Change, facts: MailFacts
+    mailer: Mailer | None,
+    booking: BookingRecord,
+    change: Change,
+    facts: MailFacts,
+    *,
+    owed: bool | None = None,
+    by_chat: bool = False,
+    original: BookingRecord | None = None,
+    invite: bool = True,
 ) -> Outcome:
-    """Send the invitation, the new time or the cancellation; say how it went."""
-    owed = owes_customer(booking)
-    people = recipients(booking, facts)
+    """Send the invitation, the new time or the cancellation; say how it went.
+
+    `owed` and `by_chat` come from a booking the customer's own bot made, or one staff changed.
+    `owed` overrides who is owed a message (see `customer_owed`). `by_chat` says the customer
+    already has a chat message about this change: they are then mailed only when the mail carries
+    something the chat cannot, a calendar file, so never for a decline (they were never sent an
+    invitation). `original` is the booking a declined request would have moved. `invite` is
+    whether a declined customer's mail may invite another request (the bot would act on it).
+    """
+    is_owed = customer_owed(booking, owed)
+    mail_customer = is_owed and not (by_chat and plain_for_customer(booking, change))
+    people = recipients(booking, facts, customer=mail_customer)
     if not people:
-        return Outcome("none", False if owed else None)
+        return Outcome("none", _told(is_owed, by_chat))
     if mailer is None or not mailer.enabled:
-        return Outcome("off", False if owed else None)
+        return Outcome("off", _told(is_owed, by_chat))
     try:
         ZoneInfo(facts.timezone)
         gate = asyncio.Semaphore(SIMULTANEOUS)
         results = await asyncio.wait_for(
-            asyncio.gather(*(_deliver(mailer, booking, change, facts, p, gate) for p in people)),
+            asyncio.gather(
+                *(
+                    _deliver(mailer, booking, change, facts, p, gate, original, invite)
+                    for p in people
+                )
+            ),
             SEND_LIMIT,
         )
     except Exception:
         logger.warning("bookings_mail_failed", category="send_error")
-        return Outcome("failed", False if owed else None)
-    told = customer_reached(booking, people, list(results)) if owed else None
-    return Outcome("sent" if all(results) else "failed", told)
+        return Outcome("failed", _told(is_owed, by_chat))
+    reached = mail_customer and customer_reached(booking, people, list(results))
+    return Outcome("sent" if all(results) else "failed", _told(is_owed, by_chat, reached))
 
 
 async def notify_after_commit(
@@ -197,6 +311,11 @@ async def notify_after_commit(
     mailer: Mailer | None,
     booking: BookingRecord,
     change: Change,
+    *,
+    owed: bool | None = None,
+    by_chat: bool = False,
+    original: BookingRecord | None = None,
+    invite: bool = True,
 ) -> Outcome:
     """Read the company's facts in a new transaction, then notify.
 
@@ -204,14 +323,24 @@ async def notify_after_commit(
     would turn into "That time was just taken." Anything that goes wrong is "failed", logged by
     category only.
     """
+    unknown = _told(customer_owed(booking, owed), by_chat)
     try:
         try:
             async with tx(pool, str(booking.client_id)) as conn:
                 facts = await load_facts(conn, booking.client_id)
         except Exception:
             logger.warning("bookings_mail_failed", category="facts_unavailable")
-            return Outcome("failed", False if owes_customer(booking) else None)
-        return await notify(mailer, booking, change, facts)
+            return Outcome("failed", unknown)
+        return await notify(
+            mailer,
+            booking,
+            change,
+            facts,
+            owed=owed,
+            by_chat=by_chat,
+            original=original,
+            invite=invite,
+        )
     except Exception:
         logger.warning("bookings_mail_failed", category="unexpected")
-        return Outcome("failed", False if owes_customer(booking) else None)
+        return Outcome("failed", unknown)

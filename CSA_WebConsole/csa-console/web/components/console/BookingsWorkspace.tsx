@@ -1,16 +1,19 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { bookingsPages, type BookingsSection } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
+import { getSettings } from "@/lib/bookings-api";
+import { readReplies } from "@/lib/customer-replies";
 import { todayInZone } from "@/lib/bookings-view";
 import BookingsCalendar from "./bookings/BookingsCalendar";
 import BookingTypes from "./bookings/BookingTypes";
 import PeopleAndRooms from "./bookings/PeopleAndRooms";
-import type { BookingsScope, ZoneState } from "./bookings/parts";
+import { useLoaded, type BookingsScope, type ZoneState } from "./bookings/parts";
 import { SectionNav, useSectionArrivalFocus } from "./kit";
 import { field, Heading, Notice } from "./ui";
 
@@ -109,12 +112,74 @@ export function BookingsWorkspace({ me, section = "calendar" }: { me: Me; sectio
       {!tenant ? (
         <Notice>Select a tenant to see its bookings.</Notice>
       ) : (
-        <div key={`${tenant}:${section}`}>
-          {section === "calendar" && <BookingsCalendar scope={scope} />}
-          {section === "types" && <BookingTypes scope={scope} peopleHref={pages[2].href} />}
-          {section === "people" && <PeopleAndRooms scope={scope} />}
-        </div>
+        <BookingsPage key={`${tenant}:${section}`} scope={scope} section={section} peopleHref={pages[2].href}
+          servicesHref={platform ? `/services?client_id=${encodeURIComponent(tenant)}` : "/portal/services"} />
       )}
     </>
+  );
+}
+
+const REPLIES_OFF = "Customer replies are off, so customers get no automatic messages from Bookings.";
+
+/**
+ * Whether Services can turn replies on, asked of the same read the Inbox banner makes. A suspended
+ * company has replies Off too, but cannot turn them on, so the link would be a dead end; a failed
+ * read offers no link either. Only someone who may change the setting asks.
+ */
+function useCanTurnRepliesOn(scope: BookingsScope, off: boolean): boolean {
+  const [read, setRead] = useState<{ tenantId: string | null; yes: boolean } | null>(null);
+  const tenantId = scope.tenantId;
+  const ask = scope.canEdit && off;
+  useEffect(() => {
+    if (!ask) return;
+    const controller = new AbortController();
+    readReplies(tenantId, controller.signal)
+      .then((replies) => setRead({ tenantId, yes: replies.can_manage && replies.warnings.includes("replies_off") }))
+      .catch(() => { if (!controller.signal.aborted) setRead({ tenantId, yes: false }); });
+    return () => controller.abort();
+  }, [ask, tenantId]);
+  return ask && read !== null && read.tenantId === tenantId && read.yes;
+}
+
+/**
+ * One page of the tab. The settings are read once here: the banner on every page needs
+ * `replies_off`, and the People & rooms page shows and changes the rest.
+ */
+function BookingsPage({
+  scope,
+  section,
+  peopleHref,
+  servicesHref,
+}: {
+  scope: BookingsScope;
+  section: BookingsSection;
+  peopleHref: string;
+  servicesHref: string;
+}) {
+  const settings = useLoaded(() => getSettings(scope.tenantId));
+  const off = settings.data?.replies_off === true;
+  const canTurnOn = useCanTurnRepliesOn(scope, off);
+  return (
+    <div>
+      {/* A failed read claims nothing: the banner appears only when the server said replies are off. */}
+      {off && (
+        <div className="mb-4">
+          <Notice warning testId="bookings-replies-off">
+            {REPLIES_OFF}
+            {canTurnOn && (
+              <>
+                {" "}
+                <Link className="underline" href={servicesHref} data-testid="bookings-replies-link">
+                  Turn replies on
+                </Link>
+              </>
+            )}
+          </Notice>
+        </div>
+      )}
+      {section === "calendar" && <BookingsCalendar scope={scope} />}
+      {section === "types" && <BookingTypes scope={scope} peopleHref={peopleHref} />}
+      {section === "people" && <PeopleAndRooms scope={scope} settings={settings} />}
+    </div>
   );
 }

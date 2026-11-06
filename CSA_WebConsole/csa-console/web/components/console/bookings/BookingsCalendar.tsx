@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, TriangleAlert } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   getCalendar,
@@ -14,13 +14,16 @@ import {
 import {
   bookingTitle,
   canChangeBooking,
+  askedText,
   customerNote,
   dayInZone,
   emailNote,
   entriesOnDay,
   inactiveNotes,
+  isChangeRequest,
   layoutDay,
   shiftWeek,
+  sourceNote,
   timeInZone,
   weekDays,
   weekTitle,
@@ -79,6 +82,9 @@ function describe(entry: Entry, zone: string): string {
     if (entry.customer?.full_name) parts.push(entry.customer.full_name);
     if (entry.people.length) parts.push(entry.people.map((p) => p.display_name).join(", "));
     if (entry.status === "pending") parts.push("waiting to be confirmed");
+    const asked = askedText(entry, zone);
+    if (asked) parts.push(asked);
+    if (entry.pending_change_id) parts.push(WAITING.toLowerCase());
     if (entry.conflict) parts.push("someone is unavailable");
     parts.push(...inactiveNotes(entry));
   }
@@ -86,16 +92,24 @@ function describe(entry: Entry, zone: string): string {
 }
 
 const CONFLICT = "Someone on this booking is unavailable";
+const WAITING = "A change is waiting";
 
 /**
  * Compact flags for the first line of a block; each one's name carries its sentence. One is for a
- * person with time off over it, the other for someone or somewhere switched off since it was made.
+ * person with time off over it, one for someone or somewhere switched off since it was made, and
+ * one for a customer's request to move it that staff have not answered.
  */
 function Flag({ entry }: { entry: Entry }) {
   if (!isBooking(entry)) return null;
   const off = inactiveNotes(entry).join(" ");
   return (
     <>
+      {entry.pending_change_id && (
+        <span data-testid="booking-change-waiting" role="img" aria-label={WAITING} title={WAITING}
+          className="inline-flex shrink-0 text-[color:var(--fs-primary)]">
+          <Clock aria-hidden="true" size={12} />
+        </span>
+      )}
       {entry.conflict && (
         <span data-testid="booking-conflict" role="img" aria-label={CONFLICT} title={CONFLICT}
           className="inline-flex shrink-0 text-[color:var(--fs-warning)]">
@@ -194,7 +208,10 @@ function Block({
           {timeInZone(item.starts_at, zone)}-{timeInZone(item.ends_at, zone)}
         </span>
       </span>
-      <span className="block truncate">{isBooking(item) ? bookingTitle(item) : "Busy"}</span>
+      <span className="block truncate">
+        {isBooking(item) && isChangeRequest(item) ? "Asked to move: " : ""}
+        {isBooking(item) ? bookingTitle(item) : "Busy"}
+      </span>
     </>
   );
   const shared = `absolute overflow-hidden rounded-[var(--fs-radius-control)] border px-1 py-0.5 text-left leading-tight ${blockTone(item)}`;
@@ -250,6 +267,17 @@ function Agenda({
                   {slot.continuesAfter && <span className={`block ${mutedText}`}>Continues the next day</span>}
                   {isBooking(item) && item.status === "pending" && !item.redacted && (
                     <span className={`block ${mutedText}`}>Waiting to be confirmed</span>
+                  )}
+                  {isBooking(item) && askedText(item, zone) && (
+                    <span data-testid="booking-asked" className="block text-sm font-medium">
+                      {askedText(item, zone)}
+                    </span>
+                  )}
+                  {isBooking(item) && item.pending_change_id && (
+                    <span data-testid="booking-change-waiting" className={`block ${mutedText}`}>{WAITING}</span>
+                  )}
+                  {isBooking(item) && sourceNote(item) && (
+                    <span className={`block ${mutedText}`}>{sourceNote(item)}</span>
                   )}
                   {isBooking(item) && item.conflict && (
                     <span data-testid="booking-conflict" className="mt-1 inline-flex items-center gap-1 font-medium">

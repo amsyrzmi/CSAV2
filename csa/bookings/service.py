@@ -17,12 +17,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from psycopg import AsyncConnection, errors
+from psycopg.types.json import Jsonb
 
 from csa.bookings import setup
 from csa.bookings.availability import (
@@ -52,7 +53,6 @@ from csa.bookings.contracts import (
 )
 from csa.bookings.rules import Actor, Finding, decide, findings_for
 from csa.console.contracts import ConsoleActor, Role
-from csa.console.kb_uploads import audit
 from csa.core import db
 
 Conn = AsyncConnection[Any]
@@ -129,6 +129,32 @@ def viewer_of(actor: ConsoleActor) -> Viewer:
     return Viewer(actor.user_id, read_only=read_only, admin=admin)
 
 
+@dataclass(frozen=True)
+class Author:
+    """Who a write is made for: the rules it follows, the account it is recorded against (the bot
+    has none) and where it came from.
+    """
+
+    acting: Actor
+    user_id: UUID | None
+    source: Literal["staff", "assistant", "bot"]
+
+
+def author_of(actor: ConsoleActor) -> Author:
+    """A person at the console."""
+    return Author(acting_as(actor), actor.user_id, "staff")
+
+
+BOT = Author("bot", None, "bot")
+
+
+async def _audit(conn: Conn, author: Author, client_id: UUID, action: str, target: str) -> None:
+    """The audit row: the id and the action only, against the account when there is one."""
+    await db.q.execute(
+        "console/audit.sql", (author.user_id, client_id, action, target, Jsonb({})), conn=conn
+    )
+
+
 # --- the booking as the server knows it, and as one viewer may see it -------------------------
 
 
@@ -170,6 +196,26 @@ class BookingRecord:
     # The status before the change this record came back from, so mail can tell a booking that was
     # never confirmed from one that was. Null on a plain read.
     previous_status: str | None = None
+    # The booking this one is a pending request to move, when it is one.
+    replaces_booking_id: UUID | None = None
+    # Who made it, and the chat it came from (a bot booking's, when it has one).
+    source: str = "staff"
+    conversation_id: UUID | None = None
+    # Set on the record a staff confirmation of a pending request to move a booking answers with:
+    # the original, now at the new time, with its own id.
+    moved_by_request: bool = False
+    # Why it was cancelled, as stored (`change_applied` on a request staff confirmed).
+    cancel_reason: str | None = None
+    # Set on the record a staff cancel or move answers with, when a pending request to move the
+    # booking was withdrawn in the same transaction.
+    withdrew_change: bool = False
+    # On a request to move a booking: when that booking is. On a booking: the live request to move
+    # it. Both are read in the same pass, so a console showing one week still knows about the other.
+    replaces_starts_at: datetime | None = None
+    replaces_ends_at: datetime | None = None
+    pending_change_id: UUID | None = None
+    # Its current start was set after its reminder was due: it gets no reminder.
+    late_for_reminder: bool = False
 
 
 def involved(record: BookingRecord, user_id: UUID) -> bool:
@@ -243,6 +289,11 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
         meeting_link=record.meeting_link,
         conflict="unavailable" if record.conflict else None,
         can_change=may_change(record, viewer),
+        source=record.source,  # type: ignore[arg-type]
+        replaces_booking_id=record.replaces_booking_id,
+        replaces_starts_at=record.replaces_starts_at,
+        replaces_ends_at=record.replaces_ends_at,
+        pending_change_id=record.pending_change_id,
     )
 
 
@@ -440,6 +491,7 @@ async def read_records(
                     full_name=row["customer_name"],
                     phone=row["customer_phone"],
                     email=row["customer_email"],
+                    given_email=row["customer_given_email"],
                 )
                 if row["contact_id"] is not None
                 else None
@@ -448,6 +500,14 @@ async def read_records(
             resources=tuple(resources.get(row["id"], ())),
             guests=tuple(guests.get(row["id"], ())),
             conflict=row["id"] in conflicts,
+            replaces_booking_id=row["replaces_booking_id"],
+            replaces_starts_at=row["replaces_starts_at"],
+            replaces_ends_at=row["replaces_ends_at"],
+            pending_change_id=row["pending_change_id"],
+            source=row["source"],
+            conversation_id=row["conversation_id"],
+            cancel_reason=row["cancel_reason"],
+            late_for_reminder=row["late_for_reminder"],
         )
         for row in rows
     ]
@@ -523,15 +583,19 @@ def _check_time(
     min_notice: timedelta,
     now: datetime,
     acknowledged: Iterable[BookingFinding],
+    max_advance: timedelta | None = None,
 ) -> None:
     """Refuse a taken time, then apply the owner's table to what is left.
 
     Nothing here names a person, a title or a reason: leave is only ever "Not available that day."
-    and the code "unavailable".
+    and the code "unavailable". `max_advance` is the bot's: a time further off than that is refused
+    like any other finding.
     """
     subjects = [("person", p) for p in people] + [("resource", r) for r in resources]
     if _taken(calendar, subjects, start, hold_end):
         raise slot_taken()
+    if max_advance is not None and start - now > max_advance:
+        raise Refusal(409, "refused", NOT_AVAILABLE, findings=["too_far_ahead"])
     found = findings_for(calendar, start, end, people, resources, min_notice, now)
     agreed: set[Finding] = {FROM_WIRE.get(f, f) for f in acknowledged}  # type: ignore[misc]
     decision = decide(acting, found, agreed)
@@ -710,6 +774,24 @@ async def _customer(conn: Conn, client_id: UUID, data: BookingIn) -> UUID | None
     return row["id"]  # type: ignore[no-any-return]
 
 
+def _max_advance(author: Author, booking_type: BookingTypeOut | None) -> timedelta | None:
+    if author.source != "bot" or booking_type is None:
+        return None
+    return timedelta(days=booking_type.max_advance_days)
+
+
+async def late_for_reminder(conn: Conn, client_id: UUID, start: datetime, now: datetime) -> bool:
+    """A start set now would already be past its reminder (`start - reminder_minutes < now`).
+
+    Judged once, when the start is set, with the company's reminder time at that moment: such a
+    booking gets no reminder, because its confirmation is enough, and one set before its reminder
+    was due keeps it whatever the reminder time later becomes. Every audience is the same.
+    """
+    row = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
+    minutes = (row or setup.DEFAULT_SETTINGS)["reminder_minutes"]
+    return start - timedelta(minutes=minutes) < now
+
+
 async def create_booking(
     conn: Conn,
     client_id: UUID,
@@ -722,7 +804,25 @@ async def create_booking(
 
     The caller sends the result through `to_out`, and runs the mail step after the commit.
     """
-    acting = acting_as(actor)
+    return await create_for(conn, client_id, author_of(actor), data, now=now)
+
+
+async def create_for(
+    conn: Conn,
+    client_id: UUID,
+    author: Author,
+    data: BookingIn,
+    *,
+    now: datetime | None = None,
+    force_pending: bool = False,
+    conversation_id: UUID | None = None,
+    expires_at: datetime | None = None,
+    replaces_booking_id: UUID | None = None,
+) -> BookingRecord:
+    """`create_booking` for any author. The bot is refused a time further off than the type allows,
+    and picks the person for a type that names one, because a customer does not choose.
+    """
+    acting = author.acting
     now = now or datetime.now(UTC)
     booking_type = await _type_for(conn, client_id, data.type_id) if data.type_id else None
     if data.private and booking_type is not None:
@@ -739,7 +839,12 @@ async def create_booking(
     rooms = await setup.list_resources(conn, client_id)
     given_people = list(dict.fromkeys(data.people))
     given_rooms = list(dict.fromkeys(data.resources))
-    if booking_type and booking_type.delivery == "named" and not given_people:
+    if (
+        booking_type
+        and booking_type.delivery == "named"
+        and not given_people
+        and author.source != "bot"
+    ):
         raise HTTPException(422, "people_required")
     crew = crew_for(
         booking_type,
@@ -789,6 +894,7 @@ async def create_booking(
         min_notice=min_notice,
         now=now,
         acknowledged=data.acknowledged,
+        max_advance=_max_advance(author, booking_type),
     )
 
     row = await db.q.fetch_one(
@@ -798,14 +904,19 @@ async def create_booking(
             "contact_id": await _customer(conn, client_id, data),
             "service": booking_type.name if booking_type else None,
             "status": "pending"
-            if booking_type and booking_type.needs_confirmation
+            if force_pending or (booking_type and booking_type.needs_confirmation)
             else "confirmed",
             "starts_at": start,
             "ends_at": end,
             "type_id": data.type_id,
             "title": None if booking_type else data.title,
             "kind": "appointment" if booking_type else "meeting",
-            "created_by": actor.user_id,
+            "created_by": author.user_id,
+            "source": author.source,
+            "conversation_id": conversation_id,
+            "expires_at": expires_at,
+            "replaces_booking_id": replaces_booking_id,
+            "late_for_reminder": await late_for_reminder(conn, client_id, start, now),
             "private": data.private,
             # The place is copied from the type, so editing the type later moves no booking. A
             # meeting with no type brings its own.
@@ -841,7 +952,7 @@ async def create_booking(
         start,
         hold_end,
     )
-    await audit(conn, actor, client_id, "bookings.booking.created", str(booking_id))
+    await _audit(conn, author, client_id, "bookings.booking.created", str(booking_id))
     return (await read_records(conn, client_id, booking_id=booking_id))[0]
 
 
@@ -885,14 +996,40 @@ async def move_booking(
     and the holds are replaced in the same transaction, so a refusal leaves everything as it was.
     The new time meets the same rules as a new booking.
     """
-    acting = acting_as(actor)
-    now = now or datetime.now(UTC)
+    author = author_of(actor)
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
+    withdrawn = await withdraw_changes(conn, client_id, author, record.id)
+    moved = await move_to(
+        conn,
+        client_id,
+        author,
+        record,
+        data.starts_at,
+        acknowledged=data.acknowledged,
+        now=now,
+    )
+    return replace(moved, withdrew_change=bool(withdrawn))
+
+
+async def move_to(
+    conn: Conn,
+    client_id: UUID,
+    author: Author,
+    record: BookingRecord,
+    starts_at: datetime,
+    *,
+    acknowledged: Iterable[BookingFinding] = (),
+    now: datetime | None = None,
+) -> BookingRecord:
+    """The move itself, for a booking already locked, checked and live."""
+    acting = author.acting
+    now = now or datetime.now(UTC)
+    booking_id = record.id
     booking_type = None
     if record.type_id is not None:
         booking_type = next(iter(await setup.list_types(conn, client_id, record.type_id)), None)
-    start = data.starts_at.astimezone(UTC)
+    start = starts_at.astimezone(UTC)
     end = window_end(start, int((record.ends_at - record.starts_at).total_seconds() // 60))
     hold_end = end + timedelta(minutes=booking_type.buffer_minutes if booking_type else 0)
     min_notice = timedelta(minutes=booking_type.min_notice_minutes if booking_type else 0)
@@ -918,7 +1055,8 @@ async def move_booking(
         resources=rooms,
         min_notice=min_notice,
         now=now,
-        acknowledged=data.acknowledged,
+        acknowledged=acknowledged,
+        max_advance=_max_advance(author, booking_type),
     )
     await db.q.execute(
         "bookings/holds_delete.sql", {"client_id": client_id, "booking_id": booking_id}, conn=conn
@@ -926,17 +1064,23 @@ async def move_booking(
     await _insert_holds(conn, client_id, booking_id, subjects, start, hold_end)
     await db.q.execute(
         "bookings/booking_times_set.sql",
-        {"client_id": client_id, "id": booking_id, "starts_at": start, "ends_at": end},
+        {
+            "client_id": client_id,
+            "id": booking_id,
+            "starts_at": start,
+            "ends_at": end,
+            "late_for_reminder": await late_for_reminder(conn, client_id, start, now),
+        },
         conn=conn,
     )
-    await audit(conn, actor, client_id, "bookings.booking.moved", str(booking_id))
+    await _audit(conn, author, client_id, "bookings.booking.moved", str(booking_id))
     return (await read_records(conn, client_id, booking_id=booking_id))[0]
 
 
 async def _finish(
     conn: Conn,
     client_id: UUID,
-    actor: ConsoleActor,
+    author: Author,
     record: BookingRecord,
     status: str,
     action: str,
@@ -955,7 +1099,7 @@ async def _finish(
         {"client_id": client_id, "id": record.id, "status": status},
         conn=conn,
     )
-    await audit(conn, actor, client_id, f"bookings.booking.{action}", str(record.id))
+    await _audit(conn, author, client_id, f"bookings.booking.{action}", str(record.id))
     if free:
         # The rooms live on the holds, which are gone now: keep them on the returned record.
         return replace(
@@ -969,13 +1113,50 @@ async def _finish(
     return replace(fresh, previous_status=record.status)
 
 
+async def cancel_for(
+    conn: Conn, client_id: UUID, author: Author, record: BookingRecord
+) -> BookingRecord:
+    """Cancel a booking already locked and checked as live: its holds go, so the time is free."""
+    return await _finish(conn, client_id, author, record, "cancelled", "cancelled", free=True)
+
+
+async def expire_for(conn: Conn, client_id: UUID, record: BookingRecord) -> BookingRecord:
+    """A pending booking the bot made ran out of time: cancelled like a decline, and its holds go.
+    The audit row says `expired`, so it can be told from a person's decision."""
+    return await _finish(conn, client_id, BOT, record, "cancelled", "expired", free=True)
+
+
+async def withdraw_changes(
+    conn: Conn, client_id: UUID, author: Author, booking_id: UUID
+) -> list[dict[str, Any]]:
+    """Cancel the pending requests to move this booking, locked after it, and free their holds.
+
+    Anything that cancels, declines or moves a booking, or replaces one request with another, does
+    this in its own transaction: a request left behind would hold a slot for a booking that no
+    longer stands, and "the old booking stands" would be false. Returns what was withdrawn.
+    """
+    rows = await db.q.fetch_all(
+        "bookings/booking_pending_changes.sql",
+        {"client_id": client_id, "id": booking_id},
+        conn=conn,
+    )
+    for row in rows:
+        request = (await read_records(conn, client_id, booking_id=row["id"]))[0]
+        await cancel_for(conn, client_id, author, request)
+    return list(rows)
+
+
 async def cancel_booking(
     conn: Conn, client_id: UUID, actor: ConsoleActor, booking_id: UUID, data: BookingActionIn
 ) -> BookingRecord:
-    """Cancel a pending or confirmed booking; its holds are deleted, so the time is free again."""
+    """Cancel a pending or confirmed booking; its holds are deleted, so the time is free again.
+    A pending request to move it is withdrawn with it."""
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     _live(record)
-    return await _finish(conn, client_id, actor, record, "cancelled", "cancelled", free=True)
+    author = author_of(actor)
+    withdrawn = await withdraw_changes(conn, client_id, author, record.id)
+    cancelled = await cancel_for(conn, client_id, author, record)
+    return replace(cancelled, withdrew_change=bool(withdrawn))
 
 
 async def decline_booking(
@@ -985,17 +1166,104 @@ async def decline_booking(
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     if record.status != "pending":
         raise HTTPException(409, "wrong_status")
-    return await _finish(conn, client_id, actor, record, "cancelled", "declined", free=True)
+    author = author_of(actor)
+    await withdraw_changes(conn, client_id, author, record.id)
+    return await _finish(conn, client_id, author, record, "cancelled", "declined", free=True)
 
 
 async def confirm_booking(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, booking_id: UUID, data: BookingActionIn
+    conn: Conn,
+    client_id: UUID,
+    actor: ConsoleActor,
+    booking_id: UUID,
+    data: BookingActionIn,
+    *,
+    now: datetime | None = None,
 ) -> BookingRecord:
-    """Confirm a pending booking. It already holds its time."""
+    """Confirm a pending booking. It already holds its time.
+
+    A pending request to move a booking is confirmed by moving that booking, which keeps its id (so
+    its calendar event is updated, not duplicated), and its new start is set at `now`. The booking
+    is locked first and the request second, the order the bot takes them in, so the two can never
+    wait on each other.
+    """
+    asked = await db.q.fetch_one(
+        "bookings/booking_replaces.sql", {"client_id": client_id, "id": booking_id}, conn=conn
+    )
+    if asked is not None and asked["replaces_booking_id"] is not None:
+        await db.q.fetch_one(
+            "bookings/booking_lock.sql",
+            {"client_id": client_id, "id": asked["replaces_booking_id"]},
+            conn=conn,
+        )
     record = await _for_change(conn, client_id, actor, booking_id, data.version)
     if record.status != "pending":
         raise HTTPException(409, "wrong_status")
-    return await _finish(conn, client_id, actor, record, "confirmed", "confirmed", free=False)
+    author = author_of(actor)
+    now = now or datetime.now(UTC)
+    if record.replaces_booking_id is not None:
+        return await _apply_change(conn, client_id, author, record, now)
+    # Nobody on a booking the bot asked for hears of it before this confirmation, so one confirmed
+    # after its reminder was due gets none: the confirmation is enough. A staff-made booking's
+    # people were invited when it was made, so its reminder stands.
+    if record.source == "bot" and await late_for_reminder(conn, client_id, record.starts_at, now):
+        await db.q.execute(
+            "bookings/booking_late_for_reminder_set.sql",
+            {"client_id": client_id, "id": record.id},
+            conn=conn,
+        )
+    return await _finish(conn, client_id, author, record, "confirmed", "confirmed", free=False)
+
+
+async def _apply_change(
+    conn: Conn, client_id: UUID, author: Author, request: BookingRecord, now: datetime
+) -> BookingRecord:
+    """Move the booking a request asks to move, to the request's time, and close the request.
+
+    The request already passed the rules and holds its time, so nothing is checked again. Its holds
+    go before the booking's new ones are written (the database refuses overlapping holds, so the
+    other order would refuse the swap), all in the caller's transaction.
+    """
+    assert request.replaces_booking_id is not None
+    found = await read_records(conn, client_id, booking_id=request.replaces_booking_id)
+    if not found or found[0].status not in ("pending", "confirmed"):
+        raise HTTPException(409, "wrong_status")
+    original = found[0]
+    held = await db.q.fetch_all(
+        "bookings/holds_for_booking.sql",
+        {"client_id": client_id, "booking_id": request.id},
+        conn=conn,
+    )
+    subjects = [(h["subject_kind"], h["subject_id"]) for h in held]
+    booking_type = None
+    if request.type_id is not None:
+        booking_type = next(iter(await setup.list_types(conn, client_id, request.type_id)), None)
+    hold_end = request.ends_at + timedelta(
+        minutes=booking_type.buffer_minutes if booking_type else 0
+    )
+    for gone in (request.id, original.id):
+        await db.q.execute(
+            "bookings/holds_delete.sql", {"client_id": client_id, "booking_id": gone}, conn=conn
+        )
+    await _insert_holds(conn, client_id, original.id, subjects, request.starts_at, hold_end)
+    await db.q.execute(
+        "bookings/booking_times_set.sql",
+        {
+            "client_id": client_id,
+            "id": original.id,
+            "starts_at": request.starts_at,
+            "ends_at": request.ends_at,
+            "late_for_reminder": await late_for_reminder(conn, client_id, request.starts_at, now),
+        },
+        conn=conn,
+    )
+    await db.q.execute(
+        "bookings/booking_change_applied.sql", {"client_id": client_id, "id": request.id}, conn=conn
+    )
+    await _audit(conn, author, client_id, "bookings.booking.confirmed", str(request.id))
+    await _audit(conn, author, client_id, "bookings.booking.moved", str(original.id))
+    fresh = (await read_records(conn, client_id, booking_id=original.id))[0]
+    return replace(fresh, previous_status=original.status, moved_by_request=True)
 
 
 async def mark_no_show(
@@ -1013,7 +1281,9 @@ async def mark_no_show(
         raise HTTPException(409, "wrong_status")
     if record.starts_at > (now or datetime.now(UTC)):
         raise HTTPException(409, "not_started")
-    return await _finish(conn, client_id, actor, record, "no_show", "no_show", free=False)
+    return await _finish(
+        conn, client_id, author_of(actor), record, "no_show", "no_show", free=False
+    )
 
 
 # --- availability ----------------------------------------------------------------------------

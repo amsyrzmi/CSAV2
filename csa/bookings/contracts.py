@@ -219,6 +219,26 @@ class BookingHoursOut(Contract):
     periods: list[BookingPeriod]
 
 
+class BookingSettingsIn(Contract):
+    """The company's booking settings, replaced as a whole. `version` is the one read: 0 while
+    nothing has been saved, then the number the last save returned."""
+
+    reminder_minutes: int = Field(ge=15, le=10080)
+    pending_hours: int = Field(ge=1, le=168)
+    customer_limit: int = Field(ge=1, le=50)
+    version: int = Field(ge=0)
+
+
+class BookingSettingsOut(Contract):
+    reminder_minutes: int
+    pending_hours: int
+    customer_limit: int
+    version: int
+    # True while customers get nothing automatic: Customer support is active with its replies Off,
+    # or it is suspended (whatever its mode). The bot books nothing and no customer is reminded.
+    replies_off: bool
+
+
 class BookingClosedDayIn(Contract):
     day: date
     note: Note | None = None
@@ -370,6 +390,9 @@ class BookingCustomerOut(Contract):
     full_name: str | None
     phone: str | None
     email: str | None
+    # An address the customer typed into a chat, never checked. Booking mail goes there only when
+    # the contact has no email of its own; staff see it as "Customer gave this address".
+    given_email: str | None = None
 
 
 class BookingOut(Contract):
@@ -405,11 +428,27 @@ class BookingOut(Contract):
     # Only on the answer to a staff change that sends mail (book, move, cancel, confirm, decline);
     # null on every read, on a no-show, and on a private meeting the viewer is not part of.
     email: EmailSummary | None = None
-    # Whether the customer got a message about this change: true if mailed, false if the booking has
-    # a customer who was not (no address, mail off or failed), null if there is no customer, on a
-    # read, a no-show or a private meeting the viewer is not part of, and while a booking still
-    # waits for confirmation (the customer is told nothing then, by design).
+    # Whether the customer got a message about this change: true if they were sent a chat message
+    # or mailed, false if the booking has a customer who was not (no address and no chat, mail off
+    # or failed), null if there is no customer, on a read, a no-show or a private meeting the viewer
+    # is not part of, and while a booking still waits for confirmation (the customer is told
+    # nothing then, by design). A booking the customer's own bot made is the exception: declining
+    # one tells them, so that answer is true or false.
     customer_told: bool | None = None
+    # Who made it: a person at the console, the console assistant, or the customer's own bot. A
+    # bot booking may be pending with an expiry, and a bot request to move a booking is a pending
+    # booking with `replaces_booking_id` set (confirming it moves that booking, which keeps its id).
+    # Null on a private meeting the viewer is not part of.
+    source: Literal["staff", "assistant", "bot"] | None = None
+    replaces_booking_id: UUID | None = None
+    # On a request to move a booking: the time of that booking, so a console showing the request's
+    # week can say what it replaces whichever week the booking is in. Null on anything else.
+    replaces_starts_at: datetime | None = None
+    replaces_ends_at: datetime | None = None
+    # On a booking: the pending request to move it, when one waits (null once it is answered or
+    # withdrawn). Moving or cancelling the booking withdraws that request. Null on a private
+    # meeting the viewer is not part of.
+    pending_change_id: UUID | None = None
 
 
 class BookingSlotOut(Contract):

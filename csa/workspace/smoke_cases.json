@@ -773,5 +773,192 @@
         "person": "Siti"
       }
     }
+  },
+  {
+    "id": "booking_book-en-1",
+    "language": "en",
+    "message": "Book Room A tomorrow at 3 pm with Aina",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "book"
+      }
+    }
+  },
+  {
+    "id": "booking_book-ms-1",
+    "language": "ms",
+    "message": "Tolong tempah bilik A esok pukul 3 petang dengan Aina",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "book"
+      }
+    }
+  },
+  {
+    "id": "booking_book-en-2",
+    "language": "en",
+    "message": "Please book Room B for a meeting tomorrow at 2 pm",
+    "facts": {
+      "preset": "staff_bookings_view"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "not_actions": [
+        "booking_action"
+      ]
+    }
+  },
+  {
+    "id": "booking_move-en-1",
+    "language": "en",
+    "message": "Move my 3 pm with Aina tomorrow to 4 pm",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "move"
+      }
+    }
+  },
+  {
+    "id": "booking_move-ms-1",
+    "language": "ms",
+    "message": "Tolong alih mesyuarat saya dengan Aina esok ke pukul 4 petang",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "move"
+      }
+    }
+  },
+  {
+    "id": "booking_cancel-en-1",
+    "language": "en",
+    "message": "Cancel my 3 pm meeting with Aina tomorrow",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "cancel"
+      }
+    }
+  },
+  {
+    "id": "booking_cancel-ms-1",
+    "language": "ms",
+    "message": "Tolong batalkan mesyuarat saya dengan Aina esok",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "cancel"
+      }
+    }
+  },
+  {
+    "id": "booking_free-en-1",
+    "language": "en",
+    "message": "When is Aina free tomorrow?",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "reads": [
+        "booking_availability"
+      ],
+      "not_actions": [
+        "booking_action"
+      ]
+    }
+  },
+  {
+    "id": "booking_free-ms-1",
+    "language": "ms",
+    "message": "Bila Aina ada masa kosong esok?",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "reads": [
+        "booking_availability"
+      ],
+      "not_actions": [
+        "booking_action"
+      ]
+    }
+  },
+  {
+    "id": "booking_move-ms-2",
+    "language": "ms",
+    "message": "Tolong alihkan temujanji saya dengan Aina esok ke pukul 4 petang",
+    "facts": {
+      "preset": "staff_bookings",
+      "page_tab": "overview"
+    },
+    "expect": {
+      "actions": [
+        "booking_action"
+      ],
+      "fields": {
+        "change": "move"
+      }
+    }
+  },
+  {
+    "id": "booking_free-en-2",
+    "language": "en",
+    "message": "Is Aina busy tomorrow?",
+    "facts": {
+      "preset": "staff_bookings",
+      "page_tab": "overview"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "reads": [
+        "booking_availability"
+      ],
+      "not_actions": [
+        "booking_action"
+      ]
+    }
   }
 ]

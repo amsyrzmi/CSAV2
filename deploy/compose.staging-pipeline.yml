@@ -76,6 +76,9 @@ services:
     environment:
       <<: *environment
       KB_INGEST_ENABLED: "true"
+      # Booking reminders and mail about a lapsed booking. The same switch as the gateway's: off
+      # unless the owner sets CSA_STAGING_INVITE_MAIL=true, and then only with both secrets.
+      INVITE_MAIL_ENABLED: ${CSA_STAGING_INVITE_MAIL:-false}
     secrets:
       - source: staging_domain_dsn
         target: DATABASE_URL
@@ -85,6 +88,12 @@ services:
         target: CREDENTIALS_KEY
       - source: staging_model_key
         target: GROQ_API_KEY
+      # Relay credentials, the gateway's own files; mail stays inactive unless the flag is on and
+      # both are present.
+      - source: staging_smtp_username
+        target: SMTP_USERNAME
+      - source: staging_smtp_password
+        target: SMTP_PASSWORD
       # TikTok sync, token refresh and order/product jobs run in the worker.
       - source: staging_tiktok_app_key
         target: TIKTOK_APP_KEY
@@ -93,6 +102,8 @@ services:
       - source: staging_tiktok_service_id
         target: TIKTOK_SERVICE_ID
     volumes: ["staging-uploads:/var/lib/csa/uploads"]
+    # provider-egress is a plain bridge with outbound access, the one the worker already reaches
+    # the model provider through, so it reaches the SMTP relay too. No network is added.
     networks: ["data", "embeddings", "provider-egress"]
     depends_on:
       staging-db:

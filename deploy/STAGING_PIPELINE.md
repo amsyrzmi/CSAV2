@@ -160,6 +160,24 @@ development gateway is not running as a service today, so nothing is lost now.
 recreating the gateway, run `sudo python3 -m scripts.staging_secrets smtp-install --secret-dir /srv/csa-staging/secrets`
 once (section 10); compose will not recreate the gateway while the SMTP secret files are missing.
 
+**Rollout that includes booking reminders (the worker sends mail):** the worker now mounts the
+same two SMTP secret files and the same `CSA_STAGING_INVITE_MAIL` switch as the gateway. This is
+a compose change, so the rollout recreates the worker with the new file, and compose will not
+recreate it while the SMTP secret files are missing (section 10). The `smtp-install` step is
+already done on staging, so nothing new is written. The scripted rollout
+(`scripts/staging_rollout.py`) reads `deploy/staging-rollout.env`, which already sets
+`CSA_STAGING_INVITE_MAIL=true`, so the recreated worker sends mail at once; only a hand-run compose
+needs `export CSA_STAGING_INVITE_MAIL=true` in the shell, or the worker's mail is off even though
+the gateway's is on.
+
+Expect, within the first five minutes of the first such rollout: a reminder for every confirmed
+booking that starts within its company's reminder time (by default the next 24 hours), mailed to
+each person on it with an address, each guest and each customer with an address, and a Telegram
+message to each customer with a Telegram chat at a company with Customer support active and
+replies on, bookings made while PR 1 was tested included. Only a booking made or moved after its
+reminder was due is skipped (its confirmation was enough). The mail job then sends up to 50 every
+five minutes. Check which addresses and Telegram contacts the staging companies hold first.
+
 **Once the email assistant is wired (section 11):** the two Google OAuth files must also
 exist before the gateway is recreated; compose will not recreate it while either is missing.
 
@@ -438,7 +456,12 @@ recreate gateway and delivery.
 Invitations, renewals and admin-issued resets are emailed from
 `FourStacks <no-reply@fourstacks.my>` through the Google Workspace relay
 `smtp-relay.gmail.com:587` (STARTTLS, SMTP auth, allowed from the staging host's IP).
-Only the gateway sends. Mail is off unless **both** are true: `CSA_STAGING_INVITE_MAIL=true`
+The gateway sends invitations and resets, and the worker sends booking reminders (by default a
+day before a booking, to the customer, the people on it and its guests) and a notice that a
+booking the customer's bot held ran out of time. Both mount the same two relay secrets and read
+the same `CSA_STAGING_INVITE_MAIL` variable, and the worker reaches the relay through
+`provider-egress`, the bridge it already used for the model provider, so it gets no new network.
+Mail is off unless **both** are true: `CSA_STAGING_INVITE_MAIL=true`
 and the two relay secrets are present. Until then the console shows the link to copy,
 as before. `CSA_STAGING_INVITE_MAIL` and `CSA_STAGING_EMAIL_ASSISTANT` (section 11) are
 independent and both must be exported (`=true`) in the shell whenever the gateway is
@@ -461,13 +484,20 @@ Expected: `installed runtime/smtp_username (0400)` and the same for `smtp_passwo
 installed; nothing to move`). `check` passes with or without the two files, but flags
 one without the other.
 
-Then, in the section-2 shell, recreate the gateway with the flag on:
+Then, in the section-2 shell, recreate the gateway with the flag on (and the worker too, once
+the release has booking reminders):
 
 ```bash
 export CSA_STAGING_INVITE_MAIL=true
 csa_pipeline_compose config --quiet || exit 1
 csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway
 ```
+
+With the flag off, a reminder is queued and waits: the worker's mail job leaves the rows
+`queued` and sends them once mail is on, as long as the booking has not started; a notice that a
+held booking ran out of time is dropped instead once it is a day old. To check the
+worker's side, `csa_pipeline_compose logs --no-log-prefix worker 2>&1 | grep -o 'smtp_[a-z_]*' |
+sort | uniq -c` lists the same categories as the gateway's check below, never an address.
 
 Verify, with nothing secret on screen:
 

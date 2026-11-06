@@ -143,6 +143,26 @@ test("booking, calendar, availability and customer calls", async () => {
   assert.deepEqual(JSON.parse(requests[9][1].body), { version: 3 });
 });
 
+test("settings are read and replaced as a whole, naming the tenant for a platform admin", async () => {
+  const saved = { reminder_minutes: 90, pending_hours: 12, customer_limit: 3, version: 2 };
+  const [read, requests] = await capture(async () => {
+    const found = await bookings.getSettings(null);
+    await bookings.saveSettings(null, saved);
+    await bookings.getSettings("a b/1");
+    await bookings.saveSettings("a b/1", saved);
+    return found;
+  }, () => Response.json({ ...saved, replies_off: true }));
+  assert.equal(read.replies_off, true);
+  assert.deepEqual(shape(requests), [
+    ["GET", "/console/v1/bookings/settings"],
+    ["PUT", "/console/v1/bookings/settings"],
+    ["GET", "/console/v1/bookings/settings?client_id=a+b%2F1"],
+    ["PUT", "/console/v1/bookings/settings?client_id=a+b%2F1"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[1][1].body), saved);
+  assert.equal(requests[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
+});
+
 test("a booking refusal carries the server's sentence and its findings; other pages are unchanged", async () => {
   const refuse = (body, status = 409) =>
     assert.rejects(

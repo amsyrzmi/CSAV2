@@ -20,6 +20,10 @@ Hours = Mapping[int, list[tuple[time, time]]]
 DEFAULT_COMPANY_HOURS: Hours = {day: [(time(9, 0), time(18, 0))] for day in range(5)}
 
 
+# Offered times fall on this grid of local clock times, counted from local midnight.
+SLOT_STEP = timedelta(minutes=15)
+
+
 @dataclass(frozen=True)
 class Busy:
     """A period a person or resource is taken, including that booking's own buffer."""
@@ -98,6 +102,20 @@ def on_leave(calendar: Calendar, subject_id: UUID, start: datetime, end: datetim
     )
 
 
+def on_slot_grid(zone: ZoneInfo, start: datetime, step: timedelta = SLOT_STEP) -> bool:
+    """True when `start` is a local clock time `free_slots` could offer: on the step grid counted
+    from local midnight, with no seconds. Local, not UTC, so a zone at +05:30 has its own grid.
+    """
+    local = start.astimezone(zone)
+    since_midnight = timedelta(
+        hours=local.hour,
+        minutes=local.minute,
+        seconds=local.second,
+        microseconds=local.microsecond,
+    )
+    return since_midnight % step == timedelta(0)
+
+
 def _is_busy(
     busy: Sequence[tuple[datetime, datetime]], start: datetime, end_with_buffer: datetime
 ) -> bool:
@@ -128,7 +146,7 @@ def free_slots(
     buffer: timedelta,
     start_from: datetime,
     until: datetime,
-    step: timedelta = timedelta(minutes=15),
+    step: timedelta = SLOT_STEP,
     limit: int | None = None,
 ) -> list[Slot]:
     """Every free slot that starts at or after `start_from` and ends by `until`, earliest first, or

@@ -936,3 +936,137 @@ async def test_the_team_read_refuses_other_companies_and_stays_narrow(
     async with tx(w.pool, mine) as conn:
         cursor = await conn.execute("SELECT * FROM public.hr_employee_accounts")
         assert await cursor.fetchall() == []
+
+
+# --- settings ----------------------------------------------------------------------------
+
+SETTINGS = {"reminder_minutes": 1440, "pending_hours": 24, "customer_limit": 5}
+
+
+async def test_settings_defaults_when_none_stored(sessions: SessionWorld, team: Team) -> None:
+    for who in (team.admin, team.staff, team.reader):
+        shown = await who.get(f"{BASE}/settings")
+        assert shown.status_code == 200, shown.text
+        assert shown.json() == {**SETTINGS, "version": 0, "replies_off": False}
+    assert (await sessions.q("SELECT count(*) AS n FROM booking_settings"))[0]["n"] == 0
+    # Another company has its own settings, and reading never makes a row.
+    body = {**SETTINGS, "customer_limit": 9, "version": 0}
+    saved = await team.send(team.admin, "/settings", body, "PUT")
+    assert saved.status_code == 200, saved.text
+    assert (await team.other.get(f"{BASE}/settings")).json()["customer_limit"] == 5
+
+
+async def test_only_admins_change_settings(sessions: SessionWorld, team: Team) -> None:
+    w = sessions
+    body = {"reminder_minutes": 60, "pending_hours": 48, "customer_limit": 3, "version": 0}
+    assert (await team.send(team.staff, "/settings", body, "PUT")).status_code == 403
+    assert (await team.send(team.reader, "/settings", body, "PUT")).status_code == 403
+    done = await team.send(team.admin, "/settings", body, "PUT")
+    assert done.status_code == 200, done.text
+    assert done.json() == {**body, "version": 1, "replies_off": False}
+    for who in (team.admin, team.staff, team.reader):
+        assert (await who.get(f"{BASE}/settings")).json() == done.json()
+    # A platform admin who chose the other company may save its settings.
+    chosen = await w.mutate(
+        w.admin,
+        f"{BASE}/settings?client_id={w.tenants[1]}",
+        {**body, "customer_limit": 8},
+        method="PUT",
+    )
+    assert chosen.status_code == 200, chosen.text
+    assert (await team.other.get(f"{BASE}/settings")).json()["customer_limit"] == 8
+    assert (await team.admin.get(f"{BASE}/settings")).json()["customer_limit"] == 3
+    # Another company's id is refused.
+    assert (await team.other.get(f"{BASE}/settings?client_id={w.tenants[0]}")).status_code == 403
+    audits = await w.q(
+        "SELECT count(*) AS n FROM console_audit WHERE action = 'bookings.settings.updated'"
+    )
+    assert audits[0]["n"] == 2
+
+
+async def test_a_stale_settings_version_gets_409(sessions: SessionWorld, team: Team) -> None:
+    first = await team.send(team.admin, "/settings", {**SETTINGS, "version": 0}, "PUT")
+    assert first.json()["version"] == 1
+    # The first save again, from the same empty read, is refused and changes nothing.
+    again = {**SETTINGS, "customer_limit": 20, "version": 0}
+    refused = await team.send(team.admin, "/settings", again, "PUT")
+    assert refused.status_code == 409 and refused.json()["detail"] == "version_conflict"
+    second = {**SETTINGS, "customer_limit": 6, "version": 1}
+    saved = await team.send(team.admin, "/settings", second, "PUT")
+    assert saved.status_code == 200 and saved.json()["version"] == 2
+    stale = {**SETTINGS, "customer_limit": 7, "version": 1}
+    assert (await team.send(team.admin, "/settings", stale, "PUT")).status_code == 409
+    assert (await team.admin.get(f"{BASE}/settings")).json()["customer_limit"] == 6
+
+
+@pytest.mark.parametrize(
+    ("field", "values"),
+    [
+        ("reminder_minutes", (14, 10081, 0, -1)),
+        ("pending_hours", (0, 169)),
+        ("customer_limit", (0, 51)),
+    ],
+)
+async def test_settings_outside_their_range_get_422(
+    sessions: SessionWorld, team: Team, field: str, values: tuple[int, ...]
+) -> None:
+    for bad in values:
+        body = {**SETTINGS, field: bad, "version": 0}
+        refused = await team.send(team.admin, "/settings", body, "PUT")
+        assert refused.status_code == 422, (field, bad)
+    # The ends of each range are fine.
+    ends = {"reminder_minutes": (15, 10080), "pending_hours": (1, 168), "customer_limit": (1, 50)}
+    for version, good in enumerate(ends[field]):
+        body = {**SETTINGS, field: good, "version": version}
+        saved = await team.send(team.admin, "/settings", body, "PUT")
+        assert saved.status_code == 200, (field, good, saved.text)
+    missing = {"reminder_minutes": 60, "version": 2}
+    assert (await team.send(team.admin, "/settings", missing, "PUT")).status_code == 422
+
+
+async def set_replies(w: SessionWorld, tenant: str, mode: str, package: str | None) -> None:
+    """Give the company Customer support in `package` status (None: no package) and a mode."""
+    await w.q(
+        "DELETE FROM console_service_packages"
+        " WHERE client_id = %s AND package = 'customer_support'",
+        tenant,
+    )
+    if package is not None:
+        await w.q(
+            "INSERT INTO console_service_packages (client_id, package, status, activated_at,"
+            " reference) VALUES (%s, 'customer_support', %s, now(), 'synthetic-test')",
+            tenant,
+            package,
+        )
+    await w.q(
+        "UPDATE clients SET config = jsonb_set(coalesce(config, '{}'::jsonb),"
+        " '{policy,deployment_mode}', to_jsonb(%s::text), true) WHERE id = %s",
+        mode,
+        tenant,
+    )
+
+
+@pytest.mark.parametrize(
+    ("package", "mode", "off"),
+    [
+        ("active", "shadow", True),  # Off
+        ("active", "suggest", False),  # Staff approve each reply
+        ("active", "auto", False),
+        ("suspended", "shadow", True),  # suspended keeps its mode
+        # Suspended: customers get nothing automatic whatever the mode, so the banner says so.
+        ("suspended", "auto", True),
+        ("suspended", "suggest", True),
+        ("requested", "shadow", False),  # a package still being asked for is not active
+        (None, "shadow", False),  # Bookings only: no replies setting at all
+    ],
+)
+async def test_replies_off_follows_customer_support_and_its_mode(
+    sessions: SessionWorld, team: Team, package: str | None, mode: str, off: bool
+) -> None:
+    await set_replies(sessions, sessions.tenants[0], mode, package)
+    for who in (team.admin, team.reader):
+        shown = await who.get(f"{BASE}/settings")
+        assert shown.status_code == 200, shown.text
+        assert shown.json()["replies_off"] is off
+    saved = await team.send(team.admin, "/settings", {**SETTINGS, "version": 0}, "PUT")
+    assert saved.json()["replies_off"] is off

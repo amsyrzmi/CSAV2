@@ -1578,6 +1578,8 @@ so they never clash with HR's `PersonOut`).
 | `GET /blocks?from=&to=` | Blocks ending after `from` (default now) and starting before `to` |
 | `POST /blocks` | Body `{subject_kind: person\|resource, subject_id, starts_at, ends_at, note?}`; 201. Writes the block's hold in the same transaction. 409 `slot_taken` when the person or room is already held for any of that time (a booking or another block); 422 `block_times_invalid`, `subject_not_found`, and 422 for a time outside the years 2000 to 2100 (the same range every booking time has) |
 | `DELETE /blocks/{id}` | 204, and the hold goes with it. 404 `block_not_found` |
+| `GET /settings` | `BookingSettingsOut` `{reminder_minutes, pending_hours, customer_limit, version, replies_off}`. Every member may read. Until an Admin saves, the defaults (`1440`, `24`, `5`) with `version: 0`; reading makes no row. `replies_off` is true while customers get nothing automatic: Customer support active with its mode Off (`shadow`), or Customer support suspended, whatever its mode. A company with no Customer support (or one still requested), or active with replies on, gets `false` |
+| `PUT /settings` | Admin or platform admin who chose the company. Body `BookingSettingsIn` `{reminder_minutes, pending_hours, customer_limit, version}`, all required, replacing the settings as a whole; `version` is the one read (`0` before the first save). Returns `BookingSettingsOut`. 409 `version_conflict` for a stale `version`. 422 outside `reminder_minutes` 15 to 10080 (minutes before the start), `pending_hours` 1 to 168 (how long a pending booking waits for staff) and `customer_limit` 1 to 50 (the most bookings the bot makes for one customer). The worker reads them: `reminder_minutes` sets how long before a confirmed booking the customer, the people on it and its guests are reminded (the customer on Telegram when they are there, otherwise by email; staff and guests by email; nothing for a pending or cancelled booking, a private meeting never reminds its customer, and no customer reminder goes while replies are Off or Customer support is suspended), and the bot reads `pending_hours` and `customer_limit`. This route only stores them. Writes a `bookings.settings.updated` audit row |
 
 ### Booking, moving and the calendar
 
@@ -1596,7 +1598,7 @@ time a client sends (`starts_at`, `from`, `to`) must carry an offset and fall in
 | `GET /customers?q=&limit=` | The Subscriptions customer search (`CustomerRef[]`). 403 for read-only members, as the Inbox |
 | `POST /bookings` | 201 `BookingOut`. Body: `type_id`, or a meeting's `title` and `minutes` (not both); `starts_at`; `people`, `resources`; `contact_id` or `walk_in {name, phone?, email?}` (one of phone or email); `guests [{name?, email}]`; `private` (meetings only); `location_kind`, `address`, `meeting_link` (a meeting with no type only: 422 with a `type_id`, because the type decides; `address` and `meeting_link` are single-line and the link must begin with `https://`, as on types); `acknowledged` (findings). A type's `named` delivery needs `people` (422 `people_required`); "any" picks the free person with the fewest bookings that day; "several" takes all its people; a specific room is held and an "any" room is picked. Status is `confirmed`, or `pending` when the type needs confirmation (a pending booking holds the time). The type's location, address and link are copied onto the booking. 422: `type_not_found`, `type_inactive`, `person_not_found`, `person_inactive`, `resource_not_found`, `resource_inactive`, `contact_not_found`, `nobody_to_book` (a type with nobody active to deliver it, or nothing and no one named for a meeting), `no_room_available` (a type that picks "any" room whose rooms are all switched off; nothing is booked), `private_meetings_only`. A read-only member gets 403 `bookings changes require staff or an administrator` |
 | `PATCH /bookings/{id}` | Move it: `{version, starts_at, acknowledged}`. Keeps the id, length, people and rooms, bumps `version`, replaces the holds in one transaction. A refusal changes nothing. 409 `stale` for an old `version`; 409 `wrong_status` unless pending or confirmed; 422 `nobody_to_book` for a booking of a type that holds no person |
-| `POST /bookings/{id}/cancel`, `/decline`, `/confirm`, `/no-show` | Optional body `{version}`. Cancel (pending or confirmed) and decline (pending) delete the holds; confirm turns pending into confirmed; no-show (confirmed and already started, else 409 `not_started`) keeps the record and its holds. 409 `wrong_status` otherwise. Each bumps `version` |
+| `POST /bookings/{id}/cancel`, `/decline`, `/confirm`, `/no-show` | Optional body `{version}`. Cancel (pending or confirmed) and decline (pending) delete the holds; confirm turns pending into confirmed; no-show (confirmed and already started, else 409 `not_started`) keeps the record and its holds. 409 `wrong_status` otherwise. Each bumps `version`. Cancelling, declining or moving a booking also withdraws a pending request to move it, in the same transaction (see below) |
 
 Refusals carry `detail` (the short code) and, for these, more at the top level of the body:
 
@@ -1626,8 +1628,46 @@ private meeting included; staff when they created it or a person linked to their
 (the creator is never put on the wire); read-only members never. It says nothing about the status, so
 a client also checks `pending` or `confirmed` before offering a move. `conflict` is `"unavailable"` when a person on
 a pending or confirmed booking now has approved leave over it, computed on every read. A person's leave is looked up live, through the HR person their account is linked to (and any stored `employee_id`), so a link made after the person was added counts, and a company without the HR package has none. `people[].is_active` and `resources[].is_active` say whether someone or somewhere was switched off after the booking was made; the booking stays, and a client shows it flagged (not on a redacted meeting, which carries no people or rooms).
-Every change writes `bookings.booking.created|moved|cancelled|confirmed|declined|no_show` with the
-booking id as target and no customer details.
+Every change writes `bookings.booking.created|moved|cancelled|confirmed|declined|expired|no_show` with
+the booking id as target and no customer details.
+
+**Bookings the customer's own bot made.** `BookingOut.source` is `"staff"`, `"assistant"` or `"bot"`
+(null on a private meeting the viewer is not part of), and `replaces_booking_id` is set on a pending
+request to move another booking (the customer asked to move a confirmed booking and staff have not
+answered). A request holds its new time and is `pending`, so a client shows it beside the booking it
+would move. The booking and its request can be on different weeks, so each says so on its own: a
+request carries `replaces_starts_at` and `replaces_ends_at` (when the booking it would move is, null
+on anything else), and a booking carries `pending_change_id` (the id of the live request to move it,
+null when none waits or once it is answered or withdrawn). All three are null on a private meeting
+the viewer is not part of. Moving or cancelling a booking withdraws its pending request in the same
+transaction, so a client says so before it does.
+
+- Confirming a request moves the booking it replaces, which keeps its `id`: the answer is that
+  booking, `confirmed`, at the new time with a higher `version` (so the same calendar event is
+  updated with a higher `SEQUENCE`). The request is closed (`cancelled`, never shown again) and its
+  holds are freed in the same transaction. Nothing is checked again: the request already holds its time.
+- Declining a request leaves the booking it replaces as it was. Cancelling or declining a booking, or
+  moving it, withdraws its pending request in the same transaction.
+- A bot booking that is `pending` lapses on its own (a job runs every five minutes): when its expiry
+  has passed, or when it has already started (a booking moved earlier keeps its old expiry). Staff's
+  own pending bookings never lapse.
+- Cancel on a pending booking the bot made, or on a request to move one, is a decline for the
+  customer: the same message and `customer_told`. A decline mails a customer who is not on Telegram a
+  plain "wasn't confirmed" message with no calendar file (they were never sent an invitation); for a
+  request to move a booking it says the request wasn't accepted and the booking stays on its time.
+  Only the customer is mailed about a request.
+- Moving or cancelling a confirmed booking, whoever made it, writes a chat message too when its
+  customer has a Telegram chat (mentioning a withdrawn request), and the email with the calendar update
+  still goes if they have an address. A private meeting never tells a customer anything.
+- A chat message, and the declined-booking mail, invite a reply or another request only while replies are
+  on and Customer support is active.
+- Cancelling or declining a booking whose end has already passed tells nobody: no chat message and no
+  mail, to the customer or the people on it (`email` and `customer_told` are null).
+- Confirming and declining tell the customer, even with replies Off, because a person acted: a plain
+  Telegram message written in the same transaction, or else an email (a customer with both gets the
+  message, and the confirmation email too because it carries the calendar file). A booking staff made
+  tells the customer nothing until it is confirmed. A lapse sends a Telegram message only while replies
+  are on and Customer support is active.
 
 **Email with a calendar file.** After a staff action commits, the server emails the people on the
 booking, each with an `invite.ics` that adds, updates or removes it in their calendar. It uses the
@@ -1637,12 +1677,12 @@ how it went and is set only on the answer to a staff action:
 
 | Action | Mail |
 |---|---|
-| `POST /bookings`, `/confirm` | An invitation (`METHOD:REQUEST`). A booking still `pending` goes to its people as `TENTATIVE` and not to the customer, so the confirm is the customer's first mail |
+| `POST /bookings`, `/confirm` | An invitation (`METHOD:REQUEST`). Confirming a request to move a booking is an update of that booking instead: the same `UID`, a higher `SEQUENCE`, the new time. A booking still `pending` goes to its people as `TENTATIVE` and not to the customer, so the confirm is the customer's first mail |
 | `PATCH /bookings/{id}` | The same `UID` with a higher `SEQUENCE` (the booking's `version`) and the new time |
-| `/cancel`, `/decline` | `METHOD:CANCEL`, `STATUS:CANCELLED`, same `UID`, higher `SEQUENCE`. A booking that was never confirmed (cancelled or declined while `pending`) is cancelled for its people and guests only: the customer was never told about it, so they are not told it is gone. A booking that was confirmed first still tells the customer |
+| `/cancel`, `/decline` | `METHOD:CANCEL`, `STATUS:CANCELLED`, same `UID`, higher `SEQUENCE`. A booking that was never confirmed (cancelled or declined while `pending`) is cancelled for its people and guests only: the customer was never told about it, so they are not told it is gone. A booking that was confirmed first still tells the customer. A decline of a booking the customer's own bot made is the exception: they asked, so it tells them (a chat message, else the cancellation). A request to move a booking sends no mail at all |
 | `/no-show` | Nothing; `email` is null |
 
-`customer_told` (true, false or null) says whether the customer got a message about this change: true if they were mailed, false if the booking has a customer who was not (no address, mail off, the send failed, or a private meeting), and null if there is no customer, on every read, on a no-show, on a redacted meeting, and while a booking is still waiting for confirmation (the customer is told nothing then, by design; a customer who was never told a booking is gone is null too). A client says "Customer wasn't told." when it is false, whatever `email` says.
+`customer_told` (true, false or null) says whether the customer got a message about this change: true if they were mailed or sent a chat message, false if the booking has a customer who was not (no address and no chat, mail off, the send failed, or a private meeting), and null if there is no customer, on every read, on a no-show, on a redacted meeting, and while a booking is still waiting for confirmation (the customer is told nothing then, by design; a customer who was never told a booking is gone is null too, except a booking the customer's own bot made, which they asked for: declining it answers true or false). A client says "Customer wasn't told." when it is false, whatever `email` says.
 
 `email` reports on whoever was to be mailed. It is `"none"` when nobody was (no address, or only a
 customer who is not to be told), else `"off"` when mail is switched off, else `"failed"` when any send

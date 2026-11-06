@@ -275,6 +275,7 @@ export function removeBlock(tenantId: string | null, blockId: string): Promise<v
 
 /** The findings a booking or a move can come back with, as they are on the wire. */
 export type BookingFinding = "outside_hours" | "closed_day" | "short_notice" | "unavailable";
+export type BookingSource = "staff" | "assistant" | "bot";
 export type BookingStatus = "pending" | "confirmed" | "cancelled" | "no_show";
 /** How the mail went, on the answer to a staff action only: null on every read. */
 export type BookingMail = "sent" | "off" | "failed" | "none";
@@ -296,6 +297,8 @@ export interface BookingCustomer {
   full_name: string | null;
   phone: string | null;
   email: string | null;
+  /** An address the customer typed into a chat, never checked; booking mail uses it only if `email` is empty. */
+  given_email?: string | null;
 }
 
 export interface BookingGuest {
@@ -332,6 +335,18 @@ export interface BookingOut {
   email?: BookingMail | null;
   /** false when the customer was not mailed; null for no customer, a read, or nothing owed yet. */
   customer_told?: boolean | null;
+  /** Who made it: `bot` is the customer, through chat. Null on a private meeting the viewer is not part of. */
+  source?: BookingSource | null;
+  /**
+   * Set on a pending request to move the booking with this id (the customer asked, staff have not
+   * answered). Confirming it moves that booking and keeps its id; declining leaves it as it was.
+   */
+  replaces_booking_id?: string | null;
+  /** On a request: when the booking it would move is, whichever week that is. */
+  replaces_starts_at?: string | null;
+  replaces_ends_at?: string | null;
+  /** On a booking: the live request to move it. Moving or cancelling it withdraws that request. */
+  pending_change_id?: string | null;
 }
 
 /** A private meeting the viewer is not part of, on a filtered read: times only, and no id. */
@@ -435,4 +450,36 @@ export function changeBooking(
   version: number,
 ): Promise<BookingOut> {
   return post(bookingsPath(tenantId, `/bookings${id(bookingId)}/${action}`), { version });
+}
+
+// ---- Settings ---------------------------------------------------------------------------------
+
+/**
+ * `replies_off` is true while customers get nothing automatic: Customer support active with its
+ * replies Off, or Customer support suspended (whose banner has no link: replies can't be turned on).
+ */
+export interface BookingSettings {
+  reminder_minutes: number;
+  pending_hours: number;
+  customer_limit: number;
+  /** 0 until an Admin first saves. */
+  version: number;
+  replies_off: boolean;
+}
+
+/** Sent as a whole: `version` is the one last read. 409 for a stale one. */
+export interface BookingSettingsIn {
+  reminder_minutes: number;
+  pending_hours: number;
+  customer_limit: number;
+  version: number;
+}
+
+/** Every member may read them; only an Admin (or a platform admin who chose the company) may save. */
+export function getSettings(tenantId: string | null, signal?: AbortSignal): Promise<BookingSettings> {
+  return api(bookingsPath(tenantId, "/settings"), { signal });
+}
+
+export function saveSettings(tenantId: string | null, body: BookingSettingsIn): Promise<BookingSettings> {
+  return api(bookingsPath(tenantId, "/settings"), { method: "PUT", body: JSON.stringify(body) });
 }

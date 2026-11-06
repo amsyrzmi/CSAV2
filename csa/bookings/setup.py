@@ -31,6 +31,8 @@ from csa.bookings.contracts import (
     BookingResourceIn,
     BookingResourceOut,
     BookingResourcePatch,
+    BookingSettingsIn,
+    BookingSettingsOut,
     BookingTypeIn,
     BookingTypeOut,
     BookingTypePatch,
@@ -40,6 +42,7 @@ from csa.bookings.contracts import (
 from csa.console.contracts import ConsoleActor
 from csa.console.kb_uploads import audit
 from csa.core import db
+from csa.staff.ownership import replies_off
 
 Conn = AsyncConnection[Any]
 
@@ -523,6 +526,63 @@ async def remove_closed_day(conn: Conn, client_id: UUID, actor: ConsoleActor, da
     if row is None:
         raise refuse(404, "closed_day_not_found")
     await audit(conn, actor, client_id, "bookings.closed_day.removed", day.isoformat())
+
+
+# --- settings --------------------------------------------------------------------------------
+
+# What a company that has never saved its settings gets (the table's own defaults).
+DEFAULT_SETTINGS = {
+    "reminder_minutes": 1440,
+    "pending_hours": 24,
+    "customer_limit": 5,
+    "version": 0,
+}
+# A company has a replies setting only with Customer support, which a suspended one still has.
+REPLIES_PACKAGE = "customer_support"
+REPLIES_STATUSES = ("active", "suspended")
+
+
+async def customer_replies_off(conn: Conn, client_id: UUID) -> bool:
+    """Customers get nothing automatic: Customer support is active with its mode Off (`shadow`),
+    or it is suspended, whatever its mode (the bot, reminders and notices all stop then).
+
+    A company without the package has no replies setting, so it is never "off": its email
+    reminders to customers still go.
+    """
+
+    async def package_is(*statuses: str) -> bool:
+        row = await db.q.fetch_one(
+            "console/service_package_any_in_status.sql",
+            (client_id, [REPLIES_PACKAGE], list(statuses)),
+            conn=conn,
+        )
+        return row is not None
+
+    if await package_is("suspended"):
+        return True
+    return await package_is("active") and await replies_off(conn, client_id)
+
+
+async def get_settings(conn: Conn, client_id: UUID) -> BookingSettingsOut:
+    """The stored settings, or the defaults with version 0, and whether replies are Off."""
+    row = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
+    return BookingSettingsOut(
+        **(row or DEFAULT_SETTINGS), replies_off=await customer_replies_off(conn, client_id)
+    )
+
+
+async def put_settings(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: BookingSettingsIn
+) -> BookingSettingsOut:
+    """Replace the settings. The first save makes the row; a save from an older read is 409."""
+    await lock(conn, "settings", client_id)
+    current = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
+    check_version(current["version"] if current else 0, data.version)
+    values = data.model_dump(exclude={"version"}) | {"client_id": client_id}
+    sql = "bookings/settings_update.sql" if current else "bookings/settings_insert.sql"
+    await db.q.fetch_one(sql, values, conn=conn)
+    await audit(conn, actor, client_id, "bookings.settings.updated", str(client_id))
+    return await get_settings(conn, client_id)
 
 
 # --- blocks ----------------------------------------------------------------------------------

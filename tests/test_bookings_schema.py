@@ -252,7 +252,11 @@ def test_each_new_table_is_tenant_isolated(migrated_dsn: str, app_dsn: str) -> N
                 " WHERE table_schema = 'public' AND table_name LIKE 'booking\\_%'"
             )
         }
-        assert found == set(NEW_TABLES), "a booking table is missing from this isolation test"
+        # The tables 0512 adds have their own isolation test (test_bookings_bot_schema.py).
+        later = {"booking_settings", "booking_reminders", "booking_turn_actions"}
+        assert found - later == set(NEW_TABLES), (
+            "a booking table is missing from this isolation test"
+        )
         for table in NEW_TABLES:
             [flags] = conn.execute(
                 "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = %s::regclass",

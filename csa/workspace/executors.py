@@ -131,6 +131,30 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "reason_dismissed": "Dismissed",
         "reason_retired": "Retired",
         "reason_other": "Other",
+        "book_title": "Book {what}",
+        "book_summary": "{when}. Nothing is booked until you select Confirm.",
+        "move_title": "Move {what}",
+        "move_summary": "Move it to {when}. Nothing changes until you select Confirm.",
+        "cancel_title": "Cancel {what}",
+        "cancel_summary": "{when}. Nothing is cancelled until you select Confirm.",
+        "label_what": "What",
+        "label_when": "When",
+        "label_from": "From",
+        "label_to": "To",
+        "label_length": "Length",
+        "label_with": "With",
+        "label_room": "Room",
+        "label_where": "Where",
+        "label_customer": "Customer",
+        "label_warning": "Heads up",
+        "minutes": "{count} minutes",
+        "private_what": "Private meeting",
+        "booking_what": "Booking",
+        "unnamed_customer": "Unnamed customer",
+        "where_phone": "Phone",
+        "warn_outside_hours": "Outside working hours.",
+        "warn_closed_day": "This is a closed day.",
+        "warn_unavailable": "Not available that day.",
     },
     "ms": {
         "training_new_title": "Hantar permohonan latihan baharu",
@@ -193,6 +217,30 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "reason_dismissed": "Diberhentikan",
         "reason_retired": "Bersara",
         "reason_other": "Lain-lain",
+        "book_title": "Tempah {what}",
+        "book_summary": "{when}. Tiada apa-apa ditempah sehingga anda memilih Sahkan.",
+        "move_title": "Alihkan {what}",
+        "move_summary": "Alihkan ke {when}. Tiada apa-apa berubah sehingga anda memilih Sahkan.",
+        "cancel_title": "Batalkan {what}",
+        "cancel_summary": "{when}. Tiada apa-apa dibatalkan sehingga anda memilih Sahkan.",
+        "label_what": "Apa",
+        "label_when": "Bila",
+        "label_from": "Dari",
+        "label_to": "Ke",
+        "label_length": "Tempoh",
+        "label_with": "Bersama",
+        "label_room": "Bilik",
+        "label_where": "Di mana",
+        "label_customer": "Pelanggan",
+        "label_warning": "Perhatian",
+        "minutes": "{count} minit",
+        "private_what": "Mesyuarat peribadi",
+        "booking_what": "Tempahan",
+        "unnamed_customer": "Pelanggan tanpa nama",
+        "where_phone": "Telefon",
+        "warn_outside_hours": "Di luar waktu bekerja.",
+        "warn_closed_day": "Ini hari tutup.",
+        "warn_unavailable": "Tidak tersedia pada hari itu.",
     },
 }
 
@@ -654,7 +702,9 @@ class InboxDecisionExecutor:
 
 
 def build_proposal_registry() -> ProposalRegistry:
-    # Imported here: csa.workspace.hr_people uses this module's card text and keys.
+    # Imported here: csa.workspace.hr_people and csa.bookings.executor use this module's card text
+    # and keys.
+    from csa.bookings.executor import BookingActionExecutor
     from csa.workspace.hr_people import HrPersonExecutor
 
     return ProposalRegistry(
@@ -665,5 +715,6 @@ def build_proposal_registry() -> ProposalRegistry:
             "inbox_decision": InboxDecisionExecutor(),
             "subscription_action": SubscriptionActionExecutor(),
             "hr_person": HrPersonExecutor(),
+            "booking_action": BookingActionExecutor(),
         }
     )

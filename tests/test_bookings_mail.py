@@ -6,15 +6,18 @@ import asyncio
 import re
 import threading
 import time
+from datetime import timedelta
 from typing import Any
 
 import pytest
 from csa.bookings import notify
 from csa.bookings.api import build_bookings_router
+from csa.bookings.service import BookingRecord
 from csa.console.mailer import Mailer, OutgoingMail
 from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
+from tests.test_booking_ics import record
 from tests.test_bookings_api import TUESDAY, at, book, booked, meeting
 from tests.test_bookings_setup import BASE, Team, make_person, make_type
 from tests.test_console_sessions import SessionWorld
@@ -654,6 +657,48 @@ async def test_customer_told_says_whether_the_customer_got_it(
     assert failed["email"] == "failed" and failed["customer_told"] is False
 
 
+async def test_the_address_a_customer_gave_in_a_chat_is_used_only_when_there_is_no_other(
+    sessions: SessionWorld, team: Team, relay: FakeTransport
+) -> None:
+    person = await make_person(team, "Aina", email="aina@example.test")
+    made = await booked(
+        team,
+        team.staff,
+        meeting(person, start=TEN_KL, walk_in={"name": "Chat Customer", "phone": "0123456789"}),
+    )
+    assert made["customer_told"] is False  # nothing on file yet
+    await sessions.q(
+        "UPDATE contacts SET customer_given_email = 'given@example.test'"
+        " WHERE full_name = 'Chat Customer'"
+    )
+    relay.sent.clear()
+    moved = await send(
+        team, team.staff, f"/bookings/{made['id']}", {"version": 1, "starts_at": at(3)}, "PATCH"
+    )
+    assert moved.json()["customer_told"] is True
+    assert "given@example.test" in relay.to()
+    # The contact's own address wins, and the claimed one hears nothing.
+    await sessions.q(
+        "UPDATE contacts SET email = 'own@example.test' WHERE full_name = 'Chat Customer'"
+    )
+    relay.sent.clear()
+    again = await send(
+        team, team.staff, f"/bookings/{made['id']}", {"version": 2, "starts_at": at(4)}, "PATCH"
+    )
+    assert again.json()["customer_told"] is True
+    assert "own@example.test" in relay.to() and "given@example.test" not in relay.to()
+    # A claimed address that is not an address never reaches the relay.
+    await sessions.q(
+        "UPDATE contacts SET email = NULL, customer_given_email = 'call me'"
+        " WHERE full_name = 'Chat Customer'"
+    )
+    relay.sent.clear()
+    last = await send(
+        team, team.staff, f"/bookings/{made['id']}", {"version": 3, "starts_at": at(5)}, "PATCH"
+    )
+    assert last.json()["customer_told"] is False and "call me" not in str(relay.to())
+
+
 async def test_customer_told_is_false_when_mail_is_off(sessions: SessionWorld, team: Team) -> None:
     sessions.app.state.mailer = Mailer(None, SENDER)
     person = await make_person(team, "Aina", email="aina@example.test")
@@ -696,3 +741,100 @@ async def test_customer_told_waits_for_a_pending_booking_and_ignores_a_no_show(
     past = await booked(team, team.staff, meeting(person, start="2020-01-07T02:00:00Z"))
     marked = await send(team, team.staff, f"/bookings/{past['id']}/no-show", {"version": 1})
     assert marked.json()["customer_told"] is None
+
+
+# --- a booking the customer's own bot made ----------------------------------------------------
+
+FACTS = notify.MailFacts("Brand", "Asia/Kuala_Lumpur", {})
+CUSTOMER = "c@example.test"
+PEOPLE = ["aina@example.test", "guest@example.test"]
+EVERYONE = sorted([CUSTOMER, *PEOPLE])
+
+
+async def notified(booking: BookingRecord, change: notify.Change, **how: Any) -> tuple[Any, Any]:
+    relay = FakeTransport()
+    outcome = await notify.notify(Mailer(relay, SENDER), booking, change, FACTS, **how)
+    return relay.to(), outcome.customer_told
+
+
+async def test_a_declined_request_the_bot_made_owes_the_customer_a_staff_one_does_not() -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    staff_made = record(status="cancelled", previous_status="pending", source="staff")
+    # The default is the PR 1 rule: a booking never confirmed tells the customer nothing.
+    assert await notified(staff_made, "cancelled") == (PEOPLE, None)
+    # A customer's bot asked, so the API says they are owed one. Nobody on it was ever invited
+    # (staff had not confirmed it), so nobody else gets a cancellation.
+    assert await notified(bots, "cancelled", owed=True) == ([CUSTOMER], True)
+
+
+async def test_a_chat_message_replaces_the_mail_for_a_decline_but_not_for_a_confirmed_booking() -> (
+    None
+):
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    # They never had the event, so the chat message is the only word and no mail adds to it; the
+    # people on it were never invited, so they get nothing either.
+    assert await notified(bots, "declined", owed=True, by_chat=True) == ([], True)
+    # A confirmation, a move or the cancellation of a booking they were invited to carries the
+    # calendar file, so it still goes to the customer.
+    confirmed = record(source="bot", previous_status="pending")
+    assert await notified(confirmed, "created", by_chat=True) == (EVERYONE, True)
+    assert await notified(confirmed, "moved", by_chat=True) == (EVERYONE, True)
+    gone = record(status="cancelled", previous_status="confirmed")
+    assert await notified(gone, "cancelled", by_chat=True) == (EVERYONE, True)
+    # With no address the chat message is all they get, and it is enough to say they were told.
+    customer = record().customer
+    assert customer is not None
+    silent = record(source="bot", customer=customer.model_copy(update={"email": None}))
+    assert await notified(silent, "created", by_chat=True) == (PEOPLE, True)
+    assert await notified(silent, "created") == (PEOPLE, False)
+
+
+async def test_a_declined_booking_mails_the_customer_plain_text_and_the_people_nothing() -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    relay = FakeTransport()
+    outcome = await notify.notify(Mailer(relay, SENDER), bots, "declined", FACTS, owed=True)
+    assert outcome.customer_told is True
+    customer = relay.for_(CUSTOMER)
+    assert customer.calendar is None and "wasn't confirmed" in customer.text
+    assert "calendar" not in customer.text.lower() and "cancelled" not in customer.subject.lower()
+    # The people on it were never sent its invitation, so there is nothing to cancel for them.
+    assert relay.to() == [CUSTOMER]
+
+
+async def test_a_declined_request_mails_only_the_customer_and_says_the_booking_stands() -> None:
+    original = record()
+    request = record(
+        status="cancelled",
+        previous_status="pending",
+        source="bot",
+        replaces_booking_id=original.id,
+        starts_at=original.starts_at + timedelta(hours=1),
+        ends_at=original.ends_at + timedelta(hours=1),
+    )
+    relay = FakeTransport()
+    outcome = await notify.notify(
+        Mailer(relay, SENDER), request, "declined", FACTS, owed=True, original=original
+    )
+    assert outcome.customer_told is True and relay.to() == [CUSTOMER]
+    (mail,) = relay.sent
+    assert mail.calendar is None and "wasn't accepted" in mail.text
+    assert "4 Mar 2031, 18:00" in mail.text and "4 Mar 2031, 19:00" in mail.text  # old and new
+
+
+@pytest.mark.parametrize("chat", [False, True])
+async def test_with_mail_off_only_a_chat_message_tells_the_customer(chat: bool) -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    off = Mailer(None, SENDER)
+    outcome = await notify.notify(off, bots, "cancelled", FACTS, owed=True, by_chat=chat)
+    assert outcome.email == "off" and outcome.customer_told is chat
+
+
+async def test_a_declined_booking_mail_invites_nothing_when_told_not_to() -> None:
+    bots = record(status="cancelled", previous_status="pending", source="bot")
+    for invite in (True, False):
+        relay = FakeTransport()
+        await notify.notify(
+            Mailer(relay, SENDER), bots, "declined", FACTS, owed=True, invite=invite
+        )
+        text = relay.for_(CUSTOMER).text
+        assert ("ask for another time" in text) is invite

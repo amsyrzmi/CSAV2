@@ -8,15 +8,17 @@ import {
   listResources,
   type BookingPersonOut,
   type BookingResourceOut,
+  type BookingSettings,
 } from "@/lib/bookings-api";
 import { emailForViewer, periodsToDays } from "@/lib/bookings-view";
 import StatusLabel from "../fs/StatusLabel";
 import { action, Notice, Panel, secondary } from "../ui";
 import BlocksPanel from "./BlocksPanel";
+import BookingSettingsPanel from "./BookingSettingsPanel";
 import HoursDialog, { type HoursSubject } from "./HoursDialog";
 import HoursPanel from "./HoursPanel";
 import { PersonDialog, RoomDialog } from "./PersonRoomDialogs";
-import { cardClass, mutedText, useAction, useLoaded, type BookingsScope } from "./parts";
+import { cardClass, mutedText, useAction, useLoaded, type BookingsScope, type Loaded } from "./parts";
 
 type Dialog =
   | { kind: "person"; person: BookingPersonOut | null }
@@ -24,7 +26,13 @@ type Dialog =
   | { kind: "hours"; subject: HoursSubject };
 
 /** The people and rooms page: who and what can be booked, and when they are available. */
-export default function PeopleAndRooms({ scope }: { scope: BookingsScope }) {
+export default function PeopleAndRooms({
+  scope,
+  settings,
+}: {
+  scope: BookingsScope;
+  settings: Loaded<BookingSettings>;
+}) {
   const companyHours = useLoaded(() => getHours(scope.tenantId));
   const people = useLoaded(() => listPeople(scope.tenantId));
   const rooms = useLoaded(() => listResources(scope.tenantId));
@@ -174,6 +182,8 @@ export default function PeopleAndRooms({ scope }: { scope: BookingsScope }) {
       </Panel>
 
       <BlocksPanel scope={scope} people={peopleList ?? []} rooms={roomList ?? []} />
+
+      <BookingSettingsPanel scope={scope} settings={settings} />
 
       {dialog?.kind === "person" && (
         <PersonDialog scope={scope} person={dialog.person} onClose={() => setDialog(null)}

@@ -68,6 +68,11 @@ const LISTED = [
   "action_not_allowed", "resume_at_not_after_today", "plan_unavailable", "plan_unchanged",
   "price_override_requires_immediate_change", "renews_at_not_after_current", "request_decided",
   "request_subscription_mismatch", "request_action_mismatch", "subscription_not_found",
+  // Booking card refusals at Confirm: "slot_taken" and "refused" are the two the assistant says.
+  "slot_taken", "refused", "own_bookings_only", "booking_not_found", "wrong_status",
+  "person_inactive", "resource_inactive", "type_inactive", "nobody_to_book", "no_room_available",
+  "people_required", "times_invalid", "bookings changes require staff or an administrator",
+  "person_not_found", "resource_not_found", "type_not_found", "contact_not_found",
 ];
 // One home per sentence: these three live in the email table, so MS_ERRORS must not copy them.
 const EMAIL_OWNED = ["mailbox_not_connected", "email_model_unavailable", "recipients_invalid"];
@@ -156,4 +161,21 @@ test("the dock chrome has English as it was and a Malay line", () => {
     assert.ok(copy.PANEL.ms[key]?.trim(), key);
     assert.notEqual(copy.PANEL.ms[key], text, key);
   }
+});
+
+test("the two booking refusals are the owner's sentences in both languages", () => {
+  assert.equal(copy.MS_ERRORS.slot_taken, "Masa itu baru sahaja diambil.");
+  assert.equal(copy.MS_ERRORS.refused, "Tidak tersedia pada hari itu.");
+  // English reads the server's own sentence or lib/api.ts's: never the raw code.
+  assert.equal(copy.errorLine(apiError("slot_taken", 409, "That time was just taken."), "en"), "That time was just taken.");
+  assert.equal(copy.errorLine(apiError("refused", 409, "Not available that day."), "en"), "Not available that day.");
+});
+
+test("every booking summary key has English and Malay", () => {
+  for (const key of ["booked", "pending", "moved", "cancelled", "not_told"]) {
+    const name = `summary_booking_${key}`;
+    assert.ok(copy.PANEL.en[name].trim() && copy.PANEL.ms[name].trim(), name);
+    assert.notEqual(copy.PANEL.en[name], copy.PANEL.ms[name], name);
+  }
+  assert.equal(copy.PANEL.en.summary_booking_not_told, "Customer wasn't told.");
 });

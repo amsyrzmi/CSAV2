@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 59 model calls (one planner call per case plus one drafting call per draft case),
-  up to about 107 when cases are re-planned.
+- A run is about 70 model calls (one planner call per case plus one drafting call per draft case),
+  up to about 129 when cases are re-planned.
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -130,7 +130,7 @@ The 1a screens have browser scenarios for the access page and the training flow,
 
 ## Bookings
 
-The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) that run against a stub, so none of them proves that mail leaves the server or that a calendar app accepts the file. The rows below are for a person on staging, with Mail on and the Bookings package active. Use synthetic people only, and your own mailbox and calendar for the invitations. The assistant does not book, move or cancel anything yet (that is PR 2), so there is no assistant prompt here.
+The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) that run against a stub, so none of them proves that mail leaves the server or that a calendar app accepts the file. The rows below are for a person on staging, with Mail on and the Bookings package active. Use synthetic people only, and your own mailbox and calendar for the invitations. The assistant's own prompts are in "Bookings in the assistant" below.
 
 | Check | Setup | Expected | Kind |
 |---|---|---|---|
@@ -154,6 +154,58 @@ The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) t
 | Open the calendar as a read-only member | Read-only member | No "New booking" button, no customer names or phones in the calendar or on a booking | manual |
 | Open the calendar from a browser set to another time zone | Company in Asia/Kuala_Lumpur, laptop on another zone | The week and every time are still in the company's time zone | manual |
 | Open an in-person booking's details | A type with an address | "Open in Maps" and "Open in Waze" open the right place in a new tab | manual |
+| A two-message booking on Telegram | Customer support and Bookings active, replies on (auto), a type for customers; a Telegram customer with a name | "What's free on Tuesday?" lists about five free times spread over the day, each in the form "Tuesday 10 November 2026, 3:00 pm (2026-11-10 15:00)". Then "3 pm please" books the Tuesday just offered with no service or day in the message: the reply says the booking is confirmed with that exact time, and one booking exists under Bookings, made by the bot | manual |
+| A two-message booking on WhatsApp | The same, on WhatsApp, a customer with no email address | The same two messages book it. The reply also asks for an email address and says it is fine to decline. Answering "sure, name@example.com" is saved ("The email address is saved.") and no second booking is made; the booking's details then show it as "Customer gave this address", and the contact's own email stays empty. Saying no leaves the booking as it was | manual |
+| A booking message that names no service or time | The same company, a new conversation | "3 pm please" as the first message gets one clarifying question, not a booking | manual |
+| Staff approve each reply, then the same two messages | Replies set to "Staff approve each reply" | The booking is held as pending; the reply says it is not confirmed yet, never "confirmed" | manual |
+| Replies Off, then the same two messages | Replies set to Off | Nothing is booked and nothing is sent | manual |
+| Open a booking the customer's own chat made | Admin or staff; the Telegram booking above | The details say "Booked by the customer". On the WhatsApp booking, an address the customer typed shows under the customer as "Customer gave this address"; a read-only member sees neither the customer nor that address | manual |
+| A pending confirmation, answered both ways | A type that needs confirmation, replies on (auto), a Telegram customer who books it | The calendar shows it dashed, "Waiting to be confirmed", and the customer was told it is not confirmed yet. Confirm: the customer is told it is confirmed. A second one left alone is declined by itself after "How long a request waits for staff", and the customer is told | manual |
+| A customer asks to move a confirmed booking | The same customer, on Telegram: "Can we move it to Thursday at 3 pm?" | A second, pending block appears on the calendar reading "Asked to move from … to …" in the company's time zone, and the original shows "A change is waiting". Confirm moves the original (same calendar event, higher version) and the customer is told; Decline leaves the original and the customer is told it stays | manual |
+| A customer cancels in chat | The Telegram customer above, with a confirmed booking: "Please cancel my haircut" | The reply asks "Cancel your Haircut on Tuesday 10 November 2026, 3:00 pm (2026-11-10 15:00)? Reply yes to cancel." and the booking is still on the calendar. "yes" (and, in a Malay chat, "ya" or "betul") cancels it and the reply says it is cancelled; sending "yes" again cancels nothing more. "no", or any other message before the yes, leaves the booking; a yes more than 30 minutes later, or after staff moved the booking, gets the question again. With "Staff approve each reply" the question is the draft staff see, and nothing is cancelled until the customer's yes. The question counts only once it is sent as drafted: if staff reject or edit that draft, or have not approved it yet, a "yes" gets the question again; approved late, it can be answered for 30 minutes from when it was sent | manual |
+| A reminder | Settings: "Remind people before a booking" set to the shortest time that suits the test (15 minutes), a confirmed customer booking made more than that far ahead | The customer gets one reminder about that long before the start, and none for a booking that is pending or cancelled. A booking made (or moved) less than 15 minutes before its start gets no reminder at all: its confirmation is enough | manual |
+| Change the Bookings settings | Admin, People & rooms, "Settings" | Hours or days for the reminder, hours for the wait, and the customer limit save with "Saved."; a value outside the range is refused in a sentence before anything is sent. Staff and read-only members read the values and see no controls | manual |
+| Replies Off banner | Customer support with replies set to Off, then to auto | The Bookings tab, on all three pages, says "Customer replies are off, so customers get no automatic messages from Bookings." An Admin also sees "Turn replies on", which opens Services; staff and read-only members see the sentence alone. With replies on, or a company with Bookings only, there is no banner. Staff's own bookings and moves still tell the customer | manual |
+| A booking when the model is down or its reply cannot be checked | Switch the primary model off (or make it write a wrong time), then book | The booking is made and the customer is sent the booking facts as they stand ("Booking confirmed: ... (2026-11-10 15:30)"), in English, with no "try again" and no escalation. The same goes for a refused booking (a taken time, the customer limit): the facts say plainly that no booking was made | manual |
+
+## Bookings in the assistant
+
+The dock finds free times and books, moves or cancels through a card (nothing changes until Confirm),
+in English and Malay, only while the Bookings tab is open to the company. It follows the Bookings tab's
+own rules: staff change only bookings they made or attend, a read-only member gets no card, and a
+private meeting of someone else is never found or described. A PASS checks the action (and `change`,
+where the row names it, or the read) and never the server's resolution: the card, the people, the time
+and the sentences are for a person to read. Use synthetic people and your own mailbox for customers.
+
+| Prompt | Setup | Expected | Smoke id |
+| --- | --- | --- | --- |
+| Book Room A tomorrow at 3 pm with Aina | Staff, Bookings active, a room "Room A", a person "Aina" | A booking_action with change book | `booking_book-en-1` |
+| Tolong tempah bilik A esok pukul 3 petang dengan Aina | Same, in Malay | A booking_action with change book | `booking_book-ms-1` |
+| Please book Room B for a meeting tomorrow at 2 pm | Read-only member (the model only sees "may ask free times") | An answer and no booking_action | `booking_book-en-2` |
+| Move my 3 pm with Aina tomorrow to 4 pm | Staff who made that booking | A booking_action with change move | `booking_move-en-1` |
+| Tolong alih mesyuarat saya dengan Aina esok ke pukul 4 petang | Same, in Malay | A booking_action with change move | `booking_move-ms-1` |
+| Tolong alihkan temujanji saya dengan Aina esok ke pukul 4 petang | Staff who made that booking, on any tab (the clock reaches the model whatever the words) | A booking_action with change move | `booking_move-ms-2` |
+| Cancel my 3 pm meeting with Aina tomorrow | Staff who made that booking | A booking_action with change cancel | `booking_cancel-en-1` |
+| Tolong batalkan mesyuarat saya dengan Aina esok | Same, in Malay | A booking_action with change cancel | `booking_cancel-ms-1` |
+| When is Aina free tomorrow? | Any member, Bookings active | An answer that carries the booking_availability read | `booking_free-en-1` |
+| Bila Aina ada masa kosong esok? | Same, in Malay | An answer that carries the booking_availability read | `booking_free-ms-1` |
+| Is Aina busy tomorrow? | Any member, on any tab, Bookings active | An answer that carries the booking_availability read | `booking_free-en-2` |
+| Book Room A tomorrow at 3 pm with Aina, then read the card | Staff; Aina free, inside working hours | Card "Book ..." with What, When (the company's local time), Length, With, Room and, when the type has them, Where and Customer; Confirm books it once and the Bookings tab shows it; the customer, if there is one, is mailed | manual |
+| Tolong tempah bilik A esok pukul 3 petang dengan Aina | Same, in Malay | The same card with Malay labels (Apa, Bila, Tempoh, Bersama, Bilik), and the same booking on Confirm | manual |
+| Book a haircut for Aina tomorrow | A type that names its person, no time given | A question asking when, with no card | manual |
+| Book a meeting with Aina | Two people called Aina | "Which Aina do you mean?" with two options, and no address in them; picking one gives a card | manual |
+| Book Aina tomorrow at 7 pm | Hours end at 6 pm | The card shows "Heads up: Outside working hours." and Confirm books it | manual |
+| Book Aina on a closed day | A closed day set on that date | The card shows "Heads up: This is a closed day." and Confirm books it | manual |
+| Book someone who has approved leave that day | Staff | "Not available that day." with no card, and no word about why | manual |
+| Book someone who has approved leave that day | An Admin | The card shows "Heads up: Not available that day." with no word about why, and Confirm books it (the owner's table: an Admin gets a warning, then allowed) | manual |
+| Confirm a card after the time was booked in the Bookings tab | Make the card, book the same time in the tab, then Confirm | "That time was just taken." and no second booking | manual |
+| Move my 10 am with Aina to 2 pm, then Confirm after moving it in the tab | Make the card, move the booking in the tab, then Confirm | The card is refused as changed; nothing moves | manual |
+| Cancel that booking and Confirm twice | Staff who made it | Cancelled once, the time is free again, and the second Confirm shows the same result | manual |
+| Move or cancel a booking you did not make and are not part of | Staff | "I couldn't find that booking." and no card | manual |
+| Move a private meeting of someone else | Staff | "I couldn't find that booking." and nothing about the meeting | manual |
+| When is Aina free tomorrow? | Aina has a private meeting and a day off on other days | Free stretches in the company's time zone, written like "Tuesday 10 November 2026, 3:00 pm (2026-11-10 15:00)"; the private meeting reads as not free, and nothing says why; on her leave day: "Aina has no free time that day." | manual |
+| Ask for free times while Bookings is not active | A company without the Bookings package | An answer saying Bookings is not part of the active services | manual |
+| A platform admin asks to book while viewing another company | Platform admin who chose company B | Only company B's rooms and people are found, and the booking lands in company B | manual |
 
 ## Go live
 

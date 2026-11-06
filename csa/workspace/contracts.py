@@ -25,6 +25,8 @@ PageKey = Literal["workspace_home", "business_orders", "business_order"]
 WorkspaceRole = Literal["platform_admin", "tenant_admin", "tenant_staff", "read_only"]
 BoundedText = Annotated[str, StringConstraints(min_length=1, max_length=100)]
 ShortText = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+PersonText = Annotated[str, StringConstraints(min_length=1, max_length=120)]
+ClockText = Annotated[str, StringConstraints(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
 MAX_WORK_TTL = timedelta(minutes=15)
 MAX_EVIDENCE_AGE = timedelta(seconds=30)
 
@@ -112,12 +114,37 @@ class OrderReadProposal(_Contract):
     resource: OrderHint
 
 
+class BookingFreeAsk(_Contract):
+    """ "When is Aina free tomorrow?": whose free times and which local day, for the read
+    ``booking_availability``. The server finds the person or room and answers from the booking
+    rules; a busy time is never explained."""
+
+    person: PersonText | None = None
+    room: PersonText | None = None
+    day: date
+    minutes: int | None = Field(default=None, ge=1, le=1440)
+
+    @model_validator(mode="after")
+    def someone_or_somewhere(self) -> BookingFreeAsk:
+        if (self.person is None) == (self.room is None):
+            raise ValueError("set exactly one of person and room")
+        return self
+
+
 class AnswerProposal(_Contract):
     action: Literal["answer"]
     markdown: str = Field(min_length=1, max_length=8000)
-    reads: list[Literal["read_current_record", "my_profile", "my_packages"]] = Field(
-        default_factory=list, max_length=3
-    )
+    reads: list[
+        Literal["read_current_record", "my_profile", "my_packages", "booking_availability"]
+    ] = Field(default_factory=list, max_length=4)
+    # Who and when for the read "booking_availability"; set with it and only with it.
+    availability: BookingFreeAsk | None = None
+
+    @model_validator(mode="after")
+    def availability_goes_with_its_read(self) -> AnswerProposal:
+        if ("booking_availability" in self.reads) != (self.availability is not None):
+            raise ValueError("set availability with the booking_availability read, and only then")
+        return self
 
 
 class NavigateProposal(_Contract):
@@ -235,9 +262,6 @@ class ProductStockReadProposal(_Contract):
 
 # People actions (csa/workspace/hr_people.py resolves every name against People as the caller).
 # Names, titles and departments are the words the user wrote; the server finds the people.
-PersonText = Annotated[str, StringConstraints(min_length=1, max_length=120)]
-
-
 class HrPersonAddProposal(_Contract):
     """Add a person; the server asks for a missing name, job title or start date."""
 
@@ -295,6 +319,34 @@ class HrPersonOpenProposal(_Contract):
     person: PersonText
 
 
+class BookingActionProposal(_Contract):
+    """Book, move or cancel; every name is the user's own words and the server finds the rest.
+
+    ``people``, ``rooms``, ``booking_type``, ``customer`` and ``booking_id`` may also hold an id
+    the user picked from offered options. To book give a ``booking_type`` (or a ``title`` and
+    ``minutes`` for a meeting), the local ``day`` and ``time``, and who or which room. To move or
+    cancel say which booking (``booking_id`` from an option, or ``on_day``, ``at_time`` and
+    ``about``); a move also gives the new ``time`` (and ``day`` when it changes). Nothing missing
+    is guessed: the server asks.
+    """
+
+    action: Literal["booking_action"]
+    change: Literal["book", "move", "cancel"]
+    booking_type: PersonText | None = None
+    title: BoundedText | None = None
+    minutes: int | None = Field(default=None, ge=1, le=1440)
+    people: list[PersonText] = Field(default_factory=list, max_length=10)
+    rooms: list[PersonText] = Field(default_factory=list, max_length=10)
+    include_me: bool = False
+    customer: PersonText | None = None
+    day: date | None = None
+    time: ClockText | None = None
+    booking_id: PersonText | None = None
+    on_day: date | None = None
+    at_time: ClockText | None = None
+    about: PersonText | None = None
+
+
 WorkspaceProposal = Annotated[
     Union[  # noqa: UP007 - Annotated discriminated union of named members
         AnswerProposal,
@@ -312,6 +364,7 @@ WorkspaceProposal = Annotated[
         HrPersonLeaveProposal,
         PeopleQueryProposal,
         HrPersonOpenProposal,
+        BookingActionProposal,
         GuidanceProposal,
         OrderReadProposal,
         ProductStockReadProposal,
@@ -327,6 +380,7 @@ ProposalKind = Literal[
     "inbox_decision",
     "subscription_action",
     "hr_person",
+    "booking_action",
 ]
 
 

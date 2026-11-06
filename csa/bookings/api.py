@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
-from csa.bookings import notify, service, setup
+from csa.bookings import customer_messages, notify, service, setup
 from csa.bookings.contracts import (
     BookingActionIn,
     BookingBlockIn,
@@ -30,6 +30,8 @@ from csa.bookings.contracts import (
     BookingResourceIn,
     BookingResourceOut,
     BookingResourcePatch,
+    BookingSettingsIn,
+    BookingSettingsOut,
     BookingSlotOut,
     BookingTime,
     BookingTypeIn,
@@ -101,17 +103,46 @@ MAIL_FOR: dict[Change, notify.Change] = {
 
 
 async def after_commit(
-    request: Request, record: service.BookingRecord, change: Change
+    request: Request,
+    record: service.BookingRecord,
+    change: Change,
+    *,
+    by_chat: bool = False,
+    original: service.BookingRecord | None = None,
+    invite: bool = True,
 ) -> notify.Outcome | None:
     """Runs once the booking's transaction has committed, with the unredacted record.
 
     Sends the invitation, change or cancellation email from this one place, so a failed email can
-    never undo a booking. It never raises, and the mail text never reaches the response.
+    never undo a booking. It never raises, and the mail text never reaches the response. `by_chat`
+    says the customer already has a chat message about this change (written in its transaction).
+    `original` is the booking a declined request to move would have moved; `invite` is whether the
+    bot would act on a reply (a declined customer's mail only then invites another request). Ending
+    a booking whose time has passed mails nobody.
     """
     mail = MAIL_FOR.get(change)
-    if mail is None:
+    if mail is None or customer_messages.is_over(record, change):
         return None
-    return await notify.notify_after_commit(request.app.state.pool, _mailer(request), record, mail)
+    declined = customer_messages.is_declined(record, change)
+    # Staff moved what the customer's own bot asked for, before confirming it: they asked, so they
+    # are told, by plain text (nobody on it was invited yet).
+    moved_request = change == "moved" and notify.bot_request(record)
+    if declined:
+        # The customer's own bot asked, so they are told; they were never sent an invitation, so it
+        # is plain text and not a cancellation. A request to move goes to them alone.
+        mail = "declined"
+    elif change == "confirmed" and record.moved_by_request:
+        mail = "moved"  # the booking keeps its id: the same calendar event, at its new time
+    return await notify.notify_after_commit(
+        request.app.state.pool,
+        _mailer(request),
+        record,
+        mail,
+        owed=True if declined or moved_request else None,
+        by_chat=by_chat,
+        original=original,
+        invite=invite,
+    )
 
 
 def build_bookings_router() -> APIRouter:
@@ -139,9 +170,18 @@ def build_bookings_router() -> APIRouter:
         return actor
 
     async def respond(
-        request: Request, actor: ConsoleActor, record: service.BookingRecord, change: Change
+        request: Request,
+        actor: ConsoleActor,
+        record: service.BookingRecord,
+        change: Change,
+        *,
+        by_chat: bool = False,
+        original: service.BookingRecord | None = None,
+        invite: bool = True,
     ) -> BookingOut:
-        outcome = await after_commit(request, record, change)
+        outcome = await after_commit(
+            request, record, change, by_chat=by_chat, original=original, invite=invite
+        )
         out = service.to_out(record, service.viewer_of(actor))
         # A redacted answer says nothing about the meeting, not even whether it had addresses.
         if out.redacted or outcome is None:
@@ -319,6 +359,23 @@ def build_bookings_router() -> APIRouter:
             await setup.remove_block(conn, client_id, actor, block_id)
         return Response(status_code=204)
 
+    # --- settings ----------------------------------------------------------------------------
+
+    @router.get("/settings", response_model=BookingSettingsOut)
+    async def settings(request: Request, client_id: Tenant) -> BookingSettingsOut:
+        """The reminder time, the pending window and the customer limit, with `replies_off`."""
+        reader(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await setup.get_settings(conn, client_id)
+
+    @router.put("/settings", response_model=BookingSettingsOut)
+    async def replace_settings(
+        request: Request, payload: BookingSettingsIn, client_id: Tenant
+    ) -> BookingSettingsOut:
+        actor = writer(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await setup.put_settings(conn, client_id, actor, payload)
+
     # --- the calendar ------------------------------------------------------------------------
 
     @router.get("/availability", response_model=list[BookingSlotOut])
@@ -401,7 +458,8 @@ def build_bookings_router() -> APIRouter:
         actor = changer(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             record = await service.move_booking(conn, client_id, actor, booking_id, payload)
-        return await respond(request, actor, record, "moved")
+            by_chat = await customer_messages.after_staff_action(conn, client_id, record, "moved")
+        return await respond(request, actor, record, "moved", by_chat=by_chat)
 
     def action(
         change: Change,
@@ -416,7 +474,16 @@ def build_bookings_router() -> APIRouter:
             actor = changer(request, client_id)
             async with tx(request.app.state.pool, str(client_id)) as conn:
                 record = await run(conn, client_id, actor, booking_id, payload or BookingActionIn())
-            return await respond(request, actor, record, change)
+                # A chat message is only rows, so it goes in the same transaction as the change.
+                by_chat = await customer_messages.after_staff_action(
+                    conn, client_id, record, change
+                )
+                original, invite = await customer_messages.mail_details(
+                    conn, client_id, record, change
+                )
+            return await respond(
+                request, actor, record, change, by_chat=by_chat, original=original, invite=invite
+            )
 
         return handle
 

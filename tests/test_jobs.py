@@ -7,14 +7,20 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
+from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.jobs.bookings import (
+    run_pending_expiry,
+    run_reminder_mail,
+    run_reminder_queue,
+)
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.reapers import run_mute_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
-from csa.jobs.runner import JobRunner
+from csa.jobs.runner import JobRunner, build_default_registry
 
 from tests.conftest import owner_dsn_for, requires_docker
 from tests.test_worker import _configure_test_settings
@@ -436,6 +442,27 @@ async def test_job_runner_advisory_lock_and_run_log(
     finally:
         await owner_pool.close()
         await app_pool.close()
+
+
+async def test_registry_runs_the_booking_expiry_every_five_minutes_for_each_client() -> None:
+    job = build_default_registry().get("booking_pending_expiry")
+    assert job is not None
+    assert job.every == timedelta(minutes=5)
+    assert job.per_client is True
+    assert job.fn is run_pending_expiry
+
+
+async def test_registry_runs_the_booking_reminders_every_five_minutes() -> None:
+    mailer = Mailer(None, "FourStacks <no-reply@fourstacks.my>")
+    for registry in (build_default_registry(), build_default_registry(mailer)):
+        queue = registry.get("booking_reminder_queue")
+        assert queue is not None and queue.fn is run_reminder_queue
+        assert queue.every == timedelta(minutes=5) and queue.per_client is True
+        send = registry.get("booking_reminder_mail")
+        # One run for everyone, as the owner, and room for a batch of slow sends.
+        assert send is not None and send.per_client is False
+        assert send.every == timedelta(minutes=5) and send.timeout > 30
+        assert send.fn is not run_reminder_mail  # the registry binds the mailer around it
 
 
 async def test_job_runner_due_and_heartbeat_health(

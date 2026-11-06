@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import ipaddress
-from datetime import UTC, datetime, timedelta
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from csa.bookings.contracts import Email, Name
 
 
 class DraftModel(BaseModel):
@@ -30,35 +39,110 @@ class PreparedRequest(DraftModel):
     payload: dict[str, object]
 
 
+# What the planner sees where the customer typed an address: `redact` numbers each one. The server
+# swaps it for the address in the customer's own message before the agent runs.
+EmailPlaceholder = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=r"^\[EMAIL_\d{1,3}\]$")
+]
+
+
 class BookingInput(DraftModel):
-    action: Literal["list", "status", "request_book", "request_reschedule", "request_cancel"]
-    booking_id: UUID | None = None
-    service: str | None = Field(default=None, min_length=1, max_length=200)
-    starts_at: AwareDatetime | None = None
-    ends_at: AwareDatetime | None = None
-    timezone: str = "Asia/Kuala_Lumpur"
-    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    """What the planner may ask the customer's booking agent to do.
+
+    The planner is shown this schema as it stands, so the descriptions are its instructions. Every
+    time is checked by the server: a wrong or invented one only gets the customer other times.
+    """
+
+    action: Literal[
+        "availability", "book", "reschedule", "cancel", "list", "status", "save_details"
+    ] = Field(
+        description=(
+            "availability: what can be booked, or the free times for one service. book: make a "
+            "booking. reschedule: move one of the customer's bookings. cancel: cancel one. "
+            "list: the customer's own bookings. status: one of the customer's bookings. "
+            "save_details: save the customer's name or email, only what they gave in their "
+            "message (for example when they answer a request for their email)."
+        )
+    )
+    type_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The id of the service, taken from context.booking.types (or the facts of an "
+            "availability lookup). Never invent one. Leave it out for availability to learn what "
+            "can be booked."
+        ),
+    )
+    day: date | None = Field(
+        default=None,
+        description=(
+            "availability only: the day the customer asked about, as YYYY-MM-DD. Leave it out "
+            "when they named no day."
+        ),
+    )
+    part_of_day: Literal["morning", "afternoon", "evening"] | None = Field(
+        default=None,
+        description=(
+            "availability only: when the customer asked about part of the day. morning is before "
+            "12:00, afternoon 12:00 to 17:00, evening 17:00 or later. Leave it out otherwise."
+        ),
+    )
+    starts_at: datetime | None = Field(
+        default=None,
+        description=(
+            "book and reschedule: the start the customer chose, as the business's local date and "
+            "time such as 2031-03-04T15:00 (no offset needed). Use only a time the customer "
+            "stated or one from the facts."
+        ),
+    )
+    booking_id: UUID | None = Field(
+        default=None,
+        description=(
+            "reschedule, cancel and status: the id of the customer's booking, taken from "
+            "context.booking.upcoming (or the facts of a list lookup). Never invent one."
+        ),
+    )
+    confirmed: bool | None = Field(
+        default=None,
+        description=(
+            "cancel only: true only when context.booking.cancel_asked is this booking_id and the "
+            "customer's message clearly says yes to that question, in any language. Otherwise "
+            "leave it out: the server then asks the customer to confirm first."
+        ),
+    )
+    customer_name: Name | None = Field(
+        default=None,
+        description=(
+            "book and save_details: the customer's name, only if they gave it in their message."
+        ),
+    )
+    customer_email: Email | EmailPlaceholder | None = Field(
+        default=None,
+        description=(
+            "book and save_details: the customer's email address, only if they gave one in their "
+            "message. The message shows an address as a placeholder such as [EMAIL_0]: copy that "
+            "placeholder exactly. Never write an address yourself."
+        ),
+    )
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def blank_is_missing(cls, value: object) -> object:
+        """A model fills an unused field with an empty string as often as it leaves it out."""
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def validate_action(self) -> Self:
-        try:
-            zone = ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("unknown timezone") from exc
-        if self.action in {"status", "request_reschedule", "request_cancel"}:
-            if self.booking_id is None:
-                raise ValueError("booking_id required")
-        if self.action in {"request_book", "request_reschedule"}:
-            if self.starts_at is None or self.ends_at is None:
-                raise ValueError("explicit offset-aware start and end required")
-            duration = self.ends_at.astimezone(UTC) - self.starts_at.astimezone(UTC)
-            if not timedelta(0) < duration <= timedelta(hours=24):
-                raise ValueError("booking duration must be positive and at most 24 hours")
-            for value in (self.starts_at, self.ends_at):
-                if value.utcoffset() != value.astimezone(UTC).astimezone(zone).utcoffset():
-                    raise ValueError("timestamp offset does not match timezone")
-        if self.action == "request_book" and not self.service:
-            raise ValueError("service required")
+        needs: dict[str, tuple[str, ...]] = {
+            "book": ("type_id", "starts_at"),
+            "reschedule": ("booking_id", "starts_at"),
+            "cancel": ("booking_id",),
+            "status": ("booking_id",),
+        }
+        for name in needs.get(self.action, ()):
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} required")
+        if self.action == "save_details" and not (self.customer_name or self.customer_email):
+            raise ValueError("customer_name or customer_email required")
         return self
 
 
@@ -203,7 +287,3 @@ class InvoiceDraftInput(DraftModel):
         payload["total"] = str(self.total)
         payload["calculation"] = "per_line_round_half_up_2dp"
         return payload
-
-
-def future_booking(inp: BookingInput, now: datetime) -> bool:
-    return inp.starts_at is None or inp.starts_at.astimezone(UTC) > now.astimezone(UTC)

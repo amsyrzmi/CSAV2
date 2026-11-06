@@ -1,7 +1,7 @@
 """Synthetic A0 evidence only: no authenticated adapter, persistence or dispatch."""
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import get_args
 from uuid import uuid4
@@ -541,6 +541,12 @@ def test_workspace_proposal_discriminator_parses_every_kind() -> None:
             "expected_version": 0,
         },
         "clarification": {"question": "which?", "options": [{"label": "a", "value": "b"}]},
+        "booking_action": {
+            "change": "book",
+            "title": "Sync",
+            "day": date(2031, 3, 4),
+            "time": "15:00",
+        },
         "page_guidance": {"page": "workspace_home"},
         "local_order_read": {"resource": {"kind": "local_order", "order_id": "o"}},
         "product_stock_read": {"query": "mug"},
@@ -550,6 +556,41 @@ def test_workspace_proposal_discriminator_parses_every_kind() -> None:
     assert WorkspaceActionProposal is not None
     with pytest.raises(ValidationError):
         adapter.validate_python({"action": "unknown"})
+
+
+def test_booking_action_and_availability_shapes() -> None:
+    adapter = TypeAdapter(WorkspaceProposal)
+    for change in ("book", "move", "cancel"):
+        assert adapter.validate_json(json.dumps({"action": "booking_action", "change": change}))
+    for bad in (
+        {"change": "delete"},
+        {"change": "book", "time": "25:00"},
+        {"change": "book", "time": "3pm"},
+        {"change": "book", "minutes": 0},
+        {"change": "book", "day": "tomorrow"},
+        {"change": "book", "starts_at": "2031-03-04T15:00:00Z"},  # a time is day and clock
+        {"change": "book", "people": ["x"] * 11},
+    ):
+        with pytest.raises(ValidationError):
+            adapter.validate_json(json.dumps({"action": "booking_action", **bad}))
+    ask = {"person": "Aina", "day": "2031-03-04"}
+    reads = ["booking_availability"]
+    answer = AnswerProposal.model_validate_json(
+        json.dumps({"action": "answer", "markdown": "x", "reads": reads, "availability": ask})
+    )
+    assert answer.availability is not None and answer.availability.person == "Aina"
+    # The read and its question go together, and name one person or one room.
+    for broken in (
+        {"reads": reads},
+        {"availability": ask},
+        {"reads": reads, "availability": {"day": "2031-03-04"}},
+        {"reads": reads, "availability": {**ask, "room": "Room A"}},
+        {"reads": reads, "availability": {**ask, "minutes": 0}},
+    ):
+        with pytest.raises(ValidationError):
+            AnswerProposal.model_validate_json(
+                json.dumps({"action": "answer", "markdown": "x", **broken})
+            )
 
 
 def test_answer_reads_and_clarification_options_bounded() -> None:

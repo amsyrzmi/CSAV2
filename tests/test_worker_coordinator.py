@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
 from typing import Any
 from uuid import UUID
 
 import psycopg
 import pytest
-from apps.worker.main import IngressWorker
+from apps.worker.main import IngressWorker, drain_then_close, run_until_stopped
+from csa.console.mailer import Mailer
 from csa.contracts.envelope import Channel
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import (
@@ -23,6 +27,7 @@ from csa.core import db
 from csa.graph.coordinator import build_runtime
 from csa.graph.saver import build_checkpoint_pool, build_saver
 from csa.turn.deps import FALLBACK_TEXT, PostgresTurnDependencies, _supported_locale
+from structlog.testing import capture_logs
 
 from tests.conftest import owner_dsn_for, requires_docker
 from tests.test_coordinator import make_envelope
@@ -416,3 +421,86 @@ async def test_finalize_failure_retries_from_checkpoint_without_second_reply(
         assert done["status"] == "completed"
     finally:
         await _close(*pools[:3])
+
+
+class _Pool:
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name, self.events = name, events
+
+    async def close(self) -> None:
+        self.events.append(f"close {self.name}")
+
+
+async def test_the_worker_hands_its_mailer_to_the_booking_agent_it_keeps() -> None:
+    mailer = Mailer(None, "FourStacks <no-reply@fourstacks.my>")
+    deps = PostgresTurnDependencies(None, mailer=mailer)  # type: ignore[arg-type]
+    agent = deps._runner._agents["booking_agent"]
+    assert agent is deps._booking_agent and agent._mailer is mailer  # type: ignore[attr-defined]
+    assert PostgresTurnDependencies(None)._booking_agent._mailer is None  # type: ignore[arg-type]
+
+
+async def test_a_normal_stop_drains_booking_mail_before_any_pool_closes() -> None:
+    events: list[str] = []
+    deps = PostgresTurnDependencies(None)  # type: ignore[arg-type]
+
+    async def drain() -> None:
+        events.append("drain")
+
+    deps._booking_agent.drain = drain  # type: ignore[method-assign]
+    await drain_then_close(deps, _Pool("checkpoint", events), _Pool("app", events))
+    assert events == ["drain", "close checkpoint", "close app"]
+    await drain_then_close(None, _Pool("owner", events))  # no coordinator: only the pools
+    assert events[-1] == "close owner"
+
+
+class _Http:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def aclose(self) -> None:
+        self.events.append("http closed")
+
+
+async def test_sigterm_stops_the_worker_through_the_drain_and_the_pool_close() -> None:
+    events: list[str] = []
+    deps = PostgresTurnDependencies(None)  # type: ignore[arg-type]
+
+    async def drain() -> None:
+        events.append("drain")
+
+    deps._booking_agent.drain = drain  # type: ignore[method-assign]
+    background = asyncio.create_task(asyncio.sleep(3600))
+    task = asyncio.create_task(
+        run_until_stopped(
+            asyncio.Event().wait(),
+            background=[background],
+            llm_http=_Http(events),  # type: ignore[arg-type]
+            deps=deps,
+            pools=(_Pool("app", events),),
+        )
+    )
+    loop = asyncio.get_running_loop()
+    try:
+        await asyncio.sleep(0.05)  # the handlers are in place once the task has started
+        os.kill(os.getpid(), signal.SIGTERM)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+        loop.remove_signal_handler(signal.SIGINT)
+    assert background.cancelled()
+    assert events == ["http closed", "drain", "close app"]
+
+
+async def test_a_drain_that_does_not_finish_is_cut_off_and_the_pools_still_close() -> None:
+    events: list[str] = []
+    deps = PostgresTurnDependencies(None)  # type: ignore[arg-type]
+
+    async def stuck() -> None:
+        await asyncio.sleep(3600)
+
+    deps._booking_agent.drain = stuck  # type: ignore[method-assign]
+    with capture_logs() as logs:
+        await drain_then_close(deps, _Pool("app", events), timeout=0.05)
+    assert events == ["close app"]
+    assert [(e["event"], e["category"]) for e in logs] == [("worker_drain_incomplete", "timeout")]

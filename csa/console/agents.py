@@ -35,8 +35,9 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
     ),
     "booking_agent": (
         "Bookings",
-        "prepared_only",
-        "Local history and unexecuted requests. No Calendar availability or booking execution.",
+        "local",
+        "Finds free times, books, moves and cancels a customer's own bookings, and lists them. "
+        "It follows the company's reply setting.",
     ),
     "subscription_agent": (
         "Subscriptions",

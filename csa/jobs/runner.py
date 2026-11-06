@@ -12,8 +12,10 @@ import structlog
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.jobs.bookings import run_pending_expiry, run_reminder_mail, run_reminder_queue
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
@@ -25,8 +27,15 @@ from csa.marketplace.retention import run_marketplace_catch_up, run_marketplace_
 logger = structlog.get_logger(__name__)
 
 
-def build_default_registry() -> JobRegistry:
-    """Build the standard production registry of scheduled jobs."""
+def build_default_registry(
+    mailer: Mailer | None = None, app_pool: AsyncConnectionPool | None = None
+) -> JobRegistry:
+    """Build the standard production registry of scheduled jobs.
+
+    `mailer` sends the booking reminders and lapse notices by email, and `app_pool` is the pool
+    every company's rows are read and written through. With either missing, the mail job runs and
+    sends nothing, so the rows wait in the queue for a worker that has both.
+    """
     registry = JobRegistry()
     registry.register(
         Job(
@@ -90,6 +99,43 @@ def build_default_registry() -> JobRegistry:
             every=timedelta(hours=3),
             fn=run_marketplace_catch_up,
             per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="booking_pending_expiry",
+            every=timedelta(minutes=5),
+            fn=run_pending_expiry,
+            per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="booking_reminder_queue",
+            every=timedelta(minutes=5),
+            fn=run_reminder_queue,
+            per_client=True,
+        )
+    )
+
+    async def booking_reminder_mail(
+        conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int
+    ) -> dict[str, Any]:
+        if app_pool is None:
+            return {"claimed": 0, "sent": 0, "failed": 0, "dropped": 0}
+        return await run_reminder_mail(conn, app_pool, mailer, clock, batch_size=batch_size)
+
+    # Once for every company: the owner connection lists which have mail queued, and each row is
+    # then handled in its own company's transaction. Sends run a few at a time
+    # and each may take its mailer's limit, so a run gets longer than the usual 30 seconds.
+    registry.register(
+        Job(
+            name="booking_reminder_mail",
+            every=timedelta(minutes=5),
+            fn=booking_reminder_mail,
+            per_client=False,
+            timeout=150.0,
+            batch_size=50,
         )
     )
     return registry

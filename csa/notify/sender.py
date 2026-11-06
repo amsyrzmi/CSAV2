@@ -28,6 +28,7 @@ _HEADLINES = {
     "order_submitted": "Order submitted",
     "dlq": "Dead-letter item",
     "circuit_opened": "Agent circuit opened",
+    "booking_pending": "Booking waiting for confirmation",
 }
 
 

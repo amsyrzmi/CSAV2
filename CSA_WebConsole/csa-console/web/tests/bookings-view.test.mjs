@@ -22,6 +22,7 @@ const {
   bookingTitle, mapsLink, wazeLink, safeMeetingLink, canChangeBooking,
   emptyBookingForm, bookingProblem, formToBookingIn, isPhone, entriesOnDay,
   inactiveNotes, customerNote, switchedOffPeople, severalSwitchedOff,
+  settingsToForm, settingsProblem, formToSettingsIn, momentText, askedText, sourceNote, isChangeRequest,
 } = view;
 
 const week = (opens, closes, days = [0, 1, 2, 3, 4]) => days.map((weekday) => ({ weekday, opens, closes }));
@@ -539,4 +540,97 @@ test("the customer note appears only when the customer was not told", () => {
   assert.equal(customerNote(true), null);
   assert.equal(customerNote(null), null);
   assert.equal(customerNote(undefined), null);
+});
+
+test("the reminder time shows in days when it is whole days, else in hours, and is stored as minutes", () => {
+  const read = (minutes) => settingsToForm({ reminder_minutes: minutes, pending_hours: 24, customer_limit: 5 });
+  assert.deepEqual(read(1440), { reminder: "1", reminderUnit: "days", pendingHours: "24", limit: "5" });
+  assert.deepEqual(read(10080), { reminder: "7", reminderUnit: "days", pendingHours: "24", limit: "5" });
+  assert.deepEqual(read(120), { reminder: "2", reminderUnit: "hours", pendingHours: "24", limit: "5" });
+  assert.deepEqual(read(90), { reminder: "1.5", reminderUnit: "hours", pendingHours: "24", limit: "5" });
+  assert.deepEqual(read(15), { reminder: "0.25", reminderUnit: "hours", pendingHours: "24", limit: "5" });
+  // A value that hours cannot say exactly is kept in minutes rather than rounded.
+  assert.deepEqual(read(100), { reminder: "100", reminderUnit: "minutes", pendingHours: "24", limit: "5" });
+
+  const send = (form, version = 3) => formToSettingsIn({ ...read(1440), ...form }, version);
+  assert.deepEqual(send({}), { reminder_minutes: 1440, pending_hours: 24, customer_limit: 5, version: 3 });
+  assert.equal(send({ reminder: "2", reminderUnit: "days" }).reminder_minutes, 2880);
+  assert.equal(send({ reminder: "1.5", reminderUnit: "hours" }).reminder_minutes, 90);
+  assert.equal(send({ reminder: "0.25", reminderUnit: "hours" }).reminder_minutes, 15);
+  assert.equal(send({ reminder: "1.1", reminderUnit: "hours" }).reminder_minutes, 66);
+  assert.equal(send({ reminder: "100", reminderUnit: "minutes" }).reminder_minutes, 100);
+  assert.deepEqual(send({ pendingHours: " 48 ", limit: "10" }, 0), {
+    reminder_minutes: 1440, pending_hours: 48, customer_limit: 10, version: 0,
+  });
+});
+
+test("the settings form names the first thing the server would refuse, in plain words", () => {
+  const form = (change) => ({ reminder: "1", reminderUnit: "days", pendingHours: "24", limit: "5", ...change });
+  assert.equal(settingsProblem(form({})), null);
+  assert.equal(settingsProblem(form({ reminder: "0.25", reminderUnit: "hours" })), null);
+  assert.equal(settingsProblem(form({ reminder: "7", reminderUnit: "days" })), null);
+  assert.match(settingsProblem(form({ reminder: "" })), /^Enter how long before a booking to remind people/);
+  assert.match(settingsProblem(form({ reminder: "abc" })), /^Enter how long before/);
+  assert.match(settingsProblem(form({ reminder: "0.1", reminderUnit: "hours" })), /at least 15 minutes/);
+  assert.match(settingsProblem(form({ reminder: "8", reminderUnit: "days" })), /at most 7 days/);
+  assert.match(settingsProblem(form({ reminder: "1.333", reminderUnit: "hours" })), /^Enter how long before/);
+  assert.match(settingsProblem(form({ pendingHours: "0" })), /whole number of hours, from 1 to 168/);
+  assert.match(settingsProblem(form({ pendingHours: "169" })), /from 1 to 168/);
+  assert.match(settingsProblem(form({ pendingHours: "1.5" })), /from 1 to 168/);
+  assert.match(settingsProblem(form({ limit: "0" })), /whole number, from 1 to 50/);
+  assert.match(settingsProblem(form({ limit: "51" })), /from 1 to 50/);
+  assert.match(settingsProblem(form({ limit: "" })), /from 1 to 50/);
+});
+
+test("a moment reads on the company's clock, not the browser's", () => {
+  assert.equal(momentText("2026-11-05T01:00:00Z", "Asia/Kuala_Lumpur"), "5 Nov 2026, 09:00");
+  assert.equal(momentText("2026-11-05T01:00:00Z", "America/New_York"), "4 Nov 2026, 20:00");
+});
+
+const asked = (id, original, extra = {}) => ({
+  id, status: "pending", replaces_booking_id: original, starts_at: "2026-11-09T02:00:00Z",
+  ends_at: "2026-11-09T03:00:00Z", ...extra,
+});
+const live = (id, extra = {}) => ({
+  id, status: "confirmed", replaces_booking_id: null, starts_at: "2026-11-05T01:00:00Z",
+  ends_at: "2026-11-05T02:00:00Z", ...extra,
+});
+
+test("a pending change reads as 'Asked to move from … to …', from the times the server sent", () => {
+  const zone = "Asia/Kuala_Lumpur";
+  // The original need not be on the same week: its time comes with the request.
+  const request = asked("r", "a", {
+    replaces_starts_at: "2026-11-02T01:00:00Z", replaces_ends_at: "2026-11-02T02:00:00Z",
+  });
+  assert.equal(askedText(request, zone), "Asked to move from 2 Nov 2026, 09:00 to 9 Nov 2026, 10:00");
+  assert.equal(
+    askedText(request, "America/New_York"),
+    "Asked to move from 1 Nov 2026, 20:00 to 8 Nov 2026, 21:00",
+  );
+});
+
+test("only a live request that carries its original's time reads as a change", () => {
+  const zone = "Asia/Kuala_Lumpur";
+  assert.equal(askedText(live("a"), zone), null);
+  assert.equal(askedText(asked("r", "a"), zone), null);
+  assert.equal(askedText(asked("r", "a", {
+    status: "cancelled", replaces_starts_at: "2026-11-02T01:00:00Z",
+  }), zone), null);
+  assert.equal(askedText({ ...live("a"), replaces_starts_at: "2026-11-02T01:00:00Z" }, zone), null);
+});
+
+test("only a pending booking with an original is a change request", () => {
+  assert.equal(isChangeRequest(asked("r", "a")), true);
+  assert.equal(isChangeRequest(asked("r", "a", { status: "cancelled" })), false);
+  assert.equal(isChangeRequest(live("a")), false);
+  assert.equal(isChangeRequest({ id: "x", status: "pending" }), false);
+});
+
+test("a booking the customer's bot made says so", () => {
+  assert.equal(sourceNote({ source: "bot", redacted: false }), "Booked by the customer");
+  assert.equal(sourceNote({ source: "staff", redacted: false }), null);
+  assert.equal(sourceNote({ source: "assistant", redacted: false }), null);
+  assert.equal(sourceNote({ source: null, redacted: true }), null);
+  assert.equal(sourceNote({ redacted: false }), null);
+  assert.equal(sourceNote({ source: "bot", redacted: true }), null);
 });
