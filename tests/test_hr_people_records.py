@@ -30,7 +30,7 @@ from csa.hr.api import build_hr_router
 from csa.hr.automation_models import PersonalSave
 from csa.hr.operations import HrOperations
 from csa.hr.personal import fingerprint_payload, personal_fingerprint
-from csa.storage.base import ObjectStore
+from csa.storage.base import ObjectStore, StorageError
 from csa.storage.local import LocalObjectStore
 from csa.storage.s3 import S3ObjectStore
 from fastapi import FastAPI
@@ -2382,3 +2382,81 @@ async def test_leaver_functions_are_pinned(world: HrWorld) -> None:
                 statement + " WHERE client_id=%s AND id=%s",  # type: ignore[arg-type]
                 (world.tenant, staff),
             )
+
+
+async def test_document_upload_storage_failure_answers_503_after_cleanup(
+    world: HrWorld, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "hr-uploads"
+    store = LocalObjectStore(root)
+    mount_documents(world, store)
+    staff = world.employees["staff"]
+    original = store.put
+
+    def throttled_after_put(tenant: UUID, name: str, data: bytes) -> None:
+        original(tenant, name, data)
+        raise StorageError("put failed: SlowDown")
+
+    monkeypatch.setattr(store, "put", throttled_after_put)
+    response = await upload(world, "owner", staff, "lost.pdf", PDF)
+
+    assert (response.status_code, response.json()) == (
+        503,
+        {"detail": "hr_document_storage_unavailable"},
+    )
+    assert await documents_rows(world) == []
+    # The reconcile ran: the file the failed put left behind is gone.
+    assert stored_files(root, world.tenant) == []
+    monkeypatch.undo()
+    assert (await upload(world, "owner", staff, "ok.pdf", PDF)).status_code == 201
+
+
+async def test_document_upload_unrelated_error_still_propagates_after_cleanup(
+    world: HrWorld, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "hr-uploads"
+    store = LocalObjectStore(root)
+    mount_documents(world, store)
+    original = store.put
+
+    def broken_after_put(tenant: UUID, name: str, data: bytes) -> None:
+        original(tenant, name, data)
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(store, "put", broken_after_put)
+    with pytest.raises(RuntimeError, match="synthetic"):
+        await upload(world, "owner", world.employees["staff"], "lost.pdf", PDF)
+
+    assert await documents_rows(world) == []
+    assert stored_files(root, world.tenant) == []
+
+
+async def test_duplicate_retry_survives_a_failed_copy_cleanup(
+    world: HrWorld, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "hr-uploads"
+    store = LocalObjectStore(root)
+    mount_documents(world, store)
+    staff = world.employees["staff"]
+    key = uuid4()
+    first = await upload(world, "owner", staff, "a.pdf", PDF, key=key)
+    assert first.status_code == 201
+
+    def broken(tenant: UUID, name: str) -> None:
+        raise StorageError("delete failed: SlowDown")
+
+    working_delete = store.delete
+    monkeypatch.setattr(store, "delete", broken)
+    with capture_logs() as logs:
+        again = await upload(world, "owner", staff, "a.pdf", PDF, key=key)
+
+    assert again.status_code == 201 and again.json() == first.json()
+    failures = [e for e in logs if e["event"] == "hr_document_duplicate_cleanup_failed"]
+    assert len(failures) == 1 and failures[0]["log_level"] == "error"
+    assert len(await documents_rows(world)) == 1
+    # The unreferenced copy waits for the next cleanup, which keeps the first file.
+    assert len(stored_files(root, world.tenant)) == 2
+    monkeypatch.setattr(store, "delete", working_delete)
+    assert await documents.cleanup(world.service.pool, store, world.tenant) == 1
+    got = await download(world, "owner", first.json()["document_id"])
+    assert got.status_code == 200 and got.content == PDF

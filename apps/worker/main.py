@@ -40,7 +40,8 @@ from csa.marketplace.processor import (
 from csa.marketplace.reads import LiveReadAccess, live_read_access
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
-from csa.storage.factory import build_stores, verify_stores
+from csa.storage.base import ObjectStore
+from csa.storage.factory import build_stores, kb_only, verify_stores
 from csa.turn.deps import CAPABILITIES, PostgresTurnDependencies, build_llm_provider
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -598,12 +599,24 @@ def register_marketplace_sync_task(
     return asyncio.create_task(marketplace_sync_loop(processor, poll_seconds=SYNC_POLL_SECONDS))
 
 
+async def prepare_kb_store(settings: Settings) -> ObjectStore | None:
+    """Build and check the KB store the ingest loop reads; HR documents are never touched.
+
+    The worker may hold a key scoped to the KB prefix only, so the HR store is neither built
+    for use nor checked here.
+    """
+    if not settings.KB_INGEST_ENABLED:
+        return None
+    stores = kb_only(build_stores(settings))
+    await verify_stores(stores)
+    return stores.kb
+
+
 async def main() -> None:  # pragma: no cover - process entrypoint
     """Start queue/reaper, checkpoint retention, and the liveness heartbeat."""
     settings = get_settings()
     # A bad bucket or root stops the worker before it opens pools or starts any loop.
-    stores = build_stores(settings)
-    await verify_stores(stores)
+    kb_store = await prepare_kb_store(settings)
     owner_dsn = str(settings.LG_DATABASE_URL)
     owner_pool = db.build_pool(owner_dsn, max_size=4)
     app_pool = db.build_pool(str(settings.DATABASE_URL), max_size=8)
@@ -687,13 +700,13 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     jobs_task = asyncio.create_task(jobs_loop(job_runner))
     background = [jobs_task, retention, hr_leavers]
     if settings.KB_INGEST_ENABLED:
-        assert stores.kb is not None
+        assert kb_store is not None
         kb_processor = KbIngestProcessor(
             owner_pool,
             app_pool,
             embedder=DefaultKbEmbedder.from_settings(settings),
             config=KbIngestConfig(
-                store=stores.kb,
+                store=kb_store,
                 max_files=settings.KB_MAX_FILES_PER_JOB,
                 max_file_bytes=settings.KB_MAX_FILE_BYTES,
             ),

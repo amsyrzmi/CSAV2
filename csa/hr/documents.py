@@ -216,9 +216,13 @@ class HrDocuments:
                 receipt = row["receipt"]
                 if receipt["duplicate"]:
                     # A retry: the first request's file is kept, this copy is not referenced.
-                    await asyncio.to_thread(self.store.delete, session.tenant_id, storage_name)
+                    try:
+                        await asyncio.to_thread(self.store.delete, session.tenant_id, storage_name)
+                    except Exception:
+                        # The first file is safe; a later cleanup removes this copy.
+                        logger.exception("hr_document_duplicate_cleanup_failed")
                 await self.core._session(conn, session)
-        except BaseException:
+        except BaseException as exc:
             # A lost COMMIT acknowledgement is ambiguous: reconcile against the durable rows
             # instead of removing a file that a committed row may already point at.
             if published:
@@ -226,6 +230,10 @@ class HrDocuments:
                     await asyncio.shield(cleanup(self.core.pool, self.store, session.tenant_id))
                 except Exception:
                     logger.exception("hr_document_reconciliation_failed")
+            if isinstance(exc, StorageError):
+                # Throttling or a timeout after the client's retries: the caller may retry.
+                logger.error("hr_document_storage_failed")
+                raise HTTPException(503, "hr_document_storage_unavailable") from exc
             raise
         return self._out(receipt)
 

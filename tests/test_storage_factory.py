@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import base64
+import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
 import boto3
 import pytest
+from apps.worker import main as worker_main
 from csa.core.settings import Settings
 from csa.storage.base import StorageError
-from csa.storage.factory import Stores, build_stores, verify_stores
+from csa.storage.factory import Stores, build_stores, kb_only, verify_stores
 from csa.storage.local import LocalObjectStore
 from csa.storage.s3 import S3ObjectStore
 from moto import mock_aws
@@ -93,3 +96,52 @@ async def test_verify_stores_raises_for_a_missing_bucket() -> None:
     with mock_aws():
         with pytest.raises(StorageError, match="check failed: NoSuchBucket"):
             await verify_stores(build_stores(s3_settings()))
+
+
+def test_importing_the_factory_does_not_import_boto3() -> None:
+    code = "import csa.storage.factory, sys; sys.exit(1 if 'boto3' in sys.modules else 0)"
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False)
+    assert done.returncode == 0, done.stderr.decode()
+
+
+def test_kb_only_drops_the_hr_store(tmp_path: Path) -> None:
+    kb, hr = LocalObjectStore(tmp_path / "kb"), LocalObjectStore(tmp_path / "hr")
+
+    assert kb_only(Stores(kb=kb, hr=hr)) == Stores(kb=kb, hr=None)
+    assert kb_only(Stores(kb=None, hr=hr)) == Stores(kb=None, hr=None)
+
+
+class RecordingStore(LocalObjectStore):
+    """A store that records whether it was checked."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.checks = 0
+
+    def check(self) -> None:
+        self.checks += 1
+
+
+async def test_worker_verifies_only_the_kb_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kb, hr = RecordingStore(tmp_path / "kb"), RecordingStore(tmp_path / "hr")
+    monkeypatch.setattr(worker_main, "build_stores", lambda settings: Stores(kb=kb, hr=hr))
+
+    store = await worker_main.prepare_kb_store(
+        make_settings(KB_INGEST_ENABLED="true", KB_UPLOAD_ROOT=str(tmp_path / "kb"))
+    )
+
+    assert store is kb
+    assert (kb.checks, hr.checks) == (1, 0)
+
+
+async def test_worker_builds_no_store_while_kb_ingest_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(settings: Settings) -> Stores:
+        raise AssertionError("the worker must not build stores while KB ingest is off")
+
+    monkeypatch.setattr(worker_main, "build_stores", refuse)
+
+    assert await worker_main.prepare_kb_store(make_settings()) is None

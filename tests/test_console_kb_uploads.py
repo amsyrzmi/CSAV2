@@ -838,3 +838,49 @@ async def test_remove_succeeds_when_storage_cleanup_fails(
     )
     assert reconciled.json() == {"removed_files": 1}
     assert sessions.kb_store.list_names(UUID(tenant)) == []
+
+
+async def test_upload_storage_failure_answers_503_after_cleanup(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await enable(sessions)
+    original = sessions.kb_store.put
+
+    def throttled_after_put(client_id: UUID, name: str, data: bytes) -> None:
+        original(client_id, name, data)
+        raise StorageError("put failed: SlowDown")
+
+    monkeypatch.setattr(sessions.kb_store, "put", throttled_after_put)
+    response = await upload(sessions, [("faq.csv", FAQ_CSV)])
+
+    assert (response.status_code, response.json()) == (
+        503,
+        {"detail": "upload storage unavailable; retry"},
+    )
+    assert not await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", tenant)
+    assert not await sessions.q("SELECT id FROM kb_upload_files WHERE client_id=%s", tenant)
+    # The reconcile ran: the object the failed put left behind is gone.
+    assert sessions.kb_store.list_names(UUID(tenant)) == []
+    monkeypatch.setattr(sessions.kb_store, "put", original)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+
+
+async def test_upload_storage_failure_is_503_even_when_cleanup_fails(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await enable(sessions)
+
+    def throttled(client_id: UUID, name: str, data: bytes) -> None:
+        raise StorageError("put failed: SlowDown")
+
+    def broken(client_id: UUID) -> list[str]:
+        raise StorageError("synthetic storage outage")
+
+    monkeypatch.setattr(sessions.kb_store, "put", throttled)
+    monkeypatch.setattr(sessions.kb_store, "list_names", broken)
+    with structlog.testing.capture_logs() as logs:
+        response = await upload(sessions, [("faq.csv", FAQ_CSV)])
+
+    assert response.status_code == 503
+    assert [entry["event"] for entry in logs].count("kb_upload_reconciliation_failed") == 1
+    assert not await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", tenant)

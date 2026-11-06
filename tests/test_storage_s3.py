@@ -127,3 +127,14 @@ def test_access_denied_is_a_storage_error_and_not_not_found() -> None:
 
     assert not isinstance(raised.value, StorageNotFound)
     assert FAKE_SECRET not in str(raised.value)
+
+
+def test_create_configures_signature_retries_and_timeouts() -> None:
+    with mock_aws():
+        store = S3ObjectStore.create(BUCKET, "us-east-1", "testing", FAKE_SECRET, "kb")
+        config = store.client.meta.config
+
+    assert config.signature_version == "s3v4"
+    # botocore reports the configured max_attempts=3 (retries) as 4 total attempts.
+    assert config.retries == {"mode": "standard", "total_max_attempts": 4}
+    assert (config.connect_timeout, config.read_timeout) == (5, 30)

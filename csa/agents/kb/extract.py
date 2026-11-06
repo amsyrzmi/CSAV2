@@ -80,16 +80,6 @@ def resolve_upload_path(upload_root: Path, client_id: UUID, path: str) -> Path:
     return resolved
 
 
-def read_upload(path: Path, max_bytes: int) -> bytes:
-    with path.open("rb") as fh:
-        data = fh.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise KbFileError(f"file exceeds the {max_bytes // (1024 * 1024)} MB limit")
-    if not data:
-        raise KbFileError("file is empty")
-    return data
-
-
 def extract_document(
     data: bytes,
     file_kind: FileKind,

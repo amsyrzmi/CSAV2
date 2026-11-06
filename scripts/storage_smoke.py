@@ -46,8 +46,10 @@ def _check_stores(label: str, store: ObjectStore, tenant: UUID) -> bool:
         try:
             detail = action()
         except Exception as exc:
-            # StorageError text is code-only by design; anything else is named by class alone.
-            reason = str(exc) if isinstance(exc, StorageError) else type(exc).__name__
+            # StorageError text is code-only by design and AssertionError text is authored in
+            # this script; any other error is named by class alone.
+            authored = isinstance(exc, StorageError | AssertionError)
+            reason = str(exc) if authored else type(exc).__name__
             print(f"FAIL {label}: {title} ({reason})", flush=True)
             passed = False
         else:

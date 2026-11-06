@@ -25,10 +25,14 @@ from csa.agents.kb.extract import (
     KbFileError,
     extract_document,
     file_kind_for,
-    read_upload,
     resolve_upload_path,
 )
-from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, parse_job_files
+from csa.agents.kb.ingest_jobs import (
+    KbIngestConfig,
+    KbIngestProcessor,
+    parse_job_files,
+    read_source,
+)
 from csa.contracts.callbacks import PendingActionStore
 from csa.core import db
 from csa.storage.base import StorageError
@@ -181,15 +185,17 @@ def test_upload_path_is_confined_to_the_tenant_directory(tmp_path: Path) -> None
         resolve_upload_path(tmp_path, client_a, ".")
 
 
-def test_read_upload_enforces_size_and_emptiness(tmp_path: Path) -> None:
-    big = tmp_path / "big.csv"
-    big.write_bytes(b"x" * 2048)
-    with pytest.raises(KbFileError, match="exceeds"):
-        read_upload(big, 1024)
-    empty = tmp_path / "empty.csv"
-    empty.write_bytes(b"")
-    with pytest.raises(KbFileError, match="empty"):
-        read_upload(empty, 1024)
+def test_read_source_enforces_size_and_emptiness(tmp_path: Path) -> None:
+    store, tenant = LocalObjectStore(tmp_path), uuid.uuid4()
+    store.put(tenant, "big.csv", b"x" * (2 * 1024 * 1024))
+    store.put(tenant, "empty.csv", b"")
+    store.put(tenant, "ok.csv", b"a,b\n1,2\n")
+
+    with pytest.raises(KbFileError, match="exceeds the 1 MB limit"):
+        read_source(store, tenant, "big.csv", 1024 * 1024)
+    with pytest.raises(KbFileError, match="file is empty"):
+        read_source(store, tenant, "empty.csv", 1024 * 1024)
+    assert read_source(store, tenant, "ok.csv", 1024 * 1024) == b"a,b\n1,2\n"
 
 
 def test_parse_job_files_accepts_paths_and_objects() -> None:

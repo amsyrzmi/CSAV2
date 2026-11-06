@@ -276,7 +276,7 @@ def build_upload_router(store: ObjectStore | None) -> APIRouter:
                         conn=conn,
                     )
                 await audit(conn, actor, client_id, "kb.upload_queued", str(job_id))
-        except BaseException:
+        except BaseException as exc:
             # A lost COMMIT acknowledgement is ambiguous: reconcile against durable rows,
             # rather than removing a file that a committed job may already be reading.
             if published:
@@ -284,6 +284,10 @@ def build_upload_router(store: ObjectStore | None) -> APIRouter:
                     await asyncio.shield(cleanup_storage(db_pool, objects, client_id))
                 except Exception:
                     logger.exception("kb_upload_reconciliation_failed", client_id=str(client_id))
+            if isinstance(exc, StorageError):
+                # Throttling or a timeout after the client's retries: the caller may retry.
+                logger.error("kb_upload_storage_failed", client_id=str(client_id))
+                raise HTTPException(503, "upload storage unavailable; retry") from exc
             raise
         return UploadOut(job_id=job_id, duplicate_request=False)
 

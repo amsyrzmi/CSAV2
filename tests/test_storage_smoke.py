@@ -11,6 +11,7 @@ import pytest
 from csa.core.settings import Settings
 from csa.storage.factory import Stores
 from csa.storage.local import LocalObjectStore
+from csa.storage.s3 import S3ObjectStore
 from moto import mock_aws
 from scripts import storage_smoke
 
@@ -108,7 +109,7 @@ def test_smoke_reports_failed_check_with_exit_1(
     output = capsys.readouterr().out
     lines = result_lines(output)
     assert code == 1
-    assert "FAIL kb: put then read" in output
+    assert "FAIL kb: put then read (read returned different bytes)" in output
     assert any(line.startswith("PASS hr: put then read") for line in lines)
     assert not [line for line in lines if line.startswith("FAIL hr:")]
     assert not [path for path in kb_root.rglob("*") if path.is_file()]
@@ -129,3 +130,36 @@ def test_smoke_exits_2_without_settings(
     monkeypatch.setattr(storage_smoke, "get_settings", broken)
     assert storage_smoke.main() == 2
     assert "settings are invalid" in capsys.readouterr().err
+
+
+class LeakyFailingStore(S3ObjectStore):
+    """An S3 store that reads wrong bytes and fails deletes with an error full of secrets."""
+
+    def read(self, tenant: UUID, name: str, limit: int) -> bytes:
+        return storage_smoke.PAYLOAD[:-1]
+
+    def delete(self, tenant: UUID, name: str) -> None:
+        raise RuntimeError(f"{FAKE_KEY_ID} {FAKE_SECRET} {storage_smoke.PAYLOAD.decode('ascii')}")
+
+
+def test_failed_checks_print_no_secrets_or_payload(capsys: pytest.CaptureFixture[str]) -> None:
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name=REGION,
+            aws_access_key_id=FAKE_KEY_ID,
+            aws_secret_access_key=FAKE_SECRET,
+        )
+        client.create_bucket(Bucket=BUCKET)
+        store = LeakyFailingStore(BUCKET, "kb", client)
+
+        code = storage_smoke._check_stores("kb", store, UUID(int=1))
+
+    captured = capsys.readouterr()
+    assert code is False
+    # The script's own assertion text is shown, other errors are named by class alone.
+    assert "FAIL kb: put then read (read returned different bytes)" in captured.out
+    assert "FAIL kb: delete then read missing (RuntimeError)" in captured.out
+    for secret in (FAKE_KEY_ID, FAKE_SECRET, storage_smoke.PAYLOAD.decode("ascii")):
+        assert secret not in captured.out
+        assert secret not in captured.err
