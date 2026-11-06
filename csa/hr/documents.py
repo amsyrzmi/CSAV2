@@ -1,10 +1,10 @@
 """Employee documents: checked uploads, retry-safe storage, listing, download and soft remove.
 
 The database decides who may see, add or remove which document (`hr_document_*`); this module
-checks the file itself (its extension must agree with its content), stores it under
-`HR_UPLOAD_ROOT/<tenant>/<uuid>.<ext>` and keeps the file and its row in step. The KB upload
-code supplies the tenant directory, durable publication and the download response; nothing here
-scans a file for viruses or encrypts it on disk (see docs/hr/SETUP.md).
+checks the file itself (its extension must agree with its content), stores it
+as `<tenant>/<uuid>.<ext>` in the HR object store and keeps the file and its row in step. The
+KB upload code supplies the download response; nothing here scans a file for viruses or
+encrypts it on disk (see docs/hr/SETUP.md).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import AwareDatetime, Field
 from starlette.datastructures import UploadFile
 
-from csa.console.kb_uploads import FileRecord, SourceDownload, durable_publish, tenant_directory
+from csa.console.kb_uploads import FileRecord, SourceDownload
 from csa.console.multipart import MAX_FILE_BYTES, upload_form
 from csa.core.db import q as sql
 from csa.core.tenancy import tx
@@ -36,6 +36,7 @@ from csa.hr.operations import HrOperations
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import HrSession
 from csa.hr.service import HrService
+from csa.storage.base import ObjectStore, StorageError, durable_put
 
 logger = structlog.get_logger(__name__)
 
@@ -115,25 +116,24 @@ def _checked_name(item: UploadFile) -> str:
     return name
 
 
-async def cleanup(pool: AsyncConnectionPool, root: Path, client_id: UUID) -> int:
+async def cleanup(pool: AsyncConnectionPool, store: ObjectStore, client_id: UUID) -> int:
     """Remove files of this tenant that no document row keeps, under the document lock."""
     removed = 0
     async with tx(pool, str(client_id)) as conn:
         await sql.execute("hr/key_lock.sql", (f"{client_id}{_LOCK}",), conn=conn)
         rows = await sql.fetch_all("hr/document_names.sql", (client_id,), conn=conn)
         keep = {row["storage_name"] for row in rows}
-        directory = await asyncio.to_thread(tenant_directory, root, client_id)
-        for path in directory.iterdir():
-            if _STORED.fullmatch(path.name) and path.name not in keep:
-                await asyncio.to_thread(path.unlink, missing_ok=True)
+        for name in await asyncio.to_thread(store.list_names, client_id):
+            if _STORED.fullmatch(name) and name not in keep:
+                await asyncio.to_thread(store.delete, client_id, name)
                 removed += 1
     return removed
 
 
 class HrDocuments:
-    def __init__(self, core: HrService, root: Path):
+    def __init__(self, core: HrService, store: ObjectStore):
         self.core = core
-        self.root = root
+        self.store = store
 
     @staticmethod
     def _out(row: dict) -> DocumentOut:  # type: ignore[type-arg]
@@ -187,17 +187,16 @@ class HrDocuments:
             raise HTTPException(413, "file exceeds 10 MB")
         ext = sniff(data, name)
         storage_name = f"{uuid4()}.{ext}"
-        published: list[Path] = []
+        published: list[str] = []
         try:
             async with tx(self.core.pool, str(session.tenant_id)) as conn:
                 access = await self.core._access(conn, session)
                 HrOperations.people_manager(access)
                 # Serialise with cleanup: a stored file is never swept before its row commits.
                 await sql.execute("hr/key_lock.sql", (f"{session.tenant_id}{_LOCK}",), conn=conn)
-                directory = await asyncio.to_thread(tenant_directory, self.root, session.tenant_id)
-                # Track the destination before publication, including fsync failures.
-                published.append(directory / storage_name)
-                await durable_publish(directory, storage_name, data)
+                # Track the name before publication, including failures part-way through.
+                published.append(storage_name)
+                await durable_put(self.store, session.tenant_id, storage_name, data)
                 row = await HrOperations._people_apply(
                     conn,
                     "hr/document_add.sql",
@@ -217,16 +216,24 @@ class HrDocuments:
                 receipt = row["receipt"]
                 if receipt["duplicate"]:
                     # A retry: the first request's file is kept, this copy is not referenced.
-                    await asyncio.to_thread(published[0].unlink, missing_ok=True)
+                    try:
+                        await asyncio.to_thread(self.store.delete, session.tenant_id, storage_name)
+                    except Exception:
+                        # The first file is safe; a later cleanup removes this copy.
+                        logger.exception("hr_document_duplicate_cleanup_failed")
                 await self.core._session(conn, session)
-        except BaseException:
+        except BaseException as exc:
             # A lost COMMIT acknowledgement is ambiguous: reconcile against the durable rows
             # instead of removing a file that a committed row may already point at.
             if published:
                 try:
-                    await asyncio.shield(cleanup(self.core.pool, self.root, session.tenant_id))
+                    await asyncio.shield(cleanup(self.core.pool, self.store, session.tenant_id))
                 except Exception:
                     logger.exception("hr_document_reconciliation_failed")
+            if isinstance(exc, StorageError):
+                # Throttling or a timeout after the client's retries: the caller may retry.
+                logger.error("hr_document_storage_failed")
+                raise HTTPException(503, "hr_document_storage_unavailable") from exc
             raise
         return self._out(receipt)
 
@@ -240,12 +247,14 @@ class HrDocuments:
                 )
                 if row is None:
                     raise HrPolicyError("resource_unavailable")
-                directory = await asyncio.to_thread(tenant_directory, self.root, session.tenant_id)
                 try:
-                    stream = handles.enter_context((directory / row["storage_name"]).open("rb"))
-                except OSError:
+                    stream = await asyncio.to_thread(
+                        self.store.open, session.tenant_id, row["storage_name"]
+                    )
+                except (OSError, StorageError):
                     logger.exception("hr_document_file_missing", document_id=str(document_id))
                     raise HTTPException(503, "hr_document_file_unavailable") from None
+                handles.enter_context(stream)
                 await self.core._session(conn, session)
             record = FileRecord(
                 id=row["id"],
@@ -273,7 +282,7 @@ class HrDocuments:
             )
             await self.core._session(conn, session)
         try:
-            await cleanup(self.core.pool, self.root, session.tenant_id)
+            await cleanup(self.core.pool, self.store, session.tenant_id)
         except Exception:
             # The row is already removed; a later cleanup deletes the file.
             logger.exception("hr_document_cleanup_failed")

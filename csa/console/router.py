@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path as FilePath
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -32,6 +31,7 @@ from csa.contracts.callbacks import PendingActionStore
 from csa.contracts.registry import CapabilityRegistry
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.storage.base import ObjectStore
 
 
 class TraceOut(BaseModel):
@@ -134,13 +134,13 @@ def build_router(
     machine_client_ids: frozenset[UUID] = frozenset(),
     kb_model: str | None = None,
     kb_tei_configured: bool = False,
-    kb_upload_root: FilePath | None = None,
+    kb_store: ObjectStore | None = None,
 ) -> APIRouter:
     async def auth(request: Request) -> None:
         await authenticate(request, token, machine_client_ids)
 
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(auth)])
-    router.include_router(build_upload_router(kb_upload_root))
+    router.include_router(build_upload_router(kb_store))
     router.include_router(build_chat_router())
     router.include_router(build_voice_router())
     router.include_router(build_voice_sessions_router())

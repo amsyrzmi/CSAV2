@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import boto3
 import httpx
 import psycopg
 import pytest
+import structlog
 from csa.agents.base import AgentContext
 from csa.agents.kb import DefaultKbEmbedder, KbAgent, KbEmbeddingError, KbInput
 from csa.agents.kb.ingest_jobs import JobStatus, KbIngestConfig, KbIngestProcessor
 from csa.console.security import digest
 from csa.contracts.callbacks import PendingActionStore
+from csa.storage.base import ObjectStore, StorageError
+from csa.storage.local import LocalObjectStore
+from csa.storage.s3 import S3ObjectStore
+from moto import mock_aws
 from psycopg.rows import dict_row
 
 from tests.conftest import requires_docker
@@ -26,6 +33,25 @@ from tests.test_kb_ingest import FAQ_CSV, make_docx, make_pdf
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
+BUCKET = "test-bucket"
+S3_STORE = pytest.mark.parametrize("kb_store", ["s3"], indirect=True)
+
+
+@pytest.fixture
+def kb_store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[ObjectStore]:
+    """Local disk by default; ``@S3_STORE`` swaps in a moto bucket for the whole world."""
+    if getattr(request, "param", "local") == "s3":
+        with mock_aws():
+            client = boto3.client(
+                "s3",
+                region_name="us-east-1",
+                aws_access_key_id="testing",
+                aws_secret_access_key="testing",  # noqa: S106
+            )
+            client.create_bucket(Bucket=BUCKET)
+            yield S3ObjectStore(BUCKET, "kb", client)
+    else:
+        yield LocalObjectStore(tmp_path)
 
 
 async def test_gap_listing_resolution_and_audit(sessions: SessionWorld) -> None:
@@ -144,7 +170,7 @@ def processor(world: SessionWorld, embedder: DefaultKbEmbedder | None = None) ->
         world.pool,
         world.pool,
         embedder=embedder or DefaultKbEmbedder(),
-        config=KbIngestConfig(upload_root=world.upload_root),
+        config=KbIngestConfig(store=world.kb_store),
     )
 
 
@@ -367,21 +393,19 @@ async def test_publication_rollback_and_reconciliation(
     sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant = await enable(sessions)
-    import csa.console.kb_uploads as storage
+    original = sessions.kb_store.put
 
-    original = storage.publish
-
-    def fail_after_publish(directory: Path, name: str, data: bytes) -> Path:
-        original(directory, name, data)
+    def fail_after_put(client_id: UUID, name: str, data: bytes) -> None:
+        original(client_id, name, data)
         raise OSError("synthetic disk fsync failure")
 
-    monkeypatch.setattr(storage, "publish", fail_after_publish)
+    monkeypatch.setattr(sessions.kb_store, "put", fail_after_put)
     with pytest.raises(OSError, match="synthetic"):
         await upload(sessions, [("faq.csv", FAQ_CSV)])
     directory = sessions.upload_root / tenant
     assert not list(directory.iterdir())
     assert not await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", tenant)
-    monkeypatch.setattr(storage, "publish", original)
+    monkeypatch.setattr(sessions.kb_store, "put", original)
     assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
     orphan = directory / f"{uuid4()}.csv"
     partial = directory / f".{uuid4()}.pdf.part"
@@ -633,16 +657,16 @@ async def test_delete_between_resolution_and_read_is_per_file_failure(
     files = (await sessions.admin.get(f"/console/v1/kb/files?client_id={tenant}")).json()
     source = next(row for row in files if row["name"] == "faq.csv")
     entered, release = threading.Event(), threading.Event()
-    original = jobs.read_upload
+    original = jobs.read_source
 
-    def paused(path: Path, max_bytes: int) -> bytes:
-        if path.suffix == ".csv":
+    def paused(store: ObjectStore, client_id: UUID, path: str, max_bytes: int) -> bytes:
+        if path.endswith(".csv"):
             entered.set()
             if not release.wait(timeout=10):
                 raise RuntimeError("synthetic read pause timed out")
-        return original(path, max_bytes)
+        return original(store, client_id, path, max_bytes)
 
-    monkeypatch.setattr(jobs, "read_upload", paused)
+    monkeypatch.setattr(jobs, "read_source", paused)
     task = asyncio.create_task(handle(sessions))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
@@ -657,3 +681,206 @@ async def test_delete_between_resolution_and_read_is_per_file_failure(
     assert await task == "partial"
     job = (await sessions.admin.get(f"/console/v1/kb/ingest-jobs?client_id={tenant}")).json()[0]
     assert [result["status"] for result in job["meta"]["results"]] == ["failed", "ingested"]
+
+
+async def stored_names(world: SessionWorld) -> list[str]:
+    rows = await world.q(
+        "SELECT storage_name FROM kb_upload_files WHERE client_id=%s ORDER BY created_at",
+        world.tenants[0],
+    )
+    return [row["storage_name"] for row in rows]
+
+
+@S3_STORE
+async def test_kb_upload_with_s3_store_is_ingested_end_to_end(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    queued = await upload(sessions, [("faq.csv", FAQ_CSV)])
+    assert queued.status_code == 202, queued.text
+    assert await sessions.q("SELECT id FROM kb_documents WHERE client_id=%s", tenant) == []
+    [name] = await stored_names(sessions)
+    assert sessions.kb_store.list_names(UUID(tenant)) == [name]
+
+    assert await handle(sessions) == "done"
+
+    [document] = await sessions.q(
+        "SELECT file_name, chunk_count FROM kb_documents WHERE client_id=%s", tenant
+    )
+    assert document["file_name"] == "faq.csv" and document["chunk_count"] > 0
+    assert sessions.kb_store.read(UUID(tenant), name, 1024 * 1024) == FAQ_CSV
+
+
+@S3_STORE
+async def test_kb_download_streams_from_s3(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    [record] = (await sessions.admin.get(f"/console/v1/kb/files?client_id={tenant}")).json()
+
+    downloaded = await sessions.admin.get(
+        f"/console/v1/kb/files/{record['id']}/download?client_id={tenant}"
+    )
+
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == FAQ_CSV
+    assert downloaded.headers["content-type"].startswith("text/csv")
+    assert "attachment" in downloaded.headers["content-disposition"]
+    assert downloaded.headers["content-length"] == str(len(FAQ_CSV))
+
+
+@S3_STORE
+async def test_kb_download_of_a_missing_object_is_503(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    [record] = (await sessions.admin.get(f"/console/v1/kb/files?client_id={tenant}")).json()
+    [name] = await stored_names(sessions)
+    sessions.kb_store.delete(UUID(tenant), name)
+
+    downloaded = await sessions.admin.get(
+        f"/console/v1/kb/files/{record['id']}/download?client_id={tenant}"
+    )
+
+    assert downloaded.status_code == 503
+    assert downloaded.json()["detail"] == "source file unavailable; storage repair required"
+
+
+@S3_STORE
+async def test_kb_cleanup_removes_only_unreferenced_server_names_in_its_tenant_prefix(
+    sessions: SessionWorld,
+) -> None:
+    tenant = await enable(sessions)
+    mine, other = UUID(tenant), UUID(sessions.tenants[1])
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    [referenced] = await stored_names(sessions)
+    orphan = f"{uuid4()}.csv"
+    partial = f".{uuid4()}.pdf.part"
+    foreign_name = "operator-note.txt"
+    other_tenants_orphan = f"{uuid4()}.csv"
+    for name in (orphan, partial, foreign_name):
+        sessions.kb_store.put(mine, name, b"synthetic")
+    sessions.kb_store.put(other, other_tenants_orphan, b"synthetic")
+
+    reconciled = await sessions.mutate(
+        sessions.admin, f"/console/v1/kb/storage/reconcile?client_id={tenant}"
+    )
+
+    assert reconciled.status_code == 200 and reconciled.json() == {"removed_files": 2}
+    assert sorted(sessions.kb_store.list_names(mine)) == sorted([referenced, foreign_name])
+    assert sessions.kb_store.list_names(other) == [other_tenants_orphan]
+
+
+@S3_STORE
+async def test_ingest_refuses_oversize_and_empty_objects_with_current_messages(
+    sessions: SessionWorld,
+) -> None:
+    tenant = await enable(sessions)
+    client_id = UUID(tenant)
+    limit = 1024 * 1024
+    sessions.kb_store.put(client_id, "big.csv", FAQ_CSV + b"\n" * limit)
+    sessions.kb_store.put(client_id, "empty.csv", b"")
+    await sessions.q(
+        "INSERT INTO kb_ingest_jobs(client_id,source,files) VALUES (%s,'upload',%s::jsonb)",
+        tenant,
+        '["big.csv", "empty.csv", "gone.csv"]',
+    )
+    worker = KbIngestProcessor(
+        sessions.pool,
+        sessions.pool,
+        embedder=DefaultKbEmbedder(),
+        config=KbIngestConfig(store=sessions.kb_store, max_file_bytes=limit),
+    )
+
+    assert await handle(sessions, worker) == "failed"
+
+    [job] = await sessions.q("SELECT meta FROM kb_ingest_jobs WHERE client_id=%s", tenant)
+    assert [(r["status"], r["error"]) for r in job["meta"]["results"]] == [
+        ("failed", "file exceeds the 1 MB limit"),
+        ("failed", "file is empty"),
+        ("failed", "source file was deleted or is unavailable"),
+    ]
+    assert not await sessions.q("SELECT id FROM kb_documents WHERE client_id=%s", tenant)
+
+
+@pytest.mark.parametrize("route", ["file", "document"])
+async def test_remove_succeeds_when_storage_cleanup_fails(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    assert await handle(sessions) == "done"
+    [record] = (await sessions.admin.get(f"/console/v1/kb/files?client_id={tenant}")).json()
+    [name] = await stored_names(sessions)
+    target = (
+        f"/console/v1/kb/files/{record['id']}"
+        if route == "file"
+        else f"/console/v1/kb/documents/{record['document_id']}"
+    )
+
+    def broken(client_id: UUID, name: str) -> None:
+        raise StorageError("synthetic storage outage")
+
+    working_delete = sessions.kb_store.delete
+    monkeypatch.setattr(sessions.kb_store, "delete", broken)
+    with structlog.testing.capture_logs() as logs:
+        removed = await sessions.mutate(
+            sessions.admin, f"{target}?client_id={tenant}", method="DELETE"
+        )
+
+    assert removed.status_code == 204, removed.text
+    failures = [entry for entry in logs if entry["event"] == "kb_storage_cleanup_failed"]
+    assert len(failures) == 1 and failures[0]["log_level"] == "error"
+    assert "exc_info" in failures[0]
+    assert (
+        await sessions.admin.get(f"/console/v1/kb/files/{record['id']}/download?client_id={tenant}")
+    ).status_code == 404
+    assert sessions.kb_store.list_names(UUID(tenant)) == [name]
+    monkeypatch.setattr(sessions.kb_store, "delete", working_delete)
+    reconciled = await sessions.mutate(
+        sessions.admin, f"/console/v1/kb/storage/reconcile?client_id={tenant}"
+    )
+    assert reconciled.json() == {"removed_files": 1}
+    assert sessions.kb_store.list_names(UUID(tenant)) == []
+
+
+async def test_upload_storage_failure_answers_503_after_cleanup(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await enable(sessions)
+    original = sessions.kb_store.put
+
+    def throttled_after_put(client_id: UUID, name: str, data: bytes) -> None:
+        original(client_id, name, data)
+        raise StorageError("put failed: SlowDown")
+
+    monkeypatch.setattr(sessions.kb_store, "put", throttled_after_put)
+    response = await upload(sessions, [("faq.csv", FAQ_CSV)])
+
+    assert (response.status_code, response.json()) == (
+        503,
+        {"detail": "upload storage unavailable; retry"},
+    )
+    assert not await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", tenant)
+    assert not await sessions.q("SELECT id FROM kb_upload_files WHERE client_id=%s", tenant)
+    # The reconcile ran: the object the failed put left behind is gone.
+    assert sessions.kb_store.list_names(UUID(tenant)) == []
+    monkeypatch.setattr(sessions.kb_store, "put", original)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+
+
+async def test_upload_storage_failure_is_503_even_when_cleanup_fails(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await enable(sessions)
+
+    def throttled(client_id: UUID, name: str, data: bytes) -> None:
+        raise StorageError("put failed: SlowDown")
+
+    def broken(client_id: UUID) -> list[str]:
+        raise StorageError("synthetic storage outage")
+
+    monkeypatch.setattr(sessions.kb_store, "put", throttled)
+    monkeypatch.setattr(sessions.kb_store, "list_names", broken)
+    with structlog.testing.capture_logs() as logs:
+        response = await upload(sessions, [("faq.csv", FAQ_CSV)])
+
+    assert response.status_code == 503
+    assert [entry["event"] for entry in logs].count("kb_upload_reconciliation_failed") == 1
+    assert not await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", tenant)

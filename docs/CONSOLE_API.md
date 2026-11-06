@@ -313,7 +313,8 @@ leaver finish) has `actor_name` `System`.
   never repeats a submitted value.
 
 **Documents.** The gateway needs `HR_UPLOAD_ROOT`; without it these routes answer 503
-`hr_documents_unavailable`.
+`hr_documents_unavailable`. With `STORAGE_BACKEND=s3` the files live in a bucket instead; see
+[OBJECT_STORAGE.md](OBJECT_STORAGE.md).
 
 - `GET /people/{employee_id}/documents` returns `DocumentList`: `items` of `DocumentOut`
   (`document_id`, `kind`, `file_name`, `media_type`, `byte_size`, `uploaded_at`,

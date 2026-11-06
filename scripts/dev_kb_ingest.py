@@ -13,6 +13,7 @@ from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor
 from csa.core import db
 from csa.core.settings import Settings, get_settings
+from csa.storage.local import LocalObjectStore
 from psycopg.conninfo import conninfo_to_dict
 
 
@@ -41,6 +42,16 @@ def validate(settings: Settings) -> None:
             raise ValueError("KB dev worker permits only credential-free loopback HTTP TEI")
 
 
+def ingest_config(settings: Settings) -> KbIngestConfig:
+    """The dev worker always reads the local ``KB_UPLOAD_ROOT``, never a bucket."""
+    assert settings.KB_UPLOAD_ROOT is not None
+    return KbIngestConfig(
+        store=LocalObjectStore(settings.KB_UPLOAD_ROOT),
+        max_files=settings.KB_MAX_FILES_PER_JOB,
+        max_file_bytes=settings.KB_MAX_FILE_BYTES,
+    )
+
+
 async def run(client_id: UUID) -> None:
     settings = get_settings()
     validate(settings)
@@ -57,11 +68,7 @@ async def run(client_id: UUID) -> None:
             pool,
             pool,
             embedder=DefaultKbEmbedder.from_settings(settings),
-            config=KbIngestConfig(
-                upload_root=settings.KB_UPLOAD_ROOT,
-                max_files=settings.KB_MAX_FILES_PER_JOB,
-                max_file_bytes=settings.KB_MAX_FILE_BYTES,
-            ),
+            config=ingest_config(settings),
         )
         print(f"KB-only dev worker ready: tenant={client_id}", flush=True)
         while not stopped.is_set():

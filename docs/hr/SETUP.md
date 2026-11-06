@@ -158,8 +158,10 @@ Migration `0521` (project 1b) adds documents on a person's profile: a contract, 
 certificate or another file. The HR owner and Manage people holders add, see and remove them, for
 any person including those who have left. The person sees their own contract, identity and
 certificate files, not the ones filed as Other, and cannot add or remove anything. A manager or a
-colleague sees none. Removing a document hides it and deletes its file; the record and its
-history entry are kept.
+colleague sees none. Removing a document hides it and removes its file; the record and its
+history entry are kept. With the local backend the file is deleted at once. With
+`STORAGE_BACKEND=s3` it leaves the live prefix at once, and because the bucket is versioned it
+stays recoverable as a non-current version for 7 days before it is permanently removed.
 
 - **Files.** PDF, JPG, PNG or DOCX, at most 10 MB each, one per upload. The file's content must
   match its extension; a renamed file is refused. Names are kept as given (up to 255 characters).
@@ -168,7 +170,8 @@ history entry are kept.
   mounted at `/var/lib/csa/hr-uploads`). Leave `HR_UPLOAD_ROOT` unset and the document routes answer
   503 `hr_documents_unavailable`. It must not be, contain or sit inside `KB_UPLOAD_ROOT`; settings
   refuse that at startup, since each side's cleanup would delete the other's files. Include the
-  volume in backups: the database holds only the record.
+  volume in backups: the database holds only the record. With `STORAGE_BACKEND=s3` the files
+  live in a bucket instead; see [OBJECT_STORAGE.md](../OBJECT_STORAGE.md).
 - **Not covered.** Files are **not scanned for viruses** and are **not encrypted on disk**; the
   volume and its backups need the access control and disk encryption of the host. The document
   list, download and History show the file name, so names should not carry identity numbers.

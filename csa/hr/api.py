@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Coroutine
-from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid5
 
@@ -83,6 +82,7 @@ from csa.hr.records import (
 )
 from csa.hr.service import HrService
 from csa.hr.workflows import WorkflowCommand, WorkflowInput, WorkflowRecord
+from csa.storage.base import ObjectStore
 from csa.workspace.contracts import ProposalOut
 from csa.workspace.registry import ProposalError, ProposalRegistry
 
@@ -247,16 +247,16 @@ class ConfirmationAccept(HrModel):
     """Opaque path reference only; callers cannot replace the prepared command."""
 
 
-def build_hr_router(hr_upload_root: Path | None = None) -> APIRouter:
+def build_hr_router(hr_store: ObjectStore | None = None) -> APIRouter:
     """Requires configured identity_service, hr_service and ordered HR schema.
 
-    `hr_upload_root` is where employee document files are stored; without it the document routes
+    `hr_store` is where employee document files are stored; without it the document routes
     answer 503 `hr_documents_unavailable`."""
 
     def documents_for(service: HrService) -> HrDocuments:
-        if hr_upload_root is None:
+        if hr_store is None:
             raise HTTPException(503, "hr_documents_unavailable")
-        return HrDocuments(service, hr_upload_root)
+        return HrDocuments(service, hr_store)
 
     router = APIRouter(prefix="/console/v1/hr", tags=["HR"], route_class=HrRoute)
 
