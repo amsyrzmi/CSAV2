@@ -468,12 +468,16 @@ class BookingAgent:
         own = await self._own(conn, ctx, booking_id)
         type_id = (await self._record(conn, ctx, booking_id)).type_id if own else None
         if inp.action == "cancel":
-            outcome = await bot.cancel(
+            # Asked first: the customer's next message says yes (or not).
+            outcome = await bot.ask_to_cancel(
                 conn,
                 ctx.client_id,
                 ctx.contact_id,
                 booking_id,
+                confirmed=inp.confirmed,
                 turn_key=ctx.idempotency_key,
+                conversation_id=ctx.conversation_id,
+                trace_id=ctx.trace_id,
                 now=ctx.now(),
             )
         else:

@@ -64,11 +64,16 @@ _BOOKING_PLAN_RULE = (
     "booking or day the customer means. If it is unclear which service, booking or time they "
     "mean, return no tasks and reply_strategy ask_clarifying. Plan at most one of book, "
     "reschedule or cancel for booking_agent in a reply; if the customer asks for more than one, "
-    "return no tasks and reply_strategy ask_clarifying and ask which to do first. There is no "
-    "confirmation step, so plan cancel or reschedule only when the customer clearly means one of "
-    "their own bookings in booking.upcoming; otherwise return no tasks and reply_strategy "
-    "ask_clarifying. If booking.more_types is true, booking.types is only some of the services: "
-    "use availability with no type_id to see them all. "
+    "return no tasks and reply_strategy ask_clarifying and ask which to do first. Plan cancel or "
+    "reschedule only when the customer clearly means one of their own bookings in "
+    "booking.upcoming; otherwise return no tasks and reply_strategy ask_clarifying. A cancel is "
+    "not done at once: the server first asks the customer to confirm it. If booking.cancel_asked "
+    "holds a booking id, the last reply asked the customer to confirm cancelling that booking: "
+    "when this message clearly says yes to it, in any language (for example yes, ok, okay, sure, "
+    "confirm, ya, betul, boleh, jadi), plan booking_agent cancel with that booking_id and "
+    "confirmed true. Anything else is not a yes: never set confirmed then, and handle the message "
+    "as usual. If booking.more_types is true, booking.types is only some of the services: use "
+    "availability with no type_id to see them all. "
 )
 # Said to the classifier only when the turn carries a booking context.
 _BOOKING_CLASSIFY_RULE = (

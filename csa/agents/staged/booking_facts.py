@@ -175,6 +175,21 @@ def withdrawn(booking: BookingRecord, scene: Scene) -> str:
     )
 
 
+def cancel_question(booking: BookingRecord, scene: Scene) -> str:
+    """The question a cancel is asked as: what and when, and that nothing has happened yet."""
+    name = scene.type_names.get(booking.type_id) if booking.type_id else None
+    when = format_slot(booking.starts_at, scene.zone)
+    if booking.replaces_booking_id is not None:
+        return (
+            f"Withdraw your request to move your {name or 'booking'} to {when}? Reply yes to "
+            "withdraw it. Nothing has been changed yet."
+        )
+    return (
+        f"Cancel your {name or 'booking'} on {when}? Reply yes to cancel. "
+        "Nothing has been cancelled yet."
+    )
+
+
 def facts_for(outcome: BotOutcome, scene: Scene) -> list[str]:
     """The facts for one booking call, from the outcome and the booking's real state."""
     code, booking = outcome.code, outcome.booking
@@ -192,6 +207,8 @@ def facts_for(outcome: BotOutcome, scene: Scene) -> list[str]:
         return [NOT_FOUND]
     if code == "change_withdrawn":
         return [withdrawn(booking, scene)]
+    if code == "cancel_asked":
+        return [cancel_question(booking, scene)]
     lines = [booking_line(code, booking, scene)]
     if scene.ask_email and booking.status in LIVE:
         lines.append(no_email(scene.reminders))

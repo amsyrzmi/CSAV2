@@ -101,6 +101,14 @@ class BookingInput(DraftModel):
             "context.booking.upcoming (or the facts of a list lookup). Never invent one."
         ),
     )
+    confirmed: bool = Field(
+        default=False,
+        description=(
+            "cancel only: true only when context.booking.cancel_asked is this booking_id and the "
+            "customer's message clearly says yes to that question, in any language. Otherwise "
+            "leave it out: the server then asks the customer to confirm first."
+        ),
+    )
     customer_name: Name | None = Field(
         default=None,
         description=(

@@ -29,7 +29,7 @@ from csa.jobs.runner import JobRunner, build_default_registry
 from csa.notify.sender import format_notification
 
 from tests.conftest import requires_docker
-from tests.test_booking_agent import ask, said
+from tests.test_booking_agent import ask, cancel_it, said
 from tests.test_bookings_api import TUESDAY, at, booked, meeting
 from tests.test_bookings_bot import ELEVEN, NOW, TEN, THREE, TWO, Shop, a_type, pending_change, shop
 from tests.test_bookings_mail import SENDER, FakeTransport, calendar_of, ics_value, unfolded
@@ -896,14 +896,7 @@ async def test_a_cancel_by_the_bot_removes_the_event_from_everyones_calendar(
     agent = BookingAgent(Mailer(transport, SENDER))
     made = await shop.book(contact, kind["id"])
     assert made.booking is not None
-    gone = await ask(
-        shop,
-        contact,
-        "cancel",
-        agent=agent,
-        key="e9:t0-booking_agent",
-        booking_id=str(made.booking.id),
-    )
+    gone = await cancel_it(shop, contact, made.booking.id, agent=agent, key="e9:t0-booking_agent")
     assert said(gone).startswith("Booking cancelled")
     await agent.drain()
     # A chat reply cannot take an event out of a calendar, so the customer who was sent an
@@ -922,9 +915,7 @@ async def test_a_cancel_by_the_bot_of_a_never_confirmed_booking_mails_the_custom
     transport = FakeTransport()
     agent = BookingAgent(Mailer(transport, SENDER))
     held = await pending_booking(shop, contact, kind)
-    gone = await ask(
-        shop, contact, "cancel", agent=agent, key="e9:t0-booking_agent", booking_id=str(held.id)
-    )
+    gone = await cancel_it(shop, contact, held.id, agent=agent, key="e9:t0-booking_agent")
     assert said(gone).startswith("Booking cancelled")
     await agent.drain()
     assert "c@example.test" not in transport.to()  # they never had an invitation to remove
@@ -1413,3 +1404,4 @@ async def test_the_decline_mail_invites_another_request_only_while_the_bot_would
     assert "wasn't confirmed" in mail.text
     assert ("ask for another time" in mail.text) is (closed == "open")
     assert ("ask for another time" in mail.html) is (closed == "open")
+

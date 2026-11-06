@@ -11,6 +11,9 @@ records what its key did (`booking_turn_actions`), so a retried message finds th
 `replay`, before any time check, because the booking's own hold now blocks its slot and a late
 retry must never undo a later request. Only then the rules, and every write sits in a savepoint, so
 a refusal leaves nothing half written on the connection the caller goes on to commit.
+
+A customer's cancel is asked first (`ask_to_cancel`): the bot names the booking and waits for a
+yes in the customer's next message. Moves go straight through.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ Code = Literal[
     "change_pending",
     "change_withdrawn",
     "cancelled",
+    "cancel_asked",
     "replay",
     "replies_off",
     "service_off",
@@ -61,6 +65,8 @@ LIVE = ("pending", "confirmed")
 OFFER_WINDOW = timedelta(days=14)
 FRESH_OFFERS = 3
 DAY_SLOTS = 96  # every start of a day on the 15 minute grid
+# How long the question "Cancel your ...? Reply yes to cancel." can be answered.
+CANCEL_QUESTION_LIFE = timedelta(minutes=30)
 PartOfDay = Literal["morning", "afternoon", "evening"]
 _TIME = TypeAdapter(BookingTime)
 
@@ -697,6 +703,8 @@ async def cancel(
     """Cancel this customer's booking and free its time. Cancelling a pending request to move a
     booking withdraws the request and leaves the booking as it was (`change_withdrawn`). A booking
     already cancelled answers `replay`, so a retried message still hears the truth.
+
+    The customer's own messages reach this only through `ask_to_cancel`, which asks first.
     """
     blocked, _ = await gate(conn, client_id)
     if blocked is not None:
@@ -707,26 +715,141 @@ async def cancel(
     if own is None:
         return BotOutcome("not_found")
     if done is not None:
-        mine = done["action"] == "cancel" and done["contact_id"] == contact_id
-        if not mine or done["booking_id"] != booking_id:
+        return await _cancel_replay(conn, client_id, contact_id, booking_id, done)
+    checked = await _cancellable(conn, client_id, booking_id, now)
+    if isinstance(checked, BotOutcome):
+        return checked
+    return await _cancel_now(conn, client_id, checked, turn_key)
+
+
+async def ask_to_cancel(
+    conn: Conn,
+    client_id: UUID,
+    contact_id: UUID,
+    booking_id: UUID,
+    *,
+    confirmed: bool,
+    turn_key: str,
+    conversation_id: UUID | None,
+    trace_id: UUID,
+    now: datetime,
+) -> BotOutcome:
+    """A customer's cancel: asked first, done on their yes.
+
+    Whatever stops a cancel (not theirs, gone, past the cutoff, the bot off) answers at once, as
+    `cancel` would. Otherwise the bot asks (`cancel_asked`) and records the one question, with the
+    booking's version and `CANCEL_QUESTION_LIFE`. The cancel is done only when the planner read
+    this message as a yes (`confirmed`) and it answers that question: about this booking, in this
+    chat, the customer's first message since it was asked, before it ran out, and the booking still
+    at the version it was asked about. A yes that fails any of those is asked again. A retried
+    message answers what its key already did: the same question, or the cancel it made.
+    """
+    blocked, _ = await gate(conn, client_id)
+    if blocked is not None:
+        return BotOutcome(blocked)
+    done = await _done_by(conn, client_id, turn_key)
+    await _one_at_a_time(conn, client_id, contact_id)
+    own = await _own(conn, client_id, contact_id, booking_id)
+    if own is None:
+        return BotOutcome("not_found")
+    if done is not None and done["action"] == "ask_cancel":
+        if done["contact_id"] != contact_id or done["booking_id"] != booking_id:
             return BotOutcome("not_found")
-        return await _replay(conn, client_id, booking_id)
+        return BotOutcome("cancel_asked", await _record(conn, client_id, booking_id))
+    if done is not None:
+        return await _cancel_replay(conn, client_id, contact_id, booking_id, done)
+    checked = await _cancellable(conn, client_id, booking_id, now)
+    if isinstance(checked, BotOutcome):
+        return checked
+    if confirmed:
+        asked = await cancel_question(conn, client_id, contact_id, conversation_id, trace_id)
+        if (
+            asked is not None
+            and asked["booking_id"] == booking_id
+            and asked["booking_version"] == checked.version
+            and asked["expires_at"] > now
+        ):
+            return await _cancel_now(conn, client_id, checked, turn_key)
+    async with conn.transaction():
+        await db.q.execute(
+            "bookings/booking_cancel_question_insert.sql",
+            {
+                "client_id": client_id,
+                "turn_key": turn_key,
+                "booking_id": booking_id,
+                "booking_version": checked.version,
+                "conversation_id": conversation_id,
+                "trace_id": trace_id,
+                "expires_at": now + CANCEL_QUESTION_LIFE,
+            },
+            conn=conn,
+        )
+    return BotOutcome("cancel_asked", checked)
+
+
+async def cancel_question(
+    conn: Conn,
+    client_id: UUID,
+    contact_id: UUID,
+    conversation_id: UUID | None,
+    trace_id: UUID,
+) -> dict[str, Any] | None:
+    """The cancel the bot last asked this customer to confirm, when the message on `trace_id` is
+    the customer's first since it was asked, in the same chat: anything they said in between
+    dropped it. The caller checks its age and version against the booking."""
+    return await db.q.fetch_one(
+        "bookings/booking_cancel_question.sql",
+        {
+            "client_id": client_id,
+            "contact_id": contact_id,
+            "conversation_id": conversation_id,
+            "trace_id": trace_id,
+        },
+        conn=conn,
+    )
+
+
+async def _cancel_replay(
+    conn: Conn, client_id: UUID, contact_id: UUID, booking_id: UUID, done: dict[str, Any]
+) -> BotOutcome:
+    """A retried message whose key already acted: its cancel of this booking, as it now stands."""
+    mine = done["action"] == "cancel" and done["contact_id"] == contact_id
+    if not mine or done["booking_id"] != booking_id:
+        return BotOutcome("not_found")
+    return await _replay(conn, client_id, booking_id)
+
+
+async def _cancellable(
+    conn: Conn, client_id: UUID, booking_id: UUID, now: datetime
+) -> service.BookingRecord | BotOutcome:
+    """The booking (already locked as the customer's) when a cancel could go ahead now, else the
+    outcome that answers instead: cancelled already, not live, no type, past the cutoff."""
     record = await _record(conn, client_id, booking_id)
     if record.status == "cancelled":
         return BotOutcome("replay", await _standing(conn, client_id, record))
     if record.status not in LIVE:
         return BotOutcome("not_found")
     if record.replaces_booking_id is not None:
-        async with conn.transaction():
-            await service.cancel_for(conn, client_id, service.BOT, record)
-            await _remember(conn, client_id, turn_key, booking_id, "cancel")
-        original = await _record(conn, client_id, record.replaces_booking_id)
-        return BotOutcome("change_withdrawn", original)
+        return record  # withdrawing a request is never too late
     found = await setup.list_types(conn, client_id, record.type_id) if record.type_id else []
     if not found:
         return BotOutcome("not_found")
     if _past_cutoff(record, found[0], now):
         return BotOutcome("past_cutoff")
+    return record
+
+
+async def _cancel_now(
+    conn: Conn, client_id: UUID, record: service.BookingRecord, turn_key: str
+) -> BotOutcome:
+    """The cancel itself, for a booking `_cancellable` passed."""
+    booking_id = record.id
+    if record.replaces_booking_id is not None:
+        async with conn.transaction():
+            await service.cancel_for(conn, client_id, service.BOT, record)
+            await _remember(conn, client_id, turn_key, booking_id, "cancel")
+        original = await _record(conn, client_id, record.replaces_booking_id)
+        return BotOutcome("change_withdrawn", original)
     try:
         async with conn.transaction():
             await _drop_pending_changes(conn, client_id, booking_id)

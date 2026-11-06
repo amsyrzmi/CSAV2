@@ -3,8 +3,9 @@
 A customer's second message ("3 pm please") names no service, day or booking. The planner sees only
 the current message, so for a company whose customers can book it is also given: today's local date,
 the company's zone, the services a customer may book and this customer's own upcoming bookings (each
-with its id), and the last few messages of the conversation. Ids are only ever taken from here, and
-the server still checks every time and slot, so nothing in it is authority.
+with its id), the last few messages of the conversation, and the booking the last reply asked the
+customer to confirm cancelling, when this message is their first since. Ids are only ever taken
+from here, and the server still checks every time and slot, so nothing in it is authority.
 """
 
 from __future__ import annotations
@@ -96,6 +97,9 @@ async def booking_context(
         )
         for m in messages
     ]
+    # Shown even when it has run out or the booking changed since: the agent then asks again,
+    # rather than the planner reading a "yes" as nothing at all.
+    asked = await bot.cancel_question(conn, client_id, contact_id, conversation_id, trace_id)
     return BookingContext(
         today=f"{local:%A} {local.date().isoformat()}",
         timezone=str(zone.key),
@@ -103,4 +107,5 @@ async def booking_context(
         more_types=len(offered) > MAX_TYPES,
         upcoming=upcoming,
         recent=recent,
+        cancel_asked=asked["booking_id"] if asked else None,
     )

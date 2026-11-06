@@ -42,6 +42,7 @@ KEY = "event-1:t0-booking_agent"
 TEN_TEXT = "Tuesday 4 March 2031, 10:00 am (2031-03-04 10:00)"
 ELEVEN_TEXT = "Tuesday 4 March 2031, 11:00 am (2031-03-04 11:00)"
 HOLD = "is not confirmed yet"
+ASKED = "Nothing has been cancelled yet."
 
 
 def context(
@@ -51,12 +52,14 @@ def context(
     key: str = KEY,
     channel: str = "telegram",
     now: datetime = NOW,
+    chat: uuid.UUID | None = None,
+    trace: uuid.UUID | None = None,
 ) -> AgentContext:
     return AgentContext(
         client_id=shop.client,
         contact_id=contact,
-        trace_id=uuid.uuid4(),
-        conversation_id=None,
+        trace_id=trace or uuid.uuid4(),
+        conversation_id=chat,
         idempotency_key=key,
         channel=channel,
         pool=shop.w.pool,
@@ -74,11 +77,45 @@ async def ask(
     channel: str = "telegram",
     now: datetime = NOW,
     agent: BookingAgent | None = None,
+    chat: uuid.UUID | None = None,
+    trace: uuid.UUID | None = None,
     **fields: Any,
 ) -> AgentResult:
     inp = BookingInput.model_validate({"action": action, **fields})
     return await (agent or BookingAgent()).run(
-        context(shop, contact, key=key, channel=channel, now=now), inp
+        context(shop, contact, key=key, channel=channel, now=now, chat=chat, trace=trace), inp
+    )
+
+
+async def cancel_it(
+    shop: Shop,
+    contact: uuid.UUID,
+    booking_id: object,
+    *,
+    key: str = KEY,
+    agent: BookingAgent | None = None,
+    now: datetime = NOW,
+) -> AgentResult:
+    """A cancel as a customer makes one: the bot asks, and the next message says yes."""
+    asked = await ask(
+        shop,
+        contact,
+        "cancel",
+        key=f"{key}:asked",
+        agent=agent,
+        now=now,
+        booking_id=str(booking_id),
+    )
+    assert "? Reply yes to " in said(asked), said(asked)
+    return await ask(
+        shop,
+        contact,
+        "cancel",
+        key=key,
+        agent=agent,
+        now=now,
+        booking_id=str(booking_id),
+        confirmed=True,
     )
 
 
@@ -455,11 +492,7 @@ async def test_a_move_in_place_and_a_cancel_say_what_happened(shop: Shop) -> Non
         )
     )
     assert moved.startswith(f"Booking moved and confirmed: Haircut on {ELEVEN_TEXT}")
-    gone = said(
-        await ask(
-            shop, contact, "cancel", key="e2:t0-booking_agent", booking_id=str(made.booking.id)
-        )
-    )
+    gone = said(await cancel_it(shop, contact, made.booking.id, key="e2:t0-booking_agent"))
     assert gone.startswith(f"Booking cancelled: Haircut on {ELEVEN_TEXT}")
     assert "confirmed" not in gone
 
@@ -496,17 +529,18 @@ async def test_a_withdrawn_request_says_the_original_stands_and_a_retry_says_the
     contact = await shop.customer()
     old, asked = await pending_change(shop, kind, contact)
     assert old.booking is not None and asked.booking is not None
-    first = said(
-        await ask(
-            shop, contact, "cancel", key="e1:t0-booking_agent", booking_id=str(asked.booking.id)
-        )
-    )
+    first = said(await cancel_it(shop, contact, asked.booking.id, key="e1:t0-booking_agent"))
     assert first.startswith("The request to move the booking is withdrawn.")
     assert f"Haircut on {TEN_TEXT}" in first and first.endswith("It is still confirmed.")
     assert "cancelled" not in first
     retry = said(
         await ask(
-            shop, contact, "cancel", key="e1:t0-booking_agent", booking_id=str(asked.booking.id)
+            shop,
+            contact,
+            "cancel",
+            key="e1:t0-booking_agent",
+            booking_id=str(asked.booking.id),
+            confirmed=True,
         )
     )
     assert "is withdrawn and will not go ahead" in retry
@@ -517,6 +551,209 @@ async def test_a_withdrawn_request_says_the_original_stands_and_a_retry_says_the
     assert "Booking confirmed" not in retry and "cancelled:" not in retry
     original = (await shop.rows())[0]
     assert original["status"] == "confirmed"
+
+
+# --- a cancel is asked first --------------------------------------------------------------------
+
+
+def question(when: str = TEN_TEXT) -> str:
+    return f"Cancel your Haircut on {when}? Reply yes to cancel. {ASKED}"
+
+
+async def asked_in_chat(
+    shop: Shop, kind: dict[str, Any]
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, AgentResult]:
+    """A confirmed booking at ten, a chat, and the customer's "cancel it" (message 1) answered with
+    the question (message 2). Returns the customer, the chat, the booking and the answer."""
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    chat, trace = await conversation(shop, contact), uuid.uuid4()
+    await say(shop, chat, 1, "inbound", "please cancel my haircut", trace=trace)
+    result = await ask(
+        shop,
+        contact,
+        "cancel",
+        key="m1:t0",
+        chat=chat,
+        trace=trace,
+        booking_id=str(made.booking.id),
+    )
+    await say(shop, chat, 2, "outbound", said(result), trace=trace)
+    return contact, chat, made.booking.id, result
+
+
+async def reply_to_it(
+    shop: Shop,
+    contact: uuid.UUID,
+    chat: uuid.UUID,
+    booking_id: uuid.UUID,
+    number: int,
+    text: str,
+    *,
+    now: datetime = NOW,
+    key: str | None = None,
+) -> AgentResult:
+    """The customer's next message (`number`), which the planner read as a yes to the question."""
+    trace = uuid.uuid4()
+    await say(shop, chat, number, "inbound", text, trace=trace)
+    return await ask(
+        shop,
+        contact,
+        "cancel",
+        key=key or f"m{number}:t0",
+        chat=chat,
+        trace=trace,
+        now=now,
+        booking_id=str(booking_id),
+        confirmed=True,
+    )
+
+
+async def test_a_cancel_asks_first_and_names_the_booking(shop: Shop) -> None:
+    kind = await a_type(shop)
+    _, _, booking_id, result = await asked_in_chat(shop, kind)
+    assert said(result) == question()
+    assert not result.requires_human
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
+    assert await shop.audits("bookings.booking.cancelled") == 0
+    asked = [a for a in await shop.actions() if a["action"] == "ask_cancel"]
+    assert [(a["turn_key"], a["booking"]) for a in asked] == [("m1:t0", str(booking_id))]
+
+
+async def test_a_yes_with_no_question_before_it_only_asks(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    eager = await ask(shop, contact, "cancel", booking_id=str(made.booking.id), confirmed=True)
+    assert said(eager) == question()
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
+
+
+async def test_a_yes_cancels_once_and_a_replayed_yes_does_not_cancel_again(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact, chat, booking_id, _ = await asked_in_chat(shop, kind)
+    done = await reply_to_it(shop, contact, chat, booking_id, 3, "yes", key="m3:t0")
+    assert said(done).startswith(f"Booking cancelled: Haircut on {TEN_TEXT}")
+    assert [r["status"] for r in await shop.rows()] == ["cancelled"]
+    again = await ask(
+        shop, contact, "cancel", key="m3:t0", chat=chat, booking_id=str(booking_id), confirmed=True
+    )
+    assert said(again) == said(done)
+    # A second yes is not an answer to the question, and the booking is gone anyway.
+    later = await reply_to_it(shop, contact, chat, booking_id, 4, "yes!")
+    assert said(later).startswith("Booking cancelled")
+    assert await shop.audits("bookings.booking.cancelled") == 1
+
+
+async def test_a_malay_yes_is_a_yes(shop: Shop) -> None:
+    """The planner judges the yes in any language; the context tells it there is a question, and
+    the server needs nothing of the words."""
+    kind = await a_type(shop)
+    contact, chat, booking_id, _ = await asked_in_chat(shop, kind)
+    trace = uuid.uuid4()
+    await say(shop, chat, 3, "inbound", "ya, batalkan", trace=trace)
+    seen = await build_context(shop, contact, chat, trace)
+    assert seen is not None and seen.cancel_asked == booking_id
+    done = await ask(
+        shop,
+        contact,
+        "cancel",
+        key="m3:t0",
+        chat=chat,
+        trace=trace,
+        booking_id=str(booking_id),
+        confirmed=True,
+    )
+    assert said(done).startswith("Booking cancelled")
+
+
+@pytest.mark.parametrize(
+    ("text", "then"), [("no, keep it", None), ("what time do you open?", "status")]
+)
+async def test_a_no_or_another_message_drops_the_question(
+    shop: Shop, text: str, then: str | None
+) -> None:
+    kind = await a_type(shop)
+    contact, chat, booking_id, _ = await asked_in_chat(shop, kind)
+    trace = uuid.uuid4()
+    await say(shop, chat, 3, "inbound", text, trace=trace)
+    if then is not None:
+        await ask(
+            shop, contact, then, key="m3:t0", chat=chat, trace=trace, booking_id=str(booking_id)
+        )
+    # The message after that is no answer to the question: a yes now asks again.
+    late_yes = await reply_to_it(shop, contact, chat, booking_id, 5, "yes")
+    assert said(late_yes) == question()
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
+
+
+async def test_the_context_shows_the_question_only_to_the_next_message(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact, chat, booking_id, _ = await asked_in_chat(shop, kind)
+    next_trace = uuid.uuid4()
+    await say(shop, chat, 3, "inbound", "ok", trace=next_trace)
+    first = await build_context(shop, contact, chat, next_trace)
+    assert first is not None and first.cancel_asked == booking_id
+    after_trace = uuid.uuid4()
+    await say(shop, chat, 4, "inbound", "actually, one more thing", trace=after_trace)
+    after = await build_context(shop, contact, chat, after_trace)
+    assert after is not None and after.cancel_asked is None
+
+
+@pytest.mark.parametrize("why", ["expired", "stale"])
+async def test_an_expired_or_stale_question_asks_again(shop: Shop, why: str) -> None:
+    kind = await a_type(shop)
+    contact, chat, booking_id, _ = await asked_in_chat(shop, kind)
+    when, now = TEN_TEXT, NOW
+    if why == "expired":
+        now = NOW + timedelta(minutes=31)
+    else:  # staff moved it since the question
+        (row,) = await shop.w.q("SELECT version FROM bookings WHERE id = %s", str(booking_id))
+        moved = await shop.team.send(
+            shop.team.admin,
+            f"/bookings/{booking_id}",
+            {"version": row["version"], "starts_at": "2031-03-04T11:00:00Z"},
+            "PATCH",
+        )
+        assert moved.status_code == 200, moved.text
+        when = ELEVEN_TEXT
+    again = await reply_to_it(shop, contact, chat, booking_id, 3, "yes", now=now)
+    assert said(again) == question(when)
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
+    # The question asked again is answered by the next message.
+    await say(shop, chat, 4, "outbound", said(again))
+    done = await reply_to_it(shop, contact, chat, booking_id, 5, "yes", now=now)
+    assert said(done).startswith(f"Booking cancelled: Haircut on {when}")
+
+
+async def test_a_yes_to_another_booking_asks_about_that_one(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact, chat, _, _ = await asked_in_chat(shop, kind)
+    other = await shop.book(contact, kind["id"], ELEVEN)
+    assert other.booking is not None
+    wrong = await reply_to_it(shop, contact, chat, other.booking.id, 3, "yes")
+    assert said(wrong) == question(ELEVEN_TEXT)
+    assert {r["status"] for r in await shop.rows()} == {"confirmed"}
+
+
+async def test_in_staff_approve_mode_the_question_is_asked_and_nothing_is_cancelled(
+    shop: Shop,
+) -> None:
+    """The question is a reply like any other: in Staff approve mode it is the draft staff see."""
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    await shop.mode("suggest")
+    result = await ask(shop, contact, "cancel", booking_id=str(made.booking.id))
+    assert said(result) == question()
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
+    await shop.mode("shadow")
+    off = await ask(shop, contact, "cancel", key="e2:t0", booking_id=str(made.booking.id))
+    assert said(off).startswith("Booking by message is not available")
+    assert sorted(a["action"] for a in await shop.actions()) == ["ask_cancel", "book"]
 
 
 # --- a retried message, and one write for each task ---------------------------------------------
@@ -945,14 +1182,7 @@ async def test_a_move_and_a_cancel_send_their_mail_and_a_hold_sends_none(shop: S
     assert said(moved).startswith("Booking moved and confirmed")
     await agent.drain()
     assert len(transport.sent) == 1 and "11:00" in transport.sent[0].text
-    gone = await ask(
-        shop,
-        contact,
-        "cancel",
-        agent=agent,
-        key="e2:t0-booking_agent",
-        booking_id=str(made.booking.id),
-    )
+    gone = await cancel_it(shop, contact, made.booking.id, agent=agent, key="e2:t0-booking_agent")
     assert said(gone).startswith("Booking cancelled")
     await agent.drain()
     # A chat reply cannot remove an event from a calendar, so the cancellation is mailed.

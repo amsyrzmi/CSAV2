@@ -18,8 +18,11 @@
 --   (book, change, cancel) in the write's own savepoint. It says which booking the key made, moved
 --   or cancelled, so a retried message answers with that instead of acting again, and a late retry
 --   of an old message never undoes a later one. The primary key (client_id, turn_key) is the
---   backstop: one message does one thing. action is book, change or cancel. Rows are written once
---   and never changed or removed.
+--   backstop: one message does one thing. action is book, change, cancel or ask_cancel. Rows are
+--   written once and never changed or removed. ask_cancel is the bot asking a customer to confirm
+--   a cancel ("Cancel your Haircut on ...? Reply yes to cancel."): it also holds the booking's
+--   version, the chat and turn it was asked on, and when it runs out (a check: only ask_cancel
+--   has them). The customer's next message in that chat may answer it; any other drops it.
 -- booking_settings: one row per company, made on its first save. reminder_minutes (15 to 10080),
 --   pending_hours (1 to 168) and customer_limit (1 to 50) have checks as well as the API's own
 --   range. No row means the defaults, 1440, 24 and 5.
@@ -91,10 +94,19 @@ CREATE TABLE public.booking_turn_actions (
     client_id uuid NOT NULL REFERENCES public.clients(id),
     turn_key text NOT NULL,
     booking_id uuid NOT NULL,
-    action text NOT NULL CHECK (action IN ('book', 'change', 'cancel')),
+    action text NOT NULL CHECK (action IN ('book', 'change', 'cancel', 'ask_cancel')),
     created_at timestamptz NOT NULL DEFAULT now(),
+    -- An ask_cancel row only: the booking's version when asked, the chat and turn it was asked
+    -- on, and when the question runs out.
+    booking_version integer,
+    conversation_id uuid,
+    trace_id uuid,
+    expires_at timestamptz,
     PRIMARY KEY (client_id, turn_key),
-    FOREIGN KEY (client_id, booking_id) REFERENCES public.bookings(client_id, id)
+    FOREIGN KEY (client_id, booking_id) REFERENCES public.bookings(client_id, id),
+    CONSTRAINT booking_turn_actions_question
+        CHECK ((action = 'ask_cancel') = (booking_version IS NOT NULL AND trace_id IS NOT NULL
+                                          AND expires_at IS NOT NULL))
 );
 
 CREATE TABLE public.booking_settings (

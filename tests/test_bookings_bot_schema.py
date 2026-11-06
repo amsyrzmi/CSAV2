@@ -143,6 +143,27 @@ def test_a_turn_action_names_a_booking_of_the_same_company_and_a_known_action(
             conn.execute(*_turn_action(a.client_id, a.booking_id, "turn-1", "reschedule"))
 
 
+def test_a_cancel_question_carries_its_version_turn_and_expiry_and_nothing_else_does(
+    migrated_dsn: str,
+) -> None:
+    c = _company(migrated_dsn)
+    insert = (
+        "INSERT INTO booking_turn_actions (client_id, turn_key, booking_id, action,"
+        " booking_version, trace_id, expires_at) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    )
+    later = "2031-03-01T01:30Z"
+    with _owner(migrated_dsn) as conn:
+        with pytest.raises(errors.CheckViolation):
+            conn.execute(*_turn_action(c.client_id, c.booking_id, "ask-1", "ask_cancel"))
+        with pytest.raises(errors.CheckViolation):
+            conn.execute(
+                insert, (c.client_id, "book-1", c.booking_id, "book", 1, uuid.uuid4(), later)
+            )
+        conn.execute(
+            insert, (c.client_id, "ask-1", c.booking_id, "ask_cancel", 1, uuid.uuid4(), later)
+        )
+
+
 def test_bookings_keep_no_turn_key_of_their_own(migrated_dsn: str) -> None:
     with _owner(migrated_dsn) as conn:
         rows = conn.execute(

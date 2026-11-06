@@ -1065,11 +1065,22 @@ async def test_the_planner_is_told_one_change_at_a_time_and_only_for_a_clear_boo
     system, _ = await _prompts_for(_booking_context(), "plan")
     assert "at most one of book, reschedule or cancel" in system
     assert (
-        "plan cancel or reschedule only when the customer clearly means one of their own" in system
+        "Plan cancel or reschedule only when the customer clearly means one of their own" in system
     )
     assert "booking.more_types" in system
     plain, _ = await _prompts_for(Context(), "plan")
     assert "at most one of book" not in plain and "clearly means" not in plain
+
+
+async def test_the_planner_is_told_a_cancel_is_asked_first_and_what_a_yes_is() -> None:
+    system, _ = await _prompts_for(_booking_context(), "plan")
+    assert "no confirmation step" not in system
+    assert "booking.cancel_asked" in system and "confirmed true" in system
+    for yes in ("yes", "ok", "confirm", "ya", "betul"):
+        assert yes in system
+    assert "Anything else is not a yes" in system
+    plain, _ = await _prompts_for(Context(), "plan")
+    assert "cancel_asked" not in plain
 
 
 async def test_the_classifier_scores_a_short_answer_that_continues_a_booking() -> None:

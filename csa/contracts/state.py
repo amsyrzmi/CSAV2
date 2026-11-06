@@ -53,6 +53,9 @@ class BookingContext(ContractModel):
     more_types: bool = False
     upcoming: list[BookingRef] = Field(default_factory=list, max_length=10)
     recent: list[RecentMessage] = Field(default_factory=list, max_length=RECENT_MESSAGES)
+    # The booking the last reply asked the customer to confirm cancelling, when this message is
+    # their first since: a clear yes to it is a cancel with `confirmed`. The server checks it again.
+    cancel_asked: UUID | None = None
 
 
 class Context(ContractModel):
