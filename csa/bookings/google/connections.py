@@ -305,3 +305,27 @@ class CalendarConnections:
                 conn=conn,
             )
         return CalendarAccess(fresh.access_token, row["calendar_id"], connection_id)
+
+    async def renew_calendar(self, client_id: UUID, person_id: UUID) -> CalendarAccess:
+        """Make the person's Bookings calendar again, after they deleted it in Google, and store
+        it. Their events there are gone with it: the sync makes each one again as it reaches it."""
+        access = await self.access(client_id, person_id)
+        api = self._api()
+        async with tx(self.pool, str(client_id)) as conn:
+            facts = await db.q.fetch_one(
+                "bookings/mail_facts.sql", {"client_id": client_id}, conn=conn
+            )
+        if facts is None:
+            raise CalendarError("not_connected")
+        calendar_id = await api.create_calendar(
+            access.token, summary=f"{facts['brand']} Bookings", time_zone=facts["timezone"]
+        )
+        async with tx(self.pool, str(client_id)) as conn:
+            done = await db.q.fetch_one(
+                "bookings/google_connection_calendar_set.sql",
+                {"client_id": client_id, "id": access.connection_id, "calendar_id": calendar_id},
+                conn=conn,
+            )
+        if done is None:
+            raise CalendarError("not_connected")
+        return CalendarAccess(access.token, calendar_id, access.connection_id)

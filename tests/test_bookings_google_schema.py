@@ -158,7 +158,7 @@ def test_a_ledger_row_defaults_to_pending_with_no_attempts(migrated_dsn: str) ->
             (c.client_id, c.booking_id, c.person_id),
         )
         [row] = conn.execute(
-            "SELECT status, attempts, synced_version, google_event_id, last_error"
+            "SELECT status, attempts, synced_version, google_event_id, last_error, failed_version"
             " FROM booking_calendar_events WHERE client_id = %s",
             (c.client_id,),
         )
@@ -168,6 +168,7 @@ def test_a_ledger_row_defaults_to_pending_with_no_attempts(migrated_dsn: str) ->
             "synced_version": None,
             "google_event_id": None,
             "last_error": None,
+            "failed_version": None,
         }
         with pytest.raises(errors.CheckViolation):
             conn.execute(

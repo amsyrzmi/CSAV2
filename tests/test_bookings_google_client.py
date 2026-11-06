@@ -284,3 +284,13 @@ def test_the_client_needs_its_id_secret_and_redirect() -> None:
             CalendarClient(*args, http)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         CalendarClient("i", SecretStr("s"), "", http)
+
+
+async def test_an_event_takes_an_id_of_our_own_and_a_taken_id_is_event_exists() -> None:
+    client, seen = _client(_answer(200, {"id": "abc123"}))
+    result = await client.insert_event(ACCESS, CALENDAR, {"summary": "x"}, event_id="abc123")
+    assert result.event_id == "abc123" and _json(seen[0])["id"] == "abc123"
+    taken, _ = _client(_answer(409, {"error": {"message": "The requested identifier exists."}}))
+    with pytest.raises(CalendarError) as caught:
+        await taken.insert_event(ACCESS, CALENDAR, {"summary": "x"}, event_id="abc123")
+    assert caught.value.code == "event_exists"

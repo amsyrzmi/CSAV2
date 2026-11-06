@@ -258,9 +258,17 @@ class CalendarClient:
         return dict(body)
 
     async def insert_event(
-        self, access: SecretStr, calendar_id: str, body: dict[str, Any], *, meet: bool = False
+        self,
+        access: SecretStr,
+        calendar_id: str,
+        body: dict[str, Any],
+        *,
+        meet: bool = False,
+        event_id: str | None = None,
     ) -> EventResult:
         payload = self._checked(body)
+        if event_id is not None:
+            payload["id"] = event_id
         params = {"sendUpdates": "none"}
         if meet:
             params["conferenceDataVersion"] = "1"
@@ -272,6 +280,9 @@ class CalendarClient:
             }
         path = f"calendars/{quote(calendar_id, safe='')}/events"
         response = await self._send(self._api(access, "POST", path, params=params, body=payload))
+        if response.status_code == 409:
+            # The id is taken: by this event already, or by a deleted one (ids stay reserved).
+            raise CalendarError("event_exists")
         if meet and response.status_code == 400:
             # A 400 refuses the whole request: no event was made, so the caller may try without.
             raise CalendarError("meet_unavailable")

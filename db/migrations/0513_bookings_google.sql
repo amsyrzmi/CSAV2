@@ -60,6 +60,9 @@ CREATE TABLE public.booking_calendar_events (
     status text NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'synced', 'failed', 'deleted', 'dropped')),
     synced_version integer,
+    -- A failure is counted against the booking version it was tried at: attempts is how many times
+    -- failed_version has failed, and a booking that changes again gets a fresh set of attempts.
+    failed_version integer,
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     last_error text CHECK (last_error IS NULL OR length(last_error) <= 64),
     updated_at timestamptz NOT NULL DEFAULT now(),
