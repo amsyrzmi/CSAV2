@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from csa.storage.base import StorageError, StorageNotFound
+from csa.storage.base import InvalidObjectName, StorageError, StorageNotFound
 from csa.storage.local import LocalObjectStore
 
 TENANT = uuid4()
@@ -84,3 +84,22 @@ def test_check_fails_when_the_root_is_a_file(tmp_path: Path) -> None:
 
     with pytest.raises(StorageError):
         LocalObjectStore(root).check()
+
+
+def test_name_whose_temp_file_fits_is_stored(tmp_path: Path) -> None:
+    # ".<name>.part" adds six bytes, so 249 characters is the longest name that fits NAME_MAX.
+    store = LocalObjectStore(tmp_path / "uploads")
+    name = "x" * 249
+    store.put(TENANT, name, b"data")
+
+    assert store.read(TENANT, name, 10) == b"data"
+
+
+@pytest.mark.parametrize("name", ["x" * 250, "x" * 255, "é" * 125])
+def test_name_whose_temp_file_exceeds_name_max_is_refused(tmp_path: Path, name: str) -> None:
+    # 255 characters, and 125 two-byte characters (250 bytes), both pass validate_name.
+    store = LocalObjectStore(tmp_path / "uploads")
+
+    with pytest.raises(InvalidObjectName):
+        store.put(TENANT, name, b"data")
+    assert store.list_names(TENANT) == []

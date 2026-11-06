@@ -8,7 +8,9 @@ from typing import BinaryIO
 from uuid import UUID
 
 from csa.agents.kb.extract import KbFileError, resolve_upload_path
-from csa.storage.base import StorageError, StorageNotFound, validate_name
+from csa.storage.base import InvalidObjectName, StorageError, StorageNotFound, validate_name
+
+MAX_FILE_NAME_BYTES = 255
 
 
 class LocalObjectStore:
@@ -22,9 +24,12 @@ class LocalObjectStore:
 
     def put(self, tenant: UUID, name: str, data: bytes) -> None:
         validate_name(name)
+        temporary_name = f".{name}.part"
+        if len(temporary_name.encode()) > MAX_FILE_NAME_BYTES:
+            raise InvalidObjectName(f"object name too long for local storage: {name[:80]!r}")
         directory = self._tenant_directory(tenant)
         final = directory / name
-        temporary = directory / f".{name}.part"
+        temporary = directory / temporary_name
         try:
             with temporary.open("xb") as stream:
                 os.chmod(temporary, 0o600)
