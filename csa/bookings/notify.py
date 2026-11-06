@@ -96,6 +96,11 @@ def _clean(address: object) -> str | None:
         return None
 
 
+def clean_address(address: object) -> str | None:
+    """The address if it passes the check an address typed into bookings passes; else none."""
+    return _clean(address) if address else None
+
+
 def customer_address(booking: BookingRecord) -> str | None:
     """Where the customer's own message goes: the contact's email, else the address they gave in a
     chat (never checked, so it is only ever a fallback and never identity)."""

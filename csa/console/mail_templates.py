@@ -151,6 +151,19 @@ def _span(start: datetime, end: datetime, tz: str) -> str:
     return f"{when(start, tz)} to {until}"
 
 
+def _place_rows(booking: BookingRecord) -> list[tuple[str, str, str | None]]:
+    """Where it happens: the address with Maps and Waze links, the meeting link, or the phone."""
+    if booking.location_kind == "in_person" and booking.address:
+        maps, waze = map_links(booking.address)
+        return [("Where", booking.address, None), ("Google Maps", maps, maps), ("Waze", waze, waze)]
+    if booking.location_kind == "online" and booking.meeting_link:
+        link = booking.meeting_link
+        return [("Link", link, link if link.startswith("https://") else None)]
+    if booking.location_kind == "phone":
+        return [("Where", "By phone", None)]
+    return []
+
+
 def booking_mail(
     *,
     to: str,
@@ -178,19 +191,8 @@ def booking_mail(
     rows: list[tuple[str, str, str | None]] = [
         ("What", title, None),
         ("When", f"{_span(booking.starts_at, booking.ends_at, tz)} ({tz})", None),
+        *_place_rows(booking),
     ]
-    if booking.location_kind == "in_person" and booking.address:
-        maps, waze = map_links(booking.address)
-        rows += [
-            ("Where", booking.address, None),
-            ("Google Maps", maps, maps),
-            ("Waze", waze, waze),
-        ]
-    elif booking.location_kind == "online" and booking.meeting_link:
-        link = booking.meeting_link
-        rows.append(("Link", link, link if link.startswith("https://") else None))
-    elif booking.location_kind == "phone":
-        rows.append(("Where", "By phone", None))
     footer = (
         "Open the attached calendar file to remove it from your calendar."
         if change == "cancelled"
@@ -245,6 +247,74 @@ def customer_declined_mail(
             "so that time isn't booked."
         )
         subject = f"Not confirmed: {title} on {new} ({_one_line(brand)})"
+    hello = f"Hello {name}," if name else "Hello,"
+    footer = ["You can ask for another time whenever you like."] if invite else []
+    text = "\n\n".join([hello, headline, *footer, brand]) + "\n"
+    html = _html([escape(hello), escape(headline), *map(escape, footer), escape(brand)])
+    return OutgoingMail(to=to, subject=subject, text=text, html=html)
+
+
+def reminder_mail(
+    *, to: str, name: str | None, brand: str, booking: BookingRecord, tz: str
+) -> OutgoingMail:
+    """A reminder that a booking is coming up: what, when and where, as plain text with no
+    calendar file (the one sent when it was made is already in the calendar).
+
+    The same for the customer, the people on the booking and its guests, and it names nobody else.
+    """
+    title = " ".join((booking.title or "Booking").split())
+    headline = f"A reminder: {title} with {brand} is coming up."
+    rows: list[tuple[str, str, str | None]] = [
+        ("What", title, None),
+        ("When", f"{_span(booking.starts_at, booking.ends_at, tz)} ({tz})", None),
+        *_place_rows(booking),
+    ]
+    hello = f"Hello {name}," if name else "Hello,"
+    text = (
+        f"{hello}\n\n{headline}\n\n"
+        + "".join(f"{label}: {value}\n" for label, value, _ in rows)
+        + f"\n{brand}\n"
+    )
+    details = "<br>\n".join(
+        f"<strong>{label}:</strong> "
+        + (f'<a href="{escape(href)}">{escape(value)}</a>' if href else escape(value))
+        for label, value, href in rows
+    )
+    html = _html([escape(hello), escape(headline), details, escape(brand)])
+    subject = f"Reminder: {title} on {when(booking.starts_at, tz)} ({_one_line(brand)})"
+    return OutgoingMail(to=to, subject=subject, text=text, html=html)
+
+
+def customer_lapsed_mail(
+    *,
+    to: str,
+    name: str | None,
+    brand: str,
+    booking: BookingRecord,
+    original: BookingRecord | None,
+    tz: str,
+    invite: bool = True,
+) -> OutgoingMail:
+    """Plain text for a customer whose own bot's pending booking, or request to move one, ran out
+    of time before staff answered. Like the decline, it sends no calendar file and never says
+    "cancelled": they were never sent an invitation. It says the time was released, or that the
+    booking a request would have moved stays where it was, and invites another request only when
+    `invite` says the bot would act on one.
+    """
+    title = " ".join((booking.title or "Booking").split())
+    new = when(booking.starts_at, tz)
+    if original is not None:
+        headline = (
+            f"Your request to move {title} with {brand} to {new} wasn't confirmed in time. "
+            f"Your booking stays on {when(original.starts_at, tz)}."
+        )
+        subject = f"Request not confirmed in time: {title} ({_one_line(brand)})"
+    else:
+        headline = (
+            f"Your request for {title} with {brand} on {new} wasn't confirmed in time, "
+            "so that time has been released."
+        )
+        subject = f"Not confirmed in time: {title} on {new} ({_one_line(brand)})"
     hello = f"Hello {name}," if name else "Hello,"
     footer = ["You can ask for another time whenever you like."] if invite else []
     text = "\n\n".join([hello, headline, *footer, brand]) + "\n"

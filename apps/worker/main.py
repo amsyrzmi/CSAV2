@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
@@ -15,6 +15,7 @@ from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, kb_ingest_loop
 from csa.channels.ingress import TelegramIngress
 from csa.channels.voice import transcribe_telegram_audio
+from csa.console.mailer import Mailer
 from csa.contracts.envelope import Channel, Envelope, Voice
 from csa.core import db
 from csa.core.langfuse import LangfuseSink
@@ -29,7 +30,7 @@ from csa.graph.coordinator import CoordinatorRuntime, build_runtime, process_tur
 from csa.graph.events import PostgresEventSink
 from csa.graph.retention import CheckpointPool, retention_loop
 from csa.graph.saver import build_checkpoint_pool, build_saver
-from csa.jobs.runner import JobRunner, jobs_loop
+from csa.jobs.runner import JobRunner, build_default_registry, jobs_loop
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
 from csa.turn.deps import CAPABILITIES, PostgresTurnDependencies, build_llm_provider
@@ -565,6 +566,21 @@ def register_hr_leavers_task(
     return asyncio.create_task(_hr_leavers_loop(app_pool, interval_seconds))
 
 
+class _Closable(Protocol):
+    async def close(self) -> None: ...
+
+
+async def drain_then_close(deps: PostgresTurnDependencies | None, *pools: _Closable) -> None:
+    """Let the booking mail still on its way finish, then close the pools it reads through.
+
+    A normal restart must not lose it: the mail tasks read the app pool, so it closes after them.
+    """
+    if deps is not None:
+        await deps.drain()
+    for pool in pools:
+        await pool.close()
+
+
 async def main() -> None:  # pragma: no cover - process entrypoint
     """Start queue/reaper, checkpoint retention, and the liveness heartbeat."""
     settings = get_settings()
@@ -576,7 +592,10 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     await app_pool.open(wait=True)
     await checkpoint_pool.open(wait=True)
     llm_http = httpx.AsyncClient()
+    # One mailer for the worker, built once: booking mail after a turn, and the reminder job.
+    mailer = Mailer.from_settings(settings)
     coordinator: CoordinatorRuntime | None = None
+    turn_deps: PostgresTurnDependencies | None = None
     if settings.TURN_ENGINE == "coordinator":
         compose_fallback = (
             GeminiClient(
@@ -613,8 +632,9 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
             else None
         )
+        turn_deps = PostgresTurnDependencies(app_pool, llm, jev, mailer=mailer)
         coordinator = build_runtime(
-            PostgresTurnDependencies(app_pool, llm, jev),
+            turn_deps,
             build_saver(checkpoint_pool),
             PostgresEventSink(app_pool, langfuse_sink=langfuse_sink),
         )
@@ -644,6 +664,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         owner_pool,
         app_pool,
         lock_conninfo=owner_dsn,
+        registry=build_default_registry(mailer),
     )
     hr_leavers = register_hr_leavers_task(app_pool)
     jobs_task = asyncio.create_task(jobs_loop(job_runner))
@@ -672,9 +693,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
         await llm_http.aclose()
-        await checkpoint_pool.close()
-        await app_pool.close()
-        await owner_pool.close()
+        await drain_then_close(turn_deps, checkpoint_pool, app_pool, owner_pool)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -12,9 +12,10 @@ import structlog
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
-from csa.jobs.bookings import run_pending_expiry
+from csa.jobs.bookings import run_pending_expiry, run_reminder_mail, run_reminder_queue
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
@@ -25,8 +26,12 @@ from csa.jobs.subscriptions import run_subscriptions_due
 logger = structlog.get_logger(__name__)
 
 
-def build_default_registry() -> JobRegistry:
-    """Build the standard production registry of scheduled jobs."""
+def build_default_registry(mailer: Mailer | None = None) -> JobRegistry:
+    """Build the standard production registry of scheduled jobs.
+
+    `mailer` sends the booking reminders and lapse notices by email. With none, the mail job runs
+    and sends nothing, so the rows wait in the queue for a worker that has one.
+    """
     registry = JobRegistry()
     registry.register(
         Job(
@@ -82,6 +87,32 @@ def build_default_registry() -> JobRegistry:
             every=timedelta(minutes=5),
             fn=run_pending_expiry,
             per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="booking_reminder_queue",
+            every=timedelta(minutes=5),
+            fn=run_reminder_queue,
+            per_client=True,
+        )
+    )
+
+    async def booking_reminder_mail(
+        conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int
+    ) -> dict[str, Any]:
+        return await run_reminder_mail(conn, mailer, clock, batch_size=batch_size)
+
+    # Once for every company, as the owner (the queue spans companies). Sends run a few at a time
+    # and each may take its mailer's limit, so a run gets longer than the usual 30 seconds.
+    registry.register(
+        Job(
+            name="booking_reminder_mail",
+            every=timedelta(minutes=5),
+            fn=booking_reminder_mail,
+            per_client=False,
+            timeout=150.0,
+            batch_size=50,
         )
     )
     return registry

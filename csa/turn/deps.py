@@ -34,6 +34,7 @@ from csa.agents.staged.service import BookingAgent, SubscriptionAgent, reply
 from csa.agents.tickets.agent import TicketAgent
 from csa.approval.service import hold_reply
 from csa.bookings.turn_context import booking_context
+from csa.console.mailer import Mailer
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
 from csa.contracts.envelope import Channel, Envelope
 from csa.contracts.facts import AgentResult, Fact
@@ -197,10 +198,14 @@ class PostgresTurnDependencies:
         app_pool: AsyncConnectionPool,
         llm: LLMProvider | None = None,
         jev: JevProvider | None = None,
+        mailer: Mailer | None = None,
     ) -> None:
         self._pool = app_pool
         self._llm = llm
         self._jev = jev
+        # Booking mail goes out after a turn's transaction commits, from tasks this agent holds.
+        # The worker keeps the one agent so it can `drain` it before it closes the pool.
+        self._booking_agent = BookingAgent(mailer)
         self._pending = PendingActionStore(app_pool)
         self._runner = SpokeRunner(
             {
@@ -211,13 +216,17 @@ class PostgresTurnDependencies:
                 "ecommerce_agent": EcommerceAgent(),
                 "kb_agent": KbAgent(),
                 "invoice_agent": InvoiceAgent(),
-                "booking_agent": BookingAgent(),
+                "booking_agent": self._booking_agent,
                 "subscription_agent": SubscriptionAgent(),
             },
             breaker=CircuitBreaker(store=PostgresBreakerStore(app_pool)),
             recorder=PostgresRunRecorder(app_pool),
             capabilities=CapabilityRegistry(app_pool),
         )
+
+    async def drain(self) -> None:
+        """Wait for the booking mail still on its way, so a restart does not lose it."""
+        await self._booking_agent.drain()
 
     async def load_context(self, envelope: Envelope) -> Context:
         conversation_id = _require_conversation(envelope)

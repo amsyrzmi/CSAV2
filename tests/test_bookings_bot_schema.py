@@ -586,3 +586,37 @@ def test_an_email_reminder_has_an_address_and_a_telegram_one_has_none(
                 *_reminder(c.client_id, c.booking_id, channel="telegram", address="x@example.test")
             )
         conn.execute(*_reminder(c.client_id, c.booking_id, channel="telegram", address=None))
+
+
+def test_a_lapse_notice_is_its_own_audience_and_collides_with_itself(migrated_dsn: str) -> None:
+    c = _company(migrated_dsn)
+    with _owner(migrated_dsn) as conn:
+        conn.execute(*_reminder(c.client_id, c.booking_id, audience="lapse"))
+        with pytest.raises(errors.UniqueViolation):
+            conn.execute(*_reminder(c.client_id, c.booking_id, audience="lapse"))
+        # The same address on the booking's reminder is a different row.
+        conn.execute(*_reminder(c.client_id, c.booking_id, audience="customer"))
+
+
+def test_a_reminder_address_is_lower_case_so_two_spellings_cannot_both_be_queued(
+    migrated_dsn: str,
+) -> None:
+    c = _company(migrated_dsn)
+    with _owner(migrated_dsn) as conn:
+        with pytest.raises(errors.CheckViolation):
+            conn.execute(*_reminder(c.client_id, c.booking_id, address="A@example.test"))
+        conn.execute(*_reminder(c.client_id, c.booking_id, address="a@example.test"))
+        with pytest.raises(errors.UniqueViolation):
+            conn.execute(*_reminder(c.client_id, c.booking_id, address="a@example.test"))
+
+
+def test_the_queued_email_sweep_has_a_partial_index(migrated_dsn: str) -> None:
+    with _owner(migrated_dsn) as conn:
+        row = conn.execute(
+            "SELECT indexdef FROM pg_indexes"
+            " WHERE tablename = 'booking_reminders' AND indexname = 'booking_reminders_queued'"
+        ).fetchone()
+    assert row is not None
+    definition = row["indexdef"]
+    assert "created_at, id" in definition
+    assert "channel = 'email'" in definition and "status = 'queued'" in definition

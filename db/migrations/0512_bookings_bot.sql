@@ -17,9 +17,13 @@
 --   pending_hours (1 to 168) and customer_limit (1 to 50) have checks as well as the API's own
 --   range. No row means the defaults, 1440, 24 and 5.
 -- booking_reminders: one row per booking, start time, audience and address, so a reminder is made
---   once and a moved booking gets a fresh one. address is NULL for a Telegram row and set for an email row (a check), and the unique
---   constraint is NULLS NOT DISTINCT (Postgres 15 and later; the image is 16) so two Telegram rows
---   for one booking still collide.
+--   once and a moved booking gets a fresh one. address is NULL for a Telegram row and set for an
+--   email row (a check), and always lower case (a check), so two spellings of one address are one
+--   reminder. The unique constraint is NULLS NOT DISTINCT (Postgres 15 and later; the image is 16)
+--   so two Telegram rows for one booking still collide. audience is customer, staff (people and
+--   guests on the booking) or lapse (the email that tells a customer without Telegram that the
+--   bot's pending booking ran out of time); the worker's mail job claims queued email rows through
+--   the partial index booking_reminders_queued, so the sweep never reads the rows already settled.
 -- staff_notification_targets.events gains 'booking_pending': the column default (set in 0160) has it
 --   and so does every existing target that already lists 'approval_needed'. A target that chose its
 --   own events without approval_needed is left alone.
@@ -89,7 +93,7 @@ CREATE TABLE public.booking_reminders (
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     booking_id uuid NOT NULL,
     starts_at timestamptz NOT NULL,
-    audience text NOT NULL CHECK (audience IN ('customer', 'staff')),
+    audience text NOT NULL CHECK (audience IN ('customer', 'staff', 'lapse')),
     channel text NOT NULL CHECK (channel IN ('telegram', 'email')),
     address text CHECK (address IS NULL OR length(address) BETWEEN 3 AND 254),
     status text NOT NULL DEFAULT 'queued'
@@ -100,9 +104,12 @@ CREATE TABLE public.booking_reminders (
     FOREIGN KEY (client_id, booking_id) REFERENCES public.bookings(client_id, id),
     CONSTRAINT booking_reminders_address_by_channel
         CHECK ((channel = 'email') = (address IS NOT NULL)),
+    CONSTRAINT booking_reminders_address_lower CHECK (address IS NULL OR address = lower(address)),
     CONSTRAINT booking_reminders_once
         UNIQUE NULLS NOT DISTINCT (client_id, booking_id, starts_at, audience, address)
 );
+CREATE INDEX booking_reminders_queued ON public.booking_reminders (created_at, id)
+    WHERE channel = 'email' AND status = 'queued';
 
 -- Row security and grants, as in 0510. No FORCE: the owner csa keeps bypassing the policy.
 DO $$

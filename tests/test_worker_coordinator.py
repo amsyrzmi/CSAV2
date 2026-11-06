@@ -7,7 +7,8 @@ from uuid import UUID
 
 import psycopg
 import pytest
-from apps.worker.main import IngressWorker
+from apps.worker.main import IngressWorker, drain_then_close
+from csa.console.mailer import Mailer
 from csa.contracts.envelope import Channel
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import (
@@ -416,3 +417,33 @@ async def test_finalize_failure_retries_from_checkpoint_without_second_reply(
         assert done["status"] == "completed"
     finally:
         await _close(*pools[:3])
+
+
+class _Pool:
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name, self.events = name, events
+
+    async def close(self) -> None:
+        self.events.append(f"close {self.name}")
+
+
+async def test_the_worker_hands_its_mailer_to_the_booking_agent_it_keeps() -> None:
+    mailer = Mailer(None, "FourStacks <no-reply@fourstacks.my>")
+    deps = PostgresTurnDependencies(None, mailer=mailer)  # type: ignore[arg-type]
+    agent = deps._runner._agents["booking_agent"]
+    assert agent is deps._booking_agent and agent._mailer is mailer  # type: ignore[attr-defined]
+    assert PostgresTurnDependencies(None)._booking_agent._mailer is None  # type: ignore[arg-type]
+
+
+async def test_a_normal_stop_drains_booking_mail_before_any_pool_closes() -> None:
+    events: list[str] = []
+    deps = PostgresTurnDependencies(None)  # type: ignore[arg-type]
+
+    async def drain() -> None:
+        events.append("drain")
+
+    deps._booking_agent.drain = drain  # type: ignore[method-assign]
+    await drain_then_close(deps, _Pool("checkpoint", events), _Pool("app", events))
+    assert events == ["drain", "close checkpoint", "close app"]
+    await drain_then_close(None, _Pool("owner", events))  # no coordinator: only the pools
+    assert events[-1] == "close owner"

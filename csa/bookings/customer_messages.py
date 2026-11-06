@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 
 from csa.bookings import bot, service
 from csa.bookings.bot import format_slot
+from csa.bookings.ics import map_links
 from csa.core import db
 
 Authority = Literal["reviewed", "human"]
@@ -258,3 +259,24 @@ async def after_staff_action(
     else:
         return False
     return await _send(conn, client_id, booking, event, key, authority="human", reply=reply)
+
+
+# --- the reminder -------------------------------------------------------------------------------
+
+
+def reminder_text(booking: service.BookingRecord, zone: ZoneInfo) -> str:
+    """The Telegram reminder: what, when in the company's time, and where or the link.
+
+    Plain text from the booking alone, so it says nothing the customer typed. An in-person booking
+    carries its Maps and Waze links. It does not invite a reply: the company may have it Off, and a
+    reminder is not a question.
+    """
+    lines = [f"Reminder: your {_what(booking)} is on {format_slot(booking.starts_at, zone)}."]
+    if booking.location_kind == "in_person" and booking.address:
+        maps, waze = map_links(booking.address)
+        lines += [f"Where: {booking.address}", f"Google Maps: {maps}", f"Waze: {waze}"]
+    elif booking.location_kind == "online" and booking.meeting_link:
+        lines.append(f"Link: {booking.meeting_link}")
+    elif booking.location_kind == "phone":
+        lines.append("Where: by phone")
+    return "\n".join(lines)

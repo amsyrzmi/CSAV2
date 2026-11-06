@@ -74,14 +74,23 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
         assert "provider-egress" in services[name]["networks"]
     gateway_secrets = {s["target"]: s["source"] for s in services["gateway"]["secrets"]}
     assert gateway_secrets["LG_DATABASE_URL"] == "staging_checkpoint_dsn"
-    # Invitation mail: relay credentials on the gateway only, and off unless switched on.
-    assert gateway_secrets["SMTP_USERNAME"] == "staging_smtp_username"
-    assert gateway_secrets["SMTP_PASSWORD"] == "staging_smtp_password"
+    # Mail: relay credentials on the gateway and the worker (booking reminders), off unless
+    # switched on, and never on delivery.
+    worker_mail = {s["target"]: s["source"] for s in services["worker"]["secrets"]}
+    for secrets in (gateway_secrets, worker_mail):
+        assert secrets["SMTP_USERNAME"] == "staging_smtp_username"
+        assert secrets["SMTP_PASSWORD"] == "staging_smtp_password"
     assert services["gateway"]["environment"]["INVITE_MAIL_ENABLED"] == "false"
-    for name in ("worker", "delivery"):
-        assert not {"SMTP_USERNAME", "SMTP_PASSWORD"} & {
-            s["target"] for s in services[name]["secrets"]
-        }
+    assert services["worker"]["environment"]["INVITE_MAIL_ENABLED"] == "false"
+    assert not {"SMTP_USERNAME", "SMTP_PASSWORD"} & {
+        s["target"] for s in services["delivery"]["secrets"]
+    }
+    assert "INVITE_MAIL_ENABLED" not in services["delivery"]["environment"]
+    # The worker reaches the relay the way the gateway does: through a bridge with outbound
+    # access, on top of the networks it already had.
+    assert {"data", "embeddings", "provider-egress"} <= set(services["worker"]["networks"])
+    assert not config["networks"]["provider-egress"].get("internal", False)
+    assert {"provider-egress"} <= set(services["gateway"]["networks"])
     # Staff email assistant: the Google OAuth client on the gateway only, off by default.
     assert gateway_secrets["GOOGLE_CLIENT_ID"] == "staging_google_client_id"
     assert gateway_secrets["GOOGLE_CLIENT_SECRET"] == "staging_google_client_secret"
@@ -133,6 +142,16 @@ def test_pipeline_switches_invitation_mail_on_from_the_environment(tmp_path: Pat
         env_overrides={"CSA_STAGING_INVITE_MAIL": "true"},
     )
     assert config["services"]["gateway"]["environment"]["INVITE_MAIL_ENABLED"] == "true"
+
+
+def test_pipeline_switches_the_workers_mail_on_with_the_same_variable(tmp_path: Path) -> None:
+    config = render(
+        tmp_path,
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_INVITE_MAIL": "true"},
+    )
+    assert config["services"]["worker"]["environment"]["INVITE_MAIL_ENABLED"] == "true"
 
 
 def test_pipeline_switches_the_email_assistant_on_from_the_environment(tmp_path: Path) -> None:
