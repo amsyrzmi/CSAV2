@@ -15,6 +15,7 @@ from csa.bookings.contracts import BookingActionIn
 from csa.console.mailer import Mailer, OutgoingMail
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.jobs import bookings as bookings_job
 from csa.jobs.bookings import run_pending_expiry, run_reminder_mail, run_reminder_queue
 from csa.jobs.clock import FakeClock
 from csa.jobs.runner import JobRunner, build_default_registry
@@ -46,8 +47,7 @@ GUEST = "guest@example.test"
 
 
 async def queue(shop: Shop, when: datetime = EARLY) -> dict[str, Any]:
-    async with tx(shop.w.pool, shop.tenant) as conn:
-        return await run_reminder_queue(conn, shop.client, FakeClock(when), batch_size=100)
+    return await run_reminder_queue(shop.w.pool, shop.client, FakeClock(when), batch_size=100)
 
 
 async def mail(
@@ -354,6 +354,51 @@ async def test_a_staff_made_booking_confirmed_late_keeps_its_reminder(shop: Shop
     relay = FakeTransport()
     await remind(shop, relay, TEN - timedelta(hours=1))
     assert relay.to() == [STAFF]
+
+
+async def test_a_run_cut_off_halfway_keeps_what_it_queued_and_holds_no_lock_on_it(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = await make_person(shop.team, "First Person", email="first@example.test")
+    second = await make_person(shop.team, "Second Person", email="second@example.test")
+    early = await booked(shop.team, shop.team.admin, meeting(first, start=at(10)))
+    later = await booked(shop.team, shop.team.admin, meeting(second, start=at(11)))
+    real = bookings_job._remind
+    stalled = asyncio.Event()
+
+    async def stall(conn: Any, client_id: Any, booking_id: Any, *args: Any) -> Any:
+        if str(booking_id) == later["id"]:
+            stalled.set()
+            await asyncio.sleep(60)  # the job's timeout comes first
+        return await real(conn, client_id, booking_id, *args)
+
+    monkeypatch.setattr("csa.jobs.bookings._remind", stall)
+    task = asyncio.create_task(queue(shop))
+    try:
+        await asyncio.wait_for(stalled.wait(), 30)
+        # The first booking's transaction has ended: a person moving it does not wait on the run.
+        await asyncio.wait_for(move(shop, early, 12), 15)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    def queued(found: list[dict[str, Any]]) -> list[tuple[str, int]]:
+        return sorted((r["address"], r["starts_at"].astimezone(UTC).hour) for r in found)
+
+    # What the run queued before it was cut off stands.
+    assert queued(await rows(shop)) == [("first@example.test", 10)]
+    monkeypatch.setattr("csa.jobs.bookings._remind", real)
+    stats = await queue(shop, EARLY + timedelta(minutes=5))
+    assert stats["bookings"] == 2 and stats["queued"] == 2 and stats["failed"] == 0
+    assert queued(await rows(shop)) == [
+        ("first@example.test", 10),  # dropped at send: the booking is at noon now
+        ("first@example.test", 12),
+        ("second@example.test", 11),
+    ]
+    relay = FakeTransport()
+    await mail(shop, relay, EARLY + timedelta(minutes=5))
+    assert sorted(relay.to()) == ["first@example.test", "second@example.test"]
 
 
 async def test_the_company_chooses_how_early(shop: Shop) -> None:
@@ -959,8 +1004,7 @@ async def test_two_companies_in_one_run_each_get_their_own_brand_zone_and_rows(
         "UPDATE clients SET timezone = 'Asia/Tokyo', brand_name = 'Cekap' WHERE id = %s", other
     )
     await queue(shop)
-    async with tx(shop.w.pool, other) as conn:
-        await run_reminder_queue(conn, uuid.UUID(other), FakeClock(EARLY), batch_size=100)
+    await run_reminder_queue(shop.w.pool, uuid.UUID(other), FakeClock(EARLY), batch_size=100)
     # A company's own transaction sees its own rows only, and cannot claim another's.
     ours = await shop.w.q("SELECT id FROM booking_reminders WHERE client_id = %s", shop.tenant)
     async with tx(shop.w.pool, other) as conn:
@@ -998,10 +1042,9 @@ async def other_company_meeting(shop: Shop) -> None:
     )
     assert elsewhere.status_code == 201, elsewhere.text
     await booked(shop.team, shop.team.other, meeting(elsewhere.json(), start=at(10)))
-    async with tx(shop.w.pool, shop.w.tenants[1]) as conn:
-        await run_reminder_queue(
-            conn, uuid.UUID(shop.w.tenants[1]), FakeClock(EARLY), batch_size=100
-        )
+    await run_reminder_queue(
+        shop.w.pool, uuid.UUID(shop.w.tenants[1]), FakeClock(EARLY), batch_size=100
+    )
 
 
 async def test_one_company_with_many_rows_does_not_fill_every_batch(shop: Shop) -> None:

@@ -2,7 +2,8 @@
 
 Reminders are two jobs. `run_reminder_queue` runs per company, as that company, and writes what
 is owed: one row in `booking_reminders` per recipient and start time, and for a customer on
-Telegram the message itself, in the same transaction. `run_reminder_mail` runs once for everyone
+Telegram the message itself, in the same transaction, one short transaction per booking.
+`run_reminder_mail` runs once for everyone
 and sends the queued email rows: the owner connection only lists which companies have some, and
 each row is then claimed, checked and settled in its own company's transaction, as `csa_app`. A row
 is claimed (`sending`) only when it has a send slot and committed before it is sent, so a worker
@@ -228,10 +229,11 @@ async def _remind(
     telegram: bool,
     now: datetime,
 ) -> tuple[int, int]:
-    """One booking's reminders. The booking is locked `FOR SHARE` before it is read, until the
-    company's run commits: a move or cancel already holding it is waited for and then read as it
-    stands, and one that comes after waits, so its own message follows the reminder. A reminder
-    for the old time can never land after the "moved" message."""
+    """One booking's reminders, in its own transaction. The booking is locked `FOR SHARE` before it
+    is read, until that transaction commits: a move or cancel already holding it is waited for and
+    then read as it stands, and one that comes after waits for this booking only, so its own
+    message follows the reminder. A reminder for the old time can never land after the "moved"
+    message."""
     locked = await db.q.fetch_one(
         "bookings/booking_share_lock.sql", {"client_id": client_id, "id": booking_id}, conn=conn
     )
@@ -255,7 +257,7 @@ async def _remind(
 
 
 async def run_reminder_queue(
-    conn: psycopg.AsyncConnection[Any],
+    app_pool: AsyncConnectionPool,
     client_id: UUID,
     clock: Clock,
     *,
@@ -267,36 +269,42 @@ async def run_reminder_queue(
     (made or moved inside the window) gets none, for anyone: its confirmation is enough
     (`service.late_for_reminder`).
 
-    Bookings are read a page of `batch_size` at a time until none is left, each in its own
-    savepoint, so one that cannot be queued does not stop the rest. Customers are reminded only
-    while the company's gates allow an automatic message (`customers_remindable`); staff and guests
-    always are. A pending booking is never reminded, and nothing is queued for a cancelled one.
+    Every transaction is the company's own, on `app_pool` (the runner hands this job the pool, not
+    one transaction: `Job.own_transactions`). The settings and gates are read once; then bookings
+    are read a page of `batch_size` at a time until none is left, and each is queued in its own
+    short transaction, so its share lock is held only while that booking is queued, one that
+    cannot be queued does not stop the rest, and what was queued stands when a run is cut off by
+    its timeout: the next run queues the rest. Customers are reminded only while the company's
+    gates allow an automatic message (`customers_remindable`); staff and guests always are. A
+    pending booking is never reminded, and nothing is queued for a cancelled one.
     """
     now = clock.now()
-    row = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
-    minutes = (row or setup.DEFAULT_SETTINGS)["reminder_minutes"]
+    async with tx(app_pool, str(client_id)) as conn:
+        row = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
+        minutes = (row or setup.DEFAULT_SETTINGS)["reminder_minutes"]
+        facts = await notify.load_facts(conn, client_id)
+        customers = await customers_remindable(conn, client_id)
+        telegram = await telegram_reminders(conn, client_id)
     until = now + timedelta(minutes=minutes)
-    facts = await notify.load_facts(conn, client_id)
     zone = ZoneInfo(facts.timezone)
-    customers = await customers_remindable(conn, client_id)
-    telegram = await telegram_reminders(conn, client_id)
     bookings = queued = told = failed = 0
     after: dict[str, Any] = {"after_starts": None, "after_id": None}
     while True:
-        page = await db.q.fetch_all(
-            "bookings/reminders_due.sql",
-            {
-                "client_id": client_id,
-                "now": now,
-                "until": until,
-                "batch_size": batch_size,
-                **after,
-            },
-            conn=conn,
-        )
+        async with tx(app_pool, str(client_id)) as conn:
+            page = await db.q.fetch_all(
+                "bookings/reminders_due.sql",
+                {
+                    "client_id": client_id,
+                    "now": now,
+                    "until": until,
+                    "batch_size": batch_size,
+                    **after,
+                },
+                conn=conn,
+            )
         for row in page:
             try:
-                async with conn.transaction():
+                async with tx(app_pool, str(client_id)) as conn:
                     mails, messages = await _remind(
                         conn, client_id, row["id"], facts, zone, customers, telegram, now
                     )

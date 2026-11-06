@@ -120,6 +120,7 @@ def build_default_registry(
             every=timedelta(minutes=5),
             fn=run_reminder_queue,
             per_client=True,
+            own_transactions=True,
         )
     )
 
@@ -257,11 +258,17 @@ class JobRunner:
             stats: dict[str, Any] = {}
             error_msg: str | None = None
             try:
-                async with tx(self._app_pool, str(client_id)) as conn:
+                if job.own_transactions:
                     stats = await asyncio.wait_for(
-                        job.fn(conn, client_id, self._clock, batch_size=job.batch_size),
+                        job.fn(self._app_pool, client_id, self._clock, batch_size=job.batch_size),
                         timeout=job.timeout,
                     )
+                else:
+                    async with tx(self._app_pool, str(client_id)) as conn:
+                        stats = await asyncio.wait_for(
+                            job.fn(conn, client_id, self._clock, batch_size=job.batch_size),
+                            timeout=job.timeout,
+                        )
             except Exception as exc:
                 ok = False
                 all_ok = False
