@@ -2,12 +2,16 @@
 
 import asyncio
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import boto3
 import pytest
 from csa.storage.base import InvalidObjectName, ObjectStore, StorageNotFound, durable_put
 from csa.storage.local import LocalObjectStore
+from csa.storage.s3 import S3ObjectStore
+from moto import mock_aws
 
 TENANT = uuid4()
 INVALID_NAMES = [
@@ -22,11 +26,22 @@ INVALID_NAMES = [
 ]
 
 
-@pytest.fixture(params=["local"])
-def store(request: pytest.FixtureRequest, tmp_path: Path) -> ObjectStore:
+@pytest.fixture(params=["local", "s3"])
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[ObjectStore]:
     if request.param == "local":
-        return LocalObjectStore(tmp_path / "uploads")
-    raise AssertionError(request.param)
+        yield LocalObjectStore(tmp_path / "uploads")
+    elif request.param == "s3":
+        with mock_aws():
+            client = boto3.client(
+                "s3",
+                region_name="us-east-1",
+                aws_access_key_id="testing",
+                aws_secret_access_key="testing",  # noqa: S106
+            )
+            client.create_bucket(Bucket="test-bucket")
+            yield S3ObjectStore("test-bucket", "kb", client)
+    else:
+        raise AssertionError(request.param)
 
 
 def test_put_then_read_returns_same_bytes(store: ObjectStore) -> None:
